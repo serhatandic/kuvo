@@ -25,7 +25,7 @@ type Commands = {
   close: []
   read: [key: string]
   write: [key: string, value: unknown]
-  scan: [input: InsightScanInput, since: number, now: number, origins: OriginScope]
+  scan: [input: InsightScanInput, since: number, now: number, origins: OriginScope, handled: string[]]
   cursor: [sender: string, scope?: string]
   batch: [after: number, historical?: string[]]
   choices: [computers: string[]]
@@ -42,38 +42,71 @@ export type DBRequest = { id: number; catalog?: PricingSnapshot } & {
 type Command = { [Each in Method]: [method: Each, args: Commands[Each]] }[Method]
 type Reply = { id: number; result?: unknown; error?: string }
 
+// Defined by build-box.sh for the shipped link. Source tests use the same worker's entrypoint.
+declare const __KUVO_INSIGHTS_WORKER__: string | undefined
+let embeddedWorker: string | undefined
+function workerEntry() {
+  if (typeof __KUVO_INSIGHTS_WORKER__ !== "string") return new URL("./insights-db-worker.ts", import.meta.url)
+  return embeddedWorker ??= URL.createObjectURL(new Blob([__KUVO_INSIGHTS_WORKER__], { type: "application/javascript" }))
+}
+
 export class InsightsDB {
-  private worker: Worker
-  private opened: Promise<void>
+  private worker?: Worker
+  private opened?: Promise<void>
+  private parking?: ReturnType<typeof setTimeout>
+  private retired?: Promise<void>
   private failure?: Error
   private closing?: Promise<void>
   private id = 0
   private pricing?: Pricing
   private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
 
-  constructor(private file: string, private bundle?: string) {
-    this.worker = bundle
-      ? new Worker(bundle, { argv: ["--insights-db-worker"] })
-      : new Worker(new URL("./insights-db-worker.ts", import.meta.url), { argv: ["--insights-db-source-worker"] })
-    this.worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+  constructor(private file: string, private readonly entry?: string) {}
+
+  private start() {
+    const worker = this.worker = new Worker(this.entry ?? workerEntry(), { smol: true, argv: this.entry ? [] : ["--insights-db-source-worker"] })
+    worker.onmessage = ({ data }: MessageEvent<Reply>) => {
       const waiting = this.pending.get(data.id)
       if (!waiting) return
       this.pending.delete(data.id)
       if (data.error !== undefined) waiting.reject(new Error(data.error))
       else waiting.resolve(data.result)
+      if (!this.pending.size && !this.closing) {
+        this.parking = setTimeout(() => {
+          if (this.worker !== worker || this.pending.size || this.closing) return
+          this.park()
+        }, 5_000)
+        this.parking.unref?.()
+      }
     }
-    this.worker.onerror = (event) => {
+    worker.onerror = (event) => {
+      if (this.worker !== worker) return
       this.fail(new Error(event.message || "The Insights worker stopped."))
-      this.worker.terminate()
+      this.park()
     }
-    this.worker.addEventListener("close", (event) => {
-      this.fail(new Error(`The Insights worker exited (code ${event.code}).`))
+    worker.addEventListener("close", (event) => {
+      if (this.worker === worker) {
+        this.worker = undefined
+        this.fail(new Error(`The Insights worker exited (code ${event.code}).`))
+      }
     })
-    this.opened = this.send(["open", [file]])
-    void this.opened.catch((error) => {
+    return this.opened = this.send<void>(["open", [this.file]]).catch((error) => {
       this.fail(error)
-      this.worker.terminate()
+      this.park()
+      throw error
     })
+  }
+
+  private park() {
+    clearTimeout(this.parking)
+    const worker = this.worker
+    this.worker = this.opened = this.pricing = undefined
+    if (worker) {
+      this.retired = new Promise(resolve => {
+        worker.addEventListener("close", () => resolve(), { once: true })
+        worker.terminate()
+      })
+    }
   }
 
   private fail(error: Error) {
@@ -83,11 +116,12 @@ export class InsightsDB {
   }
 
   reopen() {
-    return this.failure && !this.closing ? new InsightsDB(this.file, this.bundle) : this
+    return this.failure && !this.closing ? new InsightsDB(this.file, this.entry) : this
   }
 
   private send<T>([method, args]: Command, pricing?: Pricing): Promise<T> {
     if (this.failure) return Promise.reject(this.failure)
+    clearTimeout(this.parking)
     const catalog: PricingSnapshot | undefined = pricing && pricing !== this.pricing
       ? { supplement: pricing.supplement, primary: pricing.primary.entries, secondary: pricing.secondary.entries }
       : undefined
@@ -95,7 +129,7 @@ export class InsightsDB {
       const id = ++this.id
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject })
       try {
-        this.worker.postMessage({ id, method, args, catalog })
+        this.worker!.postMessage({ id, method, args, catalog })
         if (pricing) this.pricing = pricing
       } catch (error) {
         this.pending.delete(id)
@@ -105,7 +139,12 @@ export class InsightsDB {
   }
 
   private async call<T>(command: Command, pricing?: Pricing): Promise<T> {
-    await this.opened
+    if (this.closing) throw new Error("The Insights index is closed.")
+    if (this.failure) throw this.failure
+    clearTimeout(this.parking)
+    if (this.retired) await this.retired
+    if (this.closing) throw new Error("The Insights index is closed.")
+    await (this.opened ?? this.start())
     if (this.closing) throw new Error("The Insights index is closed.")
     return this.send<T>(command, pricing)
   }
@@ -116,12 +155,15 @@ export class InsightsDB {
 
   private async finish() {
     try {
-      await this.opened
-      await this.send(["close", []])
+      if (this.opened) {
+        await this.opened
+        await this.send(["close", []])
+      }
     } catch (error) {
       if (!this.failure) throw error
     } finally {
-      this.worker.terminate()
+      this.park()
+      await this.retired
     }
   }
   read<T>(key: string) { return this.call<T | undefined>(["read", [key]]) }
@@ -129,8 +171,23 @@ export class InsightsDB {
   cursor(sender: string, scope?: string) { return this.call<{ after: number; epoch?: string }>(["cursor", [sender, scope]]) }
   batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
-  scan(input: InsightScanInput, pricing: Pricing, since: number, now: number, origins: OriginScope) {
-    return this.call<{ issues: string[]; transcripts: number; observations: number }>(["scan", [input, since, now, origins]], pricing)
+  async scan(input: InsightScanInput, pricing: Pricing, since: number, now: number, origins: OriginScope) {
+    const issues = new Set<string>()
+    const handled: string[] = []
+    let transcripts = 0
+    let observations = 0
+    for (;;) {
+      const part = await this.call<{ issues: string[]; transcripts: number; observations: number; more: boolean; selected?: string[] }>(
+        ["scan", [input, since, now, origins, handled]], pricing)
+      for (const issue of part.issues) issues.add(issue)
+      transcripts += part.transcripts
+      observations += part.observations
+      if (!part.more) return { issues: [...issues], transcripts, observations }
+      handled.push(...part.selected!)
+      // The durable file checkpoints keep finished work. Release the decoder and SQLite pages
+      // before seeking more history, unless a concurrent request is using this worker.
+      if (!this.pending.size && !this.closing) this.park()
+    }
   }
 
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }

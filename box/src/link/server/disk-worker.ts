@@ -1,11 +1,11 @@
-import type { artifactCitations } from "../artifacts/service";
+import type { citationUpdate } from "../artifacts/service";
 import type { libraryHandovers } from "../library/service";
 import type { verifyHeldPack } from "../updates/fleet";
 import type { packForTransfer, unpackForTransfer } from "../moves/bundle";
 import type { checkMoveQueueFiles, clearQueuePlacement, forgetWorkQueues, packQueuesForMove, placeMoveWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
 // These filesystem operations have synchronous transactions and can take a long time.
 // Each domain has its own worker so an archive never holds up permission reads.
-import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+import { isMainThread, parentPort, Worker, workerData, type WorkerOptions } from "node:worker_threads";
 import type { setStarred } from "../areas/models-starred";
 import type { applySettings } from "../areas/apply";
 import type { applyResult, confirmConfig, previewConfig, readConfigPlan, saveChangeSet } from "../areas/apply-from";
@@ -39,7 +39,7 @@ type Operations = {
   listFolders: typeof listFolders;
   makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
-  artifactCitations: typeof artifactCitations;
+  citationUpdate: typeof citationUpdate;
   libraryHandovers: typeof libraryHandovers;
   scanSourceGeneration: typeof scanSourceGeneration;
   authenticate: (file: string, key: string, context: Buffer) => ReturnType<typeof authenticate>;
@@ -101,7 +101,7 @@ if (isDiskWorker) {
         case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
         case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;
         case "scanSourceGeneration": value = (await import("../setup/removal-generation")).scanSourceGeneration(...args); break;
-        case "artifactCitations": value = (await import("../artifacts/service")).artifactCitations(...args); break;
+        case "citationUpdate": value = (await import("../artifacts/service")).citationUpdate(...args); break;
         case "libraryHandovers": value = (await import("../library/service")).libraryHandovers(...args); break;
         case "captureBackup": value = (await import("../backup/engine")).captureBackup(...args); break;
         case "authenticate": {
@@ -157,7 +157,7 @@ class DiskWorker {
   private worker: Worker | undefined;
   private parking?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly idleMs = 0) {}
+  constructor(private readonly idleMs = 5_000) {}
   private next = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
@@ -178,7 +178,7 @@ class DiskWorker {
   }
 
   private start(): Worker {
-    const worker = this.worker = new Worker(new URL(import.meta.url), { workerData: role });
+    const worker = this.worker = new Worker(new URL(import.meta.url), { workerData: role, smol: true } as WorkerOptions);
     const fail = (error: Error) => {
       if (this.worker !== worker) return;
       this.worker = undefined;
@@ -221,4 +221,4 @@ export const queueMoveDisk = new DiskWorker();
 export const numberUpkeepDisk = new DiskWorker();
 export const moveBundleDisk = new DiskWorker();
 
-export const artifactDisk = new DiskWorker(5_000);
+export const artifactDisk = new DiskWorker();

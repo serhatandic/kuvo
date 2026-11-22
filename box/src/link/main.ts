@@ -2,7 +2,6 @@ import { keepEngineOnDemand } from "./engine/lifetime";
 import { updateUnderWay } from "../shared/updating";
 import { locked, writeSecret } from "../shared/files";
 import { once } from "node:events";
-import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
 import { processRuns } from "../shared/platform";
 import { isObject, parsed } from "../shared/json";
@@ -1106,7 +1105,6 @@ async function openBoxServices(app: boolean, wanted = () => true, resident = fal
   const { serveBoxServices } = await import("./services");
   const home = path.join(APP_FOLDER ?? K, "agents");
   if (bridgeOwnsServices(app)) return;
-  const shown = resident ? await (await import("./artifacts/service")).artifactHistory(path.join(home, "sessions")) : undefined;
   if (!resident) process.env.KUVO_AGENTS_HOME = home;
   if (!app) {
     const login = OWN_HOME_MAC && REAL_BOX ? await loginEnvironment() : undefined;
@@ -1130,7 +1128,7 @@ async function openBoxServices(app: boolean, wanted = () => true, resident = fal
     return serveBoxServices({
       home, run: RUN, box: APP_FOLDER ?? K, bots: path.join(APP_FOLDER ?? K, "bots"), artifacts: path.join(K, "artifacts"),
       engineData: APP_FOLDER ? path.join(APP_FOLDER, "opencode", "data", "opencode") : path.join(K, "data", "opencode"),
-      bundle: script, shown,
+      bundle: script,
     });
   }, { exclusive: true });
   return leave;
@@ -1705,10 +1703,7 @@ export function selftest(): boolean {
 }
 
 const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
-if (!isMainThread && process.argv.includes("--insights-db-worker")) {
-  const { serveInsightsDB } = await import("../usage/insights-db-worker");
-  serveInsightsDB();
-} else if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
+if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
   // The worker only publishes its own receipt and must outlive the installed bundle it began with.
   await box("tool-command-worker", process.argv.slice(4), false);
 } else if (main && !isReceiptWorker && !isDiskWorker) {

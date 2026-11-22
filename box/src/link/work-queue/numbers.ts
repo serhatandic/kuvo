@@ -22,7 +22,7 @@ import { followedSetup } from "../setup/record";
 import { primaryFenced, relayLease } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
 import { readLink, updateLink } from "../state";
-import { allItems, changeQueues, noteQueuesChanged, OWNER, WORK_QUEUE } from "./store";
+import { allItems, changeQueues, noteQueuesChanged, OWNER, QUEUES, WORK_QUEUE } from "./store";
 import { numberDisk, numberUpkeepDisk } from "../server/disk-worker";
 import type { Book, Item } from "./store";
 import type { LinkHost } from "../relay/host";
@@ -785,12 +785,17 @@ export function numbersToSend(link: LinkState | null, welcomed: boolean) {
 }
 
 let pushingNumbers = false;
+let checkedNumbers = 0;
 /** Send a waiting ask to the main, or fulfill it locally when this box holds the lease. */
 export async function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink()): Promise<void> {
   if (pushingNumbers) return;
+  const kept = readNumbers();
+  const now = Date.now();
+  if (!kept.asking && (now - checkedNumbers < 60_000 || !kept.primary && !fs.existsSync(QUEUES))) return;
   pushingNumbers = true;
   try {
     const { changed, peer, ask } = await numberUpkeepDisk.run("numbersToSend", link, Boolean(host?.welcomed));
+    if (now - checkedNumbers >= 60_000) checkedNumbers = now;
     if (changed) noteQueuesChanged();
     if (!host?.welcomed || !link || !peer || !ask) return;
     const bytes = mailFor(peer, { workQueue: { ask }, at: Date.now() }, link);

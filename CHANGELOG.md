@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
+- Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
 
 - Opening the Browser tab starts the computer’s browser when it’s stopped, including after a Kuvo update.
 - The context bar keeps the model's window after a restart, including when the next reply only reports tokens used.

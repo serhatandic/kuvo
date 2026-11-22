@@ -1,6 +1,6 @@
 import "../safety"
 import { expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InsightsDB } from "../../src/usage/insights-db"
@@ -103,6 +103,44 @@ test("learning the box's peer name leaves its unchanged local history checkpoint
     expect(checkpoint()).toBe(before)
   } finally {
     await reader.closeInsights()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+
+test("a large backfill keeps all usage as it releases batches and stays finished after a restart", async () => {
+  const home = mkdtempSync(join(tmpdir(), "insights-batches-"))
+  const now = Date.UTC(2026, 10, 23, 10)
+  const file = join(home, "insights.sqlite")
+  const args: Parameters<InsightsDB["scan"]> = [
+    { home, cache: join(home, "cache"), bots: [], computer: "box" },
+    bundledPricing(), now - 86_400_000, now, { eligible: ["box"], historical: [] },
+  ]
+  const block = "X".repeat(1024 * 1024)
+  let db = new InsightsDB(file)
+  try {
+    for (const [n, providerID] of ["claude-code", "codex", "antigravity", "grok", "cursor"].entries()) {
+      const id = "ses_batch_" + n
+      const folder = join(home, "sessions", id)
+      mkdirSync(folder, { recursive: true })
+      writeFileSync(join(folder, "session.json"), JSON.stringify({ id, title: "Batch " + n, time: { updated: now } }))
+      const transcript = openSync(join(folder, "messages.json"), "w")
+      try {
+        const reply = { type: "assistant", id: "call_" + n, model: { id: "test", providerID }, content: [],
+          time: { created: now - 10, completed: now }, tokens: { input: n + 10, output: 1 } }
+        writeSync(transcript, "[" + JSON.stringify(reply).slice(0, -1) + ',"unused":"')
+        for (let i = 0; i < 12; i++) writeSync(transcript, block)
+        writeSync(transcript, '"}]')
+      } finally { closeSync(transcript) }
+    }
+    expect(await db.scan(...args)).toMatchObject({ transcripts: 5, observations: 5 })
+    expect((await db.batch(0)).records.map(row => row.call).sort()).toEqual(["call_0", "call_1", "call_2", "call_3", "call_4"])
+    await db.close()
+    db = new InsightsDB(file)
+    expect(await db.scan(...args)).toMatchObject({ transcripts: 0, observations: 0 })
+    expect((await db.batch(0)).records).toHaveLength(5)
+  } finally {
+    await db.close()
     rmSync(home, { recursive: true, force: true })
   }
 })

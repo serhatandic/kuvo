@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url"
 import type { DatabaseSync } from "node:sqlite"
 import { syncDurableFile, writeDurablePrivate } from "../shared/files"
 import type { Attachment, Message, ToolOutput } from "./wire"
+import { projectedTranscript } from "./transcript-projection"
 
 /** Read a legacy array with its original whitespace, escapes and Unicode intact. */
 function* legacyMessages(file: string): Generator<Message> {
@@ -163,7 +164,7 @@ function projection(message: Message, view: MessageView): Message | undefined {
   const { id, time, model, agent, tokens } = message
   const content: typeof message.content = []
   for (const part of message.content) {
-    if (view === "artifacts" && part.type === "text" && part.text.includes(":codex-")) {
+    if (view === "artifacts" && part.type === "text" && part.text?.includes(":codex-")) {
       content.push(part)
       continue
     }
@@ -175,7 +176,7 @@ function projection(message: Message, view: MessageView): Message | undefined {
       content.push({ type: "tool", id: part.id, name, state: { status: "completed", input: { skill, name: named, file_path, filePath, path }, content: [] } })
     } else if (view === "artifacts" && (/(^|_)(show_file|generate_image)$/.test(name) || part.id.startsWith(`cited-${id}-`))) {
       const files = (state.status === "completed" || state.status === "error")
-        ? state.content?.filter(file => file?.type === "file" && file.uri.startsWith("file:")) ?? [] : []
+        ? state.content?.filter(file => file?.type === "file" && file.uri?.startsWith("file:")) ?? [] : []
       content.push({ type: "tool", id: part.id, name, state: { status: "completed", input: { path: input?.path }, content: files } })
     }
   }
@@ -187,8 +188,10 @@ export function* savedMessages(folder: string, view: MessageView = "body"): Gene
   const file = join(folder, transcriptDatabase)
   if (!existsSync(file)) {
     const legacy = join(folder, "messages.json")
-    if (existsSync(legacy)) for (const message of legacyMessages(legacy)) {
-      const projected = projection(message, view)
+    if (!existsSync(legacy)) return
+    if (view === "body") yield* legacyMessages(legacy)
+    else for (const message of projectedTranscript(legacy, view)) {
+      const projected = projection(message as Message, view)
       if (projected !== undefined) yield projected
     }
     return

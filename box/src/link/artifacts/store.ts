@@ -2,7 +2,8 @@
 // wrote or changed, with a version for each turn that changed it, who made it and where.
 //
 // Kept in one folder of the box's own:
-//   log/<yyyy-mm>.jsonl   one line per change to an artifact or one of its versions, read back at start
+//   log/<yyyy-mm>.jsonl   one line per change to an artifact or one of its versions
+//   index-v1.sqlite       a disposable index rebuilt when its journal stamp changes
 //   copies/<ab>/<hash>    each version's bytes, by their SHA-256, kept once however many versions share them
 //
 // Nothing goes silently: the newest version of each file, and every version of memory, skills and
@@ -12,7 +13,7 @@
 // always kept once the disk's free space is down to its floor.
 
 import { createHash, createHmac, randomBytes } from "node:crypto"
-import { appendFileSync, closeSync, existsSync, fchmodSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, fchmodSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { basename, join, sep } from "node:path"
 import { fromPatch, unified } from "../../agents/diff"
 import { isBinary, isText, kindOf, typeOf, type Kind } from "./kinds"
@@ -22,7 +23,10 @@ import { realOf, realOfLater } from "./paths"
 import { budgetConfirmation } from "../../shared/artifact-budget"
 import { artifactIndexFormat, artifactSettingsFormat } from "../../shared/artifact-format"
 import { isObject } from "../../shared/json"
+import { ArtifactIndex } from "./index"
 import { writeSecret } from "../../shared/files"
+
+const sweep = typeof Bun !== "undefined" ? (await import("bun:jsc")).gcAndSweep : undefined
 
 /** The biggest file a copy is kept of (as `kuvo/file` sends at most). */
 export const copyLimit = 25 * 1024 * 1024
@@ -164,41 +168,27 @@ const sameStamp = (a: Stamp, b: Stamp) => a.size === b.size && a.mtime === b.mti
 const couldBeRewritten = (stamp: Stamp, at: number) =>
   at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100)
 
-type OrderedArtifact = { artifact: Artifact; updated: string }
-const newestFirst = (a: OrderedArtifact, b: OrderedArtifact) => {
-  if (a.updated !== b.updated) return a.updated > b.updated ? -1 : 1
-  return a.artifact.id === b.artifact.id ? 0 : a.artifact.id > b.artifact.id ? -1 : 1
-}
-
-class ArtifactBucket {
-  readonly ordered: OrderedArtifact[] = []
-  readonly pinned = new Set<Artifact>()
-
-  put(row: OrderedArtifact, before: OrderedArtifact | undefined, loading: boolean) {
-    if (row.artifact.pinned) this.pinned.add(row.artifact)
-    else this.pinned.delete(row.artifact)
-    if (before === row) return
-    if (loading) {
-      this.ordered.push(row)
-      return
+/** Read one journal record at a time. A month can contain years of compacted history. */
+function* journalLines(fd: number) {
+  const buffer = Buffer.allocUnsafe(64 * 1024)
+  let pieces: Buffer[] = []
+  for (;;) {
+    const size = readSync(fd, buffer, 0, buffer.length, null)
+    if (!size) break
+    let start = 0
+    for (let end = buffer.indexOf(10, start); end !== -1 && end < size; end = buffer.indexOf(10, start)) {
+      const tail = buffer.subarray(start, end)
+      yield pieces.length ? Buffer.concat([...pieces, tail]).toString("utf8") : tail.toString("utf8")
+      pieces = []
+      start = end + 1
     }
-    if (before) this.ordered.splice(this.position(before), 1)
-    this.ordered.splice(this.position(row), 0, row)
+    if (start < size) pieces.push(Buffer.from(buffer.subarray(start, size)))
   }
-
-  private position(row: OrderedArtifact): number {
-    let start = 0, end = this.ordered.length
-    while (start < end) {
-      const middle = (start + end) >>> 1
-      if (newestFirst(this.ordered[middle]!, row) < 0) start = middle + 1
-      else end = middle
-    }
-    return start
-  }
+  if (pieces.length) yield Buffer.concat(pieces).toString("utf8")
 }
 
 export class ArtifactStore {
-  private artifacts = new Map<string, Artifact>()
+  private readonly artifacts: ArtifactIndex
   /** How many kept versions use each copy, and its size. */
   private copies = new Map<string, { uses: number; size: number }>()
   /** What the copies take, all told. */
@@ -221,6 +211,7 @@ export class ArtifactStore {
       /** Files shown before the record heard it (a kept reply's, read again), and when: marked as it loads. */
       shown?: { path: string; at: number }[]
     } = {},
+    defer = false,
   ) {
     mkdirSync(join(root, "log"), { recursive: true })
     mkdirSync(join(root, "copies"), { recursive: true })
@@ -228,10 +219,27 @@ export class ArtifactStore {
     const { budget } = this.readSettings()
     if (typeof budget === "number" && budget >= 0) this.chosenBudget = budget
     this.key = ArtifactStore.keyIn(root)
-    this.load()
-    for (const index of [this.sessions, this.bots]) for (const bucket of index.values()) bucket.ordered.sort(newestFirst)
-    this.loading = false
-    void this.indexFiles()
+    this.artifacts = new ArtifactIndex(join(root, "log"), join(root, "index-v1.sqlite"))
+    if (!defer) {
+      for (const _ of this.load()) sweep?.()
+      this.resolveFiles()
+    }
+  }
+
+  static async open(root: string, options: ConstructorParameters<typeof ArtifactStore>[1]) {
+    const store = new ArtifactStore(root, options, true)
+    for (const _ of store.load()) {
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+      sweep?.()
+    }
+    store.resolveFiles()
+    return store
+  }
+
+  private resolveFiles() {
+    void this.indexFiles().catch(error => {
+      if (existsSync(this.root)) console.error("artifacts: could not resolve saved paths", error)
+    })
   }
 
   private now() {
@@ -441,7 +449,6 @@ export class ArtifactStore {
     if (!artifact) {
       const kind = this.refine(kindOf(path, { bots: this.options.bots, download: made.download }), read.bytes)
       artifact = { id: ArtifactStore.idOf(path), path, name: basename(path), kind, type: typeOf(path, !!read.bytes && isBinary(read.bytes)), where: { bots: [], sessions: [], groups: [] }, pinned: null, gone: null, updated: stamp(now), versions: [], ...(this.policy.inGit(path) ? { git: true as const } : {}) }
-      this.artifacts.set(artifact.id, artifact)
     }
     const latest = artifact.versions.at(-1)
     // (Gone but not deleted: taken away unseen, and back as it was.)
@@ -511,7 +518,6 @@ export class ArtifactStore {
     // (What was there before, not the file now.)
     this.recorded.delete(path)
     artifact.versions.push(version)
-    this.artifacts.set(artifact.id, artifact)
     this.use(hash, bytes.length, 1)
     this.write(artifact, version)
   }
@@ -558,7 +564,7 @@ export class ArtifactStore {
     if (!bytes) return version.status === "deleted" ? "That version is a deletion: there's nothing to put back." : "That version's copy isn't kept, so it can't be put back."
     // What's there now, kept first.
     this.changeNow(artifact.path, { by: { kind: "you" }, via: "replaced", separate: true, keep: true, at })
-    const latest = artifact.versions.at(-1)
+    const latest = this.artifacts.get(id)?.versions.at(-1)
     if (latest && latest.status !== "deleted" && !latest.kept) return "What's there now can't be kept, so putting this back couldn't be undone."
     try {
       mkdirSync(join(artifact.path, ".."), { recursive: true })
@@ -582,13 +588,13 @@ export class ArtifactStore {
       rmSync(artifact.path + ".kuvo-restore", { force: true })
       return `It couldn't be written: ${error?.message ?? error}`
     }
-    this.changeNow(artifact.path, { by: { kind: "you" }, via: "restore", separate: true, keep: true, at })
-    const restored = artifact.versions.at(-1)
+    const updated = this.changeNow(artifact.path, { by: { kind: "you" }, via: "restore", separate: true, keep: true, at }) ?? this.artifacts.get(id)!
+    const restored = updated.versions.at(-1)
     if (restored && restored.n !== latest?.n) {
       restored.restored = n
-      this.write(artifact, restored)
+      this.write(updated, restored)
     }
-    return artifact
+    return updated
   }
 
   /** Shown in a panel just now. */
@@ -630,89 +636,53 @@ export class ArtifactStore {
    * `next` of the page before, an opaque cursor; `next` is null once there are no more.
    */
   list(scope: Scope, { limit = 200, before }: { limit?: number; before?: string } = {}): { artifacts: Summary[]; next: string | null } {
-    const scoped = scope.session || scope.bot
-    const bucket = this.bucket(scope)
-    if (scoped && !bucket) return { artifacts: [], next: null }
     const key = (artifact: Pick<Artifact, "updated" | "id">) => [artifact.updated, artifact.id]
-    const visible = (artifact: Artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before)
-    const ordered = bucket?.ordered ?? [...this.artifacts.values()].filter(visible)
-      .map(artifact => ({ artifact, updated: artifact.updated })).sort(newestFirst)
-    const pins = [...(bucket?.pinned ?? ordered.filter(row => row.artifact.pinned).map(row => row.artifact))]
-      .filter(visible).sort((a, b) => later(key(a), key(b)))
-    // Pick one record per file before cutting the page. Pins win, then the newest record.
     const seen = new Set<string>()
     const artifacts: Summary[] = []
-    const first = (artifact: Artifact) => {
-      const file = this.fileOf(artifact)
-      if (seen.has(file)) return false
-      seen.add(file)
-      return true
-    }
-    for (const pin of pins) if (first(pin) && !before) artifacts.push(summary(pin))
     const maximum = Math.trunc(limit) || 0
-    if (artifacts.length >= maximum) return { artifacts, next: null }
     const after = before?.split("|")
-    let next: string | null = null
-    for (const { artifact } of ordered) {
-      if (artifact.pinned || !visible(artifact) || !first(artifact)) continue
-      if (after && later(key(artifact), after) <= 0) continue
-      if (artifacts.length >= maximum) {
-        next = key(artifacts.at(-1)!).join("|")
-        break
+    for (const artifact of this.artifacts.values(scope, true)) {
+      if (!this.matches(artifact, scope) || !artifact.versions.some(version => !version.before)) continue
+      const file = this.fileOf(artifact)
+      if (seen.has(file)) continue
+      seen.add(file)
+      if (artifact.pinned) {
+        if (!before) artifacts.push(summary(artifact))
+        continue
       }
+      if (artifacts.length >= maximum && !artifacts.some(item => !item.pinned)) return { artifacts, next: null }
+      if (after && later(key(artifact), after) <= 0) continue
+      if (artifacts.length >= maximum) return { artifacts, next: key(artifacts.at(-1)!).join("|") }
       artifacts.push(summary(artifact))
     }
-    return { artifacts, next }
+    return { artifacts, next: null }
   }
 
-  // Rebuilt from the journal at startup, then kept ordered as files are recorded and pinned.
-  private readonly sessions = new Map<string, ArtifactBucket>()
-  private readonly bots = new Map<string, ArtifactBucket>()
   private readonly files = new Map<string, string>()
-  private loading = true
-  private readonly indexedWhere = new WeakMap<Artifact, { sessions: string[]; bots: string[]; row: OrderedArtifact; pinned: boolean }>()
-
-  private bucket(scope: Scope): ArtifactBucket | undefined {
-    return scope.session ? this.sessions.get(scope.session) : scope.bot ? this.bots.get(scope.bot) : undefined
-  }
-
-  private inScope(scope: Scope): Artifact[] {
-    if (scope.session || scope.bot) return this.bucket(scope)?.ordered.map(row => row.artifact) ?? []
-    return [...this.artifacts.values()]
-  }
-
-  private index(artifact: Artifact) {
-    if (!this.loading && !this.files.has(artifact.id)) this.files.set(artifact.id, realOf(artifact.path) ?? artifact.path)
-    const was = this.indexedWhere.get(artifact)
-    const { sessions, bots } = artifact.where
-    const row = was?.row.updated === artifact.updated ? was.row : { artifact, updated: artifact.updated }
-    const pinned = !!artifact.pinned
-    if (was?.sessions === sessions && was.bots === bots && was.row === row && was.pinned === pinned) return
-    for (const [ids, before, index] of [
-      [sessions, was?.sessions, this.sessions],
-      [bots, was?.bots, this.bots],
-    ] as const) {
-      // The recorder only appends to an artifact's attribution.
-      for (const [at, id] of ids.entries()) {
-        const bucket = index.get(id) ?? new ArtifactBucket()
-        if (!index.has(id)) index.set(id, bucket)
-        bucket.put(row, at < (before?.length ?? 0) ? was?.row : undefined, this.loading)
-      }
-    }
-    this.indexedWhere.set(artifact, { sessions, bots, row, pinned })
-  }
 
   /** Old journal paths can name one file through different links. Resolve them off the read path. */
   private async indexFiles() {
-    const artifacts = [...this.artifacts.values()]
-    for (let at = 0; at < artifacts.length; at += 16) {
-      const changed = await Promise.all(artifacts.slice(at, at + 16).map(async artifact => {
-        const file = await realOfLater(artifact.path)
-        if (this.files.has(artifact.id)) return undefined
-        this.files.set(artifact.id, file)
-        return file !== artifact.path ? artifact : undefined
+    const parents = new Map<string, Promise<string>>()
+    const real = (folder: string): Promise<string> => {
+      let path = parents.get(folder)
+      if (!path) {
+        if (parents.size >= 256) parents.clear()
+        parents.set(folder, path = realOfLater(folder))
+      }
+      return path
+    }
+    let after = ""
+    for (;;) {
+      const batch = this.artifacts.paths(after)
+      if (!batch.length) return
+      after = batch.at(-1)!.id
+      await Promise.all(batch.map(async ({ id, path }) => {
+        const file = await realOfLater(path, real)
+        if (this.files.has(id) || file === path) return
+        this.files.set(id, file)
+        const artifact = this.get(id)
+        if (artifact) this.told(artifact)
       }))
-      for (const artifact of changed) if (artifact) this.told(artifact)
     }
   }
 
@@ -729,7 +699,7 @@ export class ArtifactStore {
     const entries: { artifact: Header; version: Version }[] = []
     const key = (entry: { artifact: Header; version: Version }) => [entry.version.at, entry.artifact.id, String(entry.version.n).padStart(9, "0")]
     const after = before?.split("|")
-    for (const artifact of this.inScope(scope)) {
+    for (const artifact of this.artifacts.values(scope)) {
       if (!this.matches(artifact, scope)) continue
       const { versions, ...header } = artifact
       for (const version of versions) {
@@ -904,8 +874,9 @@ export class ArtifactStore {
     // Rewritten by two wake-ups or more: a page kept up to date.
     if (artifact.kind === "document" && !artifact.living && artifact.versions.filter((each) => each.trigger === "wake").length >= 2) artifact.living = true
     this.write(artifact, version)
+    if (this.copyBytes <= this.budget) return this.told(artifact)
     this.settle()
-    return this.told(artifact)
+    return this.told(this.get(artifact.id) ?? artifact)
   }
 
   /** Lines added and removed since `previous`, when both are text that was kept. */
@@ -962,18 +933,29 @@ export class ArtifactStore {
 
   /** The log as it adds up now, in place of `months`: written aside, then moved in, then they go. */
   private compact(months: string[]) {
-    const lines: string[] = []
-    for (const artifact of this.artifacts.values()) {
-      const { versions, ...header } = artifact
-      if (!versions.length) lines.push(JSON.stringify(artifactIndexFormat.write({ a: header })))
-      for (const version of [...versions].sort((a, b) => a.n - b.n)) lines.push(JSON.stringify(artifactIndexFormat.write({ a: header, v: version })))
-    }
     // Before every month, so later ones read after it.
     const file = join(this.root, "log", "0000-00.jsonl")
     try {
-      writeFileSync(file + ".new", lines.join("\n") + "\n")
+      let lines = 0
+      const fd = openSync(file + ".new", "w")
+      try {
+        let batch = ""
+        const line = (value: Line) => {
+          lines++
+          batch += JSON.stringify(artifactIndexFormat.write(value)) + "\n"
+          if (batch.length < 64 * 1024) return
+          writeFileSync(fd, batch)
+          batch = ""
+        }
+        for (const { versions, ...header } of this.artifacts.values()) {
+          if (!versions.length) line({ a: header })
+          for (const version of versions) line({ a: header, v: version })
+        }
+        if (batch) writeFileSync(fd, batch)
+      } finally { closeSync(fd) }
       renameSync(file + ".new", file)
       for (const month of months) if (month !== "0000-00.jsonl") rmSync(join(this.root, "log", month), { force: true })
+      this.artifacts.compacted(lines)
     } catch (error: any) {
       rmSync(file + ".new", { force: true })
       console.error("artifacts: the log couldn't be compacted:", error?.message ?? error)
@@ -1017,88 +999,101 @@ export class ArtifactStore {
     const { versions: _, ...header } = artifact
     const line: Line = { a: header, ...(version ? { v: version } : {}) }
     appendFileSync(join(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + "\n")
-    this.index(artifact)
+    this.artifacts.appended(artifact)
+    if (!this.files.has(artifact.id)) {
+      const file = realOf(artifact.path)
+      if (file && file !== artifact.path) this.files.set(artifact.id, file)
+    }
   }
 
-  private load() {
-    let months: string[] = []
-    try {
-      months = readdirSync(join(this.root, "log")).filter((name) => name.endsWith(".jsonl")).sort()
-    } catch {}
-    let lines = 0
-    for (const month of months) {
-      let text = ""
-      try {
-        text = readFileSync(join(this.root, "log", month), "utf8")
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-        throw error
-      }
-      for (const each of text.split("\n")) {
-        if (!each) continue
-        lines++
-        let saved: unknown
+  private *load() {
+    const months = this.artifacts.months()
+    const store = this.artifacts
+    const root = this.root
+    const lines = yield* store.load(function* () {
+      let lines = 0
+      let bytes = 0
+      for (const month of months) {
+        const fd = openSync(join(root, "log", month), "r")
         try {
-          saved = JSON.parse(each)
-        } catch {
-          // A line cut short as the box stopped: the rest still counts.
-          continue
-        }
-        if (!isObject(saved)) continue
-        const line = artifactIndexFormat.read(saved) as Line
-        if (!line.a?.id) continue
-        const artifact = this.artifacts.get(line.a.id) ?? { ...line.a, versions: [] }
-        Object.assign(artifact, line.a)
-        if (line.v) {
-          const at = artifact.versions.findIndex((version) => version.n === line.v!.n)
-          if (at >= 0) artifact.versions[at] = line.v
-          else artifact.versions.push(line.v)
-        }
-        this.artifacts.set(artifact.id, artifact)
+          for (const each of journalLines(fd)) {
+            if (!each) continue
+            lines++
+            let saved: unknown
+            try { saved = JSON.parse(each) } catch { continue }
+            if (!isObject(saved)) continue
+            const line = artifactIndexFormat.read(saved) as Line
+            if (!line.a?.id) continue
+            const artifact = store.get(line.a.id) ?? { ...line.a, versions: [] }
+            Object.assign(artifact, line.a)
+            if (line.v) {
+              const at = artifact.versions.findIndex((version) => version.n >= line.v!.n)
+              if (at < 0) artifact.versions.push(line.v)
+              else artifact.versions.splice(at, Number(artifact.versions[at]!.n === line.v.n), line.v)
+            }
+            store.put(artifact)
+            bytes += each.length
+            if (bytes >= 2 * 1024 * 1024) {
+              bytes = 0
+              yield
+            }
+          }
+        } finally { closeSync(fd) }
       }
-    }
-    // Grown well past what it holds (each change wrote a line): written again, a line a version.
-    let versions = 0
-    for (const artifact of this.artifacts.values()) versions += artifact.versions.length + 1
-    if (lines > 1000 && lines > versions * 2) this.compact(months)
+      return lines
+    })
     // Shown before the record heard it: marked, as it was then, with no version of its own.
-    const marked = new Set<Artifact>()
+    const marked = new Set<string>()
     for (const { path, at } of this.options.shown ?? []) {
       const artifact = this.at(path)
       const when = stamp(new Date(at))
       if (!artifact || (artifact.shown && artifact.shown >= when)) continue
       artifact.shown = when
-      marked.add(artifact)
+      marked.add(artifact.id)
+      this.artifacts.put(artifact)
     }
     // A command's scratch in a project's tmp folder, recorded before it was left out (a render to
     // check its work): not what it made, unless you kept it or it was shown.
     const dropped = new Set<string>()
     let any = false
-    for (const artifact of [...this.artifacts.values()]) {
-      const project = artifact.where.project
-      if (!project || artifact.where.bots.length || artifact.pinned || artifact.shown || !inScratch(artifact.path, project)) continue
-      if (!artifact.versions.every((version) => version.via.length && version.via.every((via) => via === "shell"))) continue
-      this.artifacts.delete(artifact.id)
-      any = true
-      for (const version of artifact.versions) if (version.hash?.startsWith("sha256:")) dropped.add(version.hash)
-    }
-    // Written down: a dropped one's lines go with the log written again.
-    if (any) this.compact(months)
-    else for (const artifact of marked) this.write(artifact)
-    for (const artifact of this.artifacts.values()) {
-      this.index(artifact)
-      artifact.versions.sort((a, b) => a.n - b.n)
-      // Recorded before its kind told its type (bytes that aren't text, said to be text).
-      artifact.type = typeOf(artifact.path, artifact.kind === "file" || artifact.type === "application/octet-stream")
-      for (const version of artifact.versions) {
-        if (!version.kept || !version.hash) continue
-        // A copy that went missing (deleted by hand): no longer kept.
-        if (!existsSync(this.copyPath(version.hash))) version.kept = false
-        else this.use(version.hash, version.size, 1)
+    let after = ""
+    let versions = 0
+    let pages = 0
+    for (;;) {
+      const batch = this.artifacts.page(after)
+      if (!batch.length) break
+      for (const { id, body } of batch) {
+        after = id
+        const artifact: Artifact = JSON.parse(body)
+        const project = artifact.where.project
+        if (project && !artifact.where.bots.length && !artifact.pinned && !artifact.shown && inScratch(artifact.path, project)
+          && artifact.versions.every(version => version.via.length && version.via.every(via => via === "shell"))) {
+          this.artifacts.drop(id)
+          any = true
+          for (const version of artifact.versions) if (version.hash?.startsWith("sha256:")) dropped.add(version.hash)
+          continue
+        }
+        versions += artifact.versions.length + 1
+        const type = typeOf(artifact.path, artifact.kind === "file" || artifact.type === "application/octet-stream")
+        let modified = artifact.type !== type
+        artifact.type = type
+        for (const version of artifact.versions) {
+          if (!version.kept || !version.hash) continue
+          if (existsSync(this.copyPath(version.hash))) this.use(version.hash, version.size, 1)
+          else {
+            version.kept = false
+            modified = true
+          }
+        }
+        if (modified) this.artifacts.put(artifact)
       }
+      if (++pages % 8 === 0) yield
     }
+    if (any || (lines > 1000 && lines > versions * 2)) this.compact(months)
+    else for (const id of marked) this.write(this.artifacts.get(id)!)
     // Their copies, when nothing else has the same bytes.
     for (const hash of dropped) if (!this.copies.has(hash)) rmSync(this.copyPath(hash), { force: true })
+    yield
   }
 }
 

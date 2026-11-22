@@ -24428,23 +24428,236 @@ var init_sessions = __esm(() => {
   textFileLimit = AGENTS_TEXT_BYTES;
 });
 
-// box/src/agents/transcript.ts
-import { closeSync as closeSync2, existsSync as existsSync18, fstatSync as fstatSync2, openSync as openSync2, readSync as readSync2, renameSync as renameSync12, rmSync as rmSync17, statSync as statSync10, utimesSync as utimesSync3, writeSync } from "fs";
+// box/src/agents/transcript-projection.ts
+import { closeSync as closeSync2, openSync as openSync2, readSync as readSync2 } from "fs";
 import { StringDecoder } from "string_decoder";
+function* projectedTranscript(file, view) {
+  const descriptor = openSync2(file, "r");
+  try {
+    const reader = new Reader(descriptor);
+    reader.expect("[");
+    yield* reader.elements("]", () => reader.value(view === "insight" ? insight : artifacts));
+    if (reader.peek())
+      throw new SyntaxError("Unexpected text after the conversation.");
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+
+class Reader {
+  fd;
+  buffer = Buffer.allocUnsafe(64 * 1024);
+  decoder = new StringDecoder("utf8");
+  quotes = /["\\]/g;
+  delimiters = /["{}\[\]]/g;
+  whitespace = /\S/g;
+  primitive = /[\s,}\]]/g;
+  chunk = "";
+  at = 0;
+  ended = false;
+  constructor(fd) {
+    this.fd = fd;
+  }
+  more() {
+    if (this.at < this.chunk.length)
+      return true;
+    if (this.ended)
+      return false;
+    const size = readSync2(this.fd, this.buffer, 0, this.buffer.length, null);
+    this.ended = !size;
+    this.chunk = size ? this.decoder.write(this.buffer.subarray(0, size)) : this.decoder.end();
+    this.at = 0;
+    return this.chunk.length > 0;
+  }
+  peek() {
+    while (this.more()) {
+      this.whitespace.lastIndex = this.at;
+      const token = this.whitespace.exec(this.chunk);
+      if (token) {
+        this.at = token.index;
+        return token[0];
+      }
+      this.at = this.chunk.length;
+    }
+    return;
+  }
+  expect(char) {
+    if (this.peek() !== char)
+      throw new SyntaxError("Invalid saved conversation.");
+    this.at++;
+  }
+  *elements(end, read) {
+    if (this.peek() !== end)
+      for (;; ) {
+        yield read();
+        if (this.peek() !== ",")
+          break;
+        this.at++;
+      }
+    this.expect(end);
+  }
+  string(mode) {
+    if (mode === "file") {
+      const first = this.chunk.slice(this.at, this.at + 5);
+      if (first.length === 5 && first !== "file:" && !first.includes("\\"))
+        mode = undefined;
+    }
+    let parts;
+    if (mode)
+      parts = [];
+    while (this.more()) {
+      const start = this.at;
+      this.quotes.lastIndex = start;
+      let token;
+      while (token = this.quotes.exec(this.chunk)) {
+        if (token[0] === '"') {
+          if (parts)
+            parts.push(this.chunk.slice(start, token.index));
+          this.at = token.index + 1;
+          if (!parts)
+            return;
+          const text = JSON.parse('"' + parts.join("") + '"');
+          return mode === "file" && !text.startsWith("file:") || mode === "citation" && !text.includes(":codex-") || mode === "attachment" && !text.includes("<attached-files>") ? undefined : text;
+        }
+        if (this.quotes.lastIndex++ < this.chunk.length)
+          continue;
+        if (parts)
+          parts.push(this.chunk.slice(start));
+        this.at = this.chunk.length;
+        if (this.more()) {
+          if (parts)
+            parts.push(this.chunk[0]);
+          this.at++;
+        }
+        break;
+      }
+      if (token)
+        continue;
+      if (parts)
+        parts.push(this.chunk.slice(start));
+      this.at = this.chunk.length;
+    }
+    throw new SyntaxError("Unfinished string in saved conversation.");
+  }
+  skipCollection() {
+    let depth = 1;
+    while (this.more()) {
+      this.delimiters.lastIndex = this.at;
+      const token = this.delimiters.exec(this.chunk);
+      if (!token) {
+        this.at = this.chunk.length;
+        continue;
+      }
+      this.at = token.index + 1;
+      const char = token[0];
+      if (char === '"')
+        this.string();
+      else if (char === "{" || char === "[")
+        depth++;
+      else if (--depth === 0)
+        return;
+    }
+    throw new SyntaxError("Unfinished collection in saved conversation.");
+  }
+  value(pick) {
+    const char = this.peek();
+    if (!char)
+      throw new SyntaxError("Unfinished saved conversation.");
+    if (char === '"') {
+      this.at++;
+      return this.string(typeof pick === "object" ? true : pick);
+    }
+    if (char === "[" || char === "{") {
+      this.at++;
+      if (pick === undefined || typeof pick === "string") {
+        this.skipCollection();
+        return;
+      }
+      if (char === "[") {
+        const item = pick === true ? true : Array.isArray(pick) ? pick[0] : undefined;
+        if (!item) {
+          this.skipCollection();
+          return;
+        }
+        return [...this.elements("]", () => this.value(item))];
+      }
+      const fields = pick === true ? undefined : pick;
+      const result = Object.create(null);
+      for (const _ of this.elements("}", () => {
+        this.expect('"');
+        const key = this.string(true);
+        this.expect(":");
+        const field = pick === true ? true : fields && Object.hasOwn(fields, key) ? fields[key] : undefined;
+        const value = this.value(field);
+        if (value !== undefined)
+          result[key] = value;
+      })) {}
+      return result;
+    }
+    let value = "";
+    while (this.more()) {
+      this.primitive.lastIndex = this.at;
+      const end = this.primitive.exec(this.chunk)?.index ?? this.chunk.length;
+      if (pick !== undefined)
+        value += this.chunk.slice(this.at, end);
+      this.at = end;
+      if (end < this.chunk.length)
+        break;
+    }
+    if (!value && pick !== undefined)
+      throw new SyntaxError("Missing value in saved conversation.");
+    return pick === undefined ? undefined : JSON.parse(value);
+  }
+}
+var model2, time2, insight, artifacts;
+var init_transcript_projection = __esm(() => {
+  model2 = { id: true, providerID: true };
+  time2 = { created: true, completed: true, origin: true, usageAccount: true, usageSession: true };
+  insight = {
+    type: true,
+    id: true,
+    time: time2,
+    model: model2,
+    agent: true,
+    metadata: { source: true },
+    tokens: { input: true, output: true, reasoning: true, cache: { read: true, write: true } },
+    content: [{ type: true, id: true, name: true, state: {
+      status: true,
+      input: { skill: true, name: true, file_path: true, filePath: true, path: true }
+    } }]
+  };
+  artifacts = {
+    type: true,
+    id: true,
+    time: time2,
+    model: model2,
+    text: "attachment",
+    files: [{ source: { type: true, uri: "file" }, uri: "file", url: "file" }],
+    content: [{ type: true, id: true, name: true, text: "citation", state: {
+      status: true,
+      input: { path: true },
+      content: [{ type: true, uri: "file" }]
+    } }]
+  };
+});
+
+// box/src/agents/transcript.ts
+import { closeSync as closeSync3, existsSync as existsSync18, fstatSync as fstatSync2, openSync as openSync3, readSync as readSync3, renameSync as renameSync12, rmSync as rmSync17, statSync as statSync10, utimesSync as utimesSync3, writeSync } from "fs";
+import { StringDecoder as StringDecoder2 } from "string_decoder";
 import { createHash as createHash12 } from "crypto";
 import { dirname as dirname15, join as join35 } from "path";
 import { pathToFileURL as pathToFileURL4 } from "url";
 function* legacyMessages(file) {
-  const fd = openSync2(file, "r");
+  const fd = openSync3(file, "r");
   const buffer = Buffer.allocUnsafe(128 * 1024);
-  const decoder = new StringDecoder("utf8");
+  const decoder = new StringDecoder2("utf8");
   const outside = /["{},\[\]]/g;
   const inside = /["\\]/g;
   const pieces = [];
   let array = false, ended = false, comma = false, quoted = false, escaped = false, depth = 0;
   try {
     for (;; ) {
-      const count = readSync2(fd, buffer, 0, buffer.length, null);
+      const count = readSync3(fd, buffer, 0, buffer.length, null);
       const chunk = count ? decoder.write(buffer.subarray(0, count)) : decoder.end();
       let from = 0;
       if (!array) {
@@ -24500,7 +24713,7 @@ function* legacyMessages(file) {
     if (!ended)
       throw new SyntaxError("The saved conversation ended early.");
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function retainURI(root, id, uri, mime) {
@@ -24599,7 +24812,7 @@ function projection(message, view) {
   const { id, time, model, agent, tokens } = message;
   const content = [];
   for (const part of message.content) {
-    if (view === "artifacts" && part.type === "text" && part.text.includes(":codex-")) {
+    if (view === "artifacts" && part.type === "text" && part.text?.includes(":codex-")) {
       content.push(part);
       continue;
     }
@@ -24611,7 +24824,7 @@ function projection(message, view) {
       const { skill, name: named, file_path, filePath, path } = input ?? {};
       content.push({ type: "tool", id: part.id, name, state: { status: "completed", input: { skill, name: named, file_path, filePath, path }, content: [] } });
     } else if (view === "artifacts" && (/(^|_)(show_file|generate_image)$/.test(name) || part.id.startsWith(`cited-${id}-`))) {
-      const files = state.status === "completed" || state.status === "error" ? state.content?.filter((file) => file?.type === "file" && file.uri.startsWith("file:")) ?? [] : [];
+      const files = state.status === "completed" || state.status === "error" ? state.content?.filter((file) => file?.type === "file" && file.uri?.startsWith("file:")) ?? [] : [];
       content.push({ type: "tool", id: part.id, name, state: { status: "completed", input: { path: input?.path }, content: files } });
     }
   }
@@ -24623,8 +24836,12 @@ function* savedMessages(folder, view = "body") {
   const file = join35(folder, transcriptDatabase);
   if (!existsSync18(file)) {
     const legacy = join35(folder, "messages.json");
-    if (existsSync18(legacy))
-      for (const message of legacyMessages(legacy)) {
+    if (!existsSync18(legacy))
+      return;
+    if (view === "body")
+      yield* legacyMessages(legacy);
+    else
+      for (const message of projectedTranscript(legacy, view)) {
         const projected = projection(message, view);
         if (projected !== undefined)
           yield projected;
@@ -24655,14 +24872,14 @@ function messageActivity(message) {
   return message.time?.completed ?? message.time?.streamed ?? message.time?.created;
 }
 function* legacyTail(file) {
-  const fd = openSync2(file, "r");
+  const fd = openSync3(file, "r");
   const size = fstatSync2(fd).size;
   const block = Buffer.allocUnsafe(32 * 1024);
   let offset = -block.length;
   const byte = (at) => {
     if (at < offset || at >= offset + block.length) {
       offset = Math.floor(at / block.length) * block.length;
-      readSync2(fd, block, 0, Math.min(block.length, size - offset), offset);
+      readSync3(fd, block, 0, Math.min(block.length, size - offset), offset);
     }
     return block[at - offset];
   };
@@ -24691,7 +24908,7 @@ function* legacyTail(file) {
         continue;
       const text = Buffer.allocUnsafe(end - at);
       for (let read = 0;read < text.length; ) {
-        const count = readSync2(fd, text, read, text.length - read, at + read);
+        const count = readSync3(fd, text, read, text.length - read, at + read);
         if (!count)
           throw new SyntaxError("The saved conversation ended early.");
         read += count;
@@ -24699,7 +24916,7 @@ function* legacyTail(file) {
       yield JSON.parse(text.toString("utf8"));
     }
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function savedActivity(folder) {
@@ -24730,7 +24947,7 @@ function writeTranscript(folder, messages, length, attachments, session, durable
   const target = creating ? file + ".new" : file;
   if (creating) {
     rmSync17(target, { force: true });
-    closeSync2(openSync2(target, "wx", 384));
+    closeSync3(openSync3(target, "wx", 384));
   }
   const db = database(target);
   try {
@@ -24773,14 +24990,14 @@ function* transcriptBytes(messages) {
   yield prefix === "[" ? "[]" : "]";
 }
 function exportTranscript(file, messages, observe) {
-  const fd = openSync2(file, "w", 384);
+  const fd = openSync3(file, "w", 384);
   try {
     for (const text of transcriptBytes(messages)) {
       writeSync(fd, text);
       observe?.(text);
     }
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 function migrateTranscript(folder, attachments, id) {
@@ -24822,6 +25039,7 @@ function savedPage(folder, after, limit, ascending) {
 var transcriptDatabase = "messages-v1.sqlite", transcriptPictures = "transcript-pictures", sessionID, pictures, types2;
 var init_transcript = __esm(() => {
   init_files();
+  init_transcript_projection();
   sessionID = /^ses_[A-Za-z0-9_-]{1,120}$/;
   pictures = {
     "image/png": "png",
@@ -33791,4 +34009,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 057be8f505cdc4f4542b7e8fc757e4bb7ef1dec4035233f7b1ce0fe1c203c2ac
+// Built from Packages/Box/src/agents 892b98bf60e07f359b11050f3b0795724e87b15949ba89ecfb50c0088a161832
