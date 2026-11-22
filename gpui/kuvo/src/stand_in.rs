@@ -558,14 +558,14 @@ impl StandIn {
     pub fn fleet_sample(&self, failed: bool, finished: bool, _now: f64) {
         let target = "0.8.0-beta.38";
         let current = "0.8.0-beta.35";
-        let up = json!({ "current": target, "target": target, "state": "up-to-date", "canRetry": false });
-        let ready = json!({ "current": current, "target": target, "state": "ready", "canRetry": false });
-        let off = json!({ "current": current, "target": target, "state": "off", "canRetry": false });
+        let up = json!({ "current": target, "target": target, "state": "up-to-date", "canRetry": false, "line": { "words": "beta.38 · Up to date", "tone": "done" } });
+        let ready = json!({ "current": current, "target": target, "state": "ready", "canRetry": false, "line": { "words": "Ready for beta.38", "tone": "done" } });
+        let off = json!({ "current": current, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Off: updates when it’s back", "tone": "off" } });
         let reason = "There isn’t room to prepare the release.";
         let devbox = if failed {
-            json!({ "current": current, "target": target, "state": "cannot", "reason": reason, "fixable": true, "canRetry": true })
+            json!({ "current": current, "target": target, "state": "cannot", "reason": reason, "fixable": true, "canRetry": true, "line": { "words": format!("beta.35 · {reason}"), "tone": "warning", "short": "Can’t update" } })
         } else {
-            json!({ "current": current, "target": target, "state": "getting-ready", "canRetry": false })
+            json!({ "current": current, "target": target, "state": "getting-ready", "canRetry": false, "line": { "words": "Getting beta.38 ready…", "tone": "working" } })
         };
         let rows = if finished {
             vec![("key_stand_in", up.clone()), ("key_devbox", up.clone()), ("key_studio", up.clone()), ("key_more_0", up)]
@@ -587,13 +587,9 @@ impl StandIn {
         self.fleet_update(summary, rows);
     }
 
-    /// As another of your computers' box, it answers Update Now for itself (`key`, in your list):
-    /// with `row`, its progress.
-    pub fn fleet_as(&self, key: &str, summary: Value, row: Value) {
-        let mut state = self.state();
-        state.areas.fleet = Some(summary);
-        state.areas.fleet_here = Some(key.to_owned());
-        state.areas.fleet_rows = vec![(key.to_owned(), row)];
+    /// Try Again for a computer is refused with `words`, as a box whose release moved on says.
+    pub fn retry_refused(&self, words: &str) {
+        self.state().areas.retry_refused = Some(words.to_owned());
     }
 
     /// Check for Updates (`POST kuvo/update {now}`) answers `status` with `value`, as a box would.
@@ -2075,6 +2071,7 @@ impl StandIn {
             let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
             // Your setup, where the stand-in is in one with others.
             if (method, route) == ("GET", "kuvo/setup")
+                && !state.first_run.setup_fails
                 && let Some(((status, value), _)) = areas::setup(&mut state.areas, method, route, &body)
             {
                 return answer(status, value);
@@ -2224,6 +2221,13 @@ impl StandIn {
         }
         let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();
         let now = state.made.unwrap_or_else(now_ms);
+        // (A box from before a bot's job fields doesn't know the route that takes them: it answers
+        // as an older box does.)
+        if method == "PATCH" && route.starts_with("kuvo/bots/") && (body.get("jobLine").is_some() || body.get("jobDetails").is_some())
+            && state.lacks.iter().any(|name| name == "bots.job-fields")
+        {
+            return answer(404, json!({}));
+        }
         if let Some((status, value)) = state.bots.answer(method, route, &|name| query(path, name).map(decoded), &body, &projects, now) {
             state.sync_bots();
             return answer(status, value);
@@ -2277,13 +2281,14 @@ impl StandIn {
                 ]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push("computers.update.here"); }
-                if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
+                if state.areas.fleet.is_some() { features.push(crate::fleet::FEATURE); }
                 // (A machine's box shows its browser live; a Mac's has none of its own.)
                 if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
-                let missing = kuvo_box::gate::missing(&features);
+                // (As a box says it of itself, by the list the app draws.)
+                let missing: Vec<&str> = kuvo_box::gate::REQUIRED.iter().copied().filter(|name| !features.contains(name)).collect();
                 let compatibility = if state.older { "held" } else if missing.is_empty() { "open" } else { "behind" };
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "compatibility": { "state": compatibility, "missing": missing }, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }

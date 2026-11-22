@@ -2713,6 +2713,13 @@ test("failure bench: unlinking the only computer wipes its local setup", { timeo
   const { a, b, c, phase } = await network(t, false, undefined, false, undefined, true, false, undefined,
     { phaseDiagnostics: true });
   const data = seedLocalWork(a);
+  // What each computer's Remove offers is the box's: unlink or wipe for a member, and for the main
+  // of more, who takes its role first; the last computer can only be wiped.
+  const offered = async key => (await a.route("GET", "kuvo/computers")).value.computers.find(each => each.key === key)?.actions.find(action => action.id === "remove")?.removal;
+  assert.deepEqual(await offered(b.key), { choices: ["unlink", "wipe"] });
+  const main = await offered(a.key);
+  assert.deepEqual(main?.choices, ["unlink", "wipe"]);
+  assert.match(main?.handOver ?? "", / becomes the main computer first\. /);
   for (const peer of [b, c]) {
     const result = await a.route("POST", `kuvo/computers/${peer.key}/unlink`);
     assert.equal(result.status, 200, JSON.stringify(result.value));
@@ -2721,6 +2728,7 @@ test("failure bench: unlinking the only computer wipes its local setup", { timeo
   phase("both member unlink decisions saved");
   await until("both unlinks delivered", () => removalOf(a, b)?.delivered && removalOf(a, c)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(8500)]));
   phase("both member unlink deliveries acknowledged");
+  assert.deepEqual(await offered(a.key), { choices: ["wipe"], last: true });
   const setup = a.read().setup.id;
   const last = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
   assert.equal(last.status, 200, JSON.stringify(last.value));

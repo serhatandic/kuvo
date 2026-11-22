@@ -220,9 +220,8 @@ pub struct ComputersView {
     /// that lists your computers offers it (`Workspace::update_offer`), and that box, which does it.
     offers: HashMap<String, HeldUpdate>,
     lister: Option<BoxClient>,
-    /// Rows from the box that lists the setup, when this window's box has no fleet answer.
+    /// Each computer's update, from the box that lists your computers: the setup's one summary.
     fleet_rows: HashMap<String, Computer>,
-    boxes: Option<kuvo_box::boxes::Boxes>,
     now: Option<f64>,
     /// The confirm open: its words, and what going ahead does.
     confirm: Option<(Confirm, Manage)>,
@@ -289,7 +288,6 @@ impl ComputersView {
             offers: HashMap::new(),
             lister: None,
             fleet_rows: HashMap::new(),
-            boxes: None,
             now: None,
             confirm: None,
             confirm_focus: cx.focus_handle(),
@@ -604,8 +602,7 @@ impl ComputersView {
         }
     }
 
-    pub fn set_fleet(&mut self, rows: HashMap<String, Computer>, boxes: Option<kuvo_box::boxes::Boxes>, now: f64, cx: &mut Context<Self>) {
-        self.boxes = boxes;
+    pub fn set_fleet(&mut self, rows: HashMap<String, Computer>, now: f64, cx: &mut Context<Self>) {
         if self.fleet_rows != rows || self.now != Some(now) {
             self.fleet_rows = rows;
             self.now = Some(now);
@@ -621,11 +618,10 @@ impl ComputersView {
         }
     }
 
-    /// How a computer's update stands, as its row and page draw it.
+    /// How a computer's update stands, as its row and page draw it: from the setup's one update
+    /// summary, the list of the box that lists your computers.
     fn fleet(&self, computer: &Computer) -> Option<crate::fleet::Standing> {
-        let now = self.now.unwrap_or_else(crate::time::now_ms);
-        crate::fleet::standing(computer, now)
-            .or_else(|| crate::fleet::standing(self.fleet_rows.get(&computer.key)?, now))
+        crate::fleet::standing(self.fleet_rows.get(&computer.key)?)
     }
 
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
@@ -850,6 +846,8 @@ impl ComputersView {
                 Some(match action.id.as_str() {
                     "rename" => (What::Rename.row(), "Name".to_owned(), opens, opened(What::Rename), why),
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
+                    // (Drawn where the box says which removals it allows, or why there are none now.)
+                    "remove" if action.removal.is_none() && why.is_none() => return None,
                     "remove" => (What::Remove.row(), "Remove from setup".to_owned(), opens, opened(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
                     "setup" => (What::SetUp.row(), "Kuvo there".to_owned(), label, act(What::SetUp), why),
@@ -918,17 +916,16 @@ impl ComputersView {
             What::UpdateHere => ("Updating…", Box::new(|client| client.update_here())),
             What::PairAgain => return cx.emit(ComputersEvent::PairAgain),
             What::AddMachine => return,
-            // Asked of that computer's own box: this window's, or another as your boxes reach it.
+            // Asked of the box that lists your computers, which passes it on to that one.
             What::FleetRetry => {
                 let computer = if act.key == self.this().key || act.key.is_empty() { Some(self.this()) } else { self.other(&act.key) };
                 let Some((computer, standing)) = computer.and_then(|computer| self.fleet(&computer).map(|standing| (computer, standing))) else { return };
-                let client = if computer.here { Some(self.client.clone()) } else { self.boxes.as_ref().and_then(|boxes| boxes.client(&computer.key)) };
-                let Some(client) = client else {
-                    self.problem = Some((self.shown.clone(), format!("This app can’t reach {} right now. Try again once it’s connected.", computer.name)));
+                let Some(lister) = self.lister.clone() else {
+                    self.problem = Some((self.shown.clone(), "Your computers’ list isn’t reachable right now. Try again in a moment.".into()));
                     return self.rebuild(cx);
                 };
-                let (target, sha256) = (standing.target, standing.target_sha256);
-                ("Updating…", Box::new(move |_: &BoxClient| client.retry_fleet_release(&target, sha256.as_deref()).map(|_| ())))
+                let (key, target, sha256) = (computer.key, standing.target, standing.target_sha256);
+                ("Updating…", Box::new(move |_: &BoxClient| lister.retry_fleet_release(&key, &target, sha256.as_deref()).map(|_| ())))
             }
             // Asked of the box that lists your computers, which brings that one up.
             What::Offer => {
@@ -1326,13 +1323,6 @@ impl ComputersView {
         if !standing.can_update {
             return None;
         }
-        // (Asked of its own box: one this app doesn't reach says so rather than offering a button
-        // that can't work.)
-        if !computer.here && !self.boxes.as_ref().is_some_and(|boxes| boxes.client(&computer.key).is_some()) {
-            let selector = format!("fleet-unreached-{id}");
-            let c = &cx.theme().colors;
-            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("This app doesn’t reach {} yet", computer.name)).into_any_element());
-        }
         let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
         let act = Manage { what: What::FleetRetry, key: computer.key.clone(), confirm: None, does: None };
         let selector = format!("fleet-update-{id}");
@@ -1592,7 +1582,7 @@ pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
     let dot = (size * 0.32).min(px(12.));
     // (Reached, its update says more where it's behind or failed: amber, red.)
     let reached = computer.here || computer.reach == "connected";
-    let update = reached.then(|| crate::fleet::standing(computer, 0.0)).flatten().and_then(|standing| crate::fleet::dot(&standing.line, cx));
+    let update = reached.then(|| crate::fleet::standing(computer)).flatten().and_then(|standing| crate::fleet::dot(&standing.line, cx));
     div()
         .relative()
         .flex()

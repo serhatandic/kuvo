@@ -333,7 +333,8 @@ fn an_older_computer_keeps_the_job_draft_and_asks_for_an_update(cx: &mut TestApp
     cx.simulate_input("Keeps the website working");
     cx.simulate_keystrokes("enter");
     assert!(shown(cx, "bot-edit-error-Couldn’t save the change. Update Kuvo and try again."));
-    assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").is_empty());
+    // (Asked of the box, which answers as an older one does: this app refuses nothing itself.)
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").len(), 1);
     assert_eq!(page.read_with(cx, |page, cx| page.job_fields().0.read(cx).text().to_owned()), "Keeps the website working");
 }
 

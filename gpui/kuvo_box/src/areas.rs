@@ -363,6 +363,32 @@ pub struct ComputerAction {
     pub why: Option<String>,
     /// The address the Box offers for an SSH setup action.
     pub address: Option<String>,
+    /// On `remove`, the removals the box allows: none drawn where it doesn't say.
+    #[serde(default)]
+    pub removal: Option<Removals>,
+}
+
+/// The removals the box allows for one of your computers (`removal` on its `remove` action), all
+/// its decision: `unlink`, `wipe`, whether it's the last computer of its setup (only wiped), and
+/// where it's the main computer, the box's words for who takes its role first.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Removals {
+    #[serde(default)]
+    pub choices: Vec<String>,
+    #[serde(default)]
+    pub last: bool,
+    #[serde(default, rename = "handOver")]
+    pub hand_over: Option<String>,
+}
+
+impl Removals {
+    pub fn unlinks(&self) -> bool {
+        self.choices.iter().any(|choice| choice == "unlink")
+    }
+
+    pub fn wipes(&self) -> bool {
+        self.choices.iter().any(|choice| choice == "wipe")
+    }
 }
 
 /// Adding computers, as a box says it (`computers.add`, PROTOCOL.md "Computers", Adding one):
@@ -601,8 +627,25 @@ pub struct FleetUpdate {
     pub next_retry_at: Option<u64>,
     pub failed_at: Option<u64>,
     pub last_failure_at: Option<u64>,
+    /// Try Again is offered on its row (`POST kuvo/update/retry` with its key, asked of the box
+    /// that lists your computers).
     pub can_retry: bool,
     pub fixable: Option<bool>,
+    /// What its row shows, in the box's words: none from a box from before it said them.
+    #[serde(default)]
+    pub line: Option<FleetLine>,
+}
+
+/// What a computer's row in the setup's update shows, all the box's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FleetLine {
+    pub words: String,
+    /// `done`, `working`, `warning` (it can't update for a reason you can fix), `blocked` (it can't
+    /// until the next release) or `off`.
+    pub tone: String,
+    /// Where it's `warning`, the few words a narrow place shows.
+    #[serde(default)]
+    pub short: Option<String>,
 }
 
 /// Progress across the setup, included in every Computers snapshot.
@@ -879,14 +922,10 @@ impl BoxClient {
         self.get("kuvo/computers")
     }
 
-    /// Retries the named accepted release on the computer this client reaches.
-    pub fn retry_fleet_update(&self, target: &str) -> Result<FleetUpdate> {
-        self.retry_fleet_release(target, None)
-    }
-
-    /// Retries only if the specified pack is still the accepted release.
-    pub fn retry_fleet_release(&self, target: &str, sha256: Option<&str>) -> Result<FleetUpdate> {
-        let mut body = serde_json::json!({ "target": target });
+    /// Try Again for one of your computers (`key`), asked of the box that lists them, which passes
+    /// it on to that computer; only while `sha256`'s pack is still the accepted release.
+    pub fn retry_fleet_release(&self, key: &str, target: &str, sha256: Option<&str>) -> Result<FleetUpdate> {
+        let mut body = serde_json::json!({ "target": target, "key": key });
         if let Some(hash) = sha256 {
             body["targetSha256"] = hash.into();
         }
@@ -947,31 +986,12 @@ impl BoxClient {
         self.done(&Request::delete(format!("kuvo/computers/{}", segment(key))))
     }
 
-    /// Removes a computer and returns the reinstall offer if the last setup is being wiped.
-    pub fn remove_computer_with_setup_offer(&self, key: &str) -> Result<Option<crate::setup::SetupOffer>> {
-        #[derive(Deserialize)]
-        struct Removed {
-            offer: Option<crate::setup::SetupOffer>,
-        }
-        self.value::<Removed>(&Request::delete(format!("kuvo/computers/{}", segment(key)))).map(|reply| reply.offer)
-    }
-
-    /// Removes one of your computers from your setup (`computers.removal`): unlinked, or unlinked
+    /// Removes one of your computers from your setup, as its `removal` allows: unlinked, or unlinked
     /// and wiped (`wipe`: now where it's reached, else the next time it is). How that stands, as the
     /// box says it, with its reinstall offer where this computer's last setup is wiped.
     pub fn unlink_computer(&self, key: &str, wipe: bool) -> Result<ComputerRemoval> {
         let route = if wipe { "unlink-and-wipe" } else { "unlink" };
         self.value(&Request::post(format!("kuvo/computers/{}/{route}", segment(key)), serde_json::json!({})))
-    }
-
-    /// Removes one of your computers as a box from before `computers.removal` does (`DELETE`), with
-    /// what it says of it where it says anything.
-    pub fn remove_computer_said(&self, key: &str) -> Result<ComputerRemoval> {
-        let response = self.send(&Request::delete(format!("kuvo/computers/{}", segment(key))))?;
-        if (200..300).contains(&response.status) && serde_json::from_slice::<serde_json::Value>(&response.body).map(|value| value.as_object().is_some_and(serde_json::Map::is_empty)).unwrap_or(true) {
-            return Ok(ComputerRemoval::default());
-        }
-        crate::client::decode(&response)
     }
 
     /// Reaches one of your computers that's away again, from the box asked.

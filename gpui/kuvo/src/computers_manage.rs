@@ -2,12 +2,13 @@
 //! place, who leads your setup (its main computer, `kuvo/setup`, changed through
 //! `kuvo/setup/handover`), and removing one (`kuvo/computers/<key>/unlink` or `…/unlink-and-wipe`;
 //! for the main computer, the box hands its role over first), with what the box says of it after. Every decision is the box's: what
-//! it offers (`actions`), what its Kuvo answers (`features`), and how a change went. An action a
-//! computer's Kuvo doesn't answer isn't drawn at all.
+//! it offers (`actions`, and on `remove` the removals it allows), what its Kuvo answers
+//! (`features`), and how a change went. An action a computer's Kuvo doesn't answer isn't drawn at
+//! all.
 
 use gpui::{AnyElement, AppContext as _, Entity, Context, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px};
 use kuvo_box::accounts::said;
-use kuvo_box::areas::{Computer, ComputerRemoval};
+use kuvo_box::areas::{Computer, ComputerRemoval, Removals};
 use kuvo_box::setup::{SetupLeadershipReply, SetupOffer, SetupView};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
@@ -30,9 +31,9 @@ pub enum Role {
 pub enum Sheet {
     /// Change the main computer, `picked` the one chosen.
     Lead { picked: Option<String> },
-    /// Remove another computer from your setup: unlinked, or unlinked and wiped.
+    /// Remove a computer from your setup: unlinked, or unlinked and wiped, as the box allows.
     Remove { key: String, wipe: bool },
-    /// Remove the computer this window shows, the only one in your setup: it's wiped.
+    /// Remove the only computer of your setup, as the box says it is: it's wiped.
     RemoveLast { key: String },
 }
 
@@ -259,13 +260,23 @@ impl ComputersView {
 
     // MARK: Sheets
 
-    /// Remove…: the sheet for another computer, or for the only one, which is wiped.
+    /// The removals the box allows for `key` (`removal` on its `remove` action): none where it
+    /// doesn't say.
+    fn removals(&self, key: &str) -> Option<Removals> {
+        self.listed(key)?.actions.into_iter().find(|action| action.id == "remove" && action.why.is_none())?.removal
+    }
+
+    /// Remove…: the sheet for the removals the box allows, the last computer's where it says it's
+    /// that (wiped); nothing where it allows none.
     pub(super) fn open_removal(&mut self, key: &str, cx: &mut Context<Self>) {
-        let Some(computer) = self.listed(key) else { return };
-        // (The computer it runs on is wiped only where it's the last of your setup; where it's the
-        // main of more, it's unlinked like any other, the box handing its role over first.)
-        let last = computer.here && self.led().is_none();
-        self.sheet = Some(if last { Sheet::RemoveLast { key: key.to_owned() } } else { Sheet::Remove { key: key.to_owned(), wipe: false } });
+        let Some(removals) = self.removals(key) else { return };
+        self.sheet = Some(if removals.last {
+            Sheet::RemoveLast { key: key.to_owned() }
+        } else if removals.unlinks() || removals.wipes() {
+            Sheet::Remove { key: key.to_owned(), wipe: !removals.unlinks() }
+        } else {
+            return;
+        });
         self.open_sheet(cx);
     }
 
@@ -292,12 +303,6 @@ impl ComputersView {
         cx.notify();
     }
 
-    /// Whether the box this window shows takes a removal's choice (`computers.removal`): unlinked,
-    /// or unlinked and wiped. Without it, a removal is what its box did before (`DELETE`).
-    fn chooses_removal(&self) -> bool {
-        has(&self.this(), "computers.removal")
-    }
-
     /// Goes ahead with the sheet open: asks the box, and says what it said.
     fn go(&mut self, cx: &mut Context<Self>) {
         if self.sheet_busy.is_some() {
@@ -319,10 +324,9 @@ impl ComputersView {
             Sheet::Remove { ref key, .. } | Sheet::RemoveLast { ref key } if !key.is_empty() => {
                 let key = key.clone();
                 let wipe = match &sheet { Sheet::Remove { wipe, .. } => *wipe, _ => true };
-                let choose = self.chooses_removal();
                 let name = self.setup_name(&key);
                 let asked = key.clone();
-                let work = move || if choose { client.unlink_computer(&asked, wipe) } else { client.remove_computer_said(&asked) };
+                let work = move || client.unlink_computer(&asked, wipe);
                 self.run_sheet(work, move |this, removal: ComputerRemoval, cx| {
                     this.sheet = None;
                     let (title, words, tone, again) = removal_words(&name, &removal);
@@ -517,7 +521,7 @@ impl ComputersView {
         let computer = self.listed(key);
         let name = computer.as_ref().map(|computer| computer.name.clone()).unwrap_or_default();
         let away = computer.as_ref().is_some_and(|computer| computer.reach == "away");
-        let choose = self.chooses_removal();
+        let removals = self.removals(key).unwrap_or_default();
         let option = |id: &'static str, selected: bool, danger: bool, title: &'static str, body: String, wipe: bool, cx: &mut Context<Self>| {
             div()
                 .id(id)
@@ -542,7 +546,7 @@ impl ComputersView {
                 .child(div().pt(px(2.)).child(self.radio(selected, danger, cx)))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title)).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(body)))
         };
-        let wipe = wipe && choose;
+        let wipe = (wipe && removals.wipes()) || !removals.unlinks();
         let offline = (away && wipe).then(|| {
             div()
                 .debug_selector(|| "remove-offline".into())
@@ -559,27 +563,24 @@ impl ComputersView {
                 .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(format!("{name} is offline. It will be unlinked from your setup right now, and wiped automatically the next time it comes online.")))
         });
         // (The main computer: the box says who takes its role first, in its own words.)
-        let hand_over = (self.role_of(key) == Some(Role::Main))
-            .then(|| computer.as_ref()?.actions.iter().find(|action| action.id == "remove")?.confirm.as_ref().map(|confirm| confirm.message.clone()))
-            .flatten()
-            .map(|words| {
-                div()
-                    .debug_selector(|| "remove-hand-over".into())
-                    .px(space::S3)
-                    .py(space::S2)
-                    .rounded(radius::NAV)
-                    .bg(c.accent.opacity(0.08))
-                    .border_1()
-                    .border_color(c.accent.opacity(0.30))
-                    .flex()
-                    .items_start()
-                    .gap(space::S2)
-                    .child(div().pt(px(2.)).child(Icon::new(IconName::StarFilled).size(IconSize::Nav).color(c.accent)))
-                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(words))
-            });
-        let unlink = option("remove-unlink", !wipe, false, "Unlink", format!("{name} leaves your setup. Its sessions and bots stay on it as its own standalone setup."), false, cx);
-        // (Wiping is drawn where the box this window shows takes it.)
-        let wiping = choose.then(|| option("remove-wipe", wipe, true, "Unlink + wipe", format!("Removes {name} from your setup now and erases Kuvo there once it reconnects."), true, cx));
+        let hand_over = removals.hand_over.clone().map(|words| {
+            div()
+                .debug_selector(|| "remove-hand-over".into())
+                .px(space::S3)
+                .py(space::S2)
+                .rounded(radius::NAV)
+                .bg(c.accent.opacity(0.08))
+                .border_1()
+                .border_color(c.accent.opacity(0.30))
+                .flex()
+                .items_start()
+                .gap(space::S2)
+                .child(div().pt(px(2.)).child(Icon::new(IconName::StarFilled).size(IconSize::Nav).color(c.accent)))
+                .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(words))
+        });
+        // (Each as the box allows it.)
+        let unlink = removals.unlinks().then(|| option("remove-unlink", !wipe, false, "Unlink", format!("{name} leaves your setup. Its sessions and bots stay on it as its own standalone setup."), false, cx));
+        let wiping = removals.wipes().then(|| option("remove-wipe", wipe, true, "Unlink + wipe", format!("Removes {name} from your setup now and erases Kuvo there once it reconnects."), true, cx));
         let label = match (wipe, away) {
             (false, _) => "Unlink",
             (true, true) => "Unlink & Queue Wipe",
@@ -589,7 +590,7 @@ impl ComputersView {
             .child(Self::heading(format!("Remove {name}"), String::new(), cx))
             .children(hand_over)
             .children(offline)
-            .child(div().flex().flex_col().gap(space::S2).child(unlink).children(wiping))
+            .child(div().flex().flex_col().gap(space::S2).children(unlink).children(wiping))
             .children(self.sheet_problem_view(cx))
             .child(self.sheet_foot(label.into(), true, true, cx))
             .id("computers-sheet-card")

@@ -1454,8 +1454,8 @@ impl AreaView {
             .child(two_lines(name, {
                 // Its update to the setup's release, only where it can't update for a reason you
                 // can fix ("Can’t update", amber); else how it stands.
-                let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer, 0.0)).flatten()
-                    .and_then(|standing| crate::fleet::short_words(&standing.line).map(|words| (words, crate::fleet::color(&standing.line, cx))));
+                let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer)).flatten()
+                    .and_then(|standing| crate::fleet::short_words(&standing.line).map(|words| (words.to_owned(), crate::fleet::color(&standing.line, cx))));
                 let (line, color) = match update {
                     Some((words, color)) => (words.to_owned(), color),
                     None => (computer_line(computer), if computer.is_older() { c.warning } else { c.text_muted }),

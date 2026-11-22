@@ -106,11 +106,14 @@ impl SshBox {
         options
     }
 
-    /// The script that answers one request there.
+    /// The script that answers one request there: by its keeper (`kuvo-start route`/`route-to`),
+    /// which runs it on the engine it picks itself; a keeper from before that verb, by the newest
+    /// engine there, as Kuvo did before.
     fn script(&self) -> String {
         format!(
             r#"K="$HOME/{root}"
 [ -f "$K/bin/kuvo-link.js" ] || {{ echo "Kuvo Code isn't set up on this machine." >&2; exit 3; }}
+if grep -q '^route|route-to)' "$K/bin/kuvo-start" 2>/dev/null; then exec sh "$K/bin/kuvo-start" {verb}; fi
 E=$(for d in "$K"/engine/*/; do [ -x "${{d}}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
 [ -n "$E" ] || {{ echo "Kuvo Code's engine isn't on this machine." >&2; exit 3; }}
 export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"

@@ -54,8 +54,6 @@ pub struct Areas {
     /// and each computer's progress by key (one not given reports none, as an older Kuvo).
     pub fleet: Option<Value>,
     pub fleet_rows: Vec<(String, Value)>,
-    /// Its own key among them (none: the stand-in Mac's), which Update Now updates.
-    pub fleet_here: Option<String>,
     /// What Check for Updates (`POST kuvo/update {now}`) answers, where a test says (none: as
     /// before, unanswered here).
     pub check_says: Option<(u16, Value)>,
@@ -80,6 +78,8 @@ pub struct Areas {
     /// Your setup, where the stand-in is in one (`kuvo/setup`): its main computer by key, and its
     /// epoch; its computers are those listed.
     pub roles: Option<Roles>,
+    /// What Try Again for a computer is refused with (`409`), as a box whose release moved on says.
+    pub retry_refused: Option<String>,
     /// What renaming named each computer, by key.
     pub renamed: Vec<(String, String)>,
 }
@@ -98,12 +98,14 @@ const MANAGES: [&str; 4] = ["setup", "setup.handover", "setup.shared-saves", "co
 
 /// Your setup and what changes who leads it, and removing a computer from it, as a box answers
 /// them (`kuvo/setup`, `…/handover`, `kuvo/computers/<key>/unlink…`): its answer, and
-/// whether the list of computers changed. None where the stand-in isn't in a setup.
+/// whether the list of computers changed. None where the stand-in isn't in a setup (removing
+/// answers in any).
 pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<((u16, Value), bool)> {
-    let roles = areas.roles.clone()?;
+    let led = areas.roles.clone();
     let keys: Vec<Value> = listed(areas).into_iter().collect();
     match (method, route) {
         ("GET", "kuvo/setup") => {
+            let roles = led?;
             let computers: Vec<Value> = keys.iter().map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"], "role": if computer["key"] == json!(roles.primary) { "primary" } else { "member" }, "app": computer["kind"] == json!("mac") })).collect();
             let primary = keys.iter().find(|computer| computer["key"] == json!(roles.primary)).map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"] }));
             let mut view = json!({ "setup": "setup_stand_in", "epoch": roles.epoch, "primary": primary, "you": { "key": "key_stand_in", "role": if roles.primary == "key_stand_in" { "primary" } else { "member" } }, "computers": computers, "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": true });
@@ -113,6 +115,7 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
             Some(((200, view), false))
         }
         ("POST", "kuvo/setup/handover") => {
+            let roles = led?;
             let Some(key) = body["primary"].as_str() else { return Some(((400, json!({ "message": "Choose a computer by its key." })), false)) };
             if body["epoch"] != json!(roles.epoch) {
                 return Some(((409, json!({ "message": "The main computer changed. Refresh your setup and try again." })), false));
@@ -138,7 +141,7 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
             }
             let here = computer["here"] == json!(true);
             // (The main computer of more: its role goes to another first, as the box does.)
-            if key == roles.primary && let Some(next) = keys.iter().find(|other| other["key"] != json!(key)) {
+            if led.is_some_and(|roles| key == roles.primary) && let Some(next) = keys.iter().find(|other| other["key"] != json!(key)) {
                 let roles = areas.roles.as_mut()?;
                 roles.primary = next["key"].as_str().unwrap_or_default().to_owned();
                 roles.epoch += 1;
@@ -492,7 +495,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
         json!({ "key": format!("key_added_{name}"), "name": name, "kind": "machine", "id": name, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [],
             "features": kuvo_box::gate::REQUIRED,
             "actions": [{ "id": "rename", "label": "Rename" },
-                { "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } },
+                { "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" }, "removal": { "choices": ["unlink", "wipe"] } },
                 setup,
                 { "id": "uninstall", "label": "Uninstall", "confirm": { "title": format!("Uninstall Kuvo Code from {name}?"), "message": format!("{} connects to {name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on {name}.", super::NAME), "label": "Uninstall" } }] })
     });
@@ -532,10 +535,11 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 // (The only computer of its setup: removing it wipes it.)
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
                 if computer["here"] == json!(true) && (areas.computers_alone || areas.empty) && let Some(actions) = computer["actions"].as_array_mut() {
-                    actions.push(json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Wipe {name}?"), "message": "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", "label": "Wipe" } }));
+                    actions.push(json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Wipe {name}?"), "message": "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", "label": "Wipe" }, "removal": { "choices": ["wipe"], "last": true } }));
                 } else if computer["here"] == json!(true) && areas.roles.as_ref().is_some_and(|roles| roles.primary == "key_stand_in") && let Some(actions) = computer["actions"].as_array_mut() {
                     // (The main computer of more: its role goes to an always-on one first, as the box says.)
-                    actions.push(json!({ "id": "remove", "label": "Unlink", "confirm": { "title": format!("Remove {name}?"), "message": format!("devbox becomes the main computer first. Then your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } }));
+                    let message = format!("devbox becomes the main computer first. Then your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later.");
+                    actions.push(json!({ "id": "remove", "label": "Unlink", "confirm": { "title": format!("Remove {name}?"), "message": message, "label": "Remove" }, "removal": { "choices": ["unlink", "wipe"], "handOver": message } }));
                 }
             }
             if let Some((_, name)) = areas.renamed.iter().find(|(key, name)| computer["key"] == json!(key) && !name.is_empty()) {
@@ -546,6 +550,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()) {
                     computer["fleetUpdate"] = json!({
                         "current": null, "target": target, "state": "behind", "canRetry": false,
+                        "line": { "words": "Getting beta.38 ready…", "tone": "working" },
                     });
                 }
             }
@@ -622,7 +627,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
 /// older Kuvo Code; `more` machines after them. Each with
 /// what can be done with it from here, as a Mac's box that writes its machines' records offers it.
 fn computers(alone: bool, more: usize) -> Vec<Value> {
-    let remove = |name: &str| json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } });
+    let remove = |name: &str| json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" }, "removal": { "choices": ["unlink", "wipe"] } });
     let mut computers = vec![json!({
         "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "reach": "connected",
         "version": "0.8.0-beta.12", "kuvo": "0.8.0-beta.33", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "atWork": [{ "id": "ses_limits", "title": "Plan limits" }], "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
@@ -636,7 +641,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
             json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "reach": "away", "version": "0.8.0-beta.10", "kuvo": "0.8.0-beta.32", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "connect", "label": "Connect" }] }),
             // A Mac on an older Kuvo Code: what it answers lacks what this app needs, and it never said what's at work.
-            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": kuvo_box::gate::BASELINE, "actions": [] }),
+            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": ["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"], "actions": [] }),
         ]);
     }
     let reaches = ["connected", "connected", "away", "connecting"];
@@ -839,15 +844,21 @@ pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
     if method != "POST" || route != "kuvo/update/retry" {
         return None;
     }
-    let here = areas.fleet_here.clone().unwrap_or_else(|| "key_stand_in".into());
+    // (The computer named, else this one; passed on to it, as the box that lists them does.)
+    let asked = body["key"].as_str().unwrap_or("key_stand_in").to_owned();
     let summary = areas.fleet.as_ref()?;
     if body["target"] != summary["target"] {
         return Some((409, json!({ "message": "The setup’s target version changed." })));
     }
-    let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == here).map(|(_, row)| row);
+    if let Some(refused) = areas.retry_refused.clone() {
+        return Some((409, json!({ "message": refused })));
+    }
+    let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == asked).map(|(_, row)| row);
     match row {
         Some(row) if row["canRetry"] == json!(true) => {
-            *row = json!({ "current": row["current"], "target": row["target"], "state": "getting-ready", "canRetry": false });
+            let target = row["target"].as_str().unwrap_or_default().to_owned();
+            let short = target.split_once('-').map_or(target.as_str(), |(_, pre)| pre).to_owned();
+            *row = json!({ "current": row["current"], "target": target, "state": "getting-ready", "canRetry": false, "line": { "words": format!("Getting {short} ready…"), "tone": "working" } });
             Some((202, row.clone()))
         }
         _ => Some((409, json!({ "message": "This computer has no update to retry." }))),

@@ -513,7 +513,6 @@ impl BoxClient {
     }
 
     pub fn return_sign_in_address(&self, side: Side, account: &str, attempt: &str, address: &str) -> Result<()> {
-        self.require_feature("sign-in.return")?;
         self.done(&sign_in_client(Request::post("kuvo/sign-in/return?check=1", json!({ "url": address, "integration": account, "attempt": attempt, "agents": !side.agents_query().is_empty() }))))
     }
 

@@ -9,7 +9,7 @@ use kuvo_box::follow::{ConversationUpdate, ListUpdate, Timing};
 use kuvo_box::messages::{Content, Message};
 use kuvo_box::{BoxClient, Delivery, Draft, Error, Gate, Sent, Where};
 use serde_json::{Value, json};
-use support::{Answer, ServeProcess, StandInBox, app_box, current_features, home, mac_info, write_record};
+use support::{Answer, ServeProcess, StandInBox, app_box, current_features, held, home, mac_info, write_record};
 
 /// No waiting between tries: each one follows from what the stand-in does.
 fn at_once() -> Timing {
@@ -106,24 +106,22 @@ fn this_macs_box_in_a_home_of_its_own_is_the_one_used() {
     assert_eq!(old.seen().len(), 1);
 }
 
+/// A box that says it's held for this client (its `compatibility`) is held as it says, never by
+/// this client's own reading of its features; what it's asked still goes to it.
 #[test]
-fn a_box_older_than_this_client_is_held_until_it_updates() {
+fn a_box_held_as_it_says_is_still_asked_until_it_updates() {
     let stand_in = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(json!(["sessions.list", "git.status"]))),
+        "kuvo/info" => Answer::json(200, held(mac_info(json!(["sessions.list", "git.status"])), &["typed"])),
         _ => Answer::json(200, json!({ "data": [] })),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
 
-    // Its first request reads what it has first.
-    match client.session_list(None) {
-        Err(Error::NeedsUpdating { missing }) => assert!(missing.contains(&"typed".to_owned()) && !missing.contains(&"sessions.list".to_owned())),
-        other => panic!("held, not {other:?}"),
-    }
-    assert!(client.gate().is_held());
-    // What keeps work under way going still goes; the rest never reaches the box.
+    // Its first request reads what it is first, then goes to it.
     assert!(client.messages("ses_1", Where::Engine, 10).is_ok());
-    assert!(matches!(client.typed_offers("ses_1"), Err(Error::NeedsUpdating { .. })));
-    assert_eq!(stand_in.seen_routes(), vec!["GET kuvo/info", "GET api/session/ses_1/message?limit=10&order=desc"]);
+    assert_eq!(client.gate(), Gate::Held { missing: vec!["typed".into()] });
+    let _ = client.typed_offers("ses_1");
+    assert_eq!(stand_in.seen_routes().len(), 3, "{:?}", stand_in.seen_routes());
+    assert_eq!(stand_in.seen_routes()[..2], ["GET kuvo/info", "GET api/session/ses_1/message?limit=10&order=desc"]);
 
     // Updated, it's let go once it's read again.
     stand_in.answer(|seen| match seen.route() {
@@ -134,9 +132,10 @@ fn a_box_older_than_this_client_is_held_until_it_updates() {
     assert_eq!(client.gate(), Gate::Open);
     assert!(client.typed_offers("ses_1").is_ok());
 
-    // One that answers no kuvo/info at all lacks everything.
+    // One that answers no kuvo/info at all is held.
     stand_in.answer(|_| Answer::json(404, json!({})));
-    assert!(matches!(client.connect(), Err(Error::NeedsUpdating { missing }) if missing.len() == kuvo_box::gate::REQUIRED.len()));
+    assert!(matches!(client.connect(), Err(Error::NeedsUpdating { .. })));
+    assert!(client.gate().is_held());
 }
 
 #[test]
@@ -635,22 +634,24 @@ fn a_box_whose_server_started_again_is_found_at_its_new_place_and_read_again() {
 
     // It starts again (an update, say): a new process, port and password, and it's an older one.
     let again = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(json!(["sessions.list"]))),
+        "kuvo/info" => Answer::json(200, held(mac_info(json!(["sessions.list"])), &["messages.send"])),
         _ => Answer::json(200, json!({ "archivedGroups": [], "at": "1", "sessions": {}, "projects": {} })),
     });
     let second_serve = ServeProcess::start();
     write_record(&app_box(home.path()), second_serve.pid(), again.port, &again.password);
     drop(first_serve);
 
-    // What it is is read again there before anything else is asked.
-    assert!(matches!(client.session_list(None), Err(Error::NeedsUpdating { .. })));
-    assert_eq!(again.seen_routes(), vec!["GET kuvo/info"]);
+    // What it is is read again there before anything else is asked, and it's asked.
+    let _ = client.session_list(None);
+    assert!(client.gate().is_held());
+    assert_eq!(again.seen_routes()[0], "GET kuvo/info");
+    assert_eq!(again.seen_routes().len(), 2, "{:?}", again.seen_routes());
     assert_eq!(first.seen().len(), 1);
 
     // Its record left behind by a server that's gone: the port it names is never sent anything.
     drop(second_serve);
     assert!(matches!(client.connect(), Err(Error::NotRunning(_))));
-    assert_eq!(again.seen().len(), 1);
+    assert_eq!(again.seen().len(), 2, "nothing more than it was asked before");
 }
 
 #[test]

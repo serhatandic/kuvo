@@ -1,17 +1,45 @@
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { ToldComputer } from "../../shared/records";
-import type { FleetSummary, FleetUpdate, ListedComputer } from "../../shared/routes/box";
+import type { FleetLine, FleetSummary, FleetUpdate, ListedComputer } from "../../shared/routes/box";
 import { RUN } from "../home";
 import type { RouteContext, AnswerPiece } from "../server/context";
 import { askForRetry, claimRetry, requestedRetry } from "./attempt";
 import { cannotFor, CANNOT_FILE, READY_FILE, retryCannot, sameRelease } from "./facts";
-import { fleetFacts, fleetTarget, HELD, retryTransfer, type FleetTarget } from "./fleet";
+import { askPeerToRetry, fleetFacts, fleetTarget, HELD, retryTransfer, type FleetTarget } from "./fleet";
+import { readPeerAgents } from "../peers/directory";
+import { KEY, ownKey, peersOf } from "../peers/known";
+import { peerIsAway, readReach } from "../peers/reach";
+import { readLink } from "../state";
 import { newerVersion } from "./update";
 
 export const fleetFiles = () => [CANNOT_FILE, READY_FILE, path.join(RUN, "previous"), path.join(RUN, "update-cannot"), path.join(HELD, "boxes.json")];
 
+// (A release's short name: what follows its first "-", as "beta.41" of "0.8.0-beta.41".)
+const shortName = (version: string) => version.includes("-") ? version.slice(version.indexOf("-") + 1) : version;
+const withVersion = (version: string | null, words: string) => version ? `${shortName(version)} · ${words}` : words;
+
+/** What a computer's row shows of its update, in words: the box's, so every client says the same. */
+export function fleetLine(update: FleetUpdate): FleetLine {
+  switch (update.state) {
+    case "up-to-date": return { words: `${shortName(update.current ?? update.target)} · Up to date`, tone: "done" };
+    case "ready": return { words: `Ready for ${shortName(update.target)}`, tone: "done" };
+    case "off": return { words: withVersion(update.current, "Off: updates when it’s back"), tone: "off" };
+    case "cannot": return update.fixable
+      ? { words: withVersion(update.current, update.reason), tone: "warning", short: "Can’t update" }
+      : { words: `${withVersion(update.current, update.reason)} · Updates with the next release`, tone: "blocked" };
+    case "failed": return { words: withVersion(update.current, update.reason), tone: "warning", short: "Can’t update" };
+    default: return { words: `Getting ${shortName(update.target)} ready…`, tone: "working" };
+  }
+}
+
+const lined = (update: FleetUpdate): FleetUpdate => ({ ...update, line: fleetLine(update) });
+
 export function peerFleetUpdate(target: FleetTarget, facts: ToldComputer | undefined, away = false): FleetUpdate {
+  return lined(peerProgress(target, facts, away));
+}
+
+function peerProgress(target: FleetTarget, facts: ToldComputer | undefined, away: boolean): FleetUpdate {
   const current = facts?.kuvo ?? null;
   const { version, sha256 } = target;
   const progress = { current, target: version, targetSha256: sha256, currentSha256: facts?.installedSha256, canRetry: false };
@@ -97,11 +125,32 @@ export function consumeFleetRetry(): void {
   retryTransfer(retry.version);
 }
 
+/** Try Again for another of your computers, asked of this box: passed on to it, where its row
+ * offers it (`canRetry`) and it can be reached; answered with how its row stands now. */
+export function requestPeerRetry(key: string, version: string, sha256?: string, now = Date.now()): { status: 202; update: FleetUpdate } | { status: 404 | 409 | 503; message: string } {
+  const link = readLink();
+  const peer = peersOf(link).find(each => each.key === key);
+  if (!peer) return { status: 404, message: "That isn’t one of your computers." };
+  const target = fleetTarget();
+  if (!target?.sha256 || version !== target.version || (sha256 && sha256 !== target.sha256))
+    return { status: 409, message: "The setup’s target version changed." };
+  const told = readPeerAgents()[key];
+  const update = peerFleetUpdate(target, told?.computer, peerIsAway(key, told?.heard, readReach(), now));
+  const name = peer.name || "That computer";
+  if (!update.canRetry) return { status: 409, message: `${name} has no update to retry.` };
+  if (!askPeerToRetry(key, { version, sha256: target.sha256 })) return { status: 503, message: `${name} can’t be reached right now. Try again once it’s connected.` };
+  return { status: 202, update: { ...update, canRetry: false } };
+}
+
 export function* retryFleetRoute({ request, json }: RouteContext): Generator<AnswerPiece> {
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
-  if (!isObject(given) || typeof given.target !== "string" || (given.targetSha256 !== undefined && typeof given.targetSha256 !== "string"))
+  if (!isObject(given) || typeof given.target !== "string" || (given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")
+    || (given.key !== undefined && (typeof given.key !== "string" || !KEY.test(given.key))))
     return yield* json(400, { message: "Send the setup’s target version." });
-  const reply = requestFleetRetry(given.target, given.targetSha256);
+  // (This computer's own, or another's, passed on to it.)
+  const link = readLink();
+  const elsewhere = given.key !== undefined && (!link || given.key !== ownKey(link));
+  const reply = elsewhere ? requestPeerRetry(given.key as string, given.target, given.targetSha256) : requestFleetRetry(given.target, given.targetSha256);
   return yield* json(reply.status, reply.status === 202 ? reply.update : { message: reply.message });
 }

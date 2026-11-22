@@ -234,6 +234,12 @@ pub fn current_features() -> Value {
     serde_json::json!(names)
 }
 
+/// `info` as a box says it's held for this client: lacking `missing`, as its `compatibility` says.
+pub fn held(mut info: Value, missing: &[&str]) -> Value {
+    info["compatibility"] = serde_json::json!({ "state": "held", "missing": missing });
+    info
+}
+
 pub fn mac_info(features: Value) -> Value {
     serde_json::json!({ "kind": "mac", "name": "Stand-in Mac", "app": "0.9.0", "engine": "2.2.6", "features": features, "agents": true, "started": 1.0, "chats": "/home/me/.kuvo-code/chats", "integrations": {} })
 }

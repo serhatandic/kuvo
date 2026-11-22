@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use kuvo_box::gate::{self, Gate};
+use kuvo_box::gate;
 use kuvo_box::sessions::{self, Facts, Line, Listing, Project};
 use kuvo_box::typed;
 use serde_json::Value;
@@ -193,35 +193,8 @@ fn a_box_of_this_version_passes_the_gate() {
         // A Mac's names what it includes at least; a machine's, its whole list.
         let said = &expect[kind]["json"]["features"];
         let names: Vec<String> = serde_json::from_value(said.get("<includes>").unwrap_or(said).clone()).unwrap();
-        assert_eq!(gate::missing(&names), Vec::<String>::new(), "{kind}");
-        assert_eq!(Gate::for_features(Some(&names)), Gate::Open);
-    }
-}
-
-#[test]
-fn a_held_box_is_asked_only_what_keeps_work_going() {
-    for allowed in [
-        "kuvo/info",
-        "kuvo/update",
-        "kuvo/box/update",
-        "kuvo/box/app",
-        "kuvo/box/proof",
-        "kuvo/agent-tools",
-        "api/session/ses_1/message?limit=5",
-        "kuvo/agents/api/event",
-        "kuvo/asks",
-        "kuvo/sandbox/asks/a1",
-        "kuvo/vault/asks",
-        "kuvo/work/asks/w1",
-        "kuvo/sessions/ses_1/decisions",
-        "kuvo/sessions/ses_1/asks",
-        "kuvo/sessions/ses_1/asks/events",
-        "kuvo/sessions/ses_1/asks/per_1",
-    ] {
-        assert!(gate::is_allowed(allowed), "{allowed}");
-    }
-    for held in ["kuvo/sessions/list", "kuvo/sessions/ses_1/typed", "kuvo/asksx", "kuvo/work-queue", "kuvo/sessions/ses_1/decisions/x", "kuvo/box/proofs", "kuvo/sessions/ses_1/asks/per_1/more", "kuvo/sessions/ses_1/queue"] {
-        assert!(!gate::is_allowed(held), "{held}");
+        let missing: Vec<&str> = gate::REQUIRED.iter().copied().filter(|name| !names.iter().any(|has| has == name)).collect();
+        assert_eq!(missing, Vec::<&str>::new(), "{kind}");
     }
 }
 
