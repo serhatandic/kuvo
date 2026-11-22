@@ -349,3 +349,27 @@ fn a_queue_drag_persists_across_reopening_and_keyboard_moves_it_back(cx: &mut Te
     cx.run_until_parked();
     assert_eq!(stand_in.queue_of("ses_signup")[0]["id"], "msg_q1");
 }
+
+/// A message on its way to the queue (sent, not listed by its box yet) is never a row you can't
+/// act on: its actions are there at once, and Remove takes it out by its id, the box settling it.
+#[gpui::test]
+fn a_queued_message_still_on_its_way_keeps_its_actions(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_view, _) = open_session(&workspace, "ses_signup", cx);
+    cx.simulate_input("Then write the changelog line");
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    let queued = stand_in.queue_of("ses_signup").last().cloned().expect("queued");
+    let id = queued["id"].as_str().unwrap().to_owned();
+    // Not handed to the view by its box's queue yet: drawn, with what's done with it.
+    assert!(bounds(cx, &format!("queued-{id}")).is_some(), "in the queue at once");
+    for action in [format!("go-{id}"), format!("remove-{id}"), format!("queue-more-{id}")] {
+        assert!(bounds(cx, &action).is_some(), "{action} is there while it's on its way");
+    }
+    // Removed by its id: its box takes it out, and it's gone from the queue.
+    click(cx, &format!("remove-{id}"));
+    assert!(!stand_in.queue_of("ses_signup").iter().any(|item| item["id"] == id.as_str()), "taken out on the box");
+    let asked = stand_in.seen().into_iter().any(|seen| seen.method == "DELETE" && seen.path.contains(&id) && seen.path.contains("arriving=1"));
+    assert!(asked, "asked as one still on its way");
+}
