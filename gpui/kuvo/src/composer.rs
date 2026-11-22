@@ -43,11 +43,6 @@ const LIST: &str = "MentionList";
 /// How long before what the box couldn't say of its models is asked again, at first and at most.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MOST: Duration = Duration::from_secs(30);
-/// How many times one whose answer didn't come (its computer restarting, the connection lost) is
-/// asked again under its id before it says so: about a minute and a half, backing off.
-const ASK_AGAIN_MOST: u32 = 6;
-/// What one says that its computer didn't answer for, after asking again (with Retry and Edit).
-const NOT_ANSWERED: &str = "Its computer isn't answering.";
 /// How long typing a mention pauses before the box is asked what it suggests.
 const MENTION_PAUSE: Duration = Duration::from_millis(150);
 /// How many of the list's offers show at once (the rest scroll).
@@ -124,13 +119,34 @@ pub struct Outgoing {
     owner_receipt: Option<OwnerReceipt>,
     /// Where its box's queue has it (`queue_has`): the box's row stands for it while it waits.
     pub at_box: AtBox,
-    /// How many times it was asked again under its id, its answer not having come.
-    asked_again: u32,
     /// Sent for after the run while there was something to wait for (a run, a queue): it goes to
     /// the queue over the composer. (With nothing, its box sends it at once.)
     for_queue: bool,
-    /// What goes again on Retry, under the same id (the box takes one id once).
+    /// What goes again, under the same id (the box takes one id once).
     draft: Draft,
+    /// Still here, its computer not answering: it goes by itself once it does (Edit and Remove
+    /// meanwhile).
+    pub held: bool,
+}
+
+/// A message to go to its conversation's box, in the order written: one at a time, each asked
+/// again under its id until its box takes it (or you remove it). Its box's queue and delivery
+/// do the rest (docs/architecture/message-delivery.md, rule 1).
+#[derive(Clone)]
+struct Going {
+    session: String,
+    draft: Draft,
+    text: String,
+    files: Vec<PathBuf>,
+    quotes: Vec<Quote>,
+    shows: bool,
+}
+
+/// Why a send didn't go this time: its box said no (it won't take it, however often it's asked),
+/// or the way to it didn't answer (it's asked again).
+enum NotNow {
+    Refused(String),
+    Unanswered,
 }
 
 /// Where a message sent from here is, as its box's queue says. It stays the client's to draw until
@@ -221,8 +237,15 @@ pub struct Composer {
     /// Whether the conversation has a run under way (Send turns to Stop with nothing written).
     running: bool,
     sending: bool,
-    /// The message on its way to the conversation's box, for Stop to take with it.
+    /// The message on its way to the conversation's box (or waiting to be asked again), for Stop
+    /// to take with it.
     on_its_way: Option<String>,
+    /// What's still to go, in order, after the one on its way.
+    to_go: std::collections::VecDeque<Going>,
+    /// The conversation's computer isn't answering: one quiet line says so until it does.
+    unanswered: bool,
+    /// How long before the one on its way is asked again (backing off while it isn't answered).
+    again_in: Duration,
     /// Whether anything waits in the conversation's queue (as its box says): ⌘Return queues after
     /// it even with nothing running.
     has_queue: bool,
@@ -368,7 +391,8 @@ impl Composer {
                 TextFieldEvent::Changed => {
                     this.list_at = 0;
                     this.read_mentions(cx);
-                    if this.note.is_some() && this.text(cx) != this.noted {
+                    // (Its computer not answering is said until it does, whatever's written.)
+                    if this.note.is_some() && !this.unanswered && this.text(cx) != this.noted {
                         this.note = None;
                     }
                     cx.notify();
@@ -388,6 +412,9 @@ impl Composer {
             running: false,
             sending: false,
             on_its_way: None,
+            to_go: std::collections::VecDeque::new(),
+            unanswered: false,
+            again_in: RETRY_FIRST,
             has_queue: false,
             send_menu: PopoverMenuHandle::default(),
             model_menu: PopoverMenuHandle::default(),
@@ -552,7 +579,7 @@ impl Composer {
             // Shown in it at once, until its read has it.
             Ok(Sent::Message { id }) => {
                 let draft = Draft::new(id.clone(), written.to_owned());
-                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, asked_again: 0, for_queue: false, draft });
+                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, for_queue: false, draft, held: false });
                 cx.emit(ComposerEvent::Outgoing);
             }
             Ok(Sent::Pending { id, receipt }) => {
@@ -991,7 +1018,10 @@ impl Composer {
         if self.client.gate().is_held() { return; }
         let text = self.text(cx);
         let group = matches!(self.target, Target::Group { .. });
-        if (text.trim().is_empty() && (group || (self.attached.is_empty() && self.quotes.is_empty()))) || self.sending {
+        // (A conversation's messages queue behind each other here: Send is never held for one on
+        // its way. Starting one, or a group's, is one request at a time.)
+        let session = matches!(self.target, Target::Session { .. });
+        if (text.trim().is_empty() && (group || (self.attached.is_empty() && self.quotes.is_empty()))) || (self.sending && !session) {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
@@ -1016,8 +1046,10 @@ impl Composer {
             cx.notify();
             return;
         }
-        self.sending = true;
-        self.note = None;
+        self.sending = !session;
+        if !self.unanswered {
+            self.note = None;
+        }
         self.list_dismissed = None;
         self.field.update(cx, |field, cx| {
             field.set_text("", cx);
@@ -1054,10 +1086,11 @@ impl Composer {
                 }
                 if shows {
                     let words = if quotes.is_empty() { text.clone() } else { quoting::message(&quotes, &text) };
-                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, asked_again: 0, for_queue: draft.delivery == Delivery::Queue && self.can_queue(), draft: draft.clone() });
+                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, for_queue: draft.delivery == Delivery::Queue && self.can_queue(), draft: draft.clone(), held: false });
                     cx.emit(ComposerEvent::Outgoing);
                 }
-                self.go(id, draft, text, files, quotes, shows, cx);
+                self.to_go.push_back(Going { session: id, draft, text, files, quotes, shows });
+                self.next_to_go(cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
@@ -1102,42 +1135,75 @@ impl Composer {
         }
     }
 
-    /// Sends `draft` to conversation `session` (`send` or Retry): one at a time, Stop taking it as
-    /// it goes. `shows`: it's drawn in the conversation (`outgoing`), which says what became of it;
-    /// else what was written goes back to the composer if it couldn't go.
-    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, cx: &mut Context<Self>) {
-        // (One at a time: `send` and Retry refuse another while this one's on its way.)
-        debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
-        self.sending = true;
+    /// The next message to go, where none is on its way.
+    fn next_to_go(&mut self, cx: &mut Context<Self>) {
+        if self.on_its_way.is_some() {
+            return;
+        }
+        // (One removed or edited while it waited doesn't go.)
+        while let Some(going) = self.to_go.pop_front() {
+            if going.shows && !self.outgoing.iter().any(|outgoing| outgoing.id == going.draft.id) {
+                continue;
+            }
+            self.go(going, cx);
+            return;
+        }
+    }
+
+    /// Sends one to its conversation's box. Taken, the next goes; its box saying no, it says why,
+    /// with Edit; the way to its box not answering, it's asked again under its id, a little later
+    /// each time, for as long as it takes (or until it's removed), and the ones after it wait.
+    fn go(&mut self, going: Going, cx: &mut Context<Self>) {
+        let Going { session, draft, text, files, quotes, shows } = going.clone();
         let client = self.client.clone();
         let id = draft.id.clone();
         self.on_its_way = Some(id.clone());
         // Its files as its box takes them: where they are, for this computer's; with their bytes,
-        // for another's, which keeps them there (`parts::carried`). One that can't go: not sent.
+        // for another's, which keeps them there (`parts::carried`). One that can't be read: not sent.
         let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
         let kept_quotes = quotes.clone();
         let kept_draft = draft.clone();
-        let session_again = session.clone();
         let work = move || {
             let mut draft = draft;
-            draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
+            draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted)).map_err(NotNow::Refused)?;
             let quote = |words: &str| quoting::message(&quotes, words);
             let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
-            client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())
+            client.send_draft(&session, &draft, quote).map_err(|error| match &error {
+                // (Its box said no, in its words: asking again gives the same answer.)
+                kuvo_box::Error::Refused(refusal) if (400..500).contains(&refusal.status) && !matches!(refusal.status, 408 | 425 | 429) && !refusal.older_box => NotNow::Refused(error.to_string()),
+                kuvo_box::Error::NotFound => NotNow::Refused(error.to_string()),
+                _ => NotNow::Unanswered,
+            })
         };
         self.spawn(cx, work, move |this, result, cx| {
-            this.sending = false;
+            match &result {
+                Err(NotNow::Unanswered) if shows => {
+                    this.not_answered(going, cx);
+                    cx.notify();
+                    return;
+                }
+                // Its answer didn't come (its computer restarting, the connection lost): asked
+                // again under its id, which its box takes once and settles.
+                Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) && shows => {
+                    if this.outgoing.iter().any(|outgoing| outgoing.id == id && outgoing.at_box == AtBox::Unseen) {
+                        this.not_answered(going, cx);
+                        cx.notify();
+                        return;
+                    }
+                }
+                _ => {}
+            }
             this.on_its_way = None;
+            this.answered(cx);
             match result {
                 Ok(Sent::Pending { receipt, .. }) => {
                     this.keep_owner_draft(kept_draft, files, OwnerReceipt::Pending, cx);
                     this.watch_draft_receipt(id, receipt.operation, cx);
                 }
-                // Its answer didn't come (its computer restarting, the connection lost): asked again
-                // under its id, which its box takes once and settles (sent, or sent now), drawn
-                // meanwhile as on its way; still unanswered, it says so once, with Retry.
                 Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) => {
-                    if !(shows && this.ask_again(&session_again, &id, cx)) {
+                    if shows {
+                        this.mark(&id, |outgoing| outgoing.taken = true, cx);
+                    } else {
                         let warning = answer.error.unwrap_or_else(|| "Check the conversation before sending this draft again.".into());
                         this.keep_owner_draft(kept_draft, files, OwnerReceipt::Interrupted(warning), cx);
                     }
@@ -1153,8 +1219,13 @@ impl Composer {
                     }
                     this.sent(sent, files, cx);
                 }
-                Err(why) if shows => this.mark(&id, |outgoing| if outgoing.at_box == AtBox::Unseen { outgoing.failed = Some(why) }, cx),
+                // Its box won't take it: why, with Edit to change it.
+                Err(NotNow::Refused(why)) if shows => this.mark(&id, |outgoing| if outgoing.at_box == AtBox::Unseen { outgoing.failed = Some(why) }, cx),
                 Err(why) => {
+                    let why = match why {
+                        NotNow::Refused(why) => why,
+                        NotNow::Unanswered => this.unanswered_words(),
+                    };
                     this.attach(files, cx);
                     // (What it replied to goes back with it.)
                     let mut quotes = kept_quotes;
@@ -1164,8 +1235,58 @@ impl Composer {
                     this.put_back(&text, Some(why), cx)
                 }
             }
+            this.next_to_go(cx);
             cx.notify();
         });
+    }
+
+    /// The one quiet line while its computer isn't answering.
+    fn unanswered_words(&self) -> String {
+        let name = self.client.describe();
+        let name = if name == "this Mac" { "This Mac".to_owned() } else { name };
+        format!("{name} isn’t answering · your messages will go when it’s back")
+    }
+
+    /// The way to its box didn't answer: it stays on its way (Edit and Remove meanwhile), the ones
+    /// after it wait, one quiet line says so, and it's asked again under its id in a while.
+    fn not_answered(&mut self, going: Going, cx: &mut Context<Self>) {
+        let id = going.draft.id.clone();
+        self.mark(&id, |outgoing| outgoing.held = true, cx);
+        if !self.unanswered {
+            self.unanswered = true;
+            self.note = Some(Note { text: self.unanswered_words().into(), warning: false });
+        }
+        let wait = self.again_in;
+        self.again_in = (self.again_in * 2).min(RETRY_MOST);
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                // (Removed or edited meanwhile: the next goes instead.)
+                if this.on_its_way.as_deref() != Some(id.as_str()) {
+                    return;
+                }
+                this.on_its_way = None;
+                if this.outgoing.iter().any(|outgoing| outgoing.id == id && !outgoing.taken && outgoing.at_box == AtBox::Unseen) {
+                    this.to_go.push_front(going);
+                }
+                this.next_to_go(cx);
+            }).ok();
+        }));
+    }
+
+    /// Its computer answered: the quiet line goes, and the next is asked at once.
+    fn answered(&mut self, cx: &mut Context<Self>) {
+        self.again_in = RETRY_FIRST;
+        if std::mem::take(&mut self.unanswered) {
+            self.note = None;
+        }
+        let mut changed = false;
+        for outgoing in &mut self.outgoing {
+            changed |= std::mem::take(&mut outgoing.held);
+        }
+        if changed {
+            cx.emit(ComposerEvent::Outgoing);
+        }
     }
 
     fn keep_owner_draft(&mut self, draft: Draft, files: Vec<PathBuf>, receipt: OwnerReceipt, cx: &mut Context<Self>) {
@@ -1178,7 +1299,7 @@ impl Composer {
             outgoing.owner_receipt = Some(receipt);
         } else {
             let words = draft.quote.as_ref().unwrap_or(&draft.text).clone();
-            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files, failed: None, taken: false, arrived: false, owner_receipt: Some(receipt), at_box: AtBox::Unseen, asked_again: 0, for_queue: false, draft });
+            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files, failed: None, taken: false, arrived: false, owner_receipt: Some(receipt), at_box: AtBox::Unseen, for_queue: false, draft, held: false });
         }
         cx.emit(ComposerEvent::Outgoing);
     }
@@ -1274,73 +1395,37 @@ impl Composer {
         }
     }
 
-    /// Asks its box again for one whose answer didn't come, under its id, after a while (backing
-    /// off), unless its box has shown it meanwhile. False once it's been asked enough: it says so.
-    fn ask_again(&mut self, session: &str, id: &str, cx: &mut Context<Self>) -> bool {
-        let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id) else { return true };
-        if outgoing.at_box != AtBox::Unseen {
-            outgoing.taken = true;
-            return true;
-        }
-        if outgoing.asked_again >= ASK_AGAIN_MOST {
-            outgoing.failed = Some(NOT_ANSWERED.into());
-            cx.emit(ComposerEvent::Outgoing);
-            return true;
-        }
-        outgoing.asked_again += 1;
-        let wait = (RETRY_FIRST * 2u32.pow(outgoing.asked_again - 1)).min(RETRY_MOST);
-        let (session, id) = (session.to_owned(), id.to_owned());
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            let executor = cx.background_executor().clone();
-            let mut wait = wait;
-            loop {
-                executor.timer(wait).await;
-                let asked = this.update(cx, |this, cx| {
-                    let Some(outgoing) = this.outgoing.iter().find(|outgoing| outgoing.id == id) else { return true };
-                    if outgoing.at_box != AtBox::Unseen || outgoing.failed.is_some() {
-                        return true;
-                    }
-                    // (One at a time: after the one on its way now.)
-                    if this.sending {
-                        return false;
-                    }
-                    let (draft, text, files) = (outgoing.draft.clone(), outgoing.draft.text.clone(), outgoing.files.clone());
-                    this.go(session.clone(), draft, text, files, Vec::new(), true, cx);
-                    cx.notify();
-                    true
-                });
-                if asked.unwrap_or(true) {
-                    break;
-                }
-                wait = RETRY_FIRST;
-            }
-        }));
-        true
-    }
-
-    /// Sends one that couldn't go again, under its id; not while another's on its way.
-    pub fn retry(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Target::Session { id: session, .. } = self.target.clone() else { return };
-        if self.sending || self.client.gate().is_held() {
-            return;
-        }
-        let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
-        outgoing.failed = None;
-        outgoing.asked_again = 0;
-        let (draft, text, files) = (outgoing.draft.clone(), outgoing.draft.text.clone(), outgoing.files.clone());
-        cx.emit(ComposerEvent::Outgoing);
-        self.go(session, draft, text, files, Vec::new(), true, cx);
-        cx.notify();
-    }
-
-    /// One that couldn't go, back in the composer (ahead of anything written since) to change.
+    /// One that couldn't go, or is still here waiting for its computer, back in the composer
+    /// (ahead of anything written since) to change; it doesn't go meanwhile.
     pub fn edit_unsent(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(at) = self.outgoing.iter().position(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
+        let Some(at) = self.outgoing.iter().position(|outgoing| outgoing.id == id && (outgoing.failed.is_some() || outgoing.held)) else { return };
         let outgoing = self.outgoing.remove(at);
+        self.drop_going(id, cx);
         self.attach(outgoing.files, cx);
         self.put_back(&outgoing.words, None, cx);
         cx.emit(ComposerEvent::Outgoing);
         cx.notify();
+    }
+
+    /// One still here waiting for its computer, removed: it never goes.
+    pub fn remove_unsent(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(at) = self.outgoing.iter().position(|outgoing| outgoing.id == id && (outgoing.failed.is_some() || outgoing.held)) else { return };
+        self.outgoing.remove(at);
+        self.drop_going(id, cx);
+        cx.emit(ComposerEvent::Outgoing);
+        cx.notify();
+    }
+
+    /// `id` isn't to go: out of what's to go, and, waiting to be asked again, the next goes instead.
+    fn drop_going(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.to_go.retain(|going| going.draft.id != id);
+        if self.on_its_way.as_deref() == Some(id) && self.outgoing.iter().all(|outgoing| outgoing.id != id) {
+            // (Waiting to be asked again: not asked. One that reached its box meanwhile its box
+            // takes once, as it would any.)
+            self.client.take_back(&[id.to_owned()]);
+            self.on_its_way = None;
+            self.next_to_go(cx);
+        }
     }
 
     fn mark(&mut self, id: &str, change: impl FnOnce(&mut Outgoing), cx: &mut Context<Self>) {
@@ -1444,9 +1529,10 @@ impl Composer {
         self.attachment_generation += 1;
         self.item_keys.clear();
         self.item_key = 0;
-        if self.item_editor { self.note = None; }
         self.attached.clear();
-        self.note = None;
+        if !self.unanswered {
+            self.note = None;
+        }
         cx.notify();
     }
 

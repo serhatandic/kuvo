@@ -762,7 +762,7 @@ impl ConversationView {
             .filter(|item| item.is_for_next_step() && !present.contains(item.id.as_str()) && !mine.iter().any(|outgoing| outgoing.id == item.id))
             .map(|item| (Entry::Outgoing {
                 id: item.id.clone(), words: item.words.clone(), files: item.files.clone(), pictures: Vec::new(),
-                failed: None, interruption: None, waits: running,
+                failed: None, interruption: None, waits: running, held: false,
             }, if running { u64::MAX - 2 } else { u64::MAX })));
         let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = drawn.into_iter().unzip();
         rows.splice(at..at, outgoing);
@@ -1665,22 +1665,23 @@ impl ConversationView {
             .into_any_element()
     }
 
-    /// Under one of yours that couldn't go: Retry sends it again, Edit puts it back in the composer.
-    fn unsent_actions(&self, id: &str, cx: &App) -> AnyElement {
-        let sending = self.composer.read(cx).is_sending();
-        let (retry, edit) = (self.composer.clone(), self.composer.clone());
-        let (retry_id, edit_id) = (id.to_owned(), id.to_owned());
-        let (retry_selector, edit_selector) = (format!("retry-{id}"), format!("edit-unsent-{id}"));
+    /// Under one of yours that couldn't go, or is still here waiting for its computer: Edit puts it
+    /// back in the composer, Remove takes it back for good. (One waiting goes by itself: nothing
+    /// to press for that.)
+    fn unsent_actions(&self, id: &str) -> AnyElement {
+        let (edit, remove) = (self.composer.clone(), self.composer.clone());
+        let (edit_id, remove_id) = (id.to_owned(), id.to_owned());
+        let (edit_selector, remove_selector) = (format!("edit-unsent-{id}"), format!("remove-unsent-{id}"));
         div()
             .flex()
             .gap(space::S1)
-            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").ghost().size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
-                retry.update(cx, |composer, cx| composer.retry(&retry_id, cx));
-            })))
             .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-unsent-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, window, cx| {
                 edit.update(cx, |composer, cx| composer.edit_unsent(&edit_id, cx));
                 let focus = edit.focus_handle(cx);
                 window.focus(&focus, cx);
+            })))
+            .child(div().debug_selector(move || remove_selector).child(Button::new(SharedString::from(format!("remove-unsent-{id}")), "Remove").ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                remove.update(cx, |composer, cx| composer.remove_unsent(&remove_id, cx));
             })))
             .into_any_element()
     }
@@ -2008,7 +2009,7 @@ impl Render for ConversationView {
                 let Some(entry) = this.entries.get(ix) else { return div().into_any_element() };
                 let own = match entry {
                     Entry::Earlier => this.earlier_row(&list_view, cx),
-                    Entry::Outgoing { id, failed: Some(_), .. } => this.unsent_actions(id, cx),
+                    Entry::Outgoing { id, failed: Some(_), .. } | Entry::Outgoing { id, held: true, .. } => this.unsent_actions(id),
                     Entry::Outgoing { id, waits: true, .. } => this.waiting_actions(id, &list_view),
                     Entry::Message(message) => this.files_kept(message.id(), cx),
                     _ => div().into_any_element(),

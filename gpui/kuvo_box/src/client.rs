@@ -255,6 +255,12 @@ impl BoxClient {
         Some(BoxClient { transport, gate: Arc::default() })
     }
 
+    /// Messages under these ids waiting to be sent again that never reached the box don't go
+    /// (PROTOCOL.md, "Sending again"); one that may have reached it, its box takes once.
+    pub fn take_back(&self, ids: &[String]) {
+        self.transport.take_back(ids);
+    }
+
     /// The box of another of your computers, by its key, as this client reaches it (none where it
     /// doesn't yet).
     pub fn peer(&self, key: &str) -> Option<BoxClient> {
@@ -494,7 +500,7 @@ impl BoxClient {
         // takes one id once and settles one a restart cut off (its answer lost, its box
         // restarting); never of another box or another way, which could send it twice.
         if draft.legacy_attempted.get().is_some()
-            && !(draft.route.get() == Some(&DraftRoute::Draft) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
+            && !(matches!(draft.route.get(), Some(DraftRoute::Draft | DraftRoute::Decision)) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
             return Ok(uncertain_draft());
         }
         let recovery = self.has_feature("typed.submission-recovery")?;
@@ -519,8 +525,10 @@ impl BoxClient {
             Some(DraftRoute::Submission(_) | DraftRoute::Draft) => return Ok(uncertain_draft()),
             _ => {}
         }
-        if draft.legacy_attempted.set(()).is_err() {
-            return Ok(uncertain_draft());
+        // (Its fields under its id, `idempotency-key`: its box takes one id once, so it's asked
+        // again of the same box as often as it takes, never of another.)
+        if draft.legacy_attempted.set(()).is_ok() {
+            let _ = draft.asked_box.set(self.describe());
         }
         let quoted = |words: &str| {
             if words == draft.text && let Some(rendered) = &draft.quote {
