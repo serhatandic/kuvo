@@ -58,37 +58,31 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
         .child(div().flex_1().min_w_0().child(panel.search.clone()));
 
     let tiles = tiles(panel, place);
+    // A true grid: two equal columns, the same gap across and down, and a lone tile on the last
+    // row keeping its column's width.
     let rows: Vec<AnyElement> = tiles
-        .chunks(2)
-        .map(|pair| {
+        .iter()
+        .map(|tile| {
+            let kind = tile.kind.clone();
+            let id = tile.id;
             div()
+                .id(SharedString::from(id))
+                .debug_selector(move || id.into())
+                .min_w_0()
+                .h(px(86.))
+                .p(space::S3)
+                .rounded(radius::POPOVER)
+                .bg(glass.tile)
+                .border_1()
+                .border_color(glass.tile_edge)
+                .cursor_pointer()
+                .hover(move |s| s.bg(glass.tile_hover))
+                .on_click(cx.listener(move |this, _, _, cx| this.replace_active(kind.clone(), cx)))
                 .flex()
-                .gap(space::S2)
-                .children(pair.iter().map(|tile| {
-                    let kind = tile.kind.clone();
-                    let id = tile.id;
-                    div()
-                        .id(SharedString::from(id))
-                        .debug_selector(move || id.into())
-                        .flex_1()
-                        .min_w_0()
-                        .h(px(86.))
-                        .p(space::S3)
-                        .rounded(radius::POPOVER)
-                        .bg(glass.tile)
-                        .border_1()
-                        .border_color(glass.tile_edge)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(glass.tile_hover))
-                        .on_click(cx.listener(move |this, _, _, cx| this.replace_active(kind.clone(), cx)))
-                        .flex()
-                        .flex_col()
-                        .justify_between()
-                        .child(Icon::new(tile.icon).size(IconSize::Medium).color(c.icon_on))
-                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(tile.label))
-                }))
-                // An odd tile keeps its half.
-                .when(pair.len() == 1, |d| d.child(div().flex_1()))
+                .flex_col()
+                .justify_between()
+                .child(Icon::new(tile.icon).size(IconSize::Medium).color(c.icon_on))
+                .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(tile.label))
                 .into_any_element()
         })
         .collect();
@@ -115,7 +109,7 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
                 .children(found(panel, cx))
                 .when(panel.found().is_none() && !rows.is_empty(), |d| {
                     d.child(div().when(place.is_some(), |d| d.mt(space::S6)).mb(space::S2).text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Open"))
-                        .child(div().flex().flex_col().gap(space::S2).children(rows))
+                        .child(div().debug_selector(|| "new-tab-tiles".into()).w_full().grid().grid_cols(2).gap(space::S2).children(rows))
                 }),
         )
         .into_any_element()
