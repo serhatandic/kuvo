@@ -281,8 +281,7 @@ pub enum Delivery {
 }
 
 /// What a client sends: what was written and what goes with it, as fields; the box writes the text
-/// the agent reads. `command`: run that command, `words` its arguments. `named`: the sessions picked
-/// from the "&" list as it was written.
+/// the agent reads. `named`: the sessions picked from the "&" list as it was written.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct Sending {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,8 +292,6 @@ pub struct Sending {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub keyword: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
@@ -302,8 +299,6 @@ pub struct Sending {
     pub named: Vec<String>,
     #[serde(skip_serializing_if = "Notes::is_empty")]
     pub notes: Notes,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
 }
 
 impl Sending {

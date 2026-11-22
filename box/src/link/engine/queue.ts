@@ -512,7 +512,7 @@ export async function dropWaiting(session: string, item: string, inbox: InboxEnt
       const before = order[order.indexOf(item) + 1];
       const { from, text: words, keyword } = shown;
       await saveRemoved({ ...message, ...(from ? { from } : {}), words, keyword: keyword ?? null,
-        draft: from ? words : draftOf({ words, keyword }), ...(before ? { before } : {}) });
+        draft: from ? words : draftOf({ words }), ...(before ? { before } : {}) });
     }
     dropped = true;
     return { ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting!.filter(each => each !== shown) };
@@ -707,7 +707,7 @@ function removedInbox(entry: InboxEntry, before: string | undefined): RemovedWai
     id: entry.id, text, ...(files.length ? { files } : {}), delivery: entry.delivery,
     ...(isObject(metadata) ? { metadata } : {}), ...(shown.from ? { from: shown.from } : {}),
     words: shown.words, keyword: shown.keyword,
-    draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }),
+    draft: shown.from ? shown.words : draftOf(shown),
     ...(before ? { before } : {}),
   };
 }

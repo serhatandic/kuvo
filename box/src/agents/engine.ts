@@ -259,26 +259,6 @@ export class EngineLink {
     return { providerID: picked.slice(0, at), id: picked.slice(at + 1) }
   }
 
-  /** A command of yours (Settings › Commands): what it says, from the last file that has it. */
-  async commandTemplate(name: string, directory: string): Promise<string | undefined> {
-    let template: string | undefined
-    for (const source of (await this.settingsFiles(directory)) ?? []) {
-      const own = source?.info?.commands?.[name]?.template ?? source?.info?.command?.[name]?.template
-      if (typeof own === "string" && own.trim()) template = own
-      // One written as a file in a settings folder (`command/<name>.md`): what follows its front matter.
-      if (source?.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
-        for (const folder of ["command", "commands"]) {
-          try {
-            const text = readFileSync(join(source.path, folder, `${name}.md`), "utf8")
-            const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim()
-            if (body) template = body
-          } catch {}
-        }
-      }
-    }
-    return template
-  }
-
   /** What an agent of yours (Settings › Agents) is told to be: its prompt, from the last file that has it. */
   async agentPrompt(name: string, directory: string): Promise<string | undefined> {
     let prompt: string | undefined

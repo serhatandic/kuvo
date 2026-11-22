@@ -14,7 +14,7 @@ use crate::sessions::{self, Line};
 use crate::ssh::SshBox;
 use crate::transport::{Closer, Request, Response, Socket, Stream, Transport};
 use crate::parts::{self, Comment, Delivery, File, Notes, Parts, Sending};
-use crate::typed::{self, Answer, Ask, ModelRef, Offers};
+use crate::typed::{self, Answer};
 use crate::{ids, place};
 
 /// Whether this app makes sure it's you (Touch ID, or the computer's password) before what lets
@@ -83,18 +83,11 @@ pub struct Draft {
     pub named: Vec<String>,
     /// The title of the widget it answers ("" for one without a title).
     pub widget: Option<String>,
-    /// Whether the side thread's tag is on the composer.
-    pub side: bool,
     /// Why the conversation's model can't run, as its box says it (`kuvo/sessions/models`'
-    /// `refusal`): a plain message is kept, saying so; a typed one the box checks itself.
+    /// `refusal`): the message is kept, saying so.
     pub refusal: Option<String>,
-    /// The model picked last in "Who reads it", for a review.
-    pub reviewer: Option<ModelRef>,
     /// Now, or after the run under way.
     pub delivery: Delivery,
-    /// Where the conversation lives on its box, when known: saves `send_draft` a `where_is` lookup
-    /// for `!` and `/compact`.
-    pub place: Option<Where>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,11 +111,8 @@ impl Draft {
             comments: Vec::new(),
             named: Vec::new(),
             widget: None,
-            side: false,
             refusal: None,
-            reviewer: None,
             delivery: Delivery::Steer,
-            place: None,
         }
     }
     /// Retain the quote rendering with the draft so a retry carries the same intent.
@@ -462,25 +452,8 @@ impl BoxClient {
         Ok(messages)
     }
 
-    /// What "/" offers in the conversation.
-    pub fn typed_offers(&self, session: &str) -> Result<Offers> {
-        self.get(&typed::route(session))
-    }
-
-    /// What the box makes of a typed text. A refusal is an answer too: what goes back to the
-    /// composer, and why ([`Answer::refused`]).
-    pub fn typed(&self, session: &str, ask: &Ask) -> Result<Answer> {
-        let body = serde_json::to_value(ask).map_err(|error| Error::BadAnswer(error.to_string()))?;
-        let response = self.send(&Request::post(typed::route(session), body))?;
-        if response.status == 200 {
-            return decode(&response);
-        }
-        Ok(Answer::refused(response.status, &response.body, &ask.text))
-    }
-
     /// Sends a message as its fields (`kuvo/sessions/<id>/send`): the box writes what the agent
-    /// reads, and keeps its parts with it. A message is taken once per `id` however often it comes;
-    /// a command (`command`) has no id, and runs each time it's sent.
+    /// reads, and keeps its parts with it. A message is taken once per `id` however often it comes.
     pub fn send_message(&self, session: &str, sending: &Sending) -> Result<()> {
         let body = serde_json::to_value(sending).map_err(|error| Error::BadAnswer(error.to_string()))?;
         let mut request = Request::post(parts::send_route(session), body);
@@ -491,9 +464,9 @@ impl BoxClient {
         if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
     }
 
-    /// A composer's draft sent, as every client sends it: a plain message straight to the box as
-    /// fields; a text starting "/" or "!" to the box first (`typed`), which says what it means,
-    /// sending on the message or command it says to. `quote`, given what the composer replies to:
+    /// A composer's draft sent, as every client sends it: through its box's draft route where it
+    /// has one, else straight to the box as fields; whatever it starts with, it's a message for the
+    /// agent. `quote', given what the composer replies to:
     /// the words with it, as the client writes a reply (KuvoClient's `Quoting.message`), for a
     /// message that takes it.
     pub fn send_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
@@ -536,75 +509,23 @@ impl BoxClient {
                 quote.map_or_else(|| words.to_owned(), |quote| quote(words))
             }
         };
-        if !typed::asks_box(&draft.text) {
-            // As the box would say, in its order: with a model that can't run, it's kept, saying
-            // why; else with the side thread's tag on, it's a follow-up there (the client's to ask).
-            if let Some(answer) = typed::plain_answer(&draft.text, draft.side, draft.refusal.as_deref()) {
-                return Ok(Sent::Typed { answer: Box::new(answer), message: None });
-            }
-            let sending = Sending {
-                id: Some(draft.id.clone()),
-                words: quoted(&draft.text),
-                files: draft.files.clone(),
-                delivery: Some(draft.delivery),
-                widget: draft.widget.clone(),
-                comments: draft.comments.clone(),
-                named: draft.named.clone(),
-                notes: draft.notes.clone(),
-                ..Sending::default()
-            };
-            self.send_message(session, &sending)?;
-            return Ok(Sent::Message { id: draft.id.clone() });
+        // As the box would say: with a model that can't run, it's kept, saying why.
+        if let Some(answer) = typed::plain_answer(&draft.text, draft.refusal.as_deref()) {
+            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
         }
-        let ask = Ask {
-            id: draft.id.clone(),
-            text: draft.text.clone(),
-            files: !draft.files.is_empty() || !draft.notes.is_empty(),
-            side: draft.side,
-            reviewer: draft.reviewer.clone(),
+        let sending = Sending {
+            id: Some(draft.id.clone()),
+            words: quoted(&draft.text),
+            files: draft.files.clone(),
+            delivery: Some(draft.delivery),
+            widget: draft.widget.clone(),
+            comments: draft.comments.clone(),
+            named: draft.named.clone(),
+            notes: draft.notes.clone(),
+            ..Sending::default()
         };
-        let answer = self.typed(session, &ask)?;
-        let mut place = draft.place;
-        let mut resolve = || -> Result<Where> {
-            match place {
-                Some(known) => Ok(known),
-                None => {
-                    let found = self.where_is(session)?;
-                    place = Some(found);
-                    Ok(found)
-                }
-            }
-        };
-        if answer.compact == Some(true) {
-            self.compact_session(session, resolve()?)?;
-        }
-        if let Some(command) = &answer.shell {
-            self.run_shell(session, resolve()?, command)?;
-            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
-        }
-        let mut sending = Sending { id: Some(draft.id.clone()), files: draft.files.clone(), notes: draft.notes.clone(), delivery: Some(draft.delivery), ..Sending::default() };
-        if let Some(send) = &answer.send {
-            sending.words = if send.quoted == Some(true) { quoted(&send.text) } else { send.text.clone() };
-            sending.keyword = send.typed.clone();
-            sending.comments = draft.comments.clone();
-            sending.named = draft.named.clone();
-            sending.widget = draft.widget.clone();
-            if send.steer == Some(true) {
-                sending.delivery = Some(Delivery::Steer);
-            }
-        } else if let Some(run) = &answer.command {
-            // A command runs once per send, but isn't a message with this id, and isn't taken once
-            // when sent again: the box runs it each time it's asked.
-            sending.id = None;
-            sending.words = run.arguments.clone();
-            sending.command = Some(run.name.clone());
-            self.send_message(session, &sending)?;
-            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
-        } else {
-            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
-        }
         self.send_message(session, &sending)?;
-        Ok(Sent::Typed { answer: Box::new(answer), message: Some(draft.id.clone()) })
+        Ok(Sent::Message { id: draft.id.clone() })
     }
 
     fn submit_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
@@ -623,8 +544,7 @@ impl BoxClient {
             ..Sending::default()
         };
         let mut body = json!({
-            "id": draft.id, "text": draft.text, "message": message,
-            "side": draft.side, "reviewer": draft.reviewer
+            "id": draft.id, "text": draft.text, "message": message
         });
         if let Some(rendered) = prepared.quote {
             body["quotedText"] = rendered.into();
@@ -667,7 +587,7 @@ impl BoxClient {
             Ok(outcome) => outcome,
             Err(_) => return Ok(uncertain_draft()),
         };
-        if answer.keyword.is_none() && answer.send.is_some() && !typed::asks_box(&draft.text) && let Some(id) = &message {
+        if answer.send.is_some() && let Some(id) = &message {
             return Ok(Sent::Message { id: id.clone() });
         }
         Ok(Sent::Typed { answer: Box::new(answer), message })
@@ -709,18 +629,6 @@ impl BoxClient {
             route.push_str(&format!("?digest={}", crate::paths::segment(digest)));
         }
         self.get(&route)
-    }
-    /// Asks the conversation's engine or coding agent to summarize it. The box decides
-    /// whether to run now, wait for the current turn, or refuse with words to show.
-    pub fn compact_session(&self, session: &str, place: Where) -> Result<()> {
-        let response = self.send(&Request::post(place.session_route(session, "/compact"), json!({})))?;
-        if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
-    }
-
-    /// Runs the box-decided command in the conversation's folder, without waking its agent.
-    pub fn run_shell(&self, session: &str, place: Where, command: &str) -> Result<()> {
-        let response = self.send(&Request::post(place.session_route(session, "/shell"), json!({ "command": command })))?;
-        if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
     }
 
     /// The parts of messages from before (none kept with them) and of those that ran one of the

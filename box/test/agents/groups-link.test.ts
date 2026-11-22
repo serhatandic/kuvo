@@ -171,12 +171,12 @@ describe("a computer's group chats, as a client reads them", () => {
 })
 
 describe("a computer's group chats, as a client changes them", () => {
-  test("/compact from a phone: the chat says why not, and nobody is told anything", async () => {
-    const before = runner.get(group.id)?.messages.length
+  test("/compact written in a group chat is words like any other: it's sent, nothing intercepted", async () => {
+    const before = runner.get(group.id)?.messages.length ?? 0
     const asked = await ask("POST", group.id, { text: "/compact" })
-    expect(asked.status).toBe(400)
-    expect(asked.json.message).toBe("A group chat can't be summarized: each bot keeps its own conversation, and starts it over when it grows too long.")
-    expect(runner.get(group.id)?.messages.length).toBe(before)
+    expect(asked.status).toBe(200)
+    expect(runner.get(group.id)?.messages.length).toBe(before + 1)
+    expect(runner.get(group.id)?.messages.at(-1)).toMatchObject({ text: "/compact" })
   })
 
   test("made as New Group Chat makes one, of bots that live here, its meeting worked out here", async () => {

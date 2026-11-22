@@ -1,6 +1,6 @@
 // A message's envelope and its parts (PROTOCOL.md, "A message's parts")
-// A client sends what was written and what goes with it as fields (the keyword it was sent with, the
-// widget it answers, its comments on the changes, the files it sent by path); the box writes the
+// A client sends what was written and what goes with it as fields (the widget it answers, its
+// comments on the changes, the files it sent by path); the box writes the
 // text the agent reads, in these words, and keeps the parts with the message (`metadata.kuvo.parts`)
 // for every client to draw it by. Messages from before have none: the box reads them from their
 // text (`partsOf`), the old forms too. Both directions read the same cases
@@ -32,8 +32,6 @@ export interface FilesNote {
 /** What was written, and what goes with it, as a client sends it. */
 export interface MessageFields {
   words: string;
-  /** The keyword it was sent with, as typed ("/loop every hour"). */
-  keyword?: string;
   /** The title of the widget it answers ("" for one without). */
   widget?: string;
   comments?: ReviewComment[];
@@ -45,6 +43,7 @@ export interface MessageFields {
 /** A message's parts, as clients draw it: its words, then what went with them. */
 export interface MessageParts {
   words: string;
+  /** The keyword an older message was sent with, as typed ("/loop every hour"): read, never sent now. */
   keyword?: string;
   widget?: string;
   comments?: ReviewComment[];
@@ -56,7 +55,7 @@ export interface MessageParts {
   phone?: true;
   /** A message from another agent: its name and address ("unknown" when it can't be answered). */
   mail?: { name: string; session: string };
-  /** It ran a command (`keyword`, "/review"), its arguments `words`. */
+  /** An older message that ran a command (`keyword`, "/review"), its arguments `words`. */
   command?: true;
 }
 
@@ -70,6 +69,7 @@ export interface Naming {
 
 // ——— The words ———
 
+// How older messages carried the keyword they were sent with (read, never written now).
 const KEYWORD_HEADING = "The user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:";
 /** /goal in a bot's chat (`askGoal`): the bot plans it before any of the work. */
 export const GOAL_HEADING = "The user sent this as a goal, with Kuvo Code's /goal. Plan it, check what it needs, and put it to them with propose_goal before doing any of the work:";
@@ -90,8 +90,8 @@ const trimmed = (text: string): string => text.replace(/^[\s\u0085]+|[\s\u0085]+
 // `text`, then a blank line and `block`; `block` alone after nothing.
 const ending = (text: string, block: string[]): string => (text ? `${text}\n\n` : "") + block.join("\n");
 
-/** The text the agent reads for `fields`: what was written (with the widget it answers), the keyword
- * it was sent with, the agents it names with "&" (as `naming` has everyone), the comments on the
+/** The text the agent reads for `fields`: what was written (with the widget it answers), the agents
+ * it names with "&" (as `naming` has everyone), the comments on the
  * changes, the note of its files (the client's lines, then `kept`: those this box keeps of the
  * files it carries), and, from a phone, that it's from there. */
 export function composeMessage(fields: MessageFields, naming: Naming, kept: FilesNote = {}, phone = false): string {
@@ -111,10 +111,6 @@ export function composeWithParts(fields: MessageFields, naming: Naming, kept: Fi
   if (fields.widget !== undefined) {
     words = trimmed(fields.words);
     text = trimmed([fields.words, "", WIDGET_BLOCK.start, WIDGET_HEADING, oneLine(fields.widget), WIDGET_BLOCK.end].join("\n"));
-  }
-  if (fields.keyword !== undefined) {
-    words ??= text;
-    text = [text, "", KEYWORD_BLOCK.start, KEYWORD_HEADING, oneLine(fields.keyword), KEYWORD_BLOCK.end].join("\n");
   }
   text = NAMED_BLOCK.escaping(text);
   const named = agentsNamed([text], new Set(naming.excluding ? [naming.excluding] : []), naming.agents, new Set(fields.named ?? []));
@@ -138,7 +134,6 @@ export function composeWithParts(fields: MessageFields, naming: Naming, kept: Fi
   const paths = [...(fields.notes?.paths ?? []), ...(fields.notes?.unsent ?? []), ...(kept.paths ?? [])];
   const parts: MessageParts = {
     words: words ?? text,
-    ...(fields.keyword !== undefined ? { keyword: oneLine(fields.keyword) } : {}),
     ...(fields.widget !== undefined ? { widget: oneLine(fields.widget) } : {}),
     ...(fields.comments?.length ? { comments: fields.comments.map(comment => ({ ...comment, text: trimmed(comment.text) })) } : {}),
     ...(paths.length ? { paths } : {}),
@@ -146,14 +141,6 @@ export function composeWithParts(fields: MessageFields, naming: Naming, kept: Fi
     ...(phone ? { phone: true as const } : {}),
   };
   return { text, parts };
-}
-
-/** A command's arguments as the engine's command gets them: as written, with only the note of its
- * files after them (the client's lines, then `kept`), as Kuvo Code wrote it before. */
-export function composeArguments(words: string, notes: FilesNote = {}, kept: FilesNote = {}): string {
-  const text = ATTACHED_BLOCK.escaping(words);
-  const lines = [...noteLines(notes), ...noteLines(kept)];
-  return lines.length ? ending(text, [ATTACHED_BLOCK.start, ...lines, ATTACHED_BLOCK.end]) : text;
 }
 
 const noteLines = (note: FilesNote): string[] => [
@@ -324,7 +311,6 @@ export function fieldsOf(given: Record<string, unknown>): MessageFields | null {
   const notes = isObject(given.notes) ? given.notes : null;
   return {
     words: given.words,
-    ...(typeof given.keyword === "string" ? { keyword: given.keyword } : {}),
     ...(typeof given.widget === "string" ? { widget: given.widget } : {}),
     ...(comments?.length ? { comments } : {}),
     ...(strings(given.named) ? { named: strings(given.named) } : {}),
