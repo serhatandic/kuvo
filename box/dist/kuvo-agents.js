@@ -4858,6 +4858,82 @@ function kuvoToolName(name, args) {
 var server, program, toolServerName = "kuvo-browser", schemas, loading;
 var init_kuvotools = () => {};
 
+// box/src/agents/tool-forwarder.ts
+var toolForwarder;
+var init_tool_forwarder = __esm(() => {
+  toolForwarder = String.raw`
+const { randomUUID } = require("node:crypto");
+const { createInterface } = require("node:readline");
+const { setTimeout: delay } = require("node:timers/promises");
+const { KUVO_TOOL_RELAY: url, KUVO_TOOL_RELAY_KEY: key, KUVO_TOOL_TIMEOUT: timeout } = process.env;
+const calls = new Map();
+const write = message => process.stdout.write(JSON.stringify(message) + "\n");
+const send = (body, signal) => fetch(url, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: "Bearer " + key, "X-Kuvo-Tool-Forwarder": "1" },
+  body, signal, redirect: "error",
+});
+const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+input.on("line", async line => {
+  let message;
+  try { message = JSON.parse(line); }
+  catch { return write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
+  if (message.id == null) {
+    if (message.method === "notifications/cancelled") {
+      const call = calls.get(message.params?.requestId);
+      if (call) {
+        call.abort();
+        await send(line, AbortSignal.timeout(5000)).catch(() => {});
+      }
+    }
+    return;
+  }
+  const controller = new AbortController();
+  calls.set(message.id, controller);
+  const name = message.params?.name;
+  const replay = message.method !== "tools/call" ||
+    typeof name === "string" && !name.startsWith("browser_");
+  if (message.method === "tools/call") {
+    message.params = { ...message.params, _meta: { ...message.params?._meta, "kuvo.operation": randomUUID() } };
+  }
+  const body = JSON.stringify(message);
+  let retryBy;
+  try {
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(Number(timeout) + 80_000)]);
+    while (!signal.aborted) {
+      try {
+        const response = await send(body, signal);
+        if (![502, 503].includes(response.status)) {
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error("Kuvo Code's tools said HTTP " + response.status + ".");
+          }
+          const answer = await response.json();
+          if (!answer.error?.data?.kuvoRelayRestart || !replay) return write(answer);
+        } else {
+          await response.body?.cancel();
+          if (response.status === 502 && !replay) break;
+        }
+      } catch (error) {
+        const code = error?.cause?.code ?? error?.code;
+        if (!code && error.message.startsWith("Kuvo Code's tools said HTTP")) throw error;
+        if (!replay && code !== "ECONNREFUSED" && code !== "ConnectionRefused") break;
+      }
+      retryBy ??= Date.now() + 80_000;
+      if (Date.now() >= retryBy) break;
+      await delay(200, undefined, { signal });
+    }
+    throw new Error("Kuvo Code's tools didn't answer.");
+  } catch (error) {
+    if (!controller.signal.aborted) write({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: error.message } });
+  } finally {
+    calls.delete(message.id);
+  }
+});
+input.on("close", () => process.exit(0));
+`;
+});
+
 // box/src/agents/fence.ts
 import { createHash as createHash2, randomBytes as randomBytes2 } from "crypto";
 import { constants as constants3, copyFileSync, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync6, readdirSync as readdirSync3, readFileSync as readFileSync9, realpathSync as realpathSync3, renameSync as renameSync6, rmSync as rmSync4, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync8 } from "fs";
@@ -5219,7 +5295,7 @@ var init_servers = __esm(() => {
 });
 
 // box/src/agents/toolrelay.ts
-import { randomBytes as randomBytes3 } from "crypto";
+import { randomBytes as randomBytes3, randomUUID } from "crypto";
 import { spawn as spawn4 } from "child_process";
 import { readFileSync as readFileSync10 } from "fs";
 import { dirname as dirname4, join as join11, relative } from "path";
@@ -5244,6 +5320,26 @@ function relayedTools(sessionID, holder) {
     return;
   const key = hold2(sessionID, holder);
   return { kind: "http", name: tools.name, key: tools.key, timeout: tools.timeout, url: `http://127.0.0.1:${relayPort()}/mcp`, headers: { Authorization: `Bearer ${key}` } };
+}
+function forwardedTools(sessionID, holder) {
+  const tools = relayedTools(sessionID, holder);
+  if (!tools || !onMachine)
+    return tools;
+  return {
+    kind: "stdio",
+    name: tools.name,
+    key: "forward:" + tools.key,
+    timeout: tools.timeout + 80000,
+    command: process.execPath,
+    args: ["--config=/dev/null", "--no-env-file", "-e", toolForwarder],
+    env: {
+      BUN_BE_BUN: "1",
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      KUVO_TOOL_RELAY: tools.url,
+      KUVO_TOOL_RELAY_KEY: tools.headers.Authorization,
+      KUVO_TOOL_TIMEOUT: String(tools.timeout)
+    }
+  };
 }
 function relayedServers(sessionID, holder, directory, found, options = {}) {
   if (options.brief)
@@ -5445,7 +5541,7 @@ async function answer2(request) {
   let body;
   if (request.method === "POST") {
     try {
-      body = ownSession(await request.json(), sessionID);
+      body = ownSession(await request.json(), sessionID, request.headers.get("x-kuvo-tool-forwarder") === "1");
     } catch {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
     }
@@ -5848,11 +5944,14 @@ function startServer(entry, sessionID, directory) {
   const inside = ["-c", 'BUN_INSTALL_CACHE_DIR="$npm_config_cache/_bun" exec "$0" "$@"', command, ...args];
   return new Program({ key: "", command: fence.command, args: inside, env: { ...env, ...fence.env }, cwd, name: `The ${entry.name} server`, ended: fence.ended });
 }
-function ownSession(body, sessionID) {
+function ownSession(body, sessionID, forwarded) {
   const each = (message) => {
     if (message?.method !== "tools/call" || typeof message.params !== "object" || !message.params)
       return message;
-    return { ...message, params: { ...message.params, _meta: { ...message.params._meta ?? {}, "ai.opencode/sessionID": sessionID } } };
+    const meta = message.params._meta;
+    const operation = meta?.["kuvo.operation"];
+    const id = forwarded && typeof operation === "string" && /^[a-f0-9-]{36}$/.test(operation) ? operation : randomUUID();
+    return { ...message, params: { ...message.params, _meta: { ...meta, "ai.opencode/sessionID": sessionID, "kuvo.operation": id } } };
   };
   return Array.isArray(body) ? body.map(each) : each(body);
 }
@@ -5906,7 +6005,7 @@ class Program {
   send(message, timeout, connection) {
     this.used = Date.now();
     if (this.stopped)
-      return Promise.resolve(message?.id === undefined ? undefined : failure2(message.id, `${this.name} stopped.`));
+      return Promise.resolve(message?.id === undefined ? undefined : stopped(message.id, this.name));
     if (message?.id === undefined || message.id === null) {
       const requestId = message?.params?.requestId;
       const ours = requestId === undefined ? undefined : this.ours.get(connection + " " + JSON.stringify(requestId));
@@ -5961,7 +6060,7 @@ class Program {
       this.child.kill();
     }
     for (const [, waiting] of this.waiting)
-      waiting.done(failure2(waiting.id, `${this.name} stopped.`));
+      waiting.done(stopped(waiting.id, this.name));
     this.waiting.clear();
     for (const then of this.stopping.splice(0))
       then();
@@ -5979,8 +6078,9 @@ var server2, keys, sessionsByKey, programs, holders, served, running, standIns, 
   } catch {
     return;
   }
-}, failure2 = (id, message) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } });
+}, failure2 = (id, message) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } }), stopped = (id, name) => ({ jsonrpc: "2.0", id, error: { code: -32603, message: `${name} stopped.`, data: { kuvoRelayRestart: true } } });
 var init_toolrelay = __esm(() => {
+  init_tool_forwarder();
   init_files();
   init_fence();
   init_kuvotools();
@@ -7953,11 +8053,11 @@ function elicitationField(key, field, required) {
 }
 
 // box/src/shared/work-order.ts
-import { randomUUID } from "crypto";
+import { randomUUID as randomUUID2 } from "crypto";
 var BACKGROUND_WORK_LIMIT, origin, sequence = 0, workOrder = () => [origin, ++sequence];
 var init_work_order = __esm(() => {
   BACKGROUND_WORK_LIMIT = 6 * 3600000;
-  origin = randomUUID();
+  origin = randomUUID2();
 });
 
 // box/src/agents/acp.ts
@@ -8193,7 +8293,7 @@ class AcpThread {
       homes: whole.homes(started),
       state: whole.state,
       kept: whole.kept,
-      read: [...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
+      read: [...onMachine ? [process.execPath] : [], ...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -8206,7 +8306,7 @@ class AcpThread {
     const http = Boolean(init?.agentCapabilities?.mcpCapabilities?.http);
     const listed = (headers) => Object.entries(headers).map(([name, value]) => ({ name, value }));
     const servers = [];
-    const tools = this.fenced ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = this.fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
     if (tools && (tools.kind === "stdio" || http)) {
       loadKuvoTools();
       if (tools.kind === "stdio")
@@ -9207,6 +9307,7 @@ var init_acp = __esm(() => {
   init_events();
   init_rpc();
   init_fence();
+  init_machine();
   init_kuvotools();
   init_servers();
   init_toolrelay();
@@ -12065,7 +12166,7 @@ var paragraphs = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filte
 
 // box/src/agents/agents/claude.ts
 import { spawn as spawn6 } from "child_process";
-import { createHash as createHash10, randomUUID as randomUUID2 } from "crypto";
+import { createHash as createHash10, randomUUID as randomUUID3 } from "crypto";
 import { existsSync as existsSync13, mkdirSync as mkdirSync14, readdirSync as readdirSync10, readFileSync as readFileSync22, rmdirSync as rmdirSync2, rmSync as rmSync13, statSync as statSync7 } from "fs";
 import { homedir } from "os";
 import { basename as basename4, dirname as dirname10, join as join22, resolve as resolve6 } from "path";
@@ -12251,7 +12352,7 @@ class ClaudeThread {
     const modelID = input.model.id;
     const effort = input.model.variant;
     const append = hooks.instructions();
-    const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)));
     const fence = fenceKey() + fullAccessMark(this.session.id);
     this.subagents = await subagentsFor(this.session.location.directory);
@@ -12281,7 +12382,7 @@ class ClaudeThread {
     }
     if (this.query && (opening || this.servers !== serversNow)) {
       const entries = {};
-      const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
+      const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
       if (tools)
         entries[tools.name] = tools.kind === "http" ? { type: "http", url: tools.url, headers: tools.headers, timeout: tools.timeout } : { type: "stdio", command: tools.command, args: tools.args, env: tools.env, timeout: tools.timeout };
       for (const server of servers)
@@ -12604,7 +12705,7 @@ ${input.text}` } : input, this.copies());
     let id = this.state.claudeSession;
     const resume = Boolean(id && this.state.claudeStarted);
     if (!id) {
-      id = randomUUID2();
+      id = randomUUID3();
       this.state.claudeSession = id;
       hooks.saveState();
     }
@@ -12624,7 +12725,7 @@ ${input.text}` } : input, this.copies());
     const named = botMemory(this.session);
     const ownMemory = named && existsSync13(named) ? named : undefined;
     this.input = new Queue;
-    const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() };
     this.adopted = Boolean(taken);
@@ -12671,7 +12772,7 @@ ${input.text}` } : input, this.copies());
       homes: [settings],
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
+      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -13749,7 +13850,7 @@ Attached files:
 ${others.map((path) => `- ${path}`).join(`
 `)}`;
   content.push({ type: "text", text });
-  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID2() };
+  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID3() };
 }
 function safeBase642(path) {
   try {
@@ -14905,7 +15006,7 @@ class CodexAgent {
       homes,
       state: STATE_IN_HOME2,
       kept: KEPT_IN_HOME2,
-      read: [...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
+      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
       port: relayPort(),
       session: sessionID,
       bot
@@ -15569,7 +15670,7 @@ class CodexThread {
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join(`
 
 `);
-    const tools = fenced ? relayedTools(this.session.id, this.agent) : kuvoTools(this.session.id);
+    const tools = fenced ? forwardedTools(this.session.id, this.agent) : kuvoTools(this.session.id);
     const directory = this.session.location.directory;
     const own = this.agent.ownSkillFolders(directory);
     const off = turnedOff(hooks);
@@ -17722,7 +17823,7 @@ class CursorThread {
     const cwd = this.session.location.directory;
     const skills = skillsFolder(await skillsFor(cwd, this.owner.ownSkillFolders(cwd), turnedOff(hooks)));
     const fenced = Boolean(fenceRules());
-    const tools = fenced ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
     const computer = await computerServers(cwd);
     await serversKey(this.session.id, computer);
     const servers = relayedServers(this.session.id, this, cwd, computer);
@@ -18780,7 +18881,7 @@ function failureWords(status, message) {
 }
 
 // box/src/agents/account-refresh.ts
-import { randomUUID as randomUUID3 } from "crypto";
+import { randomUUID as randomUUID4 } from "crypto";
 
 class AccountRefresh {
   limits;
@@ -18797,7 +18898,7 @@ class AccountRefresh {
   snapshot(agent) {
     let found = this.snapshots.get(agent);
     if (!found)
-      this.snapshots.set(agent, found = { generation: randomUUID3(), revision: 0 });
+      this.snapshots.set(agent, found = { generation: randomUUID4(), revision: 0 });
     return found;
   }
   read(agent, fresh = false) {
@@ -18834,7 +18935,7 @@ class AccountRefresh {
     snapshot.signIn = signIn;
     if (changed) {
       this.invalidate(agent, snapshot);
-      this.snapshots.set(agent, { account, identity, signIn, generation: randomUUID3(), revision: 0 });
+      this.snapshots.set(agent, { account, identity, signIn, generation: randomUUID4(), revision: 0 });
     }
     if (!previous || changed)
       this.observed?.(agent.providerID, account.installed && account.signedIn, signIn);
@@ -18857,7 +18958,7 @@ class AccountRefresh {
   forgetSignIn(agent) {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
-    this.snapshots.set(agent, { generation: randomUUID3(), revision: 0 });
+    this.snapshots.set(agent, { generation: randomUUID4(), revision: 0 });
   }
   invalidate(agent, snapshot) {
     this.limits?.invalidate(agent.providerID);
@@ -19156,7 +19257,7 @@ var init_engine_swap = __esm(() => {
 });
 
 // box/src/agents/updates.ts
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID5 } from "crypto";
 import { readdirSync as readdirSync12, readFileSync as readFileSync28, rmSync as rmSync16 } from "fs";
 import { join as join29 } from "path";
 function isUpdating(program) {
@@ -19240,7 +19341,7 @@ function updateProgram(agent, accounts, noted, control = {}, saved) {
   const running = underWay2.get(program);
   if (running)
     return running;
-  const drain = saved ?? { attempt: randomUUID4(), provider: agent.providerID, deadline: Date.now() + HOLD_MOST };
+  const drain = saved ?? { attempt: randomUUID5(), provider: agent.providerID, deadline: Date.now() + HOLD_MOST };
   const home = control.home;
   const file = home && drainFile(home, program);
   if (file && !saved)
@@ -31198,7 +31299,7 @@ var init_event_stream = () => {};
 
 // box/src/agents/box-services.ts
 import { readFileSync as readFileSync34 } from "fs";
-import { randomUUID as randomUUID5 } from "crypto";
+import { randomUUID as randomUUID6 } from "crypto";
 import { join as join34 } from "path";
 
 class BoxServicesClient {
@@ -31273,7 +31374,7 @@ class BoxServicesClient {
         this.generations.set(provider, this.generation(provider) + 1);
         pending.windows.clear();
       }
-      pending.account = { signedIn: update.signedIn, signIn: update.signIn, revision: randomUUID5() };
+      pending.account = { signedIn: update.signedIn, signIn: update.signIn, revision: randomUUID6() };
       pending.sentTo = undefined;
     } else if (update.window && update.signIn) {
       pending.windows.set(update.window.id, { window: update.window, signIn: update.signIn });
@@ -32117,4 +32218,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents a68709a1880dbcd8fce0a7467d7323d2c8b6b4d9808090d8d8910c15262d3225
+// Built from Packages/Box/src/agents f4a5927108bfeddd3cca55a9e6219cac0d5d21de7f90b5779b049030bda71fb8
