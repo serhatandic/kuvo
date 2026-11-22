@@ -195,9 +195,16 @@ test("resident pilot: active sandboxed Codex survives a failed trial and a succe
   await until(async () => (await messages()).at(-1)?.outcome === "succeeded", "the original active turn to finish", 30_000);
   await prompt("msg_residentpilot00003", "new turn after update");
   await until(async () => (await messages()).filter(note => note.type === "idle" && note.outcome === "succeeded").length === 2, "the new turn to finish", 30_000);
+  await prompt("msg_residentpilot00004", "another sandboxed turn");
+  await until(async () => (await messages()).filter(note => note.type === "idle" && note.outcome === "succeeded").length === 3, "the next turn to finish", 30_000);
   const ran = turns(signals);
-  assert.deepEqual(ran.map(turn => turn.text), ["hold pilot", "new turn after rollback", "new turn after update"]);
-  assert.deepEqual(ran.filter(turn => turn.text !== "new turn after rollback").map(turn => turn.pid), [holder.child, holder.child]);
+  assert.deepEqual(ran.map(turn => turn.text), ["hold pilot", "new turn after rollback", "new turn after update", "another sandboxed turn"]);
+  assert.equal(ran[0].pid, holder.child);
+  // A new bin target changes a sandbox's readable paths. The next turn may reopen the provider
+  // after the active turn has finished. Consecutive turns on the same policy share their provider.
+  assert.equal(ran[2].pid, ran[3].pid);
   assert.notEqual(ran[1].pid, holder.child, "another conversation has its own sandboxed provider");
-  assert.deepEqual(readJSON(path.join(signals, `provider-${ran[1].pid}.json`)), { pid: ran[1].pid, canReadBox: false });
+  for (const pid of new Set(ran.map(turn => turn.pid))) {
+    assert.deepEqual(readJSON(path.join(signals, `provider-${pid}.json`)), { pid, canReadBox: false });
+  }
 });
