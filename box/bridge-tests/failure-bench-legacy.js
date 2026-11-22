@@ -33,14 +33,23 @@ export function layout0Build(checkout) {
     "1ee6ffd6cbfb32ad10a8fa95e40733a49dd08a494579b171c6692e1245654e18", ".layout-0.mjs", checkout);
 }
 
-function buildFixture(ref, digest, filename, checkout = fileURLToPath(new URL("../..", import.meta.url))) {
+// The last split launcher with the same lease, save and move protocols as resident serve.
+const split = fs.readFileSync(new URL("split-launch-ref.txt", import.meta.url), "utf8").trim();
+export function splitLaunchBuild() {
+  return buildFixture(split, "4ab8b3a572eec08b06d18931ba8b5b44a9d2c364b1d447298bd3952517dec30f", ".split-launch.mjs");
+}
+export function splitLaunchKeeper() {
+  return buildFixture(split, "b25c8f4465b4240a8e7cbb32ec6f8c630d60511ea0cb0129ddfaaa1563354257", ".split-keeper.sh", undefined, "box/src/keeper/kuvo-start");
+}
+
+function buildFixture(ref, digest, filename, checkout = fileURLToPath(new URL("../..", import.meta.url)), file = resource) {
   if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error("Invalid pinned failure-bench revision.");
   const archived = path.join(checkout, "box", "bridge-tests", filename);
   let build;
   if (fs.existsSync(archived)) {
     build = fs.readFileSync(archived);
   } else {
-    const result = spawnSync("git", ["--no-optional-locks", "-C", checkout, "show", `${ref}:${resource}`], { maxBuffer: 64 * 1024 * 1024 });
+    const result = spawnSync("git", ["--no-optional-locks", "-C", checkout, "show", `${ref}:${file}`], { maxBuffer: 64 * 1024 * 1024 });
     if (result.status !== 0) {
       throw new Error(`Missing pinned failure-bench build at ${ref}. Check that the pinned commit or the transferred fixture is present.`);
     }

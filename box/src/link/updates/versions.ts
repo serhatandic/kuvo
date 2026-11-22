@@ -93,7 +93,8 @@ export async function convertBin(root: string, version: string, sha256?: string)
   if (!fs.lstatSync(plugins, { throwIfNoEntry: false })?.isSymbolicLink()) {
     // Until plugins is exchanged, the engine still sees its original directory.
     fs.rmSync(local, { force: true, recursive: true });
-    if (fs.existsSync(plugins)) fs.cpSync(plugins, local, { recursive: true, verbatimSymlinks: true });
+    // The running engine uses the generated sandbox plug-in's mtime to tell whether it has loaded it.
+    if (fs.existsSync(plugins)) fs.cpSync(plugins, local, { recursive: true, verbatimSymlinks: true, preserveTimestamps: true });
     else fs.mkdirSync(local, { mode: 0o700 });
     syncDurableTree(local, root);
     const pluginLink = "../../bin/opencode-plugins";

@@ -313,9 +313,17 @@ exit $?
   }
 }, 32_000);
 
-test("a server-only switch keeps the running engine", async () => {
+test("a server-only switch keeps the running engine and its generated sandbox files", async () => {
   const version = "0.8.0-beta.41";
   const root = home(version);
+  const plugin = path.join(root, "config/opencode/plugins/kuvo-sandbox.js");
+  const defaults = path.join(root, "config/opencode/plugins/kuvo-defaults.js");
+  put(plugin, "generated plug-in");
+  put(defaults, "generated defaults");
+  put(path.join(root, "bin/kuvo-fence"), "generated launcher", 0o700);
+  put(path.join(root, "bin/kuvo-fence.js"), "generated Linux runner");
+  const timestamp = new Date(1_700_000_000_000);
+  fs.utimesSync(plugin, timestamp, timestamp);
   const old = await convertBin(root, version, "1".repeat(64));
   const release = path.join(root, "unpacked");
   files(release, version);
@@ -333,6 +341,11 @@ test("a server-only switch keeps the running engine", async () => {
     put(previousBin(root), old + "\n");
     expect(run(root, path.join(root, next, "kuvo-start"), "stop", "--switch", next).status).toBe(0);
     expect(activeBin(root)).toBe(next);
+    expect(fs.readFileSync(plugin, "utf8")).toBe("generated plug-in");
+    expect(fs.statSync(plugin).mtimeMs).toBe(timestamp.getTime());
+    expect(fs.readFileSync(defaults, "utf8")).toBe("generated defaults");
+    expect(fs.statSync(path.join(root, "bin/kuvo-fence")).mode & 0o777).toBe(0o700);
+    expect(fs.readFileSync(path.join(root, "bin/kuvo-fence.js"), "utf8")).toBe("generated Linux runner");
     expect(JSON.parse(fs.readFileSync(path.join(root, "run/engine.json"), "utf8")).pid).toBe(engine.pid);
     expect(() => process.kill(engine.pid!, 0)).not.toThrow();
   } finally {

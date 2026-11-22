@@ -16,7 +16,7 @@ import { CODEX_STAND_IN } from "./codex-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { runningAs } from "./running-as.js";
 import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
-import { recoveryNeighborBuild } from "./failure-bench-legacy.js";
+import { recoveryNeighborBuild, splitLaunchBuild } from "./failure-bench-legacy.js";
 import { benchRelease, durablePhase, put, recoveryEngine } from "./recovery-bench.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
@@ -66,7 +66,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false, resident = false } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false, resident = false, splitIndex } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -84,6 +84,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       fs.writeFileSync(legacyScript, old.stdout);
     }
   }
+  const splitScript = path.join(root, "pre-resident.mjs");
+  if (splitIndex !== undefined) fs.writeFileSync(splitScript, splitLaunchBuild());
   if (releaseKey) {
     const source = fs.readFileSync(script, "utf8");
     assert.ok(source.includes(link.UPDATE_KEYS[0]));
@@ -288,7 +290,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
       pid: bridgePID, port: engine.address().port, password: liveAsks && name === "Lab" ? "Lab-bridge" : name,
     }));
-    const nodeScript = name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
+    const nodeScript = index === splitIndex ? splitScript : name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
     if (nodeScript === legacyScript) {
       fs.mkdirSync(path.join(home, "bin"), { recursive: true });
       fs.writeFileSync(path.join(home, "bin", "box-version"), "0.8.0-beta.35");
@@ -363,6 +365,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const wire = JSON.parse(out.trim().split("\n").at(-1));
         return { status: wire.status, value: JSON.parse(wire.body) };
       },
+      async residentRoute(method, route, body, headers) {
+        const { port, password, pid } = read("serve.json");
+        assert.equal(pid, this.child.pid);
+        const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
+          method, headers: { ...headers, authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"),
+            "content-type": "application/json", "x-kuvo-from": "mac" }, body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return { status: response.status, value: await response.json() };
+      },
       async labelTool(args) {
         labelCall = args;
         return (await this.route("POST", "kuvo/work-queue/tools", { name: "queue_labels", arguments: args, session: "ses_labels" }, true)).value;
@@ -378,7 +389,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       start() {
         this.output = "";
         const flags = this.onShutdown ? ["--import", `data:text/javascript,${encodeURIComponent(this.onShutdown)}`] : [];
-        const command = mac ? ["serve"] : resident ? ["serve", "--resident"] : ["run"];
+        const command = mac ? ["serve"] : resident && index !== splitIndex ? ["serve", "--resident"] : ["run"];
         const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, ...command], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
@@ -4245,6 +4256,53 @@ test("main saves alone: a resident member catches up to a save committed while i
     b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep" &&
     b.read().sharedOutcomes?.[receipt.operation]?.status === "committed", t.signal);
 });
+
+for (const splitIndex of [0, 1]) {
+  test(`mixed resident pilot: ${splitIndex === 0 ? "split" : "resident"} main hands over with receipts and a direct move`, { timeout: 80_000 }, async t => {
+    const group = { id: "grp_pilot", name: "Pilot group", members: ["bot_one", "bot_two"], created: "2026-11-21T00:00:00Z", seats: {}, heard: {} };
+    const { a, b, see, leaseRelay, groupCopies } = await network(t, true, undefined, false, group, false, true, ["Studio", "Lab"], {
+      resident: true, splitIndex, acceptedRoster: true,
+    });
+    const split = [a, b][splitIndex];
+    const ask = (box, ...args) => box === split ? box.route(...args) : box.residentRoute(...args);
+    const term = leaseRelay.lease.term;
+    assert.equal(leaseRelay.lease.holder, a.key);
+
+    const saveName = async (main, member, name) => {
+      const receipt = await ask(member, "PATCH", `kuvo/computers/${member.key}`, { name });
+      assert.equal(receipt.status, 200, JSON.stringify(receipt));
+      assertReceipt(main, "setupNames", "committed", receipt.value);
+      const operation = receipt.value.operation;
+      await until("the member receives the committed receipt", () => member.read().sharedOutcomes?.[operation]?.status === "committed", t.signal);
+      assert.equal(member.read().shared.setupNames.value[member.key], name);
+      return operation;
+    };
+    const before = await saveName(a, b, "Before handover");
+    const handover = await ask(a, "POST", "kuvo/setup/handover", { primary: b.key, epoch: 2 });
+    assert.ok([200, 202].includes(handover.status), JSON.stringify(handover));
+    await Promise.all([see(a, 3, b), see(b, 3, b)]);
+    assert.equal(leaseRelay.lease.holder, b.key);
+    assert.equal(leaseRelay.lease.term, term + 1);
+    assert.equal(b.read().sharedOutcomes[before].status, "committed");
+    await saveName(b, a, "After handover");
+
+    const folder = path.join(b.home, "groups", group.id);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: "active", group }));
+    fs.writeFileSync(path.join(folder, "messages.json"), "[]");
+    const moved = await ask(b, "POST", "kuvo/moves", { kind: "group", id: group.id, to: a.key, receipt: true });
+    assert.equal(moved.status, 202, JSON.stringify(moved));
+    const receiptRoute = `kuvo/moves/receipt?id=${moved.value.move.id}`;
+    const done = await until("the source reports its move outcome", async () => {
+      const receipt = await ask(b, "GET", receiptRoute);
+      return receipt.status === 200 && receipt.value.state && receipt.value.state !== "moving" && receipt;
+    }, t.signal);
+    assert.equal(done.value.state, "done", JSON.stringify(done));
+    assert.equal(done.value.move.to, a.key);
+    assert.equal(groupCopies.get("Studio")?.status, "active");
+    await until("the source exports and releases its old copy", () => !groupCopies.has("Lab"), t.signal);
+  });
+}
 
 test("unlinking the main of two computers hands its role to the other, on an older version, and unlinks it", { timeout: 30_000 }, async t => {
   const { a, b, leaseRelay, see } = await relayLeaseNetwork(t, { oldMember: true });
