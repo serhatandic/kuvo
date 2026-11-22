@@ -1635,7 +1635,13 @@ the same for every client and with none connected, and keeps them in `run/queues
   sessions' queues when a box starts again (or its stream comes back) beside the same engine, for
   a run that ended while it couldn't hear (one that was stopped or failed, as its newest message says:
   the run's end, `idle` with an `outcome` other than `succeeded`, or an answer ending in an error,
-  is held and paused instead); one at work then is settled so once it's free.
+  is held and paused instead); one at work then is settled so once it's free. **A restart isn't a
+  Stop** (#809): the coding agents' bridge keeps its sessions' inboxes on disk, and as it stops (an
+  update, a restart, a quit) what waits in a run's inbox is kept for the next bridge (held, for the
+  next step), which sends it as it starts, once, in order. The run it cut short ends `interrupted`
+  with `reason: "restart"` (on `session.execution.interrupted` and on its `idle` message), which
+  neither holds nor pauses the queue, and a new bridge process (unlike a new engine) is looked over as
+  the same one.
 - **Pauses**: Stop, from any client (the box's `stop`, or an interrupt a client sent the engine
   itself: with no run started again a moment later, as Send Now's resume does at once; while the
   bridge's session still says it's at work, looked at again once it's free, and Resume pressed
@@ -1755,6 +1761,18 @@ the same for every client and with none connected, and keeps them in `run/queues
 - Clients show what's held and whether it's paused from these; the in-flight record of a message
   still on its way stays with the client that sends it, which names those in Stop's `items` (it
   doesn't wait for them), and waits for its hold before it asks the box to resume.
+- **Where a client draws a message** (#809), by its id, in one place from the moment it's sent until
+  the conversation has it: one `items` lists for the agent's next step (`delivery: "steer"`, `on:
+  "engine"`, not `held`) in the conversation, saying it's for the next step (with Send Now, Edit and
+  Remove); the rest of `items` in the queue over the composer. Its own message the box hasn't listed
+  yet goes where sending it puts it (a send in the conversation, one for after the run in the
+  queue); one `items` listed and no longer does was handed to the agent and stays in the conversation
+  until its copy comes. Nothing under it while it's on its way.
+- **A send whose answer was lost** (its computer restarting, the connection dropped) is asked again
+  under its id (`kuvo/sessions/<id>/draft` takes one id once). One an earlier link was partway
+  through when it stopped is settled then, not left unknown: answered as sent where it reached its
+  conversation (its inbox, its messages, or what waits on the box), else sent now; what was typed
+  for the box (`/`, `!`) stays unknown, for you to check.
 - A box without `queue` in its features is older than the update gate lets through: held until
   it's up to date, never carried by a client.
 

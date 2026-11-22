@@ -85,15 +85,21 @@ fn while_it_works_return_steers_and_cmd_return_queues_for_after_the_run(cx: &mut
     cx.simulate_input("Also keep the email field's focus");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    // ⌘Return: for after this run, in the queue over the composer.
+    // ⌘Return: for after this run, in the queue over the composer, at once (#809).
     cx.simulate_input("Then write the changelog line");
     cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
     assert_eq!(sent(&stand_in, "ses_signup"), vec![("Also keep the email field's focus".into(), "steer".into()), ("Then write the changelog line".into(), "queue".into())]);
-    follow_queue(&view, &workspace, "ses_signup", cx);
     let queued = stand_in.queue_of("ses_signup").last().cloned().expect("queued");
     assert_eq!(queued["words"], "Then write the changelog line");
-    assert!(bounds(cx, &format!("queued-{}", queued["id"].as_str().unwrap())).is_some(), "shown in the queue, last");
+    let row = format!("queued-{}", queued["id"].as_str().unwrap());
+    // Before the box's queue has said so: drawn where it goes, and nowhere else.
+    let pending = bounds(cx, &row).expect("in the queue at once");
+    let drawn_in_conversation = view.read_with(cx, |view, _| view.entries().iter().any(|entry| entry.key() == queued["id"].as_str().unwrap()));
+    assert!(!drawn_in_conversation, "not in the conversation too");
+    // The box's row takes its place, where it was.
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert_eq!(bounds(cx, &row).map(|row| row.origin.y), Some(pending.origin.y), "shown in the queue, last, where it was");
 }
 
 #[gpui::test]
@@ -134,9 +140,11 @@ fn a_queued_message_is_steered_in_or_sent_now_through_the_box(cx: &mut TestAppCo
     assert!(bounds(cx, "go-msg_q1").is_some());
     click(cx, "go-msg_q1");
     assert_eq!(stand_in.queue_asked(), vec!["steer msg_q1"]);
-    // For its next step now: it says so, with Send Now.
-    assert!(bounds(cx, "next-step-msg_q1").is_some());
-    click(cx, "go-msg_q1");
+    // Handed to the agent for its next step: it leaves the queue for the conversation at once,
+    // saying so, with Send Now (#809).
+    assert!(bounds(cx, "queued-msg_q1").is_none(), "out of the queue");
+    assert!(bounds(cx, "at-next-step").is_some());
+    click(cx, "now-waiting-msg_q1");
     assert_eq!(stand_in.queue_asked(), vec!["steer msg_q1", "now msg_q1"]);
     assert!(bounds(cx, "queued-msg_q1").is_none(), "gone to the agent");
     // Another agent's letter, held on the box: Send Now.
@@ -266,19 +274,23 @@ fn the_boxs_queue_stays_visible_when_its_inbox_cannot_be_read(cx: &mut TestAppCo
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
     client.steer_queued("ses_signup", id).unwrap();
     follow_queue(&view, &workspace, "ses_signup", cx);
-    assert!(bounds(cx, &selector).is_some(), "the box still has the steered message waiting");
-    assert!(!view.read_with(cx, |view, _| view.entries().iter().any(|entry|
-        matches!(entry, kuvo::entries::Entry::Outgoing { words: sent, .. } if sent == words))));
+    // For the agent's next step: in the conversation, once, not in the queue (#809).
+    let in_conversation = |view: &Entity<ConversationView>, cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.entries().iter().filter(|entry|
+        matches!(entry, kuvo::entries::Entry::Outgoing { words: sent, .. } if sent == words)).count());
+    assert_eq!(in_conversation(&view, cx), 1, "the box still has the steered message waiting");
+    assert!(bounds(cx, &selector).is_none());
 
+    // Its inbox unreadable: everything stays where it was.
     let mut queue = client.queue("ses_signup").unwrap();
     let items = queue.items.take().unwrap();
     view.update(cx, |view, cx| view.take_queue(queue.clone(), cx));
     cx.run_until_parked();
-    for item in &items {
+    for item in items.iter().filter(|item| !item.is_for_next_step()) {
         assert!(bounds(cx, &format!("queued-{}", item.id)).is_some(), "{} stayed visible", item.id);
     }
+    assert_eq!(in_conversation(&view, cx), 1, "stayed visible");
     follow_queue(&view, &workspace, "ses_signup", cx);
-    assert!(bounds(cx, &selector).is_some());
+    assert_eq!(in_conversation(&view, cx), 1);
 
     queue.items = Some(Vec::new());
     view.update(cx, |view, cx| view.take_queue(queue, cx));

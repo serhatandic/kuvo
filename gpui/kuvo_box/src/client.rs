@@ -66,6 +66,8 @@ pub struct Draft {
     pub id: String,
     route: Arc<OnceLock<DraftRoute>>,
     legacy_attempted: Arc<OnceLock<()>>,
+    /// The box it was first sent to (`kuvo/sessions/<id>/draft`): asked again, it's of that one.
+    asked_box: Arc<OnceLock<String>>,
     /// What was typed (what it replies to apart: see [`BoxClient::send_draft`]'s `quote`).
     pub text: String,
     /// Local quote rendering, carried separately from the text the owner interprets.
@@ -106,6 +108,7 @@ impl Draft {
             id: id.into(),
             route: Arc::new(OnceLock::new()),
             legacy_attempted: Arc::new(OnceLock::new()),
+            asked_box: Arc::new(OnceLock::new()),
             text: text.into(),
             quote: None,
             files: Vec::new(),
@@ -490,7 +493,11 @@ impl BoxClient {
     /// the words with it, as the client writes a reply (KuvoClient's `Quoting.message`), for a
     /// message that takes it.
     pub fn send_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
-        if draft.legacy_attempted.get().is_some() {
+        // Sent before: asked again only under its id, of the box it was sent to as a draft, which
+        // takes one id once and settles one a restart cut off (its answer lost, its box
+        // restarting); never of another box or another way, which could send it twice.
+        if draft.legacy_attempted.get().is_some()
+            && !(draft.route.get() == Some(&DraftRoute::Draft) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
             return Ok(uncertain_draft());
         }
         let recovery = self.has_feature("typed.submission-recovery")?;
@@ -506,7 +513,12 @@ impl BoxClient {
         }
         match draft.route.get() {
             Some(DraftRoute::Submission(_)) if recovery => return self.submit_draft(session, draft, quote),
-            Some(DraftRoute::Draft) if full && draft.legacy_attempted.set(()).is_ok() => return self.submit_draft(session, draft, quote),
+            Some(DraftRoute::Draft) if full => {
+                if draft.legacy_attempted.set(()).is_ok() {
+                    let _ = draft.asked_box.set(self.describe());
+                }
+                return self.submit_draft(session, draft, quote);
+            }
             Some(DraftRoute::Submission(_) | DraftRoute::Draft) => return Ok(uncertain_draft()),
             _ => {}
         }
@@ -931,6 +943,49 @@ mod draft_submission_tests {
         assert!(matches!(other.send_draft("ses_owned", &draft.clone(), None).unwrap(),
             Sent::Typed { answer, .. } if answer.ambiguous == Some(true)));
         assert!(observed.lock().unwrap().is_empty());
+    }
+
+    /// Its reply lost once (its box restarting), then answered.
+    struct LosesOnce {
+        drafts: Arc<Mutex<u32>>,
+    }
+
+    impl Transport for LosesOnce {
+        fn send(&self, request: &Request) -> Result<Response> {
+            let value = match request.route() {
+                "kuvo/info" => {
+                    let features: Vec<_> = crate::gate::REQUIRED.iter().copied().chain(["typed.draft"]).collect();
+                    json!({ "kind": "machine", "name": "Owner", "features": features })
+                }
+                "kuvo/sessions/ses_owned/draft" => {
+                    let mut drafts = self.drafts.lock().unwrap();
+                    *drafts += 1;
+                    assert_eq!(request.body.as_ref().unwrap()["id"], "msg_again");
+                    if *drafts == 1 {
+                        return Err(Error::Unreachable("Connection closed".into()));
+                    }
+                    json!({ "answer": { "send": { "text": "Hello" } }, "message": "msg_again" })
+                }
+                route => panic!("Unexpected route {route}"),
+            };
+            Ok(Response { status: 200, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn describe(&self) -> String { "Owner".into() }
+    }
+
+    /// #809: a send whose reply was lost is asked again of its box under its id (which takes one id
+    /// once), and answered, not left "unknown" for good.
+    #[test]
+    fn a_draft_whose_reply_was_lost_is_asked_again_of_its_box_under_its_id() {
+        let drafts = Arc::new(Mutex::new(0));
+        let client = BoxClient::new(LosesOnce { drafts: drafts.clone() });
+        let draft = Draft::new("msg_again", "Hello");
+        assert!(matches!(client.send_draft("ses_owned", &draft, None).unwrap(), Sent::Typed { answer, .. } if answer.ambiguous == Some(true)));
+        // (As the composer keeps it: a copy.)
+        assert_eq!(client.send_draft("ses_owned", &draft.clone(), None).unwrap(), Sent::Message { id: "msg_again".into() });
+        assert_eq!(*drafts.lock().unwrap(), 2);
     }
 
     #[test]

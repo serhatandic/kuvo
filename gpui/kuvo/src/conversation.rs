@@ -29,7 +29,7 @@ use kuvo_ui::{
 };
 
 use crate::ask_card::AskCard;
-use crate::composer::{Composer, ComposerEvent};
+use crate::composer::{AtBox, Composer, ComposerEvent};
 use crate::pictures::{self, Looks, Read};
 use kuvo_box::messages::{Content, Message};
 use kuvo_box::pictures::Picture;
@@ -655,13 +655,37 @@ impl ConversationView {
         self.queue = queue;
         self.queue_failed = None;
         let waiting: HashSet<&str> = self.queued().iter().map(|item| item.id.as_str()).collect();
-        self.composer.update(cx, |composer, cx| {
-            composer.set_has_queue(!waiting.is_empty(), cx);
-            // The queue carries filenames. Keep the sending bubble's local files for the
-            // transcript until the box provides the attachments themselves.
-            composer.arrived(|id| waiting.contains(id).then_some(false), cx);
-        });
-        cx.notify();
+        // Yours from here it lists are drawn as its rows say; one it listed and no longer does was
+        // handed to the agent, and stays drawn until the conversation has it.
+        self.composer.update(cx, |composer, cx| composer.queue_has(|id| waiting.contains(id), cx));
+        self.show_outgoing(cx);
+    }
+
+    /// Whether anything is drawn in the queue over the composer (the box's, or yours on its way to
+    /// it): "Queue for After This Run" has something to wait for.
+    fn tell_has_queue(&self, cx: &mut App) {
+        let has = !self.queue_items().is_empty() || self.composer.read(cx).outgoing().iter().any(|outgoing| outgoing.is_queued());
+        self.composer.update(cx, |composer, cx| composer.set_has_queue(has, cx));
+    }
+
+    /// What the queue over the composer draws of its box's: every message waiting but those
+    /// handed to the agent for its next step (the conversation draws those).
+    fn queue_items(&self) -> Vec<&Item> {
+        self.queued().iter().filter(|item| !item.is_for_next_step()).collect()
+    }
+
+    /// Yours sent from here for after the run that its box's queue doesn't list yet: drawn in the
+    /// queue at once, as the box's row will be, until its row takes their place.
+    fn pending_queued(&self, cx: &App) -> Vec<Item> {
+        let listed: HashSet<&str> = self.queued().iter().map(|item| item.id.as_str()).collect();
+        self.composer.read(cx).outgoing().iter()
+            .filter(|outgoing| outgoing.is_queued() && !outgoing.arrived && outgoing.failed.is_none() && !outgoing.has_owner_receipt() && !listed.contains(outgoing.id.as_str()))
+            .map(|outgoing| Item {
+                id: outgoing.id.clone(), words: outgoing.words.clone(),
+                files: outgoing.files.iter().filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned())).collect(),
+                keyword: None, from: None, on: "sending".into(), delivery: "queue".into(), held: false,
+            })
+            .collect()
     }
 
     /// The rows of the box's conversation (`rows`), with yours on their way after them (before the
@@ -673,12 +697,31 @@ impl ConversationView {
             Entry::Message(message) => Some(message.id()),
             _ => None,
         }).collect();
-        // Send After goes to the queue once its owner accepts it. Pending owner receipts and
-        // failures stay with the outgoing draft until the transcript has that message.
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter()
-            .filter(|outgoing| !outgoing.arrived && !present.contains(outgoing.id.as_str())
-                && (!outgoing.is_queued() || outgoing.failed.is_some() || outgoing.has_owner_receipt()))
-            .map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
+        // Each message on its way is drawn in one place, by its id, from the moment it's sent until
+        // the conversation has it: where its box's queue says it waits (its rows over the
+        // composer, or here for the agent's next step), else where sending it put it (a send here,
+        // Send After in the queue), and here once handed to the agent. Failures and unconfirmed
+        // owner receipts stay here, saying so.
+        let listed: HashMap<&str, &Item> = self.queued().iter().map(|item| (item.id.as_str(), item)).collect();
+        let mine = self.composer.read(cx).outgoing();
+        let mut drawn: Vec<(Entry, u64)> = mine.iter()
+            .filter(|outgoing| !outgoing.arrived && !present.contains(outgoing.id.as_str()))
+            .filter_map(|outgoing| match listed.get(outgoing.id.as_str()) {
+                Some(item) if item.is_for_next_step() => Some(Entry::outgoing(outgoing, running)),
+                Some(_) => None,
+                None if outgoing.is_queued() && outgoing.failed.is_none() && !outgoing.has_owner_receipt() => None,
+                // (Its box said it took it, for the agent's next step: it says so at once.)
+                None => Some(Entry::outgoing(outgoing, running && outgoing.taken && outgoing.at_box == AtBox::Unseen && !outgoing.is_for_queue())),
+            })
+            .collect();
+        // For its next step from elsewhere (another device, a Steer from the queue): here too.
+        drawn.extend(self.queued().iter()
+            .filter(|item| item.is_for_next_step() && !present.contains(item.id.as_str()) && !mine.iter().any(|outgoing| outgoing.id == item.id))
+            .map(|item| (Entry::Outgoing {
+                id: item.id.clone(), words: item.words.clone(), files: item.files.clone(), pictures: Vec::new(),
+                failed: None, interruption: None, waits: running,
+            }, if running { u64::MAX - 2 } else { u64::MAX })));
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = drawn.into_iter().unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -687,11 +730,14 @@ impl ConversationView {
     /// Yours on their way drawn again, as the composer says they changed.
     fn show_outgoing(&mut self, cx: &mut Context<Self>) {
         if !self.read {
+            self.tell_has_queue(cx);
+            cx.notify();
             return;
         }
         let (rows, revisions): (Vec<Entry>, Vec<u64>) = self.entries.iter().zip(&self.revisions).filter(|(entry, _)| !matches!(entry, Entry::Outgoing { .. })).map(|(entry, revision)| (entry.clone(), *revision)).unzip();
         let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
         self.show(rows, revisions);
+        self.tell_has_queue(cx);
         // (Yours on their way show the pictures they carry.)
         self.note_sent(cx);
         self.find_pictures();
@@ -844,7 +890,7 @@ impl ConversationView {
         if !bounds.contains(&position) { return None; }
         let y = position.y - bounds.top() - self.queue_scroll.offset().y;
         let index = (f32::from(y) / QUEUE_ROW_HEIGHT).floor() as usize;
-        let items = self.queued();
+        let items = self.queue_items();
         let from = items.iter().position(|item| item.id == drag.item && item.can_reorder())?;
         let anchor = items.get(index)?;
         (from != index && anchor.can_reorder()).then(|| QueueMove {
@@ -864,7 +910,7 @@ impl ConversationView {
     }
 
     fn keyboard_queue_move(&mut self, id: &str, up: bool, cx: &mut Context<Self>) {
-        let items: Vec<_> = self.queued().iter().filter(|item| item.can_reorder()).collect();
+        let items: Vec<_> = self.queue_items().into_iter().filter(|item| item.can_reorder()).collect();
         let Some(at) = items.iter().position(|item| item.id == id) else { return };
         let neighbor = if up { at.checked_sub(1) } else { Some(at + 1) };
         if let Some(anchor) = neighbor.and_then(|index| items.get(index)) {
@@ -1552,12 +1598,17 @@ impl ConversationView {
     /// Under one of yours waiting for the agent's next step (its box holds it): Edit takes it back to
     /// the composer, Remove takes it back for good, as the queue offers them.
     fn waiting_actions(&self, id: &str, view: &Entity<ConversationView>) -> AnyElement {
-        let (edit, remove) = (view.clone(), view.clone());
-        let (edit_id, remove_id) = (id.to_owned(), id.to_owned());
-        let (edit_selector, remove_selector) = (format!("edit-waiting-{id}"), format!("remove-waiting-{id}"));
+        let (now, edit, remove) = (view.clone(), view.clone(), view.clone());
+        let (now_id, edit_id, remove_id) = (id.to_owned(), id.to_owned(), id.to_owned());
+        let (now_selector, edit_selector, remove_selector) = (format!("now-waiting-{id}"), format!("edit-waiting-{id}"), format!("remove-waiting-{id}"));
         div()
             .flex()
             .gap(space::S1)
+            .child(div().debug_selector(move || now_selector).child(Button::new(SharedString::from(format!("now-waiting-{id}")), "Send Now").ghost().size(ButtonSize::Small)
+                .tooltip("Send Now: stops the agent's current step and gives it this")
+                .on_click(move |_, _, cx| {
+                    now.update(cx, |this, cx| this.send_queued_now(now_id.clone(), cx));
+                })))
             .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-waiting-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
                 edit.update(cx, |this, cx| this.unqueue(edit_id.clone(), true, cx));
             })))
@@ -1638,7 +1689,11 @@ impl ConversationView {
     /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
     /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut items = self.queued().to_vec();
+        let mut items: Vec<Item> = self.queue_items().into_iter().cloned().collect();
+        // Yours on their way to it, drawn at once where its box's rows will be.
+        let pending = self.pending_queued(cx);
+        let sending: HashSet<String> = pending.iter().map(|item| item.id.clone()).collect();
+        items.extend(pending);
         if items.is_empty() && self.queue.line.is_none() {
             return None;
         }
@@ -1666,6 +1721,9 @@ impl ConversationView {
             }
         }
         let rows = items.iter().enumerate().map(|(index, item)| {
+            // Yours on its way to the queue: drawn as its row will be, with what's done with one
+            // once its box lists it.
+            let pending = sending.contains(&item.id);
             let (remove_id, go_id) = (item.id.clone(), item.id.clone());
             let selector = format!("queued-{}", item.id);
             // Where it stands: for after the run, or for the agent's next step.
@@ -1719,7 +1777,7 @@ impl ConversationView {
                 })
             };
             let more = format!("queue-more-{}", item.id);
-            let draggable = can_drag && item.can_reorder();
+            let draggable = can_drag && item.can_reorder() && !pending;
             let dragging_here = self.queue_dragging.as_deref() == Some(item.id.as_str());
             let row_id: SharedString = format!("queued-{}", item.id).into();
             let keyboard = item.id.clone();
@@ -1766,23 +1824,23 @@ impl ConversationView {
                     div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(div().max_w(px(90.)).truncate().child(files))
                 }))
                 .children(next_step)
-                .child(go)
-                .child({
+                .when(!pending, |row| row.child(go))
+                .when(!pending, |row| row.child({
                     let selector = format!("remove-{}", item.id);
                     div().flex_none().debug_selector(move || selector).child(
                         Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav)
                             .on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))),
                     )
-                })
-                .child(div().flex_none().debug_selector({
+                }))
+                .when(!pending, |row| row.child(div().flex_none().debug_selector({
                     let selector = more.clone();
                     move || selector
                 }).child(
                     PopoverMenu::button(SharedString::from(more.clone()), Button::icon_only(SharedString::from(format!("open-{more}")), IconName::More, "More actions")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav), menu.clone())
                         .above().align_right(),
-                ));
+                )));
             let row = match previous_slots.get(&item.id) {
                 Some(previous) if !dragging_here && *previous != index => {
                     let distance = (*previous as f32 - index as f32) * QUEUE_ROW_HEIGHT;
@@ -1793,7 +1851,10 @@ impl ConversationView {
                 }
                 _ => row.into_any_element(),
             };
-            ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu)
+            if pending {
+                return row;
+            }
+            ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu).into_any_element()
         });
         Some(
             div()
