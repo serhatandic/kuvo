@@ -544,6 +544,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-end", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-scrolled", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-grown", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: Some("Here are the two screens: the header still wraps on the narrow one, and the footer’s links run into each other."), empty: false, opens: &[], search: None, walks: 0, attach: &["shots/theme-dark.png", "kuvo_ui/src/theme.rs"], panel: None },
     Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-dragging", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-long", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -3173,6 +3176,11 @@ fn main() -> anyhow::Result<()> {
                 let watches = ["ci", "inbox", "deploys", "errors"].iter().enumerate().map(|(ix, letters)| serde_json::json!({ "letters": letters, "next": NOW / 1000. + 180. * (ix as f64 + 1.), "every": "5m", "summary": format!("Watch {letters}") })).collect();
                 stand_in.set_bot_wakes("bot_mira", wakes, watches);
             }
+            if screen.slug == "floating-composer-grown" {
+                stand_in.set_queue("ses_lighthouse", ["Check the form on mobile", "Add a changelog entry"].iter().enumerate().map(|(index, text)| {
+                    serde_json::json!({ "id": format!("msg_shot{index}"), "words": text, "delivery": "queue", "on": "engine", "held": false })
+                }).collect());
+            }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
                 let messages = if screen.slug != "composer-queue-long" {
@@ -3393,6 +3401,17 @@ fn main() -> anyhow::Result<()> {
                     mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
                     mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
                     mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            // Read up a little: the way back to the end shows over the composer.
+            if screen.slug == "floating-composer-scrolled" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).conversation().expect("the conversation").read(cx).list().scroll_by(px(-360.));
+                    window.refresh();
                 })?;
                 cx.run_until_parked();
                 cx.update_window(any, |_, window, _| window.refresh())?;
