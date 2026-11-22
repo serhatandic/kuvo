@@ -11,7 +11,7 @@ use std::time::Duration;
 use kuvo_box::link::client::words;
 use kuvo_box::link::stand_in::{Host, RELAY_URL, Relay};
 use kuvo_box::link::{Identity, LinkBox, LinkClient, Timing, WebSocketDial, frames, is_unpaired, keys, noise};
-use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+use kuvo_box::transport::{Closer, Request, Response, Socket, SocketMessage, SocketOut, Stream, Transport};
 use kuvo_box::{BoxClient, Error, Gate, gate};
 use serde_json::{Value, json};
 
@@ -123,6 +123,39 @@ struct Served {
     /// Once set, the next "send" it's asked drops this device's relay connection as it's taken,
     /// before its answer can go back (a network drop just then).
     drops: Mutex<Option<(Relay, keys::Address)>>,
+    /// A terminal's socket, as the box's engine has it.
+    terminal: Arc<Terminal>,
+}
+
+/// What a terminal's socket on the box was asked, what was typed in it, and who's told it closed.
+#[derive(Default)]
+struct Terminal {
+    asked: Mutex<Vec<Request>>,
+    typed: Mutex<Vec<String>>,
+    closed: Mutex<Option<Sender<()>>>,
+    shell: Mutex<Option<async_channel::Sender<SocketMessage>>>,
+}
+
+/// The engine's side of a terminal's socket: what's typed is echoed back, as a shell does.
+struct Shell(Arc<Terminal>);
+
+impl SocketOut for Shell {
+    fn send_text(&self, text: &str) -> kuvo_box::Result<()> {
+        self.0.typed.lock().unwrap().push(text.to_owned());
+        if let Some(shell) = self.0.shell.lock().unwrap().as_ref() {
+            let _ = shell.send_blocking(SocketMessage::Text(text.as_bytes().to_vec()));
+        }
+        Ok(())
+    }
+
+    fn close(&self) {
+        if let Some(shell) = self.0.shell.lock().unwrap().take() {
+            let _ = shell.send_blocking(SocketMessage::Ended(None));
+        }
+        if let Some(told) = self.0.closed.lock().unwrap().take() {
+            let _ = told.send(());
+        }
+    }
 }
 
 impl Served {
@@ -178,6 +211,19 @@ impl Transport for Served {
         hold(closer.clone());
         let ticks = self.ticks.lock().unwrap().take().expect("followed once");
         Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(std::io::BufReader::new(Ticks(ticks, Vec::new()))), closer })
+    }
+
+    fn socket(&self, request: &Request) -> kuvo_box::Result<Socket> {
+        self.terminal.asked.lock().unwrap().push(request.clone());
+        if request.route() != "api/pty/pty_1/connect" {
+            return Err(Error::Unreachable("The engine closed it.".into()));
+        }
+        let (shell, incoming) = async_channel::unbounded();
+        // What it printed so far, then its note on where that got to.
+        shell.send_blocking(SocketMessage::Text(b"\x1b[1;32m~/app\x1b[0m $ ".to_vec())).unwrap();
+        shell.send_blocking(SocketMessage::Binary(b"\0{\"cursor\":21}".to_vec())).unwrap();
+        *self.terminal.shell.lock().unwrap() = Some(shell);
+        Ok(Socket { incoming, outgoing: Arc::new(Shell(self.terminal.clone())) })
     }
 
     fn streams(&self) -> bool {
@@ -619,4 +665,46 @@ fn a_message_sent_just_after_the_connection_dropped_waits_for_its_box_to_be_read
     let seen = world.served.seen.lock().unwrap();
     assert_eq!(seen.iter().filter(|request| request.route() == "send").count(), 1);
     assert_eq!(seen.iter().filter(|request| request.route() == "kuvo/info").count(), 2, "read again before it went");
+}
+
+#[test]
+fn a_terminal_on_another_computer_carries_its_output_and_your_keys_over_the_relay() {
+    use kuvo_box::pty::{PtyError, PtyOutput};
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    let client = BoxClient::new(linked);
+    let terminal = client.connect_pty("pty_1", Some("/home/me/app")).expect("its socket opened");
+    let asked = world.served.terminal.asked.lock().unwrap()[0].clone();
+    assert_eq!((asked.method.as_str(), asked.path.as_str()), ("GET", "api/pty/pty_1/connect"));
+    assert!(asked.headers.contains(&("x-opencode-directory".into(), "%2Fhome%2Fme%2Fapp".into())), "in its folder: {:?}", asked.headers);
+    // What it printed so far, as it printed it; its note on where that got to is kept, not shown.
+    assert_eq!(terminal.next_blocking(), Some(PtyOutput::Bytes(b"\x1b[1;32m~/app\x1b[0m $ ".to_vec())));
+    terminal.write("ls -la\r").unwrap();
+    assert_eq!(terminal.next_blocking(), Some(PtyOutput::Bytes(b"ls -la\r".to_vec())));
+    assert_eq!(terminal.cursor(), 21);
+    assert_eq!(world.served.terminal.typed.lock().unwrap().as_slice(), ["ls -la\r"]);
+    // Closed here: the box closes the engine's socket.
+    let (told, closed) = channel();
+    *world.served.terminal.closed.lock().unwrap() = Some(told);
+    terminal.close();
+    closed.recv().expect("the box was told");
+
+    // One that won't open says why, as its box said it.
+    let refused = client.connect_pty("pty_gone", None).err().expect("refused");
+    assert_eq!(refused, PtyError::Failed("The engine closed it.".into()));
+}
+
+#[test]
+fn a_terminal_whose_shell_exits_says_so_and_nothing_comes_after() {
+    use kuvo_box::pty::PtyOutput;
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    let terminal = BoxClient::new(linked).connect_pty("pty_1", None).expect("its socket opened");
+    assert!(matches!(terminal.next_blocking(), Some(PtyOutput::Bytes(_))));
+    // The shell exits: the engine closes its socket.
+    let shell = world.served.terminal.shell.lock().unwrap().take().expect("open");
+    shell.send_blocking(SocketMessage::Ended(None)).unwrap();
+    assert_eq!(terminal.next_blocking(), Some(PtyOutput::Ended(None)));
+    assert_eq!(terminal.next_blocking(), None);
+    assert!(terminal.write("too late").is_err());
 }

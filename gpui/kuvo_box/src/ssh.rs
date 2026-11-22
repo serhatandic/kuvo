@@ -424,6 +424,11 @@ impl Transport for SshBox {
         self.computer.is_some()
     }
 
+    /// `box route` answers one request at a time: it can't carry a socket.
+    fn socket(&self, _request: &Request) -> Result<crate::transport::Socket> {
+        Err(crate::transport::sockets_not_here(format!("Terminals on {} aren’t available over SSH yet.", self.destination)))
+    }
+
     fn describe(&self) -> String {
         self.destination.clone()
     }

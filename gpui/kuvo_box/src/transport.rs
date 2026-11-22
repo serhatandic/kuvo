@@ -44,6 +44,10 @@ impl Request {
         Request { method: "DELETE".into(), path: path.into(), headers: Vec::new(), body: None }
     }
 
+    pub fn put(path: impl Into<String>, body: serde_json::Value) -> Request {
+        Request { method: "PUT".into(), path: path.into(), headers: Vec::new(), body: Some(body) }
+    }
+
     pub fn header(mut self, name: &str, value: impl Into<String>) -> Request {
         self.headers.push((name.to_ascii_lowercase(), value.into()));
         self
@@ -118,6 +122,47 @@ impl Closer {
     }
 }
 
+/// A WebSocket a box opened on its engine for this client (PROTOCOL.md, "Sockets"): today only a
+/// terminal's (`api/pty/<id>/connect`). What comes on it arrives on `incoming` a message at a
+/// time, its last [`SocketMessage::Ended`], and the channel closes after it; `outgoing` sends on it
+/// and closes it.
+pub struct Socket {
+    pub incoming: async_channel::Receiver<SocketMessage>,
+    pub outgoing: Arc<dyn SocketOut>,
+}
+
+/// One message from the other side of a [`Socket`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketMessage {
+    Text(Vec<u8>),
+    Binary(Vec<u8>),
+    /// It ended, and why where that was said (the close's reason, the connection dropping).
+    Ended(Option<String>),
+}
+
+/// What sends on a [`Socket`] and closes it, from any thread.
+pub trait SocketOut: Send + Sync {
+    /// Sends `text` as one text message; fails once the socket has ended.
+    fn send_text(&self, text: &str) -> Result<()>;
+    /// Closes it: its end comes on `incoming`, and nothing after.
+    fn close(&self);
+}
+
+/// A refusal's `reason` when this client can't open a socket on a box the way it reaches it (over
+/// SSH, or through a server that doesn't pass one on yet): said plainly where it's shown, never a
+/// silent failure.
+pub const SOCKETS_NOT_HERE: &str = "socketsNotHere";
+
+/// This client can't open a socket on that box the way it reaches it: `message` says so.
+pub fn sockets_not_here(message: impl Into<String>) -> Error {
+    Error::Refused(crate::error::Refusal { status: 501, message: message.into(), title: None, reason: Some(SOCKETS_NOT_HERE.into()), older_box: false, action: None })
+}
+
+/// Whether `error` is [`sockets_not_here`].
+pub fn is_sockets_not_here(error: &Error) -> bool {
+    error.refusal().is_some_and(|refusal| refusal.reason.as_deref() == Some(SOCKETS_NOT_HERE))
+}
+
 /// How a client reaches one box.
 pub trait Transport: Send + Sync {
     /// Sends `request` and reads its whole answer.
@@ -136,6 +181,13 @@ pub trait Transport: Send + Sync {
     /// something to close, before the answer's head comes (a box holds some requests a while), so
     /// what opened it can end it meanwhile; `hold` saying no (it's ended already) ends it there.
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream>;
+
+    /// Opens a WebSocket on the box's engine (`request`: a GET, with no body; PROTOCOL.md,
+    /// "Sockets"). One that can't carry a socket says so ([`sockets_not_here`]): the only socket
+    /// today is a terminal's, so it says it of terminals.
+    fn socket(&self, _request: &Request) -> Result<Socket> {
+        Err(sockets_not_here(format!("Terminals on {} aren’t available this way yet.", self.describe())))
+    }
 
     /// Looks again where the box is, and says which time it's found it somewhere new: a client
     /// reads a box's `kuvo/info` again once its server started again (another version's, maybe).

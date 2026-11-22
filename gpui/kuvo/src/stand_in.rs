@@ -28,10 +28,11 @@ mod insights;
 pub mod panel;
 pub mod queue;
 pub mod settings;
+pub mod terminals;
 pub mod work_bars;
 
 use kuvo_box::Result;
-use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+use kuvo_box::transport::{Closer, Request, Response, Socket, SocketMessage, SocketOut, Stream, Transport};
 use serde_json::{Value, json};
 
 /// Whether a message sent gets an answer.
@@ -181,6 +182,8 @@ struct State {
     panel: panel::Panel,
     /// How each new session was asked to start: in a worktree, and its mode.
     starts: Vec<Value>,
+    /// Its engine's terminals.
+    terminals: terminals::Terminals,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -892,6 +895,67 @@ impl StandIn {
         let now = state.made.unwrap_or_else(now_ms) + 60_000.0;
         state.groups.say(group, bot, text, now);
         state.group_changed(group);
+    }
+
+    /// Its terminals' sockets can't be opened (`Some`: why, as the box's way there says it), or
+    /// can again.
+    pub fn terminals_not_here(&self, why: Option<&str>) {
+        self.state().terminals.not_here = why.map(str::to_owned);
+    }
+
+    /// Its engine won't make a terminal now (`Some`: why), or will again.
+    pub fn terminals_refused(&self, why: Option<&str>) {
+        self.state().terminals.refuses = why.map(str::to_owned);
+    }
+
+    /// The terminals it has now (made and not removed), by id.
+    pub fn ptys(&self) -> Vec<String> {
+        self.state().terminals.ids()
+    }
+
+    /// The shell in terminal `id` prints `bytes`: its open socket brings them, and one opened later
+    /// replays them first.
+    pub fn pty_print(&self, id: &str, bytes: &[u8]) {
+        let mut state = self.state();
+        let Some(pty) = state.terminals.get(id) else { return };
+        pty.printed.extend_from_slice(bytes);
+        if let Some(socket) = &pty.socket {
+            let _ = socket.send_blocking(SocketMessage::Text(bytes.to_vec()));
+        }
+    }
+
+    /// The shell in terminal `id` exits with `code`: its socket ends, as the engine's does.
+    pub fn pty_exit(&self, id: &str, code: i64) {
+        let mut state = self.state();
+        let Some(pty) = state.terminals.get(id) else { return };
+        pty.info["status"] = json!("exited");
+        pty.info["exitCode"] = json!(code);
+        if let Some(socket) = pty.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(None));
+        }
+    }
+
+    /// Terminal `id`'s socket drops, its shell still running (the connection went).
+    pub fn pty_drop(&self, id: &str) {
+        let mut state = self.state();
+        if let Some(socket) = state.terminals.get(id).and_then(|pty| pty.socket.take()) {
+            let _ = socket.send_blocking(SocketMessage::Ended(Some("The connection closed.".into())));
+        }
+    }
+
+    /// What was typed in terminal `id`, as it went, in order.
+    pub fn pty_typed(&self, id: &str) -> Vec<String> {
+        self.state().terminals.get(id).map(|pty| pty.typed.clone()).unwrap_or_default()
+    }
+
+    /// Each size terminal `id` was told it's drawn at, in order (rows, columns).
+    pub fn pty_sizes(&self, id: &str) -> Vec<(u16, u16)> {
+        self.state().terminals.get(id).map(|pty| pty.sizes.clone()).unwrap_or_default()
+    }
+
+    /// Whether terminal `id`'s socket was closed from the app.
+    pub fn pty_closed(&self, id: &str) -> bool {
+        self.state().terminals.get(id).is_some_and(|pty| pty.closed)
     }
 
     /// Every request it was sent, in order.
@@ -1874,6 +1938,12 @@ impl StandIn {
         let mut state = self.state();
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
+        if route.starts_with("api/pty") {
+            let directory = request.headers.iter().find(|(name, _)| name == "x-opencode-directory").map(|(_, value)| decoded(value));
+            if let Some((status, value)) = state.terminals.answer(method, route, request.body.as_ref(), directory) {
+                return answer(status, value);
+            }
+        }
         if let Some((status, value)) = moves::answer(&mut state, request) {
             return answer(status, value);
         }
@@ -2750,6 +2820,42 @@ fn title_from(words: &str) -> String {
     if title.is_empty() { "New session".into() } else { title }
 }
 
+/// A terminal's socket on the stand-in, as the app sends on it: what's typed is kept for a test to
+/// read, and echoed back where it answers live (the app's `--stand-in`), as a shell would.
+struct Shell {
+    stand_in: StandIn,
+    id: String,
+}
+
+impl SocketOut for Shell {
+    fn send_text(&self, text: &str) -> Result<()> {
+        let live = self.stand_in.inner.replies == Replies::Live;
+        let mut state = self.stand_in.state();
+        let Some(pty) = state.terminals.get(&self.id).filter(|pty| pty.socket.is_some()) else {
+            return Err(kuvo_box::Error::Unreachable("The connection closed.".into()));
+        };
+        pty.typed.push(text.to_owned());
+        if live {
+            let echoed = text.replace('\r', "\r\n").replace('\u{7f}', "\u{8} \u{8}");
+            pty.printed.extend_from_slice(echoed.as_bytes());
+            if let Some(socket) = &pty.socket {
+                let _ = socket.send_blocking(SocketMessage::Text(echoed.into_bytes()));
+            }
+        }
+        Ok(())
+    }
+
+    fn close(&self) {
+        let mut state = self.stand_in.state();
+        if let Some(pty) = state.terminals.get(&self.id) {
+            pty.closed = true;
+            if let Some(socket) = pty.socket.take() {
+                let _ = socket.send_blocking(SocketMessage::Ended(None));
+            }
+        }
+    }
+}
+
 impl Transport for StandIn {
     fn send(&self, request: &Request) -> Result<Response> {
         if self.state().down {
@@ -2765,6 +2871,32 @@ impl Transport for StandIn {
 
     fn peer(&self, key: &str) -> Option<Arc<dyn Transport>> {
         self.state().peers.get(key).map(|peer| Arc::new(peer.clone()) as Arc<dyn Transport>)
+    }
+
+    /// A terminal's socket, as its engine opens one: what its shell printed so far first.
+    fn socket(&self, request: &Request) -> Result<Socket> {
+        let mut state = self.state();
+        state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+        if state.down {
+            return Err(kuvo_box::Error::Unreachable("The computer is away.".into()));
+        }
+        if let Some(why) = state.terminals.not_here.clone() {
+            return Err(kuvo_box::transport::sockets_not_here(why));
+        }
+        let id = request.route().strip_prefix("api/pty/").and_then(|rest| rest.strip_suffix("/connect")).map(decoded).unwrap_or_default();
+        let Some(pty) = state.terminals.get(&id).filter(|pty| pty.info["status"] == "running") else {
+            let said = json!({ "message": "That terminal isn’t there any more." }).to_string();
+            return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, said.as_bytes())));
+        };
+        let (sender, incoming) = async_channel::unbounded();
+        if !pty.printed.is_empty() {
+            let _ = sender.send_blocking(SocketMessage::Text(pty.printed.clone()));
+        }
+        // (The engine's note on where its output had got to.)
+        let _ = sender.send_blocking(SocketMessage::Binary(format!("\0{{\"cursor\":{}}}", pty.printed.len()).into_bytes()));
+        pty.socket = Some(sender);
+        pty.closed = false;
+        Ok(Socket { incoming, outgoing: Arc::new(Shell { stand_in: self.clone(), id }) })
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
