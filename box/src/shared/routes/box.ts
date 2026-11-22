@@ -367,9 +367,10 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
 export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
-/** A computer's progress towards its setup's accepted release. Timestamps are in ms. */
+/** A computer's progress towards its setup's accepted release, and the box's words for it, one
+ * line (`title`, drawn as it is). Timestamps are in ms. */
 const FLEET_PROGRESS = {
-  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
+  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool, "title?": string,
 } as const;
 export const FLEET_UPDATE = oneOf(
   object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),

@@ -6510,8 +6510,10 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   service, signed in or not). One signed in is listed at once, read or not yet (no `windows` until it's read, or until a turn
   tells of it: a Mac's Claude); one signed out goes at once, and what was read of it with it, so
   a reading is never older than its account's sign-in. Until every agent has said once (the
-  bridge just started), only what's signed in by then is listed, never what was kept from
-  before. One with no sign-in its plan limits could be read with (an API key, a Mac's Claude
+  bridge just started), what's signed in by then is listed, and so is a coding agent's account
+  whose sign-in is still in its folder, the same account as was last read here, as it was last
+  read (so a client's rings don't blink out while the box restarts); one whose sign-in is gone
+  from its folder is never listed from what was kept. One with no sign-in its plan limits could be read with (an API key, a Mac's Claude
   with an Anthropic Console sign-in) isn't.
   Each `account`:
   - `title` (`limits.titles`, #668): its name, the same in every client: its coding agent's
@@ -12801,6 +12803,11 @@ by the box; a client draws it as it comes:
 - `standouts`: at most three sessions, each with one short `reason` and
   its `kind` (`cost`, `cache` or `subagents`).
 - `state`: `loading`, `empty` or `ready`.
+- `asOf`: where present, this is the box's last summary for the same
+  query, read then (ms), answered at once while the box reads it afresh
+  (a client asks again shortly). Its last summaries are kept on disk, so
+  a box that just started answers at once too. One read in the last 30 s
+  is answered as it is, without `asOf`; a `loading` one is never kept.
 
 Each usage record carries the bot over it: a bot's own conversation and
 group-chat seat are its, a session it started (`kuvo.by`) is its, a
