@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Work Queue item named in a reply shows as a small chip right where it's written (its status, number and title), and a Work Queue step shows its item's chip in its own line. Clicking a chip opens the item in the Work Queue.
+- Time, Copy and Quote now show once per reply, at its end, and Copy takes the whole reply.
+- Replies no longer end with a "Worked for …" line.
+- Insights has a refresh button beside 7d, 30d and 90d that counts your usage again, and says when its numbers were last counted ("Updated 5m ago").
 - What you send appears immediately in the conversation or queue and stays visible until the box has it. If the connection drops or the box restarts, Kuvo retries the same send. Steered messages leave the queue as soon as you steer them.
 - Long Claude Code, Codex and Grok conversations summarize earlier by default, so ongoing chats and bots spend fewer tokens replaying old context.
 

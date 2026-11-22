@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 940346006a98
+// Kuvo folder layout 23 1369277622d7
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "940346006a98";
+var BRIDGE_VERSION = "1369277622d7";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -103501,6 +103501,20 @@ class Insights {
     });
     return this.scan;
   }
+  async recount() {
+    let timer;
+    const waited = new Promise((resolve) => {
+      timer = setTimeout(resolve, RECOUNT_WAIT);
+      timer.unref?.();
+    });
+    const counted = (async () => {
+      if (this.scan)
+        await this.scan;
+      await this.refresh(true);
+    })();
+    await Promise.race([counted, waited]);
+    clearTimeout(timer);
+  }
   async round() {
     const now = this.now();
     const pricing = this.pricing.current();
@@ -103708,6 +103722,7 @@ class Insights {
       state: !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty",
       period,
       zone,
+      ...local ? { countedAt: local.scanned } : {},
       totals: measures(totals),
       change,
       trend: facts.trend,
@@ -103784,7 +103799,11 @@ async function insightsRoutes(insights, method, path, params) {
   if (method !== "GET")
     return json5({ message: "Not found." }, 404);
   if (path.length === 1 && path[0] === "summary") {
-    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params)) : await insights.summary(params);
+    const refresh = params.get("refresh") === "1";
+    params.delete("refresh");
+    if (refresh && [7, 30, 90].includes(Number(params.get("period") ?? 30)))
+      await insights.recount();
+    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params), refresh) : await insights.summary(params);
     return data ? json5({ data }) : json5({ message: "Choose a 7, 30 or 90 day period." }, 400);
   }
   const route = path.length === 0 ? params.has("session") ? "detail" : "overview" : path[0] === "sessions" && path.length === 1 ? "sessions" : path[0] === "sessions" && path.length === 2 ? "detail" : undefined;
@@ -103795,7 +103814,7 @@ async function insightsRoutes(insights, method, path, params) {
   const data = await insights.view(params, route);
   return data ? json5({ data }) : json5({ message: "Choose a 7, 30, 90 or 365 day period and a valid page." }, 400);
 }
-var DAY8 = 86400000, SCAN_EVERY, MAX_PAGE = 100, isInsightsMail = (value) => value?.kind === "insights", optionalText = (value) => typeof value === "string" && value.length > 0 ? value.slice(0, 512) : undefined, small = (v) => typeof v === "string" && v.length > 0 && v.length <= 512, validAt = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0, json5 = (body, status = 200) => Response.json(body, { status });
+var DAY8 = 86400000, SCAN_EVERY, RECOUNT_WAIT = 60000, MAX_PAGE = 100, isInsightsMail = (value) => value?.kind === "insights", optionalText = (value) => typeof value === "string" && value.length > 0 ? value.slice(0, 512) : undefined, small = (v) => typeof v === "string" && v.length > 0 && v.length <= 512, validAt = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0, json5 = (body, status = 200) => Response.json(body, { status });
 var init_insights = __esm(() => {
   init_history2();
   init_insight_records();
@@ -112430,21 +112449,24 @@ class KeptSummaries {
       }
     } catch {}
   }
-  async answer(params, read) {
+  async answer(params, read, fresh = false) {
     const key = keptKey(params);
     const kept = this.kept.get(key);
-    if (kept && this.now() - kept.at < FRESH2 && kept.at <= this.now())
+    if (!fresh && kept && this.now() - kept.at < FRESH2 && kept.at <= this.now())
       return kept.data;
-    let reading = this.reading.get(key);
+    let reading = fresh ? undefined : this.reading.get(key);
     if (!reading) {
       reading = read().then((data) => {
         if (data && data.state !== "loading")
           this.keep(key, data);
         return data;
-      }).finally(() => this.reading.delete(key));
+      }).finally(() => {
+        if (this.reading.get(key) === reading)
+          this.reading.delete(key);
+      });
       this.reading.set(key, reading);
     }
-    if (!kept)
+    if (!kept || fresh)
       return reading;
     reading.catch(() => {});
     return { ...kept.data, asOf: kept.at };
