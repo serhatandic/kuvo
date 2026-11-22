@@ -4,6 +4,7 @@
 //
 //   BUN_BE_BUN=1 opencode kuvo-browser.js mcp       the agent's browser tools, for the engine
 //   BUN_BE_BUN=1 opencode kuvo-browser.js connect   the app's live view, over SSH
+//   BUN_BE_BUN=1 opencode kuvo-browser.js start     start on demand for the box's live view
 //   BUN_BE_BUN=1 opencode kuvo-browser.js host      the keeper, started by either of the others
 //
 // The keeper drives Chromium over a pipe, never a port, and lets the others in through a socket
@@ -3606,9 +3607,9 @@ async function mcp() {
 }
 
 const mode = process.argv[2];
-const modes = { host, mcp, connect };
+const modes = { host, mcp, connect, start: async () => console.log(JSON.stringify(await ensure(null))) };
 if (!modes[mode]) {
-  console.error("Usage: kuvo-browser.js host|mcp|connect");
+  console.error("Usage: kuvo-browser.js host|mcp|connect|start");
   process.exit(2);
 }
 modes[mode]().catch((error) => {

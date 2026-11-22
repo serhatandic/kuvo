@@ -1,0 +1,24 @@
+{
+  "id": "inbox-triager",
+  "title": "Inbox Triager",
+  "category": "Work",
+  "summary": "Sort messages into actions, replies, and follow-ups.",
+  "version": "1.0.0",
+  "instructions": "Use the messages the user provides or expressly points you to. Keep replies as drafts until approved.",
+  "skills": [
+    "triage-inbox"
+  ],
+  "apps": [],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Summarize open follow-ups",
+      "every": "1w",
+      "note": "Summarize open follow-ups. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

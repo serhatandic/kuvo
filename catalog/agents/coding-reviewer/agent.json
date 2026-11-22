@@ -1,0 +1,24 @@
+{
+  "id": "coding-reviewer",
+  "title": "Coding Reviewer",
+  "category": "Code",
+  "summary": "Review changes for regressions and summarize findings for the author.",
+  "version": "1.0.0",
+  "instructions": "Review a selected diff when asked. Cite concrete evidence and ask before changing files.",
+  "skills": [
+    "review-changes"
+  ],
+  "apps": [],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Check for changes awaiting review",
+      "every": "1w",
+      "note": "Check for changes awaiting review. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

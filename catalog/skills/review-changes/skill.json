@@ -1,0 +1,7 @@
+{
+  "id": "review-changes",
+  "title": "Review changes",
+  "category": "Code",
+  "summary": "Review a patch for regressions and missing coverage.",
+  "version": "1.0.0"
+}

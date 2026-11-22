@@ -1,0 +1,7 @@
+{
+  "id": "write-release-notes",
+  "title": "Write release notes",
+  "category": "Writing",
+  "summary": "Turn a set of changes into release notes for users.",
+  "version": "1.0.0"
+}

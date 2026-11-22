@@ -1,6 +1,8 @@
 import "./safety"
 import { afterAll, expect, jest, test } from "bun:test"
 import fs, { renameSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { Database } from "bun:sqlite"
 import { dirname, join } from "node:path"
 
 // Every client's session lists come from the box (PROTOCOL.md, "Session lists"): what each session
@@ -1642,5 +1644,68 @@ test("a schedule stream empties when ownership switches away from its source", a
     await stream.end()
     forgetMove(move)
     rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a Git worktree's sessions are filed under its project, including a removed worktree the engine remembers", async () => {
+  const { ENGINE_DATA } = await import("../src/link/home")
+  mkdirSync(ENGINE_DATA, { recursive: true })
+  const file = join(ENGINE_DATA, "opencode-lists.test.db")
+  const oldTree = join(home, "lists-removed-tree")
+  const repo = join(home, "lists-repo")
+  const tree = join(home, "lists-linked-tree")
+  mkdirSync(repo)
+  const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+    cwd: repo, stdio: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  })
+  git("init", "-q")
+  git("-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-qm", "Initial")
+  git("worktree", "add", "--detach", tree)
+  const child = join(tree, "nested")
+  mkdirSync(child)
+  const projects = join(home, "box", "projects.json")
+  const before = readFileSync(projects)
+  try {
+    const db = new Database(file)
+    try {
+      db.exec(`CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, vcs TEXT);
+        CREATE TABLE worktree (project_id TEXT, directory TEXT);
+        CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time_created INTEGER);
+        CREATE TABLE session_message (session_id TEXT, seq INTEGER, time_created INTEGER);`)
+      db.query("INSERT INTO project VALUES ('project', ?, 'git')").run(repo)
+      db.query("INSERT INTO worktree VALUES ('project', ?)").run(oldTree)
+      db.exec("INSERT INTO session_v2 VALUES ('ses_removed', 1); INSERT INTO session_message VALUES ('ses_removed', 1, 300)")
+    } finally { db.close() }
+    writeFileSync(projects, JSON.stringify({ version: 1, projects: [
+      { directory: repo, folders: [], name: "Repository" }, { directory: tree, folders: [] },
+    ] }))
+    add("ses_linked", tree, 500)
+    add("ses_nested", child, 400)
+    add("ses_removed", oldTree, 900)
+    const { status, lines: [list] } = await ask("kuvo/sessions/list")
+    expect(status).toBe(200)
+    expect(list.sessions.ses_linked).toMatchObject({ directory: tree, project: repo })
+    expect(list.sessions.ses_nested).toMatchObject({ directory: child, project: repo })
+    expect(list.sessions.ses_removed).toMatchObject({ directory: oldTree, project: repo, updated: 300 })
+    expect(list.projects[repo].shown).toEqual(["ses_linked", "ses_nested", "ses_removed"])
+    expect(list.projects[tree]).toBeUndefined()
+    expect(list.projects[child]).toBeUndefined()
+    const stop = keepList()
+    try {
+      await listPlaceHeard("engine", target)
+      sessions.get("ses_removed").title = "Renamed"
+      sessions.get("ses_removed").time.updated = 1000
+      await noteListEvent("engine", target, { type: "session.renamed", data: { sessionID: "ses_removed" } })
+      const visible = (await ask("kuvo/sessions/list")).lines[0]
+      expect(visible.sessions.ses_removed).toMatchObject({ title: "Renamed", updated: 300, project: repo })
+    } finally { stop() }
+  } finally {
+    sessions.delete("ses_linked")
+    sessions.delete("ses_nested")
+    sessions.delete("ses_removed")
+    rmSync(file, { force: true })
+    writeFileSync(projects, before)
+    rmSync(repo, { recursive: true })
+    rmSync(tree, { recursive: true })
   }
 })

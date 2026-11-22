@@ -13,6 +13,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-skills-"));
 process.env.KUVO_HOME = home;
 const asked = [];
+const commit = "8ac2".repeat(10);
 const github = http.createServer((request, response) => {
   asked.push(request.url);
   const answers = {
@@ -61,13 +62,18 @@ const github = http.createServer((request, response) => {
     "/acme/skills/main/skills/c%2B%2B/b.cpp": "int b;\n",
     "/acme/mixed/main/broken/SKILL.md": "---\nname: broken\n---\nBroken.\n",
   };
-  if (answers[request.url]) {
+  if (/^\/repos\/acme\/(skills|mixed)\/commits\/main$/.test(request.url)) {
     response.writeHead(200, { "content-type": "application/json" });
-    return response.end(JSON.stringify(answers[request.url]));
+    return response.end(JSON.stringify({ sha: commit }));
   }
-  if (files[request.url]) {
+  const fixture = request.url.replace(`/${commit}`, "/main");
+  if (answers[fixture]) {
+    response.writeHead(200, { "content-type": "application/json" });
+    return response.end(JSON.stringify(answers[fixture]));
+  }
+  if (files[fixture]) {
     response.writeHead(200);
-    return response.end(files[request.url]);
+    return response.end(files[fixture]);
   }
   response.writeHead(404);
   response.end();
@@ -317,7 +323,8 @@ test("GitHub's collections, listed, described and installed from by the machine 
 
   assert.deepEqual(await ask("POST", "kuvo/skill-library/install", { repository: "acme/skills", path: "skills/pdf" }), { status: 200, value: { name: "pdf" } });
   assert.equal(fs.readFileSync(path.join(skills, "pdf", "fill.py"), "utf8"), "print('hi')\n");
-  assert.deepEqual((await ask("GET", "kuvo/skills")).value.github, { pdf: { repository: "acme/skills", path: "skills/pdf" } });
+  assert.ok(asked.includes(`/acme/skills/${commit}/skills/pdf/fill.py`));
+  assert.deepEqual((await ask("GET", "kuvo/skills")).value.github, { pdf: { repository: "acme/skills", path: "skills/pdf", commit } });
   assert.equal((await ask("POST", "kuvo/skill-library/install", { repository: "acme/skills", path: "skills/pdf" })).status, 409);
   assert.equal((await ask("POST", "kuvo/skill-library/install", { repository: "acme/skills", path: "skills/none" })).status, 404);
   assert.equal((await ask("GET", "kuvo/skill-library/acme/missing")).status, 404);

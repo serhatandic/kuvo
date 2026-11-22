@@ -2155,6 +2155,15 @@ impl StandIn {
             }
             return answer(status, value);
         }
+        // Using a reset (`limits/reset`): asked, it offers one; confirmed, it's used.
+        if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/reset") {
+            let row = body["row"].clone();
+            return if body.get("confirm").is_none() {
+                answer(200, json!({ "data": { "confirm": "rsc_stand_in", "row": row, "service": "codex", "count": 2, "on": { "key": "here-key", "name": "This Mac", "here": true }, "always": false, "expires": made + 60_000.0 } }))
+            } else {
+                answer(200, json!({ "data": { "outcome": "reset" } }))
+            };
+        }
         if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh") && !state.areas.usage_refresh_failed {
             state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
             state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;

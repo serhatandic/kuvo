@@ -638,6 +638,7 @@ export function claudeRoots(agent: UsageAgent, env: NodeJS.ProcessEnv = process.
 
 /** The Insights reader only opens roots that resolve inside the agent's own Kuvo folder. */
 interface NativeUsageReader {
+  has(provider: string): boolean
   take(provider: string, rows: NativeUsage[]): void
   owns(path: string): boolean
   problem?(provider: string): void
@@ -691,7 +692,7 @@ export function claudeSources(folder?: string, computer = ownComputer, native?: 
           await files.refresh(ordered, since)
           const listed = createHash("sha256").update(ordered.map((file) => file.path).join("\n")).digest("hex")
           const before = last.get(agent.providerID)
-          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
+          if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
           const entries = dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude))
           native?.take(agent.providerID, entries.flatMap((entry) => entry.session ? [{
             session: entry.session, at: entry.at, call: entry.message ?? entry.request ?? insightKey(entry.at, entry.model, entry.tokens),
@@ -810,7 +811,7 @@ export function codexSources(folder?: string, fallback: () => string | undefined
           const listed = createHash("sha256").update(found.map((file) => file.path).join("\n")).digest("hex")
           const model = fallback()
           const before = last.get(agent.providerID)
-          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model) return before.slots
+          if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model) return before.slots
           const events = files.itemsOf(found, since).map(fromKeptCodex)
           native?.take(agent.providerID, events.flatMap((event) => event.session ? [{
             session: event.session, call: insightKey(codexKey(event)), at: event.at, model: event.model,
@@ -919,7 +920,7 @@ export function grokSources(folder?: string, computer = ownComputer, native?: Na
           await files.refresh(ordered, since)
           const listed = createHash("sha256").update(ordered.map((file) => file.path).join("\n")).digest("hex")
           const before = last.get(agent.providerID)
-          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
+          if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
           if (native) native.take(agent.providerID, ordered.flatMap((file) =>
             dedupGrok(files.itemsOf([file], since).map(fromKeptGrok)).map((entry) => ({
               session: entry.session ?? basename(dirname(file.path)), at: entry.at, model: entry.model,

@@ -220,6 +220,32 @@ describe("a side question", () => {
     questions.stopAll()
   })
 
+  test("asked on another model, with a text file, is answered there with both; a picture is refused", async () => {
+    const questions = new SideQuestions(join(root, "btw.json"), places())
+    questions.onAnswered = beat
+    engine.answers = ["It's the 30-second debounce."]
+    const notes = join(root, "notes.md")
+    writeFileSync(notes, "Debounce: 30s")
+    const pasted = "data:text/plain;base64," + Buffer.from("retry after 2s").toString("base64")
+    const model = { providerID: "anthropic", id: "claude-opus-5-5", variant: "high" }
+    const answer = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "Which delay?", model, files: [{ uri: "file://" + notes }, { uri: pasted, name: "log.txt" }] }))
+    const asked = ((await answer.json()) as any).data
+    // Clients see the files by name and the model it's on, not the files' words.
+    expect(asked).toMatchObject({ model, files: ["notes.md", "log.txt"] })
+    expect(asked.attached).toBeUndefined()
+    await until(() => questions.list("ses_work")[0]?.state === "answered")
+    // On that model, afresh, with the conversation and the files in the prompt.
+    expect(engine.checks.map((check) => [check.kind, check.model])).toEqual([["fresh", model]])
+    expect(engine.checks[0].prompt).toContain("Person: Make the timer pause on blur.")
+    expect(engine.checks[0].prompt).toContain('<file name="notes.md">\nDebounce: 30s\n</file>')
+    expect(engine.checks[0].prompt).toContain('<file name="log.txt">\nretry after 2s\n</file>')
+    expect(told()).toBe(0)
+    const picture = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's this?", files: [{ uri: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }] }))
+    expect(picture.status).toBe(400)
+    expect(((await picture.json()) as any).message).toContain("not pictures")
+    expect(questions.list("ses_work")).toHaveLength(1)
+  })
+
   test("about a coding agent's conversation is answered with the conversation in the question", async () => {
     const questions = new SideQuestions(join(root, "btw.json"), places(true))
     questions.onAnswered = beat

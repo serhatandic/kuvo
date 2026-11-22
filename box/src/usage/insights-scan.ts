@@ -1,16 +1,20 @@
 // Kuvo's persisted session metadata and isolated usage readers feed one observation per call.
 import { join } from "node:path"
+import { statSync } from "node:fs"
+import { setImmediate as nextTurn } from "node:timers/promises"
+import { transcriptDatabase } from "../agents/transcript"
 import type { Record_, Store } from "../agents/store"
 import type { UsageAgent } from "./accounts"
 import { parseProvider } from "../agents/accounts"
 import type { AssistantMessage } from "../agents/wire"
-import { databasesStamp, engineUsageAnswers } from "./engine-db"
-import { AntigravityHistory } from "./antigravity-history"
+import { engineDatabases, engineUsageAnswers, type EngineWatermarks } from "./engine-db"
+import { AntigravityHistory, type CachedDatabase } from "./antigravity-history"
 import { antigravitySources, claudeSources, codexSources, grokSources, insideUsageHome, ownComputer } from "./usage"
 import { insightKey, type InsightRecord, type NativeUsage, type TokenBuckets } from "./insight-records"
 import type { Pricing } from "./pricing"
 import { numberOf } from "./numbers"
 
+const DECODE_BUDGET = 8 * 1024 * 1024
 const nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" } as const
 export type InsightBot = { id: string; name: string; sessionID: string }
 
@@ -143,23 +147,66 @@ function automated(metadata?: Record<string, unknown>) {
   return typeof metadata?.source === "string" && ["agent", "group", "queue", "wake", "system"].includes(metadata.source)
 }
 
+type EngineSessions = [string, { parentID?: string; metadata?: unknown }][]
+type EngineCheckpoint = { since: number; identity: string; revision: string; sessions: EngineSessions; watermarks?: EngineWatermarks }
+
+type Conversation = Omit<Record_, "messages"> & { folder?: string; messages: Iterable<Record_["messages"][number]> }
+
+export interface ScanIndex {
+  read<T>(key: string): T | undefined
+  write(entries: readonly (readonly [string, unknown])[]): void
+  reclaim(): void
+  take(records: InsightRecord[]): void
+  attribute(lineage: [string, Lineage][]): void
+}
+
+export function fileStamp(file: string) {
+  try {
+    const stat = statSync(file, { bigint: true })
+    return { identity: `${stat.dev}/${stat.ino}/${stat.birthtimeNs}`, revision: `${stat.size}/${stat.mtimeNs}/${stat.ctimeNs}`, size: Number(stat.size) }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    return undefined
+  }
+}
+
+function conversationStamp(folder: string) {
+  const sqlite = fileStamp(join(folder, transcriptDatabase))
+  return sqlite ? [sqlite, fileStamp(join(folder, transcriptDatabase + "-wal"))]
+    : [fileStamp(join(folder, "messages.json"))]
+}
+
+function nativeThreads(record: Conversation, providers: Iterable<string>) {
+  const found = new Set<string>()
+  const state = (provider: string, saved: Record<string, unknown>) => {
+    const kind = parseProvider(provider)?.kind
+    const key = kind && kind in nativeKey ? nativeKey[kind as keyof typeof nativeKey] : undefined
+    if (key && typeof saved[key] === "string") found.add(insightKey(provider, saved[key]))
+  }
+  const threads = record.agent.threads as Record<string, { state?: Record<string, unknown> }> | undefined
+  for (const [provider, thread] of Object.entries(threads ?? {})) state(provider, thread?.state ?? record.agent)
+  for (const provider of providers) state(provider, threads?.[provider]?.state ?? record.agent)
+  return found
+}
+
 export class InsightsScan {
   private issues = new Set<string>()
   private native = new Map<string, NativeUsage[]>()
-  private engine?: { stamp: string; since: number; records: InsightRecord[]; sessions: Map<string, { parentID?: string; metadata?: unknown }> }
+  private antigravity = new AntigravityHistory()
   private sources: ReturnType<typeof claudeSources>[]
 
   constructor(private options: {
     root: string
     cache: string
     agents: () => UsageAgent[]
-    store: Pick<Store, "all" | "get"> | (() => Iterable<Omit<Record_, "messages"> & { messages: Iterable<Record_["messages"][number]> }>)
+    store: Pick<Store, "all" | "get"> | (() => Iterable<Conversation>)
     bots: () => InsightBot[]
     computer: () => string
     engine?: string
   }) {
     const reader = {
       owns: (path: string) => insideUsageHome(options.root, path),
+      has: (provider: string) => this.native.has(provider),
       problem: (provider: string) => this.issues.add(provider),
       take: (provider: string, rows: NativeUsage[]) => { this.native.set(provider, rows) },
     }
@@ -167,22 +214,28 @@ export class InsightsScan {
       claudeSources(options.cache, ownComputer, reader),
       codexSources(options.cache, undefined, ownComputer, reader),
       grokSources(options.cache, ownComputer, reader),
-      antigravitySources(options.cache, ownComputer, new AntigravityHistory(), reader),
+      antigravitySources(options.cache, ownComputer, this.antigravity, reader),
     ]
   }
 
-  async scan(pricing: Pricing, since: number) {
+  async scan(pricing: Pricing, since: number, index?: ScanIndex) {
     const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity")
     const sources = this.sources.flatMap((list) => list(agents))
+    this.antigravity.checkpoints = index && {
+      read: path => index.read<CachedDatabase>("scan/antigravity-v1/" + insightKey(path)),
+      write: (path, value) => index.write([["scan/antigravity-v1/" + insightKey(path), value]]),
+    }
     this.issues.clear()
     const issues = this.issues
-    this.native.clear()
+    const providers = new Set(sources.map(source => source.provider))
+    for (const provider of this.native.keys()) if (!providers.has(provider)) this.native.delete(provider)
     try {
       for (const source of sources) {
         try { await source.slots(pricing, since) }
         catch { issues.add(source.service) }
       }
     } finally {
+      this.antigravity.checkpoints = undefined
       for (const files of new Set(sources.map((source) => source.files))) files?.endRound(issues.size === 0)
     }
     const bots = this.options.bots()
@@ -204,15 +257,139 @@ export class InsightsScan {
     }
     for (const list of native.values()) list.sort((a, b) => a.at - b.at)
     const store = this.options.store
-    const recordsFromStore = typeof store === "function" ? store() : store.all().flatMap(session => store.get(session.id) ?? [])
-    for (const record of recordsFromStore) {
+    const conversations = typeof store === "function" ? [...store()] : store.all().flatMap(session => store.get(session.id) ?? [])
+    for (const { session } of conversations) nodes.set(session.id, lineNode(session, botOf, botNames))
+    const engineCheckpoints: [string, EngineCheckpoint][] = []
+    let engineRecords: InsightRecord[] = []
+    if (this.options.engine) {
+      try {
+        const folder = this.options.engine
+        const selected = new Map<string, { key: string; identity: string; revision: string }>()
+        const after: Record<string, EngineWatermarks> = {}
+        const add = (sessions: EngineSessions) => {
+          for (const [id, session] of sessions) {
+            nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) })
+          }
+        }
+        if (index) for (const path of engineDatabases(folder)) {
+          const file = fileStamp(path)
+          if (!file) continue
+          const key = "scan/engine-v2/" + insightKey(path)
+          const identity = insightKey(file.identity, local)
+          const revision = insightKey(file.revision, fileStamp(path + "-wal"))
+          const saved = index.read<EngineCheckpoint>(key)
+          if (saved?.identity === identity && saved.since <= since && saved.revision === revision) add(saved.sessions)
+          else {
+            if (saved?.identity === identity && saved.since <= since && saved.watermarks) after[path] = saved.watermarks
+            selected.set(path, { key, identity, revision })
+          }
+        }
+        if (!index || selected.size) {
+          const read = await this.engineRecords(folder, since, index ? after : undefined, index ? new Set(selected.keys()) : undefined)
+          engineRecords = read.records
+          if (read.partial) issues.add("opencode")
+          for (const item of read.channels) {
+            add(item.sessions)
+            const saved = selected.get(item.path)
+            if (saved) engineCheckpoints.push([saved.key, { since, identity: saved.identity, revision: saved.revision, sessions: item.sessions, watermarks: item.watermarks }])
+          }
+        }
+      } catch { issues.add("opencode") }
+    } else { issues.add("opencode") }
+
+    const lineOf = lineages(nodes)
+    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }: InsightRecord): InsightRecord => {
+      const line = lineOf(record.session)
+      return {
+        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
+        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
+      }
+    }
+    const lineage = [...nodes.keys()].flatMap((id): [string, Lineage][] => {
+      const line = lineOf(id)
+      return line.bot || line.root !== id ? [[id, line]] : []
+    })
+    const waiting: [string, { stamp: string; since: number }][] = []
+    let observations = 0
+    let transcripts = 0
+    const flush = async () => {
+      if (!index) return
+      observations += records.length
+      if (records.length) index.take(records.splice(0).map(withLine))
+      if (waiting.length) index.write(waiting.splice(0))
+      await nextTurn()
+    }
+
+    // Release engine data before the legacy transcript reader starts decoding large files.
+    if (index) {
+      const readEngine = engineRecords.length > 0
+      for (const record of engineRecords) {
+        records.push(record)
+        if (records.length >= 400) await flush()
+      }
+      engineRecords = []
+      await flush()
+      if (engineCheckpoints.length) index.write(engineCheckpoints)
+      if (readEngine) index.reclaim()
+    }
+
+    const stamps = new Map<string, { stamp: string; size: number }>()
+    const nativeStamps = new Map<string, string>()
+    const threads = new Map<string, string[]>()
+    const byConversation = new Map<string, Set<string>>()
+    const dirty = new Set<string>()
+    if (index) for (const record of conversations as Conversation[]) {
+      const { session, folder } = record
+      if (!folder || session.time.updated < since) continue
+      const keys = nativeThreads(record, this.native.keys())
+      byConversation.set(session.id, keys)
+      for (const key of keys) {
+        let owners = threads.get(key)
+        if (!owners) threads.set(key, owners = [])
+        owners.push(session.id)
+      }
+      const source = [...keys].sort().map(key => {
+        let stamp = nativeStamps.get(key)
+        if (!stamp) nativeStamps.set(key, stamp = insightKey(key, native.get(key) ?? []))
+        return stamp
+      })
+      const files = conversationStamp(folder)
+      const stamp = insightKey(files, session.title, session.model, session.parentID,
+        seatBot(session.metadata), local, source)
+      stamps.set(session.id, { stamp, size: files.reduce((sum, file) => sum + (file?.size ?? 0), 0) })
+      const saved = index.read<{ stamp: string; since: number }>("scan/transcript-v1/" + session.id)
+      if (stamp !== saved?.stamp || saved.since > since) dirty.add(session.id)
+    }
+    // A native call can match only one saved conversation. Read all conversations that share a
+    // changed thread so whichever one previously claimed the call keeps that precedence.
+    for (const id of dirty) for (const key of byConversation.get(id) ?? []) {
+      for (const owner of threads.get(key) ?? []) dirty.add(owner)
+    }
+
+    let decoded = 0
+    for (const record of conversations as Conversation[]) {
       const session = record.session
-      // (Kept for its place in a line even when its own calls are older.)
-      nodes.set(session.id, lineNode(session, botOf, botNames))
-      if (session.time.updated < since) continue
+      if (session.time.updated < since || (index && record.folder && !dirty.has(session.id))) continue
+      transcripts++
+      const saved = stamps.get(session.id)
+      if (index && decoded && decoded + (saved?.size ?? 0) >= DECODE_BUDGET) {
+        decoded = 0
+        await flush()
+        index.reclaim()
+      }
+      let complete = true
+      const messages = function* () {
+        try { yield* record.messages } catch (error) {
+          if (!index) throw error
+          complete = false
+          issues.add("coding-agent history")
+          console.error("Unable to index saved conversation", session.id, error)
+        }
+      }
       const seat = seatBot(session.metadata)
       const base = { session: session.id, title: session.title }
-      for (const message of record.messages) {
+      for (const message of messages()) {
+        if (index && records.length >= 400) await flush()
         if (message.type !== "assistant" && message.type !== "user") continue
         const at = message.time.completed ?? message.time.created
         if (at < since) continue
@@ -251,51 +428,49 @@ export class InsightsScan {
             taken.add(nativeID)
             matched = true
             records.push({ ...step, ...row, supersedes: key, session: session.id, nativeSession: row.session, key: nativeID })
+            if (index && records.length >= 400) await flush()
           }
           if (matched) continue
         }
         records.push({ ...step, tokens, ...(!tokens ? { partial: true as const } : {}) })
       }
-    }
-    if (this.options.engine) {
-      try {
-        const read = await this.engineRecords(this.options.engine, since)
-        records.push(...read.records)
-        for (const [id, session] of read.sessions) {
-          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) })
-        }
-        if (read.partial) issues.add("opencode")
-      } catch { issues.add("opencode") }
-    } else { issues.add("opencode") }
-    const lineOf = lineages(nodes)
-    const lined = records.map(({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }): InsightRecord => {
-      const line = lineOf(record.session)
-      return {
-        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
-        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
+      if (saved) {
+        if (complete) waiting.push(["scan/transcript-v1/" + session.id, { stamp: saved.stamp, since }])
+        decoded += saved.size
       }
-    })
-    const lineage = [...nodes.keys()].flatMap((id): [string, Lineage][] => {
-      const line = lineOf(id)
-      return line.bot || line.root !== id ? [[id, line]] : []
-    })
-    return { records: lined, lineage, issues: [...issues] }
+      // Legacy JSON may contain inline attachments. Drop decoder and SQLite allocations after
+      // each tranche of large files instead of waiting for pressure from the resident process.
+      if (index && decoded >= DECODE_BUDGET) {
+        decoded = 0
+        await flush()
+        index.reclaim()
+      } else if (index && waiting.length >= 32) await flush()
+    }
+    if (index) {
+      await flush()
+      const revision = insightKey(lineage)
+      if (index.read("scan/lineage-v1") !== revision) {
+        index.attribute(lineage)
+        index.write([["scan/lineage-v1", revision]])
+      }
+    } else for (const record of engineRecords) records.push(record)
+    return { records: records.map(withLine), lineage, issues: [...issues], transcripts, observations }
   }
 
-  private async engineRecords(folder: string, since: number) {
-    const stamp = databasesStamp(folder)
-    if (this.engine?.stamp === stamp && this.engine.since === since) return { records: this.engine.records, sessions: this.engine.sessions }
+  private async engineRecords(folder: string, since: number, after?: Record<string, EngineWatermarks>, selected?: ReadonlySet<string>) {
     const records: InsightRecord[] = []
-    const sessions = new Map<string, { parentID?: string; metadata?: unknown }>()
-    const answers = await engineUsageAnswers(folder, since)
-    const partial = answers?.some((answer) => answer.failed !== undefined)
-    for (const answer of answers ?? []) {
-      if (!answer.json) continue
-      const channel = new Map<string, { parentID?: string; metadata?: unknown }>()
-      for (const [id, parent, metadata] of answer.sessions ?? []) {
-        channel.set(id, { ...channel.get(id), ...(parent ? { parentID: parent } : {}), ...(metadata ? { metadata } : {}) })
+    const channels: { path: string; sessions: EngineSessions; watermarks?: EngineWatermarks }[] = []
+    const sessions = new Map<string, Map<string, { parentID?: string; metadata?: unknown }>>()
+    const answers = await engineUsageAnswers(folder, since, after, selected, answer => {
+      const channel = sessions.get(answer.path) ?? new Map<string, { parentID?: string; metadata?: unknown }>()
+      if (answer.sessions) {
+        for (const [id, parent, metadata] of answer.sessions) {
+          channel.set(id, { ...channel.get(id), ...(parent ? { parentID: parent } : {}), ...(metadata ? { metadata } : {}) })
+        }
+        sessions.set(answer.path, channel)
+        channels.push({ path: answer.path, sessions: [...channel], watermarks: answer.watermarks })
       }
-      for (const [id, session] of channel) sessions.set(id, { ...sessions.get(id), ...session })
+      if (!answer.json) return
       const rows: unknown[][] = JSON.parse(answer.json)
       for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, parts] of rows) {
         const at = completed ?? created
@@ -317,9 +492,9 @@ export class InsightsScan {
           ...(role === "user" ? { human: true as const } : !tokens ? { partial: true as const } : {}),
         })
       }
-    }
-    if (!partial) this.engine = { stamp, since, records, sessions }
-    return { records, sessions, partial }
+    })
+    const failures = new Set(answers?.filter(answer => answer.failed !== undefined).map(answer => answer.path))
+    return { records, channels: channels.filter(channel => !failures.has(channel.path)), partial: failures.size > 0 }
   }
 }
 

@@ -7,15 +7,17 @@ test("an engine session reports its latest measured step and drops it when a sum
   const ref = { id: "wide", providerID: "test" }
   const last = { type: "assistant", model: ref, tokens: { input: 10, output: 8, reasoning: 2, cache: { read: 400_000, write: 500 } } }
   let compacted = false
+  let measured = false
+  let catalog = true
   const engine = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     fetch(request) {
       const url = new URL(request.url)
       if (url.pathname === "/api/session/ses_context") return Response.json({ data: { id: "ses_context", model: ref, tokens: { input: 3_000_000 } } })
       if (url.pathname === "/api/session/ses_context/message" && url.searchParams.get("order") === "desc") {
-        return Response.json({ data: [compacted ? { type: "compaction", status: "completed" } : { type: "idle" }, last] })
+        return Response.json({ data: measured ? [compacted ? { type: "compaction", status: "completed" } : { type: "idle" }, last] : [] })
       }
-      if (url.pathname === "/api/model") return Response.json({ data: [{ ...ref, limit: { context: 1_000_000 } }] })
+      if (url.pathname === "/api/model" && catalog) return Response.json({ data: [{ ...ref, limit: { context: 1_000_000 } }] })
       return new Response(null, { status: 404 })
     },
   })
@@ -30,11 +32,16 @@ test("an engine session reports its latest measured step and drops it when a sum
     return { status, json: JSON.parse(Buffer.concat(body).toString()) }
   }
   try {
+    expect((await read()).json.data).toMatchObject({ contextWindow: 1_000_000 })
+    catalog = false
+    measured = true
     expect(await read()).toMatchObject({
       status: 200, json: { data: { context: { used: 400_520, window: 1_000_000 }, tokens: { input: 3_000_000 } } },
     })
     compacted = true
-    expect((await read()).json.data.context).toBeUndefined()
+    const { context, contextWindow } = (await read()).json.data
+    expect(context).toBeUndefined()
+    expect(contextWindow).toBe(1_000_000)
   } finally {
     await engine.stop(true)
   }

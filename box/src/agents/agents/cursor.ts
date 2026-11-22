@@ -244,6 +244,8 @@ export class CursorAgent implements Agent {
         return model(this.providerID, info.id, info.id === "default" ? "Auto" : info.displayName ?? info.id, {
           variants: effort?.values?.map((value: any) => String(value.value)) ?? [],
           images: true,
+          // The SDK catalog has no capacity field.
+          context: 0,
           released: info.id === "default" ? 2000 : 1000 - index,
         })
       })

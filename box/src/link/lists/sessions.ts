@@ -24,12 +24,14 @@ import { filedProjects, projectFollowers, readProjects } from "../areas/projects
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
-import { factsOf, listedProjects, needsYou, projectOrder, projectPage, shownOfCursor, withSubagents, type ListPlace, type Stopped } from "./rule";
+import { factsOf, folderOf, kindOf, listedProjects, needsYou, projectOrder, projectPage, shownOfCursor, withSubagents, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
 import { listedWork, workBot, type ListedWork } from "../work/listed-work";
+import { inTime, repositoryOf } from "../work/project-trees";
 import { wakeTurnIsOpen } from "../work/wakes";
 import { Moments } from "./moments";
 import type { EngineSession } from "../engine/sessions";
+import { engineListFacts, withEngineActivity, type EngineListFacts } from "../engine/list-facts";
 import type { ListedProject, NeedsYou, SessionFacts, SessionList } from "../../shared/routes/sessions";
 import type { Target } from "../../shared/records";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -45,7 +47,7 @@ const GONE_FOR = 24 * 3600_000;
 /** How often the list is read whole while the box runs. */
 const READ_EVERY = 5 * 60_000;
 /** A session's events that change what's listed of it: it's read again. */
-const RELOADS = new Set(["session.created", "session.updated", "session.renamed", "session.moved", "session.metadata.updated", "session.revert.staged", "session.revert.cleared", "session.revert.committed"]);
+const RELOADS = new Set(["session.created", "session.updated", "session.shell.started", "session.shell.ended", "session.renamed", "session.moved", "session.metadata.updated", "session.revert.staged", "session.revert.cleared", "session.revert.committed"]);
 const STARTS = "session.execution.started";
 const DELIVERED = "session.inbox.delivered";
 const ENDS = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"]);
@@ -54,6 +56,7 @@ const ENDS = new Set(["session.execution.succeeded", "session.execution.failed",
 interface Place {
   target: Target;
   sessions: Map<string, EngineSession>;
+  engineActivity?: boolean;
   running: Set<string>;
   wakeReads: Map<string, object>;
   wakeRetries: Map<string, ReturnType<typeof setTimeout>>;
@@ -127,6 +130,29 @@ export interface BoxKnows {
   asks: ReturnType<typeof readAsks>;
 }
 
+// A session can be started straight in a Git worktree, without any Kuvo project or worktree record.
+let engineWorktrees: Record<string, string> = {};
+const gitProjects = new Map<string, { project?: string; readAt: number }>();
+
+async function discoverProjects(sessions: readonly EngineSession[]): Promise<void> {
+  const { projects, botSessions } = readBoxKnows();
+  const filed = filedProjects(projects);
+  const place = { isChatsFolder, botsFolder: BOTS, botSessions };
+  const now = Date.now();
+  const directories = sessions.filter(session => kindOf(session, place) === "project").map(folderOf);
+  const folders = [...new Set([...directories, ...projects.filter(project => !project.removed).map(project => project.directory)])]
+    .filter(folder => path.isAbsolute(folder) && !filed[folder] && (gitProjects.get(folder)?.readAt ?? -Infinity) < now - READ_EVERY);
+  for (let from = 0; from < folders.length; from += 24) {
+    await Promise.all(folders.slice(from, from + 24).map(async folder => {
+      const repository = await inTime(repositoryOf(folder), null, 1500);
+      const previous = gitProjects.get(folder)?.project;
+      const project = repository ? (repository.top === repository.main ? undefined : repository.main) : previous;
+      gitProjects.set(folder, { project, readAt: now });
+      if (project !== previous) known = null;
+    }));
+  }
+}
+
 export function readBoxKnows(): BoxKnows {
   const projects = readProjects();
   const botSessions = new Set<string>();
@@ -135,7 +161,12 @@ export function readBoxKnows(): BoxKnows {
     const bot = botHere(id);
     if (bot) { botSessions.add(bot.session); botOf.set(bot.session, id); }
   }
-  return { projects, filed: filedProjects(projects), botSessions, botOf, away: new Set(awaySessions()), asks: readAsks() };
+  const filed = filedProjects(projects);
+  for (const [folder, { project }] of gitProjects) {
+    if (project && !filed[folder]) filed[folder] = filed[project] ?? project;
+  }
+  for (const [folder, project] of Object.entries(engineWorktrees)) filed[folder] ??= filed[project] ?? project;
+  return { projects, filed, botSessions, botOf, away: new Set(awaySessions()), asks: readAsks() };
 }
 
 /** What the box knows beside its sessions, as it is now (`known`: as it was read last). At work
@@ -529,18 +560,28 @@ async function readOnce(name: string, target: Target): Promise<void> {
   reading.set(name, touched);
   let sessions: EngineSession[] | null = null;
   let running: Awaited<ReturnType<typeof readRunningSnapshot>>;
+  let facts: EngineListFacts | undefined;
   try {
     const listed = readSessions(target);
-    [sessions, running] = await Promise.all([listed, readRunningSnapshot(name, target, listed)]);
+    [sessions, running, facts] = await Promise.all([
+      listed, readRunningSnapshot(name, target, listed), name === "engine" ? readEngineFacts() : undefined,
+    ]);
+    if (sessions) await discoverProjects(sessions);
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
   if (!keepsList() || !sessions || placeTargets.get(name) !== target) return;
   // (Only a whole read makes a place: until then its events have nothing to change.)
-  const place = places.get(name) ?? { target, sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
+  const place: Place = places.get(name) ?? { target, sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
   const gone = deleted.get(name);
   place.target = target;
+  if (facts?.available) {
+    engineWorktrees = facts.worktrees;
+    known = null;
+    place.engineActivity = true;
+    sessions = withEngineActivity(sessions, facts);
+  }
   place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, withViewed(each, place.sessions.get(each.id))]));
   deleted.delete(name);
   // (Its events' count starts again: a read under way for an earlier one answers for nothing now.)
@@ -599,20 +640,37 @@ let eventCount = 0;
 
 /** One session of `name`'s read again: as it is now, or gone; unless another event came for it
  * since (a later read answers for that), or it was deleted. Whether it was taken in as read now. */
-async function readOne(name: string, target: Target, id: string): Promise<boolean> {
+async function readOne(name: string, target: Target, id: string, metadataOnly = false): Promise<boolean> {
   const key = `${name} ${id}`;
   const at = asked.get(key);
   const current = () => asked.get(key) === at && !deleted.get(name)?.has(id) && sameTarget(places.get(name)?.target, target);
   try {
-    const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, AbortSignal.timeout(10_000));
+    const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}${name === "bridge" ? "?context=0" : ""}`, undefined, AbortSignal.timeout(10_000));
+    if (!current() || !isObject(session) || session.id !== id) return false;
+    const read = session as unknown as EngineSession;
+    const folder = folderOf(read);
+    if (!gitProjects.has(folder) && !(known ??= readBoxKnows()).filed[folder]) await discoverProjects([read]);
     const place = places.get(name);
-    if (!current() || !place || !isObject(session) || session.id !== id) return false;
-    place.sessions.set(id, withViewed(session as unknown as EngineSession, place.sessions.get(id)));
+    const before = place?.sessions.get(id);
+    if (place?.engineActivity && read.time?.activity === undefined) {
+      const previous = before?.time?.activity ?? read.time.created;
+      const activity = metadataOnly ? previous : await recentEngineActivity(target, id, read.time.created, previous);
+      read.time = { ...read.time, activity };
+    }
+    if (!current() || !place || places.get(name) !== place) return false;
+    place.sessions.set(id, withViewed(read, place.sessions.get(id)));
     return true;
   } catch (error) {
     if (current() && (error as { status?: number }).status === 404) places.get(name)?.sessions.delete(id);
     return false;
   }
+}
+
+async function recentEngineActivity(target: Target, id: string, created: number, previous: number): Promise<number> {
+  const page = await engineGet(target, `api/session/${encodeURIComponent(id)}/message?limit=1&order=desc`).catch(() => null) as
+    { data?: { time?: { created?: number } }[] } | null;
+  if (!Array.isArray(page?.data)) return previous;
+  return page.data[0]?.time?.created ?? created;
 }
 
 /** Takes in an event from `name` (the engine, or the bridge, at `target`): a session read again as
@@ -669,7 +727,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   scheduleWorkOut();
   // As it is now: its folder, title, notes and times.
   const stop = moments.stopped.get(id);
-  const landed = await readOne(name, target, id);
+  const landed = await readOne(name, target, id, event.type === "session.renamed" || event.type === "session.metadata.updated");
   // (A stop heard before this read: the turn it ended is the one read, its end as the run's end
   // left it (as READ_RULE reads it too), unless another event came since. Known, it's let go once
   // it can no longer block: `letGoOfStops`.)
@@ -862,6 +920,10 @@ async function readPlaces(context: Pick<RouteContext, "readEngine" | "bridge">):
   if (engine && !places.has("engine")) await listPlaceHeard("engine", engine);
 }
 
+function readEngineFacts(): Promise<EngineListFacts | undefined> {
+  return inTime(engineListFacts(), undefined);
+}
+
 /** The list now, for a route; null while the engine can't be read. In the long-running process: as
  * it keeps it, the engine read first where it hasn't been (it just started), worked out again with
  * the box's files as they are now (a project another process changed). In any other: as the
@@ -883,7 +945,9 @@ export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge
     bridge ? readSessions(bridge, signal) : Promise.resolve(null), bridge ? readRunning(bridge, signal) : Promise.resolve(null),
   ]);
   if (!engineSessions) return null;
-  const sessions = [...engineSessions];
+  const facts = await readEngineFacts();
+  if (facts?.available) engineWorktrees = facts.worktrees;
+  const sessions = facts ? withEngineActivity(engineSessions, facts) : [...engineSessions];
   const placeOf: Record<string, string> = Object.fromEntries(engineSessions.map(each => [each.id, "engine"]));
   if (bridgeSessions) for (const each of bridgeSessions) if (!(each.id in placeOf)) { sessions.push(each); placeOf[each.id] = "bridge"; }
   // (Those at work where it couldn't say: as last read.)
@@ -891,6 +955,7 @@ export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge
   const running = new Set([...(engineRunning ?? wasRunning("engine")), ...(bridgeRunning ?? (bridge ? wasRunning("bridge") : []))]);
   const pending = bridge && !bridgeSessions ? ["bridge"] : [];
   // (Those stopped on an error or a limit, as last listed: this process hears no events.)
+  await discoverProjects(sessions);
   const knows = readBoxKnows();
   const wakeTurns = new Set<string>();
   await Promise.all([...knows.botSessions].map(async id => {

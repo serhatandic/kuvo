@@ -211,7 +211,7 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
 export function withSummarizeAt(session: Session): Session {
   const context = session.context
   if (!context) return session
-  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window)
+  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window)
   return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } }
 }
 
@@ -457,7 +457,10 @@ export function handler(context: Context, transferring?: () => boolean) {
       // Sessions
       if (area === "session") {
         if (!a) {
-          if (method === "POST") return json({ data: sessions.create(await body()) })
+          if (method === "POST") {
+            const session = sessions.create(await body())
+            return json({ data: await sessions.withContextWindow(session.id) })
+          }
           const directory = url.searchParams.get("directory") ?? undefined
           // Later pages carry the first's filter in their cursor ("<order>:<id>:<parentID>").
           const under = url.searchParams.get("parentID") ?? url.searchParams.get("cursor")?.split(":")[2] ?? null
@@ -474,7 +477,10 @@ export function handler(context: Context, transferring?: () => boolean) {
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
         const id = a
         if (!b) {
-          if (method === "GET") return json({ data: withSummarizeAt(sessions.get(id)) })
+          if (method === "GET") {
+            const session = url.searchParams.get("context") === "0" ? sessions.get(id) : await sessions.withContextWindow(id)
+            return json({ data: withSummarizeAt(session) })
+          }
           if (method === "PATCH") {
             sessions.update(id, await body())
             return json({ data: sessions.get(id) })
@@ -563,8 +569,9 @@ export function handler(context: Context, transferring?: () => boolean) {
             const prompt = String(input.prompt ?? "")
             if (!prompt.trim()) throw new BadRequest("Say what to write.")
             // `orAnother`: another agent you're signed in to may answer, where this one can't.
-            // `model`: on that model of the session's own maker (Auto's reviewer, on its small one).
-            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id } : undefined
+            // `model`: on that model of the session's own maker, with its effort (Auto's reviewer, on
+            // its small one; a side question asked on another).
+            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id, ...(typeof input.model.variant === "string" && input.model.variant ? { variant: input.model.variant } : {}) } : undefined
             return json({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } })
           }
           case "interrupt":

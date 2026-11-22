@@ -35,13 +35,24 @@ export const markedFullAccess = (session: string, folder = FULL_ACCESS_FOLDER): 
 /** A conversation's approval changed: its mark, and its subagents' (those marked with it), as it is
  * now. A subagent gets its mark again as its next run starts, where it's on. */
 export function markConversation(root: string, on: boolean, folder = FULL_ACCESS_FOLDER): void {
-  markFullAccess(root, on, root, folder);
-  if (on) return;
+  markConversations([[root, on]], folder);
+}
+
+/** Reconcile a page of conversations with one pass over the shared launcher folder. */
+export function markConversations(marks: Iterable<readonly [string, boolean]>, folder = FULL_ACCESS_FOLDER): void {
+  const revoked = new Set<string>();
+  for (const [root, on] of marks) {
+    if (!named(root)) continue;
+    markFullAccess(root, on, root, folder);
+    if (!on) revoked.add(root);
+  }
+  if (!revoked.size) return;
   let names: string[] = [];
   try { names = fs.readdirSync(folder); } catch {}
   for (const name of names) {
-    if (!named(name) || name === root) continue;
-    try { if (fs.readFileSync(path.join(folder, name), "utf8") === root) fs.rmSync(path.join(folder, name), { force: true }); } catch {}
+    if (!named(name) || revoked.has(name)) continue;
+    const file = path.join(folder, name);
+    try { if (revoked.has(fs.readFileSync(file, "utf8"))) fs.rmSync(file, { force: true }); } catch {}
   }
 }
 

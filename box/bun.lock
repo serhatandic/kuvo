@@ -5,6 +5,7 @@
     "": {
       "name": "kuvo-box",
       "dependencies": {
+        "@modelcontextprotocol/sdk": "1.32.2",
         "mdast-util-from-markdown": "2.0.3",
       },
       "devDependencies": {

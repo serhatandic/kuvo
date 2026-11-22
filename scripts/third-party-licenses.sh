@@ -32,6 +32,9 @@ HEADER
     section "Work Queue Markdown parser" 2.0.3 https://github.com/syntax-tree/mdast-util-from-markdown \
         "Bundled in kuvo-link.js. Includes micromark and the runtime dependencies listed below." \
         Licenses/work-queue-markdown.txt
+    section "Model Context Protocol OAuth client" 1.32.2 https://github.com/modelcontextprotocol/typescript-sdk \
+        "Bundled in kuvo-link.js with the runtime dependencies listed below." \
+        Licenses/marketplace-oauth.txt
     section models.dev "(logos, 2026-11-01)" https://models.dev \
         "Providers' logos in gpui/assets/marks/providers, unchanged. Each logo is its owner's trademark, shown only to name its provider." \
         Licenses/models.dev.txt

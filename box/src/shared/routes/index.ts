@@ -15,6 +15,7 @@ import { GROUP_ROUTES } from "./groups";
 import { INTEGRATION_ROUTES } from "./integrations";
 import { LIBRARY_ROUTES } from "./library";
 import { LINE_ROUTES } from "./line";
+import { MARKETPLACE_ROUTES } from "./marketplace";
 import { MAC_ROUTES } from "./mac";
 import { MESSAGE_ROUTES } from "./messages";
 import { MISC_ROUTES } from "./misc";
@@ -61,6 +62,7 @@ export const ROUTES: RouteShape[] = [
   ...INTEGRATION_ROUTES,
   ...LINE_ROUTES,
   ...LIBRARY_ROUTES,
+  ...MARKETPLACE_ROUTES,
   ...MISC_ROUTES,
   ...OWNERSHIP_ROUTES,
   ...PERSONALITY_ROUTES,

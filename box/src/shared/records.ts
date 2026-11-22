@@ -72,6 +72,7 @@ export interface ListedAgent {
   project?: string;
   about?: string;
   machine?: string;
+  marketplaceAgent?: string;
 }
 
 /** One session as its box publishes it in the peer activity snapshot. */

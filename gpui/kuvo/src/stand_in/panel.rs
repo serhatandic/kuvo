@@ -82,6 +82,14 @@ impl Panel {
                 let thread = body["thread"].as_str().map(str::to_owned).unwrap_or_else(|| id.clone());
                 let asked = self.now + self.asked as f64;
                 let mut said = json!({ "id": id, "session": session, "thread": thread, "question": question, "state": "answering", "asked": asked });
+                // Its model and its files by name, as the box keeps them.
+                if body["model"].is_object() {
+                    said["model"] = body["model"].clone();
+                }
+                if let Some(files) = body["files"].as_array().filter(|files| !files.is_empty()) {
+                    let names: Vec<Value> = files.iter().map(|file| file["name"].as_str().map(str::to_owned).unwrap_or_else(|| file["uri"].as_str().unwrap_or_default().rsplit('/').next().unwrap_or_default().to_owned()).into()).collect();
+                    said["files"] = json!(names);
+                }
                 let kept = said.clone();
                 if !self.answers.is_empty() {
                     let answer = self.answers.remove(0);

@@ -1,4 +1,5 @@
-import { readSavedSessions } from "../agents/store"
+import { readSavedSessionHeaders } from "../agents/store"
+import { savedMessages } from "../agents/transcript"
 import { join } from "node:path"
 import { UsageAccounts } from "./accounts"
 import { InsightsScan } from "./insights-scan"
@@ -30,11 +31,29 @@ export function serveInsightsDB() {
             const accounts = new UsageAccounts(input.home)
             scanner = new InsightsScan({
               root: input.home, cache: input.cache, agents: () => accounts.all(),
-              store: () => readSavedSessions(join(input.home, "sessions"), "insight"),
+              store: function* () {
+                for (const row of readSavedSessionHeaders(join(input.home, "sessions"))) {
+                  yield { ...row, messages: savedMessages(row.folder, "insight") }
+                }
+              },
               bots: () => input.bots, computer: () => input.computer, engine: input.engine,
             })
           }
-          result = await scanner.scan(pricing!, args[1])
+          const [_, since, now, origins] = args
+          const index = db!
+          index.price(pricing!, now)
+          const { issues, transcripts, observations } = await scanner.scan(pricing!, since, {
+            read: key => index.read(key),
+            write: entries => index.checkpoint(entries),
+            reclaim: () => { Bun.gc(true) },
+            take: records => {
+              index.price(pricing!, now)
+              index.take(records, pricing!, now, undefined, undefined, undefined, origins)
+            },
+            attribute: lineage => index.attribute(lineage),
+          })
+          index.take([], pricing!, now)
+          result = { issues, transcripts, observations }
           break
         }
         case "cursor": result = db!.cursor(...args); break
