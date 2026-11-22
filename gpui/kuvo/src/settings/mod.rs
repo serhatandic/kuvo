@@ -155,6 +155,9 @@ struct Confirm {
 
 /// The Settings area: its sidebars and its pages.
 pub struct SettingsView {
+    /// A computer's settings, under Computers › that computer (the user's pick, 2026-11-23: each
+    /// computer's settings live with it). Settings itself has your own alone.
+    of_computers: bool,
     /// The window's box: your computers are its list, and other boxes are reached from it.
     home: BoxClient,
     live: bool,
@@ -319,6 +322,7 @@ impl SettingsView {
             TextFieldEvent::Submit(_) => {}
         });
         let mut view = SettingsView {
+            of_computers: false,
             client: Some(client.clone()),
             home: client,
             live,
@@ -396,6 +400,28 @@ impl SettingsView {
         let sized = kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
         view._subscriptions.push(sized);
         view
+    }
+
+    /// A computer's settings, as Computers › that computer shows them: its own sidebar, and at
+    /// its foot the way back to the computer's page.
+    pub fn for_computers(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SettingsView {
+        let mut view = SettingsView::new(client, live, cx);
+        view.of_computers = true;
+        view.side = Side::Computer;
+        view.section = "computer".into();
+        view.search.update(cx, |field, _| field.set_placeholder("Search its settings…"));
+        view.rebuild(cx);
+        view
+    }
+
+    /// Whether it's a computer's settings, under Computers.
+    pub fn of_computers(&self) -> bool {
+        self.of_computers
+    }
+
+    /// The computer's page in Computers, by the area's key for it: `this` or `computer:<key>`.
+    pub fn computer_page(&self) -> String {
+        self.computer.as_ref().map_or_else(|| "this".to_owned(), |key| format!("computer:{key}"))
     }
 
     // MARK: Where it is
@@ -637,6 +663,11 @@ impl SettingsView {
     /// The foot row: to the other side, at the section last open there.
     pub(crate) fn switch_side(&mut self, cx: &mut Context<Self>) {
         self.search.update(cx, |field, cx| field.set_text("", cx));
+        // (A computer's, under Computers: back to its page.)
+        if self.of_computers {
+            cx.emit(Pick { place: self.computer_page(), record: true });
+            return;
+        }
         let place = match self.side {
             Side::Yours => box_key(self.computer.as_deref().unwrap_or_default(), &self.section),
             Side::Computer => yours_key(&self.yours),

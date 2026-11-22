@@ -9,6 +9,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The desktop app shows all your computers in one window, and the computer picker is gone. Another computer's sessions are listed under their project and open on that computer; a project is named for its computer only where two share a name.
 - While a computer is away its rows stay, saying when it was last seen, or "Updating…" while it switches to a new release. Once it's back they're live again within seconds, its bots included, instead of saying "Can't be reached".
 - The Work Queue lists every computer's items together, and its filter no longer offers a computer. Before its first answer, the Work Queue and Insights show one quiet loading line, with their tabs, search, filters, periods and refresh coming in with the data.
+- A new session has Runs on beside its model: pick which of your computers it works on, and its models, modes and projects are that computer's. A computer that's away is listed with when it was last seen, and can't be picked. New Bot has the same choice.
+- Each computer's settings are on its page under Computers, with a Settings row there; Settings itself holds your own. Its row at the foot still takes you to this computer's.
+- When this computer's Kuvo needs updating, each area shows its title and one line saying so, with Update Now beside it, instead of a page in the middle. A computer that can't be reached keeps showing what it last had.
+- Your sessions and group chats show as soon as Kuvo starts, as they were last, while it reads them again; they're empty only the very first time.
 - Send is never greyed out and never spins: send as many messages as you like, while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
 
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.

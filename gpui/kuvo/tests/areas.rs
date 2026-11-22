@@ -591,17 +591,18 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_settings(cx: &mut TestAppContext) {
+fn a_held_older_box_shows_each_areas_title_and_one_quiet_line_with_what_moves_it_on(cx: &mut TestAppContext) {
     let stand_in = StandIn::held_older(Replies::Never);
     stand_in.own_update_waits("waiting", 1);
-    let (title, detail) = kuvo::workspace::held_words(Some("This Mac"), true);
-    stand_in.own_update_words(title, detail);
+    let (held, detail) = kuvo::workspace::held_words(Some("This Mac"), true);
+    stand_in.own_update_words(held, detail);
     let (workspace, cx) = open(cx, stand_in);
     workspace.update_in(cx, |workspace, _, cx| read_update_offers(workspace, cx));
     cx.run_until_parked();
     assert!(bounds(cx, "update-chip").is_some());
-    // Sessions: why it can't be used, in the gate's words, never an empty list or a composer
-    // that takes nothing.
+    // Sessions: its title and one quiet line, in the gate's words, never a page of its own in the
+    // middle, an empty list or a composer that takes nothing.
+    assert!(bounds(cx, "area-quiet-title").is_some() && bounds(cx, "area-quiet-line").is_some());
     assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
     workspace.read_with(cx, |workspace, cx| {
@@ -612,21 +613,20 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
         // Never words without a way on: Update Now, here as everywhere.
         assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
     });
-    assert!(bounds(cx, "blocked-action").is_some());
-    for (rail, empty) in [("rail-bots", "bots-empty"), ("rail-queue", "queue-empty"), ("rail-computers", "computers-page")] {
+    // (Beside its line, never under a page's middle.)
+    let (line, action) = (bounds(cx, "area-quiet-line").unwrap(), bounds(cx, "blocked-action").expect("Update Now"));
+    assert!(action.top() >= line.top() && action.bottom() <= line.bottom());
+    for (rail, empty, name) in [("rail-bots", "bots-empty", "Bots"), ("rail-queue", "queue-empty", "Work Queue"), ("rail-computers", "computers-page", "Computers")] {
         click(cx, rail);
         assert!(bounds(cx, "update-chip").is_some());
-        assert!(bounds(cx, "blocked-held").is_some(), "{rail}: the same view");
+        assert!(bounds(cx, "area-quiet-line").is_some(), "{rail}: one quiet line");
+        assert_eq!(title(&workspace, cx).as_deref(), Some(name), "{rail}: its title");
         assert!(bounds(cx, empty).is_none(), "{rail}: never opened empty");
         assert!(bounds(cx, "held-area-sidebar").is_none(), "{rail}: no empty sidebar beside it");
     }
     click(cx, "rail-settings");
     assert!(bounds(cx, "blocked-held").is_none());
     assert!(bounds(cx, "row-editor").is_some(), "your own settings remain available");
-    // Its own settings are its box's: they wait with it.
-    click(cx, "settings-foot");
-    assert!(bounds(cx, "settings-held").is_some());
-    assert!(bounds(cx, "update-chip").is_some());
 }
 
 /// This Mac's box reports an update offer that asks first. Update Now invokes the box's offer.
@@ -956,11 +956,12 @@ fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppC
     click(cx, "bot-avatar-bot:solo");
     assert_eq!(title(&workspace, cx).as_deref(), Some("One Bot with a Very Long Name"));
 
+    // Its computer goes away: its bots stay as last read, never a page of its own instead.
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(bounds(cx, "area-sidebar").is_none());
-    assert!(bounds(cx, "held-area").is_some());
+    assert!(bounds(cx, "blocked-unreached").is_none() && bounds(cx, "held-area").is_none());
+    assert!(bounds(cx, "bot-avatar-bot:solo").is_some(), "its rows as last read");
 }
 
 #[gpui::test]
@@ -986,22 +987,23 @@ fn compact_sidebar_search_closes_when_folded(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn compact_sidebar_search_closes_on_disconnect_and_cannot_reopen(cx: &mut TestAppContext) {
+fn the_compact_sidebar_keeps_its_bots_when_their_computer_goes_away(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_elsewhere(true);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-bots");
     drag_sidebar(cx, -210.);
-    click(cx, "bot-avatar-search");
-    cx.simulate_input("Mira");
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira").is_some());
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(bounds(cx, "blocked-unreached").is_some());
-    assert!(bounds(cx, "sidebar-quick-search").is_none());
-    cx.simulate_keystrokes("cmd-shift-f");
-    assert!(bounds(cx, "sidebar-quick-search").is_none());
-    assert!(bounds(cx, "blocked-unreached").is_some());
+    // Its rows as last read, and the search over them still opens: no page of its own instead.
+    assert!(bounds(cx, "blocked-unreached").is_none());
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira").is_some());
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("Mira");
+    cx.run_until_parked();
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
     assert_eq!(area(&workspace, cx), Area::Bots);
 }
 

@@ -350,6 +350,30 @@ impl StandIn {
         json!({ "sessions": sessions, "projects": projects })
     }
 
+    /// Where a new session can run, as `kuvo/setup/runs-on/events` says it: this computer, then
+    /// its peers, an away one with when it was last seen.
+    fn runs_on(&self) -> Value {
+        let state = self.state();
+        let mut computers = vec![json!({ "computer": { "id": "key_stand_in", "name": state.name() }, "here": true, "offered": { "models": [] }, "agents": [] })];
+        let mut peers: Vec<(String, StandIn)> = state.peers.iter().map(|(key, peer)| (key.clone(), peer.clone())).collect();
+        peers.sort_by(|a, b| a.0.cmp(&b.0));
+        let standing = state.setup_standing.clone();
+        drop(state);
+        for (key, peer) in peers {
+            let name = peer.state().name();
+            let mut row = json!({ "computer": { "id": key, "name": name }, "offered": { "models": [] }, "agents": [] });
+            if let Some((since, updating)) = standing.get(&key) {
+                row["away"] = json!(true);
+                row["lastSeen"] = json!(since);
+                if *updating {
+                    row["updating"] = json!(true);
+                }
+            }
+            computers.push(row);
+        }
+        json!({ "computers": computers })
+    }
+
     /// The box of another of your computers, as this one reaches it (`key`: its key in
     /// `kuvo/computers`): what a test changes or reads there.
     pub fn peer_box(&self, key: &str) -> Option<StandIn> {
@@ -2377,6 +2401,10 @@ impl StandIn {
             ("GET", ["kuvo", "setup", "sessions", "events"]) if state.setup_lists => {
                 drop(state);
                 answer(200, self.setup_sessions())
+            }
+            ("GET", ["kuvo", "setup", "runs-on", "events"]) if state.setup_lists => {
+                drop(state);
+                answer(200, self.runs_on())
             }
             ("GET", ["kuvo", "sessions", "list"]) if state.sessions_down => answer(500, json!({ "message": "Sessions couldn’t be read." })),
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),

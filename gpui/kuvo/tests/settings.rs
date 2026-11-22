@@ -53,20 +53,30 @@ fn shown(cx: &mut VisualTestContext, selector: &str) -> bool {
     bounds(cx, selector).is_some()
 }
 
+/// The settings on screen: your own in Settings, or a computer's under Computers › that computer.
 fn settings(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<SettingsView> {
-    workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned()).expect("Settings"))
+    workspace.read_with(cx, |workspace, cx| {
+        let area = if workspace.area() == Area::Computers { Area::Computers } else { Area::Settings };
+        workspace.area_view(area).and_then(|view| view.read(cx).settings().cloned())
+    }).expect("Settings")
 }
 
-/// Settings, on the side `side`, over the row at its sidebar's foot where it's on the other.
+/// Your settings (in Settings), or a computer's (under Computers › that computer, over the row at
+/// Settings' foot that goes there).
 fn side(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, side: Side) -> Entity<SettingsView> {
-    if workspace.read_with(cx, |workspace, _| workspace.area()) != Area::Settings {
-        click(cx, "rail-settings");
+    let area = workspace.read_with(cx, |workspace, _| workspace.area());
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Computers).is_some_and(|view| view.read(cx).settings().is_some()));
+    match side {
+        Side::Yours if area != Area::Settings => click(cx, "rail-settings"),
+        Side::Computer if !(area == Area::Computers && showing) => {
+            if area != Area::Settings {
+                click(cx, "rail-settings");
+            }
+            click(cx, "settings-foot");
+        }
+        _ => {}
     }
-    let view = settings(workspace, cx);
-    if view.read_with(cx, |view, _| view.side()) != side {
-        click(cx, "settings-foot");
-    }
-    view
+    settings(workspace, cx)
 }
 
 /// The settings of the computer shown, on `name`, picked in its sidebar.
@@ -119,8 +129,10 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     // Folded again, the one shown stays listed.
     click(cx, "settings-later");
     assert!(shown(cx, "setting-voice"));
-    // The foot row goes to the computer's: its picker as the title, its sections as its box says them.
+    // The foot row goes to the computer's, under Computers › This Mac: its picker as the title,
+    // its sections as its box says them.
     click(cx, "settings-foot");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Computers);
     assert!(shown(cx, "settings-computer") && !shown(cx, "settings-yours-title"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/settings").len(), 1);
     assert!(shown(cx, "row-time-zone"), "its Clock");
@@ -134,11 +146,14 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     // A section neither the box describes nor this app has yet says so.
     section(&workspace, cx, "Git");
     assert!(shown(cx, "placeholder"));
-    // Back goes to the section before; and the foot row back to your own, where you were.
+    // Back goes to the section before; the foot row to the computer's page; and Settings is your
+    // own, where you were.
     cx.simulate_keystrokes("cmd-[");
     cx.run_until_parked();
     assert!(shown(cx, "row-search-engine"));
     click(cx, "settings-foot");
+    assert!(shown(cx, "computer-settings") && !shown(cx, "settings-computer"), "This Mac's page, with its Settings row");
+    click(cx, "rail-settings");
     assert!(shown(cx, "settings-yours-title") && shown(cx, "placeholder"), "Keyboard Shortcuts, as it was left");
 }
 

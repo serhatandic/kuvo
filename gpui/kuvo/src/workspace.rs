@@ -288,6 +288,12 @@ pub struct Workspace {
     landing_picked: bool,
     /// What the box said of sessions started here, until its list has them: their projects.
     started: HashMap<String, Option<String>>,
+    /// Sessions started here on another computer (picked in Runs on), by that computer's key, until
+    /// the setup's list says where they are.
+    started_on: HashMap<String, String>,
+    /// Where a new session or bot can run, as the nearest box says it (`kuvo/setup/runs-on`).
+    runs_on: Vec<kuvo_box::models::RunsOnComputer>,
+    _runs_on_follow: Option<Follow<Followed<kuvo_box::models::RunsOn>>>,
     /// Sessions started here whose first message didn't go (or came back with why), while you were
     /// elsewhere: marked in the sidebar until opened.
     unsent: HashSet<String>,
@@ -486,6 +492,7 @@ impl Workspace {
                 Go::Opened(address) => {
                     this.permissions.update(cx, |permissions, cx| permissions.opened(address, cx));
                 }
+                Go::Setting(place) => this.show_setting(place, window, cx),
                 Go::AddMachine => {
                     if let Some(view) = this.area_view(Area::Computers).cloned() {
                         view.update(cx, |view, cx| view.select(Some("add".into()), cx));
@@ -539,6 +546,9 @@ impl Workspace {
             landing_place: None,
             landing_picked: false,
             started: HashMap::new(),
+            started_on: HashMap::new(),
+            runs_on: Vec::new(),
+            _runs_on_follow: None,
             unsent: HashSet::new(),
             collapsed: HashSet::new(),
             showing_all: HashSet::new(),
@@ -634,6 +644,22 @@ impl Workspace {
                     }
                 }
             }));
+            // Where a new session can run, as the nearest box says it (an older box without it:
+            // this computer alone, so no Runs on).
+            let follow = client.follow_runs_on();
+            let updates = follow.updates().clone();
+            workspace._runs_on_follow = Some(follow);
+            workspace.tasks.push(cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    let rows = match update {
+                        Followed::Now(said) => said.computers,
+                        Followed::Failed(_) => Vec::new(),
+                    };
+                    if this.update(cx, |this, cx| this.take_runs_on(rows, cx)).is_err() {
+                        break;
+                    }
+                }
+            }));
             // Where the box streams, what waits on you and your computers are followed as they
             // change; elsewhere they're read again (as the list changes, as Computers opens).
             if client.streams() {
@@ -702,6 +728,11 @@ impl Workspace {
         };
         self.take_list(update, cx);
         self.landing.update(cx, |composer, cx| composer.read_at_once(cx));
+        #[cfg(feature = "stand-in")]
+        {
+            let rows = self.client.runs_on_at_once().map(|said| said.computers).unwrap_or_default();
+            self.take_runs_on(rows, cx);
+        }
         self.rings.update(cx, |rings, cx| rings.read_at_once(cx));
         self.read_computers(cx);
         if matches!(self.welcome, Welcome::Had | Welcome::Unknown) {
@@ -1818,6 +1849,8 @@ impl Workspace {
     /// now, or that computer is away and its row can't be opened).
     pub fn client_for(&self, session: &str) -> Option<BoxClient> {
         match self.listing.computer_of(session) {
+            // (Started here on another computer, before the setup's list has it.)
+            None if self.started_on.contains_key(session) => self.client.peer(&self.started_on[session]),
             None => Some(self.client.clone()),
             Some(on) if on.opens() => self.client.peer(&on.id),
             Some(_) => None,
@@ -2174,6 +2207,45 @@ impl Workspace {
         }
     }
 
+    /// Where a new one starts on a computer (none: this one) before one's picked: its newest
+    /// project as the lists have it, else a chat.
+    fn default_place_on(&self, computer: Option<&str>) -> StartIn {
+        let Some(computer) = computer else { return self.default_place() };
+        self.landing_projects(Some(computer)).into_iter().next().map_or(StartIn::Chat, |(directory, _)| StartIn::Project(directory))
+    }
+
+    /// The projects a new one can start in on a computer (none: this one), newest first, by
+    /// their key in the lists and name.
+    pub fn landing_projects(&self, computer: Option<&str>) -> Vec<(String, String)> {
+        self.listing
+            .sidebar()
+            .projects
+            .iter()
+            .filter(|group| match (computer, kuvo_box::sessions::project_elsewhere(&group.directory)) {
+                (None, None) => !group.elsewhere,
+                (Some(computer), Some((on, _))) => group.elsewhere && on == computer,
+                _ => false,
+            })
+            .map(|group| (group.directory.clone(), group.name.clone()))
+            .collect()
+    }
+
+    /// Runs on, as the nearest box says it: the landing composer and New Bot offer it.
+    fn take_runs_on(&mut self, rows: Vec<kuvo_box::models::RunsOnComputer>, cx: &mut Context<Self>) {
+        self.runs_on = rows.clone();
+        let now = self.now();
+        self.landing.update(cx, |composer, cx| composer.set_runs_on(rows.clone(), now, cx));
+        if let Some(view) = self.area_view(Area::Bots).cloned() {
+            view.update(cx, |view, cx| view.set_runs_on(rows, now, cx));
+        }
+        cx.notify();
+    }
+
+    /// Runs on, as the nearest box last said it.
+    pub fn runs_on(&self) -> &[kuvo_box::models::RunsOnComputer] {
+        &self.runs_on
+    }
+
     pub fn landing_place(&self) -> StartIn {
         self.landing_place.clone().unwrap_or_else(|| self.default_place())
     }
@@ -2196,10 +2268,13 @@ impl Workspace {
 
     fn composer_event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            ComposerEvent::Started { session, project, written, files, sent, .. } => {
+            ComposerEvent::Started { session, project, written, files, sent, computer, .. } => {
                 // What the box said of what was written (or why it didn't go) goes to the new
                 // conversation's own composer; the landing one is left empty.
                 self.started.insert(session.clone(), project.clone());
+                if let Some(computer) = computer {
+                    self.started_on.insert(session.clone(), computer.clone());
+                }
                 let composer = self.composer_for(session, window, cx);
                 composer.update(cx, |composer, cx| composer.take_sent(written, files.clone(), sent.clone(), cx));
                 // Opened, unless you've gone to another conversation meanwhile, or started
@@ -2215,6 +2290,24 @@ impl Workspace {
                     // You're elsewhere: what didn't go waits there, marked in the sidebar.
                     self.unsent.insert(session.clone());
                 }
+            }
+            // Another computer picked in Runs on: a new one starts where that computer's lists
+            // say (its newest project, else a chat), with what it offers read there.
+            ComposerEvent::RunsOn(computer) => {
+                let place = self.default_place_on(computer.as_deref());
+                self.landing_place = Some(place.clone());
+                self.landing_picked = false;
+                self.place_panel(cx);
+                self.landing.update(cx, |composer, cx| {
+                    composer.set_start(place, cx);
+                    if composer.reads() {
+                        composer.read_models(cx);
+                        composer.read_approval(cx);
+                    } else {
+                        composer.read_at_once(cx);
+                    }
+                });
+                cx.notify();
             }
             // (A group chat's composer is its chat's; what's on its way, its conversation's.)
             ComposerEvent::Wrote | ComposerEvent::Outgoing => {}
@@ -2912,10 +3005,17 @@ impl Workspace {
 
     /// Settings, on a place there (its key; a section's name alone is the computer shown's).
     pub fn show_setting(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = self.area_view(Area::Settings).cloned() {
-            view.update(cx, |view, cx| view.select(Some(section.to_owned()), cx));
+        // A computer's settings are under Computers › that computer (a section named alone is this
+        // computer's); your own, in Settings.
+        let (area, place) = match section {
+            yours if yours.starts_with("yours/") => (Area::Settings, yours.to_owned()),
+            place if place.starts_with("box/") => (Area::Computers, place.to_owned()),
+            named => (Area::Computers, crate::settings::box_key("", &named.to_lowercase().replace(' ', "-"))),
+        };
+        if let Some(view) = self.area_view(area).cloned() {
+            view.update(cx, |view, cx| view.select(Some(place), cx));
         }
-        self.show_area(Area::Settings, window, cx);
+        self.show_area(area, window, cx);
     }
 
     fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
@@ -4014,8 +4114,10 @@ impl Workspace {
     }
 
     fn sidebar_available(&self, cx: &App) -> bool {
+        // (A computer that can't be reached keeps its sidebar, its rows as last read; one held
+        // has nothing to list, but in Settings.)
         self.first_run().is_none() && !self.awaits_box()
-            && (self.area == Area::Settings || self.blocked(cx).is_none())
+            && (self.area == Area::Settings || self.blocked(cx).is_none_or(|blocked| blocked.kind != "held"))
     }
 
     fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
@@ -4111,6 +4213,13 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.area != Area::Settings
             && let Some(settings) = self.area_view(Area::Settings).and_then(|view| view.read(cx).settings()).cloned()
+        {
+            settings.update(cx, |settings, _| settings.hidden());
+        }
+        // (And a computer's, under Computers, off screen.)
+        if let Some(view) = self.area_view(Area::Computers)
+            && let Some(settings) = view.read(cx).computer_settings().cloned()
+            && (self.area != Area::Computers || view.read(cx).settings().is_none())
         {
             settings.update(cx, |settings, _| settings.hidden());
         }
@@ -4214,11 +4323,16 @@ impl Render for Workspace {
             library.update(cx, |view, cx| view.set_bots(bots, cx));
         }
         let sessions = self.area == Area::Sessions;
-        // A computer that can't be used shows why, and what moves it on, in every area but
-        // Settings, never areas that open empty.
-        let blocked = (self.area != Area::Settings).then(|| self.blocked(cx)).flatten();
+        // A computer whose Kuvo this app can't read (older, held) is each area's title and one
+        // quiet line, with what moves it on, in every area but Settings: never a page of its own,
+        // never one opened empty. One that can't be reached keeps the rows it last had.
+        let blocked = (self.area != Area::Settings).then(|| self.blocked(cx)).flatten().filter(|blocked| blocked.kind == "held");
         let content: AnyElement = if let Some(blocked) = &blocked {
-            div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
+            let title = match self.area_view(self.area) {
+                Some(view) if self.area != Area::Sessions => view.read(cx).title(cx),
+                _ => self.area.name().into(),
+            };
+            div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::quiet(blocked, title, cx)).into_any_element()
         } else if in_insights {
             insights.into_any_element()
         } else if in_library {

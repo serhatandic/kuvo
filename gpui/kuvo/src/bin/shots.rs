@@ -218,6 +218,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "sessions-all-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sessions-computer-updating", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sessions-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Runs on beside the model in a new session's composer, devbox away (closed, then open), and a
+    // computer's settings under Computers › that computer.
+    Screen { slug: "runs-on", width: 1280., height: 820., session: None, typed: Some("Look at the deploy logs"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "runs-on-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(runs_on_open) },
+    Screen { slug: "computer-settings", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_settings) },
     Screen { slug: "landing-sky-dawn", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dawn) },
     Screen { slug: "landing-sky-day", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_day) },
     Screen { slug: "landing-sky-dusk", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dusk) },
@@ -1089,7 +1094,8 @@ fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Worksp
 /// Settings' view, on `section`.
 fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &mut Context<Workspace>) -> gpui::Entity<SettingsView> {
     workspace.show_setting(section, window, cx);
-    workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned()).expect("Settings")
+    // (Your own in Settings; a computer's under Computers › that computer.)
+    workspace.area_view(workspace.area()).and_then(|view| view.read(cx).settings().cloned()).expect("Settings")
 }
 
 fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1219,6 +1225,15 @@ fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<
     if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("older-budget").cloned()) {
         view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
+}
+/// Runs on's menu open, in a new session's composer.
+fn runs_on_open(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let landing = w.landing().clone();
+    landing.update(cx, |composer, cx| composer.open_runs_on(window, cx));
+}
+/// devbox's settings, under Computers › devbox: its Permissions.
+fn computer_settings(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, &kuvo::settings::box_key("key_devbox", "permissions"), window, cx);
 }
 fn this_mac(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "computer", window, cx);
@@ -2999,9 +3014,10 @@ fn main() -> anyhow::Result<()> {
                 }), include_bytes!("../../../assets/icons/activity.svg"));
                 stand_in.set_queue("ses_signup", vec![]);
             }
-            if matches!(screen.slug, "sessions-all-computers" | "sessions-computer-updating" | "sessions-computer-away") {
+            if matches!(screen.slug, "sessions-all-computers" | "sessions-computer-updating" | "sessions-computer-away" | "runs-on" | "runs-on-open") {
                 stand_in.share_setup_lists();
                 match screen.slug {
+                    "runs-on" | "runs-on-open" => stand_in.setup_away("key_devbox", NOW - 3.0 * 3_600_000.0, false),
                     "sessions-computer-updating" => stand_in.setup_away("key_devbox", NOW - 90_000.0, true),
                     "sessions-computer-away" => stand_in.setup_away("key_devbox", NOW - 3.0 * 3_600_000.0, false),
                     _ => {}

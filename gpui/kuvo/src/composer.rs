@@ -21,7 +21,7 @@ use crate::model_picker::{Catalog, ModelPicker};
 
 use kuvo_box::approval::{Approval, Here, Picked, Shown};
 use kuvo_box::client::DraftReceiptStatus;
-use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, Starred, effort_title};
+use kuvo_box::models::{ModelState, Offered, OfferedModel, RunsOnComputer, Side, StartHow, StartIn, Starred, effort_title};
 use kuvo_box::typed::{self, Answer, ModelRef};
 use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
@@ -93,7 +93,10 @@ pub enum ComposerEvent {
     /// A new conversation was started on the box (in `folder`, filed under `project`), and what
     /// was written (`written`) and its attached `files` sent to it: what the box said of it, or
     /// why it couldn't go, is for the conversation's own composer.
-    Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Result<Sent, String> },
+    Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Result<Sent, String>, computer: Option<String> },
+    /// Another computer was picked in Runs on (none: this one): where a new one starts is that
+    /// computer's to offer.
+    RunsOn(Option<String>),
     /// A group chat took what was written, or stopped: it's to be read again.
     Wrote,
     /// What's on its way from here changed (`outgoing`): the conversation draws it again.
@@ -231,6 +234,15 @@ pub struct Offer {
 
 pub struct Composer {
     client: BoxClient,
+    /// The window's box, where another computer's is reached from: a new conversation's composer
+    /// turns to the box of the computer picked in Runs on (`client`), and back.
+    home: BoxClient,
+    /// Runs on, as the nearest box says it (one computer alone: no chip), and when that was.
+    runs_on: Vec<RunsOnComputer>,
+    runs_on_now: f64,
+    /// The computer picked in Runs on, by its key (none: this one).
+    on: Option<String>,
+    runs_on_menu: PopoverMenuHandle,
     target: Target,
     field: Entity<TextField>,
     field_held: bool,
@@ -405,7 +417,12 @@ impl Composer {
             attachment_generation: 0,
             item_keys: Vec::new(),
             item_key: 0,
+            home: client.clone(),
             client,
+            runs_on: Vec::new(),
+            runs_on_now: 0.0,
+            on: None,
+            runs_on_menu: PopoverMenuHandle::default(),
             target,
             field,
             field_held: false,
@@ -566,9 +583,137 @@ impl Composer {
         match &self.target {
             Target::Session { .. } => self.folder.clone(),
             // (The box reads its own lists for one that isn't a folder there.)
-            Target::New(StartIn::Project(project)) => Some(project.clone()),
+            Target::New(StartIn::Project(project)) => Some(there(project).to_owned()),
             Target::New(_) | Target::Group { .. } => None,
         }
+    }
+
+    // MARK: Runs on
+
+    /// Runs on, as the nearest box says it, `now` (for when an away one was last seen). The one
+    /// picked going away, or no longer listed: this computer, again.
+    pub fn set_runs_on(&mut self, computers: Vec<RunsOnComputer>, now: f64, cx: &mut Context<Self>) {
+        self.runs_on_now = now;
+        if self.runs_on == computers {
+            return;
+        }
+        self.runs_on = computers;
+        if let Some(on) = self.on.clone()
+            && !self.runs_on.iter().any(|row| row.computer.id == on && !row.away && !row.here)
+        {
+            self.pick_computer(None, cx);
+        }
+        cx.notify();
+    }
+
+    /// The computer picked in Runs on, by its key (none: this one).
+    pub fn runs_on(&self) -> Option<&str> {
+        self.on.as_deref()
+    }
+
+    /// Picks where a new conversation runs: another computer by its key, or this one (none).
+    /// What it starts on is that computer's to offer, so what was picked for the last is let go.
+    pub fn pick_computer(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if !matches!(self.target, Target::New(_)) || self.on == key {
+            return;
+        }
+        // (Only one Runs on lists and can be reached: this window's own box otherwise.)
+        let client = match &key {
+            Some(key) => match self.runs_on.iter().find(|row| row.computer.id == *key && !row.away && !row.here).and_then(|_| self.home.peer(key)) {
+                Some(client) => client,
+                None => return,
+            },
+            None => self.home.clone(),
+        };
+        self.client = client;
+        self.on = key.clone();
+        self.picked = None;
+        self.picked_approval = None;
+        self.confirming_full_access = false;
+        self.approval = None;
+        self.here = None;
+        self.catalog = None;
+        self.models = Models::default();
+        self.computer = self.runs_on_name(key.as_deref()).into();
+        cx.emit(ComposerEvent::RunsOn(key));
+        cx.notify();
+    }
+
+    /// A computer's name as Runs on says it: "This Mac" for this window's own.
+    fn runs_on_name(&self, key: Option<&str>) -> String {
+        let row = match key {
+            Some(key) => self.runs_on.iter().find(|row| row.computer.id == key),
+            None => self.runs_on.iter().find(|row| row.here),
+        };
+        match row {
+            Some(row) if !row.here => row.computer.name.clone(),
+            Some(row) if !self.home.here() => row.computer.name.clone(),
+            _ => crate::launch::HERE.to_owned(),
+        }
+    }
+
+    /// What makes Runs on's menu: your computers as listed now, an away one with when it was seen.
+    fn runs_on_menu(&self, cx: &mut Context<Self>) -> impl Fn(&mut App) -> Entity<Menu> + 'static {
+        let rows: Vec<(Option<String>, String, Option<String>, bool)> = self
+            .runs_on
+            .iter()
+            .map(|row| {
+                let key = (!row.here).then(|| row.computer.id.clone());
+                let name = self.runs_on_name(key.as_deref());
+                let said = row.away.then(|| if row.updating { "Updating…".to_owned() } else { row.last_seen.map(|seen| format!("seen {}", crate::time::ago(seen, self.runs_on_now))).unwrap_or_else(|| "Away".into()) });
+                (key, name, said, row.away)
+            })
+            .collect();
+        let (this, picked) = (cx.entity().downgrade(), self.on.clone());
+        move |cx| {
+            let (rows, this, picked) = (rows.clone(), this.clone(), picked.clone());
+            cx.new(|cx| {
+                let mut menu = Menu::new(cx).width(px(240.)).header("Runs on");
+                for (key, name, said, away) in rows {
+                    let this = this.clone();
+                    let checked = key == picked;
+                    let mut entry = MenuEntry::new(name).icon(IconName::Computer).checked(checked).disabled(away);
+                    if let Some(said) = said {
+                        entry = entry.detail(said);
+                    }
+                    menu = menu.entry(entry.on_select(move |_, cx| {
+                        this.update(cx, |this, cx| this.pick_computer(key.clone(), cx)).ok();
+                    }));
+                }
+                menu
+            })
+        }
+    }
+
+    /// Opens Runs on's menu (for the shots, which press nothing).
+    pub fn open_runs_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let menu = self.runs_on_menu(cx)(cx);
+        self.runs_on_menu.open(menu, window, cx);
+    }
+
+    /// "This Mac ⌄": where a new conversation runs, beside its model, and the menu of your
+    /// computers; one that's away says when it was seen, and can't be picked. None with only one.
+    fn runs_on_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(self.target, Target::New(_)) || self.item_editor || self.runs_on.len() < 2 {
+            return None;
+        }
+        let label = self.runs_on_name(self.on.as_deref());
+        let trigger = div().debug_selector(|| "runs-on-chip".into()).child(
+            Button::new("runs-on-chip", label)
+                .disabled(self.home.gate().is_held() || self.sending)
+                .ghost()
+                .size(ButtonSize::Small)
+                .icon(IconName::Computer)
+                .tooltip("Runs on: the computer the session works on"),
+        );
+        let build = self.runs_on_menu(cx);
+        Some(
+            PopoverMenu::new("runs-on-menu", trigger, move |_, cx| build(cx))
+            .with_handle(self.runs_on_menu.clone())
+            .above()
+            .centered()
+            .into_any_element(),
+        )
     }
 
     /// What became of `written` and its attached `files`, sent from the landing view to the
@@ -1094,7 +1239,13 @@ impl Composer {
             }
             Target::New(place) => {
                 let model = self.picked.clone();
-                let how = StartHow { worktree: self.starts_in_worktree(), approval: self.picked_approval.clone() };
+                let how = StartHow { worktree: self.starts_in_worktree(), approval: self.picked_approval.clone(), computer: self.on.clone() };
+                let on = self.on.clone();
+                // (Another computer's project starts in its folder there.)
+                let place = match place {
+                    StartIn::Project(project) => StartIn::Project(there(&project).to_owned()),
+                    StartIn::Chat => StartIn::Chat,
+                };
                 let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
                 self.spawn(
                     cx,
@@ -1121,6 +1272,7 @@ impl Composer {
                                 written: text.clone(),
                                 files,
                                 sent,
+                                computer: on,
                             })
                             }
                             Err(error) => {
@@ -2323,6 +2475,12 @@ impl Composer {
     }
 }
 
+/// A project's folder on the computer it's on: another computer's project is keyed in the lists by
+/// its computer and folder (`elsewhere_project`).
+fn there(project: &str) -> &str {
+    kuvo_box::sessions::project_elsewhere(project).map_or(project, |(_, directory)| directory)
+}
+
 /// The model chip: the model's name, opening `picker` (`ModelPicker`) above it.
 pub fn model_chip<V: 'static>(name: String, disabled: bool, handle: &PopoverMenuHandle, picker: impl Fn(&mut V, &mut Window, &mut Context<V>) -> Entity<ModelPicker> + 'static, cx: &mut Context<V>) -> AnyElement {
     let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(disabled).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
@@ -2738,6 +2896,7 @@ impl Render for Composer {
                     .children(self.mode_chip(cx))
                     .children(self.model_chip(cx))
                     .children(self.effort_chip(cx))
+                    .children(self.runs_on_chip(cx))
                     .children(self.worktree_chip(cx))
                     .child(div().flex_1())
                     .children(choices)

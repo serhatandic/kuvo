@@ -121,6 +121,8 @@ enum Item {
     /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
     Action { key: String, title: String, sub: Option<String>, button: String, danger: bool, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
+    /// Its settings, kept on it by its box: the row that opens them (`place`, the settings' key).
+    Settings { place: String },
     /// The address field; `can`: the box adds computers.
     AddForm { can: bool },
     /// The hosts the box suggests, those that go with what's typed.
@@ -796,6 +798,10 @@ impl ComputersView {
                 }
             }
         }
+        // Its settings, kept on it: under Computers › it, not in Settings (your own there).
+        items.push(Item::Group("Settings".into()));
+        let key = if computer.here { String::new() } else { computer.key.clone() };
+        items.push(Item::Settings { place: crate::settings::box_key(&key, "computer") });
         items.push(Item::Group("About".into()));
         // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
         // reached, says little, and a row of "Not said yet" tells you nothing.)
@@ -1203,6 +1209,25 @@ impl ComputersView {
                 let words = div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().text_ui(TypeSize::Body).text_color(c.text).child(title))
                     .children(sub.map(|sub| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(sub)));
                 card_row(key.clone(), first, last, cx).child(words).child(button).into_any_element()
+            }
+            Item::Settings { place } => {
+                let words = div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(space::S0_5)
+                    .child(div().text_ui(TypeSize::Body).text_color(c.text).child("Settings"))
+                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("How Kuvo runs there, its permissions, browser, storage and sign-ins."));
+                card_row("computer-settings".into(), true, true, cx)
+                    .id("computer-settings")
+                    .cursor_pointer()
+                    .hover(|d| d.bg(c.hover))
+                    .child(Icon::new(IconName::Settings).color(c.icon))
+                    .child(words)
+                    .child(Icon::new(IconName::ChevronRight).color(c.icon))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ComputersEvent::Select(Some(place.clone())))))
+                    .into_any_element()
             }
             Item::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element(),
             Item::Note { key, words, busy } => div()
