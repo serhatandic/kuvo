@@ -1,6 +1,9 @@
 //! The chat list: a conversation's messages, newest at the bottom.
 //!
 //! - Anchored to the bottom: a short conversation sits just above the composer.
+//! - Fills the whole height, with the composer floating over its bottom: the list is padded at its
+//!   end by the composer's height ([`ChatListState::floating`] measures it), so the last message
+//!   scrolls clear of it while what's above scrolls under it.
 //! - Follows new text while it streams, as long as you're at the bottom.
 //! - Scroll up and it stays exactly where you left it while text keeps arriving.
 //! - While you're away from the bottom, a button jumps back to the latest; it says "New
@@ -14,7 +17,7 @@ use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     AnyElement, App, Context, FollowMode, InteractiveElement, IntoElement, ListAlignment,
-    ListState, ParentElement, RenderOnce, Styled, Window, div, list, px,
+    ListState, ParentElement, Pixels, RenderOnce, Styled, Window, canvas, div, list, px,
 };
 
 use crate::{
@@ -28,6 +31,8 @@ use crate::{
 pub struct ChatListState {
     list: ListState,
     unseen: Rc<Cell<bool>>,
+    /// The height of what floats over the list's bottom (the composer, and what's stacked on it).
+    inset: Rc<Cell<Pixels>>,
     /// Measures the messages again when the text size changes, while the list is kept.
     _sized: Rc<gpui::Subscription>,
 }
@@ -48,7 +53,19 @@ impl ChatListState {
             }
             view.update(cx, |_, cx| cx.notify()).ok();
         });
-        Self { list, unseen, _sized: sized }
+        Self { list, unseen, inset: Rc::new(Cell::new(px(0.))), _sized: sized }
+    }
+
+    /// Put inside what floats over the list's bottom, filling it: measures its height as it's laid
+    /// out, and pads the list's end by as much (drawn again at once where it changed, so a composer
+    /// that grows never covers the last message).
+    pub fn floating(&self) -> impl IntoElement {
+        measured_height(self.inset.clone())
+    }
+
+    /// How much of the list's bottom is under what floats over it.
+    pub fn bottom_inset(&self) -> Pixels {
+        self.inset.get()
     }
 
     /// Messages were added at the end.
@@ -147,10 +164,27 @@ impl ChatListState {
         }
         let view = self.list.viewport_bounds();
         match self.list.bounds_for_item(count - 1) {
-            Some(last) => last.bottom() > view.bottom() + px(1.),
+            Some(last) => last.bottom() > view.bottom() - self.inset.get() + px(1.),
             None => true,
         }
     }
+}
+
+/// Put inside what floats over something's bottom, filling it: keeps its height in `height` as it's
+/// laid out, and draws the window again where it changed (so what's padded by it follows at once).
+pub fn measured_height(height: Rc<Cell<Pixels>>) -> impl IntoElement {
+    div().absolute().top_0().left_0().size_full().child(
+        canvas(
+            move |bounds, window, _| {
+                if (height.get() - bounds.size.height).abs() > px(0.5) {
+                    height.set(bounds.size.height);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .size_full(),
+    )
 }
 
 type RenderItem = Box<dyn FnMut(usize, &mut Window, &mut App) -> AnyElement>;
@@ -174,6 +208,7 @@ impl RenderOnce for ChatList {
         let away = self.state.away_from_latest();
         let unseen = self.state.has_unseen();
         let state = self.state.clone();
+        let inset = self.state.inset.get();
         let surface = cx.theme().colors.surface;
         let shadow = cx.theme().elevated_shadow();
         let jump = away.then(|| {
@@ -189,7 +224,7 @@ impl RenderOnce for ChatList {
             };
             div()
                 .absolute()
-                .bottom(space::S4)
+                .bottom(inset + space::S4)
                 .left_0()
                 .right_0()
                 .flex()
@@ -210,7 +245,7 @@ impl RenderOnce for ChatList {
         div()
             .relative()
             .size_full()
-            .child(list(self.state.list.clone(), self.render).size_full())
+            .child(list(self.state.list.clone(), self.render).size_full().pb(inset))
             .children(jump)
     }
 }

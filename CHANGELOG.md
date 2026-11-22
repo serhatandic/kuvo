@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The composer floats over the conversation: messages scroll under it instead of stopping at its top edge, and the last one always scrolls clear of it, in sessions, bots, group chats and the side chat.
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
 
 - Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.

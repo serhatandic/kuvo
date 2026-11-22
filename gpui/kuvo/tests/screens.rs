@@ -236,6 +236,30 @@ fn earlier_messages_go_above_without_moving_what_youre_reading(cx: &mut TestAppC
     assert!(matches!(entries[0], Entry::Earlier));
 }
 
+/// The composer floats over the conversation, as the user asked (11-23): at the end, the last
+/// message ends above it; scrolled up a little, what's read goes on under it instead of being cut
+/// off at its top.
+#[gpui::test]
+fn the_conversation_scrolls_under_the_floating_composer(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_lighthouse", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
+    // (Drawn twice: the composer's height is measured as it's laid out.)
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let composer = bounds(cx, "composer-card").expect("the composer");
+    let last = bounds(cx, &format!("entry-{}", keys.last().unwrap())).expect("the last message shows at the end");
+    assert!(last.bottom() <= composer.top(), "the last message ends above the composer: {last:?}, {composer:?}");
+
+    // A little up: the messages go on under the composer.
+    view.read_with(cx, |view, _| view.list().scroll_by(px(-120.)));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let under = keys.iter().filter_map(|key| bounds(cx, &format!("entry-{key}"))).any(|entry| entry.bottom() > composer.top() + px(40.) && entry.top() < composer.bottom());
+    assert!(under, "what's read is drawn under the composer, not cut off at its top");
+}
+
 /// An earlier page that ends in the middle of what the agent did: the steps at the top of what was
 /// shown go into the group the page started, and the reader stays where they were reading.
 #[gpui::test]
