@@ -299,6 +299,8 @@ pub struct Workspace {
     pages: HashMap<String, ProjectPage>,
     /// Now, as the sidebar's times count from it (fixed for shots).
     now: Option<f64>,
+    /// The hour of day the landing's sky shows (fixed for shots); otherwise this computer's clock.
+    sky_hour: Option<f32>,
     focus: FocusHandle,
     sidebar_toggle_focus: FocusHandle,
     /// The sidebar's search, and what the box found in conversations for it (`finds_for`).
@@ -544,6 +546,7 @@ impl Workspace {
             showing_all: HashSet::new(),
             pages: HashMap::new(),
             now: None,
+            sky_hour: None,
             focus: cx.focus_handle(),
             sidebar_toggle_focus: cx.focus_handle(),
             search,
@@ -1592,6 +1595,17 @@ impl Workspace {
         self.now.unwrap_or_else(time::now_ms)
     }
 
+    /// The local hour of day (`0.0..24.0`) the landing's sky shows: this computer's clock.
+    pub fn sky_hour(&self) -> f32 {
+        self.sky_hour.unwrap_or_else(|| time::hour_of_day(time::now_ms()))
+    }
+
+    /// Fixes the landing's sky at `hour` (shots, so each time of day can be seen).
+    pub fn set_sky_hour(&mut self, hour: f32, cx: &mut Context<Self>) {
+        self.sky_hour = Some(hour);
+        cx.notify();
+    }
+
     /// Counts the sidebar's times from `now` (shots, so they read the same each time).
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
@@ -1971,6 +1985,14 @@ impl Workspace {
     }
 
     fn tick_wake_labels(&self, cx: &mut Context<Self>) {
+        // The landing's sky moves on a step every five minutes: draw it again when it has.
+        if self.is_landing() && self.sky_hour.is_none() {
+            let now = time::now_ms();
+            let step = |ms: f64| kuvo_ui::sky::stepped(time::hour_of_day(ms));
+            if step(now) != step(now - 30_000.) {
+                cx.notify();
+            }
+        }
         if self.area == Area::Bots && let Some(area) = self.area_view(Area::Bots) {
             area.update(cx, |_, cx| cx.notify());
         }

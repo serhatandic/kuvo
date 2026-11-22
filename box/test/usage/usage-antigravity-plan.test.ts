@@ -93,7 +93,7 @@ describe("Antigravity discovery", () => {
       } finally {
         ready.releaseLock()
       }
-      const accounts = new UsageAccounts(root, true, { antigravity: { bases: [cloud.url.origin] } })
+      const accounts = new UsageAccounts(root, { antigravity: { bases: [cloud.url.origin] } })
       const account = accounts.all().find(item => item.providerID === "antigravity")!
       const reading = await account.limits!.read!(Date.now())
       expect(reading?.windows.map(window => [window.id, window.used])).toEqual([

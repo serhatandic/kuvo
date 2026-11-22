@@ -19,6 +19,7 @@ mod motion_tests;
 pub mod output;
 pub mod row;
 pub mod selection;
+pub mod sky;
 pub mod small;
 pub mod text_field;
 pub mod theme;

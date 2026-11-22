@@ -2757,7 +2757,7 @@ describe("the plan's limits a turn hears", () => {
     mkdirSync(run)
     writeFileSync(join(run, "bridge.json"), JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: 1, password: "fixture" })))
     const source = { every: claude.limits.every, signIn: claude.limits.signIn }
-    const reader = usageReader({ box: root, run, home, bots: join(root, "bots"), managedDefaults: true }, {
+    const reader = usageReader({ box: root, run, home, bots: join(root, "bots") }, {
       accounts: () => [{ providerID: provider, instance: claude.instance, limits: source }],
       engineCredentials: async () => [],
     })
