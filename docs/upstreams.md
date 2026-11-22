@@ -23,7 +23,7 @@ Kuvo Code runs one pinned build of `@opencode/cli`. A new opencode release bring
 
 ## Code copied from other projects
 
-- **browser-use**'s page reader, `box/src/browser/buildDomTree.js` (version in `scripts/third-party-licenses.sh`): ours is 0.4.2's, unchanged, and 0.4.2 is the last browser-use release that has the file; later ones read pages through Chrome's DevTools protocol, which WebKit doesn't offer. Check new releases in case it comes back, and port fixes to it by hand if the agent's browsing needs them.
+- **browser-use**'s page reader, `box/src/browser/buildDomTree.js` (version in `scripts/third-party-licenses.sh`): the embedded reader from 0.4.2 gives the box browser's tools their numbered interactive elements. Chrome for Testing runs it through CDP. Keep the tool's page-reading contract when porting upstream fixes.
 - **Brand marks** in `gpui/assets/marks` come from OpenUsage and models.dev. See
   `gpui/LICENSES-DEPS.md` and `THIRD_PARTY_LICENSES.txt`.
 

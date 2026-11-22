@@ -1,5 +1,9 @@
 # Contributor License Agreement
 
+> Historical terms for previously accepted contributions. Kuvo Code does not
+> accept outside pull requests or code contributions. See the
+> [current policy](CONTRIBUTING.md).
+
 This agreement documents the rights granted by contributors to Serhat Andıç
 (the **project owner**) for contributions to Kuvo Code. It is based on the grant of
 rights in the Harmony Individual Contributor License Agreement, with the
