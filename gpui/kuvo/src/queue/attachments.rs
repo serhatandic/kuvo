@@ -206,6 +206,7 @@ impl Cards {
                 again: Rc::new(move |_, _, cx| { retry.update(cx, |page, cx| page.load_attachment(&load, true, cx)).ok(); }),
                 files: &[],
                 file_actions: crate::shown_files::Actions::none(),
+                items: None,
             };
             let failed = matches!(self.read.get(&key), Some(Read::Failed { .. }));
             let file = file.clone();

@@ -2,10 +2,11 @@
 //! by their parts (what you wrote, the keyword it went with, who it's from, files it names); one
 //! another agent wrote, and its sessions' news, as a card from that agent; the agent's words
 //! (Markdown); what it did between its words (tool steps and thinking, across its steps) as one
-//! group, folded to a line that sums it up; the end of each turn as how long it worked. What's only
+//! group, folded to a line that sums it up; a turn that didn't finish, said at its end. What's only
 //! for the agent (the box's other notes, a switch of mode) shows nothing.
 
 use kuvo_ui::motion::{MotionExt as _};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -18,6 +19,7 @@ use kuvo_box::{Conversation, Parts, pictures};
 use kuvo_box::pictures::Picture;
 
 use crate::pictures::Looks;
+use crate::queue::chat_references::Items;
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     markdown::{self, Markdown, Selectable},
@@ -47,8 +49,9 @@ pub enum Entry {
     /// A message this agent sent to another agent (`send_message`), standing on its own in the
     /// conversation in order with the words and steps around it.
     Sent { key: String, step: Rc<Step>, part: usize },
-    /// How long a turn worked, or how it ended, at its end.
-    TurnEnd { id: String, outcome: String, worked: Option<f64> },
+    /// How a turn ended, at its end, when it didn't finish (stopped, or failed). A finished turn
+    /// shows nothing there (the user, 11-17: no "Worked for" line).
+    TurnEnd { id: String, outcome: String },
     /// A run under way, after what it has said so far.
     Working { title: String },
     /// Yours, sent from here and on its way (`Composer::outgoing`): drawn at once as your message,
@@ -59,23 +62,24 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub(crate) fn reference_text(&self) -> Vec<&str> {
+    /// The text it names Work Queue items in, as the box is asked what it names: its words, and
+    /// the item a Work Queue step's row is about ("#954").
+    pub(crate) fn reference_text(&self) -> Vec<Cow<'_, str>> {
         match self {
-            Entry::Message(message) => crate::queue::chat_references::message_text(message),
+            Entry::Message(message) => match &**message {
+                Message::User(user) if user.is_letter() => letters(user).into_iter().map(|letter| Cow::Owned(letter.said)).collect(),
+                message => crate::queue::chat_references::message_text(message).into_iter().map(Cow::Borrowed).collect(),
+            },
             Entry::Words { step, parts, .. } => parts.iter().filter_map(|&at| match step.content.get(at) {
-                Some(Content::Text(text)) => Some(text.as_str()),
+                Some(Content::Text(text)) => Some(Cow::Borrowed(text.as_str())),
                 _ => None,
             }).collect(),
-            Entry::Sent { step, part, .. } => match step.content.get(*part) {
-                Some(Content::Tool { state, .. }) => state
-                    .pointer("/input/text")
-                    .or_else(|| state.pointer("/input/message"))
-                    .and_then(Value::as_str)
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
-            },
-            Entry::Outgoing { words, .. } => vec![words.as_str()],
+            Entry::Steps { items, .. } => items.iter().filter_map(|(step, n)| match step.content.get(*n) {
+                Some(Content::Tool { name, state, .. }) => crate::tool_step::queue_item(name, state).map(|number| Cow::Owned(format!("#{number}"))),
+                _ => None,
+            }).collect(),
+            Entry::Sent { step, part, .. } => sent_letters(step, *part).into_iter().map(|letter| Cow::Owned(letter.said)).collect(),
+            Entry::Outgoing { words, .. } => vec![Cow::Borrowed(words.as_str())],
             _ => Vec::new(),
         }
     }
@@ -124,8 +128,6 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
         rows.push(Entry::Earlier);
         revisions.push(0);
     }
-    // A turn's length counts from its first message, as the Mac's does.
-    let mut asked_at: Option<f64> = None;
     let mut summarizing: Option<String> = None;
     // The group the agent's steps go on in: until anything else shows.
     let mut group: Option<usize> = None;
@@ -141,20 +143,16 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
             // Its sessions' news shows, as messages from them; the box's other notes don't.
             Message::User(user) if !user.news().is_empty() || user.unread_news().is_some() => Some(Entry::Message(Box::new(message))),
             Message::User(user) if user.is_box_note() => None,
-            Message::User(user) => {
-                asked_at.get_or_insert(user.time.created);
-                Some(Entry::Message(Box::new(message)))
-            }
+            Message::User(_) => Some(Entry::Message(Box::new(message))),
             Message::System(note) if !note.text.trim().is_empty() => Some(Entry::Message(Box::new(message))),
             Message::Shell(_) => Some(Entry::Message(Box::new(message))),
             Message::Other { kind, raw, .. } if kind == "compaction" => {
                 summarizing = (raw["status"].as_str() == Some("running")).then(|| raw["workingTitle"].as_str().unwrap_or_default().to_owned());
                 Some(Entry::Message(Box::new(message)))
             }
-            Message::Idle { id, time, outcome } => {
+            Message::Idle { id, outcome, .. } => {
                 summarizing = None;
-                let worked = asked_at.take().map(|asked| time.created - asked).filter(|worked| *worked > 0.0);
-                Some(Entry::TurnEnd { id: id.clone(), outcome: outcome.clone(), worked })
+                ends_unfinished(outcome).then(|| Entry::TurnEnd { id: id.clone(), outcome: outcome.clone() })
             }
             _ => None,
         };
@@ -313,10 +311,9 @@ pub fn render(
     selection: &SelectionState,
     looks: &Looks,
     actions: Option<Actions>,
-    references: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
-    let actions = actions.map(|actions| actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx));
+    let actions = actions.map(|actions| (actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx), actions.shown));
     let body: AnyElement = match entry {
         Entry::Earlier => own,
         Entry::Outgoing { words, files, pictures, failed, interruption, waits, .. } => {
@@ -327,7 +324,7 @@ pub fn render(
         Entry::Message(message) => match &**message {
             Message::User(user) if user.is_letter() => {
                 let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), base);
-                from_agents(&user.id, &letters(user), user.time.created, open, toggle, around, &sel, cx)
+                from_agents(&user.id, &letters(user), user.time.created, open, toggle, around, &sel, looks, cx)
             }
             // (What its view draws under it: the files sent with yours, while its copy has none.)
             message => div().child(message_body(ix, entry.key(), message, open, toggle, selection, looks, cx)).child(own).into_any_element(),
@@ -342,12 +339,11 @@ pub fn render(
         }
         Entry::Sent { key, step, part } => {
             let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
-            from_agents(key, &sent_letters(step, *part), step.time.created, open, toggle, around, &sel, cx)
+            from_agents(key, &sent_letters(step, *part), step.time.created, open, toggle, around, &sel, looks, cx)
         }
-        Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
+        Entry::TurnEnd { outcome, .. } => turn_end(outcome, cx),
         Entry::Working { title } => working(title, cx),
     };
-    let body = if let Some(references) = references { div().child(body).child(references).into_any_element() } else { body };
     frame_with(ix, entry.key(), body, matches!(entry, Entry::Working { .. }), actions)
 }
 
@@ -368,7 +364,7 @@ pub fn message_body(
         // The pictures it carried, as thumbnails on it, over its words (as 0.7 put them).
         Message::User(user) => {
             let shown: Vec<Picture> = looks.shown.iter().filter(|picture| picture.id.starts_with(&format!("{}#", user.id)) || picture.id.starts_with(&format!("{}@", user.id))).cloned().collect();
-            let words = user_message(ix, &user.parts(), sel(&[]), cx);
+            let words = user_message(ix, &user.parts(), sel(&[]), looks, cx);
             if shown.is_empty() {
                 words
             } else {
@@ -390,8 +386,9 @@ pub fn frame(ix: usize, key: &str, body: AnyElement, last: bool) -> AnyElement {
 }
 
 /// [`frame`], with `actions` (a message's time, Copy and Quote) under it, in the gap to the next
-/// row: shown while the pointer is over the row, and taking no room, so nothing moves.
-pub fn frame_with(ix: usize, key: &str, body: AnyElement, last: bool, actions: Option<AnyElement>) -> AnyElement {
+/// row: shown while the pointer is over the row (or, `true`, over another row of its reply), and
+/// taking no room, so nothing moves.
+pub fn frame_with(ix: usize, key: &str, body: AnyElement, last: bool, actions: Option<(AnyElement, bool)>) -> AnyElement {
     let last_gap = if last { space::S8 } else { space::S5 };
     let selector = format!("entry-{key}");
     let group = SharedString::from(format!("row-{key}"));
@@ -411,7 +408,10 @@ pub fn frame_with(ix: usize, key: &str, body: AnyElement, last: bool, actions: O
                 .max_w(px(COLUMN))
                 .min_w_0()
                 .child(body)
-                .children(actions.map(|actions| div().absolute().left_0().right_0().bottom(-ACTIONS).h(ACTIONS).invisible().group_hover(group, |s| s.visible()).child(actions))),
+                .children(actions.map(|(actions, shown)| {
+                    let row = div().absolute().left_0().right_0().bottom(-ACTIONS).h(ACTIONS);
+                    if shown { row.child(actions) } else { row.invisible().group_hover(group, |s| s.visible()).child(actions) }
+                })),
         )
         .into_any_element()
 }
@@ -424,6 +424,8 @@ const ACTIONS: gpui::Pixels = space::S5;
 pub struct Actions {
     /// When the message was written (ms since 1970).
     pub time: f64,
+    /// Shown now, the pointer being on another row of its reply.
+    pub shown: bool,
     /// Now, for saying its day.
     pub now: f64,
     /// Copy was just used on it.
@@ -432,6 +434,39 @@ pub struct Actions {
     pub copy: Rc<dyn Fn(&mut Window, &mut App)>,
     /// Quotes it into the composer, as Add to Chat does.
     pub quote: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// The replies among `rows`: for each of the agent's rows (its words, what it did, its messages to
+/// other agents), the row its reply ends with (the last of its words before anything else shows: you
+/// writing, a note, how the turn ended), which carries the reply's one time, Copy and Quote. None
+/// for other rows, and for a reply still under way.
+pub fn reply_ends(rows: &[Entry]) -> Vec<Option<usize>> {
+    let mut ends = vec![None; rows.len()];
+    let mut start: Option<usize> = None;
+    let mut last_words: Option<usize> = None;
+    let close = |ends: &mut Vec<Option<usize>>, start: Option<usize>, last_words: Option<usize>, upto: usize| {
+        if let (Some(start), Some(end)) = (start, last_words) {
+            ends[start..upto].iter_mut().for_each(|at| *at = Some(end));
+        }
+    };
+    for (ix, row) in rows.iter().enumerate() {
+        match row {
+            Entry::Words { .. } | Entry::Steps { .. } | Entry::Sent { .. } => {
+                start.get_or_insert(ix);
+                if matches!(row, Entry::Words { .. }) {
+                    last_words = Some(ix);
+                }
+            }
+            // (Under way: it has no end yet.)
+            Entry::Working { .. } => (start, last_words) = (None, None),
+            _ => {
+                close(&mut ends, start, last_words, ix);
+                (start, last_words) = (None, None);
+            }
+        }
+    }
+    close(&mut ends, start, last_words, rows.len());
+    ends
 }
 
 /// What Copy takes of `entry`, as Markdown, and when it was written: yours, and the agent's words.
@@ -490,21 +525,24 @@ fn actions_row(key: &str, yours: bool, actions: &Actions, cx: &App) -> AnyElemen
 /// The selectable text of a row, as [`render`] draws it, in reading order: what you wrote; the
 /// agent's words (`[part, block…]`), its thinking (`[part, 0]`) and what an opened step printed
 /// or changed (`[part, 0 and 1]`, `[part, file, line]`). For copying, without laying anything out.
-pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
+///
+/// `items`: the Work Queue items the conversation names, drawn (and so selected) as their chips'
+/// labels.
+pub fn units(entry: &Entry, open: &HashSet<Fold>, items: Option<&Items>) -> Vec<Unit> {
     match entry {
         Entry::Message(message) => match &**message {
             Message::User(user) if user.is_letter() => letters(user)
                 .iter()
                 .enumerate()
                 .filter(|(n, letter)| letter.opens(open, &user.id, *n))
-                .flat_map(|(n, letter)| markdown::units(&letter.said, &[n as u32]))
+                .flat_map(|(n, letter)| markdown::units(&labeled(items, &letter.said, true), &[n as u32]))
                 .collect(),
-            message => message_units(message, open),
+            message => message_units(message, open, items),
         },
         Entry::Words { step, parts, .. } => parts
             .iter()
             .filter_map(|n| match &step.content[*n] {
-                Content::Text(text) => Some(markdown::units(text, &[*n as u32])),
+                Content::Text(text) => Some(markdown::units(&labeled(items, text, true), &[*n as u32])),
                 _ => None,
             })
             .flatten()
@@ -523,7 +561,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
             .iter()
             .enumerate()
             .filter(|(n, letter)| letter.opens(open, key, *n))
-            .flat_map(|(n, letter)| markdown::units(&letter.said, &[n as u32]))
+            .flat_map(|(n, letter)| markdown::units(&labeled(items, &letter.said, true), &[n as u32]))
             .collect(),
         // (As the box's copy will be: what you wrote.)
         Entry::Outgoing { words, .. } => words_units(words),
@@ -532,22 +570,22 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
 }
 
 /// The selectable text of a message, as [`message_body`] draws it.
-pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
+pub fn message_units(message: &Message, open: &HashSet<Fold>, items: Option<&Items>) -> Vec<Unit> {
     match message {
         Message::User(user) => {
-            words_units(&user.parts().words)
+            words_units(&labeled(items, &user.parts().words, false))
         }
         Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
         Message::Assistant(step) => {
             let mut units = Vec::new();
             for (n, content) in step.content.iter().enumerate() {
                 match content {
-                    Content::Text(text) if !text.trim().is_empty() => units.extend(markdown::units(text, &[n as u32])),
+                    Content::Text(text) if !text.trim().is_empty() => units.extend(markdown::units(&labeled(items, text, true), &[n as u32])),
                     Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
                         let card_key = format!("{}:{n}", step.id);
                         for (c_ix, letter) in sent_letters(step, n).iter().enumerate() {
                             if letter.opens(open, &card_key, c_ix) {
-                                units.extend(markdown::units(&letter.said, &[n as u32, c_ix as u32]));
+                                units.extend(markdown::units(&labeled(items, &letter.said, true), &[n as u32, c_ix as u32]));
                             }
                         }
                     }
@@ -634,7 +672,7 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
         .children(shown)
         // The bubble across the row's width, as a sent one's is: its width (and where its words
         // wrap) the same Sending as Sent, its state on its own line under it.
-        .child(div().w_full().child(user_message(ix, &parts, sel, cx)))
+        .child(div().w_full().child(user_message(ix, &parts, sel, &Looks::none(), cx)))
         .when(!files.is_empty(), |d| d.child(div().flex().flex_wrap().justify_end().gap(space::S1).children(names)))
         .children(status)
         .into_any_element()
@@ -671,7 +709,29 @@ fn words_units(words: &str) -> Vec<Unit> {
     pieces(words.trim()).into_iter().filter_map(|piece| piece.unit.map(|at| Unit::new(&[at], piece.text, Lead::Paragraph))).collect()
 }
 
-fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
+/// `text` with the Work Queue items it names as their chips' labels, where they're known
+/// ([`Items::labeled`]).
+fn labeled<'a>(items: Option<&Items>, text: &'a str, markdown: bool) -> Cow<'a, str> {
+    items.map_or(Cow::Borrowed(text), |items| items.labeled(text, markdown))
+}
+
+/// Markdown that draws the items it names as their chips.
+fn with_items(words: Markdown, looks: &Looks) -> Markdown {
+    match &looks.items {
+        Some(items) => words.inline_items(items.inline()),
+        None => words,
+    }
+}
+
+/// Plain text `plain` (yours) drawn with the items it names as their chips, their numbers muted.
+fn item_text(text: SelectableText, plain: &str, inline: Option<&markdown::InlineItems>, cx: &App) -> SelectableText {
+    let c = &cx.theme().colors;
+    let (Some(draw), Some(runs)) = (inline, markdown::item_runs(plain, c.text, c.text_muted)) else { return text };
+    let items = markdown::item_labels(plain).into_iter().filter_map(|label| Some((label.range, draw(label.number, cx)?))).collect();
+    text.runs(runs).items(items)
+}
+
+fn user_message(ix: usize, parts: &Parts, sel: Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What went with it, above it: the keyword it was sent with as typed, who wrote it.
     let mut above: Vec<AnyElement> = Vec::new();
@@ -701,7 +761,8 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     }
     // What it replies to, in its bubble, each quote above the words that answer it, in the order
     // they were written.
-    let blocks: Vec<AnyElement> = pieces(parts.words.trim())
+    let inline = looks.items.as_ref().map(|items| items.inline());
+    let blocks: Vec<AnyElement> = pieces(labeled(looks.items.as_deref(), &parts.words, false).trim())
         .into_iter()
         .enumerate()
         .flat_map(|(n, Piece { quote, text, unit })| {
@@ -721,7 +782,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
             let words = unit.map(|at| {
                 div()
                     .debug_selector(move || format!("said-{ix}-{n}"))
-                    .child(SelectableText::new(("words", ix * 1000 + at as usize), text).selectable(Some(sel.unit(&[at]))))
+                    .child(item_text(SelectableText::new(("words", ix * 1000 + at as usize), text.clone()), &text, inline.as_ref(), cx).selectable(Some(sel.unit(&[at]))))
                     .into_any_element()
             });
             quote.into_iter().chain(words)
@@ -786,7 +847,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
             Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
                 let card_key = format!("{}:{n}", step.id);
                 let nested_sel = |base: &[u32]| sel(&[n as u32, base.first().copied().unwrap_or(0)]);
-                blocks.push(from_agents(&card_key, &sent_letters(step, n), step.time.created, open, toggle.clone(), &Around::none(), &nested_sel, cx));
+                blocks.push(from_agents(&card_key, &sent_letters(step, n), step.time.created, open, toggle.clone(), &Around::none(), &nested_sel, looks, cx));
             }
             _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, time::now_ms(), sel, looks, cx)),
         }
@@ -826,7 +887,7 @@ fn words(step: &Step, parts: &[usize], error: bool, sel: &dyn Fn(&[u32]) -> Sele
 
 /// Block `n` of a step's words, as Markdown, with the pictures written in it.
 fn words_block(step: &Step, n: usize, text: &str, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks) -> AnyElement {
-    let mut words = Markdown::new(SharedString::from(format!("{}:{n}", step.id)), text).selectable(sel(&[n as u32]));
+    let mut words = with_items(Markdown::new(SharedString::from(format!("{}:{n}", step.id)), &labeled(looks.items.as_deref(), text, true)).selectable(sel(&[n as u32])), looks);
     // (Pictures written in its words, drawn as the conversation reads them.)
     if text.contains("![") {
         words = words.pictures(crate::pictures::words_pictures(&step.id, n, text, MADE.0, looks));
@@ -933,7 +994,28 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             // A file it read or changed opens in its own tab in the side panel, by its name.
             let file = looks.file_actions.preview_file.clone().and_then(|preview| step_file(name, state).map(|path| (path, preview)));
             let target = if file.is_some() { None } else { pres.target.clone() };
-            let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, target, pres.target_mono, busy, failed, cx);
+            // A Work Queue step's item, as its chip in its row ("Updated [○ #954 Remove slash…]").
+            let item = (failure.is_none()).then(|| crate::tool_step::queue_item(name, state)).flatten()
+                .and_then(|number| looks.items.as_ref().and_then(|items| Some((items.row_chip(number, &key, cx)?, items.title(number).map(str::to_owned), number))));
+            let mut row = match item {
+                Some((chip, title, number)) => {
+                    let named = format!("#{number}");
+                    let (before, after) = pres.label.split_once(named.as_str()).map(|(before, after)| (before.trim().to_owned(), after.trim().to_owned())).unwrap_or_else(|| (pres.label.to_string(), String::new()));
+                    // (Its title is the chip's: said again only when the step gave it another.)
+                    let target = target.filter(|target| title.as_deref().is_none_or(|title| target.trim_start_matches("· ").trim() != title.trim()));
+                    let body = div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S1)
+                        .min_w_0()
+                        .when(!before.is_empty(), |d| d.child(div().flex_none().child(before)))
+                        .child(chip)
+                        .when(!after.is_empty(), |d| d.child(div().flex_none().child(after)))
+                        .children(target.map(|target| div().min_w_0().truncate().text_color(c.text_faint).child(target)));
+                    step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label.clone(), None, false, busy, failed, cx).body(body)
+                }
+                None => step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, target, pres.target_mono, busy, failed, cx),
+            };
             if let (Some((path, preview)), Some(named)) = (file, pres.target.clone()) {
                 row = row.trailing(file_link(SharedString::from(format!("tool-file-{key}")), named, path, preview, cx));
             }
@@ -1393,7 +1475,7 @@ pub fn sent_letters(step: &Step, part: usize) -> Vec<Letter> {
 /// wake-ups, each as one calm bordered card: its mark, direction + name, time and Open (its
 /// conversation), and its text (or first line, opening to all of it).
 #[allow(clippy::too_many_arguments)]
-fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, around: &Around, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
+fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, around: &Around, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let cards = letters.iter().enumerate().map(|(n, letter)| {
         let whole = letter.opens(open, message, n);
@@ -1460,7 +1542,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             .children(open_it)
             .when(letter.folds(), |d| d.child(div().flex().flex_none().items_center().child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint))));
         let said: AnyElement = if whole {
-            div().min_w_0().ml(UNDER).text_ui(TypeSize::Small).child(Markdown::new(SharedString::from(format!("{id}-said")), &letter.said).selectable(sel(&[n as u32]))).into_any_element()
+            div().min_w_0().ml(UNDER).text_ui(TypeSize::Small).child(with_items(Markdown::new(SharedString::from(format!("{id}-said")), &labeled(looks.items.as_deref(), &letter.said, true)).selectable(sel(&[n as u32])), looks)).into_any_element()
         } else {
             div().min_w_0().ml(UNDER).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
         };
@@ -1835,12 +1917,16 @@ fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: i
         .into_any_element()
 }
 
-fn turn_end(outcome: &str, worked: Option<f64>, cx: &App) -> AnyElement {
+/// Whether a turn that ended so says so at its end: one stopped, or one that failed.
+fn ends_unfinished(outcome: &str) -> bool {
+    matches!(outcome, "failed" | "interrupted")
+}
+
+fn turn_end(outcome: &str, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let (words, color) = match outcome {
-        "failed" => ("The turn didn’t finish".to_owned(), c.danger),
-        "interrupted" => ("Stopped".to_owned(), c.text_faint),
-        _ => (worked.map(time::worked_for).unwrap_or_default(), c.text_faint),
+        "failed" => ("The turn didn’t finish", c.danger),
+        _ => ("Stopped", c.text_faint),
     };
     div().flex().justify_center().text_ui(TypeSize::Caption).text_color(color).child(words).into_any_element()
 }
@@ -1915,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_shows_your_message_the_agents_step_and_how_long_it_worked() {
+    fn a_finished_turn_shows_your_message_and_the_agents_words_and_nothing_after_them() {
         let (rows, _) = entries(conversation(
             json!([
                 { "type": "user", "id": "m1", "time": { "created": 1000 }, "text": "Fix it" },
@@ -1930,10 +2016,9 @@ mod tests {
             None,
         ));
         let keys: Vec<&str> = rows.iter().map(Entry::key).collect();
-        // The box's note to the agent, an empty step and a switch of mode show nothing.
-        assert_eq!(keys, ["m1", "m1b", "m3", "m5"]);
-        // From the turn's first message.
-        assert!(matches!(&rows[3], Entry::TurnEnd { worked: Some(worked), .. } if *worked == 25000.0));
+        // The box's note to the agent, an empty step, a switch of mode and the finished turn's end
+        // show nothing (no "Worked for" line).
+        assert_eq!(keys, ["m1", "m1b", "m3"]);
     }
 
     #[test]
@@ -2129,8 +2214,8 @@ mod tests {
         let Message::User(user) = &**message else { panic!() };
         assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()), busy: false, error: None }]);
         // Its words are selectable once it's shown whole.
-        assert!(units(&rows[0], &HashSet::new()).is_empty());
-        assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+        assert!(units(&rows[0], &HashSet::new(), None).is_empty());
+        assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)]), None).is_empty());
     }
 
     #[test]
@@ -2179,7 +2264,7 @@ mod tests {
         assert_eq!(cards1[0].said, "Taking a look now.");
         assert_eq!(cards1[0].error, None);
         // Short sent message is immediately selectable without folding.
-        assert!(!units(&rows[2], &HashSet::new()).is_empty());
+        assert!(!units(&rows[2], &HashSet::new(), None).is_empty());
 
         let Entry::Steps { items: mid, .. } = &rows[3] else { panic!("steps mid") };
         assert_eq!(mid.len(), 1);
@@ -2220,8 +2305,8 @@ mod tests {
         assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None, busy: false, error: None }]);
         assert_eq!(wake[0].folded_line(), "Pacing check");
         assert!(wake[0].folds(), "it opens to the whole note");
-        assert!(units(&rows[0], &HashSet::new()).is_empty(), "folded, only its summary shows");
-        assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+        assert!(units(&rows[0], &HashSet::new(), None).is_empty(), "folded, only its summary shows");
+        assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)]), None).is_empty());
         let Entry::Message(message) = &rows[1] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
         assert!(!user.is_letter(), "nothing marks it: the app reads no text to tell");
