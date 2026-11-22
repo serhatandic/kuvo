@@ -22,9 +22,9 @@ use kuvo_box::areas::{Computer, Waiting};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, TypeSize,
+    ActiveTheme, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::Menu,
-    theme::{radius, space},
+    theme::radius,
 };
 
 use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
@@ -2145,9 +2145,24 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Whether the side panel goes beside what's in view: a conversation in Sessions (or the
+    /// landing view), or a bot's conversation in Bots.
+    pub fn panel_here(&self) -> bool {
+        self.area == Area::Sessions || self.bot_chat().is_some()
+    }
+
+    /// The conversation the side panel goes beside: a bot's in Bots, the open one in Sessions.
+    fn panel_session(&self) -> Option<&str> {
+        match self.bot_chat() {
+            Some(_) => self.bot_chat.as_ref().map(|chat| chat.session.as_str()),
+            None => self.opened(),
+        }
+    }
+
     /// Opens the side panel on `kind`, in the conversation in view: its tab, or a new one.
     pub fn show_panel(&mut self, kind: Kind, cx: &mut Context<Self>) {
-        // (Opened first: what's asked for is what it starts on.)
+        // (In the conversation in view's tabs; opened first: what's asked for is what it starts on.)
+        self.place_panel(cx);
         self.panel.update(cx, |panel, cx| panel.open(kind, cx));
         if !self.panel_open {
             self.toggle_panel(cx);
@@ -2156,6 +2171,7 @@ impl Workspace {
 
     /// Opens the side panel on what the conversation sent you to (from its Outputs).
     pub fn arrive(&mut self, arrival: panel::Arrival, cx: &mut Context<Self>) {
+        self.place_panel(cx);
         self.panel.update(cx, |panel, cx| panel.arrive(arrival, cx));
         if !self.panel_open {
             self.toggle_panel(cx);
@@ -2167,11 +2183,12 @@ impl Workspace {
         self.show_panel(Kind::File(path.to_owned()), cx);
     }
 
-    /// The conversation the panel follows, and the folder it shows: the open session's (its
-    /// worktree's, for one in a worktree), or on the landing view the project a new one starts in.
+    /// The conversation the panel follows, and the folder it shows: the session's in view (its
+    /// worktree's, for one in a worktree; a bot's in Bots), or on the landing view the project a
+    /// new one starts in.
     fn place_panel(&mut self, cx: &mut Context<Self>) {
-        let key = self.opened().map(str::to_owned);
-        let place = match self.opened() {
+        let key = self.panel_session().map(str::to_owned);
+        let place = match self.panel_session() {
             Some(session) => self.listing.facts(session).filter(|facts| !facts.kind.is_chat()).map(|facts| Place { directory: facts.directory.clone(), session: Some(session.to_owned()) }),
             None => match self.landing_place() {
                 StartIn::Project(directory) => Some(Place { directory, session: None }),
@@ -3216,44 +3233,21 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A bot's conversation in Bots: a strip saying whose it is, with the way back to its page,
-    /// over the conversation.
-    fn bot_chat_view(&self, bot: &str, chat: &Entity<ConversationView>, cx: &mut Context<Self>) -> AnyElement {
+    /// The face of the bot whose conversation shows, for the title bar beside its name (still
+    /// while it moves).
+    pub fn bot_chat_face(&self, cx: &App) -> Option<AnyElement> {
+        let (bot, _) = self.bot_chat()?;
         let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
-        let move_status = self.moves.read(cx).row_status(&target, cx);
-        let c = cx.theme().colors.clone();
-        let listed = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
-            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
-            _ => None,
-        });
-        let activity = chat.read(cx).bars().clone();
-        let needs_spacer = move_status.is_some() || listed.is_none();
-        let strip = div()
-            .debug_selector(|| "bot-chat-strip".into())
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(space::S2)
-            .h(px(44.))
-            .px(space::S3)
-            .border_b_1()
-            .border_color(c.border)
-            .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
-            .children(listed.as_ref().map(|bot| {
-                if move_status.is_some() {
-                    crate::bot_face::still_bot_face(&bot.id, &bot.look, px(22.))
-                } else {
-                    areas::bot_face(&bot.id, &bot.look, px(22.))
-                }
-            }))
-            .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
-            .children(move_status.or_else(|| listed.as_ref().map(|bot| {
-                let words = bot.job.clone();
-                div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element()
-            })))
-            .when(needs_spacer, |d| d.child(div().flex_1()))
-            .child(activity);
-        div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
+        let moving = self.moves.read(cx).row_status_words(&target).is_some();
+        let Reading::Ready(bots) = self.area_view(Area::Bots)?.read(cx).bots() else { return None };
+        let bot = bots.bots.iter().find(|each| each.id == bot)?;
+        Some(if moving { crate::bot_face::still_bot_face(&bot.id, &bot.look, px(22.)) } else { areas::bot_face(&bot.id, &bot.look, px(22.)) })
+    }
+
+    /// A bot's conversation in Bots, under the title bar, which says whose it is (as Sessions has
+    /// it: one header).
+    fn bot_chat_view(&self, chat: &Entity<ConversationView>) -> AnyElement {
+        div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
     }
 
     /// The main view's title and what's beside it, as the title bar shows them: a conversation's
@@ -3263,6 +3257,19 @@ impl Workspace {
         if self.area == Area::Library {
             let (title, beside) = self.library.read(cx).title();
             return (Some(title), beside);
+        }
+        // A bot's conversation, titled as Sessions titles one: the bot's name, and beside it what
+        // its move is at, or its job.
+        if let Some((bot, _)) = self.bot_chat() {
+            let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
+            let moving = self.moves.read(cx).row_status_words(&target).map(|words| SharedString::from(words.to_owned()));
+            let listed = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
+                Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|bot| (bot.name.clone(), bot.job.clone())),
+                _ => None,
+            });
+            let (name, job) = listed.unzip();
+            let job = job.filter(|job| !job.trim().is_empty()).map(SharedString::from);
+            return (Some(name.map_or_else(|| SharedString::from(Area::Bots.name()), SharedString::from)), moving.or(job));
         }
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
@@ -3895,7 +3902,7 @@ impl Workspace {
     }
 
     fn panel_shown(&self, cx: &App) -> bool {
-        self.area == Area::Sessions && self.panel_open && !self.client.gate().is_held()
+        self.panel_here() && self.panel_open && !self.client.gate().is_held()
             && self.sidebar_available(cx)
     }
 
@@ -4051,6 +4058,11 @@ impl Render for Workspace {
                 view.update(cx, |view, cx| view.set_chat_open(chat_open, cx));
             }
         }
+        // The side panel shows the tabs of the conversation beside it: a bot's in Bots, the open
+        // one in Sessions (nothing changes where it's that one's already).
+        if self.panel_shown(cx) {
+            self.place_panel(cx);
+        }
         let in_insights = self.area == Area::Insights;
         let show_insights = in_insights && self.client.gate().has("usage.insights");
         let insights = self.insights.clone();
@@ -4088,7 +4100,7 @@ impl Render for Workspace {
             library.clone().into_any_element()
         } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
-                (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
+                (Some((_, chat)), _, _) => self.bot_chat_view(chat),
                 (None, Some(settings), _) => settings.clone().into_any_element(),
                 (None, None, Some(main)) => main.into_any_element(),
                 (None, None, None) => areas::placeholder(self.area, view.read(cx).title(cx), cx),
@@ -4145,19 +4157,19 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &DeleteSession, window, cx| this.run_shortcut("delete", window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, window, cx| {
-                if this.area != Area::Sessions {
+                if !this.panel_here() {
                     this.show_area(Area::Sessions, window, cx);
                 }
                 this.toggle_panel(cx);
             }))
             .on_action(cx.listener(|this, _: &ShowChanges, window, cx| {
-                if this.area != Area::Sessions {
+                if !this.panel_here() {
                     this.show_area(Area::Sessions, window, cx);
                 }
                 this.show_panel(Kind::Changes, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
-                if this.area != Area::Sessions {
+                if !this.panel_here() {
                     this.show_area(Area::Sessions, window, cx);
                 }
                 this.show_panel(Kind::Files, cx);

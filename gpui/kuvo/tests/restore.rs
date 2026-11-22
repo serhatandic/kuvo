@@ -115,7 +115,7 @@ fn the_area_in_front_and_a_bots_conversation_open_again(cx: &mut TestAppContext)
     let (home, cx) = open(cx, &path);
     let here = workspace(&home, cx);
     assert_eq!(here.read_with(cx, |workspace, _| (workspace.area(), workspace.bot_chat().map(|(bot, _)| bot.to_owned()))), (Area::Bots, Some("bot_mira".into())));
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
     // Sessions' conversation is there behind it, as it was.
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_limits"));
 }

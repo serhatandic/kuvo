@@ -738,6 +738,43 @@ fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outp
 }
 
 #[gpui::test]
+fn a_bots_conversation_opens_the_panel_from_the_title_bar_and_its_side_chats_open_there(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.answer_side_questions(&["It reads the queue first."]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    // A side chat asked in the bot's conversation before.
+    BoxClient::new(stand_in.clone()).ask_aside("ses_mira", "What do you check first?", None).unwrap();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.show_area(kuvo::area::Area::Bots, window, cx);
+        workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(bounds(cx, "bot-chat-title").is_some());
+    assert!(bounds(cx, "side-panel").is_none(), "closed until it's asked for");
+
+    // The title bar's button opens it beside the bot's conversation, and closes it again.
+    click(cx, "toggle-panel");
+    assert!(bounds(cx, "side-panel").is_some(), "the panel beside the bot's conversation");
+    assert!(bounds(cx, "new-tab").is_some());
+    click(cx, "toggle-panel");
+    assert!(bounds(cx, "side-panel").is_none());
+
+    // Its Outputs list the side chat; a click opens it in the panel, the bot's conversation still there.
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-side-chat-btw_1");
+    assert!(bounds(cx, "side-panel").is_some(), "the side chat opens the panel");
+    assert!(bounds(cx, "bot-chat-title").is_some(), "still in the bot's conversation");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+    assert!(bounds(cx, "side-question-btw_1").is_some());
+
+    // Back in Sessions, the session's own tabs, not the bot's.
+    workspace.update_in(cx, |workspace, window, cx| workspace.show_area(kuvo::area::Area::Sessions, window, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "side-panel").is_some());
+    assert_ne!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+}
+
+#[gpui::test]
 fn a_terminal_opens_as_a_tab_in_the_conversations_folder_and_keeps_its_shell_while_hidden(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
