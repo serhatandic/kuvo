@@ -156,7 +156,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
       const { commands, subagents } = readSessionBackground(session);
       const list = keptList();
       const listed = list?.sessions ?? {};
-      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot);
+      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot, true);
       return {
         commands,
         activity,

@@ -1024,21 +1024,6 @@ test("an away backup computer does not block a move", async () => {
   }
 })
 
-test("startup keeps a group held when legacy ownership points elsewhere", async () => {
-  const { link, pc5 } = checkpointed()
-  link.shared.ownershipAssignments.value = { ["group host:" + group]: { computer: pc5.peer.key } }
-  writeLink(link)
-  listedHeld = true
-  try {
-    await resumeMoves()
-    expect(groupActive).toBe(false)
-  } finally {
-    listedHeld = false
-    fs.rmSync(PEER_AGENTS_FILE, { force: true })
-    fs.rmSync(LINK_FILE, { force: true })
-  }
-})
-
 test("a carried session moves with a previously handed-off tombstone", async () => {
   const { link, pc4 } = checkpointed()
   const itemId = "wqi_" + "B".repeat(20)

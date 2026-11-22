@@ -5,6 +5,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { locked, writePrivate } from "../files";
 import { K, REAL_BOX, RUN } from "../home";
+import { peersOf } from "../peers/known";
 import type { LinkState } from "../state";
 
 const file = path.join(RUN, "setup-relay-lease.json");
@@ -74,7 +75,9 @@ export function primaryFenced(link: LinkState | null | undefined, allowDeparture
   if (link?.macRotation) return true;
   if (link?.setup?.role !== "primary" || link.setup.aside) return false;
   if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture) return true;
-  return !holdsRelayLease(link);
+  // With no other computer in the setup, none can take over: the lease guards nothing. (Adding one
+  // needs the relay.)
+  return peersOf(link).length > 0 && !holdsRelayLease(link);
 }
 
 export const LEADERSHIP_WAIT = "Kuvo's relay can't be reached. Setup changes will resume when it reconnects.";

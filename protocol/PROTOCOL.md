@@ -540,6 +540,9 @@ once both computers are connected. On the wire, `primary` means the main compute
   roles have no bearing on this choice. A lost SSH reply to a write is reported back to the
   caller so the client does not send the same write again over the relay.
 
+  A client over SSH runs `~/.kuvo-code/bin/kuvo-start route-to` (or `route`), its request on
+  standard input: the keeper runs it on the engine it runs itself, never one the client picks.
+
   On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
   input. `computer` is the expected box public key and `hello` is the first Noise IK message
   (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?, app?, setupProtocol?}`). The box answers with
@@ -711,11 +714,13 @@ shared saves.
 
 ### Data owners
 
-A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box. Use
-`computer=<key>` to locate an older record that has no directory entry, and `queue=<owner>` for
-a Work Queue record. A known owner takes precedence over the supplied address. Setup-wide kinds
-use the current primary. Computer-local kinds use the named computer or the box being asked.
-The feature is `data.ownership`.
+A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box, with
+`queue=<owner>` for a Work Queue record. Setup-wide kinds use the current primary. Computer-local
+kinds use `computer=<key>`, else the box being asked. A conversation, bot or group chat lives, by
+one rule, on this computer if it has it (its session list, its bots, its group chats); else where
+this computer's own move journal says it sent it; else on the one computer that says it has it
+(`agents.owns`, "Peers"). When none does, there is no owner: the reply is 404. A Work Queue item
+is its queue's, in the queue a move journal says it was handed to. The feature is `data.ownership`.
 
 The reply carries `owner {key, name, scope, local, reachable}` and the current accepted name.
 `state` describes the observation available to the reader.
@@ -867,7 +872,11 @@ connection.
   peer; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
   carries `zone: {zone, n, zoneinfo?}`, your time zone's pick, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
-  sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
+  sessions (its engine's and its coding agents') when they change and every ten minutes, and
+  `owns`: every record it has (its bots, then its sessions without subagents', newest first, then
+  its group chats; 5,000 at most), each as the first 6 characters of the base64url SHA-256 of its
+  ID, one after another. This is where any computer finds an older conversation ("Data owners").
+  A box from before `owns` is found by what it lists. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
   again at once (within a minute before bridge 0.9.63), once in ten seconds at most for each.
@@ -3085,8 +3094,13 @@ client shows it from the same routes.
     `tasks`: anything else its agent keeps going. A client shows a session at work when its own turn
     runs or it's listed here. Kept in `run/work/background.json`, per place (engine, bridge).
   - **`GET kuvo/work/background/<session>`** (`work.background.items`) → `{commands: [{id, command,
-    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}]}`: each one,
+    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}], activity?:
+    {working, asking, sessions: [{session, title, state, computer?, subagent?}]}}`: each one,
     for the bars over a client's composer, the oldest first; both empty for a session with nothing.
+    `activity`: what's at work for the conversation besides its own turn (the sessions and
+    subagents under it, on any of your computers, and a bot's sessions in its conversation), never
+    the conversation itself; `subagent` marks a subagent's row, which a client draws with its
+    subagents rather than as a session of its own.
     Every command it left running however long it has run (`agents`: a coding agent's, whose output is
     `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
     with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
@@ -10225,19 +10239,25 @@ a machine, `box/artifacts` in this Mac's app folder), and the box passes `kuvo/a
 the bridge as it answers (`503 {"message"}` while it isn't running).
 
 - **What fills it**: the tool calls of every conversation on the engine and the bridge (their
-  `metadata.files`, a write's path, the pictures a tool that makes them made), Kuvo Code's own
-  tools (`show_file` and `show_in_panel` mark it shown; `mark_final` pins it), and as each turn
-  ends, files it changed that no tool call named (a command's): in a git repository as `git
-  status` lists them, elsewhere by a walk of the folder; a bot's folder is also watched, so your
-  own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from its folder, its
-  `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from its `kuvo.seat`;
-  a chat's part, given to a bot's own conversation, is the chat's too (`trigger: "group"`); a
-  wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn. The engine's
+  `metadata.files`, a write's path, the pictures a tool that makes them made, and a picture a read
+  brought back, which shows in the conversation, `via: ["read"]`: a screenshot the agent took and
+  then looked at, Claude Code's `Read` of a picture; never anything else it only read), Kuvo
+  Code's own tools (`show_file`, of any file, and `show_in_panel` mark it shown; `mark_final` pins
+  it), and as each turn ends, files it changed that no tool call named (a command's): in a git
+  repository as `git status` lists them, elsewhere by a walk of the folder; a bot's folder is also
+  watched, so your own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from
+  its folder, its `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from
+  its `kuvo.seat`; a chat's part, given to a bot's own conversation, is the chat's too (`trigger:
+  "group"`); a wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn.
+  The engine's
   conversations run for the bridge's (`kuvo.engineFor`) aren't recorded twice. What the agent's
   browser downloads is that conversation's too (`kind: "download"`, `via: ["download"]`): the box's
   own browser, or this Mac's app for the browser in its panel, tells the bridge (`POST
   /api/kuvo/artifacts/noted {path, session, via: "download"}`, with the bridge's password; not a
   client's route). A download in a page you'd taken over is yours, and isn't recorded.
+- **One file, one artifact**: a file is named by its path as the conversation's folder (or the
+  bots' folder) spells it, however a tool reached it (through a link to that folder, like a
+  worktree opened at `/tmp/…`), so its versions are one artifact's.
 - **Versions**: one per turn (more edits in that turn make it `edits` more); changes with no turn
   running, within 5 minutes of each other, are one version. A file the record first sees changed
   has a version 0 (`before: true`), what it was, worked out from the change when it fits the file
@@ -10276,17 +10296,20 @@ An artifact:
 folder or the project it was made in), so a client offers Restore only then.
 
 A version: `{n, at, by: {kind: "agent|you|outside", session?, bot?, agent?}, turn?: {session,
-message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "show_file",
-"restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size, hash, kept,
-reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
+message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "read",
+"show_file", "restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size,
+hash, kept, reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
 restored?: <n>}`. `turn.message` is the message that started the turn; `handoff`, another bot in
 the same chat made the version before; `restored`, it put back version `n`.
 
 - `GET kuvo/artifacts?<scope>[&kind=][&pinned=1][&limit=][&before=]`: `{artifacts: [summary],
   next}`, the scope's pinned ones first, then the latest changed; a summary has `versions` (how
   many) and `latest` (the newest version) in place of the list. The scope is exactly one of
-  `session=`, `bot=`, `group=` or `project=` (400 otherwise). `next`, an opaque cursor: pass it as
-  `before` for the next page; null when there are none.
+  `session=`, `bot=`, `group=` or `project=` (400 otherwise). Each file is listed once: artifacts
+  that are one file by two paths (recorded before it was named one way) list as one, the pinned one
+  or else the latest changed. Two files of the same name in different folders are two (a client
+  tells them apart by `path`). `next`, an opaque cursor: pass it as `before` for the next page;
+  null when there are none.
 - `GET kuvo/artifacts/events?<scope>`: `application/x-ndjson`, the list now (the latest 200), then
   again each time it changes.
 - `GET kuvo/artifacts/timeline?<scope>[&by=<bot>][&limit=][&before=]`: `{entries: [{artifact, version}],

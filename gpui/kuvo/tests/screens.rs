@@ -2118,3 +2118,48 @@ fn attachments_stay_for_non_file_taking_sends_and_new_session_failures(cx: &mut 
 
     std::fs::remove_dir_all(&folder).ok();
 }
+
+/// The user's 11-21 case (#948): a bot ran a command, then showed several pictures with show_file,
+/// drawn as a strip under the step. A click on one opens it in the viewer, and ← → go among that
+/// message's pictures.
+#[gpui::test]
+fn pictures_shown_after_a_command_open_in_the_viewer(cx: &mut TestAppContext) {
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let shown = |n: usize, path: &str| json!({ "type": "tool", "id": format!("prt_{n}"), "name": "kuvo-browser_show_file", "state": { "status": "completed", "input": { "path": path }, "content": [] } });
+    stand_in.add_message("ses_mira", json!({ "type": "assistant", "id": "msg_d", "time": { "created": NOW - 50_000.0, "completed": NOW - 40_000.0 }, "agent": "build", "finish": "stop", "content": [
+        { "type": "tool", "id": "prt_0", "name": "bash", "state": { "status": "completed", "input": { "command": "printf done" }, "output": "done", "metadata": {} } },
+        shown(1, "/home/sam/insights-light.png"),
+        shown(2, "/home/sam/insights-dark.png"),
+        shown(3, "/home/sam/insights-wide.png"),
+        { "type": "text", "text": "The drafts are above." },
+    ] }));
+    for (path, width) in [("/home/sam/insights-light.png", 800), ("/home/sam/insights-dark.png", 640), ("/home/sam/insights-wide.png", 1000)] {
+        stand_in.put_file(path, png(width, 500));
+    }
+    let (workspace, cx) = open(cx, stand_in.clone());
+    cx.simulate_resize(size(px(1200.), px(2400.)));
+    // In a bot's own conversation, as the user saw it (Kuvo Foreman's).
+    for selector in ["rail-bots", "bot-bot_mira"] {
+        let at = bounds(cx, selector).unwrap_or_else(|| panic!("{selector}"));
+        cx.simulate_click(at.center(), Modifiers::default());
+        cx.run_until_parked();
+    }
+    let view = workspace.read_with(cx, |workspace, _| workspace.bot_chat().expect("Mira's conversation").1.clone());
+    let tile = bounds(cx, "picture-msg_d:2-shown").expect("the second picture is drawn in the strip");
+    cx.simulate_click(tile.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-viewer").is_some(), "a click opens it in the viewer");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_d:2-shown".into()));
+    cx.simulate_keystrokes("right");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_d:3-shown".into()));
+    cx.simulate_keystrokes("left");
+    cx.simulate_keystrokes("left");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_d:1-shown".into()));
+    cx.simulate_keystrokes("escape");
+    assert!(bounds(cx, "picture-viewer").is_none());
+}

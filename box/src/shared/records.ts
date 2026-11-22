@@ -81,6 +81,8 @@ export interface ActivityFact {
   state: "working" | "asking";
   line: string[];
   bot?: string;
+  /** A subagent's (the engine's or a coding agent's), not a session of its own. */
+  subagent?: true;
 }
 
 /** What one peer told this box of its agents (`run/peer-agents.json`, by its key): when it said
@@ -96,6 +98,9 @@ export interface ToldAgents {
   /** Its `features` were longer than a peer keeps (`keptFeatures`): the list is cut, so it can't say what's missing. */
   featuresCut?: true;
   groups?: string[];
+  /** Every record it has (its bots, sessions and group chats), each as a short digest of its ID
+   * (`ownedDigest`), one after another. None from a box before it. */
+  owns?: string;
   /** Conversations it moved away lately, by the key of the box each lives on now, and when. */
   moved?: { session: string; key: string; at: number }[];
   /** The setup it follows (its id), where it said one (PROTOCOL.md, "Your setup"). */

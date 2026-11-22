@@ -2526,6 +2526,7 @@ impl Workspace {
     /// Whether this workspace is the one the window currently shows: background computers keep
     /// their workspaces alive, while only the shown one updates shared bot faces (`bot_face`).
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.image_viewer.update(cx, |viewer, cx| viewer.set_shown(shown, cx));
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.set_shown(shown, cx));
         }

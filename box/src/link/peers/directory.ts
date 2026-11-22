@@ -73,6 +73,13 @@ const keptMoved = (moved: unknown[]): NonNullable<ToldAgents["moved"]> => moved.
   && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400)
   .map(({ session, key, at }) => ({ session, key, at }));
 
+/** How long each ID's digest is in what a computer says it has (`owns`), and the most it says,
+ * the newest first: enough to fit one mail beside its agents. */
+export const OWNED_DIGEST = 6;
+export const MOST_OWNED = 5_000;
+const keptOwns = (given: unknown): given is string => typeof given === "string" && given.length % OWNED_DIGEST === 0
+  && given.length <= OWNED_DIGEST * MOST_OWNED && /^[A-Za-z0-9_-]*$/.test(given);
+
 // What a peer said its agents are, the newest it said: false for an older list.
 export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: string }, given: unknown, file = PEER_AGENTS_FILE, lock = PEER_LOCK): boolean {
   if (!isObject(given) || typeof given.at !== "number" || !Array.isArray(given.list)) return false;
@@ -91,6 +98,7 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features), ...(featuresCut(given.features) ? { featuresCut: true as const } : {}) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
       ...(Array.isArray(given.groups) ? { groups: given.groups.filter((id): id is string => typeof id === "string" && /^grp_[a-z0-9]{1,60}$/.test(id)).slice(0, 100) } : {}),
+      ...(keptOwns(given.owns) ? { owns: given.owns } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}),
       ...(given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {}),
       ...(computer ? { computer } : {}) };

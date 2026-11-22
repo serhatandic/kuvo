@@ -100,7 +100,7 @@ export const UNANSWERING_LIST = object({ held: list(UNANSWERING) });
 /** A conversation's own turn and the sessions below it, on any computer. */
 export const ACTIVITY = object({
   working: number, asking: number,
-  sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string })),
+  sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string, "subagent?": bool })),
 });
 export type Activity = Infer<typeof ACTIVITY>;
 

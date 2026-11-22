@@ -16,6 +16,7 @@ const { readLink, writeLink } = await import("../src/link/state")
 const { publicOf } = await import("../src/link/crypto/keys")
 const { newSigningSeed, signingKeyOf } = await import("../src/link/documents/format")
 const { forgetAsks, noteAskEvent } = await import("../src/link/glance/asked")
+const { forgetMovedAway, noteMovedAway } = await import("../src/link/moves/records")
 
 const home = process.env.HOME!
 const work = join(process.env.KUVO_HOME!, "asks-work")
@@ -512,11 +513,10 @@ test("live permission dispatch rejects stale devices, expired asks, new owners a
     beforeLivePermissionRead = () => { permissions.ses_root = [] }
     expect(await reply(raw)).toBe(404)
     permissions.ses_root = pending
-    beforeLivePermissionRead = () => writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: {
-      sequence: 1, value: { "session computer:ses_root": { computer: primary } },
-    } } })
+    // Moved to the main computer while the answer was on its way.
+    beforeLivePermissionRead = () => noteMovedAway(["ses_root"], primary)
     expect(await reply(card)).toBe(409)
-    writeLink(state)
+    forgetMovedAway(["ses_root"])
     beforeLivePermissionRead = () => {
       mkdirSync(dirname(CONFIG_FILE), { recursive: true })
       writeFileSync(CONFIG_FILE, JSON.stringify({ permissions: [{ action: "edit", resource: "*", effect: "deny" }] }))

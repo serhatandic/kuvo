@@ -48,9 +48,9 @@ export function returnPending(session: string, id: string) {
     }
     const saved = readWaitingFile(waitingFile(held.files, id));
     if (!saved || saved.id !== id || typeof saved.text !== "string") throw new Error("That message's payload is unavailable.");
-    const owner = ownerOf({ kind: "sessionQueue", id: session }, { localRecord: true });
+    const owner = ownerOf({ kind: "sessionQueue", id: session });
     if (!owner?.local || !await placeOfSession(session, peerPlaces().targets, 3_000) ||
-      ownerOf({ kind: "sessionQueue", id: session }, { localRecord: true })?.local !== true) {
+      ownerOf({ kind: "sessionQueue", id: session })?.local !== true) {
       throw new Error("Open the current owner’s conversation before recovering its pending message.");
     }
     const files = queueFiles(RUN);

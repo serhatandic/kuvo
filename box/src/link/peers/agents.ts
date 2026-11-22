@@ -21,7 +21,7 @@ import { IS_MAC, K } from "../home";
 import { isChatsFolder } from "../engine/chats";
 import { committedDepartures, frozen, movedAway } from "../moves/records";
 import { readLink } from "../state";
-import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS_FILE, PEER_AGENTS_FILE, PEER_LOCK, readPeerAgents } from "./directory";
+import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS_FILE, OWNED_DIGEST, PEER_AGENTS_FILE, PEER_LOCK, readPeerAgents } from "./directory";
 import { mailFor, movedOf, peersOf } from "./known";
 import { tellSeatPeers } from "./seats";
 import { followedSetup } from "../setup/record";
@@ -35,6 +35,7 @@ import type { AgentsFile, BridgeRecord, ListedAgent, Target, ToldAgents } from "
 import { FORWARD_EVIDENCE_FEATURE } from "../ownership/forward-evidence";
 import { SCOPED_FORWARD } from "../work-queue/forward-grant";
 import { SUBMITTER_FEATURE } from "../ownership/authority";
+import { ownedDigests } from "../ownership/resolve";
 
 /** What this box last told a peer of its agents (`announce`): all of them as JSON, when, and the
  * sessions that fit in that mail. */
@@ -196,7 +197,9 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   const bridge = ownershipLayoutReady(K) && bridgeTarget();
   const held = bridge ? frozen() : new Set<string>();
   const groups = bridge && (await (await import("../areas/groups")).listedGroups(bridge, AbortSignal.timeout(3_000)))?.map(group => group.id).filter(id => !held.has(id)).slice(0, 100);
-  const json = JSON.stringify([list, moved, where, groups, computer && { ...computer, working: undefined }, trash, zone]);
+  // And every record it has, so any computer finds an older conversation here too (`ownerOf`).
+  const owns = ownedDigests();
+  const json = JSON.stringify([list, moved, where, groups, owns, computer && { ...computer, working: undefined }, trash, zone]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;
@@ -210,10 +213,13 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     // (Your zone with its rules where they fit, else without them: the peer's own, if it has them.)
     const zones = zone ? [zone, ...(zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : [])] : [null];
+    // (Then fewer of the records it has, the oldest left out: never no mail.)
+    const half = owns.slice(0, Math.floor(owns.length / 2 / OWNED_DIGEST) * OWNED_DIGEST);
+    const tries = [[list.length, owns], [Math.floor(list.length / 2), owns], [Math.floor(list.length / 4), owns], [0, owns], [0, half], [0, ""]] as const;
     for (const told of zones) {
-      for (const count of [list.length, Math.floor(list.length / 2), Math.floor(list.length / 4), 0]) {
+      for (const [count, those] of tries) {
         sent = list.slice(0, count);
-        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, trash, ...where, ...(groups ? { groups } : {}), ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, owns: those, trash, ...where, ...(groups ? { groups } : {}), ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
         if (bytes) break;
       }
       if (bytes) break;

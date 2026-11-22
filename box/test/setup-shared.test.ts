@@ -44,6 +44,20 @@ test("a running machine waits for the SSH reservation before creating an indepen
   expect(link.setup?.primary).toBe(box.key);
 });
 
+test("a new setup starts in the current model, with no relay to convert it", () => {
+  const box = identity();
+  const link: LinkState = { key: box.seed, secret: crypto.randomBytes(32).toString("base64url"), sign: box.sign, name: "Lone", phones: [] };
+  settleOwnSetup(link);
+  expect(link.setup).toMatchObject({ epoch: 1, primary: box.key, role: "primary", managed: true, checkpointed: true });
+  // Its membership is accepted, this computer its one member, under epoch 1's certificate.
+  expect(acceptedMembership(link)?.boxes.map(each => each.key)).toEqual([box.key]);
+  expect(readDoc(link.leadership?.[1])?.body.setup).toEqual({ id: link.setup!.id, epoch: 1, primary: box.key });
+  // Settled again (each start), it stays the same setup.
+  const id = link.setup!.id;
+  settleOwnSetup(link);
+  expect(link.setup?.id).toBe(id);
+});
+
 test("label restore previews are provisional until the setup accepts its library", () => {
   const [a, b] = [identity(), identity()] as const;
   const id = newSetupID();

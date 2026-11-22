@@ -1,14 +1,22 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { dataOwner, type DataKind, type DataOwner } from "../../shared/data-declarations";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
-import { ownKey, peersOf, movedOf, KEY } from "../peers/known";
-import { readPeerAgents } from "../peers/directory";
+import type { ToldAgents } from "../../shared/records";
+import { botHere } from "../bots/here";
+import { listOf } from "../files";
+import { BOTS, GROUPS } from "../home";
+import { keptList } from "../lists/sessions";
+import { ownKey, peersOf, KEY } from "../peers/known";
+import { MOST_OWNED, OWNED_DIGEST, readPeerAgents } from "../peers/directory";
 import { acceptedMembership, acceptedName } from "../setup/membership";
 import { followedSetup } from "../setup/record";
 import { ownershipEntries } from "../setup/shared";
 import { readLink, type LinkState } from "../state";
-import { committedDepartures, frozen, liveMoves, localMoveOwners, type MoveRecord } from "../moves/records";
+import { committedDepartures, frozen, liveMoves, localMoveOwners } from "../moves/records";
 import { peerIsAway } from "../peers/reach";
 
 export interface DataReference {
@@ -77,31 +85,20 @@ export function authorityAddress(ref: DataReference): string {
   return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
 }
 
-export function assignmentFor(link: LinkState | null, ref: DataReference) {
-  if (dataOwner(ref.kind) === undefined && ref.id) {
-    const placement = localMoveOwners().find(entry => entry.session === ref.id && entry.queue);
-    if (placement) return { computer: placement.key, queue: placement.queue, move: undefined };
-  }
-  const assignments = ownershipEntries(link);
-  const address = authorityAddress(ref);
-  const value = Object.hasOwn(assignments, address) ? assignments[address] : undefined;
-  return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer)
-    ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
+/** The queue a Work Queue item was handed to, as this computer's move journal has it. */
+export function assignmentFor(_link: LinkState | null, ref: DataReference) {
+  if (dataOwner(ref.kind) !== undefined || !ref.id) return undefined;
+  const placement = localMoveOwners().find(entry => entry.session === ref.id && entry.queue);
+  return placement ? { computer: placement.key, queue: placement.queue, move: undefined } : undefined;
 }
 
 export function moveReference(kind: "chat" | "bot" | "group", id: string): DataReference {
   return { kind: kind === "chat" ? "conversations" : kind === "bot" ? "botSettings" : "groupSettings", id };
 }
 
-/** One release of read compatibility for journals staged before peer handover. */
-export function legacyMoveAccepted(link: LinkState | null, move: MoveRecord): boolean {
-  return [moveReference(move.kind, move.thing), ...move.sessions.map(id => moveReference("chat", id))].every(ref => {
-    const assignment = assignmentFor(link, ref);
-    return assignment?.computer === move.to && assignment.move === move.id;
-  });
-}
+const MOVABLE: readonly DataOwner[] = ["session computer", "group host", "bot home"];
 
-/** Resolve durable handovers and legacy setup ownership. */
+/** Where this computer's own move journal says the record went (or that it arrived here). */
 export function acceptedOwner(link: LinkState | null, ref: DataReference): string | undefined {
   if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id) return;
   if (dataOwner(ref.kind) === "submission issuer") {
@@ -117,23 +114,14 @@ export function acceptedOwner(link: LinkState | null, ref: DataReference): strin
   }
   const id = queueRecord ? ref.queue : ref.id;
   const scope = dataOwner(ref.kind, ref.queue);
-  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
-  const moved = scope === "session computer" && acceptedMembership(link)?.moved.find(each => each.session === id);
-  const handover = id && scope && ["session computer", "group host", "bot home"].includes(scope)
-    && localMoveOwners().find(entry => entry.session === id);
-  const accepted = (handover ? handover.key : undefined) ?? assignment?.computer ?? (moved ? moved.key : undefined);
-  return accepted ? replacementOwner(link, accepted) : undefined;
+  const handover = id && scope && MOVABLE.includes(scope) && localMoveOwners().find(entry => entry.session === id && !entry.queue);
+  return handover ? replacementOwner(link, handover.key) : undefined;
 }
 
 /** Aggregate stores such as the engine DB use the same decision for each affected ID. */
 export function sessionsFencedHere(authority: { link: LinkState | null; origin?: string | null }, recovering = false): string[] {
   const { link } = authority;
-  const assignments = ownershipEntries(link);
-  const prefix = "session computer:";
-  const sessions = new Set([...movedOf(link).keys(), ...frozen(), ...committedDepartures().map(each => each.session)].filter(id => id.startsWith("ses_")));
-  for (const address of Object.keys(assignments)) {
-    if (address.startsWith(prefix)) sessions.add(address.slice(prefix.length));
-  }
+  const sessions = new Set([...frozen(), ...committedDepartures().map(each => each.session)].filter(id => id.startsWith("ses_")));
   if (recovering) {
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
@@ -166,8 +154,7 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin, act
     const move = (moves ?? liveMoves()).find(move => move.id === activating);
     if (move?.role === "to" && move.activation && move.to === own && accepted === own &&
       id && (move.thing === id || move.sessions.includes(id))) return true;
-    if (followedSetup(link)?.checkpointed) return accepted === own && assignmentFor(link, ref)?.move === activating;
-    if (!accepted) return true; // The legacy switch was authenticated and durably recorded by the move protocol.
+    if (!accepted) return true; // The switch was authenticated and durably recorded by the move protocol.
   }
   if (accepted) return accepted === own;
   if (scope === "primary") {
@@ -177,15 +164,11 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin, act
   if (scope === "local computer") return !ref.computer || replacementOwner(link, ref.computer) === own;
   const departure = id && committedDepartures().find(each => each.session === id);
   if (departure && replacementOwner(link, departure.key) !== own) return false;
-  // Legacy move notices lack a setup-level decision. Treat a remote notice as
-  // a reason to hold a recovered copy, never as permission to activate one.
-  const hinted = origin && id ? movedOf(link).get(id) : undefined;
-  if (hinted && replacementOwner(link, hinted) !== own) return false;
   return !origin || replacementOwner(link, origin) === own;
 }
 
-/** Restoration can use verified archive provenance. A legacy advert or move notice can
- * hold a copy, but only an accepted assignment overrides conflicting recovery evidence. */
+/** Restoration can use verified archive provenance. Another computer announcing the record holds
+ * the copy, unless this computer's own move journal places it here. */
 export function mayRecover(ref: DataReference, { link = readLink(), origin }: { link?: LinkState | null; origin?: string | null } = {}): boolean {
   if (!mayActivate(ref, { link, origin })) return false;
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
@@ -195,22 +178,62 @@ export function mayRecover(ref: DataReference, { link = readLink(), origin }: { 
   const own = link && ownKey(link);
   const disagrees = (key: string) => replacementOwner(link, key) !== own;
   if (committedDepartures().some(each => each.session === id && disagrees(each.key))) return false;
-  const moved = movedOf(link).get(id);
-  if (moved && disagrees(moved)) return false;
-  return !advertisedOwners(link, scope, id).some(peer => disagrees(peer.key));
+  return !announcedBy(link, scope, id).some(peer => disagrees(peer.key));
 }
 
-function advertisedOwners(link: LinkState | null, scope: DataOwner, id: string) {
+// MARK: What each computer has
+
+/** How an ID is announced: a short digest, so every record a computer has fits in one mail. */
+export const ownedDigest = (id: string): string => createHash("sha256").update(id).digest("base64url").slice(0, OWNED_DIGEST);
+
+/** Whether this computer has the record: its sessions (the engine's and the coding agents', as the
+ * box's session list has them), its bots or its group chats. Not a copy a move is bringing or taking. */
+function holdsHere(scope: DataOwner, id: string, moves = liveMoves()): boolean {
+  if (frozen(moves).has(id)) return false;
+  if (scope === "session computer") {
+    const listed = keptList()?.sessions[id];
+    return Boolean(listed && !listed.facts.away);
+  }
+  if (scope === "bot home") return Boolean(botHere(id)) || listOf(BOTS).some(bot => botHere(bot)?.session === id);
+  return fs.existsSync(path.join(GROUPS, id, "group.json"));
+}
+
+/** Every record this computer has, by the same rule, as it announces them to its peers (`owns`):
+ * its bots, then its sessions, newest first, then its group chats. */
+export function ownedDigests(): string {
+  const held = frozen();
+  for (const entry of committedDepartures()) held.add(entry.session);
+  const bots = listOf(BOTS).flatMap(id => botHere(id) ? [id] : []);
+  const sessions = Object.entries(keptList()?.sessions ?? {}).filter(([id, { facts }]) => !facts.away && !facts.parent && !held.has(id))
+    .sort(([, a], [, b]) => b.facts.updated - a.facts.updated).map(([id]) => id);
+  const groups = listOf(GROUPS).filter(id => fs.existsSync(path.join(GROUPS, id, "group.json")));
+  return [...bots, ...sessions, ...groups].filter(id => !held.has(id)).slice(0, MOST_OWNED).map(ownedDigest).join("");
+}
+
+/** Whether a peer's announcement lists the record. (A computer from before `owns` lists only its
+ * bots, its 40 newest sessions and its group chats.) */
+function announces(told: ToldAgents | undefined, scope: DataOwner, id: string): boolean {
+  if (!told) return false;
+  if (told.owns !== undefined) {
+    const digest = ownedDigest(id);
+    for (let at = 0; at < told.owns.length; at += OWNED_DIGEST) if (told.owns.startsWith(digest, at)) return true;
+    return false;
+  }
+  return scope === "group host" ? Boolean(told.groups?.includes(id)) : told.list.some(agent =>
+    scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id));
+}
+
+function announcedBy(link: LinkState | null, scope: DataOwner, id: string) {
   const told = readPeerAgents();
-  return peersOf(link).filter(peer => scope === "group host" ? told[peer.key]?.groups?.includes(id) : (told[peer.key]?.list ?? []).some(agent =>
-    scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id)));
+  return peersOf(link).filter(peer => announces(told[peer.key], scope, id));
 }
 
-/** Resolve the declaration against accepted state first, then the evidence used by
- * existing boxes. An address can locate an unlisted record, but cannot override its owner. */
+/** Where a record lives, by one rule (`docs/architecture/how-kuvo-works.md`): here, if this computer
+ * has it; else where this computer's own move journal sent it; else the one computer that announces
+ * it. Null when none does. Setup-wide data is the main computer's, a client's its own. */
 export function ownerOf(ref: DataReference, {
-  link = readLink(), name = os.hostname(), localRecord = false,
-}: { link?: LinkState | null; name?: string; localRecord?: boolean } = {}): Owner | null {
+  link = readLink(), name = os.hostname(),
+}: { link?: LinkState | null; name?: string } = {}): Owner | null {
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope) return null;
   if (scope === "client") return ref.client ? { key: ref.client, name: "This client", scope, local: false, reachable: true } : null;
@@ -228,32 +251,35 @@ export function ownerOf(ref: DataReference, {
     const primary = setup?.primary ?? link?.setup?.primary;
     return primary ? named(primary) : here();
   }
-
-
-  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  const accepted = acceptedOwner(link, ref);
-  // What another computer announces locates a record. It never outranks this computer's own
-  // accepted ownership: a source that went away before announcing again still lists what it
-  // handed here, and only this computer can hand it on.
-  if (id && !localRecord && !(own && accepted === own) && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
-    const announced = advertisedOwners(link, scope, id).filter(peer => told[peer.key]?.features?.includes("moves.two-computers"));
-    if (announced.length === 1) return named(announced[0]!.key);
+  // A Work Queue item is its queue's. One handed on from here, or to here, is in the queue (on the
+  // computer) this computer's move journal says.
+  const handed = assignmentFor(link, ref);
+  if (handed && typeof handed.queue === "string") {
+    const queue = { kind: ref.kind, queue: handed.queue };
+    return dataOwner(ref.kind, handed.queue) === "local computer" ? named(handed.computer)
+      : ownerOf(queue, { link, name }) ?? named(handed.computer);
   }
-  if (accepted) return named(accepted);
-  if (scope === "submission issuer" || (ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)) return null;
+  if (scope === "submission issuer") {
+    const issuer = acceptedOwner(link, ref);
+    return issuer ? named(issuer) : null;
+  }
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id) return null;
   if (scope === "local computer") return ref.computer ? named(ref.computer) : here();
+  if (!MOVABLE.includes(scope)) return ref.computer ? named(ref.computer) : null;
+  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   if (!id || !DATA_ID.test(id)) return null;
 
-  const switched = liveMoves().find(move => move.role === "from" && (move.stage === "switching" || move.stage === "finishing")
+  // 1. Here. A copy this computer is handing on, or has handed on, isn't here any more.
+  const moves = liveMoves();
+  const switching = moves.find(move => move.role === "from" && (move.stage === "switching" || move.stage === "finishing")
     && (move.thing === id || move.sessions.includes(id)));
-  const moved = switched?.peer ?? (scope === "session computer" ? movedOf(link).get(id) : undefined)
-    ?? committedDepartures().find(each => each.session === id)?.key;
-  if (moved) return named(replacementOwner(link, moved));
-  if (localRecord) return here();
-  const candidates = advertisedOwners(link, scope, id);
-  if (candidates.length === 1) return named(candidates[0]!.key);
-  if (candidates.length > 1) return null;
-  return ref.computer ? named(ref.computer) : null;
+  const journal = switching?.peer ?? acceptedOwner(link, ref);
+  if (journal === undefined && holdsHere(scope, id, moves)) return here();
+  // 2. Where this computer's move journal sent it. That computer's journal covers a later hop.
+  if (journal !== undefined) return named(replacementOwner(link, journal));
+  // 3. The one computer that says it has it.
+  const announced = announcedBy(link, scope, id);
+  return announced.length === 1 ? named(announced[0]!.key) : null;
 }
 
 /** Decide what a replacement can install from the available item and ownership evidence. */

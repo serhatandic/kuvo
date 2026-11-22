@@ -26,10 +26,10 @@ import { editQueue, queueEditView } from "../work-queue/offline";
 import { allItems, deletionFor, departureFor, ITEM_ID, MOST_FILES, MOST_NOTE, OWNER, Refusal, YOURS } from "../work-queue/store";
 import { readSubmitter, mutationSubmitter, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
 import { editStatus, type EditReceipt, type EditTarget, type OfflineEdit } from "./edit-types";
-import { editSessionNote, hasSessionNotes, NOTE_SESSION, SESSION_NOTE_FEATURE, SESSION_NOTE_ROUTE, sessionNoteView } from "./session-notes";
+import { editSessionNote, NOTE_SESSION, SESSION_NOTE_FEATURE, SESSION_NOTE_ROUTE, sessionNoteView } from "./session-notes";
 import { fingerprint } from "./merge";
 import { MUTATION_ID, mutationKey, mutationNonce } from "./mutation";
-import { mayActivate, ownerOf } from "./resolve";
+import { ownerOf } from "./resolve";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "./store";
 import { acceptsMutation } from "./admission";
 
@@ -111,23 +111,16 @@ const operationOf = (setup: string, sender: string, nonce: string) => recordKey(
 function location(ref: EditTarget, link: LinkState | null) {
   if (ref.kind === "queueItems") {
     const item = allItems().find(item => item.id === ref.id);
-    if (item) return ownerOf({ ...ref, queue: item.owner, computer: undefined }, { link, localRecord: true });
+    if (item) return ownerOf({ ...ref, queue: item.owner, computer: undefined }, { link });
     const remote = itemElsewhere({ id: ref.id! }, link, { deleted: true });
     if (remote) return ownerOf({ ...ref, queue: remote.owner, computer: remote.computer.key }, { link });
     if (ref.queue === YOURS && ref.computer) return ownerOf({ kind: "ownerReadSnapshots", computer: ref.computer }, { link });
     const fence = deletionFor(ref.id!);
-    if (fence) return ownerOf({ ...ref, queue: fence.queue }, { link, localRecord: true });
+    if (fence) return ownerOf({ ...ref, queue: fence.queue }, { link });
     const transferred = departureFor(ref.id!);
     if (transferred) return ownerOf({ ...ref, ...transferred }, { link });
   }
-  return ownerOf(ref, { link, localRecord: ref.kind === "sessionNotes" ? hasSessionNotes(ref.id!) : ref.kind === "botSettings" && Boolean(botHere(ref.id)) });
-}
-
-async function locate(ref: EditTarget, link: LinkState | null, places: PeerPlaces) {
-  const known = location(ref, link);
-  if (ref.kind === "sessionNotes" && known && !known.local && !mayActivate(ref, { link })) return known;
-  if ((known && ref.kind !== "sessionNotes") || !await confirmRecord(ref, places)) return known;
-  return ownerOf(ref, { link: readLink(), localRecord: true });
+  return ownerOf(ref, { link });
 }
 
 function member(link: LinkState | null, setup: string, sender: string) {
@@ -247,7 +240,7 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces,
   if (!setup || !sender) return json(409, { message: "Join a setup before saving an offline edit." });
   if (given.ref.kind !== "queueItems" && given.ref.kind !== "sessionNotes" && given.ref.kind !== "botSettings" && !usesAcceptedSaves(setup))
     return json(409, { message: "This setup has not enabled accepted preference saves." });
-  const owner = await locate(given.ref, link, places);
+  const owner = location(given.ref, link);
   const currentLink = readLink();
   if (followedSetup(currentLink)?.id !== setup.id || !currentLink || ownKey(currentLink) !== sender)
     return json(409, { message: "The setup changed before this edit could be saved." });
@@ -356,7 +349,7 @@ export async function readOfflineEdit(context: RouteContext, places: PeerPlaces,
   const link = readLink();
   const setup = followedSetup(link);
   const own = link && ownKey(link);
-  const owner = await locate(ref, link, places);
+  const owner = location(ref, link);
   if (!setup || !link || !own || !owner?.key) return context.json(409, { message: "This computer could not identify the owner." });
   if (owner.local) {
     const answer = await readHere(ref, own, setup.id, places);

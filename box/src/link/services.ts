@@ -17,7 +17,7 @@ import { ownComputerName } from "./computer-name"
 import { APP_FOLDER, located } from "./home"
 import { GitHubSignIn } from "./work-queue/github-sign-in"
 import { DATA_ID, ownerOf } from "./ownership/resolve"
-import { ownListed, peersOf } from "./peers/known"
+import { peersOf } from "./peers/known"
 import { readLink } from "./state"
 
 export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
@@ -26,8 +26,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
     conversationHome: (id, computer) => {
       if (!DATA_ID.test(id)) return
       const link = readLink()
-      const localRecord = existsSync(join(options.home, "sessions", id, "session.json")) || ownListed().some(agent => agent.session === id)
-      const owner = ownerOf({ kind: "conversations", id, computer }, { link, localRecord })
+      const owner = ownerOf({ kind: "conversations", id, computer }, { link })
       if (owner?.key && (owner.local || peersOf(link).some(peer => peer.key === owner.key))) return owner.key
       return undefined
     },
