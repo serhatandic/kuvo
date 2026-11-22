@@ -7,7 +7,7 @@ import { ask } from "./route-answer"
 const { BOTS } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
 const { ASKS_FILE, noteAskEvent } = await import("../src/link/glance/asked")
-const { LIST_FILE } = await import("../src/link/lists/sessions")
+const { LIST_FILE, listNow } = await import("../src/link/lists/sessions")
 
 test("recent work caps finished sessions while older working or asking sessions stay visible", async () => {
   // These routes persist facts in the suite's shared scratch home.
@@ -22,11 +22,13 @@ test("recent work caps finished sessions while older working or asking sessions 
     time: { created, updated: created },
     metadata: { kuvo: { startedBy: "ses_bot_limit", by: { bot, name: "Worker" }, depth: 1 } },
   })
-  const finished = Array.from({ length: 61 }, (_, i) => session(`ses_finished${i}`, i + 10, "succeeded"))
+  const finished = Array.from({ length: 600 }, (_, i) => session(`ses_finished${i}`, i + 10, "succeeded"))
   const permission = { id: "per_old_recent_work", sessionID: "ses_old_asking", action: "shell", resources: ["make"] }
+  let reads = 0
   const engine = Bun.serve({
     port: 0,
     fetch(request) {
+      reads++
       const url = new URL(request.url)
       if (url.pathname === "/api/session/active") return Response.json({ data: { ses_old_active: true } })
       if (url.pathname === "/api/session") {
@@ -40,9 +42,15 @@ test("recent work caps finished sessions while older working or asking sessions 
   })
   try {
     noteAskEvent({ type: "permission.asked", data: permission }, "engine")
-    const handler = engineHandler(() => ({ port: engine.port, password: "test" }) as never, { name: "test" }, () => { throw new Error("no bridge") })
+    const readEngine = () => ({ port: engine.port, password: "test" }) as never
+    mkdirSync(join(LIST_FILE, ".."), { recursive: true })
+    rmSync(LIST_FILE, { force: true })
+    expect(await listNow({ readEngine, bridge: () => null })).not.toBeNull()
+    reads = 0
+    const handler = engineHandler(readEngine, { name: "test" }, () => { throw new Error("no bridge") })
     const { status, json } = await ask(handler, "GET", `kuvo/work?bot=${bot}`)
     expect(status).toBe(200)
+    expect(reads).toBe(0)
     const rows = json.sessions as { session: string; state: string }[]
     expect(rows.filter(row => row.state === "finished")).toHaveLength(60)
     expect(rows.find(row => row.session === "ses_old_active")?.state).toBe("working")

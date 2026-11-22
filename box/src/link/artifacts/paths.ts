@@ -2,7 +2,7 @@
 // `/tmp/kuvo-ai`, `/tmp` itself on a Mac) is the same file as by its own path. The same on macOS and
 // Linux: plain `realpath`.
 
-import { realpathSync } from "node:fs"
+import { promises as fs, realpathSync } from "node:fs"
 import { basename, dirname, join, sep } from "node:path"
 
 /**
@@ -17,6 +17,18 @@ export function realOf(path: string): string | undefined {
     } catch {}
     const up = dirname(at)
     if (up === at) return undefined
+    rest = sep + basename(at) + rest
+    at = up
+  }
+}
+
+/** Resolve a path from an older journal without holding up requests while the disk answers. */
+export async function realOfLater(path: string): Promise<string> {
+  let rest = ""
+  for (let at = path; ; ) {
+    try { return (await fs.realpath(at)) + rest } catch {}
+    const up = dirname(at)
+    if (up === at) return path
     rest = sep + basename(at) + rest
     at = up
   }

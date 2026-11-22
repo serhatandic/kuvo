@@ -64,7 +64,8 @@ const notAnswering = () => (IS_MAC ? "What your agents made on this Mac can’t 
 // record, in the shapes of shared/routes/artifacts.ts.
 export async function* artifactsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, route, bridge } = context;
-  const target = readServices(RUN) ?? await bridgeBack(bridge, signal);
+  const listing = request.method.toUpperCase() === "GET" && (route === "kuvo/artifacts" || route === "kuvo/artifacts/events");
+  const target = readServices(RUN) ?? (listing ? bridge() : await bridgeBack(bridge, signal));
   if (!target) return yield* groupJSON(503, agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" });
   return yield* forwardArtifacts(target, route, request, signal);
 }

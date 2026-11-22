@@ -13,10 +13,12 @@ import { askingNow } from "../work/tree";
 // (`kuvo/work/apps/icon`).
 
 import fs from "node:fs";
+import path from "node:path";
+import { listOf } from "../files";
+import { readAsks } from "../glance/asked";
 import { isObject, parsed } from "../../shared/json";
-import { followed, followedLive, followersOf } from "../follow";
+import { followed, followersOf } from "../follow";
 import { botHere } from "../bots/here";
-import { listBots } from "../bots/list";
 import { targetsOf } from "../letters/tools";
 import { answersOn } from "../work/answers";
 import { noteWorkChanged, readWorkChanges, WORK_FOLDER, workFollowers } from "../work/changes";
@@ -33,18 +35,19 @@ import { answerGoal, askGoal, goalFollowers, goalPlans } from "../work/goals";
 import { call } from "../engine/client";
 import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
-import { HERE } from "../home";
-import { backgroundFollowers, readBackground, readSessionBackground, WORK_BACKGROUND } from "../work/background";
+import { BOTS, HERE } from "../home";
+import { backgroundFollowers, readBackground, readSessionBackground, readStopped } from "../work/background";
 import { commandOf, followOutput, outputReader } from "../work/command-output";
-import { subagentsOf, subagentsSaid } from "../work/subagents";
+import { subagentsOf } from "../work/subagents";
 import type { Target } from "../../shared/records";
 import { keptList, LIST_FILE, listFollowers, listNow } from "../lists/sessions";
 import { botOfConversation, describeWork, ofBot, workSessions } from "../work/tree";
 import { activityFacts, activityOf } from "../work/activity";
 import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { workAccounts } from "../work/accounts";
+import { workBot, workRow } from "../work/listed-work";
 import type { BotWork, WorkAnswer } from "../../shared/routes/work";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { fromAPhone, type AnswerPiece, type RouteContext } from "../server/context";
 
 export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+)(\/events)?)?)?|bots\/([^/]+)\/stop-all)$/;
 export const COMMAND_OUTPUT_ROUTE = /^kuvo\/work\/background\/([^/]+)\/commands\/([^/]+)\/output(\/events)?$/;
@@ -115,6 +118,59 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   };
 }
 
+// The desktop's recent sessions and activity come from the same kept list as its sidebar.
+function botWorkSummary(bot: string, root: string): BotWork {
+  const list = keptList();
+  const activity = activityOf(activityFacts(list), root, bot);
+  const active = new Map(activity.sessions.map(row => [row.session, row]));
+  const listed = list?.sessions ?? {};
+  // A list written before the work fields were added still has ownership and ancestry.
+  const ids = list?.workByBot?.[bot] ?? (list?.workByBot ? [] : Object.keys(listed).filter(id => id !== root && workBot(listed[id]!.facts) === bot));
+  const work = ids.flatMap(id => listed[id] && id !== root ? [{ id, ...listed[id] }] : [])
+    .sort((a, b) => b.facts.created - a.facts.created || b.id.localeCompare(a.id));
+  const asks = new Map<string, string>();
+  for (const ask of readAsks().sort((a, b) => a.at - b.at)) {
+    if (ask.asks && !asks.has(ask.session)) asks.set(ask.session, ask.asks.summary);
+  }
+  const stopped = readStopped();
+  const sessions: BotWork["sessions"][number][] = [];
+  const shown = new Set<string>();
+  const midnight = startOfDay(Date.now());
+  const today: BotWork["today"] = { started: 0, answered: 0, working: activity.working, tokens: 0 };
+  let cost = 0;
+  let recent = 0;
+  const answered: WorkAnswer[] = [];
+  for (const { id, facts, work: detail } of work) {
+    if (facts.created >= midnight) {
+      today.started++;
+      today.tokens += detail?.tokens ?? 0;
+      cost += detail?.cost ?? 0;
+    }
+    for (const answer of detail?.answered ?? []) {
+      answered.push({ ...answer, session: id });
+      if (answer.at >= midnight) today.answered!++;
+    }
+    const state = active.get(id)?.state;
+    if (!state && recent++ >= 60) continue;
+    sessions.push(workRow(id, facts, detail, list?.projects[facts.project ?? facts.directory]?.name, {
+      state, stopped: stopped[id], ...(state === "asking" ? { asks: asks.get(id) ?? "Waiting for you" } : {}),
+    }));
+    shown.add(id);
+  }
+  for (const row of activity.sessions) {
+    if (shown.has(row.session)) continue;
+    sessions.push({ ...row, folder: listed[row.session]?.facts.directory ?? "", startedBy: "", depth: 1, started: 0, tokens: 0 });
+  }
+  if (cost > 0) today.cost = cost;
+  return {
+    bot, activity, sessions, today,
+    answered: answered.sort((a, b) => b.at - a.at).slice(0, 100),
+    limits: botLimits(bot),
+    asks: workAsks().filter(ask => ask.bot === bot),
+    projects: readProjects().filter(project => !project.removed && project.madeBy?.bot === bot),
+  };
+}
+
 export async function* workRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   const method = request.method.toUpperCase();
@@ -125,18 +181,23 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     const seen = new Map<string, { key: string; changed: number }>();
     const now = () => {
       const changed = readWorkChanges();
-      const rows = activityFacts();
-      for (const bot of listBots()) {
-        const key = JSON.stringify(activityOf(rows, bot.session, bot.id));
-        const old = seen.get(bot.id);
+      const list = keptList();
+      const rows = activityFacts(list);
+      for (const id of listOf(BOTS)) {
+        const bot = botHere(id);
+        if (!bot) continue;
+        const work = list?.workByBot?.[id] ?? [];
+        const seq = work.reduce((latest, session) => Math.max(latest, list?.sessions[session]?.workSeq ?? 0), 0);
+        const key = JSON.stringify([activityOf(rows, bot.session, id), Boolean(list?.workByBot), work.length, seq]);
+        const old = seen.get(id);
         const at = old?.key === key ? old.changed : Math.max(Date.now(), (old?.changed ?? 0) + 1);
-        seen.set(bot.id, { key, changed: at });
-        changed[bot.id] = Math.max(changed[bot.id] ?? 0, at);
+        seen.set(id, { key, changed: at });
+        changed[id] = Math.max(changed[id] ?? 0, at);
       }
       return { changed };
     };
     return yield* followed(now, followersOf(workFollowers, listFollowers), signal ?? undefined,
-      { folders: [WORK_FOLDER, ACTIVITY_FOLDER], recursive: false, coalesce: true });
+      { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE)], recursive: false, coalesce: true, beforeWatch: true });
   }
   // What still runs for each session besides its turn: a list now, and again as it changes.
   if (route === "kuvo/work/background" || route === "kuvo/work/background/events") {
@@ -151,12 +212,13 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   if (match[1] !== undefined) {
     if (method !== "GET") return yield* json(405, {});
     const session = decodeURIComponent(match[1]);
-    if (!keptList()) await listNow(context, signal ?? undefined);
     const now = () => {
       const { commands, subagents } = readSessionBackground(session);
       const list = keptList();
       const listed = list?.sessions ?? {};
-      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot, true);
+      const facts = listed[session]?.facts;
+      const bot = facts?.bot && botHere(facts.bot)?.session === session ? facts.bot : undefined;
+      const activity = activityOf(activityFacts(list), session, bot, true);
       return {
         commands,
         activity,
@@ -168,7 +230,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     };
     if (!match[2]) return yield* json(200, now());
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(now, followersOf(backgroundFollowers, listFollowers), signal ?? undefined, { folders: [WORK_FOLDER, ACTIVITY_FOLDER], recursive: false, coalesce: true });
+    return yield* followed(now, followersOf(backgroundFollowers, listFollowers), signal ?? undefined, { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE)], recursive: false, coalesce: true, beforeWatch: true });
   }
   // What bots just did to their sessions: a list now, and again with each mark.
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
@@ -179,9 +241,12 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   }
   if (route === "kuvo/work") {
     if (method !== "GET") return yield* json(405, {});
-    const bot = new URLSearchParams(request.path.split("?")[1] ?? "").get("bot") ?? "";
+    const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+    const bot = query.get("bot") ?? "";
     if (!bot) return yield* json(400, { message: "Name the bot: kuvo/work?bot=<id>." });
-    if (!botHere(bot)) return yield* json(404, { message: "There's no such bot here." });
+    const here = botHere(bot);
+    if (!here) return yield* json(404, { message: "There's no such bot here." });
+    if (!fromAPhone(request)) return yield* json(200, botWorkSummary(bot, here.session));
     try {
       readEngine();
     } catch {
@@ -219,40 +284,14 @@ export async function* commandOutputRoute(context: RouteContext, match: RegExpMa
 
 // A conversation's subagents, at work and done, as a side panel lists them: now, and as they change.
 export async function* subagentsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, signal, json } = context;
+  const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const session = decodeURIComponent(match[1]!);
-  // (Their titles and asks, as the session lists say them.)
-  if (!keptList()) await listNow(context, signal ?? undefined).catch(() => null);
-  // (Where they run found again each time: its engine started again on another port.)
-  const places = () => {
-    let engine: Target | null = null;
-    try { engine = readEngine(); } catch {}
-    return { engine, bridge: bridge() };
-  };
-  if (!match[2]) {
-    const said = await subagentsOf(session, places(), signal ?? undefined);
-    return yield* said ? json(200, said) : json(503, { message: "Its engine isn't answering now. Try again in a moment." });
-  }
+  const read = () => subagentsOf(session);
+  if (!match[2]) return yield* json(200, read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  // Read again as what the box knows of them changes here (one starting or ending, a title, an
-  // ask), as another process changes it, and every quarter minute; a place not answering leaves
-  // what was said last.
-  const listen = (told: () => void) => {
-    let was = subagentsSaid(session);
-    const changed = () => {
-      const now = subagentsSaid(session);
-      if (now === was) return;
-      was = now;
-      told();
-    };
-    backgroundFollowers.add(changed);
-    listFollowers.add(changed);
-    return () => { backgroundFollowers.delete(changed); listFollowers.delete(changed); };
-  };
-  const mtime = (file: string) => { try { return String(fs.statSync(file).mtimeMs); } catch { return ""; } };
-  const look = () => [WORK_BACKGROUND, LIST_FILE].map(mtime).join(" ");
-  return yield* followedLive(async () => (await subagentsOf(session, places(), signal ?? undefined)) ?? undefined, listen, signal ?? undefined, { look });
+  return yield* followed(read, followersOf(backgroundFollowers, listFollowers), signal,
+    { folders: [WORK_FOLDER, path.dirname(LIST_FILE)], recursive: false, coalesce: true, beforeWatch: true });
 }
 
 // What's asked of you, your answers, and where new projects go.

@@ -101,7 +101,7 @@ export class Recorder {
        * A turn ending (not a subagent's): what changed meanwhile that no tool call named (a
        * command's files), recorded as that turn's with `made`, in its bot's folder or its project.
        */
-      turnEnded?: (turn: { bot?: string; folder?: string; since: number; made: (via: string) => Made }) => void
+      turnEnded?: (turn: { bot?: string; folder?: string; since: number; made: (via: string) => Made }) => void | Promise<void>
       /** A file handed over to you: one `show_file` showed, or a picture `generate_image` made (the Library). */
       handed?: (handover: Handover) => void
     } = {},
@@ -215,14 +215,17 @@ export class Recorder {
       case "session.execution.interrupted": {
         // What it made with commands. A subagent's turn is its parent's, looked at as that ends.
         const turn = live.turn
-        if (turn && this.options.turnEnded) {
-          const info = await this.info(source, id)
-          const context = info.parent ? undefined : await this.context(source, id, live, event.location?.directory)
-          if (context) this.options.turnEnded({ bot: context.bot, folder: context.folder, since: turn.started, made: context.made })
+        try {
+          if (turn && this.options.turnEnded) {
+            const info = await this.info(source, id)
+            const context = info.parent ? undefined : await this.context(source, id, live, event.location?.directory)
+            if (context) await this.options.turnEnded({ bot: context.bot, folder: context.folder, since: turn.started, made: context.made })
+          }
+        } finally {
+          live.turn = undefined
+          live.calls.clear()
+          for (const [bot, running] of this.running) if (running.key === key) this.running.delete(bot)
         }
-        live.turn = undefined
-        live.calls.clear()
-        for (const [bot, running] of this.running) if (running.key === key) this.running.delete(bot)
         return
       }
     }

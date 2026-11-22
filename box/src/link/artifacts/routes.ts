@@ -65,9 +65,9 @@ function scopeOf(query: URLSearchParams): Scope | string {
 export async function artifactRoutes(store: ArtifactStore | undefined, method: string, parts: string[], query: URLSearchParams, body: () => Promise<any>, signal?: AbortSignal): Promise<Response> {
   if (!store) return message(503, "This computer's record of what its agents made isn't running. Try again in a moment.")
   const [first, second, third, fourth] = parts
-  // What's being recorded now first, so a turn that just ended reads as it ended.
-  // A kept version's bytes are already published; unrelated writes need not finish first.
-  if (!(method === "GET" && second === "versions" && third !== undefined && !fourth)) await store.settled()
+  // Lists see committed records immediately. Followers get another line when queued writes land.
+  const committedRead = method === "GET" && (!first || first === "events" || (second === "versions" && third !== undefined && !fourth))
+  if (!committedRead) await store.settled()
 
   if (!first) {
     if (method !== "GET") return message(405, "Read them with GET.")

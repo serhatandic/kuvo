@@ -3,10 +3,10 @@
 // of the folder for files changed since the turn began, which stops at a limit. The same on macOS
 // and Linux: plain directory reads and git, no watch.
 
-import { spawnSync } from "node:child_process"
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { execFile } from "node:child_process"
+import { promises as fs } from "node:fs"
 import { dirname, join, sep } from "node:path"
-import { ownArgs } from "../../shared/git"
+import { ownArgsLater } from "../../shared/git"
 
 /** Folders whose files are never what an agent made for you (tools' own, caches). */
 export const skipped = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".next", ".turbo", ".gradle", "target", "DerivedData"])
@@ -52,86 +52,94 @@ function ownFolders(): string[] {
 }
 
 /** The git repository `folder` is in, or none. */
-function repositoryOf(folder: string): string | undefined {
+async function repositoryOf(folder: string): Promise<string | undefined> {
   for (let at = folder; ; at = dirname(at)) {
-    if (existsSync(join(at, ".git"))) return at
+    try { await fs.access(join(at, ".git")); return at } catch {}
     if (dirname(at) === at) return undefined
   }
 }
 
 /**
- * Files under `folder` changed since `since` (ms), at most a couple of hundred; `keep` says
- * which of them count (a path from `folder`).
+ * Files under `folder` changed since `since` (ms), at most a couple of hundred.
+ * Directory reads, stats and git run asynchronously so serving the record can continue.
  */
-export function changedSince(folder: string, since: number, keep: (relative: string) => boolean = () => true): string[] {
-  const top = repositoryOf(folder)
-  // Kuvo Code's own, where they're inside it (not a bot's folder, which is in them).
+export async function changedSince(
+  folder: string, since: number, keep: (relative: string) => boolean = () => true,
+  descend: (relative: string) => boolean = () => true,
+): Promise<string[]> {
+  const top = await repositoryOf(folder)
   const own = ownFolders().filter((inside) => inside.startsWith(folder + sep))
-  const candidates = top ? fromGit(top, folder) : walk(folder, own)
-  const found: string[] = []
-  for (const path of candidates) {
-    if (found.length >= fileLimit) break
+  const allowed = (path: string) => {
     const relative = path.slice(folder.length + 1)
-    if (!keep(relative) || relative.split(sep).some((part) => skipped.has(part) || scratch.has(part.toLowerCase())) || own.some((inside) => path === inside || path.startsWith(inside + sep))) continue
-    try {
-      const stat = statSync(path)
-      if (stat.isFile() && stat.mtimeMs >= since - clockSlack) found.push(path)
-    } catch {}
+    return !relative.split(sep).some((part) => skipped.has(part) || scratch.has(part.toLowerCase()))
+      && !own.some((inside) => path === inside || path.startsWith(inside + sep))
   }
+  const found: string[] = []
+  const check = async (paths: string[]) => {
+    const matching = await Promise.all(paths.map(async path => {
+      try {
+        const stat = await fs.stat(path)
+        if (stat.isFile() && stat.mtimeMs >= since - clockSlack) return path
+      } catch {}
+      return undefined
+    }))
+    for (const path of matching) if (path && found.length < fileLimit) found.push(path)
+  }
+  const paths = top && await fromGit(top, folder)
+  if (paths) {
+    const candidates = paths.filter(path => allowed(path) && keep(path.slice(folder.length + 1)))
+    for (let i = 0; i < candidates.length && found.length < fileLimit; i += 32) await check(candidates.slice(i, i + 32))
+    return found
+  }
+  let looked = 0
+  const visit = async (at: string): Promise<void> => {
+    const entries = await fs.readdir(at, { withFileTypes: true }).catch(() => [])
+    const pending: string[] = []
+    const folders: string[] = []
+    for (const entry of entries) {
+      if (++looked > walkLimit || found.length >= fileLimit) break
+      const path = join(at, entry.name)
+      if (!allowed(path)) continue
+      const relative = path.slice(folder.length + 1)
+      if (entry.isDirectory()) {
+        if (descend(relative)) folders.push(path)
+      } else if ((entry.isFile() || entry.isSymbolicLink()) && keep(relative)) {
+        pending.push(path)
+        if (pending.length === 32) await check(pending.splice(0))
+      }
+    }
+    if (pending.length && found.length < fileLimit) await check(pending)
+    for (const child of folders) {
+      if (looked >= walkLimit || found.length >= fileLimit) break
+      await visit(child)
+    }
+  }
+  await visit(folder)
+  if (looked >= walkLimit) console.error(`artifacts: stopped looking through ${folder} after ${walkLimit} entries`)
   return found
 }
 
 /** What git status lists under `folder`: changed and new files, each by its whole path. */
-function fromGit(top: string, folder: string): string[] {
-  const args = ownArgs(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])
-  if (!args) return walk(folder)
-  const result = spawnSync("git", args, {
+async function fromGit(top: string, folder: string): Promise<string[] | undefined> {
+  const args = await ownArgsLater(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])
+  if (!args) return undefined
+  const out = await new Promise<string | undefined>(done => execFile("git", args, {
     timeout: 15_000,
     maxBuffer: 16 * 1024 * 1024,
+    encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
-  })
-  if (result.status !== 0) return walk(folder)
+  }, (error, stdout) => done(error ? undefined : stdout)))
+  if (out === undefined) return undefined
   const paths: string[] = []
-  const entries = result.stdout.toString("utf8").split("\0")
+  const entries = out.split("\0")
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
     if (entry.length < 4) continue
     // A rename names where it went first, then where it came from (skipped).
     if (entry[0] === "R" || entry[0] === "C") i++
     if (entry[0] === "D" || entry[1] === "D") continue
-    paths.push(join(top, entry.slice(3)))
+    const path = join(top, entry.slice(3))
+    if (path.startsWith(folder + sep)) paths.push(path)
   }
-  return paths.filter((path) => path.startsWith(folder + sep))
-}
-
-/** Every file under `folder`, but in skipped folders and `own`, up to the walk's limit. */
-function walk(folder: string, own: string[] = []): string[] {
-  const files: string[] = []
-  let looked = 0
-  const visit = (at: string) => {
-    let names: string[]
-    try {
-      names = readdirSync(at)
-    } catch {
-      return
-    }
-    for (const name of names) {
-      if (++looked > walkLimit) return
-      if (skipped.has(name)) continue
-      const path = join(at, name)
-      let stat
-      try {
-        stat = statSync(path)
-      } catch {
-        continue
-      }
-      if (stat.isDirectory()) {
-        if (!own.includes(path)) visit(path)
-      }
-      else if (stat.isFile()) files.push(path)
-    }
-  }
-  visit(folder)
-  if (looked > walkLimit) console.error(`artifacts: stopped looking through ${folder} after ${walkLimit} entries`)
-  return files
+  return paths
 }

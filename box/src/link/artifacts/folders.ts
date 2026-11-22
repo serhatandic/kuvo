@@ -4,7 +4,7 @@
 // Its memory, job and skills are noted as they are when the watch starts, so their first change
 // has a before.
 
-import { readdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
+import { promises as fs, readdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
 import { join, relative, sep } from "node:path"
 import { watchFolder } from "../../shared/watch"
 import type { Recorder } from "./recorder"
@@ -49,11 +49,13 @@ export function watchTree(folder: string, changed: (path: string) => void, faile
   }
   const watchers = new Map<string, FSWatcher>()
   let full = false
+  let closed = false
   const add = (at: string) => {
-    if (watchers.has(at) || full) return
+    if (watchers.has(at) || full || closed) return false
     if (watchers.size >= limit) {
       full = true
-      return failed(`more than ${limit} folders`)
+      failed(`more than ${limit} folders`)
+      return false
     }
     let watcher: FSWatcher
     try {
@@ -62,37 +64,37 @@ export function watchTree(folder: string, changed: (path: string) => void, faile
         const path = join(at, name.toString())
         changed(path)
         // A folder made since: watched too.
-        try {
-          if (statSync(path).isDirectory() && wanted(relative(folder, path))) visit(path)
-        } catch {}
+        if (!watchers.has(path) && wanted(relative(folder, path))) {
+          void fs.lstat(path).then(stat => stat.isDirectory() ? visit(path) : undefined).catch(() => {})
+        }
       })
     } catch (error: any) {
       full = true
-      return failed(String(error?.message ?? error))
+      failed(String(error?.message ?? error))
+      return false
     }
     watcher.on("error", () => {
       watcher.close()
       watchers.delete(at)
     })
     watchers.set(at, watcher)
+    return true
   }
-  const visit = (at: string) => {
-    add(at)
-    let names: string[]
-    try {
-      names = readdirSync(at)
-    } catch {
-      return
-    }
-    for (const name of names) {
-      const path = join(at, name)
-      try {
-        if (statSync(path).isDirectory() && wanted(relative(folder, path))) visit(path)
-      } catch {}
+  const visit = async (at: string): Promise<void> => {
+    if (!add(at)) return
+    const entries = await fs.readdir(at, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      if (closed || full) return
+      const path = join(at, entry.name)
+      if (entry.isDirectory() && wanted(relative(folder, path))) await visit(path)
     }
   }
-  visit(folder)
-  return { close: () => { for (const watcher of watchers.values()) watcher.close() } }
+  void visit(folder).then(() => { if (!closed) missed() })
+  return { close: () => {
+    closed = true
+    for (const watcher of watchers.values()) watcher.close()
+    watchers.clear()
+  } }
 }
 
 /** A folder in the bots' folder (by its path from it) whose files can be what a bot made or keeps. */
@@ -110,6 +112,7 @@ export class BotFolders {
   private pending = new Map<string, ReturnType<typeof setTimeout>>()
   /** Since when what the watch may not have told was last looked for. */
   private lookedAt = 0
+  private looking?: Promise<void>
 
   constructor(
     private readonly store: ArtifactStore,
@@ -138,6 +141,7 @@ export class BotFolders {
 
   stop() {
     this.watcher?.close()
+    this.watching = false
     for (const timer of this.pending.values()) clearTimeout(timer)
     this.pending.clear()
   }
@@ -145,12 +149,14 @@ export class BotFolders {
   /** What changed since it last looked, for what the watch may not have told (as it started, or
    * as another started or stopped): each the record hasn't seen as it is, as the watch would have
    * told it. (By the files' times: a file moved in keeps its own, and one gone isn't found.) */
-  missed() {
+  missed(): Promise<void> {
+    if (this.looking) return this.looking
     const since = this.lookedAt
     this.lookedAt = Date.now()
-    for (const path of changedSince(this.bots, since, (inside) => recordable(inside))) {
-      if (!this.pending.has(path) && !this.store.asSeen(path)) this.changed(path)
-    }
+    this.looking = changedSince(this.bots, since, recordable, botFolder).then(paths => {
+      for (const path of paths) if (!this.pending.has(path) && !this.store.asSeen(path)) this.changed(path)
+    }).finally(() => { this.looking = undefined })
+    return this.looking
   }
 
   /** A file in a bot's folder changed: recorded once it settles (or its turn ends). */
@@ -171,12 +177,13 @@ export class BotFolders {
    * with one, what the record hasn't seen as it is (what the watch didn't tell, its stream made
    * anew for longer than it looked again).
    */
-  turnEnded(bot: string, since: number, made: (via: string) => Made) {
-    // What's still settling goes with the rest, read once at its turn (not looked at now, and again).
-    const settling = this.settling(bot)
+  async turnEnded(bot: string, since: number, made: (via: string) => Made) {
+    const settling = new Set(this.settling(bot))
     const folder = join(this.bots, bot)
-    const found = changedSince(folder, since, (inside) => recordable(join(bot, inside))).filter((path) => !settling.includes(path))
-    void this.store.changeAll([...settling, ...(this.watching ? found.filter((path) => !this.store.asSeen(path)) : found)], made("shell"))
+    const found = await changedSince(folder, since, inside => recordable(join(bot, inside)), inside => botFolder(join(bot, inside)))
+    for (const path of this.settling(bot)) settling.add(path)
+    for (const path of found) if (!this.watching || !this.store.asSeen(path)) settling.add(path)
+    if (settling.size) await this.store.changeAll([...settling], made("shell"))
   }
 
   /** What's waiting to settle in `bot`'s folder (all bots' without one), recorded now. */
@@ -213,37 +220,44 @@ export class BotFolders {
   /** A bot's memory, job and skills as they are, kept as each one's version 0 where the record has none. */
   private baseline(bot: string) {
     const folder = join(this.bots, bot)
-    const files = [join(folder, "MEMORY.md"), join(folder, "job.json"), ...walk(join(folder, "workspace", ".opencode", "skills"), 200)]
-    for (const file of files) {
-      if (this.store.at(file)) continue
+    const before = (file: string) => {
+      if (this.store.at(file)) return
       try {
         const stat = statSync(file)
-        if (!stat.isFile() || stat.size > copyLimit) continue
+        if (!stat.isFile() || stat.size > copyLimit) return
         void this.store.before(file, readFileSync(file), { bot })
       } catch {}
     }
+    before(join(folder, "MEMORY.md"))
+    before(join(folder, "job.json"))
+    void this.baselineSkills(join(folder, "workspace", ".opencode", "skills"), bot)
+  }
+
+  private async baselineSkills(folder: string, bot: string) {
+    let left = 200
+    const visit = async (at: string): Promise<void> => {
+      const entries = await fs.readdir(at, { withFileTypes: true }).catch(() => [])
+      for (const entry of entries) {
+        if (left-- <= 0) return
+        if (skipped.has(entry.name)) continue
+        const file = join(at, entry.name)
+        if (entry.isDirectory()) await visit(file)
+        else if (entry.isFile() && !this.store.at(file)) {
+          try {
+            const stat = await fs.stat(file)
+            if (stat.size <= copyLimit) await this.store.before(file, await fs.readFile(file), { bot })
+          } catch {}
+        }
+      }
+    }
+    await visit(folder)
   }
 }
 
-/** Files under `folder`, at most `limit`. */
-function walk(folder: string, limit: number): string[] {
-  const found: string[] = []
-  const visit = (at: string) => {
-    let names: string[]
-    try {
-      names = readdirSync(at)
-    } catch {
-      return
-    }
-    for (const name of names) {
-      if (found.length >= limit || skipped.has(name)) return
-      const path = join(at, name)
-      try {
-        if (statSync(path).isDirectory()) visit(path)
-        else found.push(path)
-      } catch {}
-    }
-  }
-  visit(folder)
-  return found
+/** Folders where a walk can find something recordable, relative to the bots' folder. */
+function botFolder(path: string): boolean {
+  const [bot, area, ...rest] = path.split(sep)
+  if (!bot?.startsWith("bot_")) return false
+  if (!area || (area === "groups" && !rest.length)) return true
+  return area === "workspace" && wanted(path)
 }

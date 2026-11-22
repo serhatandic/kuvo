@@ -129,6 +129,7 @@ async function route(method: string, path: string, body: unknown = {}): Promise<
   const url = new URL("http://box/" + path)
   // What follows `kuvo/artifacts`, as the box's link passes it on.
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent).slice(2)
+  if (method === "GET" && !parts.length) await store.settled()
   const response = await artifactRoutes(store, method, parts, url.searchParams, async () => body)
   const type = response.headers.get("content-type") ?? ""
   return { status: response.status, value: type.includes("json") ? await response.json() : Buffer.from(await response.arrayBuffer()).toString() }
@@ -352,7 +353,7 @@ describe("a bot's folder", () => {
       folders.flush()
       writeFileSync(notes, "draft 2")
       // (At once, before the watch could tell of it.)
-      folders.turnEnded("bot_ada", Date.now() - 60_000, (via) => ({ by: { kind: "outside" }, via }))
+      await folders.turnEnded("bot_ada", Date.now() - 60_000, (via) => ({ by: { kind: "outside" }, via }))
       await store.settled()
       const { value } = await route("GET", "kuvo/artifacts?bot=bot_ada")
       const shelf = value.artifacts.find((artifact: any) => artifact.name === "notes.md")
@@ -373,7 +374,7 @@ describe("a bot's folder", () => {
       writeFileSync(report, "a,b\n1,2\n")
       folders.changed(report)
       look.mockClear()
-      folders.turnEnded("bot_ada", Date.now() - 60_000, (via) => ({ by: { kind: "outside" }, via }))
+      await folders.turnEnded("bot_ada", Date.now() - 60_000, (via) => ({ by: { kind: "outside" }, via }))
       await store.settled()
       expect(look.mock.calls.filter(([path]) => path === report).length).toBe(1)
       expect(store.bytes(store.at(report)!.id, store.at(report)!.versions.at(-1)!.n)?.toString()).toBe("a,b\n1,2\n")
@@ -502,7 +503,7 @@ describe("a bot's folder", () => {
     await hear([{ type: "session.execution.started", data: { sessionID: "ses_bot_ada" } }, { type: "session.inbox.delivered", data: { sessionID: "ses_bot_ada", inboxID: "msg_1" } }])
     const report = join(folder, "workspace", "weekly.csv")
     writeFileSync(report, "week,sales\n1,10\n")
-    folders.missed()
+    await folders.missed()
     // (Before its turn ends, which looks too.)
     folders.flush()
     await store.settled()
@@ -1382,6 +1383,59 @@ describe("a conversation's outputs", () => {
 })
 
 describe("the routes", () => {
+  test("the first output line reads its committed scope without a scan or a recording wait", async () => {
+    const together = join(project, "together.md")
+    const other = join(project, "other.md")
+    writeFileSync(together, "visible")
+    writeFileSync(other, "unrelated")
+    await store.change(together, { by: { kind: "agent" }, via: "write", where: { session: "ses_outputs", bot: "bot_outputs" } })
+    await store.change(other, { by: { kind: "agent" }, via: "write", where: { session: "ses_other", bot: "bot_other" } })
+    store = new ArtifactStore(join(root, "artifacts"), { bots })
+    const settling = spyOn(store, "settled").mockRejectedValue(new Error("Recording is still in flight"))
+    const matches = spyOn(store as any, "matches")
+    try {
+      for (const scope of ["session=ses_outputs", "bot=bot_outputs"]) {
+        const response = await artifactRoutes(store, "GET", ["events"], new URLSearchParams(scope), async () => ({}))
+        const stream = response.body!.getReader()
+        try {
+          const first = JSON.parse(new TextDecoder().decode((await stream.read()).value))
+          expect(first.artifacts.map((each: any) => each.name)).toEqual(["together.md"])
+        } finally { await stream.cancel() }
+      }
+      expect(settling).not.toHaveBeenCalled()
+      expect(matches).toHaveBeenCalledTimes(2)
+    } finally {
+      matches.mockRestore()
+      settling.mockRestore()
+    }
+  })
+
+  test("a turn-end folder scan can wait on the disk while outputs answer", async () => {
+    const file = join(project, "saved.md")
+    writeFileSync(file, "ready")
+    await store.change(file, { by: { kind: "agent" }, via: "write", where: { session: "ses_scan" } })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const readdir = fs.promises.readdir.bind(fs.promises)
+    const read = spyOn(fs.promises, "readdir").mockImplementation(async (...args: Parameters<typeof readdir>) => {
+      if (args[0] === project) {
+        entered.resolve()
+        await release.promise
+      }
+      return readdir(...args)
+    })
+    const scan = Promise.resolve(changedSince(project, Date.now()))
+    try {
+      expect(await Promise.race([entered.promise.then(() => "reading"), scan.then(() => "done")])).toBe("reading")
+      const response = await artifactRoutes(store, "GET", [], new URLSearchParams("session=ses_scan"), async () => ({}))
+      expect((await response.json()).artifacts.map((row: any) => row.name)).toEqual(["saved.md"])
+    } finally {
+      release.resolve()
+      await scan
+      read.mockRestore()
+    }
+  })
+
   test("a list says whose, and a followed list sends a line now and one on each change", async () => {
     expect((await route("GET", "kuvo/artifacts")).status).toBe(400)
     expect((await route("GET", "kuvo/artifacts?bot=a&group=b")).status).toBe(400)
@@ -1470,7 +1524,7 @@ test("the link's artifact service reports an unsupported artifact format", async
   expect(await response.json()).toEqual({ code: "unsupportedFormatVersion", message: artifactFormatError.message })
 })
 
-test("artifact collection from a home project excludes the app's own data", () => {
+test("artifact collection from a home project excludes the app's own data", async () => {
   const home = join(root, "home-project")
   const excluded = ["Caches/run.kuvo.code", "Logs/Kuvo Code", "WebKit/run.kuvo.code", "HTTPStorages/run.kuvo.code", "Preferences/run.kuvo.code.plist"]
     .map(path => join(home, "Library", path))
@@ -1482,7 +1536,7 @@ test("artifact collection from a home project excludes the app's own data", () =
   writeFileSync(report, "user file")
   const before = process.env.KUVO_OWN_FOLDERS
   process.env.KUVO_OWN_FOLDERS = JSON.stringify(excluded)
-  try { expect(changedSince(home, Date.now())).toEqual([report]) }
+  try { expect(await changedSince(home, Date.now())).toEqual([report]) }
   finally {
     if (before === undefined) delete process.env.KUVO_OWN_FOLDERS
     else process.env.KUVO_OWN_FOLDERS = before
