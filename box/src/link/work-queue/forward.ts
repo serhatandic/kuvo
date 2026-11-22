@@ -207,14 +207,14 @@ function authorizedBackup(link: LinkState, kept: Record<string, unknown>): boole
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
-export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant, deferSend = false }: { backgroundRelay?: boolean; memory?: boolean; grant?: ForwardGrant | null; deferSend?: boolean } = {}): Promise<Forwarded> {
+export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant, deferSend = false, operation }: { backgroundRelay?: boolean; memory?: boolean; grant?: ForwardGrant | null; deferSend?: boolean; operation?: string } = {}): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   if (grant === null) return { status: 409, refused: "Use a current device grant and a valid operation id." };
   if (grant && !takesForwarded(peer.key, SCOPED_FORWARD))
     return { status: 409, refused: `Update ${computer.name} before forwarding this operation from a paired device.` };
-  const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
+  const id = operation ? `wqa_tool_${operation.slice(0, 32)}` : `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   if (memory) {
     if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
       return { status: 409, refused: `Update the box on ${computer.name} before requesting this read.` };
@@ -589,7 +589,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   catch { return answer(unavailable); }
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && (act.area === "computers" || act.area === "devices");
+  const redo = kept !== undefined && kept.answer === null && (act.area === "computers" || act.area === "devices" || act.area === "queue-agent" && act.id.startsWith("wqa_tool_"));
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });

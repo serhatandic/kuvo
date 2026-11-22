@@ -1,3 +1,4 @@
+import { ToolCallPending, toolProgress } from "../server/tool-call";
 // Agents writing to each other (PROTOCOL.md, "Agents' tools")
 // Any conversation on any of your computers can ask who else there is (list_agents), write to one of
 // them (send_message), read one's conversation (read_conversation) and start a session
@@ -17,7 +18,7 @@ import { pause } from "../../shared/wait";
 import { readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { asked } from "../engine/client";
-import { sendInto } from "../engine/queue";
+import { messageReached, queueOf, sendInto } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { ownAgentsNow, ownAsLast } from "../peers/agents";
 import { computerName } from "../peers/computer-name";
@@ -29,7 +30,7 @@ import { folded, READ_BY_MAIL, READ_LIMIT, readConversation, TranscriptRefusal }
 import { letterAnswer, leaveLetter, offRelay } from "./leave";
 import { composeLetter, lookupProblem, waitingNote, placeOfSession, placeOfSessionPatiently } from "./letter";
 import { allowed, takeBack } from "./limits";
-import { OUTSIDE, seatRefusal, startedWords, startSession } from "./start";
+import { OUTSIDE, seatRefusal, startedWords } from "./start";
 import { noteOversightBy } from "../work/oversight";
 import { noteSent } from "../work/sent";
 import { notifyUserTool } from "../notices/notify";
@@ -40,7 +41,7 @@ import { under, workSessions } from "../work/tree";
 import { rowsBox } from "../work/elsewhere";
 import { awaySince } from "../peers/reach";
 import { awaitAnswer, boxOf, callPeer, elsewhereTool, rowsEverywhere } from "./calls";
-import { computerOf, readElsewhere, startElsewhere } from "./start-call";
+import { computerOf, readElsewhere, startElsewhere, startToolSession } from "./start-call";
 import { setJobTool, showTool, wakeTool } from "./own-tools";
 import { SHOW_TOOLS, WAKE_TOOLS } from "./tool-names";
 import type { ListedAgent, Target } from "../../shared/records";
@@ -64,6 +65,7 @@ export interface ToolPlace {
   inView?: boolean;
   /** Work Queue reference from a verified start_session call. */
   queueItem?: string | number;
+  operation?: string;
 }
 
 /** The tools, by name. */
@@ -206,30 +208,42 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
   if (typeof args.to !== "string" || !args.to.trim()) return refused("Say who to write to (to).");
   if (typeof args.text !== "string" || !args.text.trim()) return refused("Say what to write (text).");
   const { text } = args;
-  const found = await findAgent(args.to, caller, all, place);
-  if ("error" in found) return found.error;
-  const target = found.agent;
+  const journal = place.operation && toolProgress<{
+    session: string; name: string; sender: string; id: string; at: number; peer?: string; machine?: string; answer?: string;
+  }>(place.operation);
+  const kept = journal ? journal.read() : undefined;
+  const found = kept ? undefined : await findAgent(args.to, caller, all, place);
+  if (found && "error" in found) return found.error;
+  const target = kept ?? found!.agent;
   // A few at a time: two agents shouldn't keep writing to each other unattended. Taken back if it
   // doesn't go, so one tried again isn't counted twice.
   const key = caller ?? "outside";
-  const counted = allowed("messages", key);
+  const counted = kept ? 0 : allowed("messages", key);
   if (counted === null) return refused("You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on.");
   const failed = (words: string) => {
-    takeBack("messages", key, counted);
+    if (!kept) takeBack("messages", key, counted);
     return refused(words);
   };
-  const sender = nameOf(caller, all);
-  if ("local" in found) {
-    let here = found.local;
-    const id = messageID();
+  const sender = kept?.sender ?? nameOf(caller, all);
+  const peer = kept?.peer ?? (found && "away" in found ? found.away.peer.key : undefined);
+  const at = kept?.at ?? Date.now();
+  const id = kept?.id ?? (peer && place.operation ? "ltr_" + place.operation.slice(0, 22) : messageID(at));
+  const machine = kept?.machine ?? found?.agent.machine;
+  const progress = { session: target.session, name: target.name, sender, id, at, peer, machine };
+  if (!kept && journal) journal.keep(progress);
+  if (kept?.answer) return said(kept.answer);
+  if (!peer) {
+    let here = found && "local" in found ? found.local : await placeOfSession(target.session, targetsOf(place)).catch(() => null);
+    if (!here) throw new ToolCallPending("Still looking for the recipient's conversation.");
     const message = { id, text: composeLetter(sender, caller ?? "unknown", text, false), delivery: "steer" as const };
     const shown = { from: sender, words: text, kept: message.text };
     let went: "sent" | "waits";
     try {
-      went = await sendInto(here.target, target.session, message, shown);
+      if (kept && await messageReached(here.target, target.session, id)) {
+        went = queueOf(target.session).waiting?.some(item => item.id === id) ? "waits" : "sent";
+      } else went = await sendInto(here.target, target.session, message, shown);
     } catch (error) {
-      // The receiver deduplicates by message ID if it accepted the first request before its
-      // response was lost. Re-read its location to follow an engine or bridge restart.
+      if (journal) throw new ToolCallPending(`Waiting for ${target.name}'s conversation to confirm delivery.`);
       try {
         await pause(200, place.signal);
         const again = await findAgent(target.session, caller, all, place);
@@ -240,22 +254,21 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
         return failed(`Delivery to ${target.name} couldn't be confirmed: ${lookupProblem(retryError)}`);
       }
     }
-    // A bot writing to a session of its own: for clients to show it looking after it.
+    const answer = went === "waits" ? waitingNote(target.session, target.name) : `Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`;
+    journal && journal.keep({ ...progress, answer });
     noteOversightBy(caller, { ...here.data, id: target.session }, "told");
-    // (A session's report sent to its starter isn't told it again as it finishes.)
     if (caller) noteSent(caller, target.session, text);
-    // Its message waits on the box; the sender hears why instead of waiting for an answer.
-    if (went === "waits") return said(waitingNote(target.session, target.name));
-    return said(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
+    return said(answer);
   }
-  const { away } = found;
   try {
-    leaveLetter({ from: caller, to: target.session, text, peer: away.peer.key, wait: false });
+    leaveLetter({ from: caller, to: target.session, text, peer, wait: false }, at, journal ? id : undefined);
   } catch {
     return failed(`It didn't reach ${target.name}.`);
   }
   if (caller) noteSent(caller, target.session, text);
-  return said(offRelay() ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
+  const answer = offRelay() ? offlineNote() : `On its way to ${target.name}${machine ? ` on ${machine}` : ""}. Its answer, if it writes one, comes to you as a message.`;
+  journal && journal.keep({ ...progress, answer });
+  return said(answer);
 }
 
 // The conversation of the agent `args.of` names, as you'd read it; a long one as its start and its
@@ -358,7 +371,7 @@ export async function agentTool(name: AgentToolName, args: Record<string, unknow
       // one (`outside`).
       const by = root ? { ...root, name: nameOf(root.session, all) } : OUTSIDE;
       const { computer: _here, wait: _wait, ...given } = args;
-      const outcome = await startSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal, queueItem: place.queueItem });
+      const outcome = await startToolSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal, queueItem: place.queueItem, operation: place.operation });
       return startedWords(outcome);
     }
     case "list_models":

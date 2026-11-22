@@ -170,6 +170,7 @@ export interface Item {
   removed?: { at: number; by: Who };
   offlineEdits?: EditHistory;
   creationReceipt?: CreationReceipt;
+  toolReplies?: Record<string, { text: string; isError: boolean }>;
   restoreReview?: string;
 }
 

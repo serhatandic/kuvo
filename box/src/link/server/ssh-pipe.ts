@@ -2,11 +2,13 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
 import { privateFolder } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { ROUTE_VERSION } from "../../shared/route-version";
 import { ChunkQueue } from "../browser/buffers";
+import { localToolRequest } from "./tool-call";
 import { APP_FOLDER, isSocketKey, RUN, socketKey } from "../home";
 import type { LinkHandler } from "./context";
 import { answerSshRoute, sshLine, writeSshBytes, type SshCommand } from "./ssh-route";
@@ -123,42 +125,106 @@ async function unavailable(): Promise<void> {
     body: JSON.stringify({ message: "Kuvo on this computer is starting. Connect again in a moment." }) }));
 }
 
-export async function pipeSshRoute(command: SshCommand): Promise<void> {
-  let key: string;
-  try {
-    if (!socketIsPrivate()) return unavailable();
-    key = socketKey({ create: false });
-  } catch { return unavailable(); }
+const startupWait = 80_000;
 
-  const socket = net.createConnection(socketPath);
-  const abort = () => socket.destroy();
+async function openPipe(command: SshCommand, signal: AbortSignal, until: number) {
+  while (!signal.aborted && Date.now() < until) {
+    let socket: net.Socket | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const close = () => socket?.destroy();
+    let connected = false;
+    try {
+      // A present socket with the wrong permissions is never used.
+      if (!socketIsPrivate()) return;
+      const key = socketKey({ create: false });
+      socket = net.createConnection(socketPath);
+      socket.on("error", () => {}); // Reported by the exchange.
+      signal.addEventListener("abort", close, { once: true });
+      timer = setTimeout(close, Math.min(5000, until - Date.now())).unref();
+      const response = packets(socket);
+      await packet(socket, Buffer.from(JSON.stringify({ ...command, key })));
+      const first = await response.next();
+      if (first.done || first.value.length !== 1 || first.value[0] !== accepted) throw new Error("SSH pipe did not accept the command.");
+      connected = true;
+      return { socket, response };
+    } catch {
+      // The selection survives while the socket or key is missing, stale, or starting.
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", close);
+      if (!connected) close();
+    }
+    await delay(200, undefined, { signal });
+  }
+  return undefined;
+}
+
+export async function pipeSshRoute(command: SshCommand): Promise<void> {
+  const stop = new AbortController();
+  let socket: net.Socket | undefined;
+  const abort = () => { stop.abort(); socket?.destroy(); process.stdin.destroy(); };
   process.once("SIGTERM", abort);
   process.stdout.once("error", abort);
-  socket.on("error", () => {}); // The iterator or pending write reports the error to the exchange.
-  const timeout = setTimeout(abort, 5000).unref();
-  let admitted = false;
   try {
-    const response = packets(socket);
-    await packet(socket, Buffer.from(JSON.stringify({ ...command, key })));
-    const first = await response.next();
-    if (first.done || first.value.length !== 1 || first.value[0] !== accepted) return await unavailable();
-    admitted = true;
-    clearTimeout(timeout);
-    const send = async () => {
-      for await (const bytes of process.stdin) await sendPackets(socket, bytes);
-      await packet(socket, Buffer.alloc(0));
-    };
-    void send().catch(error => {
-      if (!["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes((error as NodeJS.ErrnoException).code ?? "")) abort();
-    });
-    for await (const bytes of response) await writeSshBytes(process.stdout, bytes);
-  } catch {
-    // From the moment the server accepts, there is no safe fallback or retry.
-    if (!admitted) await unavailable();
-    else process.exitCode = 1;
+    let input: Buffer | undefined;
+    let replay = false;
+    let until: number | undefined;
+    if (command.internalPath) input = Buffer.alloc(0);
+    else if (!command.addressed) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      ({ input, replay } = localToolRequest(Buffer.concat(chunks)));
+    }
+    while (!stop.signal.aborted) {
+      const opened = await openPipe(command, stop.signal, until ?? Date.now() + startupWait);
+      if (!opened) {
+        if (!stop.signal.aborted) await unavailable();
+        return;
+      }
+      ({ socket } = opened);
+      const active = socket;
+      let pending: Buffer | undefined;
+      const send = async () => {
+        if (input !== undefined) await sendPackets(active, input);
+        else for await (const bytes of process.stdin) await sendPackets(active, bytes);
+        await packet(active, Buffer.alloc(0));
+      };
+      void send().catch(() => active.destroy());
+      try {
+        const reply: Buffer[] = [];
+        for await (const bytes of opened.response) {
+          if (replay) reply.push(bytes);
+          else await writeSshBytes(process.stdout, bytes);
+        }
+        if (replay) {
+          const complete = Buffer.concat(reply);
+          if (complete.length) {
+            const answer = JSON.parse(complete.toString("utf8"));
+            const retry = answer.status === 503 && JSON.parse(answer.body || "null")?.retryToolCall === true;
+            if (!retry) {
+              await writeSshBytes(process.stdout, complete);
+              return;
+            }
+            pending = complete;
+          }
+        } else return;
+      } catch {
+        if (!replay) { process.exitCode = 1; return; }
+      } finally {
+        active.destroy();
+      }
+      until ??= Date.now() + startupWait;
+      if (Date.now() >= until) {
+        if (pending) await writeSshBytes(process.stdout, pending);
+        else await unavailable();
+        return;
+      }
+      await delay(200, undefined, { signal: stop.signal });
+    }
+  } catch (error) {
+    if (!stop.signal.aborted) throw error;
   } finally {
-    clearTimeout(timeout);
-    socket.destroy();
+    socket?.destroy();
     process.stdin.destroy();
     process.off("SIGTERM", abort);
     process.stdout.off("error", abort);

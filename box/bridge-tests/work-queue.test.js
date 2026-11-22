@@ -154,6 +154,18 @@ const start = (args, session) => tool("start_session", args, session, "kuvo/agen
 const view = async owner => (await route("GET", `kuvo/work-queue?owner=${owner}`)).body;
 const numberIn = text => Number(text.match(/#(\d+)/)[1]);
 
+test("repeating a queue mutation returns its first answer without adding another item", async () => {
+  const args = { title: "One queue item" };
+  const body = { name: "queue_add", arguments: args, session: "ses_lead", operation: "queue_add_once" };
+  calling.set(body.session, { name: body.name, args });
+  const first = await spawnRoute("POST", "kuvo/work-queue/tools", body);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.isError, false, first.body.text);
+  const repeat = await spawnRoute("POST", "kuvo/work-queue/tools", body);
+  assert.deepEqual(repeat, first);
+  assert.equal((await view("ses_lead")).items.filter(item => item.title === args.title).length, 1);
+});
+
 test("an agent keeps its work in its own queue: numbered from #1 here (its own primary), Todo by default, listed by status", async () => {
   const first = await tool("queue_add", { title: "Fix the login page", body: "It loops after **sign-in**." }, "ses_lead");
   assert.equal(first.isError, false, first.text);

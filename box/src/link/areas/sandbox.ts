@@ -5,6 +5,7 @@
 // allowed each project (`kuvo/sandbox/allowed`). The asks wait in the box's long-running process,
 // as Also Allowed is, which any other passes them to (vault/holder.ts).
 
+import { answerToolCall } from "../server/tool-call";
 import { isObject, parsed } from "../../shared/json";
 import type { SandboxState } from "../../shared/routes/sandbox";
 import { addableOwners, addRule, allowedFor, folderOfOwner, forgetGoneBots, listed, removeRule, RuleRefusal } from "../fence/allowed";
@@ -113,16 +114,18 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
     // What a tool server lists (`tools/list`): only while commands here are in the sandbox.
     if (method === "GET") return yield* json(200, { tools: on ? SANDBOX_TOOLS : [] });
     if (method !== "POST") return yield* json(405, {});
-    if (!on) return yield* json(200, { text: fencePending() ? notOnWords() : NOT_ON, isError: true });
-    // Only a call the conversation it names is making now, with these arguments (vault/who.ts).
-    const args = isObject(given.arguments) ? given.arguments : {};
-    const session = typeof given.session === "string" ? given.session : undefined;
-    const tool = given.name;
-    if (typeof tool !== "string" || !await sandboxProposer(session, () => isCalling(session, [tool], args, readEngine, readBridge))) {
-      return yield* json(200, { text: NOT_CALLING, isError: true });
-    }
-    const caller = await callerOf(session, readEngine, readBridge);
-    return yield* json(200, await callSandboxTool(tool, args, caller, signal));
+    const answer = await answerToolCall(request, given, async () => {
+      if (!on) return { text: fencePending() ? notOnWords() : NOT_ON, isError: true };
+      const args = isObject(given.arguments) ? given.arguments : {};
+      const session = typeof given.session === "string" ? given.session : undefined;
+      const tool = given.name;
+      if (typeof tool !== "string" || !await sandboxProposer(session, () => isCalling(session, [tool], args, readEngine, readBridge))) {
+        return { text: NOT_CALLING, isError: true };
+      }
+      const caller = await callerOf(session, readEngine, readBridge);
+      return callSandboxTool(tool, args, caller, signal);
+    });
+    return yield* json(answer.status, answer.value);
   }
   // A command the sandbox stopped, as the engine's plugin tells it when the agent's shell call ends:
   // in Auto, what the agent gets instead (`{text, exit}`), or why not after what it printed
