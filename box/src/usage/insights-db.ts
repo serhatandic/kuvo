@@ -1,6 +1,7 @@
 // SQLite and pricing run on one worker. Its message queue orders writes, price changes and reads.
 import type { Pricing } from "./pricing"
 import type { InsightRecord } from "./insight-records"
+import type { Lineage } from "./insights-scan"
 import type { CallsPage, Filter, InsightsStore, OriginScope, Overview, Route, Scope, SessionsPage } from "./insights-store"
 import type { SummaryFacts } from "./insights-summary"
 
@@ -22,6 +23,7 @@ type Commands = {
   view: [now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]]
   summary: [now: number, zone: string, period: number, scope: Scope, computers: string[], eligible?: string[]]
   price: [now: number]
+  attribute: [lineage: [string, Lineage][]]
   take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope]
 }
 type Method = keyof Commands
@@ -119,6 +121,7 @@ export class InsightsDB {
   batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }
+  attribute(lineage: [string, Lineage][]) { return this.call<void>(["attribute", [lineage]]) }
   take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {
     return this.call<void>(["take", [records, now, sender, cursor, epoch, origins]], pricing)
   }

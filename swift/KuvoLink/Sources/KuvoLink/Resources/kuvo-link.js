@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 db2d78665898
+// Kuvo folder layout 23 ba705ac1a037
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "db2d78665898";
+var BRIDGE_VERSION = "ba705ac1a037";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -100962,10 +100962,16 @@ function conversations2(rows, titles) {
     if (row.session === id) {
       top.title = row.title ?? top.title;
       top.own = top.own || !!row.own;
+      if (row.bot) {
+        top.bot = row.bot;
+        top.botName = row.botName;
+      }
     } else
       top.subagents++;
-    top.bot ??= row.bot;
-    top.botName ??= row.botName;
+    if (!top.bot) {
+      top.bot = row.bot;
+      top.botName = row.botName;
+    }
   }
   for (const top of tops.values())
     top.title ??= titles.get(top.session) ?? null;
@@ -101171,11 +101177,12 @@ class Insights {
     const now = this.now();
     const pricing = this.pricing.current();
     const since = Math.floor(now / DAY8) * DAY8 - 365 * DAY8;
-    const { records, issues } = await this.scanner.scan(pricing, since);
+    const { records, lineage, issues } = await this.scanner.scan(pricing, since);
     for (let offset = 0;offset < records.length; offset += 800) {
       await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins());
     }
     await this.db.take([], this.pricing.current(), now);
+    await this.db.attribute(lineage);
     await this.db.write("failed", false);
     await this.db.write("local", { scanned: this.now(), issues });
     this.sync();
@@ -101352,7 +101359,7 @@ class Insights {
           ...lookOf(bot.bot),
           ...overseen ? { note: plural(overseen, "session") } : {},
           ...measures(bot.sums),
-          sessions: bot.conversations.slice(0, MOST8).map((top) => conversation(top, false))
+          sessions: bot.conversations.map((top) => conversation(top, false))
         };
       }),
       ...facts.loose.map((top) => conversation(top, true))
@@ -101362,7 +101369,7 @@ class Insights {
       { key: "providers", name: "Providers", rows: facts.providers.map((row) => ({ kind: "provider", id: row.provider, name: providerName(row.provider), provider: row.provider, ...measures(row) })) },
       { key: "models", name: "Models", rows: facts.models.map((row) => ({ kind: "model", id: row.key, name: row.name, provider: row.provider, ...measures(row) })) },
       { key: "computers", name: "Computers", rows: facts.computers.map((row) => ({ kind: "computer", id: row.computer, name: named.get(row.computer) ?? "Another computer", ...measures(row) })) }
-    ].map((list) => ({ ...list, rows: list.rows.slice(0, MOST8) }));
+    ].map((list, index) => index === 0 ? list : { ...list, rows: list.rows.slice(0, MOST8) });
     const { totals, prior } = facts;
     const change = prior && {
       cost: prior.cost > 0 ? (totals.cost - prior.cost) / prior.cost : null,
@@ -105091,7 +105098,7 @@ function engineUsageAnswers(folder, since) {
       json_extract(data, '$.agent'), json_extract(data, '$.tokens'),
       json_extract(data, '$.metadata.source'),
       json_extract(data, '$.time.origin'), json_extract(data, '$.time.usageAccount'),
-      @${sessionTable}_title@, @${sessionTable}_metadata@, @${sessionTable}_parent_id@,
+      @${sessionTable}_title@,
       (SELECT json_group_array(json_array(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool')),
           json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
         WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
@@ -105153,17 +105160,22 @@ self.onmessage = (event) => {
       const v2 = names.includes("session_message")
       if (!v1 && !v2) continue
       let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
+      const sessions = []
       if (sql.usage) {
         for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
           const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
           const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
-          for (const column of ["title", "metadata", "parent_id"]) query = query.replaceAll("@" + table + "_" + column + "@", fact(column))
+          query = query.replaceAll("@" + table + "_title@", fact("title"))
+          if (columns.includes("id")) {
+            const fields = ["parent_id", "metadata"].map((column) => columns.includes(column) ? column : "NULL")
+            for (const session of db.query("SELECT id, " + fields.join(", ") + " FROM " + table).values()) sessions.push(session)
+          }
         }
         const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
         query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
       }
       const json = db.query(query).values()[0]?.[0]
-      answers.push(typeof json === "string" ? { path, json } : { path })
+      answers.push({ path, ...(typeof json === "string" ? { json } : {}), ...(sql.usage ? { sessions } : {}) })
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -110156,6 +110168,9 @@ class InsightsDB {
   price(pricing, now) {
     return this.call(["price", [now]], pricing);
   }
+  attribute(lineage) {
+    return this.call(["attribute", [lineage]]);
+  }
   take(records, pricing, now, sender, cursor, epoch, origins) {
     return this.call(["take", [records, now, sender, cursor, epoch, origins]], pricing);
   }
@@ -110208,46 +110223,75 @@ function lineNode(session, bots, names) {
   const kuvo = kuvoOf2(session.metadata);
   const parent = typeof session.parentID === "string" && session.parentID ? session.parentID : undefined;
   const startedBy = typeof kuvo?.startedBy === "string" && kuvo.startedBy ? kuvo.startedBy : undefined;
-  const line = { ...parent ? { parent } : {}, ...startedBy ? { startedBy } : {} };
+  const ancestors = Array.isArray(kuvo?.line) ? kuvo.line.slice(-20).filter((id) => typeof id === "string" && !!id).reverse() : [];
+  const starters = startedBy ? [startedBy, ...ancestors.filter((id) => id !== startedBy)] : ancestors;
+  const line = { ...parent ? { parent } : {}, ...starters.length ? { starters } : {} };
   const own = bots.get(session.id);
   if (own)
     return { ...line, bot: own.id, botName: own.name, own: true };
   const seat = seatBot(session.metadata);
   if (seat)
-    return { ...line, bot: seat, ...names.has(seat) ? { botName: names.get(seat) } : {}, own: true };
+    return { ...line, bot: seat, botName: names.get(seat), own: true };
   const by = kuvo?.by;
   if (by && typeof by.bot === "string" && by.bot)
-    return { ...line, bot: by.bot, ...typeof by.name === "string" && by.name ? { botName: by.name } : {} };
+    return { ...line, bot: by.bot, botName: typeof by.name === "string" && by.name || names.get(by.bot), own: undefined };
   return line;
 }
 function lineages(nodes) {
-  const known = new Map;
-  const resolve = (id, depth) => {
-    const kept = known.get(id);
-    if (kept)
-      return kept;
+  const roots = new Map;
+  const rootOf = (id) => {
     let root = id;
-    let owner;
-    const seen = new Set([id]);
-    for (let node = nodes.get(id);node; node = nodes.get(root)) {
-      if (!owner && node.bot)
-        owner = node;
-      if (!node.parent || seen.has(node.parent) || seen.size > 64)
+    const visited = new Set;
+    while (true) {
+      const kept = roots.get(root);
+      if (kept) {
+        root = kept;
         break;
-      root = node.parent;
-      seen.add(root);
+      }
+      if (visited.has(root)) {
+        const path = [...visited];
+        root = path.slice(path.indexOf(root)).sort()[0];
+        break;
+      }
+      const parent = nodes.get(root)?.parent;
+      if (!parent)
+        break;
+      visited.add(root);
+      root = parent;
     }
-    const top = nodes.get(root);
-    if (!owner && top?.startedBy && top.startedBy !== root && depth < 16) {
-      const starter = resolve(top.startedBy, depth + 1);
-      if (starter.bot)
-        owner = { bot: starter.bot, botName: starter.botName };
-    }
-    const line = { root, ...owner?.bot ? { bot: owner.bot } : {}, ...owner?.botName ? { botName: owner.botName } : {}, ...owner && top?.own && top.bot === owner.bot ? { own: true } : {} };
-    known.set(id, line);
-    return line;
+    for (const session of visited)
+      roots.set(session, root);
+    return root;
   };
-  return (id) => resolve(id, 0);
+  const owners = new Map;
+  const ownerOf = (root, path) => {
+    const top = owners.get(root) ?? nodes.get(root);
+    if (top?.bot)
+      return top;
+    if (!top?.starters || path.has(root))
+      return;
+    path.add(root);
+    for (const starter of top.starters) {
+      const owner = ownerOf(rootOf(starter), path);
+      if (owner) {
+        path.delete(root);
+        owners.set(root, owner);
+        return owner;
+      }
+    }
+    path.delete(root);
+    return;
+  };
+  return (id) => {
+    const root = rootOf(id);
+    const owner = ownerOf(root, new Set);
+    return {
+      root,
+      ...owner?.bot ? { bot: owner.bot } : {},
+      ...owner?.botName ? { botName: owner.botName } : {},
+      ...nodes.get(root)?.own ? { own: true } : {}
+    };
+  };
 }
 function buckets(given) {
   if (!given || typeof given !== "object")
@@ -110309,7 +110353,7 @@ class InsightsScan {
     const bots = this.options.bots();
     const botOf = new Map(bots.map((bot) => [bot.sessionID, bot]));
     const botNames = new Map(bots.map((bot) => [bot.id, bot.name]));
-    const nodes = new Map;
+    const nodes = new Map(bots.map(({ sessionID, id, name }) => [sessionID, { bot: id, botName: name, own: true }]));
     const local = this.options.computer();
     const records = [];
     const taken = new Set;
@@ -110395,9 +110439,9 @@ class InsightsScan {
       try {
         const read = await this.engineRecords(this.options.engine, since);
         records.push(...read.records);
-        for (const [id, session] of read.sessions)
-          if (!nodes.has(id))
-            nodes.set(id, lineNode({ id, ...session }, botOf, botNames));
+        for (const [id, session] of read.sessions) {
+          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) });
+        }
         if (read.partial)
           issues.add("opencode");
       } catch {
@@ -110417,7 +110461,11 @@ class InsightsScan {
         ...line.own ? { botOwn: true } : {}
       };
     });
-    return { records: lined, issues: [...issues] };
+    const lineage = [...nodes.keys()].flatMap((id) => {
+      const line = lineOf(id);
+      return line.bot || line.root !== id ? [[id, line]] : [];
+    });
+    return { records: lined, lineage, issues: [...issues] };
   }
   async engineRecords(folder, since) {
     const stamp = databasesStamp(folder);
@@ -110430,15 +110478,19 @@ class InsightsScan {
     for (const answer of answers ?? []) {
       if (!answer.json)
         continue;
+      const channel = new Map;
+      for (const [id, parent, metadata] of answer.sessions ?? []) {
+        channel.set(id, { ...channel.get(id), ...parent ? { parentID: parent } : {}, ...metadata ? { metadata } : {} });
+      }
+      for (const [id, session] of channel)
+        sessions.set(id, { ...sessions.get(id), ...session });
       const rows = JSON.parse(answer.json);
-      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, metadata, parent, parts] of rows) {
+      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, parts] of rows) {
         const at = completed ?? created;
         if (typeof session !== "string" || !session || typeof call !== "string" || typeof at !== "number" || at < since)
           continue;
-        if (!sessions.has(session))
-          sessions.set(session, { ...typeof parent === "string" && parent ? { parentID: parent } : {}, metadata });
-        const seat = seatBot(metadata);
-        if (role === "user" && (parent || seat || automated({ source })))
+        const saved = channel.get(session);
+        if (role === "user" && (saved?.parentID || seatBot(saved?.metadata) || automated({ source })))
           continue;
         if (role === "assistant" && completed === null && !usage)
           continue;
@@ -110574,7 +110626,10 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
       cache: join25(folder, "insights-logs"),
       agents,
       store: () => readSavedSessions(join25(home, "sessions")),
-      bots: () => groups.allBots(),
+      bots: () => [
+        ...directory.bots().flatMap(({ id, name, session }) => session ? [{ id, name, sessionID: session }] : []),
+        ...groups.allBots()
+      ],
       computer,
       engine: engineData
     });
@@ -114274,6 +114329,34 @@ class InsightsStore {
       return { after: 0 };
     return { after: this.read(`cursor/${sender}`) ?? 0, epoch: this.read(`peer-epoch/${sender}`) };
   }
+  attribute(lineage) {
+    const changed = this.db.query(`
+      SELECT key, seq, json_patch(body, ?1) AS body FROM event
+      WHERE session = ?2 AND event.body != json_patch(event.body, ?1)`);
+    const update = this.db.query(`
+      UPDATE event SET seq = ?1, body = ?2, bot = json_extract(?2, '$.bot'),
+        bot_name = json_extract(?2, '$.botName') WHERE key = ?3`);
+    const dirty = this.db.transaction(() => {
+      const before = this.read("sequence") ?? 0;
+      let seq = before;
+      let dirty = false;
+      for (const [session, line] of lineage) {
+        const patch = JSON.stringify({
+          ...line.bot ? { bot: line.bot, botName: line.botName ?? null, botOwn: line.own ?? null } : {},
+          root: line.root === session ? null : line.root
+        });
+        for (const row of changed.all(patch, session)) {
+          update.run(row.seq === null ? null : ++seq, row.body, row.key);
+          dirty = true;
+        }
+      }
+      if (seq !== before)
+        this.write("sequence", seq);
+      return dirty;
+    }).immediate();
+    if (dirty)
+      this.invalidate();
+  }
   take(records, pricing, now, sender, cursor, epoch, origins) {
     const eligible = origins && new Set(origins.eligible);
     const historical = new Set(origins?.historical);
@@ -114312,6 +114395,9 @@ class InsightsStore {
         if (before?.accountObserved && sameOrigin) {
           record.account = before.account;
           record.accountObserved = true;
+        }
+        if (before?.session === record.session) {
+          record = { ...record, root: record.root ?? before.root, ...!record.bot && before.bot ? { bot: before.bot, botName: before.botName, botOwn: before.botOwn } : {} };
         }
         const body = JSON.stringify(record);
         const received = historicalCopy ? keepCounts ? old.received : firstSeen : old && sameOrigin ? Math.min(old.received, firstSeen) : firstSeen;
@@ -114655,6 +114741,9 @@ function serveInsightsDB() {
           break;
         case "price":
           db.price(pricing, args[0]);
+          break;
+        case "attribute":
+          db.attribute(...args);
           break;
         case "take":
           db.price(pricing, args[1]);

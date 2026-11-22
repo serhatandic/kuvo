@@ -24,6 +24,7 @@ export function serveInsightsDB() {
         case "view": result = db!.view(...args); break
         case "summary": result = db!.summary(...args); break
         case "price": db!.price(pricing!, args[0]); break
+        case "attribute": db!.attribute(...args); break
         case "take":
           db!.price(pricing!, args[1])
           db!.take(args[0], pricing!, args[1], args[2], args[3], args[4], args[5])

@@ -64,7 +64,7 @@ export interface EngineSQL {
 }
 
 /** What one database answered: its JSON, or why it couldn't be read. One without message tables answers nothing. */
-export type EngineAnswer = { path: string; json?: string; failed?: string }
+export type EngineAnswer = { path: string; json?: string; sessions?: [id: string, parent: string | null, metadata: string | null][]; failed?: string }
 
 /**
  * The worker: each database read-only. A database in WAL mode whose side files are gone (Linux's
@@ -122,17 +122,22 @@ self.onmessage = (event) => {
       const v2 = names.includes("session_message")
       if (!v1 && !v2) continue
       let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
+      const sessions = []
       if (sql.usage) {
         for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
           const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
           const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
-          for (const column of ["title", "metadata", "parent_id"]) query = query.replaceAll("@" + table + "_" + column + "@", fact(column))
+          query = query.replaceAll("@" + table + "_title@", fact("title"))
+          if (columns.includes("id")) {
+            const fields = ["parent_id", "metadata"].map((column) => columns.includes(column) ? column : "NULL")
+            for (const session of db.query("SELECT id, " + fields.join(", ") + " FROM " + table).values()) sessions.push(session)
+          }
         }
         const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
         query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
       }
       const json = db.query(query).values()[0]?.[0]
-      answers.push(typeof json === "string" ? { path, json } : { path })
+      answers.push({ path, ...(typeof json === "string" ? { json } : {}), ...(sql.usage ? { sessions } : {}) })
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -191,7 +196,7 @@ export function engineUsageAnswers(folder: string, since: number) {
       json_extract(data, '$.agent'), json_extract(data, '$.tokens'),
       json_extract(data, '$.metadata.source'),
       json_extract(data, '$.time.origin'), json_extract(data, '$.time.usageAccount'),
-      @${sessionTable}_title@, @${sessionTable}_metadata@, @${sessionTable}_parent_id@,
+      @${sessionTable}_title@,
       (SELECT json_group_array(json_array(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool')),
           json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
         WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
