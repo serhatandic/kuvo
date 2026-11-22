@@ -1,3 +1,4 @@
+// Run real test subprocesses and verify their boxes and keepers disappear when the runner ends.
 import { ownPath } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -17,6 +18,62 @@ function live(pid) {
 const safety = new URL("./test-safety.js", import.meta.url).href;
 const bundle = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href;
 const standIn = new URL("./relay-stand-in.js", import.meta.url).href;
+const keeperSource = new URL("../src/keeper/kuvo-start", import.meta.url);
+
+test("killing a runner leaves no keeper or worker in its test home", { timeout: 15_000 }, async () => {
+  const root = fs.realpathSync(fs.mkdtempSync("/tmp/kuvo-keeper-watch-"));
+  const install = path.join(root, ".kuvo-code");
+  const bin = path.join(install, "bin");
+  const run = path.join(install, "run");
+  const ready = path.join(root, "ready");
+  const started = path.join(run, "started");
+  const recordedPids = () => [started, ready].map(file => {
+    try { return Number(fs.readFileSync(file, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; return 0; }
+  });
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(run);
+  fs.mkdirSync(path.join(install, "box"));
+  fs.writeFileSync(path.join(install, "box", "kind"), "mac\n");
+  fs.copyFileSync(keeperSource, path.join(bin, "kuvo-start"));
+  fs.writeFileSync(path.join(bin, "caffeinate"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  // Park the real keeper in its first round and record the PID of its sleep.
+  fs.writeFileSync(path.join(bin, "sleep"), '#!/bin/sh\nprintf "%s\\n" "$$" > "$HOME/ready"\nexec /bin/sleep 60\n', { mode: 0o700 });
+  const runner = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { ownPath, removeTestHomeAtExit } from ${JSON.stringify(safety)};
+    import { spawn } from "node:child_process";
+    import fs from "node:fs";
+    const [root, bin, run] = process.argv.slice(1);
+    removeTestHomeAtExit(ownPath(root));
+    const keeper = spawn("/usr/bin/env", ["-i", "HOME=" + root, "PATH=" + bin + ":/usr/bin:/bin",
+      "/bin/sh", "--", bin + "/kuvo-start", "keep"], { detached: true, stdio: "ignore" });
+    fs.writeFileSync(run + "/started", String(keeper.pid));
+  `, root, bin, run], { stdio: ["ignore", "ignore", "inherit"] });
+  const exited = once(runner, "exit");
+  let pids = [];
+  try {
+    for (let i = 0; i < 250 && runner.exitCode === null; i++) {
+      pids = recordedPids();
+      if (pids.every(pid => pid > 1)) break;
+      await setTimeout(20);
+    }
+    assert.ok(pids.length === 2 && pids.every(pid => pid > 1 && live(pid)), "the keeper reached its first round");
+    assert.ok(runner.kill("SIGKILL"));
+    assert.deepEqual(await exited, [null, "SIGKILL"]);
+    for (let i = 0; i < 50 && (fs.existsSync(root) || pids.some(live)); i++) await setTimeout(100);
+    assert.deepEqual(pids.filter(live), [], "processes survived from the keeper's home");
+    assert.equal(fs.existsSync(root), false);
+  } finally {
+    const startedPids = new Set([...pids, ...recordedPids()]);
+    if (runner.exitCode === null && runner.signalCode === null) runner.kill("SIGKILL");
+    await exited;
+    for (const pid of startedPids) {
+      if (pid > 1 && live(pid)) try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const fixtureSource = `
 import { removeTestHomeAtExit } from ${JSON.stringify(safety)};
 import { spawn } from "node:child_process";

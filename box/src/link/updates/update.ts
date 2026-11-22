@@ -27,7 +27,7 @@ import { listOf, locked, textOf, writePrivate } from "../files";
 import { BRIDGE_FILE, K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder, upgradeLinkFolder } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { LinkState } from "../state";
-import { keeperEngine } from "./engine-swap";
+import { engineBusy, keeperEngine } from "./engine-swap";
 import { engineSwapFormat, installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
 import { waitForPromptWrites } from "../moves/admission";
 import { releaseWaiting } from "../engine/queue";
@@ -275,7 +275,7 @@ async function bridgeEngineWorking(signal: AbortSignal): Promise<boolean> {
     typeof session.model.providerID !== "string" || isEngineModel({ providerID: session.model.providerID }));
 }
 
-async function nativeEngineWorking(signal: AbortSignal): Promise<boolean> {
+async function nativeEngineWorking(): Promise<boolean> {
   let engine: EngineRecord;
   try { engine = readEngineFile(); }
   catch (error) {
@@ -283,8 +283,7 @@ async function nativeEngineWorking(signal: AbortSignal): Promise<boolean> {
     throw error;
   }
   if (!engineRuns(engine.pid, K)) return false;
-  const active = await call(engine, "GET", "/api/session/active", undefined, signal);
-  return Array.isArray(active) ? active.length !== 0 : !isObject(active) || Object.keys(active).length !== 0;
+  return engineBusy(engine);
 }
 
 /** The release hold was published before probing. Unknown work defers the switch too. */
@@ -292,7 +291,7 @@ export async function releaseSwitchQuiet(keepEngine: boolean): Promise<boolean> 
   const signal = AbortSignal.timeout(3000);
   const busy = await Promise.all([
     bridgeEngineWorking(signal).catch(() => true),
-    keepEngine ? false : nativeEngineWorking(signal).catch(() => true),
+    keepEngine ? false : nativeEngineWorking().catch(() => true),
   ]);
   return !busy.some(Boolean);
 }

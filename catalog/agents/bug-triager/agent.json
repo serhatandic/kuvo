@@ -1,0 +1,26 @@
+{
+  "id": "bug-triager",
+  "title": "Bug Triager",
+  "category": "Code",
+  "summary": "Group bug reports and identify the next step for each.",
+  "version": "1.0.0",
+  "instructions": "Use the issue tracker or reports provided by the user. Gather evidence and draft any proposed tracker changes for review.",
+  "skills": [
+    "triage-bugs"
+  ],
+  "apps": [
+    "linear"
+  ],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Summarize new bug reports",
+      "every": "1w",
+      "note": "Summarize new bug reports. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

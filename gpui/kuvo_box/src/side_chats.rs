@@ -8,8 +8,10 @@ use serde_json::json;
 
 use crate::error::{Error, Refusal, Result};
 use crate::follow::{Followed, follow_lines};
+use crate::parts::File;
 use crate::paths;
 use crate::transport::Request;
+use crate::typed::ModelRef;
 use crate::{BoxClient, Follow};
 
 pub const SIDE_CHATS: &str = "btw.threads.events";
@@ -32,6 +34,12 @@ pub struct SideQuestion {
     #[serde(default)]
     pub thread: Option<String>,
     pub question: String,
+    /// The model it was asked on, where that isn't the conversation's own.
+    #[serde(default)]
+    pub model: Option<ModelRef>,
+    /// The files that went with it, by name.
+    #[serde(default)]
+    pub files: Vec<String>,
     pub state: Answering,
     #[serde(default)]
     pub answer: Option<String>,
@@ -88,17 +96,25 @@ impl BoxClient {
         follow_lines(self, format!("{once}/events"))
     }
 
-    /// Asks `question` aside about `session`: a follow-up in `thread`, or a new side thread. Answers
-    /// the question as the box keeps it (being answered).
-    pub fn ask_aside(&self, session: &str, question: &str, thread: Option<&str>) -> Result<SideQuestion> {
+    /// Asks `question` aside about `session`: a follow-up in `thread`, or a new side thread; on
+    /// `model` (with its effort) where it's given, else the conversation's own; with `files` (text
+    /// and pictures; the box says why it refuses one it can't take). Answers the question as the box keeps it (being
+    /// answered).
+    pub fn ask_aside(&self, session: &str, question: &str, thread: Option<&str>, model: Option<&ModelRef>, files: &[File]) -> Result<SideQuestion> {
         #[derive(Deserialize)]
         struct Answer {
             data: SideQuestion,
         }
-        let body = match thread {
-            Some(thread) => json!({ "question": question, "thread": thread }),
-            None => json!({ "question": question }),
-        };
+        let mut body = json!({ "question": question });
+        if let Some(thread) = thread {
+            body["thread"] = json!(thread);
+        }
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        if !files.is_empty() {
+            body["files"] = json!(files);
+        }
         let response = self.send(&Request::post(route(session), body))?;
         if !response.is_success() {
             return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));

@@ -6,6 +6,7 @@
 // given neither.
 
 import { isAbsolute } from "node:path"
+import { marketplaceScope, MARKETPLACE_SERVER_PREFIX } from "../shared/marketplace"
 import type { EngineLink } from "./engine"
 import { toolServerName } from "./kuvotools"
 
@@ -72,7 +73,9 @@ async function readServers(directory: string): Promise<ComputerServers> {
   const servers: ComputerServer[] = []
   // (URLs' servers that can be signed in to, by name.)
   const signing = new Set<string>()
+  const scope = marketplaceScope(directory)
   for (const [name, entry] of named) {
+    if (scope && name.startsWith(MARKETPLACE_SERVER_PREFIX) && !scope.apps.includes(name.slice(MARKETPLACE_SERVER_PREFIX.length))) continue
     if (name === toolServerName || !NAME.test(name) || !entry || typeof entry !== "object" || entry.disabled === true || entry.enabled === false) continue
     const timeout = Number(entry.timeout?.execution) > 0 ? Number(entry.timeout.execution) : 300_000
     if (entry.type === "local" && Array.isArray(entry.command) && entry.command.length && entry.command.every((part: unknown) => typeof part === "string")) {

@@ -154,6 +154,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "model-picker-accounts-ten-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_open) },
     Screen { slug: "model-picker-accounts-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_search) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
+    Screen { slug: "composer-edited-attachments", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(composer_edited) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "compaction-running", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -400,6 +401,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     // The rail's rings, each filled with what's left, and a ring's card open beside it.
     Screen { slug: "rail-ring-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    // The box's cards (#952): on pace to run out, used up, Codex's resets and its confirm, an
+    // agent's many accounts (20, and 4), one before its first reading, and one Google doesn't count.
+    Screen { slug: "rail-card-claude-max", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-claude-used-up", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
+    Screen { slug: "rail-card-codex-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_2) },
+    Screen { slug: "rail-card-codex-confirm", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_confirm) },
+    Screen { slug: "rail-card-antigravity-20", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_3) },
+    Screen { slug: "rail-card-antigravity-4", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-codex-no-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
+    Screen { slug: "rail-card-antigravity-as-of", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
@@ -1412,6 +1423,20 @@ fn panel_subagent_detail(workspace: &mut Workspace, _: &mut Window, cx: &mut Con
     workspace.arrive(kuvo::panel::Arrival::Subagents(Some("ses_limits".into())), cx);
 }
 
+/// A queued message taken back to edit (as its box gives it back): its words, and its picture
+/// (sent with its bytes) and file back in the strip.
+fn composer_edited(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    use base64::Engine as _;
+    let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+    // (Its picture kept, as Edit keeps one, in a folder of the shots' own.)
+    cx.set_global(kuvo::pasted::PastedFolder(std::env::temp_dir().join("kuvo-shots-pasted")));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_fn(96, 64, |x, y| if y < 20 { image::Rgba([220, 60, 60, 255]) } else if x % 24 < 12 { image::Rgba([240, 240, 245, 255]) } else { image::Rgba([200, 205, 215, 255]) }).write_to(&mut png, image::ImageFormat::Png).expect("a picture");
+    let picture = kuvo_box::parts::File { uri: format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner())), name: Some("Pasted Image 2026-11-23 at 10.12.04.png".into()) };
+    let file = kuvo_box::parts::File::at(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/stand_in/fixtures/SignupForm.tsx"));
+    composer.update(cx, |composer, cx| composer.restore("[Image 1] The error still shows under the password field: move it under the email one.", &[picture, file], cx));
+}
+
 /// A side chat with two questions answered.
 fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_panel(Kind::SideChat(None), cx);
@@ -1421,6 +1446,11 @@ fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<W
         field.update(cx, |field, cx| field.set_text(question, cx));
         view.update(cx, |view, cx| view.ask(cx));
     }
+    // The next one's composer: a file attached, on another model than the conversation's.
+    view.update(cx, |view, cx| {
+        view.attach([std::path::PathBuf::from(format!("{}/notes/signup-review.md", kuvo::stand_in::git::website()))], cx);
+        view.pick(kuvo_box::typed::ModelRef { provider_id: "anthropic".into(), id: "claude-sonnet-5-5".into(), variant: Some("medium".into()) }, cx);
+    });
 }
 
 /// A bot's conversation with the side panel opened from the title bar: the New tab page beside it.
@@ -2314,6 +2344,26 @@ fn ring_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspa
     workspace.rings().update(cx, |rings, cx| rings.show_card(0, cx));
 }
 
+fn ring_card_1(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(1, cx));
+}
+
+fn ring_card_2(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(2, cx));
+}
+
+fn ring_card_3(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(3, cx));
+}
+
+/// Codex's card asking before a reset is used.
+fn ring_card_confirm(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| {
+        rings.show_card(2, cx);
+        rings.ask_reset("codex#pro".into(), cx);
+    });
+}
+
 fn session_menu_row_hover(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.pin_session("ses_recipes", true, cx);
     workspace.set_hovered_row(Some("session-project:ses_dark".into()), cx);
@@ -2624,6 +2674,9 @@ fn main() -> anyhow::Result<()> {
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
                 "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
+                "rail-card-antigravity-4" | "rail-card-codex-no-resets" => stand_in.set_usage_sample(UsageSample::CardsFew),
+                "rail-card-antigravity-as-of" => stand_in.set_usage_sample(UsageSample::CardsAsOf),
+                slug if slug.starts_with("rail-card-") => stand_in.set_usage_sample(UsageSample::Cards),
                 _ => {}
             }
             if screen.slug.starts_with("settings-custom-auto") {
@@ -2893,8 +2946,8 @@ fn main() -> anyhow::Result<()> {
                 }
                 let client = BoxClient::new(stand_in.clone());
                 stand_in.answer_side_questions(&["Yes, it's atomic.", "Three of them."]);
-                let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None);
-                let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None);
+                let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None, None, &[]);
+                let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None, None, &[]);
                 stand_in.set_queue("ses_signup", vec![]);
             }
             if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {

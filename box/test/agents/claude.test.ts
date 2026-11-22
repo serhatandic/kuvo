@@ -28,6 +28,7 @@ import { shellOutput, shells } from "../../src/agents/shells"
 import { Store } from "../../src/agents/store"
 import type { Message, PermissionRule } from "../../src/agents/wire"
 import { holding } from "../../src/agents/hold/adopt"
+import { compactionFile } from "../../src/shared/context"
 import { QUEUE_ROUTE, queueRoute } from "../../src/link/areas/queue"
 import { SEND_ROUTE, sendRoute } from "../../src/link/areas/messages"
 import { queueWatcher } from "../../src/link/engine/queue"
@@ -666,6 +667,36 @@ describe("Claude Code ended between turns, with work in the background (#262)", 
     await until(() => idles(id).length === 1)
     await until(() => (sessions.background()[id]?.commands.length ?? 0) === 1)
   }
+
+  test("changing the summary setting leaves Claude Code's background command running", async () => {
+    const before = process.env.KUVO_HOME
+    process.env.KUVO_HOME = root
+    try {
+      const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+      await waiting(id)
+      const [job] = sessions.background()[id]!.commands
+      mkdirSync(join(root, "box"))
+      writeFileSync(compactionFile(root), JSON.stringify("200000"))
+      sessions.prompt(id, { id: "msg_claude_keep_bg_02", text: "keep the tests running", files: [], delivery: "steer" })
+      await until(() => fake.closed || fake.sent.length === 2)
+      expect(shells(root).find(each => each.id === job!.id)?.status).toBe("running")
+      expect(fake.sent).toHaveLength(2)
+      expect(fake.options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("433000")
+      fake.say("The tests are still running.", [fake.sent[1].uuid])
+      fake.result([fake.sent[1].uuid])
+      await until(() => idles(id).length === 2)
+      fake.out.push({ type: "system", subtype: "task_notification", task_id: "t1", status: "completed", tool_use_id: "tool1", summary: "exit code 0" })
+      fake.out.push({ type: "system", subtype: "background_tasks_changed", tasks: [] })
+      await until(() => !sessions.background()[id])
+      fake.out = new Queue<any>()
+      sessions.prompt(id, { id: "msg_claude_keep_bg_03", text: "use the new setting", files: [], delivery: "steer" })
+      await until(() => fake.sent.length === 3)
+      expect(fake.options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("233000")
+    } finally {
+      if (before === undefined) delete process.env.KUVO_HOME
+      else process.env.KUVO_HOME = before
+    }
+  })
 
   test("killed from outside: the session is woken, told the command stopped unfinished, rather than waiting for ever", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id

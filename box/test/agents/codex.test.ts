@@ -1016,7 +1016,7 @@ describe("Codex's file citations", () => {
     expect((sessions.messages(id).find((message) => message.id === "msg_quoted") as any).content).toEqual([{ type: "text", text: words }])
     expect(sessions.cited).toEqual([{ path: pdf, at: 2 }])
     // Kept as it reads now: read once, not again at the next start.
-    expect(readFileSync(join(root, "sessions", id, "messages.json"), "utf8").split(":codex-").length).toBe(3)
+    expect(JSON.stringify(new Store(join(root, "sessions")).get(id)!.messages).split(":codex-").length).toBe(3)
     sessions.closeAll()
     sessions = new Sessions(new Store(join(root, "sessions")), { find: () => undefined } as unknown as Roster, new Auto(root))
     expect(sessions.cited).toEqual([])

@@ -1843,7 +1843,10 @@ the same for every client and with none connected, and keeps them in `run/queues
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
   composer: its words alone, without the keyword or command an older one went with;
-  `before`, what came after it, left out when it was last; `queue.removed.keyword`). A successful
+  `before`, what came after it, left out when it was last; `queue.removed.keyword`; `attached`,
+  everything it went with for Edit to put back, `{uri, name?}` as a send takes them: the files it
+  carries, then those the box kept for the agent to open, which its note names and `files`
+  doesn't carry, as `file://` on the box. Undo keeps to `files`). A successful
   removal can include `removed.receipt`. A client can supply `?receipt=<operation-id>` in the
   message ID format and save it before asking to remove the item. Repeating that DELETE recovers
   the same payload until the client uses or discards it and sends `POST …/queue/<item>/ack` with
@@ -2148,10 +2151,12 @@ the branch, the model, effort and account, and the pull request with its checks 
 
 `GET api/session/<id>` and `GET kuvo/agents/api/session/<id>` can include
 `data.context: {used, window?}`, in tokens. `used` is the last occupancy reported by the agent
-or measured from its latest model request, with cached input included. `window` is the model's
-reported context capacity when known. The field can be absent before a measurement or after a
-summary without a new measurement. Cursor supplies aggregate billing usage and has no measurement
-for this field. Session `tokens` still describes usage across the conversation.
+or measured from its latest model request, with cached input included. `window` is the capacity
+reported for that model by the agent or its catalog. Session detail can also include
+`data.contextWindow` with the capacity in tokens before usage is measured or after a summary. The
+box remembers a known capacity across turns and restarts. Usage may be absent before a measurement
+or after a summary. Cursor's SDK supplies billing usage and does not expose its context capacity
+or measured occupancy. Session `tokens` still describes usage across the conversation.
 
 `kuvo/agents/api/session/<id>` adds `summarizeAt` to it, in tokens, where the box's
 "Summarize long conversations at" setting (`kuvo/settings/conversations`) decides when the
@@ -2197,7 +2202,8 @@ its update view. A temporary `503` leaves the list waiting.
   is older than the day and 2000 deletions it keeps, or its file went) gets the whole list, `full: true`, in place of
   what the client had. `projects` and `needsYou` are whole in every line.
 - Facts, each flag left out where it isn't: `kind`, `project` (a `project` session's), `directory`,
-  `title?`, `created`, `updated` (ms; the lists' order), `parent?` (a `subagent`'s session),
+  `title?`, `created`, `updated` (ms; latest conversation activity, or creation for an empty
+  session; the lists' order), `parent?` (a `subagent`'s session),
   `subagents?` (#950: a session's subagents' sessions, those at work or waiting on you first, then
   the newest), `messages?` (#950, a `subagent`'s: how it takes your messages, `{via: "direct" |
   "parent" | "none", note?}`, its `metadata.kuvo.messages` as the engine routes say; `none` with `note`, why, in words to
@@ -2219,10 +2225,11 @@ its update view. A temporary `503` leaves the list waiting.
   group chat); `hidden` (`kuvo.engineFor` or `kuvo.reviewPart`: a run its session or review shows);
   `bot` (one of its bots' conversations, as `kuvo/bots` lists them, or anything in its bots folder);
   `chat` (marked a chat naming the folder it's in, or in its chats folder, "Chats"); else
-  `project`, filed under the project of its folder as `kuvo/projects`' `worktrees` says, else the
-  one `kuvo.filed` names while it still runs in that folder (as that project is filed), else its
-  own folder ("Projects").
-- `projects`: every project of the box's list that isn't removed, and each one a `project` session
+  `project`, filed under the project of its folder as `kuvo/projects`' `worktrees` says, by the
+  worktree's Git common directory, or by a worktree record the engine still has. Otherwise it
+  uses the project `kuvo.filed` names while it still runs in that folder (as that project is
+  filed), then its own folder ("Projects").
+- `projects`: every project of the box's list that isn't removed or filed as a worktree, and each one a `project` session
   that isn't archived is filed under (a removed one comes back so), with its list's `name` where
   it has one, and `updated`, its newest such session's. `asking` and `working`
   (`sessions.needsYou`, #711): how many of its sessions listed (not archived, this box's own copy)
@@ -3731,7 +3738,7 @@ bridge, checks the keeper's shell syntax, and asks the staged link
 with one rename. The plugin directory follows `bin/opencode-plugins` and the selected keeper names
 the engine. The existing `bin/kuvo-start` launch path stays in use. A matching engine version,
 launcher and installed plugins let the engine keep its process and running turns. Ahead of a
-restart, the box lets running engine turns finish. It also waits for bridge conversations using
+restart, the box lets running engine turns and background work finish. It also waits for bridge conversations using
 engine models to finish before stopping their bridge, even if the engine stays up. New engine
 messages wait during the switch and its startup check. If work is still running after about five
 minutes, the attempt defers and lets waiting work go before trying again. If the installed
@@ -3740,7 +3747,11 @@ allows Try Again if it finds a turn still running. After a restart, the keeper u
 `run/previous` to restore the previous target if the selected release can't start and answer within
 two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of every holder, at
 work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in
-their sessions, and an agent between turns takes its session's next message. Antigravity's turn goes on from its
+their sessions, and an agent between turns takes its session's next message. During handover,
+the outgoing bridge leaves each held turn open, even after its holder connection closes.
+Launch setting changes only recycle a process once its conversation's reported background work
+has finished. A missing saved compaction value in a Claude Code or Codex holder means the default.
+Antigravity's turn goes on from its
 place in its transcript, which the bridge writes to the holder's record as it makes way. Only an
 agent it can't take up is stopped, and its turn ends as interrupted: one from another Agent SDK or
 an older Claude Code, or an Antigravity turn whose place couldn't be written (a subagent at work,
@@ -6865,6 +6876,51 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     shares: its `balance` (what's gone of `limit`) and each `capped` extra (`amount` of `limit`), the
     highest of them. It's left out where nothing says a limit (a balance with no cap, spend alone, no
     reading): that is "no level", which a client draws apart from `calm`, never as it.
+  - **Cards and the rail** (`limits.card`, #952): in `GET` and `refresh` answers (never in what
+    peers are told), each row adds `card`, what a client shows of the account when its ring is
+    rested on, worded by the box; and the answer adds `rail`, the rings a client draws, in order.
+    Words are a list of `{text, at?, as?, tone?, strong?}`: a client writes `text`, then `at` (ms)
+    in its own time zone, as a time of day (`as: "time"`; with its weekday, or its date, where
+    it isn't today) or a date (`as: "date"`, "Nov 30"); `tone` is `warning`, `danger`, `muted` or
+    `faint`. A `card` is `{title, name, dot?, tone, left?, lines, note?, asOf?, inUse?, resets?}`:
+    - `title`: the account's name on its card, the agent's with which account where you have more
+      than one on the rail ("Claude · Max"); `name`, the account alone ("Max", "Lab 12").
+    - `lines`: one per window, the plan's own shortest first (5-hour, then Weekly), then those
+      named for what they count, then each model's; each `{window, title, left, tone, words}`:
+      `left`, what's left (0 to 1) for its bar; `tone` `calm`, `warning` or `danger`.
+    - How fast it's going: the box keeps each window's readings (from any of your computers, as the
+      row has them; through a restart, in `limits.json`'s `paces`) and, where it has three or more
+      over a quarter of a recent stretch (a fifth of the window, half an hour to a day; a quarter
+      hour at least), takes the rate between the stretch's first and last. Used up: "Back at
+      {reset}" (`danger`). On pace to be used up before it starts over: "38% left · runs out
+      ~{about when, to five minutes}, resets {reset}" (`warning`). Otherwise "56% left · lasts until
+      reset". With too few readings nothing is guessed: "56% left · resets {reset}".
+    - `dot`: `danger` where a window is used up, else `warning` where one runs out before its
+      reset: a client marks the account's ring with it, and the ring itself stays as `rings` say.
+      `tone` and `left` (its rings' tightest) are the account's as a whole, for a mark among others
+      (`unknown` and no `left` where nothing's known).
+    - `note`: why there's nothing (or not everything) to show: its maker's own (`problem.unknown`,
+      Google not counting Antigravity's use), what to do about a problem, "Fills in once a session
+      runs on this account" before anything was read, or "No limits reported.".
+    - A coding agent's last numbers stay, however old (a reader that can't answer now, such as
+      Antigravity's where it isn't running, never blanks them; this box's own Codex reading too),
+      until its sign-in changes or a window starts over. Where none of them was read in the last
+      half hour, `asOf` says when ("as of {time}", `faint`), and nothing is predicted from them.
+    - `inUse`: a turn told of it in the last half hour.
+    - `resets`, only where one of its resets can be used now: `{words, action, confirm: {title,
+      message, button, cancel}}`: "2 resets left · next expires {date}", "Use a reset", and the
+      question asked before one's used, naming the reset it uses: the soonest to expire, as each
+      maker's spend picks ("Use the reset that expires {date}?", "Codex's usage limits start over
+      now.", "Use Reset", "Cancel"). Using it is `POST …/limits/reset` (below, "Resets").
+    `rail`: the accounts signed in on the answering box (`here`) whose plan hasn't ended and that
+    have numbers (one with nothing read yet has no ring, never an empty one), in the
+    rows' order, each item `{key, rows, ring, selected, title, dot?, count?, summary?, strip?}`:
+    an account a ring (`rows` its own `id`); an agent's (or, for the engine's, a service's) three
+    or more accounts one ring, at its first's place: `ring` the row it draws (the emptiest with
+    rings), `count`, `summary` ("17 of 20 fine": `tone` `calm`), and `strip`, each account
+    emptiest first (unknown last), `{row, name, left?, tone, heading}`, `heading` the words over
+    its card when shown in full (", in use" for the one in use). `selected`: the account its card
+    shows in full at first, the one in use (newest), else the emptiest.
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of
   your computers that states accounts, a machine's on Linux too), refreshed
@@ -8122,6 +8178,19 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
     (`kuvo/agents/api/kuvo/btw/<session>/threads/events`).
   - `DELETE …/kuvo/btw/<session>/<id>` takes one away, `DELETE …/kuvo/btw/<session>/threads/<thread>`
     a side thread, all of it, and `DELETE …/kuvo/btw/<session>` all of them.
+  - Choices (`btw.choices`): the `POST` can carry `"model": {providerID, id, variant?}` and
+    `"files": [{uri, name?}]` (as a message's files go: `file://` on the box, or a `data:` URI;
+    at most 10). A model other than the conversation's own is answered on that model (its effort
+    as `variant`) with the conversation in the prompt, the conversation staying on its own; with
+    the coding agents it must be one of the conversation's own agent's (`400` otherwise). Files
+    must be text or pictures. Text goes in the prompt (200,000 characters together at most). A
+    question with a picture (20 MB at most each) is answered in a one-off turn on the engine, in a
+    hidden session of its own (`kuvo.engineFor`, allowed nothing, deleted after), on the model asked
+    for or the conversation's, with the conversation as a record in the prompt, since the engine's
+    text routes take no pictures; its bytes aren't kept once it's answered. `400` says why for a
+    model the engine lists as not seeing pictures, for a coding agent's conversation (text only,
+    for now), and for anything that's neither text nor a picture. The question then has `model`
+    (where it isn't the conversation's) and `files`, their names; their words aren't sent back.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
     `kuvo.btw.removed` `{sessionID, id?}` (a thread's, one for each of its questions).
 - **Handoffs** (`handoff`): a conversation carried on in a fresh one.
@@ -8265,6 +8334,10 @@ conversation, are its to read). A client sends it through the conversation's box
 ### A message's parts
 
 See “Messages in a session” for same-ID send and restart settlement.
+
+Coding-agent history can return a `file://` address for an attachment that was sent inline
+or returned by a tool. The bytes live on the conversation's box and can be read with
+`kuvo/file`. A client's message pages keep the same message IDs, order and cursors.
 
 A client sends what was written and what goes with it as fields, and the conversation's box writes
 the text the agent reads (feature `messages.send`, which the update gate requires); every message
@@ -12758,7 +12831,10 @@ Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with i
 request in an authenticated, paired client's Noise session. Peers cannot open sockets.
 The upgrade checks the exact canonical path, method and password itself; the ordinary HTTP
 handler never sees upgrades. A GET without upgrading returns 426 with `{message}`.
-If the keeper isn't running, opening fails; starting the browser remains a separate operation.
+Opening the view starts the browser on demand. The socket can upgrade while Chrome starts
+or is being installed. Wait for the keeper's `Kuvo.hello` and page facts before sending view
+commands. If startup fails, the box sends `Kuvo.error` with `{kind, message}` and ends the socket.
+Opening a new view asks the box to start the browser again.
 
 Text messages are newline-delimited JSON `{id?, method, params?}`. A request with an id
 gets `{id, result}` or `{id, error: {message}}`. The socket accepts only the view commands
@@ -12952,3 +13028,56 @@ pull from the last SQLite sequence they have applied and take at most
 100 usage records in a page. Records contain origin, native identity,
 model, session metadata, skill names and observed token counts. Estimates
 are calculated by the receiving computer with its own current catalog.
+
+### Marketplace
+
+A box advertises `marketplace` and serves `kuvo/marketplace` to paired Kuvo clients. The box includes an
+offline catalog snapshot. `POST kuvo/marketplace/refresh` reads the configured public index and validates
+the snapshot before replacing the last good copy. It answers `{refreshed, message?}`. A catalog refresh
+leaves previously installed endpoints and skill bytes at the version reviewed by the user.
+
+- **Browse.** `GET kuvo/marketplace[?q=&category=&origin=kuvo|yours]` returns three ordered `areas`.
+  Each includes `id`, `title`, `count`, `categories` (title and count), visible `items`, `actions`, empty
+  text, and optional filters. It includes the computer choices with their key, name and availability.
+  `GET kuvo/marketplace/{apps|agents|skills}/<id>` returns the details and action labels. An app's
+  advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.
+- **Apps.** `POST apps/<id>/add` or `POST apps/custom` with `{title,url,id?,summary?,auth?}` under
+  `kuvo/marketplace/` enables a Streamable HTTP server across the setup. Custom endpoints use HTTPS
+  without inline credentials or query parameters. `auth` is `open`, `token`, or `oauth`. The box
+  reports connection state on the computer answering. `POST apps/<id>/connect` takes `{token}`
+  for a personal-token server or returns an OAuth flow (202 with `attempt`, `opens` and display words).
+  Open `opens` in the browser. A browser on the box can finish on loopback. From another computer,
+  submit the complete callback address and original `attempt` to `POST apps/<id>/finish`.
+  Follow completion with `GET apps/<id>/status?attempt=…` or cancel with `POST apps/<id>/cancel`
+  and `{attempt}`. `POST apps/<id>/disconnect` removes this computer's credentials.
+  `DELETE apps/<id>` removes the app from the setup. Each computer needing service authentication
+  keeps its own credentials in its vault. Engines and agents receive connection settings and a scoped
+  local relay credential, and the relay supplies the service token.
+- **Agents.** `GET agents/<id>/options?computer=<key>` reads models and accounts from that computer.
+  It includes missing app dependencies and each routine with `enabled: false`.
+  `POST agents/<id>/add` takes `{computer,model,request,version,name?,routine?}`, using an offered
+  `model` and the same stable URL-safe `request` on retries. It installs required catalog skills
+  and creates a bot on the selected computer using the existing bot creation boundary. The result
+  is the usual `201 {bot,firstMessage}`. The scheduled routines are created paused unless `routine: true`.
+  Required apps must already be connected on that computer. Marketplace bots' workspaces carry the
+  selected Marketplace apps and skills, and the box and bridge use that selection when exposing tools.
+- **Skills.** `POST skills/preview` takes `{link}`, `{repository,path,ref?}`, or `{folder}` on
+  the answering computer. It returns `{preview,skill,files,action}`. Each file has its relative
+  `path`, base64 `data` and SHA-256 `sha256`. GitHub sources include `repository`, `path` and
+  `commit`. `POST skills/install` with `{preview,was?}` installs the exact bytes reviewed on that
+  box. For a catalog skill, `POST skills/<id>/add` takes the available `{version,revision,was?}`.
+  `POST skills/create` takes `{name,description,instructions}`. To edit an authored or folder
+  skill, use `PATCH skills/<id>` with `{description,instructions,was}`. `DELETE skills/<id>`
+  takes `{was}` for a shared skill. `was` is the installed revision from details. To update an
+  installed GitHub skill, explicitly ask `POST skills/<id>/update-preview` and install with its
+  preview ID and the previous revision. Legacy local skills still use the existing skills routes.
+- **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
+  primary and published in signed setup state. The Work Queue peer mail carries requests to the
+  primary and bot creation to the selected owner. An offline computer projects the last accepted
+  copy and catches up when it sees the newer one. An installation receipt can precede the replica
+  on another computer, so the client can reread after a pending change. `problems` on an install
+  response gives projection conflicts on the computer that processed it.
+
+All writes live in the box. The bridge uses OpenCode's discovered skill and MCP settings, passes the
+skills as a Claude/Grok plugin tree, Codex additional skill paths, a Cursor workspace skill tree,
+or a private Antigravity skills directory, and supplies each agent's native MCP connection settings.

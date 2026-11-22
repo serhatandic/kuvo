@@ -211,7 +211,7 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
 export function withSummarizeAt(session: Session): Session {
   const context = session.context
   if (!context) return session
-  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window)
+  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window)
   return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } }
 }
 
@@ -457,7 +457,10 @@ export function handler(context: Context, transferring?: () => boolean) {
       // Sessions
       if (area === "session") {
         if (!a) {
-          if (method === "POST") return json({ data: sessions.create(await body()) })
+          if (method === "POST") {
+            const session = sessions.create(await body())
+            return json({ data: await sessions.withContextWindow(session.id) })
+          }
           const directory = url.searchParams.get("directory") ?? undefined
           // Later pages carry the first's filter in their cursor ("<order>:<id>:<parentID>").
           const under = url.searchParams.get("parentID") ?? url.searchParams.get("cursor")?.split(":")[2] ?? null
@@ -474,7 +477,10 @@ export function handler(context: Context, transferring?: () => boolean) {
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
         const id = a
         if (!b) {
-          if (method === "GET") return json({ data: withSummarizeAt(sessions.get(id)) })
+          if (method === "GET") {
+            const session = url.searchParams.get("context") === "0" ? sessions.get(id) : await sessions.withContextWindow(id)
+            return json({ data: withSummarizeAt(session) })
+          }
           if (method === "PATCH") {
             sessions.update(id, await body())
             return json({ data: sessions.get(id) })
@@ -495,14 +501,24 @@ export function handler(context: Context, transferring?: () => boolean) {
             }
             break
           case "message": {
+            const cursor = url.searchParams.get("cursor")
+            const asc = url.searchParams.get("order") === "asc" || cursor?.startsWith("asc") === true
+            const limit = Number(url.searchParams.get("limit") ?? 100) || 100
+            if (!c && Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER && (!cursor || cursor.split(":")[1])) {
+              const saved = sessions.messagePage(id, cursor?.split(":")[1], limit, asc)
+              if (saved) {
+                const order = cursor?.split(":", 1)[0] ?? url.searchParams.get("order") ?? "desc"
+                const filter = url.searchParams.get("parentID") ?? cursor?.split(":")[2]
+                const next = saved.more && saved.data.length ? `${order}:${saved.data.at(-1)!.id}${filter ? `:${filter}` : ""}` : undefined
+                return json({ data: saved.data, cursor: { next } })
+              }
+            }
             const messages = sessions.messages(id)
-            const asc = url.searchParams.get("order") === "asc" || url.searchParams.get("cursor")?.startsWith("asc")
-            const ordered = asc ? messages : [...messages].reverse()
             if (c) {
               const found = messages.find((message) => message.id === c)
               return found ? json({ data: found }) : error(404, "No such message.")
             }
-            return json(page(ordered, url))
+            return json(page(asc ? messages : [...messages].reverse(), url))
           }
           case "inbox":
             if (method === "DELETE" && c) {
@@ -553,8 +569,9 @@ export function handler(context: Context, transferring?: () => boolean) {
             const prompt = String(input.prompt ?? "")
             if (!prompt.trim()) throw new BadRequest("Say what to write.")
             // `orAnother`: another agent you're signed in to may answer, where this one can't.
-            // `model`: on that model of the session's own maker (Auto's reviewer, on its small one).
-            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id } : undefined
+            // `model`: on that model of the session's own maker, with its effort (Auto's reviewer, on
+            // its small one; a side question asked on another).
+            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id, ...(typeof input.model.variant === "string" && input.model.variant ? { variant: input.model.variant } : {}) } : undefined
             return json({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } })
           }
           case "interrupt":

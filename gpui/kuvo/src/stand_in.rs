@@ -148,6 +148,8 @@ struct State {
     asks: HashMap<String, Vec<Value>>,
     /// Each conversation's queue, in the order the box shows it (`kuvo/sessions/<id>/queue`).
     queues: HashMap<String, Vec<Value>>,
+    /// The files each message waiting went with, as they were sent (`{uri, name}`), by its id.
+    queued_files: HashMap<String, Vec<Value>>,
     /// The conversations whose queue a Stop holds until Resume.
     paused: HashSet<String>,
     /// Why each session's queue waits, as its box says it (an engine being updated).
@@ -2241,6 +2243,15 @@ impl StandIn {
             }
             return answer(status, value);
         }
+        // Using a reset (`limits/reset`): asked, it offers one; confirmed, it's used.
+        if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/reset") {
+            let row = body["row"].clone();
+            return if body.get("confirm").is_none() {
+                answer(200, json!({ "data": { "confirm": "rsc_stand_in", "row": row, "service": "codex", "count": 2, "on": { "key": "here-key", "name": "This Mac", "here": true }, "always": false, "expires": made + 60_000.0 } }))
+            } else {
+                answer(200, json!({ "data": { "outcome": "reset" } }))
+            };
+        }
         if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh") && !state.areas.usage_refresh_failed {
             state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
             state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;
@@ -2742,10 +2753,11 @@ impl StandIn {
                 let Some(at) = queue.iter().position(|each| each["id"] == json!(item)) else { return answer(404, json!({})) };
                 let removed = queue.remove(at);
                 let session = (*session).to_owned();
-                let files: Vec<Value> = removed["files"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|name| json!({ "uri": format!("file://{HOME}/Downloads/{name}"), "name": name })).collect();
+                // Each as it was sent (a picture with its bytes as it is); a fixture's from Downloads.
+                let files: Vec<Value> = state.queued_files.remove(*item).unwrap_or_else(|| removed["files"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|name| json!({ "uri": format!("file://{HOME}/Downloads/{name}"), "name": name })).collect());
                 let words = removed["words"].clone();
                 state.told(&session, Followed::Queue);
-                answer(200, json!({ "paused": false, "held": [], "removed": { "id": item, "text": words, "words": words, "keyword": removed["keyword"], "draft": removed.get("draft").cloned().unwrap_or(words), "files": files, "delivery": removed["delivery"] } }))
+                answer(200, json!({ "paused": false, "held": [], "removed": { "id": item, "text": words, "words": words, "keyword": removed["keyword"], "draft": removed.get("draft").cloned().unwrap_or(words), "files": files, "attached": files, "delivery": removed["delivery"] } }))
             }
             ("GET", ["kuvo", "sessions", session, "asks"]) if state.sessions.contains_key(*session) => answer(200, json!({ "asks": state.asks.get(*session).cloned().unwrap_or_default() })),
             ("POST", ["kuvo", "sessions", session, "asks", ask]) => {
@@ -2808,6 +2820,9 @@ impl StandIn {
                 if body["delivery"] == json!("queue") && body["command"].is_null() && (state.running.contains(&session) || state.paused.contains(&session)) {
                     let on = if state.paused.contains(&session) { "box" } else { "engine" };
                     let files: Vec<Value> = body["files"].as_array().into_iter().flatten().filter_map(|file| file["name"].as_str().map(|name| json!(name))).collect();
+                    if let Some(sent) = body["files"].as_array().filter(|sent| !sent.is_empty()) {
+                        state.queued_files.insert(id.clone(), sent.clone());
+                    }
                     state.queues.entry(session.clone()).or_default().push(json!({ "id": id, "words": words, "files": files, "keyword": body["keyword"], "from": null, "on": on, "delivery": "queue", "held": false }));
                     state.told(&session, Followed::Queue);
                     return answer(200, if on == "box" { json!({ "waits": true }) } else { json!({}) });

@@ -138,6 +138,14 @@ impl File {
     }
 }
 
+/// The bytes of a file sent with them (a base64 `data:` URI, as files go with a message); none for
+/// any other address.
+pub fn data_bytes(uri: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let (head, data) = uri.strip_prefix("data:")?.split_once(',')?;
+    head.ends_with(";base64").then(|| base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()).flatten()
+}
+
 /// The most a file sent to another computer with a message weighs, and all of a message's files
 /// (as 0.7's `Attachments.maxMachineBytes` and `maxMessageBytes`): the box there keeps them.
 pub const CARRIED_FILE_MOST: u64 = 50 * 1024 * 1024;

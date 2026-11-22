@@ -17,10 +17,11 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Account, Agent, LostWork, OwnTurn, PermissionAsk, PromptFile, QuestionAsk, RunInput, RunResult, SubagentMessages, SubagentRun, SubagentTask, SteerReceipt, Thread, TurnHooks } from "./agent"
 import { failure, lostWorkNote } from "./agent"
+import { contextCapacity, sameContextModel } from "../shared/context"
 import { parseProvider } from "./accounts"
 import { citedIn, plainCitations } from "./agents/codex-citations"
 import { Auto, autoProvider, foldEntries, resetTime, type AutoEntry, type AutoList } from "./auto"
-import { emit } from "./events"
+import { emit, subscribe } from "./events"
 import { fenceOff } from "./fence"
 import { handover, withHandover } from "./handover"
 import { onMachine, ownEnvironment } from "./machine"
@@ -987,9 +988,12 @@ export class Sessions {
       }
       else turn.gate.drop(turn.thread)
     }
-    // Turns a quit or crash cut short: ended, as Stop ends one.
-    for (const session of store.all()) this.repair(session.id)
-    for (const session of store.all()) this.readCitations(session.id)
+    // Repair an interrupted conversation when its messages are first needed.
+    store.prepare = id => {
+      this.repair(id)
+      this.readCitations(id)
+    }
+    for (const id of this.resuming.keys()) this.readCitations(id)
   }
 
   /** Its replies kept with Codex's directives in their words (`:codex-…`), read as a reply now reads them. */
@@ -1311,7 +1315,7 @@ export class Sessions {
   /** Its agents' processes stopped, between turns (the next message starts them again, in the same conversation); whether any ran. */
   closeAgents(id: string): boolean {
     const live = this.live.get(id)
-    if (!live || isBusy(live.doing) || !live.threads.size) return false
+    if (!live || isBusy(live.doing) || this.hasBackgroundWork(id, live) || !live.threads.size) return false
     clearTimeout(live.idle)
     for (const thread of live.threads.values()) thread.close()
     live.threads.clear()
@@ -1333,16 +1337,43 @@ export class Sessions {
       .all()
       .filter((session) => !directory || session.location.directory === directory)
       .filter((session) => parentID === undefined || (parentID === null ? !session.parentID : session.parentID === parentID))
-      .sort((a, b) => b.time.updated - a.time.updated || (a.id < b.id ? 1 : -1))
+      .map(session => this.withActivity(session))
+      .sort((a, b) => b.time.activity! - a.time.activity! || (a.id < b.id ? 1 : -1))
   }
 
   get(id: string): Session {
-    return this.record(id).session
+    return this.withActivity(this.record(id).session)
+  }
+
+  private withActivity(session: Session): Session {
+    session.time.activity = this.store.activity(session)
+    return session
+  }
+
+  /** Capacity as reported by the turn, or by the model catalog before the agent reports usage. */
+  async withContextWindow(id: string): Promise<Session> {
+    const session = this.get(id)
+    const ref = session.contextModel ?? session.model
+    if (!ref || session.contextWindow !== undefined) return session
+    const listed = session.context?.window === undefined ? Sessions.modelIn(await this.listedModels(ref.providerID), ref.id) : undefined
+    const window = session.context?.window ?? (listed?.provisional ? undefined : listed?.limit.context)
+    // While the catalog answered, a turn or model selection could have superseded this read.
+    if (session.contextWindow === undefined && sameContextModel(session.contextModel ?? session.model, ref) && contextCapacity(window)) {
+      session.contextWindow = window
+      if (session.context) session.context.window = window
+      this.store.progress(id)
+    }
+    return session
   }
 
   /** Its conversation, oldest first, with the turn under way as far as it's got. */
   messages(id: string): Message[] {
     return this.record(id).messages
+  }
+
+  messagePage(id: string, after: string | undefined, limit: number, ascending: boolean) {
+    this.record(id)
+    return this.store.page(id, after, limit, ascending)
   }
 
   update(id: string, body: { title?: string; permissions?: PermissionRule[]; metadata?: Record<string, unknown> }) {
@@ -1413,6 +1444,13 @@ export class Sessions {
     session.time.viewed = idle
     this.store.save(id)
     emit("session.viewed", { sessionID: id, idle }, session.location.directory)
+  }
+
+  /** Pending edits and live turns may still hold mutable messages. */
+  pruneTranscripts() {
+    if (this.commands || this.sending || this.removing) return
+    const working = new Set(this.active())
+    this.store.prune(id => working.has(id) || this.resuming.has(id))
   }
 
   active(): string[] {
@@ -1674,6 +1712,11 @@ export class Sessions {
     if (previous && previous.providerID === model.providerID && previous.id === model.id && previous.variant === model.variant) return
     // What the session's agent kept, moved to its own slot while it's still the session's.
     this.slots(record)
+    if (!sameContextModel(previous, model)) {
+      delete session.context
+      delete session.contextWindow
+      delete session.contextModel
+    }
     session.model = model
     session.metadata = { ...session.metadata, kuvoAgent: this.kind(model.providerID) }
     const event = emit("session.model.selected", { sessionID: id, model, previous }, session.location.directory)
@@ -1904,7 +1947,8 @@ export class Sessions {
   /** Record the same row that clients see as soon as the input leaves the inbox. */
   private recordInput(record: Record_, input: Input, order?: WorkOrder, nativeProvider?: string) {
     const created = Date.now()
-    const attachments: Attachment[] = input.files.map(file => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
+    const attachments: Attachment[] = input.files.map(file =>
+      this.store.keepAttachment(record.session.id, { mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     const message: Message = input.synthetic
       ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata }
       : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata }
@@ -1937,6 +1981,7 @@ export class Sessions {
     if (!agent) return undefined
     const slot = (this.slots(record)[provider] ??= { state: {} })
     const thread = agent.thread(record.session, slot.state)
+    thread.canRestart = () => !this.hasBackgroundWork(id, live)
     thread.onOwnTurn = (note) => this.ownTurn(id, provider, note)
     thread.onWorkLost = (lost) => this.workLost(id, provider, lost, `${this.agentName(provider)} stopped between turns: its process was ended from outside Kuvo Code, or crashed.`)
     live.threads.set(provider, thread)
@@ -2524,13 +2569,18 @@ export class Sessions {
     this.free(id, live, !held && outcome !== "failed" ? outcome : undefined, agentExited && !held)
   }
 
-  /** A while after its last turn, a session's agents stop running: they go on where they left off next time. */
+  private hasBackgroundWork(id: string, live: Live): boolean {
+    return runningShells(id).length > 0 || [...live.subagents.values()].some(turn => !turn.isEnded) ||
+      [...live.threads.values()].some(thread => thread.keepsWorking || thread.backgroundTasks?.length)
+  }
+
+  /** A while after its last work, a session's agents stop and go on where they left off next time. */
   private closeWhenIdle(id: string, live: Live) {
     clearTimeout(live.idle)
     live.idle = setTimeout(() => {
       if (live.doing.kind !== "idle" || this.live.get(id) !== live) return
       // Commands it left running would end with it: later.
-      if ([...live.threads.values()].some((thread) => thread.keepsWorking)) return this.closeWhenIdle(id, live)
+      if (this.hasBackgroundWork(id, live)) return this.closeWhenIdle(id, live)
       for (const thread of live.threads.values()) thread.close()
       live.threads.clear()
     }, timing.idleClose)
@@ -2725,7 +2775,7 @@ export class Sessions {
       turnAway()
       letHeldGo()
       if (run.agent === working) run.agent = undefined
-      this.store.save(id, true)
+      this.store.progress(id, undefined, true)
     }
   }
 
@@ -3050,8 +3100,22 @@ export class Sessions {
     const record = this.record(id)
     return {
       signal,
+      waitToRestart: async () => {
+        if (signal.aborted || !this.hasBackgroundWork(id, live)) return
+        await new Promise<void>(resolve => {
+          const finish = () => {
+            off()
+            signal.removeEventListener("abort", finish)
+            resolve()
+          }
+          const off = subscribe(() => queueMicrotask(() => {
+            if (!this.hasBackgroundWork(id, live)) finish()
+          }))
+          signal.addEventListener("abort", finish, { once: true })
+        })
+      },
       state: slot.state,
-      saveState: () => this.store.save(id, true),
+      saveState: () => this.store.progress(id, undefined, true),
       instructions: (withAgent = true) =>
         [
           ...Object.values((record.agent.kuvoInstructions as Record<string, string> | undefined) ?? {}),
@@ -3376,17 +3440,16 @@ export class Sessions {
 
   /**
    * Restarts the agents' processes here that started before the box's sandbox was on (you said
-   * to): each closes once its session is between turns (what it left running stops with it), and
-   * starts again in the sandbox with its next turn, going on with its conversation. Whether one
-   * still waits for its turn to end.
+   * to): each closes once the session and its background work are idle, and starts again in
+   * the sandbox with its next turn, going on with its conversation. Whether one still waits.
    */
   restartOutside(): boolean {
     let waiting = false
-    for (const live of this.live.values()) {
+    for (const [id, live] of this.live) {
       for (const [providerID, thread] of live.threads) {
         if (!thread.outside) continue
         // (Its turn, and what it left going, commands or subagents, as when it closes idle.)
-        if (isBusy(live.doing) || thread.keepsWorking) {
+        if (isBusy(live.doing) || this.hasBackgroundWork(id, live)) {
           waiting = true
           continue
         }
@@ -3640,7 +3703,17 @@ export class Sessions {
   adoptIdle(held: Held, meta: HeldMeta): boolean {
     // (One that serves its agent's sessions, Codex's app-server: its agent's.)
     const agent = this.agent(meta.provider)
-    if (agent?.adoptIdle) return agent.adoptIdle(held, meta)
+    if (agent?.adoptIdle) {
+      if (!agent.adoptIdle(held, meta)) return false
+      // A pooled process can have background work in several conversations.
+      const tracked = meta.backgroundSessions && typeof meta.backgroundSessions === "object" ? Object.keys(meta.backgroundSessions) : []
+      if (typeof meta.session === "string") tracked.push(meta.session)
+      for (const id of new Set(tracked)) {
+        const record = this.store.get(id)
+        if (record) this.threadOf(id, this.state(id), record, meta.provider)?.adoptIdle?.(held, meta)
+      }
+      return true
+    }
     const id = typeof meta.session === "string" ? meta.session : undefined
     const record = id ? this.store.get(id) : undefined
     if (!id || !record || record.session.parentID) return false
@@ -3750,9 +3823,9 @@ export class Sessions {
       this.wakeHeld()
     }
     const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined
-    const work = () => this.programUses.has(program) || [...this.live.values()].some(live =>
+    const work = () => this.programUses.has(program) || [...this.live].some(([id, live]) =>
       this.agent(live.own?.adopt?.providerID ?? "")?.id === program ||
-      [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program),
+      (this.hasBackgroundWork(id, live) && [...live.threads.keys()].some(provider => this.agent(provider)?.id === program)),
     ) || (holders !== undefined && heldIn(holders).some(record =>
       !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0,
     ))
@@ -3881,6 +3954,9 @@ function mime(uri: string): string {
       gif: "image/gif",
       webp: "image/webp",
       heic: "image/heic",
+      heif: "image/heif",
+      bmp: "image/bmp",
+      tiff: "image/tiff",
       pdf: "application/pdf",
       txt: "text/plain",
       md: "text/markdown",

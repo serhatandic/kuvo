@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -78,14 +80,9 @@ export function watchTestProcesses(parents = []) {
   };
 }
 
-function processes(args) {
-  const result = spawnSync("/bin/ps", [
-    ...(darwin ? ["-E"] : []), "-ww", "-o", "uid=,pid=,ppid=,pgid=,stat=,lstart=,command=", ...args,
-  ], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
-  if (result.error) throw result.error;
-  if (![0, 1].includes(result.status)) throw new Error(result.stderr.trim() || "ps failed");
+async function processRows(stdout) {
   const rows = new Map();
-  for (const line of result.stdout.split("\n")) {
+  for await (const line of createInterface({ input: stdout })) {
     const row = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/);
     if (row && Number(row[1]) === uid && !row[5].startsWith("Z")) {
       rows.set(Number(row[2]), { parent: Number(row[3]), group: Number(row[4]), leader: row[5].includes("s"), started: row[6], command: row[7] });
@@ -94,7 +91,31 @@ function processes(args) {
   return rows;
 }
 
+async function processes(args) {
+  // Under load a process listing can take longer than the runner's grace period. Read it
+  // incrementally and let it finish, even when many processes have large environments.
+  for (;;) {
+    const ps = startNode("/bin/ps", [
+      ...(darwin ? ["-E"] : []), "-ww", "-o", "uid=,pid=,ppid=,pgid=,stat=,lstart=,command=", ...args,
+    ], { stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      const [[status, signal], rows] = await Promise.all([once(ps, "close"), processRows(ps.stdout)]);
+      if (status !== 0 && !(args[0] === "-p" && status === 1 && !rows.size)) {
+        throw new Error(`ps failed (${signal ?? status})`);
+      }
+      return rows;
+    } catch (error) {
+      if (!["EAGAIN", "ENOMEM", "EINTR"].includes(error.code)) throw error;
+      await setTimeout(250);
+    }
+  }
+}
+
 const sameProcess = (known, current) => current?.started === known.started && current.command === known.command;
+
+const scriptAt = command => command
+  .replace(/^(?:\S+\/)?(?:sh|bash|dash|node|bun)(?: --?[\w=./-]*)* +/, "")
+  .replace(/\/{2,}/g, "/");
 
 function hasScope(pid, command, marker) {
   if (darwin) return command.includes(` ${marker} `) || command.endsWith(` ${marker}`);
@@ -115,7 +136,7 @@ function scopedProcesses(rows, roots, owner, marker, groups) {
     if (pid === owner) continue;
     // Protected tools on macOS hide their environment, and some keepers clear it. The executable
     // (or interpreter's script) may still be in the test's registered home.
-    const executable = row.command.replace(/^(?:\S+\/)?(?:sh|bash|node|bun)(?: --[^ ]+)* /, "");
+    const executable = scriptAt(row.command);
     if (roots.some(root => executable.startsWith(root + "/")) || hasScope(pid, row.command, marker)) scoped.add(pid);
   }
   // Keep an isolated group only as long as a known member still pins its identity.
@@ -176,7 +197,8 @@ async function clean(journal, owner, scope) {
   let quiet = 0;
   let live;
   for (let round = 0; round < 20; round++) {
-    live = scopedProcesses(processes(["-ax"]), aliases, owner, `${PROCESS_SCOPE}=${scope}`, groups);
+    const rows = await processes(darwin ? ["-x", "-U", String(uid)] : ["-ax"]);
+    live = scopedProcesses(rows, aliases, owner, `${PROCESS_SCOPE}=${scope}`, groups);
     if (!live.size) {
       if (++quiet === 2) {
         for (const entry of managed) if (sameRoot(entry)) rmSync(entry.root, { recursive: true, force: true });
@@ -184,11 +206,17 @@ async function clean(journal, owner, scope) {
       }
     } else {
       quiet = 0;
-      const current = processes(["-p", [...live.keys()].join(",")]);
+      const current = await processes(["-p", [...live.keys()].join(",")]);
+      const keepers = [], workers = [];
       for (const [pid, row] of live) {
         if (!sameProcess(row, current.get(pid))) continue;
-        try { process.kill(pid, round < 2 ? "SIGTERM" : "SIGKILL"); } catch (error) {
-          if (error.code !== "ESRCH") throw error;
+        const isKeeper = /^\S+\/(?:kuvo-start|\.kuvo-start-keeper) keep(?: |$)/.test(scriptAt(row.command));
+        (isKeeper ? keepers : workers).push(pid);
+      }
+      // Stop the keep loops before their workers so they cannot launch replacements.
+      for (const [pids, signal] of [[keepers, "SIGKILL"], [workers, round < 2 ? "SIGTERM" : "SIGKILL"]]) {
+        for (const pid of pids) {
+          try { process.kill(pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; }
         }
       }
     }
@@ -222,12 +250,14 @@ if (path.basename(file) === "monitor.mjs" && fs.realpathSync(process.argv[1]) ==
       }
     }
   }, 250) : undefined;
+  // The runner's pipe owns our lifetime even if cancellation also signals the watchdog.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
   try {
     for await (const _ of process.stdin) { /* Wait for the runner's pipe to close. */ }
-    clearInterval(parentCheck);
-    await clean(journal, owner, scope);
   } finally {
     clearInterval(parentCheck);
+    await clean(journal, owner, scope);
+    // If cleanup itself fails, leave the ownership journal available for diagnosis.
     rmSync(journal, { recursive: true, force: true });
   }
 }

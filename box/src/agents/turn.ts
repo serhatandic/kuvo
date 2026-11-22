@@ -2,7 +2,7 @@
 // words, thinking and tool calls, as events the app's transcript applies, and as messages kept for
 // a later read. Agents report what happens in plain calls; this keeps both in step.
 
-import { tokenCount, type ContextSize } from "../shared/context"
+import { contextCapacity, sameContextModel, tokenCount } from "../shared/context"
 import { emit } from "./events"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
@@ -66,8 +66,8 @@ export class Turn {
     return this.store.get(this.sessionID)?.messages ?? []
   }
 
-  private save() {
-    this.store.save(this.sessionID)
+  private save(message: Message | undefined = this.step ?? undefined) {
+    this.store.progress(this.sessionID, message)
   }
 
   private send(type: string, data: Record<string, unknown>) {
@@ -80,18 +80,24 @@ export class Turn {
 
   /** The latest occupancy measured on this conversation, separate from billing totals. */
   context(used: unknown, window: unknown) {
-    if (!tokenCount(used)) return
-    this.saveContext({ used, ...(tokenCount(window) && window > 0 ? { window } : {}) })
+    const session = this.store.get(this.sessionID)?.session
+    if (!session || this.ended) return
+    const same = sameContextModel(session.contextModel ?? session.model, this.model)
+    const capacity = contextCapacity(window) ? window : same ? session.contextWindow ?? session.context?.window : undefined
+    const occupancy = tokenCount(used) ? used : same ? session.context?.used : undefined
+    if (capacity === undefined && occupancy === undefined) return
+    if (same && session.contextWindow === capacity && session.context?.window === capacity && session.context?.used === occupancy) return
+    session.contextModel = this.model
+    session.contextWindow = capacity
+    session.context = occupancy === undefined ? undefined : { used: occupancy, window: capacity }
+    this.save()
   }
 
   clearContext() {
-    this.saveContext(undefined)
-  }
-
-  private saveContext(context: ContextSize | undefined) {
     const session = this.store.get(this.sessionID)?.session
-    if (!session || this.ended || (session.context?.used === context?.used && session.context?.window === context?.window)) return
-    session.context = context
+    if (!session?.context || this.ended) return
+    session.contextWindow ??= session.context.window
+    delete session.context
     this.save()
   }
 
@@ -109,7 +115,7 @@ export class Turn {
     const kuvo = (metadata.kuvo as Record<string, unknown> | undefined) ?? {}
     if (kuvo.ranOn === model) return
     record.session.metadata = { ...metadata, kuvo: { ...kuvo, ranOn: model } }
-    this.store.save(this.sessionID, true)
+    this.store.progress(this.sessionID, undefined, true)
     this.send("session.metadata.updated", {})
   }
 
@@ -219,7 +225,7 @@ export class Turn {
       error: end.error,
     })
     this.step = undefined
-    this.save()
+    this.save(step)
   }
 
   /** Usage reported for the whole run at its end, when the agent gives no per-step figures. */
@@ -321,7 +327,7 @@ export class Turn {
     this.tools.set(id, { step, call })
     this.send("session.tool.input.started", { assistantMessageID: step.id, id, name })
     if (input !== undefined) this.toolCalled(id, input)
-    this.save()
+    this.save(step)
   }
 
   /** The tool's name, changed as more is known: told as its start again, with the name it has now. */
@@ -331,7 +337,7 @@ export class Turn {
     tool.call.name = name
     if (this.ended) return
     this.send("session.tool.input.started", { assistantMessageID: tool.step.id, id, name })
-    this.save()
+    this.save(tool.step)
   }
 
   toolInputDelta(id: string, delta: string) {
@@ -353,7 +359,7 @@ export class Turn {
     tool.call.state = { status: "running", input, metadata: tool.call.state.status === "running" ? tool.call.state.metadata : undefined }
     tool.call.time = { ...tool.call.time, ran: tool.call.time?.ran ?? Date.now() }
     this.send("session.tool.called", { assistantMessageID: tool.step.id, id, input })
-    this.save()
+    this.save(tool.step)
   }
 
   /** What a running tool has to show so far (a command's output, as it comes). */
@@ -364,7 +370,7 @@ export class Turn {
     const merged = { ...((tool.call.state.metadata as Record<string, unknown> | undefined) ?? {}), ...metadata }
     tool.call.state.metadata = merged
     this.send("session.tool.progress", { assistantMessageID: tool.step.id, id, metadata: merged })
-    this.save()
+    this.save(tool.step)
   }
 
   toolSucceeded(id: string, output: string | ToolOutput[], metadata?: Record<string, unknown>) {
@@ -372,11 +378,11 @@ export class Turn {
     if (!tool || this.ended) return
     if (tool.call.state.status === "streaming") this.toolCalled(id, safeJSON(tool.call.state.input))
     if (tool.call.state.status !== "running") return
-    const content: ToolOutput[] = typeof output === "string" ? [{ type: "text", text: output }] : output
+    const content: ToolOutput[] = typeof output === "string" ? [{ type: "text", text: output }] : output.map(file => this.store.keepOutput(this.sessionID, file))
     tool.call.state = { status: "completed", input: tool.call.state.input, content, metadata: metadata ?? tool.call.state.metadata }
     tool.call.time = { ...tool.call.time, completed: Date.now() }
     this.send("session.tool.success", { assistantMessageID: tool.step.id, id, content, metadata: tool.call.state.metadata })
-    this.save()
+    this.save(tool.step)
   }
 
   toolFailed(id: string, message: string, metadata?: Record<string, unknown>, type = "tool") {
@@ -391,7 +397,7 @@ export class Turn {
     tool.call.state = { status: "error", input, error, content, metadata: kept }
     tool.call.time = { ...tool.call.time, completed: Date.now() }
     this.send("session.tool.failed", { assistantMessageID: tool.step.id, id, error, content, metadata: kept })
-    this.save()
+    this.save(tool.step)
   }
 
   /** A note in the conversation from Kuvo Code, not the agent: "Going on with Codex…". Marked as
@@ -435,7 +441,7 @@ export class Turn {
       this.compaction = { type: "compaction", id: messageID(event.id), time: { created: event.created }, status: "running", reason: "auto" }
     }
     this.messages.push(this.compaction)
-    this.store.save(this.sessionID, true)
+    this.store.progress(this.sessionID, undefined, true)
   }
 
   /**
@@ -455,7 +461,7 @@ export class Turn {
     message.status = succeeded ? "completed" : "failed"
     message.time.completed = Date.now()
     this.send(succeeded ? "session.compaction.ended" : "session.compaction.failed", {})
-    this.store.save(this.sessionID, true)
+    this.store.progress(this.sessionID, message, true)
   }
 
   /** Whether the agent is summarizing by itself now. */
@@ -514,7 +520,7 @@ export class Turn {
       session.tokens = add(session.tokens, this.tokens)
       session.cost += this.cost
       emit("session.usage.updated", { sessionID: this.sessionID, cost: session.cost, tokens: session.tokens }, this.directory)
-      this.store.save(this.sessionID, true)
+      this.store.progress(this.sessionID, undefined, true)
     }
   }
 }

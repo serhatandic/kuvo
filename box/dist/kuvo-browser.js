@@ -1,4 +1,4 @@
-// kuvo-browser fee9631592e0958f
+// kuvo-browser fbd2a7a22da03a65
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -23,6 +23,7 @@ export function framePolicy() {
 //
 //   BUN_BE_BUN=1 opencode kuvo-browser.js mcp       the agent's browser tools, for the engine
 //   BUN_BE_BUN=1 opencode kuvo-browser.js connect   the app's live view, over SSH
+//   BUN_BE_BUN=1 opencode kuvo-browser.js start     start on demand for the box's live view
 //   BUN_BE_BUN=1 opencode kuvo-browser.js host      the keeper, started by either of the others
 //
 // The keeper drives Chromium over a pipe, never a port, and lets the others in through a socket
@@ -102,7 +103,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "c0723b23d2dd";
+const KEEPER = "77242ebe53f8";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -3625,9 +3626,9 @@ async function mcp() {
 }
 
 const mode = process.argv[2];
-const modes = { host, mcp, connect };
+const modes = { host, mcp, connect, start: async () => console.log(JSON.stringify(await ensure(null))) };
 if (!modes[mode]) {
-  console.error("Usage: kuvo-browser.js host|mcp|connect");
+  console.error("Usage: kuvo-browser.js host|mcp|connect|start");
   process.exit(2);
 }
 modes[mode]().catch((error) => {

@@ -139,7 +139,10 @@ export class BotFolders {
     }
   }
 
+  private generation = 0
+
   stop() {
+    this.generation++
     this.watcher?.close()
     this.watching = false
     for (const timer of this.pending.values()) clearTimeout(timer)
@@ -153,7 +156,9 @@ export class BotFolders {
     if (this.looking) return this.looking
     const since = this.lookedAt
     this.lookedAt = Date.now()
+    const generation = this.generation
     this.looking = changedSince(this.bots, since, recordable, botFolder).then(paths => {
+      if (generation !== this.generation) return
       for (const path of paths) if (!this.pending.has(path) && !this.store.asSeen(path)) this.changed(path)
     }).finally(() => { this.looking = undefined })
     return this.looking

@@ -12,7 +12,7 @@ export class StandIn {
   readonly conversations = new Map<string, any[]>()
   readonly synthetic: { session: string; text: string; description?: string }[] = []
   /** Each check asked: afresh on the session's model (`fresh`), or in the session's own context (`own`). */
-  readonly checks: { kind: "fresh" | "own"; prompt: string; model?: any; session?: string }[] = []
+  readonly checks: { kind: "fresh" | "own"; prompt: string; model?: any; session?: string; files?: any[] }[] = []
   /** Messages sent as yours (`/prompt`), by session. */
   readonly prompted: { session: string; text: string }[] = []
   prompts(session: string) {
@@ -254,6 +254,12 @@ export class StandIn {
         this.prompted.push({ session, text: body.text })
         // A review's part: its reviewer answers as a one-off answer would, in a turn of its own.
         const made = this.made.find((each) => each.id === session)
+        // A one-off answer in a turn of its own (one that takes files): answered as a part is.
+        if (made?.metadata?.kuvo?.engineFor) {
+          this.add(session, { type: "user", text: body.text })
+          void this.readPart(session, body.text, made.model, body.files)
+          return Response.json({ data: {} })
+        }
         if (made?.metadata?.kuvo?.reviewPart) {
           // Taken, not yet begun (its answer on its way back).
           if (this.holdingPrompts) {
@@ -291,8 +297,8 @@ export class StandIn {
   answers: string[] = []
 
   /** A review's part read in its session: counted with the checks, held with them, its answer the next one scripted. */
-  private async readPart(session: string, prompt: string, model?: any) {
-    this.checks.push({ kind: "fresh", prompt, ...(model ? { model } : {}), session })
+  private async readPart(session: string, prompt: string, model?: any, files?: any[]) {
+    this.checks.push({ kind: "fresh", prompt, ...(model ? { model } : {}), session, ...(files ? { files } : {}) })
     this.busy.add(session)
     this.emit("session.execution.started", { sessionID: session })
     this.beat()

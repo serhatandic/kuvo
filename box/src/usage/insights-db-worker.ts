@@ -1,10 +1,13 @@
-import { readSavedSessions } from "../agents/store"
+import { readSavedSessionHeaders } from "../agents/store"
+import { savedMessages } from "../agents/transcript"
 import { join } from "node:path"
 import { UsageAccounts } from "./accounts"
 import { InsightsScan } from "./insights-scan"
 import { InsightsStore } from "./insights-store"
 import { Catalog, Pricing } from "./pricing"
 import type { DBRequest, InsightScanInput } from "./insights-db"
+
+const sweep = typeof Bun === "undefined" ? undefined : (await import("bun:jsc")).gcAndSweep
 
 export function serveInsightsDB() {
   let db: InsightsStore | undefined
@@ -30,11 +33,29 @@ export function serveInsightsDB() {
             const accounts = new UsageAccounts(input.home)
             scanner = new InsightsScan({
               root: input.home, cache: input.cache, agents: () => accounts.all(),
-              store: () => readSavedSessions(join(input.home, "sessions")),
+              store: function* () {
+                for (const row of readSavedSessionHeaders(join(input.home, "sessions"))) {
+                  yield { ...row, messages: savedMessages(row.folder, "insight") }
+                }
+              },
               bots: () => input.bots, computer: () => input.computer, engine: input.engine,
             })
           }
-          result = await scanner.scan(pricing!, args[1])
+          const [_, since, now, origins, handled] = args
+          const index = db!
+          index.price(pricing!, now)
+          const { issues, transcripts, observations, more, selected } = await scanner.scan(pricing!, since, {
+            read: key => index.read(key),
+            write: entries => index.checkpoint(entries),
+            reclaim: () => { sweep?.() },
+            take: records => {
+              index.price(pricing!, now)
+              index.take(records, pricing!, now, undefined, undefined, undefined, origins)
+            },
+            attribute: lineage => index.attribute(lineage),
+          }, new Set(handled))
+          index.take([], pricing!, now)
+          result = { issues, transcripts, observations, more, ...(more ? { selected } : {}) }
           break
         }
         case "cursor": result = db!.cursor(...args); break

@@ -2,7 +2,7 @@
 // belong to its original process, and the bridge follows its own turn to completion.
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -63,6 +63,23 @@ test("an OpenCode conversation finishes on the same engine after a release switc
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid, "the original process owns this turn");
   assert.deepEqual(await native("GET", "active"), { data: { ses_engine: { type: "busy" } } });
   assert.deepEqual(await native("POST", "ses_engine/fixture-finish"), { data: { outcome: "succeeded", count: 1 } });
+});
+
+test("a release that needs to restart OpenCode waits for its background shell", { skip: bun ? false : NO_BUN }, async () => {
+  const { engine, native, env, scratch, RUN } = await runningBox("shell");
+  const marker = path.join(scratch, "engine-shell");
+  fs.writeFileSync(marker, "");
+  assert.deepEqual(await native("GET", "active"), { data: {} });
+  const probe = () => spawnSync(bunRunsAs(bun), ["--config=/dev/null", "--no-env-file", builtLink, "release-switch-quiet", "restart"], {
+    env: { HOME: env.HOME, KUVO_HOME: env.KUVO_HOME, TMPDIR: env.TMPDIR, PATH: env.PATH, BUN_BE_BUN: "1" },
+    encoding: "utf8",
+  });
+  const busy = probe();
+  assert.equal(busy.status, 1, busy.stderr);
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  fs.unlinkSync(marker);
+  const quiet = probe();
+  assert.equal(quiet.status, 0, quiet.stderr);
 });
 
 test("a bridge session on an engine model finishes once before the replacement bridge takes over", { skip: bun ? false : NO_BUN }, async () => {

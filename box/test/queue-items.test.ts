@@ -208,7 +208,7 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect(status).toBe(200)
   expect(json.removed).toEqual({
     id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
-    files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
+    files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], attached: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
     // (Its words alone: an old message's keyword no longer does anything when sent again.)
     keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
     metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
@@ -221,6 +221,25 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/msg_steer/ack", { receipt: json.removed.receipt })).status).toBe(200)
   // Not waiting anywhere: 404.
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_none")).status).toBe(404)
+})
+
+test("Edit gives back every file a message went with: a picture it carries, and a file this box kept for the agent to open", async () => {
+  // Sent from another computer while the queue is paused: a picture and a zip, with their bytes.
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/hold")).status).toBe(200)
+  const zip = Buffer.from("PK\u0003\u0004 the logs")
+  const picture = `data:image/png;base64,${Buffer.from("a picture").toString("base64")}`
+  const sent = await ask(handler, "POST", "kuvo/sessions/ses_q/queue/add", { id: "msg_withFiles", words: "What's in these?",
+    files: [{ uri: picture, name: "shot.png" }, { uri: `data:application/zip;base64,${zip.toString("base64")}`, name: "logs.zip" }] })
+  expect(sent.json.waits).toBe(true)
+  const { status, json } = await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_withFiles")
+  expect(status).toBe(200)
+  expect(json.removed.draft).toBe("What's in these?")
+  // Both, in the order they were attached: the picture as it went, the zip where this box keeps it.
+  const attached = json.removed.attached as { uri: string; name?: string }[]
+  expect(attached.map(file => file.name)).toEqual(["shot.png", "logs.zip"])
+  expect(attached[0]!.uri).toBe(picture)
+  expect(fs.readFileSync(new URL(attached[1]!.uri))).toEqual(zip)
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/msg_withFiles/ack", { receipt: json.removed.receipt })).status).toBe(200)
 })
 
 test("one the app still shows on its way can be removed: it's taken out as it arrives, or said to have gone already", async () => {
@@ -257,7 +276,7 @@ for (const failedRead of ["inbox", "transcript"] as const) {
     expect(recovered.status).toBe(200)
     expect(recovered.json.removed).toEqual({
       id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
-      files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "steer", words: "Use the blue one.",
+      files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], attached: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "steer", words: "Use the blue one.",
       keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
       metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
     })

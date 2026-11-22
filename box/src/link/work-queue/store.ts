@@ -27,7 +27,7 @@ import { QUEUES_LOCK, migrateOnce, queueFileFormat } from "./migrate";
 import { fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
-const QUEUES = path.join(WORK_QUEUE, "queues");
+export const QUEUES = path.join(WORK_QUEUE, "queues");
 export const FILES = path.join(WORK_QUEUE, "files");
 
 export { OWNER, YOURS } from "../../shared/work-queue-owner";

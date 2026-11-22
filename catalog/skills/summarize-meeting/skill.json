@@ -1,0 +1,7 @@
+{
+  "id": "summarize-meeting",
+  "title": "Summarize a meeting",
+  "category": "Work",
+  "summary": "Extract decisions, action items, and open questions from notes.",
+  "version": "1.0.0"
+}

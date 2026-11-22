@@ -8,7 +8,7 @@
 // clients (`serve --kept`) and the bridge as built. A stand-in only for the engine (an HTTP server).
 // In a home of the test's own; the same on macOS and Linux. Run with
 // `node --test box/bridge-tests/agents-handover.test.js`.
-import "./test-safety.js";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -39,7 +39,7 @@ const build = text => [...text.matchAll(/\/\/ Built from Packages\/Box\/src\/age
  * clients wanted, and its bridge's program as `agents` (the built one by default). */
 function machine(prefix, { agents, round = "1", before, release, kept = true, held = true, feed = null } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-  removeAtEnd(base);
+  removeTestHomeAtExit(base);
   const home = path.join(base, ".kuvo-code");
   const run = path.join(home, "run");
   const scratch = path.join(base, "scratch");

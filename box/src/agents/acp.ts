@@ -7,12 +7,12 @@ import { tokenCount } from "../shared/context"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { LostWork, OwnTurn, RunInput, RunResult, Thread, TurnHooks, SubagentRun, SubagentTask } from "./agent"
-import { failure, lostWorkNote } from "./agent"
+import { failure } from "./agent"
 import { resetsIn, resetTime, type Limit } from "./auto"
 import { fileDiff } from "./diff"
 import { emit } from "./events"
 import { RPC, RPCClosed, RPCError } from "./rpc"
-import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "./fence"
+import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, sameFenceKey, seatBot, fullAccessMark } from "./fence"
 import { isKuvoTool, kuvoToolName, kuvoTools, loadKuvoTools, toolServerName } from "./kuvotools"
 import { computerServers, type ComputerServers } from "./servers"
 import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "./toolrelay"
@@ -285,10 +285,12 @@ export class AcpThread implements Thread {
     this.computer = computer
     // (What each reaches, a key you changed, a sign-in renewed, for the same agent going on too.)
     if (this.rpc && !this.rpc.isClosed) relayedServers(this.session.id, this, this.session.location.directory, computer, { brief: true })
-    if (this.rpc && !this.rpc.isClosed && this.spawnedWith === key && this.rpc !== this.stale) return this.rpc
-    // Started again for another approval mode (the agent takes it as it starts), or an updated program.
-    // (What it left going in the background ends with it: the next message says so.)
-    if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
+    if (this.rpc && !this.rpc.isClosed && this.sameLaunch(key, fence) && this.rpc !== this.stale) return this.rpc
+    // Another approval mode or version needs a new process. Let the old one finish its work.
+    if (this.rpc && !this.rpc.isClosed) {
+      await hooks.waitToRestart?.()
+      if (cancelled()) return stopped()
+    }
     this.drop()
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
     const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
@@ -462,6 +464,7 @@ export class AcpThread implements Thread {
         if (previous && previous !== this.sessionID) {
           // In place of one it had: the instructions go again, and what came before is handed over.
           this.startedOver = true
+          this.session.contextWindow ??= this.session.context?.window
           delete this.session.context
           delete this.state.acpInstructions
           delete this.state.acpInstructed
@@ -484,6 +487,17 @@ export class AcpThread implements Thread {
       throw error
     }
     return rpc
+  }
+
+  private sameLaunch(key: string, fence: string): boolean {
+    if (this.spawnedWith === key) return true
+    if (!this.spawnedWith) return false
+    try {
+      const old = JSON.parse(this.spawnedWith)
+      return sameFenceKey(old.fence, fence) && JSON.stringify({ ...old, fence }) === key
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -632,8 +646,14 @@ export class AcpThread implements Thread {
     }
     this.rpc = rpc
     this.fenced = meta.fenced === true
-    this.spawnedWith = typeof meta.key === "string" ? meta.key : undefined
+    this.spawnedWith = undefined
+    if (typeof meta.key === "string") {
+      try {
+        this.spawnedWith = JSON.stringify({ ...JSON.parse(meta.key), program: flavor.program?.() ?? 0 })
+      } catch {}
+    }
     if (meta.setup && typeof meta.setup === "object") this.setup = { ...meta.setup }
+    if (Array.isArray(meta.backgroundTasks)) this.tasks = new Map((meta.backgroundTasks as BackgroundTask[]).map(task => [task.id, task]))
     return rpc
   }
 
@@ -709,8 +729,6 @@ export class AcpThread implements Thread {
       instructed = { value: instructions }
     }
     if (others.length) text += `\n\nAttached files:\n${others.map((path) => `- ${path}`).join("\n")}`
-    if (this.cut.length) text = `${lostWorkNote(`${this.name} started again before this message.`, this.cut)}\n\n${text}`
-    this.cut = []
     prompt.unshift({ type: "text", text })
     return new Promise<RunResult>((resolve) => {
       const active: Active = { turn, hooks, resolve, rpc, tools: new Map(), toolsSinceText: false, ended: false, instructed, children: new Map(), served: new Map(), started: Date.now(), prompt: 0, input }
@@ -859,6 +877,7 @@ export class AcpThread implements Thread {
           const known = before.get(task.id)
           return [task.id, { ...task, started: known?.started ?? Date.now(), order: known ? known.order : workOrder() }]
         }))
+        this.rpc?.holder?.note({ backgroundTasks: [...this.tasks.values()] })
         if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started || before.get(task.id)?.order !== task.order)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
       },
     }
@@ -940,8 +959,8 @@ export class AcpThread implements Thread {
         }
         if (tokenCount(update.used)) {
           active.used = update.used
-          turn.context(update.used, active.contextWindow)
         }
+        turn.context(update.used, active.contextWindow)
         // What it cost, when it says (in dollars).
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") this.cost(turn, update.cost.amount)
         return
@@ -1335,8 +1354,6 @@ export class AcpThread implements Thread {
 
   /** What it keeps going in the background, by its id: it goes with its process. */
   private tasks = new Map<string, BackgroundTask>()
-  /** What it had going when it was started again for the next message, for that message to say. */
-  private cut: LostWork[] = []
   onWorkLost?: (lost: LostWork[]) => void
 
   /** Work it left going: closing it would end it. */

@@ -1,0 +1,24 @@
+{
+  "id": "research-assistant",
+  "title": "Research Assistant",
+  "category": "Research",
+  "summary": "Answer questions using cited primary sources.",
+  "version": "1.0.0",
+  "instructions": "State the question, reconcile conflicting sources, and label uncertainty. Cite primary sources next to key claims.",
+  "skills": [
+    "compare-sources"
+  ],
+  "apps": [],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Check for updates to tracked questions",
+      "every": "1w",
+      "note": "Check for updates to tracked questions. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

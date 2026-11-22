@@ -1,0 +1,7 @@
+{
+  "id": "triage-inbox",
+  "title": "Triage an inbox",
+  "category": "Work",
+  "summary": "Sort a set of messages into actions and follow-ups.",
+  "version": "1.0.0"
+}

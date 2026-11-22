@@ -1,0 +1,10 @@
+{
+  "id": "supabase",
+  "title": "Supabase",
+  "category": "Data",
+  "summary": "Databases, auth and storage in your projects.",
+  "url": "https://mcp.supabase.com/mcp",
+  "auth": "oauth",
+  "asset": "https://supabase.com/favicon/apple-icon-180x180.png",
+  "brand": "https://supabase.com/brand"
+}

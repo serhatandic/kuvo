@@ -15,7 +15,7 @@ import { rewriteOn } from "../engine/notes";
 import { BOTS, HERE, IS_MAC } from "../home";
 import { botPersonalities } from "../personalities/library";
 import { BOT_STEP, botLook, botModel, DESCRIPTION, isModel, noteBotsChanged } from "./here";
-import { firstMessageOf } from "./jobs";
+import { firstMessageOf, projectJob, type Job } from "./jobs";
 import { botInstructions, NO_KIT, readKit, runsWithAgents } from "./kit";
 import { writeZoneFiles } from "../zone/setting";
 import { listBots } from "./list";
@@ -105,13 +105,18 @@ const REQUEST = /^[A-Za-z0-9_-]{8,64}$/;
 const MADE_FOR = 3600_000;
 const madeFor = new Map<string, { answer: Promise<MadeAnswer>; at: number }>();
 
-export function makeBot(given: GivenBot | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string): Promise<MadeAnswer> {
+export interface BotSetup {
+  job: Job;
+  prepare: (folder: string, directory: string) => Promise<void>;
+}
+
+export function makeBot(given: GivenBot | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, setup?: BotSetup): Promise<MadeAnswer> {
   const make = async () => {
     const release = given && !(isModel(given.model) && runsWithAgents(given.model)) ? await acquireEngine() : undefined;
-    try { return await makeOnce(given, readEngine, readBridge, machine); }
+    try { return await makeOnce(given, readEngine, readBridge, machine, setup); }
     finally { release?.(); }
   };
-  const request = typeof given?.request === "string" && REQUEST.test(given.request) ? given.request : null;
+  const request = typeof given?.request === "string" && REQUEST.test(given.request) ? (setup ? "marketplace:" : "") + given.request : null;
   if (!request) return make();
   const now = Date.now();
   for (const [id, made] of madeFor) if (now - made.at > MADE_FOR) madeFor.delete(id);
@@ -121,12 +126,12 @@ export function makeBot(given: GivenBot | null | undefined, readEngine: () => Ta
     if (made.status === 201) madeFor.set(request, { answer, at: Date.now() });
     else madeFor.delete(request);
     return made;
-  });
+  }, error => { madeFor.delete(request); throw error; });
   madeFor.set(request, { answer, at: now });
   return answer;
 }
 
-async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string): Promise<MadeAnswer> {
+async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, setup?: BotSetup): Promise<MadeAnswer> {
   const no = (status: OtherStatus, message: string): MadeAnswer => ({ status, value: { message } });
   const kit = readKit();
   if (!kit) return no(409, NO_KIT);
@@ -181,6 +186,11 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
     // bot that works in a project: there it's the project's.
     if (!project) fs.mkdirSync(path.join(folder, "memory"), { recursive: true });
     fs.writeFileSync(path.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
+    if (setup) {
+      writeZoneFiles(folder);
+      await setup.prepare(folder, directory);
+      projectJob(folder, setup.job);
+    }
     // Its own folder; the rest are made just below for this computer's default approval and its
     // Settings › Permissions.
     const rules = [{ action: "external_directory", resource: path.join(folder, "*"), effect: "allow" }];
@@ -199,7 +209,7 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
       permissions: approvalRules(kept.effective, rules),
     }));
     if (!marked) throw new Error("The conversation it made went.");
-    const told = botInstructions(kit, name, folder, personality?.instruction, project as string | undefined);
+    const told = botInstructions(kit, name, folder, personality?.instruction, project as string | undefined, setup ? { line: setup.job.line, section: setup.job.details } : undefined);
     await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, AbortSignal.timeout(BOT_STEP));
     fs.writeFileSync(path.join(folder, "session"), session.id);
     noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
@@ -208,7 +218,7 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
     writeZoneFiles(folder);
     if (agents) fs.writeFileSync(path.join(folder, "via"), "bridge");
     const now = stamp();
-    const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...(personality ? { personality: personality.id } : {}), ...(project ? { project: project as string } : {}), updated: now } satisfies BotDescription;
+    const described = { created: now, id, job: setup?.job.line ?? "", kuvo: DESCRIPTION, look, model, name, ...(personality ? { personality: personality.id } : {}), ...(project ? { project: project as string } : {}), updated: now } satisfies BotDescription;
     fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify(described, null, 2));
     // (What it comes to may have changed meanwhile: the sandbox stopped. The box's round would, in a
     // moment.)
@@ -220,7 +230,7 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
   }
   // Without a template's or a shared bot's job for you to send, it writes first.
   const firstMessage = (template ? firstMessageOf(template.job, template.instructions) || null : null) ?? shared;
-  if (!firstMessage) await call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/synthetic`, { text: kit.greeting, description: "A new bot's first message" }, AbortSignal.timeout(BOT_STEP)).catch(() => {});
+  if (!firstMessage && !setup) await call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/synthetic`, { text: kit.greeting, description: "A new bot's first message" }, AbortSignal.timeout(BOT_STEP)).catch(() => {});
   noteBotsChanged();
   // (It lists: it was just made.)
   const bot = listBots(machine).find(each => each.id === id)!;

@@ -114,6 +114,19 @@ pub fn is_another_apps(path: &Path) -> bool {
 /// while you hand it over. What went wrong, in plain words, where it couldn't be.
 pub fn keep_copy(path: &Path, folder: &Path, now: SystemTime) -> Result<PathBuf, String> {
     let name = path.file_name().ok_or_else(|| "That file couldn’t be read.".to_owned())?;
+    kept(name.as_ref(), folder, now, |copy| std::fs::copy(path, copy).map(|_| ()))
+}
+
+/// `bytes` kept in `folder` as a file named `name` (a folder of its own there), to attach again: a
+/// file a message taken back to edit went with, that isn't on this computer's disk (sent with its
+/// bytes, or kept on another computer's box). It goes again with its bytes, as a pasted picture does.
+pub fn keep_bytes(bytes: &[u8], name: &str, folder: &Path, now: SystemTime) -> Result<PathBuf, String> {
+    // (Its name alone: never a path out of its folder.)
+    let name = Path::new(name).file_name().filter(|name| !name.is_empty()).unwrap_or("attachment".as_ref());
+    kept(name, folder, now, |copy| std::fs::write(copy, bytes))
+}
+
+fn kept(name: &std::ffi::OsStr, folder: &Path, now: SystemTime, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(folder).map_err(|_| "That file couldn’t be kept to attach.".to_owned())?;
     let_old_go(folder, now);
     let stamp = now.duration_since(SystemTime::UNIX_EPOCH).map(|since| since.as_nanos()).unwrap_or(0);
@@ -122,8 +135,8 @@ pub fn keep_copy(path: &Path, folder: &Path, now: SystemTime) -> Result<PathBuf,
         match std::fs::create_dir(&own) {
             Ok(()) => {
                 let copy = own.join(name);
-                return match std::fs::copy(path, &copy) {
-                    Ok(_) => Ok(copy),
+                return match write(&copy) {
+                    Ok(()) => Ok(copy),
                     Err(_) => {
                         let _ = std::fs::remove_dir_all(&own);
                         Err("That file couldn’t be read.".to_owned())

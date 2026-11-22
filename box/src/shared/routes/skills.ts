@@ -5,7 +5,7 @@ import { bool, type Infer, list, map, NOTHING, number, object, type RouteShape, 
 
 /** The skills folder: where its engine reads them, the folders in it by name (not hidden ones),
  * and those installed from GitHub, by folder, with the repository and folder there they came from. */
-export const SKILLS = object({ folder: string, folders: list(string), github: map(object({ repository: string, path: string })) });
+export const SKILLS = object({ folder: string, folders: list(string), github: map(object({ repository: string, path: string, "commit?": string })) });
 /** A skill's SKILL.md, as it's written. */
 export const SKILL_TEXT = object({ text: string });
 

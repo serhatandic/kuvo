@@ -1,11 +1,12 @@
 /// <reference types="bun" />
+import { createHash } from "node:crypto"
 import type { Database as SQLite } from "bun:sqlite"
 
 // The link bundle is also imported by Node. Only the usage worker opens this database.
 const Database = typeof Bun === "undefined" ? undefined : (await import("bun:sqlite")).Database
 import { upgradeFormat } from "../shared/format-version"
 import { dayIn, windowDays } from "./history"
-import { codexCost, resolveCodexRates } from "./codex-pricing"
+import { AUTO_REVIEW, codexCost, pricingModelOf, resolveCodexRates } from "./codex-pricing"
 import { insightKey, type InsightRecord } from "./insight-records"
 import { type Pricing, type Tokens } from "./pricing"
 import { modelName } from "./insights-names"
@@ -124,6 +125,8 @@ const insightsUpgrades = [(db: SQLite): SQLite => {
 export class InsightsStore {
   private db: SQLite
   private pricing?: Pricing
+  private priceRevision?: string
+  private priceEra?: string
   private overviews = new Map<string, { until: number; result: Overview }>()
   private summaries = new Map<string, { until: number; result: SummaryFacts }>()
   private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
@@ -158,6 +161,12 @@ export class InsightsStore {
     this.db.query("INSERT INTO state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body").run(key, JSON.stringify(value))
   }
 
+  checkpoint(entries: readonly (readonly [string, unknown])[]) {
+    this.db.transaction(() => {
+      for (const [key, value] of entries) this.write(key, value)
+    }).immediate()
+  }
+
   private invalidate(days?: Set<number>) {
     this.overviews.clear()
     this.summaries.clear()
@@ -169,14 +178,25 @@ export class InsightsStore {
   }
 
   price(pricing: Pricing, now: number) {
-    if (this.pricing === pricing) return
+    const era = pricingModelOf(AUTO_REVIEW, now)
+    const revision = this.pricing === pricing ? this.priceRevision! :
+      createHash("sha256").update(JSON.stringify(
+        [pricing.supplement, pricing.primary.entries, pricing.secondary.entries],
+        (_key, value) => value instanceof Map ? [...value] : value,
+      )).digest("hex")
+    if (this.pricing === pricing && this.priceEra === era) return
     this.db.transaction(() => {
-      const set = this.db.query("UPDATE event SET cost = ? WHERE key = ?")
+      const stamp = revision + "/" + era
+      if (this.read<string>("prices-v1") === stamp) return
+      const set = this.db.query("UPDATE event SET cost = ?1 WHERE key = ?2 AND cost IS NOT ?1")
       for (const { body, key } of this.db.query<{ key: string; body: string }, []>("SELECT key, body FROM event WHERE human = 0").iterate()) {
         set.run(estimate(JSON.parse(body), pricing, now), key)
       }
+      this.write("prices-v1", stamp)
     }).immediate()
     this.pricing = pricing
+    this.priceRevision = revision
+    this.priceEra = era
     this.invalidate()
   }
 

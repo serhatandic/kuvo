@@ -6,6 +6,7 @@
 import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred, setupMergeLayoutReady } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
+import { marketplaceScope } from "../../shared/marketplace";
 import { FEATURES } from "../../shared/features";
 import { SHARED_SEED_FEATURE } from "../setup/seed";
 import { macFeatures } from "../../shared/routes/mac";
@@ -67,7 +68,12 @@ export async function ownAgents(readEngine: () => Target, machine?: string, read
   // Not what doesn't live here (a copy a move brought, not switched to yet; an original going).
   const away = frozen();
   for (const entry of committedDepartures()) away.add(entry.session);
-  const bots = listBots(machine).filter(bot => !away.has(bot.session)).map(bot => ({ session: bot.session, name: bot.name, kind: "bot" as const, id: bot.id, ...(bot.job ? { about: bot.job } : {}), ...(bot.look ? { look: bot.look } : {}) }));
+  const bots = listBots(machine).filter(bot => !away.has(bot.session)).map(bot => {
+    const marketplaceAgent = bot.folder && marketplaceScope(path.join(bot.folder, "workspace"))?.agent;
+    return { session: bot.session, name: bot.name, kind: "bot" as const, id: bot.id,
+      ...(bot.job ? { about: bot.job } : {}), ...(bot.look ? { look: bot.look } : {}),
+      ...(marketplaceAgent ? { marketplaceAgent } : {}) };
+  });
   const botSessions = new Set(bots.map(bot => bot.session));
   const sessionsOf = async (target: Target): Promise<EngineSession[]> => {
     if (keepsList()) {

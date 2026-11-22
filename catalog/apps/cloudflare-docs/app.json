@@ -1,0 +1,10 @@
+{
+  "id": "cloudflare-docs",
+  "title": "Cloudflare Docs",
+  "category": "Code",
+  "summary": "Search Cloudflare’s documentation.",
+  "url": "https://docs.mcp.cloudflare.com/mcp",
+  "auth": "open",
+  "asset": "https://developers.cloudflare.com/favicon.ico",
+  "brand": "https://www.cloudflare.com/press/"
+}

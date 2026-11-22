@@ -2,7 +2,6 @@ import { keepEngineOnDemand } from "./engine/lifetime";
 import { updateUnderWay } from "../shared/updating";
 import { locked, writeSecret } from "../shared/files";
 import { once } from "node:events";
-import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
 import { processRuns } from "../shared/platform";
 import { isObject, parsed } from "../shared/json";
@@ -54,6 +53,8 @@ import { reconnectEverywhere, upgradeBeforeEngine, upgradeIntegrations } from ".
 import { readApart } from "./github/graphql";
 import "./work-queue/github";
 import "./glance/github";
+import { keepMarketplaceProjection } from "./areas/marketplace";
+import { startMarketplaceRelay } from "./marketplace/connections";
 import { keepSkillTrashClear } from "./areas/skills";
 import { sendWakes } from "./areas/wakes";
 import { finishDeletes } from "./bots/edit";
@@ -574,6 +575,8 @@ async function run(owner?: ClientOwner): Promise<void> {
   keepMachinesUp(automaticSshUpdate);
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
+  keepMarketplaceProjection();
+  startMarketplaceRelay().catch(() => console.error("Marketplace connections could not start."));
   // What a Work Queue change left half read as the box stopped.
   clearStaging();
   setInterval(() => {
@@ -1102,7 +1105,6 @@ async function openBoxServices(app: boolean, wanted = () => true, resident = fal
   const { serveBoxServices } = await import("./services");
   const home = path.join(APP_FOLDER ?? K, "agents");
   if (bridgeOwnsServices(app)) return;
-  const shown = resident ? await (await import("./artifacts/service")).artifactHistory(path.join(home, "sessions")) : undefined;
   if (!resident) process.env.KUVO_AGENTS_HOME = home;
   if (!app) {
     const login = OWN_HOME_MAC && REAL_BOX ? await loginEnvironment() : undefined;
@@ -1126,7 +1128,7 @@ async function openBoxServices(app: boolean, wanted = () => true, resident = fal
     return serveBoxServices({
       home, run: RUN, box: APP_FOLDER ?? K, bots: path.join(APP_FOLDER ?? K, "bots"), artifacts: path.join(K, "artifacts"),
       engineData: APP_FOLDER ? path.join(APP_FOLDER, "opencode", "data", "opencode") : path.join(K, "data", "opencode"),
-      bundle: script, shown,
+      bundle: script,
     });
   }, { exclusive: true });
   return leave;
@@ -1301,6 +1303,10 @@ async function serve(owner?: ClientOwner): Promise<void> {
   }
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
+  if (IS_MAC) {
+    keepMarketplaceProjection();
+    startMarketplaceRelay().catch(() => console.error("Marketplace connections could not start."));
+  }
   // What a Work Queue change left half read as the box stopped.
   clearStaging();
   // Its bots' jobs kept in their folders, taken once from where they were before, once its app
@@ -1697,10 +1703,7 @@ export function selftest(): boolean {
 }
 
 const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
-if (!isMainThread && process.argv.includes("--insights-db-worker")) {
-  const { serveInsightsDB } = await import("../usage/insights-db-worker");
-  serveInsightsDB();
-} else if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
+if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
   // The worker only publishes its own receipt and must outlive the installed bundle it began with.
   await box("tool-command-worker", process.argv.slice(4), false);
 } else if (main && !isReceiptWorker && !isDiskWorker) {

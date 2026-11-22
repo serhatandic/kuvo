@@ -11,6 +11,25 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Work Queue lists every computer's items together, and its filter no longer offers a computer. Before its first answer, the Work Queue and Insights show one quiet loading line, with their tabs, search, filters, periods and refresh coming in with the data.
 - Send is never greyed out and never spins: send as many messages as you like, while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
 
+- Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
+
+- Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.
+- Side questions can include pictures. They're answered by the model you pick or the conversation's own, if it can see pictures. Side questions in a coding agent's conversation still take text files only.
+- Opening the Browser tab starts the computer’s browser when it’s stopped, including after a Kuvo update.
+- The context bar keeps the model's window after a restart, including when the next reply only reports tokens used.
+- Sessions in Git worktrees appear under their original project, including worktrees created outside Kuvo.
+- Older conversations keep their place in the sidebar when Kuvo rewrites their history or changes session settings.
+
+- The box checks conversation permissions faster after a restart and uses fewer resources to track message delivery.
+- Kuvo boxes can browse the free Marketplace offline, share app and skill installs across a setup, and create a bot from an agent with its routine paused.
+
+- The side chat's composer has the paperclip and the model and effort chips: attach text files to a side question, and ask it on another model than the conversation's, which stays on its own. Pictures can't go with a side question yet; it says so.
+- Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
+
+- Changing an agent’s settings leaves its running background work alone. Older Claude Code and Codex sessions keep their process when their summary setting matches the default.
+- Running Codex and Antigravity turns keep going when a Kuvo update replaces their bridge.
+- Resting on a usage ring now says how fast each limit is going: "5-hour · 38% left · runs out ~17:45, resets 18:35" when it's on pace to run out before it resets, or "lasts until reset", from your recent use (nothing is guessed until there's enough). A small amber dot on the ring marks an account on pace to run out, red one that's used up ("Back at 20:00"). Each card shows only its own account, 5-hour first, then Weekly. An agent with three or more accounts is one ring with their count; its card shows them all, emptiest first, and the one in use in full. Codex's card shows its resets ("2 resets left · next expires Nov 30") with Use a reset, which asks first and uses the one that expires soonest.
+- A usage ring's card is never empty: when a coding agent's limits can't be read for a while (Antigravity's, on a computer where it isn't running), it keeps the last numbers and says "as of" when. An account whose limits were never read has no ring until they are.
 - Show in conversation in the Library opens a bot's conversation in Bots with that bot selected, instead of in Sessions. Notifications, search and Activity open a bot's conversation there too.
 - The sidebar stays hidden once you hide it: switching between Bots, Sessions, the Work Queue and the rest no longer brings it back, and it stays hidden after a restart.
 - Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.

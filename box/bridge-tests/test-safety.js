@@ -86,20 +86,23 @@ function trackRoot(folder, remove = false) {
   lifetime?.addRoot(root, remove);
 }
 
-function processEnv(env) {
+function processLifetime() {
   if (!lifetime) {
     lifetime = watchTestProcesses(runnerParents);
     for (const [root, remove] of processRoots) {
       if (fs.existsSync(root)) lifetime.addRoot(root, remove);
     }
   }
-  return lifetime.env(env ?? process.env);
+  return lifetime;
 }
+
+const processEnv = env => processLifetime().env(env ?? process.env);
 
 // A fixture with detached workers can keep its home around until all its processes have stopped.
 export function removeTestHomeAtExit(folder) {
   refuseOutside(folder, "register for removal");
   trackRoot(folder, true);
+  processLifetime();
 }
 
 export const stopTestProcesses = () => lifetime?.stop();

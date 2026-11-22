@@ -1,6 +1,6 @@
 import "../safety"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sideQuestionRoutes, SideQuestions } from "../../src/agents/btw"
@@ -217,6 +217,57 @@ describe("a side question", () => {
     await until(() => engine.checks.length === 2)
     expect(engine.checks[1].prompt).toContain("Q: Which event?\nA: (not answered yet)")
     engine.answerChecks()
+    questions.stopAll()
+  })
+
+  test("asked on another model, with a text file, is answered there with both; a picture is refused", async () => {
+    const questions = new SideQuestions(join(root, "btw.json"), places())
+    questions.onAnswered = beat
+    engine.answers = ["It's the 30-second debounce."]
+    const notes = join(root, "notes.md")
+    writeFileSync(notes, "Debounce: 30s")
+    const pasted = "data:text/plain;base64," + Buffer.from("retry after 2s").toString("base64")
+    const model = { providerID: "anthropic", id: "claude-opus-5-5", variant: "high" }
+    const answer = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "Which delay?", model, files: [{ uri: "file://" + notes }, { uri: pasted, name: "log.txt" }] }))
+    const asked = ((await answer.json()) as any).data
+    // Clients see the files by name and the model it's on, not the files' words.
+    expect(asked).toMatchObject({ model, files: ["notes.md", "log.txt"] })
+    expect(asked.attached).toBeUndefined()
+    await until(() => questions.list("ses_work")[0]?.state === "answered")
+    // On that model, afresh, with the conversation and the files in the prompt.
+    expect(engine.checks.map((check) => [check.kind, check.model])).toEqual([["fresh", model]])
+    expect(engine.checks[0].prompt).toContain("Person: Make the timer pause on blur.")
+    expect(engine.checks[0].prompt).toContain('<file name="notes.md">\nDebounce: 30s\n</file>')
+    expect(engine.checks[0].prompt).toContain('<file name="log.txt">\nretry after 2s\n</file>')
+    expect(told()).toBe(0)
+    const archive = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's this?", files: [{ uri: "data:application/zip;base64,UEsDBAA=", name: "logs.zip" }] }))
+    expect(archive.status).toBe(400)
+    expect(((await archive.json()) as any).message).toContain("isn't text")
+    expect(questions.list("ses_work")).toHaveLength(1)
+  })
+
+  test("asked with a picture, is answered in a turn of its own that sees it, with the conversation, and nothing of it kept", async () => {
+    const questions = new SideQuestions(join(root, "btw.json"), places())
+    questions.onAnswered = beat
+    engine.answers = ["The error shows under the wrong field."]
+    const picture = "data:image/png;base64,iVBORw0KGgo="
+    const answer = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's wrong here?", files: [{ uri: picture, name: "shot.png" }] }))
+    expect(answer.status).toBe(200)
+    expect(((await answer.json()) as any).data).toMatchObject({ files: ["shot.png"], state: "answering" })
+    await until(() => questions.list("ses_work")[0]?.state === "answered")
+    expect(questions.list("ses_work")[0]!.answer).toBe("The error shows under the wrong field.")
+    // On the conversation's own model, the picture with the question and the conversation as a record.
+    expect(engine.checks).toHaveLength(1)
+    const [check] = engine.checks
+    const made = engine.made.find((each) => each.id === check!.session)
+    expect(made).toMatchObject({ model: { providerID: "p", id: "m" }, metadata: { kuvo: { engineFor: "ses_work" } } })
+    expect(check!.files).toEqual([{ uri: picture, name: "shot.png" }])
+    expect(check!.prompt).toContain("Person: Make the timer pause on blur.")
+    expect(check!.prompt).toContain("<question>\nWhat's wrong here?\n</question>")
+    // Its session gone after, the conversation told nothing, and the picture not kept once answered.
+    expect(engine.deleted).toContain(check!.session!)
+    expect(told()).toBe(0)
+    expect(readFileSync(join(root, "btw.json"), "utf8")).not.toContain("iVBORw0KGgo")
     questions.stopAll()
   })
 

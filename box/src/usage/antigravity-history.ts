@@ -214,7 +214,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
 `
 let readerURL: string | undefined
 
-interface CachedDatabase {
+export interface CachedDatabase {
   stamp: string
   events: AntigravityEvent[]
 }
@@ -223,6 +223,10 @@ interface CachedDatabase {
 export class AntigravityHistory {
   // The legacy folder argument is accepted by usage.ts; no manifest should keep removed paths alive.
   constructor(_folder?: string, private readonly read = readAntigravityDatabase, private readonly log: (message: string) => void = (message) => console.warn(message)) {}
+  checkpoints?: {
+    read(path: string): CachedDatabase | undefined
+    write(path: string, value: CachedDatabase): void
+  }
   private databases = new Map<string, Map<string, CachedDatabase>>()
   private combined = new Map<string, { since: number; parts: AntigravityEvent[][]; events: AntigravityEvent[] }>()
   /** Each profile's databases that failed, with what was last logged: a failure is logged once, not every round. */
@@ -245,12 +249,17 @@ export class AntigravityHistory {
     for (const [folder, message] of problems) fail(folder, message)
     const parts: AntigravityEvent[][] = []
     for (const path of paths) {
-      const before = cached.get(path)
+      const before = cached.get(path) ?? this.checkpoints?.read(path)
       try {
         const stamp = fingerprint(path)
         // A store untouched since the window began cannot contain use in the window.
         if (stamp.latest < since) { cached.delete(path); continue }
-        if (before?.stamp === stamp.stamp) { parts.push(before.events); observe?.take(path, before.events); continue }
+        if (before?.stamp === stamp.stamp) {
+          cached.set(path, before)
+          parts.push(before.events)
+          observe?.take(path, before.events)
+          continue
+        }
         const events = await this.read(path, !!observe)
         observe?.take(path, events)
         if (fingerprint(path).stamp !== stamp.stamp) {
@@ -263,7 +272,9 @@ export class AntigravityHistory {
           parts.push(events)
           continue
         }
-        cached.set(path, { stamp: stamp.stamp, events })
+        const observation = { stamp: stamp.stamp, events }
+        this.checkpoints?.write(path, observation)
+        cached.set(path, observation)
         failing.delete(path)
         parts.push(events)
       } catch (error) {

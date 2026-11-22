@@ -80,6 +80,10 @@ pub struct Removed {
     pub draft: String,
     #[serde(default)]
     pub files: Vec<File>,
+    /// Everything it went with, for Edit to put back: `files`, then those its box kept for the
+    /// agent to open (a box from before has none: `files` is all there is).
+    #[serde(default)]
+    pub attached: Option<Vec<File>>,
     pub receipt: Option<String>,
 }
 

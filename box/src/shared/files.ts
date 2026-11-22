@@ -293,3 +293,14 @@ export async function lockedWhile<T>(lock: string, work: () => Promise<T>, { sta
     if (turns.get(lock) === mine) turns.delete(lock);
   }
 }
+
+/** A local file's identity, revision and byte size for resumable indexing. */
+export function fileStamp(file: string) {
+  try {
+    const stat = fs.statSync(file, { bigint: true })
+    return { identity: `${stat.dev}/${stat.ino}/${stat.birthtimeNs}`, revision: `${stat.size}/${stat.mtimeNs}/${stat.ctimeNs}`, size: Number(stat.size) }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    return undefined
+  }
+}

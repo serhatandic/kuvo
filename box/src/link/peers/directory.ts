@@ -41,6 +41,7 @@ export interface GivenAgent {
   project?: unknown;
   about?: unknown;
   machine?: unknown;
+  marketplaceAgent?: unknown;
 }
 
 /** A conversation as the engine (or the agents bridge) lists it, as far as whether it's put away. */
@@ -56,8 +57,9 @@ const LOOKS: { [Part in keyof BotLook]: readonly string[] } = { color: LOOK_WORD
 const PLAIN_LOOK: BotLook = { color: "graphite", shape: "round", face: "calm" };
 const keptLook = (look: unknown): BotLook | undefined => (isObject(look)
   ? Object.fromEntries((Object.keys(LOOKS) as (keyof BotLook)[]).map(key => [key, LOOKS[key].includes(look[key] as string) ? look[key] as string : PLAIN_LOOK[key]])) as unknown as BotLook : undefined);
-export const keptAgent = ({ session, name, kind, project, about, machine, id, look }: GivenAgent): ListedAgent => ({ session, name: plainName(name).slice(0, 200), kind,
+export const keptAgent = ({ session, name, kind, project, about, machine, id, look, marketplaceAgent }: GivenAgent): ListedAgent => ({ session, name: plainName(name).slice(0, 200), kind,
   ...(kind === "bot" && typeof id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(id) ? { id } : {}),
+  ...(kind === "bot" && typeof marketplaceAgent === "string" && /^[a-z0-9][a-z0-9-]{0,62}$/.test(marketplaceAgent) ? { marketplaceAgent } : {}),
   ...(kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {}),
   ...(typeof project === "string" && project ? { project: project.slice(0, 200) } : {}), ...(typeof about === "string" && about ? { about: about.slice(0, 500) } : {}),
   ...(typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}) });

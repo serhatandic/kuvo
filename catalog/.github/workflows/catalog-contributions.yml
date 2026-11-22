@@ -1,0 +1,16 @@
+name: Direct catalog ideas to issues
+on:
+  pull_request_target:
+    types: [opened, reopened]
+permissions:
+  pull-requests: write
+jobs:
+  close:
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close outside pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --comment "Thanks for the catalog idea. Please open an issue at https://github.com/$GITHUB_REPOSITORY/issues/new so the maintainers can consider it."
