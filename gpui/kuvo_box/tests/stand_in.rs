@@ -617,9 +617,10 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     assert_eq!(last_words(&ConversationUpdate::Conversation(after)).as_deref(), Some("Hello"));
     events.send(event("session.text.delta", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0, "delta": "!" }))).unwrap();
     while last_words(&follow.next_blocking().expect("the follow goes on")).as_deref() != Some("Hello!") {}
-    // Only the initial, catch-up, and delivery reads were made: streamed words ask for none.
+    // Only the initial and delivery reads were made: streamed words ask for none, and the line
+    // needs no catch-up read.
     let reads: Vec<_> = stand_in.seen().into_iter().filter(|seen| seen.route() == "api/session/ses_1/message").collect();
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 2);
 }
 
 #[test]
