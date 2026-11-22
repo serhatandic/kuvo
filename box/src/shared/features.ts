@@ -182,6 +182,7 @@ export const FEATURES = [
   "projects",
   "projects.folders",
   "providers.models",
+  "pty.socket",
   "queue",
   "queue.items",
   "queue.once",

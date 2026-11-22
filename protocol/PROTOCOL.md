@@ -8389,6 +8389,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `projects` | `kuvo/projects…`: the box keeps its own projects, and any client reads and changes them there ("Projects", bridge 0.9.33) |
 | `projects.folders` | A project's `folders` reach each of its sessions as it's started or moved there, opened (`POST kuvo/sessions/<id>/folders`) and as each run starts where they changed ("Projects", #341) |
 | `providers.models` | `POST kuvo/providers/models` |
+| `pty.socket` | The box's own server (`serve`) opens a terminal's socket, `api/pty/<id>/connect`, as the relay does ("Sockets") |
 | `queue` | `kuvo/sessions/<id>/queue…`, `…/stop` and `kuvo/sessions/queues/events`: the box carries the queue (bridge 0.9.100) |
 | `queue.items` | `items` in `kuvo/sessions/<id>/queue`, `…/queue/events`, and `DELETE …/queue/<item>` taking back one the engine holds ("The queue") |
 | `queue.once` | `…/queue/add` sent again under its `id` adds it once ("Sending again"): a phone sends it with `idempotency-key` only to a box that says this (#144) |
@@ -8497,6 +8498,15 @@ each `data` message for that `id`, either way, is one message on the socket: tex
 if `h.type = "binary"`. Text from the engine too long for one message goes in several;
 binary that long doesn't go. The phone closes it with `cancel` (or `data` with `end: true`);
 when the engine closes it, the host sends `data` with `end: true`.
+
+A box's own server (`serve`) passes a terminal's socket too (feature `pty.socket`): a WebSocket
+upgrade of `GET api/pty/<id>/connect`, with `serve`'s `Authorization: Basic
+<base64(opencode:password)>` and `x-opencode-directory` where it has one, checked as the browser's
+live view's upgrade is (401 for a wrong password, 400 for a route version it doesn't know); 502 if
+the engine's socket won't open. Each message then passes as it came, either way: text as text,
+binary as binary (the engine's note, a zero byte then JSON such as `{"cursor":n}`, among them).
+Either side's close goes to the other with its code and reason; an engine cut off cuts the
+client off too.
 
 ## Pairing
 

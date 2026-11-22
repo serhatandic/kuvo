@@ -1787,6 +1787,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     projects: ["GET", "kuvo/projects"],
     "projects.folders": ["POST", "kuvo/sessions/ses_none/folders"],
     "providers.models": ["GET", "kuvo/providers/models"],
+    // (A terminal's socket on the box's own server, not a route: kuvo/info names it.)
+    "pty.socket": ["GET", "kuvo/info"],
     queue: ["GET", "kuvo/sessions/ses_none/queue"],
     // (Every message waiting, as clients show it: the queue's `items`.)
     "queue.items": ["GET", "kuvo/sessions/ses_none/queue"],
