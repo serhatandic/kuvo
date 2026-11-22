@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 30b1c33d0a54
+// Kuvo folder layout 23 170104fff2e1
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1839,7 +1839,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "30b1c33d0a54";
+var BRIDGE_VERSION = "170104fff2e1";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -16356,11 +16356,11 @@ async function* browserDataRoute(context, match) {
     return yield* json(400, { message: "Name the site as its address has it." });
   if (list === "history") {
     if (method === "GET" && which === null)
-      return yield* json(200());
+      return yield* json(200, await browserDisk.run("readHistory"));
     if (method !== "DELETE")
       return yield* json(405, {});
     await browserDisk.run("forgetHistory", which);
-    return yield* json(200());
+    return yield* json(200, await browserDisk.run("readHistory"));
   }
   if (method === "GET" && which === null)
     return yield* json(200, await browserDisk.run("browserSites"));

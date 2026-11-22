@@ -47,10 +47,10 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
   const which = one === undefined ? null : part(one);
   if (one !== undefined && !which) return yield* json(400, { message: "Name the site as its address has it." });
   if (list === "history") {
-    if (method === "GET" && which === null) return yield* json(200());
+    if (method === "GET" && which === null) return yield* json(200, await browserDisk.run("readHistory"));
     if (method !== "DELETE") return yield* json(405, {});
     await browserDisk.run("forgetHistory", which);
-    return yield* json(200());
+    return yield* json(200, await browserDisk.run("readHistory"));
   }
   if (method === "GET" && which === null) return yield* json(200, await browserDisk.run("browserSites"));
   if (method !== "DELETE") return yield* json(405, {});
