@@ -21,7 +21,7 @@ function rowOf(row: unknown): ActivityFact | undefined {
   const bot = typeof row.bot === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(row.bot) ? row.bot : undefined;
   const line = Array.isArray(row.line) ? row.line.filter(sessionID).slice(0, 24) : [];
   return { session: row.session, state: row.state, title: plainName(row.title).slice(0, 200) || "New Session",
-    line, ...(bot ? { bot } : {}) };
+    line, ...(bot ? { bot } : {}), ...(row.subagent === true ? { subagent: true as const } : {}) };
 }
 
 export function readActivity(key: string): { at: number; heard: number; rows: ActivityFact[] } | undefined {

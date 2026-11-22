@@ -3049,8 +3049,13 @@ client shows it from the same routes.
     `tasks`: anything else its agent keeps going. A client shows a session at work when its own turn
     runs or it's listed here. Kept in `run/work/background.json`, per place (engine, bridge).
   - **`GET kuvo/work/background/<session>`** (`work.background.items`) → `{commands: [{id, command,
-    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}]}`: each one,
+    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}], activity?:
+    {working, asking, sessions: [{session, title, state, computer?, subagent?}]}}`: each one,
     for the bars over a client's composer, the oldest first; both empty for a session with nothing.
+    `activity`: what's at work for the conversation besides its own turn (the sessions and
+    subagents under it, on any of your computers, and a bot's sessions in its conversation), never
+    the conversation itself; `subagent` marks a subagent's row, which a client draws with its
+    subagents rather than as a session of its own.
     Every command it left running however long it has run (`agents`: a coding agent's, whose output is
     `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
     with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
