@@ -3015,7 +3015,11 @@
          },
          "unlisted?": {
           "literal": true
-         }
+         },
+         "away?": {
+          "literal": true
+         },
+         "lastSeen?": "number"
         }
        }
       }
@@ -3555,7 +3559,11 @@
          },
          "unlisted?": {
           "literal": true
-         }
+         },
+         "away?": {
+          "literal": true
+         },
+         "lastSeen?": "number"
         }
        }
       }

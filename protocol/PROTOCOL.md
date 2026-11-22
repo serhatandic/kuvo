@@ -2307,7 +2307,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
     (a peer not heard from yet since this box knew of it, or being reached again: Connect, below,
     asked in the last 20 seconds and no word since), `away` (the relay said it isn't
-    there, `run/peer-reach.json`, or nothing came from it for half an hour). As this box last heard: one that's itself
+    there, `run/peer-reach.json`, or nothing came from it for half an hour). Any mail from it counts as heard (its
+    `heard` in `run/peer-agents.json`, moved at most every five minutes, and at once when it ends a half hour's
+    quiet), not only its agents: one back is `connected` with its first mail. As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
   - `kuvo?`: the installed version of Kuvo on that computer.
   - `version?`, `engine?`, `system?`: the desktop app’s version on a Mac (Kuvo’s on a machine), its engine’s, and its system as
@@ -6088,9 +6090,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     confirm shows these lines as they are and writes none of its own; a `what` it doesn't know
     is a line all the same.
   - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session?, name?,
-    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?}]`, each bot your
-    other computers list, as each last told the box asked (their agents, "Peers"), for a client
-    to draw as it is: its `job`'s line, the computer it lives on by its key (`box`, as
+    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?, away?, lastSeen?}]`,
+    each bot your other computers list, as each last told the box asked (their agents, "Peers"), for
+    a client to draw as it is (`away: true` while its computer isn't answering, as `kuvo/computers`
+    says it, with `lastSeen`, when it was last heard from, in ms; said again as that changes): its `job`'s line, the computer it lives on by its key (`box`, as
     `kuvo/computers` has it) and by its name here (`computer`, a machine by its name), that
     computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there
     (its folder where that computer says its deleted bots' go, `trash` in its agents' mail: `trash`

@@ -22,6 +22,7 @@ import { wakeFollowers } from "./wakes";
 import { moveFollowers, readMoves } from "../moves/records";
 import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { PEER_AGENTS_FILE } from "../peers/directory";
+import { PEER_REACH } from "../peers/reach";
 import fs from "node:fs";
 import { BOTS, RUN } from "../home";
 import type { Target } from "../../shared/records";
@@ -158,7 +159,8 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
     }
     return bots;
   };
-  const peerStamp = () => { try { return fs.statSync(PEER_AGENTS_FILE).mtimeMs; } catch { return 0; } };
+  // (What peers told, and which of them are away.)
+  const peerStamp = () => [PEER_AGENTS_FILE, PEER_REACH].map(file => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } }).join(" ");
   const watch: typeof watchFolders = (folders, changed, options) => {
     const bots = watchFolders(folders, changed, options);
     const activity = watchFolders([ACTIVITY_FOLDER], changed, { recursive: false });

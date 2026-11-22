@@ -58,7 +58,8 @@ export const BOT = object({
  * while this box holds an edit for it, `refused` when that computer refused one lately. `unlisted`:
  * no computer of yours lists it now, and it's here only by what's held or was refused (its
  * conversation, kind and `deletes` left out, and its `name` and `look` where this box never knew
- * them): nothing more is taken for it from here but what's held. */
+ * them): nothing more is taken for it from here but what's held. `away` while that computer isn't
+ * answering (as `kuvo/computers` says it), with when it was last heard from (`lastSeen`, ms). */
 export const BOT_ELSEWHERE = object({
   id: string,
   "session?": string,
@@ -72,6 +73,8 @@ export const BOT_ELSEWHERE = object({
   "waiting?": literal(true),
   "refused?": literal(true),
   "unlisted?": literal(true),
+  "away?": literal(true),
+  "lastSeen?": number,
 });
 /** A change to a bot (or its delete) that lives on another of your computers, held here until that
  * computer answers ("Held for another computer"): the bot, that computer by its key (empty for one this box

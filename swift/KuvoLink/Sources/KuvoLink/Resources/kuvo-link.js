@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 31d8c74017fe
+// Kuvo folder layout 23 2bdc7fc77aa9
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "31d8c74017fe";
+var BRIDGE_VERSION = "2bdc7fc77aa9";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24483,7 +24483,9 @@ var init_bots = __esm(() => {
     "deletes?": DELETES,
     "waiting?": literal(true),
     "refused?": literal(true),
-    "unlisted?": literal(true)
+    "unlisted?": literal(true),
+    "away?": literal(true),
+    "lastSeen?": number
   });
   HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
   REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
@@ -25759,6 +25761,21 @@ function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
     return true;
   });
 }
+function heardFrom(key, now = Date.now(), file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
+  const before = readPeerAgents(file)[key]?.heard;
+  if (before === undefined || now - before < HEARD_EVERY)
+    return null;
+  return locked(lock, () => {
+    const all = readPeerAgents(file);
+    const told = all[key];
+    if (told?.heard === undefined || now - told.heard < HEARD_EVERY)
+      return null;
+    const was = told.heard;
+    told.heard = now;
+    writePrivate(file, JSON.stringify(all));
+    return was;
+  });
+}
 function keptComputer(given) {
   if (!isObject(given))
     return;
@@ -25838,7 +25855,7 @@ var PEER_AGENTS_FILE, MAC_AGENTS_FILE, AGENTS_FILE, PEER_LOCK, MOST_AGENTS = 120
   ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
   ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
   ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
-}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY3.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), OWNED_DIGEST = 6, MOST_OWNED = 5000, keptOwns = (given) => typeof given === "string" && given.length % OWNED_DIGEST === 0 && given.length <= OWNED_DIGEST * MOST_OWNED && /^[A-Za-z0-9_-]*$/.test(given), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), MOST_ASKING = 10, keptAsking = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_ASKING).map(({ id, title, asks }) => ({
+}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY3.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), OWNED_DIGEST = 6, MOST_OWNED = 5000, keptOwns = (given) => typeof given === "string" && given.length % OWNED_DIGEST === 0 && given.length <= OWNED_DIGEST * MOST_OWNED && /^[A-Za-z0-9_-]*$/.test(given), HEARD_EVERY, short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), MOST_ASKING = 10, keptAsking = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_ASKING).map(({ id, title, asks }) => ({
   id,
   ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {},
   ...typeof asks === "string" && plainName(asks) ? { asks: plainName(asks).slice(0, 200) } : {}
@@ -25860,6 +25877,7 @@ var init_directory = __esm(() => {
   PEER_LOCK = path57.join(RUN, ".peers.lock");
   LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
   PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
+  HEARD_EVERY = 5 * 60000;
 });
 
 // box/src/link/peers/naming.ts
@@ -61548,8 +61566,11 @@ function botsElsewhere(link = readLink(), told = readPeerAgents()) {
   const retired = new Map(readMoves().filter((move) => move.kind === "bot" && move.role === "from" && move.stage === "finishing").map((move) => [move.thing, move.to]));
   const listed = [];
   const away = new Set(awaySessions());
+  const reach = readReach();
   for (const peer of peers) {
     const computer = shownName2(peer);
+    const seen = told[peer.key]?.heard ?? told[peer.key]?.at;
+    const off = peerIsAway(peer.key, told[peer.key]?.heard, reach) ? { away: true, ...seen !== undefined ? { lastSeen: seen } : {} } : {};
     const trash = told[peer.key]?.trash;
     for (const agent of bots(peer)) {
       const destination = retired.get(agent.id);
@@ -61566,7 +61587,8 @@ function botsElsewhere(link = readLink(), told = readPeerAgents()) {
         box: peer.key,
         computer,
         kind: peer.kind,
-        deletes: whatDeleteTakes({ computer, folder: trash ? { to: trash } : { to: "unsaid" } })
+        deletes: whatDeleteTakes({ computer, folder: trash ? { to: trash } : { to: "unsaid" } }),
+        ...off
       });
     }
   }
@@ -61601,6 +61623,7 @@ var init_elsewhere3 = __esm(() => {
   init_computer_name2();
   init_directory();
   init_known();
+  init_reach();
   init_state();
   init_records2();
   init_here();
@@ -109910,13 +109933,13 @@ async function* botEventsRoute(context) {
     }
     return bots;
   };
-  const peerStamp = () => {
+  const peerStamp = () => [PEER_AGENTS_FILE, PEER_REACH].map((file) => {
     try {
-      return fs262.statSync(PEER_AGENTS_FILE).mtimeMs;
+      return fs262.statSync(file).mtimeMs;
     } catch {
       return 0;
     }
-  };
+  }).join(" ");
   const watch = (folders, changed, options) => {
     const bots = watchFolders(folders, changed, options);
     const activity = watchFolders([ACTIVITY_FOLDER], changed, { recursive: false });
@@ -110015,6 +110038,7 @@ var init_bots2 = __esm(() => {
   init_records2();
   init_activity_peers();
   init_directory();
+  init_reach();
   init_home();
   init_authority();
   init_record();
@@ -123626,7 +123650,7 @@ class LimitsPeers {
       const accounts = this.forPeer(key, mine);
       const json = JSON.stringify([this.noticeEnvelope(key), accounts]);
       const last = this.told.get(key);
-      const due = !last || now - last.at >= TELL_AGAIN3 || last.json !== json && (urgent || now - last.at >= HEARD_EVERY);
+      const due = !last || now - last.at >= TELL_AGAIN3 || last.json !== json && (urgent || now - last.at >= HEARD_EVERY2);
       if (!due)
         continue;
       this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key), ...!last ? { ask: true } : {} }, false);
@@ -123695,7 +123719,7 @@ class LimitsPeers {
     if (!this.transport.followed)
       return;
     const now = this.now();
-    if (now - (this.answered.get(key) ?? -Infinity) < HEARD_EVERY)
+    if (now - (this.answered.get(key) ?? -Infinity) < HEARD_EVERY2)
       return;
     this.answered.set(key, now);
     const accounts = this.forPeer(key, this.shared());
@@ -123873,14 +123897,14 @@ function takenAccount2(given, off, now) {
     ...problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text18(problem.message, 500) ? { problem: { kind: problem.kind, message: text18(problem.message, 500), ...time4(problem.until) ? { until: problem.until + off } : {}, ...problem.unknown === true ? { unknown: true } : {} } } : {}
   };
 }
-var MINUTE6 = 60000, TELL_AGAIN3, PEER_AWAY2, HEARD_EVERY, SKEW2, MOST_BYTES3 = 40000, SERVICE2, PROBLEMS, text18 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, time4 = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined, MOST_EXTRA = 1000;
+var MINUTE6 = 60000, TELL_AGAIN3, PEER_AWAY2, HEARD_EVERY2, SKEW2, MOST_BYTES3 = 40000, SERVICE2, PROBLEMS, text18 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, time4 = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined, MOST_EXTRA = 1000;
 var init_limits_peers = __esm(() => {
   init_accounts3();
   init_notices();
   init_limits_rows();
   TELL_AGAIN3 = 10 * MINUTE6;
   PEER_AWAY2 = 25 * MINUTE6;
-  HEARD_EVERY = MINUTE6;
+  HEARD_EVERY2 = MINUTE6;
   SKEW2 = MINUTE6;
   SERVICE2 = /^[a-z0-9][a-z0-9-]{0,39}$/;
   PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed", "ended"]);
@@ -127051,7 +127075,9 @@ function receiveMail(body, host, peerMail = () => {}, attended = () => {}, from)
     peerMail(sender, { sessionFollow: payload.sessionFollow });
     return true;
   }
-  if (noteHeard(sender.key)) {
+  const quiet = heardFrom(sender.key);
+  const found = noteHeard(sender.key);
+  if (found || quiet !== null && peerIsAway(sender.key, quiet, {})) {
     callsBack(sender.key);
     rowsBack();
     queuesBack(sender.key);

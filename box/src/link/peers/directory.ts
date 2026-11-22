@@ -107,6 +107,26 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
   });
 }
 
+/** How often mail that carries no agents moves when a peer was last heard from (`heardFrom`). */
+const HEARD_EVERY = 5 * 60_000;
+
+/** Mail from the peer `key`, whatever it carries: heard from now, as its agents would say (they come
+ * as it connects and every ten minutes; this mail shows it answers before then). Kept at most every
+ * five minutes. When it was last heard from before, where that moved; else null. */
+export function heardFrom(key: string, now = Date.now(), file = PEER_AGENTS_FILE, lock = PEER_LOCK): number | null {
+  const before = readPeerAgents(file)[key]?.heard;
+  if (before === undefined || now - before < HEARD_EVERY) return null;
+  return locked(lock, () => {
+    const all = readPeerAgents(file);
+    const told = all[key];
+    if (told?.heard === undefined || now - told.heard < HEARD_EVERY) return null;
+    const was = told.heard;
+    told.heard = now;
+    writePrivate(file, JSON.stringify(all));
+    return was;
+  });
+}
+
 const short = (value: unknown, most: number): string | undefined => (typeof value === "string" && value && value.length <= most ? value : undefined);
 
 /** The most sessions at work a box names, to its peers and in `kuvo/computers` (it counts them all). */

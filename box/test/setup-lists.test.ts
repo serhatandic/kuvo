@@ -210,6 +210,35 @@ test("a computer going away keeps its rows with the same last-seen time and no a
   } finally { setup.close(); }
 }, 30_000);
 
+test("a computer that comes back after being away has its rows live again at once, and is listed connected", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    // Off for two hours, with its bot Mira: last heard from then, and found away by the relay.
+    const told = path.join(near.home, "run", "peer-agents.json");
+    const heard = Date.now() - 2 * 3600_000;
+    const mira = { kind: "bot", id: "bot_mira", name: "Mira", session: "ses_mira" };
+    writeFileSync(told, JSON.stringify({ [far.peer.key]: { features, at: 100, heard, list: [mira] } }));
+    expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
+    const away = (await line(near)).sessions.sessions.find((row: any) => row.id === far.session);
+    expect(away).toMatchObject({ away: true, actions: [] });
+    const reachOf = async () => (JSON.parse((await near.read("kuvo/computers")).text).computers as any[]).find(computer => computer.key === far.peer.key)?.reach;
+    const botOf = async () => (JSON.parse((await near.read("kuvo/bots")).text).elsewhere as any[]).find(bot => bot.id === mira.id);
+    expect(await reachOf()).toBe("away");
+    expect(await botOf()).toMatchObject({ computer: "far", away: true, lastSeen: heard });
+    // It's back: the first thing it mails says so, with nothing asked of you.
+    await share(far, near, far.session);
+    const back = (await line(near)).sessions.sessions.find((row: any) => row.id === far.session);
+    expect(back).toMatchObject({ computer: far.computer, away: false, actions: ["open", "manage"] });
+    expect(back.lastSeen).toBeUndefined();
+    expect(await reachOf()).toBe("connected");
+    const live = await botOf();
+    expect(live).toMatchObject({ computer: "far" });
+    expect(live.away).toBeUndefined();
+  } finally { setup.close(); }
+}, 30_000);
+
 test("a computer switching to a new release keeps its rows, said to be updating, with no actions", async () => {
   const setup = pair();
   const { near, far } = setup;

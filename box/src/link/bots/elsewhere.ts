@@ -9,6 +9,7 @@ import { LOOKS } from "../../shared/routes/bots";
 import { computerName } from "../peers/computer-name";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
+import { peerIsAway, readReach } from "../peers/reach";
 import { readLink } from "../state";
 import { whatDeleteTakes } from "./deletes";
 import { awaySessions, readMoves } from "../moves/records";
@@ -49,8 +50,12 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
   const retired = new Map(readMoves().filter(move => move.kind === "bot" && move.role === "from" && move.stage === "finishing").map(move => [move.thing, move.to]));
   const listed: ListedElsewhere[] = [];
   const away = new Set(awaySessions());
+  const reach = readReach();
   for (const peer of peers) {
     const computer = shownName(peer);
+    // Its computer not answering: said so, with when it was last heard from.
+    const seen = told[peer.key]?.heard ?? told[peer.key]?.at;
+    const off = peerIsAway(peer.key, told[peer.key]?.heard, reach) ? { away: true as const, ...(seen !== undefined ? { lastSeen: seen } : {}) } : {};
     // Where its deleted bots' folders go, as it said; one that hasn't (from before it did) is said both ways.
     const trash = told[peer.key]?.trash;
     for (const agent of bots(peer)) {
@@ -70,6 +75,7 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
         kind: peer.kind,
         // (Its wake-ups aren't told between computers: said without a count.)
         deletes: whatDeleteTakes({ computer, folder: trash ? { to: trash } : { to: "unsaid" } }),
+        ...off,
       });
     }
   }
