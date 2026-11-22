@@ -410,7 +410,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
   if (!toAgents && method === "GET" && response.ok && /^\/api\/session\/[^/]+$/.test(url.pathname)) {
     const page = await response.json() as { data?: EngineSession & { context?: ContextSize } } | null;
     const context = await currentEngineContext(url, headers, signal, page?.data);
-    if (context && page?.data) page.data.context = context;
+    if (page?.data) Object.assign(page.data, context);
     delete out["content-length"];
     yield { head: { status: response.status, headers: out } };
     yield { body: Buffer.from(JSON.stringify(page)) };

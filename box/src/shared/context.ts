@@ -46,6 +46,13 @@ export function summarizeAt(kind: string | undefined, window: number | undefined
 export const tokenCount = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 
+export const contextCapacity = (value: unknown): value is number => tokenCount(value) && value > 0
+
+type ContextModel = { providerID: string; id: string }
+
+export const sameContextModel = (one: ContextModel | undefined, other: ContextModel | undefined): boolean =>
+  one?.providerID === other?.providerID && one?.id === other?.id
+
 /** Occupancy after one model request. These buckets are disjoint in Kuvo's wire format. */
 export function stepContext(usage: unknown): number | undefined {
   const tokens = usage as { input?: unknown; output?: unknown; reasoning?: unknown; cache?: { read?: unknown; write?: unknown } } | undefined

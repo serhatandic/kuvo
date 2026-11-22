@@ -2145,10 +2145,12 @@ the branch, the model, effort and account, and the pull request with its checks 
 
 `GET api/session/<id>` and `GET kuvo/agents/api/session/<id>` can include
 `data.context: {used, window?}`, in tokens. `used` is the last occupancy reported by the agent
-or measured from its latest model request, with cached input included. `window` is the model's
-reported context capacity when known. The field can be absent before a measurement or after a
-summary without a new measurement. Cursor supplies aggregate billing usage and has no measurement
-for this field. Session `tokens` still describes usage across the conversation.
+or measured from its latest model request, with cached input included. `window` is the capacity
+reported for that model by the agent or its catalog. Session detail can also include
+`data.contextWindow` with the capacity in tokens before usage is measured or after a summary. The
+box remembers a known capacity across turns and restarts. Usage may be absent before a measurement
+or after a summary. Cursor's SDK supplies billing usage and does not expose its context capacity
+or measured occupancy. Session `tokens` still describes usage across the conversation.
 
 `kuvo/agents/api/session/<id>` adds `summarizeAt` to it, in tokens, where the box's
 "Summarize long conversations at" setting (`kuvo/settings/conversations`) decides when the
@@ -2194,7 +2196,8 @@ its update view. A temporary `503` leaves the list waiting.
   is older than the day and 2000 deletions it keeps, or its file went) gets the whole list, `full: true`, in place of
   what the client had. `projects` and `needsYou` are whole in every line.
 - Facts, each flag left out where it isn't: `kind`, `project` (a `project` session's), `directory`,
-  `title?`, `created`, `updated` (ms; the lists' order), `parent?` (a `subagent`'s session),
+  `title?`, `created`, `updated` (ms; latest conversation activity, or creation for an empty
+  session; the lists' order), `parent?` (a `subagent`'s session),
   `subagents?` (#950: a session's subagents' sessions, those at work or waiting on you first, then
   the newest), `messages?` (#950, a `subagent`'s: how it takes your messages, `{via: "direct" |
   "parent" | "none", note?}`, its `metadata.kuvo.messages` as the engine routes say; `none` with `note`, why, in words to
@@ -2216,10 +2219,11 @@ its update view. A temporary `503` leaves the list waiting.
   group chat); `hidden` (`kuvo.engineFor` or `kuvo.reviewPart`: a run its session or review shows);
   `bot` (one of its bots' conversations, as `kuvo/bots` lists them, or anything in its bots folder);
   `chat` (marked a chat naming the folder it's in, or in its chats folder, "Chats"); else
-  `project`, filed under the project of its folder as `kuvo/projects`' `worktrees` says, else the
-  one `kuvo.filed` names while it still runs in that folder (as that project is filed), else its
-  own folder ("Projects").
-- `projects`: every project of the box's list that isn't removed, and each one a `project` session
+  `project`, filed under the project of its folder as `kuvo/projects`' `worktrees` says, by the
+  worktree's Git common directory, or by a worktree record the engine still has. Otherwise it
+  uses the project `kuvo.filed` names while it still runs in that folder (as that project is
+  filed), then its own folder ("Projects").
+- `projects`: every project of the box's list that isn't removed or filed as a worktree, and each one a `project` session
   that isn't archived is filed under (a removed one comes back so), with its list's `name` where
   it has one, and `updated`, its newest such session's. `asking` and `working`
   (`sessions.needsYou`, #711): how many of its sessions listed (not archived, this box's own copy)

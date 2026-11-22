@@ -17,6 +17,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Account, Agent, LostWork, OwnTurn, PermissionAsk, PromptFile, QuestionAsk, RunInput, RunResult, SubagentMessages, SubagentRun, SubagentTask, SteerReceipt, Thread, TurnHooks } from "./agent"
 import { failure, lostWorkNote } from "./agent"
+import { contextCapacity, sameContextModel } from "../shared/context"
 import { parseProvider } from "./accounts"
 import { citedIn, plainCitations } from "./agents/codex-citations"
 import { Auto, autoProvider, foldEntries, resetTime, type AutoEntry, type AutoList } from "./auto"
@@ -1336,11 +1337,33 @@ export class Sessions {
       .all()
       .filter((session) => !directory || session.location.directory === directory)
       .filter((session) => parentID === undefined || (parentID === null ? !session.parentID : session.parentID === parentID))
-      .sort((a, b) => b.time.updated - a.time.updated || (a.id < b.id ? 1 : -1))
+      .map(session => this.withActivity(session))
+      .sort((a, b) => b.time.activity! - a.time.activity! || (a.id < b.id ? 1 : -1))
   }
 
   get(id: string): Session {
-    return this.record(id).session
+    return this.withActivity(this.record(id).session)
+  }
+
+  private withActivity(session: Session): Session {
+    session.time.activity = this.store.activity(session)
+    return session
+  }
+
+  /** Capacity as reported by the turn, or by the model catalog before the agent reports usage. */
+  async withContextWindow(id: string): Promise<Session> {
+    const session = this.get(id)
+    const ref = session.contextModel ?? session.model
+    if (!ref || session.contextWindow !== undefined) return session
+    const listed = session.context?.window === undefined ? Sessions.modelIn(await this.listedModels(ref.providerID), ref.id) : undefined
+    const window = session.context?.window ?? (listed?.provisional ? undefined : listed?.limit.context)
+    // While the catalog answered, a turn or model selection could have superseded this read.
+    if (session.contextWindow === undefined && sameContextModel(session.contextModel ?? session.model, ref) && contextCapacity(window)) {
+      session.contextWindow = window
+      if (session.context) session.context.window = window
+      this.store.progress(id)
+    }
+    return session
   }
 
   /** Its conversation, oldest first, with the turn under way as far as it's got. */
@@ -1689,6 +1712,11 @@ export class Sessions {
     if (previous && previous.providerID === model.providerID && previous.id === model.id && previous.variant === model.variant) return
     // What the session's agent kept, moved to its own slot while it's still the session's.
     this.slots(record)
+    if (!sameContextModel(previous, model)) {
+      delete session.context
+      delete session.contextWindow
+      delete session.contextModel
+    }
     session.model = model
     session.metadata = { ...session.metadata, kuvoAgent: this.kind(model.providerID) }
     const event = emit("session.model.selected", { sessionID: id, model, previous }, session.location.directory)

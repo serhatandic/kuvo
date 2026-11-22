@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { writeDurablePrivate } from "../shared/files"
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../shared/format-version"
 import type { Attachment, Message, Session, ToolOutput } from "./wire"
-import { exportTranscript, messageFileTime, migrateTranscript, retainAttachment, retainOutput, savedMessages, savedPage, transcriptDatabase, writeTranscript, type MessageView } from "./transcript"
+import { exportTranscript, messageActivity, messageFileTime, migrateTranscript, retainAttachment, retainOutput, savedActivity, savedMessages, savedPage, transcriptDatabase, writeTranscript, type MessageView } from "./transcript"
 
 const sessionFormat = additiveObjectFormat("Coding-agent session")
 export const readSession = (value: unknown) => sessionFormat.read(value) as unknown as Session
@@ -109,6 +109,24 @@ export class Store {
     return messageFileTime(join(this.root, id))
   }
 
+  /** Time of the last transcript entry that represents conversation activity, or its creation. */
+  activity(session: Session): number {
+    const loaded = this.loaded.get(session.id)
+    if (loaded) {
+      for (let at = loaded.messages.length - 1; at >= 0; at--) {
+        const time = messageActivity(loaded.messages[at]!)
+        if (time !== undefined) return time
+      }
+      return session.time.created
+    }
+    if (session.time.activity !== undefined) return session.time.activity
+    try {
+      return (session.time.activity = savedActivity(join(this.root, session.id)) ?? session.time.created)
+    } catch {
+      return session.time.idle ?? session.time.created
+    }
+  }
+
   add(session: Session) {
     this.checkWritable(session.id)
     this.keep(session, {}, join(this.root, session.id), [])
@@ -206,6 +224,7 @@ export class Store {
         }
       }
       writeTranscript(folder, changed(), messages.length, this.attachments, id, durable)
+      record.session.time.activity = this.activity(record.session)
       loaded.order = [...messages]
       dirty.clear()
     }

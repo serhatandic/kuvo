@@ -7,6 +7,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Opening the Browser tab starts the computer’s browser when it’s stopped, including after a Kuvo update.
+- The context bar keeps the model's window after a restart, including when the next reply only reports tokens used.
+- Sessions in Git worktrees appear under their original project, including worktrees created outside Kuvo.
+- Older conversations keep their place in the sidebar when Kuvo rewrites their history or changes session settings.
 
 - Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
 

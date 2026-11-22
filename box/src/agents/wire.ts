@@ -43,8 +43,12 @@ export interface Session {
   cost: number
   tokens: TokenUsage
   context?: ContextSize
+  /** Capacity can be known before usage or after a summary. */
+  contextWindow?: number
+  /** The model that last supplied context, which can differ from the selected model in Auto. */
+  contextModel?: ModelRef
   outcome?: "succeeded" | "failed" | "interrupted"
-  time: { created: Millis; updated: Millis; idle?: Millis; viewed?: Millis; archived?: Millis }
+  time: { created: Millis; updated: Millis; activity?: Millis; idle?: Millis; viewed?: Millis; archived?: Millis }
   title?: string
   location: { directory: string }
   permissions?: PermissionRule[]
