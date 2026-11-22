@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 ab8cd0b428bd
+// Kuvo folder layout 23 c85731d00939
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ab8cd0b428bd";
+var BRIDGE_VERSION = "c85731d00939";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -29459,8 +29459,32 @@ class LineBuffer {
 }
 
 // box/src/link/browser/view.ts
+import { execFile as execFile8 } from "node:child_process";
 import net3 from "node:net";
 import path69 from "node:path";
+function startKeeper() {
+  return starting2 ??= new Promise((resolve, reject) => {
+    const script = path69.join(K, "bin", "kuvo-browser.js");
+    execFile8(process.execPath, [...OWN_RUNTIME, script, "start"], {
+      cwd: K,
+      env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1" }
+    }, (error, stdout) => {
+      if (error)
+        return reject(new Error(START_FAILED));
+      try {
+        const problem = JSON.parse(stdout);
+        if (problem === null)
+          resolve();
+        else
+          reject(new Error(problem.message || START_FAILED));
+      } catch {
+        reject(new Error(START_FAILED));
+      }
+    });
+  }).finally(() => {
+    starting2 = undefined;
+  });
+}
 function frameBudget(count, now = Date.now(), ceiling = 100) {
   if (now - windowAt >= 1000) {
     windowAt = now;
@@ -29473,8 +29497,8 @@ function frameBudget(count, now = Date.now(), ceiling = 100) {
 }
 function browserView(events, relay = false, run = RUN, key = socketKey, options = {}) {
   const budget = options.budget ?? ((count, ceiling = 100) => frameBudget(count, Date.now(), ceiling));
-  const socket = net3.createConnection(path69.join(run, "browser.sock"));
-  let opened = false, ended = false;
+  let socket;
+  let opened = false, greeted = false, ended = false, requestedStart = false;
   const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
   const facts = new Map;
   let notice = 0;
@@ -29486,34 +29510,62 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
       events.text(bytes);
     }
     if (facts.size < 32)
-      socket.resume();
+      socket?.resume();
   };
   const timer = relay ? setInterval(flush, 50) : undefined;
   timer?.unref();
-  const end = (error) => {
+  const open = () => {
+    if (opened)
+      return;
+    opened = true;
+    events.open();
+  };
+  const close = () => {
     clearInterval(timer);
+    ended = true;
+    socket?.destroy();
+  };
+  const end = (error) => {
     if (ended)
       return;
-    ended = true;
-    socket.destroy();
+    close();
     events.end(error);
   };
-  socket.on("connect", () => socket.write(JSON.stringify(browserControlFormat.write({ method: "Kuvo.key", params: { key: key() } })) + `
+  const failedToStart = (error) => {
+    if (ended)
+      return;
+    events.text(Buffer.from(JSON.stringify(browserControlFormat.write({
+      method: "Kuvo.error",
+      params: { kind: "failed", message: error.message }
+    })) + `
 `));
-  socket.on("error", end);
-  socket.on("close", () => end());
-  socket.on("data", (chunk) => {
+    close();
+    events.end(error, { code: 1011, reason: START_FAILED });
+  };
+  const wake = () => {
+    requestedStart = true;
+    socket = undefined;
+    open();
+    startKeeper().then(() => {
+      if (!ended)
+        dial();
+    }, failedToStart);
+  };
+  const received = (client, chunk) => {
     try {
       incoming.feed(chunk, (line) => {
         if (ended)
           return;
         let message;
         message = browserControlFormat.read(JSON.parse(line));
-        if (!opened) {
+        if (!greeted) {
+          if (message.method === "Kuvo.error" && requestedStart) {
+            return failedToStart(new Error(message.params?.message || START_FAILED));
+          }
           if (message.method !== "Kuvo.hello")
             return end(new Error("Browser refused connection."));
-          opened = true;
-          events.open();
+          greeted = true;
+          open();
         }
         if (message.method === "Kuvo.frame") {
           const { data, ...meta } = message.params;
@@ -29521,7 +29573,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
           const frame = encodeBrowserFrame(meta, jpeg);
           const reason = !relay ? null : frame.length > 60000 ? "oversize" : (options.unsent?.() ?? 0) > 0 ? "unsent" : !budget(1, 80) ? "budget" : null;
           if (reason) {
-            socket.write(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.frameId, reason } }) + `
+            client.write(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.frameId, reason } }) + `
 `);
             return;
           }
@@ -29538,7 +29590,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
             const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
             facts.set(name, bytes);
             if (facts.size >= 64)
-              socket.pause();
+              client.pause();
             flush();
           }
         }
@@ -29546,10 +29598,43 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
     } catch (error) {
       end(error);
     }
-  });
+  };
+  function dial() {
+    const client = socket = net3.createConnection(path69.join(run, "browser.sock"));
+    client.on("connect", () => {
+      try {
+        client.write(JSON.stringify(browserControlFormat.write({ method: "Kuvo.key", params: { key: key() } })) + `
+`);
+      } catch (error) {
+        end(error);
+      }
+    });
+    client.on("error", (error) => {
+      if (ended)
+        return;
+      if (!requestedStart && !greeted && (error.code === "ENOENT" || error.code === "ECONNREFUSED"))
+        wake();
+      else if (requestedStart && !greeted)
+        failedToStart(error);
+      else
+        end(error);
+    });
+    client.on("close", () => {
+      if (ended || socket !== client)
+        return;
+      if (greeted)
+        end();
+      else if (!requestedStart)
+        wake();
+      else
+        failedToStart(new Error(START_FAILED));
+    });
+    client.on("data", (chunk) => received(client, chunk));
+  }
+  dial();
   return {
     send(data) {
-      if (!opened || ended)
+      if (!greeted || ended)
         return;
       try {
         input.feed(data, (line) => {
@@ -29559,21 +29644,17 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
           message = browserControlFormat.read(JSON.parse(line));
           if (!message || typeof message !== "object" || !COMMANDS.has(message.method))
             return end(new Error("Unknown view command."));
-          socket.write(line + `
+          socket?.write(line + `
 `);
         });
       } catch (error) {
         end(error);
       }
     },
-    close() {
-      clearInterval(timer);
-      ended = true;
-      socket.destroy();
-    }
+    close
   };
 }
-var COMMANDS, windowAt = 0, messages = 0;
+var COMMANDS, START_FAILED = "The browser couldn’t start.", starting2, windowAt = 0, messages = 0;
 var init_view = __esm(() => {
   init_keeper_client();
   init_media();
@@ -32935,7 +33016,7 @@ var init_engine = __esm(() => {
 });
 
 // box/src/link/work/services.ts
-import { execFile as execFile8 } from "node:child_process";
+import { execFile as execFile9 } from "node:child_process";
 import fs82 from "node:fs";
 import path82 from "node:path";
 async function listeningPorts(groups, { proc = "/proc", platform = process.platform } = {}) {
@@ -32946,7 +33027,7 @@ async function listeningPorts(groups, { proc = "/proc", platform = process.platf
 }
 function fromLsof(groups) {
   return new Promise((resolve) => {
-    execFile8("lsof", ["-nP", "-a", "-g", groups.join(","), "-iTCP", "-sTCP:LISTEN", "-F", "gn"], { timeout: 5000 }, (_error, stdout) => {
+    execFile9("lsof", ["-nP", "-a", "-g", groups.join(","), "-iTCP", "-sTCP:LISTEN", "-F", "gn"], { timeout: 5000 }, (_error, stdout) => {
       const found = new Map;
       let group = 0;
       for (const line of String(stdout ?? "").split(`
@@ -40864,7 +40945,7 @@ var init_project_trees = __esm(() => {
 
 // box/src/link/work/reviewer.ts
 import { createHash as createHash8, randomBytes as randomBytes4 } from "node:crypto";
-import { execFile as execFile9 } from "node:child_process";
+import { execFile as execFile10 } from "node:child_process";
 import dns from "node:dns/promises";
 import fs105 from "node:fs";
 import path107 from "node:path";
@@ -41458,7 +41539,7 @@ async function gitIn(folder, args, ok = [0]) {
   if (!run)
     return null;
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_LITERAL_PATHSPECS: "1" };
-  return new Promise((resolve) => execFile9("git", run, { cwd: folder, env, encoding: "utf8", timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, out) => resolve(!error || typeof error.code === "number" && !error.killed && ok.includes(error.code) ? String(out ?? "") : null)));
+  return new Promise((resolve) => execFile10("git", run, { cwd: folder, env, encoding: "utf8", timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, out) => resolve(!error || typeof error.code === "number" && !error.killed && ok.includes(error.code) ? String(out ?? "") : null)));
 }
 async function projectScript(file, text, folders) {
   const at = realish(file);
@@ -44413,7 +44494,7 @@ var init_assignees = __esm(() => {
 });
 
 // box/src/link/github/graphql.ts
-import { execFile as execFile10, spawn as spawn11 } from "node:child_process";
+import { execFile as execFile11, spawn as spawn11 } from "node:child_process";
 import crypto39 from "node:crypto";
 import fs114 from "node:fs";
 import os10 from "node:os";
@@ -44446,7 +44527,7 @@ function heldOf2(data, errors) {
 }
 function askGitHub(host, query, timeout = 30000) {
   return new Promise((resolve) => {
-    execFile10("gh", ["api", "graphql", "--hostname", host, "-f", `query=${query}`], {
+    execFile11("gh", ["api", "graphql", "--hostname", host, "-f", `query=${query}`], {
       cwd: os10.tmpdir(),
       timeout,
       maxBuffer: 8 * 1024 * 1024,
@@ -46179,7 +46260,7 @@ var init_git_words = __esm(() => {
 });
 
 // box/src/link/areas/worktrees.ts
-import { execFile as execFile11 } from "node:child_process";
+import { execFile as execFile12 } from "node:child_process";
 import fs120 from "node:fs";
 import path122 from "node:path";
 async function freeBranch(folder, name) {
@@ -46629,7 +46710,7 @@ async function spawnGit(folder, args) {
   if (!asked)
     return "This repository’s commondir leads git to another repository’s settings, so Kuvo Code won’t run git there.";
   return new Promise((resolve) => {
-    const child = execFile11("git", asked, { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 60000 }, (error, stdout, stderr) => resolve(error ? (stderr || stdout || error.message).trim().replace(/^fatal: /, "") : null));
+    const child = execFile12("git", asked, { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 60000 }, (error, stdout, stderr) => resolve(error ? (stderr || stdout || error.message).trim().replace(/^fatal: /, "") : null));
     child.stdin?.on("error", () => {});
     child.stdin?.end();
   });
@@ -58925,7 +59006,7 @@ var init_file = __esm(() => {
 });
 
 // box/src/link/areas/changes.ts
-import { execFile as execFile12, spawn as spawn16 } from "node:child_process";
+import { execFile as execFile13, spawn as spawn16 } from "node:child_process";
 import crypto57 from "node:crypto";
 import fs153 from "node:fs";
 import os16 from "node:os";
@@ -58937,7 +59018,7 @@ async function git(folder, given, changing = false, more = {}, program = "git", 
   const env = { ...changing === "yours" ? await askedEnv() : commandEnv(), GIT_TERMINAL_PROMPT: "0", ...changing ? {} : { GIT_OPTIONAL_LOCKS: "0" }, ...more };
   if (!changing) {
     return new Promise((resolve) => {
-      execFile12(program, args, { cwd: folder, env, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout }, (error, stdout, stderr) => resolve({ ok: !error, out: stdout ?? Buffer.alloc(0), said: String(stderr ?? "").trim() }));
+      execFile13(program, args, { cwd: folder, env, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout }, (error, stdout, stderr) => resolve({ ok: !error, out: stdout ?? Buffer.alloc(0), said: String(stderr ?? "").trim() }));
     });
   }
   return new Promise((resolve) => {
@@ -59331,7 +59412,7 @@ async function trash(file) {
   if (process.platform === "darwin" && !process.env.KUVO_CHANGES_TRASH) {
     if (fs153.existsSync("/usr/bin/trash")) {
       await new Promise((resolve, reject) => {
-        execFile12("/usr/bin/trash", [file], { timeout: 30000 }, (error) => error ? reject(error) : resolve());
+        execFile13("/usr/bin/trash", [file], { timeout: 30000 }, (error) => error ? reject(error) : resolve());
       });
       return;
     }
@@ -59650,7 +59731,7 @@ async function pullRequestWay(directory) {
 }
 function ghOn(root, host) {
   return new Promise((resolve) => {
-    execFile12("gh", ["auth", "status", "--hostname", host], { cwd: root, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" }, timeout: 30000 }, (error) => resolve(!error ? "signed-in" : error.code === "ENOENT" ? "missing" : "signed-out"));
+    execFile13("gh", ["auth", "status", "--hostname", host], { cwd: root, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" }, timeout: 30000 }, (error) => resolve(!error ? "signed-in" : error.code === "ENOENT" ? "missing" : "signed-out"));
   });
 }
 async function pullRequestSummary(root, against, limit = 30000) {
@@ -64864,7 +64945,7 @@ var init_notify = __esm(() => {
 });
 
 // box/src/link/letters/own-tools.ts
-import { execFile as execFile13 } from "node:child_process";
+import { execFile as execFile14 } from "node:child_process";
 import fs172 from "node:fs";
 import os18 from "node:os";
 import path179 from "node:path";
@@ -64953,7 +65034,7 @@ async function wakeTool(name, args, calling, bridge, operation) {
     return { text: result.output.trim() || (result.code === 0 ? "Done." : "That didn't work."), isError: result.code !== 0 || result.timedOut };
   }
   const answer = await new Promise((resolve) => {
-    execFile13(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30000 }, (error, out, errors) => {
+    execFile14(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30000 }, (error, out, errors) => {
       if (error?.code === "ENOENT")
         return resolve(refused4(`Couldn't run kuvo-wake here: there's none at ${WAKE_COMMAND}.`));
       const text = (String(out ?? "") + String(errors ?? "")).trim();
@@ -77153,7 +77234,7 @@ var init_storage_sizes = __esm(() => {
 });
 
 // box/src/link/helper.ts
-import { execFile as execFile14, spawn as spawn18, spawnSync as spawnSync10 } from "node:child_process";
+import { execFile as execFile15, spawn as spawn18, spawnSync as spawnSync10 } from "node:child_process";
 import fs192 from "node:fs";
 import path201 from "node:path";
 function helperPlist(app, mode = "keep") {
@@ -77407,7 +77488,7 @@ function helperAtLoginLater() {
   if (!asking)
     return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile14(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
+    execFile15(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
   });
 }
 function loginItemsAsk() {
@@ -94300,7 +94381,7 @@ var init_answers = __esm(() => {
 });
 
 // box/src/link/areas/wakes.ts
-import { execFile as execFile15 } from "node:child_process";
+import { execFile as execFile16 } from "node:child_process";
 import fs226 from "node:fs";
 import path237 from "node:path";
 function repeatText(text) {
@@ -94472,7 +94553,7 @@ function sendWakes() {
       return;
     }
     const release = demand === "engine" ? await acquireEngine() : undefined;
-    execFile15(WAKE_COMMAND, ["fire", BOTS, path237.join(RUN, "engine.json")], { env }, (error) => {
+    execFile16(WAKE_COMMAND, ["fire", BOTS, path237.join(RUN, "engine.json")], { env }, (error) => {
       release?.();
       running = false;
       if (error?.code === "ENOENT" && !said) {
@@ -94590,7 +94671,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   try {
     given = JSON.parse(Buffer.from(request.body ?? []).toString("utf8") || "{}") ?? {};
   } catch {}
-  const kuvoWake = (args) => new Promise((resolve) => execFile15(WAKE_COMMAND, [folder, ...args], { encoding: "utf8", timeout: 30000 }, (error, _out, said) => resolve(error ? { missing: error.code === "ENOENT", refused: error.code === 2, said: String(said ?? "").trim() } : null)));
+  const kuvoWake = (args) => new Promise((resolve) => execFile16(WAKE_COMMAND, [folder, ...args], { encoding: "utf8", timeout: 30000 }, (error, _out, said) => resolve(error ? { missing: error.code === "ENOENT", refused: error.code === 2, said: String(said ?? "").trim() } : null)));
   const unavailable = (failed, what) => failed.missing ? json(503, { message: "Wake-ups aren’t set up on this computer." }) : json(failed.refused && failed.said ? 400 : 503, { message: failed.refused && failed.said ? failed.said : `${what} couldn’t be saved. Try again.` });
   if (action === "watch") {
     const every = typeof given.every === "string" ? given.every.trim() : "";
@@ -99148,7 +99229,7 @@ var init_policy3 = __esm(() => {
 });
 
 // box/src/link/artifacts/turnfiles.ts
-import { execFile as execFile16 } from "node:child_process";
+import { execFile as execFile17 } from "node:child_process";
 import { promises as fs236 } from "node:fs";
 import { dirname as dirname6, join as join12, sep as sep3 } from "node:path";
 function inScratch(path, project) {
@@ -99242,7 +99323,7 @@ async function fromGit(top, folder) {
   const args = await ownArgsLater(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (!args)
     return;
-  const out = await new Promise((done) => execFile16("git", args, {
+  const out = await new Promise((done) => execFile17("git", args, {
     timeout: 15000,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
@@ -101690,7 +101771,7 @@ var init_store6 = __esm(() => {
 });
 
 // box/src/link/library/thumbnails.ts
-import { execFile as execFile17 } from "node:child_process";
+import { execFile as execFile18 } from "node:child_process";
 import { createHash as createHash17 } from "node:crypto";
 import { mkdirSync as mkdirSync7, mkdtempSync, readdirSync as readdirSync7, readFileSync as readFileSync11, renameSync as renameSync7, rmSync as rmSync7, statSync as statSync7 } from "node:fs";
 import { basename as basename7, join as join18 } from "node:path";
@@ -101780,7 +101861,7 @@ class Thumbnails {
 }
 function run8(program, args) {
   return new Promise((done, failed) => {
-    execFile17(program, args, { timeout: making, killSignal: "SIGKILL" }, (error) => error ? failed(error) : done());
+    execFile18(program, args, { timeout: making, killSignal: "SIGKILL" }, (error) => error ? failed(error) : done());
   });
 }
 var thumbnailSide = 480, asItIs, making = 20000;
@@ -104207,7 +104288,7 @@ var init_limits_events = __esm(() => {
 });
 
 // box/src/link/work/backups.ts
-import { execFile as execFile18, spawn as spawn22 } from "node:child_process";
+import { execFile as execFile19, spawn as spawn22 } from "node:child_process";
 import crypto83 from "node:crypto";
 import fs247 from "node:fs";
 import path257 from "node:path";
@@ -104216,7 +104297,7 @@ async function git3(given, options = {}) {
   if (!args)
     return REFUSED5;
   return new Promise((resolve) => {
-    const child = execFile18("git", args, { cwd: options.cwd, env: ENV, encoding: "utf8", timeout: 300000, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => resolve({ ok: !error, out: String(out ?? ""), error: String(err ?? "").trim() || (error ? String(error.message) : "") }));
+    const child = execFile19("git", args, { cwd: options.cwd, env: ENV, encoding: "utf8", timeout: 300000, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => resolve({ ok: !error, out: String(out ?? ""), error: String(err ?? "").trim() || (error ? String(error.message) : "") }));
     if (options.input !== undefined)
       child.stdin?.end(options.input);
   });

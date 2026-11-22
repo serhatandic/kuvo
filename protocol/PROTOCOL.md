@@ -12805,7 +12805,10 @@ Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with i
 request in an authenticated, paired client's Noise session. Peers cannot open sockets.
 The upgrade checks the exact canonical path, method and password itself; the ordinary HTTP
 handler never sees upgrades. A GET without upgrading returns 426 with `{message}`.
-If the keeper isn't running, opening fails; starting the browser remains a separate operation.
+Opening the view starts the browser on demand. The socket can upgrade while Chrome starts
+or is being installed. Wait for the keeper's `Kuvo.hello` and page facts before sending view
+commands. If startup fails, the box sends `Kuvo.error` with `{kind, message}` and ends the socket.
+Opening a new view asks the box to start the browser again.
 
 Text messages are newline-delimited JSON `{id?, method, params?}`. A request with an id
 gets `{id, result}` or `{id, error: {message}}`. The socket accepts only the view commands
