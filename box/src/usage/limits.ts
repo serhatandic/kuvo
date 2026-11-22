@@ -568,7 +568,9 @@ export class Limits {
         ...(account.label ? { label: account.label } : {}),
         ...(entry.identity ? { identity: entry.identity } : {}),
         ...(entry.plan ? { plan: entry.plan } : {}),
-        windows: account.limits.keepLastReading ? entry.windows : entry.windows.filter(window => this.recent(account.limits, window)),
+        // (A coding agent's last numbers stay, however old, so its ring and card never go blank
+        // while it isn't running: its card says as of when, `limit-card.ts`.)
+        windows: account.limits.keepLastReading || account.agent ? entry.windows : entry.windows.filter(window => this.recent(account.limits, window)),
         ...(entry.notices?.length ? { notices: entry.notices.filter(n => currentNotice(n, this.now())) } : {}),
         ...(entry.noticeState ? { noticeState: entry.noticeState } : {}),
         ...(entry.balance ? { balance: entry.balance } : {}),

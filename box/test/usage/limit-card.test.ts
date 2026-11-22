@@ -9,7 +9,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Limits, limitsRoutes, type LimitedAccount, type LimitExtra, type LimitReading } from "../../src/usage/limits"
+import { Limits, LimitsProblem, limitsRoutes, type LimitedAccount, type LimitExtra, type LimitReading } from "../../src/usage/limits"
 import type { CardWord, LimitCard, RailItem } from "../../src/usage/limit-card"
 import type { AgentKind } from "../../src/agents/accounts"
 
@@ -23,7 +23,7 @@ afterAll(() => rmSync(base, { recursive: true, force: true }))
 /** A coding agent's account whose maker answers `reading()` each time it's asked. */
 function account(kind: AgentKind, id: string, reading: () => LimitReading, label?: string): LimitedAccount {
   const provider = id === "default" ? `${kind}-test` : `${kind}-test@${id}`
-  const service = kind === "claude" ? "claude" : kind === "codex" ? "codex" : "antigravity"
+  const service = kind
   return {
     provider,
     service,
@@ -45,7 +45,7 @@ async function answer(limits: Limits): Promise<{ rows: { title: string; card: Li
 }
 
 /** A line's words as they read, each moment as minutes from the start ("{+70m}"). */
-const read = (words: CardWord[]) => words.map((word) => word.text + (word.at !== undefined ? `{+${Math.round((word.at - START) / MINUTE)}m}` : "")).join("")
+const read_ = (words: CardWord[]) => words.map((word) => word.text + (word.at !== undefined ? `{+${Math.round((word.at - START) / MINUTE)}m}` : "")).join("")
 
 /** Reads every 10 minutes, the 5-hour window at each of `used` in turn (resetting 3 hours from the start), the week steady at 20%. */
 async function readings(used: number[], file?: string) {
@@ -70,7 +70,7 @@ test("a 5-hour window used at a steady pace says when it runs out, ahead of its 
   const { rows, rail } = await answer(limits)
   const card = rows[0]!.card
   expect(card.lines.map((line) => line.title)).toEqual(["5-hour", "Weekly"])
-  expect(read(card.lines[0]!.words)).toBe("40% left · runs out ~{+70m}, resets {+180m}")
+  expect(read_(card.lines[0]!.words)).toBe("40% left · runs out ~{+70m}, resets {+180m}")
   expect(card.lines[0]!.tone).toBe("warning")
   expect(card.dot).toBe("warning")
   expect(rail).toEqual([expect.objectContaining({ rows: [expect.any(String)], dot: "warning" })])
@@ -79,7 +79,7 @@ test("a 5-hour window used at a steady pace says when it runs out, ahead of its 
 test("a window used slowly lasts until its reset, and says so with no dot", async () => {
   const { limits } = await readings([0.3, 0.31, 0.32, 0.33])
   const card = (await answer(limits)).rows[0]!.card
-  expect(read(card.lines[0]!.words)).toBe("67% left · lasts until reset")
+  expect(read_(card.lines[0]!.words)).toBe("67% left · lasts until reset")
   expect(card.lines[0]!.tone).toBe("calm")
   expect(card.dot).toBeUndefined()
 })
@@ -88,7 +88,7 @@ test("with too few readings nothing is predicted: what's left and when it resets
   // Two readings ten minutes apart, however fast, aren't enough to say.
   const { limits } = await readings([0.3, 0.6])
   const card = (await answer(limits)).rows[0]!.card
-  expect(read(card.lines[0]!.words)).toBe("40% left · resets {+180m}")
+  expect(read_(card.lines[0]!.words)).toBe("40% left · resets {+180m}")
   expect(card.dot).toBeUndefined()
 })
 
@@ -97,7 +97,7 @@ test("what the readings said is kept through a restart of the box", async () => 
   const { clock } = await readings([0.3, 0.4, 0.5, 0.6], file)
   const again = new Limits(() => [account("claude", "default", () => ({ windows: [] }))], file, () => clock.now)
   const card = (await answer(again)).rows[0]!.card
-  expect(read(card.lines.find((line) => line.title === "5-hour")!.words)).toBe("40% left · runs out ~{+70m}, resets {+180m}")
+  expect(read_(card.lines.find((line) => line.title === "5-hour")!.words)).toBe("40% left · runs out ~{+70m}, resets {+180m}")
 })
 
 test("each card shows only its own account, named among its agent's others", async () => {
@@ -108,8 +108,8 @@ test("each card shows only its own account, named among its agent's others", asy
   const { rows, rail } = await answer(limits)
   const cards = rows.map((row) => row.card)
   expect(cards.map((card) => card.title)).toEqual(["Claude · Max", "Claude · $20"])
-  expect(cards[0]!.lines.map((line) => read(line.words))).toEqual(["38% left · resets {+120m}"])
-  expect(cards[1]!.lines.map((line) => read(line.words))).toEqual(["Back at {+480m}"])
+  expect(cards[0]!.lines.map((line) => read_(line.words))).toEqual(["38% left · resets {+120m}"])
+  expect(cards[1]!.lines.map((line) => read_(line.words))).toEqual(["Back at {+480m}"])
   expect(cards.map((card) => card.dot)).toEqual([undefined, "danger"])
   // Two accounts of an agent: a ring each.
   expect(rail.map((item) => item.title)).toEqual(["Claude · Max", "Claude · $20"])
@@ -125,10 +125,10 @@ test("a reset is offered only where one can be used, naming the soonest to expir
   const { limits } = box([codex(2, [8, 15])])
   await limits.tick()
   const resets = (await answer(limits)).rows[0]!.card.resets!
-  expect(read(resets.words)).toBe(`2 resets left · next expires {+${8 * 24 * 60}m}`)
+  expect(read_(resets.words)).toBe(`2 resets left · next expires {+${8 * 24 * 60}m}`)
   expect(resets.words.find((word) => word.at)!.as).toBe("date")
   expect(resets.action).toBe("Use a reset")
-  expect(read(resets.confirm.title)).toBe(`Use the reset that expires {+${8 * 24 * 60}m}?`)
+  expect(read_(resets.confirm.title)).toBe(`Use the reset that expires {+${8 * 24 * 60}m}?`)
   expect(resets.confirm).toMatchObject({ message: "Codex’s usage limits start over now.", button: "Use Reset", cancel: "Cancel" })
 
   const none = box([codex(0, [])])
@@ -153,4 +153,36 @@ test("an agent's many accounts share one ring, its card a strip of them emptiest
   // Nothing in use: the emptiest is shown in full first.
   expect(item.selected).toBe(item.rows[0])
   expect(rows.find((row) => row.card.name === "Lab 01")!.card.title).toBe("Antigravity · Lab 01")
+})
+
+test("each coding agent's last numbers stay on its card, as of when, once it can't be read any more", async () => {
+  for (const kind of ["claude", "codex", "antigravity", "grok", "cursor"] as AgentKind[]) {
+    let read = false
+    // Read once; after that, as Antigravity on a computer where it isn't running: nothing to say.
+    const reading = (): LimitReading => {
+      if (read) throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false)
+      read = true
+      return { windows: [{ id: "five_hour", used: 0.4, minutes: 300, resetsAt: START + 4 * HOUR }, { id: "seven_day", used: 0.3, minutes: 10_080, resetsAt: START + 3 * 24 * HOUR }] }
+    }
+    const { limits, clock } = box([account(kind, "default", reading)])
+    await limits.tick()
+    clock.now = START + 2 * HOUR
+    await limits.tick()
+    const { rows, rail } = await answer(limits)
+    const card = rows[0]!.card
+    expect([kind, card.lines.map((line) => read_(line.words))]).toEqual([kind, ["60% left · resets {+240m}", `70% left · resets {+${3 * 24 * 60}m}`]])
+    expect(read_(card.asOf!)).toBe("as of {+0m}")
+    expect(rail).toHaveLength(1)
+  }
+})
+
+test("an account with no numbers read yet has no ring, rather than an empty one", async () => {
+  const never = account("antigravity", "default", () => {
+    throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false)
+  })
+  const { limits } = box([never, codex(0, [])])
+  await limits.tick()
+  const { rows, rail } = await answer(limits)
+  expect(rows.map((row) => row.title)).toEqual(["Antigravity", "Codex"])
+  expect(rail.map((item) => item.title)).toEqual(["Codex"])
 })

@@ -489,8 +489,8 @@ impl Render for Rings {
                     .into_any_element(),
             );
         }
-        // None signed in: an empty ring that says where to sign in.
-        if accounts.is_empty() && !self.client.gate().is_held() {
+        // None signed in: an empty ring that says where to sign in. (Signed in with nothing read yet: no ring.)
+        if accounts.is_empty() && self.ringed().is_empty() && !self.client.gate().is_held() {
             let hover = c.hover;
             rings.push(
                 div()
@@ -1009,6 +1009,11 @@ fn resets_footer(row: String, resets: &CardResets, now: f64, state: &CardState, 
         .into_any_element()
 }
 
+/// "as of 14:05", where the box says its numbers aren't current.
+fn as_of(card: &Card, now: f64) -> Option<String> {
+    (!card.as_of.is_empty()).then(|| card.as_of.iter().map(|word| written(word, now)).collect())
+}
+
 fn card_header(service: &str, title: String, right: Option<String>, cx: &App) -> AnyElement {
     let c = cx.theme().colors.clone();
     let mark: AnyElement = match kuvo_ui::icon::Mark::of_service(service) {
@@ -1021,7 +1026,7 @@ fn card_header(service: &str, title: String, right: Option<String>, cx: &App) ->
         .justify_between()
         .gap(space::S3)
         .child(div().flex().items_center().gap(space::S1_5).min_w_0().child(mark).child(div().debug_selector(|| "ring-card-title".into()).truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(title)))
-        .children(right.map(|right| div().debug_selector(|| "ring-card-summary".into()).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(right)))
+        .children(right.map(|right| div().debug_selector(|| "ring-card-aside".into()).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(right)))
         .into_any_element()
 }
 
@@ -1036,7 +1041,7 @@ fn one_card(account: &Account, card: &Card, now: f64, updating: Option<String>, 
         .flex()
         .flex_col()
         .gap(px(10.))
-        .child(card_header(&account.service, card.title.clone(), None, cx))
+        .child(card_header(&account.service, card.title.clone(), as_of(card, now), cx))
         .child(account_body(account, card, now, state, cx))
         .children(updating_line(updating, cx))
         .into_any_element()
@@ -1128,7 +1133,19 @@ fn many_card(item: &RailItem, members: &[Account], now: f64, updating: Option<St
         .child(card_header(&service, item.title.clone(), item.summary.clone(), cx))
         .child(div().flex().items_end().gap(px(2.)).children(marks))
         .child(div().h(px(1.)).w_full().bg(c.border))
-        .when(!heading.is_empty(), |d| d.child(div().debug_selector(|| "ring-card-heading".into()).child(words_row(&heading, now, cx).text_ui(TypeSize::Small))))
+        .when(!heading.is_empty(), |d| {
+            let old = shown.and_then(|account| account.card.as_ref()).and_then(|card| as_of(card, now));
+            d.child(
+                div()
+                    .debug_selector(|| "ring-card-heading".into())
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .gap(space::S3)
+                    .child(words_row(&heading, now, cx).text_ui(TypeSize::Small))
+                    .children(old.map(|old| div().debug_selector(|| "ring-card-as-of".into()).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(old))),
+            )
+        })
         .children(shown.and_then(|account| account.card.as_ref().map(|card| account_body(account, card, now, state, cx))))
         .children(updating_line(updating, cx))
         .into_any_element()

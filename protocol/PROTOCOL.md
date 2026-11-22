@@ -6865,7 +6865,7 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     Words are a list of `{text, at?, as?, tone?, strong?}`: a client writes `text`, then `at` (ms)
     in its own time zone, as a time of day (`as: "time"`; with its weekday, or its date, where
     it isn't today) or a date (`as: "date"`, "Nov 30"); `tone` is `warning`, `danger`, `muted` or
-    `faint`. A `card` is `{title, name, dot?, tone, left?, lines, note?, inUse?, resets?}`:
+    `faint`. A `card` is `{title, name, dot?, tone, left?, lines, note?, asOf?, inUse?, resets?}`:
     - `title`: the account's name on its card, the agent's with which account where you have more
       than one on the rail ("Claude · Max"); `name`, the account alone ("Max", "Lab 12").
     - `lines`: one per window, the plan's own shortest first (5-hour, then Weekly), then those
@@ -6885,13 +6885,18 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     - `note`: why there's nothing (or not everything) to show: its maker's own (`problem.unknown`,
       Google not counting Antigravity's use), what to do about a problem, "Fills in once a session
       runs on this account" before anything was read, or "No limits reported.".
+    - A coding agent's last numbers stay, however old (a reader that can't answer now, such as
+      Antigravity's where it isn't running, never blanks them; this box's own Codex reading too),
+      until its sign-in changes or a window starts over. Where none of them was read in the last
+      half hour, `asOf` says when ("as of {time}", `faint`), and nothing is predicted from them.
     - `inUse`: a turn told of it in the last half hour.
     - `resets`, only where one of its resets can be used now: `{words, action, confirm: {title,
       message, button, cancel}}`: "2 resets left · next expires {date}", "Use a reset", and the
       question asked before one's used, naming the reset it uses: the soonest to expire, as each
       maker's spend picks ("Use the reset that expires {date}?", "Codex's usage limits start over
       now.", "Use Reset", "Cancel"). Using it is `POST …/limits/reset` (below, "Resets").
-    `rail`: the accounts signed in on the answering box (`here`) whose plan hasn't ended, in the
+    `rail`: the accounts signed in on the answering box (`here`) whose plan hasn't ended and that
+    have numbers (one with nothing read yet has no ring, never an empty one), in the
     rows' order, each item `{key, rows, ring, selected, title, dot?, count?, summary?, strip?}`:
     an account a ring (`rows` its own `id`); an agent's (or, for the engine's, a service's) three
     or more accounts one ring, at its first's place: `ring` the row it draws (the emptiest with

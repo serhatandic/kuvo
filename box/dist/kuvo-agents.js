@@ -9738,11 +9738,12 @@ var init_limit_display = __esm(() => {
 });
 
 // box/src/usage/limit-card.ts
-var IN_USE_FOR;
+var IN_USE_FOR, CURRENT_FOR;
 var init_limit_card = __esm(() => {
   init_limit_display();
   init_limits_rows();
   IN_USE_FOR = 30 * 60000;
+  CURRENT_FOR = 30 * 60000;
 });
 
 // box/src/usage/limits-rows.ts
@@ -32907,4 +32908,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents a5828053c7a9bc125fff7df5f80b97fee7cc3a2b86efde01bcdaefb71816dd8e
+// Built from Packages/Box/src/agents 4e493b2aa8e6e897eb365ed63740c84bfd130e6c7ccca8e387ccadfa86ef8624

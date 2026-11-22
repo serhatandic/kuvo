@@ -115,9 +115,11 @@ export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false,
   }
   const rows = groups.map(({ id, members }) => {
     const mergedAccount = merged(members)
-    // Older peers can still advertise a Codex reading long after they stopped polling it.
+    // Older peers can still advertise a Codex reading long after they stopped polling it. (This
+    // box's own last reading stays, as of when it was read.)
+    const ownWindow = (window: LimitWindow) => members.some(member => member.box.here && member.account.windows.includes(window))
     const account = mergedAccount.service === "codex"
-      ? { ...mergedAccount, windows: mergedAccount.windows.filter(window => now - window.read <= 20 * 60_000) }
+      ? { ...mergedAccount, windows: mergedAccount.windows.filter(window => now - window.read <= 20 * 60_000 || ownWindow(window)) }
       : mergedAccount
     const row: LimitRow = {
       ...ringed(account, now),

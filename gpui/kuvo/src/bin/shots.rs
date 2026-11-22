@@ -402,10 +402,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "rail-card-codex-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_2) },
     Screen { slug: "rail-card-codex-confirm", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_confirm) },
     Screen { slug: "rail-card-antigravity-20", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_3) },
-    Screen { slug: "rail-card-antigravity-4", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
-    Screen { slug: "rail-card-codex-no-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_2) },
-    Screen { slug: "rail-card-claude-unread", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
-    Screen { slug: "rail-card-antigravity-unknown", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-antigravity-4", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-codex-no-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
+    Screen { slug: "rail-card-antigravity-as-of", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
@@ -2646,8 +2645,8 @@ fn main() -> anyhow::Result<()> {
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
                 "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
-                "rail-card-antigravity-4" | "rail-card-codex-no-resets" | "rail-card-claude-unread" => stand_in.set_usage_sample(UsageSample::CardsFew),
-                "rail-card-antigravity-unknown" => stand_in.set_usage_sample(UsageSample::CardsUnknown),
+                "rail-card-antigravity-4" | "rail-card-codex-no-resets" => stand_in.set_usage_sample(UsageSample::CardsFew),
+                "rail-card-antigravity-as-of" => stand_in.set_usage_sample(UsageSample::CardsAsOf),
                 slug if slug.starts_with("rail-card-") => stand_in.set_usage_sample(UsageSample::Cards),
                 _ => {}
             }

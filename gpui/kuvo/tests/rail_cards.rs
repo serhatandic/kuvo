@@ -111,8 +111,9 @@ fn cancel_closes_the_confirm_and_uses_nothing(cx: &mut TestAppContext) {
 #[gpui::test]
 fn no_reset_offered_means_no_footer(cx: &mut TestAppContext) {
     let (_stand_in, _workspace, cx) = open(cx, UsageSample::CardsFew);
-    // Claude, Antigravity's four, then Codex with no reset.
-    rest_on(cx, "ring-2");
+    // Antigravity's four, then Codex with no reset (Claude, with nothing read yet, has no ring).
+    assert!(shown(cx, "ring-1") && !shown(cx, "ring-2"));
+    rest_on(cx, "ring-1");
     assert!(shown(cx, "card-codex-line-primary"));
     assert!(!shown(cx, "ring-card-resets") && !shown(cx, "ring-card-use-reset"));
 }
@@ -123,7 +124,7 @@ fn an_agents_many_accounts_are_one_ring_and_its_card_shows_each_in_a_strip(cx: &
     // Two Claude, Codex, and Antigravity's twenty as one ring with their count.
     assert!(shown(cx, "ring-3") && shown(cx, "ring-3-count") && !shown(cx, "ring-4"));
     rest_on(cx, "ring-3");
-    assert!(shown(cx, "ring-card-summary"));
+    assert!(shown(cx, "ring-card-aside"), "how many are fine");
     assert!((0..20).all(|ix| shown(cx, &format!("ring-strip-{ix}"))) && !shown(cx, "ring-strip-20"));
     // The one in use in full; resting on another shows that one instead.
     assert!(shown(cx, "card-antigravity-Lab 12-line-gemini-5h"));
@@ -132,4 +133,12 @@ fn an_agents_many_accounts_are_one_ring_and_its_card_shows_each_in_a_strip(cx: &
     cx.run_until_parked();
     assert!(shown(cx, "card-antigravity-Lab 07-line-gemini-5h"), "the emptiest, Lab 07, rested on");
     assert!(!shown(cx, "card-antigravity-Lab 12-line-gemini-5h"));
+}
+
+#[gpui::test]
+fn a_card_whose_numbers_arent_current_keeps_them_and_says_as_of_when(cx: &mut TestAppContext) {
+    let (_stand_in, _workspace, cx) = open(cx, UsageSample::CardsAsOf);
+    rest_on(cx, "ring-0");
+    assert!(shown(cx, "card-antigravity-line-gemini-5h") && shown(cx, "card-antigravity-line-gemini-weekly"), "its last numbers, never an empty card");
+    assert!(shown(cx, "ring-card-aside"), "as of when");
 }

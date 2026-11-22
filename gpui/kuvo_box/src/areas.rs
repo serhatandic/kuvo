@@ -925,6 +925,9 @@ pub struct Card {
     pub lines: Vec<CardLine>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Its numbers aren't current: as of when (`asOf`), said quietly; empty where they are.
+    #[serde(default, deserialize_with = "readable")]
+    pub as_of: Vec<CardWord>,
     #[serde(default)]
     pub in_use: bool,
     #[serde(default, deserialize_with = "lenient")]

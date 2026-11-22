@@ -179,8 +179,8 @@ pub enum UsageSample {
     Cards,
     /// The same with four Antigravity accounts, Claude before its first reading, and Codex with no reset.
     CardsFew,
-    /// One Antigravity account whose use Google doesn't count.
-    CardsUnknown,
+    /// One Antigravity account last read three hours ago (not running here since): its last numbers, as of then.
+    CardsAsOf,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -246,7 +246,7 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
         "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => {
             let (rows, rail) = match areas.usage {
                 _ if areas.empty => (Vec::new(), None),
-                UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsUnknown => {
+                UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsAsOf => {
                     let (rows, rail) = carded(now, areas.usage);
                     (rows, Some(rail))
                 }
@@ -776,7 +776,7 @@ fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
     ];
     match sample {
         // (Served with their cards, `carded`.)
-        UsageSample::Default | UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsUnknown => {}
+        UsageSample::Default | UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsAsOf => {}
         UsageSample::Many => {
             rows.insert(4, row("antigravity", "Antigravity", Some("antigravity"), "", "Pro", vec![
                 window("gemini-5h", "Gemini · 5-hour", 0.35, 4.0 * HOUR, Some(300), None, Some("Gemini · 5-hour")),
@@ -1004,16 +1004,23 @@ fn carded(now: f64, sample: UsageSample) -> (Vec<Value>, Value) {
                 lab("Studio", 0.12, 0.3, None, false, false),
             ];
             let codex = codex(false);
-            let rail = json!([single(&claude), group(labs.clone()), single(&codex)]);
+            // (Claude, with nothing read yet, has no ring.)
+            let rail = json!([group(labs.clone()), single(&codex)]);
             let mut rows = vec![claude];
             rows.extend(labs);
             rows.push(codex);
             (rows, rail)
         }
-        UsageSample::CardsUnknown => {
-            let mut only = lab("Antigravity", 0.0, 0.0, None, false, true);
-            only["card"]["title"] = json!("Antigravity");
-            only["title"] = json!("Antigravity");
+        UsageSample::CardsAsOf => {
+            let read = now - 3.0 * HOUR;
+            let mut only = row("antigravity#own", "antigravity", "Antigravity", "", "Pro", vec![
+                window("gemini-5h", "Gemini · 5-hour", 0.35, 1.5 * HOUR, 300, None, false),
+                window("gemini-weekly", "Gemini · Weekly", 0.52, 4.0 * DAY, 10080, None, false),
+            ], json!({ "title": "Antigravity", "name": "Pro" }));
+            for window in only["windows"].as_array_mut().unwrap() {
+                window["read"] = json!(read);
+            }
+            only["card"]["asOf"] = json!([{ "text": "as of ", "at": read, "as": "time", "tone": "faint" }]);
             let rail = json!([single(&only)]);
             (vec![only], rail)
         }

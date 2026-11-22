@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 899cf254f72f
+// Kuvo folder layout 23 35d472d61ed0
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "899cf254f72f";
+var BRIDGE_VERSION = "35d472d61ed0";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -115828,7 +115828,17 @@ function cardOf2(row, pace, now, siblings) {
     const [gb, mb] = rank2(b);
     return ga - gb || ma - mb;
   });
-  const lines = row.ended ? [] : windows.map((window2) => line3(window2, window2.expired ? undefined : pace?.predict(paceKey(row, window2), window2, now) ?? (window2.used >= 0.995 ? { state: "used-up" } : undefined)));
+  const current = (window2) => now - window2.read <= CURRENT_FOR2;
+  const prediction = (window2) => {
+    if (window2.expired)
+      return;
+    if (window2.used >= 0.995)
+      return { state: "used-up" };
+    return current(window2) ? pace?.predict(paceKey(row, window2), window2, now) : undefined;
+  };
+  const lines = row.ended ? [] : windows.map((window2) => line3(window2, prediction(window2)));
+  const newest = Math.max(0, ...row.windows.map((window2) => window2.read));
+  const asOf = lines.length && newest && now - newest > CURRENT_FOR2 ? [{ text: "as of ", at: newest, as: "time", tone: "faint" }] : undefined;
   const name = nameOf7(row);
   const base = baseTitle(row);
   const title = siblings > 1 ? row.title.includes(" · ") ? row.title : `${base} · ${name}` : row.title;
@@ -115849,6 +115859,7 @@ function cardOf2(row, pace, now, siblings) {
     ...left !== undefined ? { left } : {},
     lines,
     ...note ? { note } : {},
+    ...asOf ? { asOf } : {},
     ...turnRead && now - turnRead <= IN_USE_FOR ? { inUse: true } : {},
     ...resets ? { resets } : {}
   };
@@ -115909,12 +115920,13 @@ function railOf(rows) {
   }
   return items;
 }
-var SEP, percent = (share) => `${Math.round(Math.max(0, Math.min(1, share)) * 100)}% left`, IN_USE_FOR, GROUP_FROM = 3, paceKey = (row, window2) => `${row.id}|${limitOf(window2)}`, railed = (row) => row.boxes.some((box) => box.here) && !row.ended, railKey = (row) => row.agent ?? row.service, WORST, newestTurn = (row) => Math.max(0, ...row.windows.filter((window2) => window2.source === "turn").map((window2) => window2.read));
+var SEP, percent = (share) => `${Math.round(Math.max(0, Math.min(1, share)) * 100)}% left`, IN_USE_FOR, CURRENT_FOR2, GROUP_FROM = 3, paceKey = (row, window2) => `${row.id}|${limitOf(window2)}`, railed = (row) => row.boxes.some((box) => box.here) && !row.ended && row.windows.length > 0, railKey = (row) => row.agent ?? row.service, WORST, newestTurn = (row) => Math.max(0, ...row.windows.filter((window2) => window2.source === "turn").map((window2) => window2.read));
 var init_limit_card = __esm(() => {
   init_limit_display();
   init_limits_rows();
   SEP = { text: " · ", tone: "faint" };
   IN_USE_FOR = 30 * 60000;
+  CURRENT_FOR2 = 30 * 60000;
   WORST = { danger: 0, warning: 1, calm: 2, unknown: 3 };
 });
 
@@ -115936,7 +115948,8 @@ function limitRows(boxes, now, presentUsage = false, pace) {
   }
   const rows = groups.map(({ id, members }) => {
     const mergedAccount = merged3(members);
-    const account = mergedAccount.service === "codex" ? { ...mergedAccount, windows: mergedAccount.windows.filter((window2) => now - window2.read <= 20 * 60000) } : mergedAccount;
+    const ownWindow = (window2) => members.some((member) => member.box.here && member.account.windows.includes(window2));
+    const account = mergedAccount.service === "codex" ? { ...mergedAccount, windows: mergedAccount.windows.filter((window2) => now - window2.read <= 20 * 60000 || ownWindow(window2)) } : mergedAccount;
     const row = {
       ...ringed(account, now),
       ...presentUsage ? { usage: limitDisplay(account, members, now, accountTitle(account)) } : {},
@@ -116429,7 +116442,7 @@ class Limits {
         ...account.label ? { label: account.label } : {},
         ...entry.identity ? { identity: entry.identity } : {},
         ...entry.plan ? { plan: entry.plan } : {},
-        windows: account.limits.keepLastReading ? entry.windows : entry.windows.filter((window2) => this.recent(account.limits, window2)),
+        windows: account.limits.keepLastReading || account.agent ? entry.windows : entry.windows.filter((window2) => this.recent(account.limits, window2)),
         ...entry.notices?.length ? { notices: entry.notices.filter((n) => currentNotice(n, this.now())) } : {},
         ...entry.noticeState ? { noticeState: entry.noticeState } : {},
         ...entry.balance ? { balance: entry.balance } : {},

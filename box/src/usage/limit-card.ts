@@ -51,6 +51,8 @@ export interface LimitCard {
   lines: CardLine[]
   /** Why there's nothing (or not everything) to show, in words. */
   note?: string
+  /** Its numbers aren't current (none read for half an hour): as of when, quietly. */
+  asOf?: CardWord[]
   /** Sessions ran on it lately, more lately than any other of its agent's accounts. */
   inUse?: true
   resets?: CardResets
@@ -78,6 +80,8 @@ const SEP: CardWord = { text: " · ", tone: "faint" }
 const percent = (share: number) => `${Math.round(Math.max(0, Math.min(1, share)) * 100)}% left`
 /** A window used lately in a turn is the account in use, for this long. */
 const IN_USE_FOR = 30 * 60_000
+/** Numbers read longer ago than this aren't current: the card says as of when, and predicts nothing. */
+export const CURRENT_FOR = 30 * 60_000
 /** An agent's accounts share one ring from this many. */
 export const GROUP_FROM = 3
 
@@ -151,7 +155,16 @@ export function cardOf(row: LimitRow, pace: Pace | undefined, now: number, sibli
     const [gb, mb] = rank(b)
     return ga - gb || ma - mb
   })
-  const lines = row.ended ? [] : windows.map((window) => line(window, window.expired ? undefined : pace?.predict(paceKey(row, window), window, now) ?? (window.used >= 0.995 ? { state: "used-up" } : undefined)))
+  const current = (window: LimitWindow) => now - window.read <= CURRENT_FOR
+  const prediction = (window: LimitRow["windows"][number]): Prediction | undefined => {
+    if (window.expired) return undefined
+    if (window.used >= 0.995) return { state: "used-up" }
+    // (Not current: what's left as last read, and when it resets; no pace from old numbers.)
+    return current(window) ? pace?.predict(paceKey(row, window), window, now) : undefined
+  }
+  const lines = row.ended ? [] : windows.map((window) => line(window, prediction(window)))
+  const newest = Math.max(0, ...row.windows.map((window) => window.read))
+  const asOf: CardWord[] | undefined = lines.length && newest && now - newest > CURRENT_FOR ? [{ text: "as of ", at: newest, as: "time", tone: "faint" }] : undefined
   const name = nameOf(row)
   const base = baseTitle(row)
   const title = siblings > 1 ? (row.title.includes(" · ") ? row.title : `${base} · ${name}`) : row.title
@@ -179,6 +192,7 @@ export function cardOf(row: LimitRow, pace: Pace | undefined, now: number, sibli
     ...(left !== undefined ? { left } : {}),
     lines,
     ...(note ? { note } : {}),
+    ...(asOf ? { asOf } : {}),
     ...(turnRead && now - turnRead <= IN_USE_FOR ? { inUse: true as const } : {}),
     ...(resets ? { resets } : {}),
   }
@@ -192,8 +206,8 @@ export function notePace(row: LimitRow, pace: Pace, now: number) {
   }
 }
 
-/** The rail's accounts: those signed in on this computer, with a plan that hasn't ended. */
-export const railed = (row: LimitRow) => row.boxes.some((box) => box.here) && !row.ended
+/** The rail's accounts: those signed in on this computer, with a plan that hasn't ended, once there are numbers of it (never an empty ring). */
+export const railed = (row: LimitRow) => row.boxes.some((box) => box.here) && !row.ended && row.windows.length > 0
 /** What groups an account with others on the rail: its coding agent, else its service. */
 export const railKey = (row: Pick<LimitRow, "agent" | "service">) => row.agent ?? row.service
 
