@@ -25999,7 +25999,14 @@
     },
     "404": {
      "object": {
-      "message": "string"
+      "message": "string",
+      "delivered?": "bool"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "arriving?": "bool"
      }
     },
     "502": {

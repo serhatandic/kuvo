@@ -426,5 +426,5 @@ export const SESSION_ROUTES: RouteShape[] = [
   // (The coding agents' bridge's, passed on by the box's link as it came.)
   { route: "GET kuvo/agents/api/kuvo/btw/:session/threads", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/agents/api/kuvo/btw/:session/threads/events", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
-  { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED, 404: object({ message: string, "delivered?": bool }), 409: object({ message: string, "arriving?": bool }), 502: REFUSED, 503: REFUSED } },
 ];

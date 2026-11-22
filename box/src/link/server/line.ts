@@ -15,8 +15,9 @@ export const LINE_WATCH_ROUTE = "kuvo/line/watch";
 
 /** How often a quiet line says it's there (`beat`), how long a line's topics keep running with no
  * stream attached (`kept`), and how much of what was sent it keeps to send again (`bytes`). A test
- * sets its own. */
-export const lineTiming = { beat: 5_000, kept: 120_000, bytes: 4 * 1024 * 1024 };
+ * sets its own. An event stream that says nothing at all (not even its own heartbeat) for
+ * `eventsQuiet` is opened again, saying a gap: one that stalled never freezes a conversation. */
+export const lineTiming = { beat: 5_000, kept: 120_000, bytes: 4 * 1024 * 1024, eventsQuiet: 60_000 };
 /** How long `once` waits for every topic's first line. */
 const ONCE_MS = 10_000;
 /** Before a topic that ended (its source dropped, the engine wasn't ready) is opened again. */
@@ -119,10 +120,12 @@ const wait = (ms: number, signal: AbortSignal) => new Promise<void>(done => {
  * and ends unless it's only not ready yet (5xx). */
 async function runTopic(line: Line, name: string, topic: Topic) {
   const { signal } = topic.stop;
-  let opened = 0;
+  let attempts = 0;
+  let refusedLast = "";
   let last: string | undefined;
   let tries = 0;
   while (!signal.aborted) {
+    const attempt = attempts++;
     let status = 0;
     let events = false;
     let refusal = "";
@@ -151,20 +154,31 @@ async function runTopic(line: Line, name: string, topic: Topic) {
       last = text;
       emit(line, { t: name, d: value });
     };
+    // This opening's own end: the topic's, or its events gone quiet.
+    const opening = new AbortController();
+    const ended = () => opening.abort();
+    signal.addEventListener("abort", ended, { once: true });
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    const heard = () => {
+      clearTimeout(quiet);
+      if (events) quiet = setTimeout(() => opening.abort(), lineTiming.eventsQuiet);
+    };
     try {
       const request: LinkRequest = { ...line.base, method: "GET", path: topic.route, body: undefined };
-      for await (const piece of line.dispatch(request, signal) as AsyncIterable<AnyPiece>) {
-        if (signal.aborted) break;
+      for await (const piece of line.dispatch(request, opening.signal) as AsyncIterable<AnyPiece>) {
+        if (signal.aborted || opening.signal.aborted) break;
         if (piece.head) {
           status = piece.head.status;
           const headers = piece.head.headers ?? {};
           const type = Object.entries(headers).find(([key]) => key.toLowerCase() === "content-type")?.[1];
           events = isEvents(topic.route, typeof type === "string" ? type : undefined);
+          heard();
           if (status >= 200 && status < 300) {
             tries = 0;
-            // Events from before this opening may be missing: the client reads its conversation again.
-            if (events && opened > 0) emit(line, { t: name, gap: true });
-            opened++;
+            refusedLast = "";
+            // Events from before this opening may be missing (an earlier one dropped, or wasn't
+            // ready): the client reads its conversation again.
+            if (events && attempt > 0) emit(line, { t: name, gap: true });
           }
         }
         if (piece.body) {
@@ -172,6 +186,7 @@ async function runTopic(line: Line, name: string, topic: Topic) {
             refusal += piece.body.toString("utf8");
             continue;
           }
+          heard();
           rest += piece.body.toString("utf8");
           let at: number;
           while ((at = rest.indexOf("\n")) >= 0) {
@@ -183,13 +198,19 @@ async function runTopic(line: Line, name: string, topic: Topic) {
       if (rest) take(rest.replace(/\r$/, ""));
       if (events) take("");
     } catch {
-      // Cut off (the engine went halfway): opened again, as one that ended.
+      // Cut off (the engine went halfway, or it went quiet): opened again, as one that ended.
+    } finally {
+      clearTimeout(quiet);
+      signal.removeEventListener("abort", ended);
     }
     if (signal.aborted) return;
     if (status && (status < 200 || status >= 300)) {
       const said = parsed(Buffer.from(refusal));
       const message = isObject(said) && typeof said.message === "string" ? said.message : refusal.slice(0, 500);
-      emit(line, { t: name, refused: { status, message, ...(isObject(said) ? { said } : {}) } });
+      const refused = { status, message, ...(isObject(said) ? { said } : {}) };
+      // (Said once while it goes on being so, not at each try.)
+      if (JSON.stringify(refused) !== refusedLast) emit(line, { t: name, refused });
+      refusedLast = JSON.stringify(refused);
       // Turned down: it ends. Not ready yet: tried again.
       if (status < 500) {
         line.topics.delete(name);

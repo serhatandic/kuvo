@@ -223,6 +223,18 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_none")).status).toBe(404)
 })
 
+test("one the app still shows on its way can be removed: it's taken out as it arrives, or said to have gone already", async () => {
+  // Not here yet: held as it comes, for the app's removal (asked again) to take out.
+  const coming = await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_coming?arriving=1")
+  expect(coming).toEqual({ status: 409, json: { message: "It’s still on its way, and is taken out as it arrives.", arriving: true } })
+  expect(Object.keys(queueOf("ses_q").arriving ?? {})).toContain("msg_coming")
+  // Handed to the agent already: said so, never a row that can't be acted on.
+  const { sentOnce } = await import("../src/link/server/sent-once")
+  await sentOnce("engine\nses_q\nmsg_went", async () => ({ status: 200, headers: {}, body: Buffer.from("{}") }))
+  const went = await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_went?arriving=1")
+  expect(went).toEqual({ status: 404, json: { message: "It was already sent to the agent.", delivered: true } })
+})
+
 for (const failedRead of ["inbox", "transcript"] as const) {
   test(`Edit recovers its draft when the ${failedRead} read fails after Delete`, async () => {
     const route = "kuvo/sessions/ses_q/queue/msg_steer"

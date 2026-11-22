@@ -55,7 +55,7 @@ const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch
 // (The bridge's record names a process that's it: one of this test's own, stopped at its end.)
 const bridgeProcess = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)", "kuvo-agents"], { stdio: "ignore" })
 afterAll(() => { engine.stop(true); bridge.stop(true); bridgeProcess.kill() })
-afterEach(() => { endLines(); lineTiming.beat = 5_000 })
+afterEach(() => { endLines(); lineTiming.beat = 5_000; lineTiming.eventsQuiet = 60_000 })
 
 const handler = engineHandler(() => ({ port: engine.port, password: "test" }) as any, { name: "test" } as any, () => ({ port: bridge.port, password: "test", pid: bridgeProcess.pid }) as any)
 
@@ -212,4 +212,22 @@ test("once: each topic's state now, then it ends", async () => {
   const seen = [await line.said(), await line.said()]
   expect(seen.map(each => each.t).sort()).toEqual(["missing", "side"])
   expect(await line.said()).toBeNull()
+})
+
+test("an event stream that stalls (open, saying nothing) is opened again, with a gap, so a conversation never freezes", async () => {
+  lineTiming.eventsQuiet = 50
+  const before = engineFeeds.open.length
+  const line = open({ engine: "api/event" })
+  await line.next()
+  await engineFeeds.opened(before + 1)
+  // The engine's stream stays open and says nothing: the box opens it again, and says so.
+  expect(await line.said()).toMatchObject({ t: "engine", gap: true })
+  await engineFeeds.opened(before + 2)
+  lineTiming.eventsQuiet = 60_000
+  engineFeeds.open.at(-1)!.send(event("message.updated", "ses_1"))
+  for (;;) {
+    const said = await line.said()
+    if (said.d) { expect(said).toMatchObject({ t: "engine", d: { type: "message.updated" } }); break }
+  }
+  await line.drop()
 })

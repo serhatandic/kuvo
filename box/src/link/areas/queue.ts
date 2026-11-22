@@ -26,7 +26,7 @@ import { composed, isEmpty, NotListed, sentAgain } from "./messages";
 import type { Composed } from "./messages";
 import { fromPhone, modelInput } from "../server/forward";
 import { namedIn, namingHere } from "../server/naming";
-import { answering, BUSY, collected, forgetSent, SENDING_PATIENCE, sentKey, sentOnce } from "../server/sent-once";
+import { answering, BUSY, collected, forgetSent, SENDING_PATIENCE, sentKey, sentOnce, wentAlready } from "../server/sent-once";
 import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
@@ -161,7 +161,17 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
         const place = await placeOfSession(session, targetsOf({ readEngine, bridge })).catch(() => undefined);
         return { target: place?.target, bridge: !!place && bridge()?.port === place.target.port };
       });
-      if (!removed) return yield* json(404, { message: "That message isn't waiting any more." });
+      if (!removed) {
+        // One the client still shows on its way (`arriving=1`): taken out as it arrives, or, gone
+        // to the agent already, said so. Never a message on screen that can't be acted on.
+        const arriving = new URLSearchParams(request.path.split("?")[1] ?? "").get("arriving") === "1";
+        if (arriving && wentAlready(session, id)) return yield* json(404, { message: "It was already sent to the agent.", delivered: true });
+        if (arriving) {
+          await holdArriving(session, [id]);
+          return yield* json(409, { message: "It’s still on its way, and is taken out as it arrives.", arriving: true });
+        }
+        return yield* json(404, { message: "That message isn't waiting any more." });
+      }
       forgetSent(session, id);
       return yield* json(200, { ...shownQueue(queueOf(session)), removed });
     } catch (error) {
