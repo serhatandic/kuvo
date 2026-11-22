@@ -58,6 +58,9 @@ export interface HeldTurnNote {
   from: number
   /** The request that the turn's end answers (an ACP agent's `session/prompt`). */
   request?: number | string
+  /** What a bridge taking the turn up needs that only the one before knew (Antigravity's place in its
+   * transcript), written as that one made way (`Thread.handOver`). */
+  state?: unknown
 }
 
 /** What a held agent's record says of it, for a bridge adopting it. */
@@ -178,31 +181,45 @@ function stopHolder(record: HoldRecord) {
   } catch {}
 }
 
+/** What a bridge starting takes up of the agents held here: turns under way, by session, and agents between turns. */
+export interface Adopted {
+  turns: Map<string, HeldTurn>
+  /** Agents with no turn under way, attached as they are (nothing said again), for their agent to take up (`Agent.adoptIdle`). */
+  idle: { held: Held; meta: HeldMeta }[]
+}
+
 /**
- * This box's held agents, as a bridge starts: those with turns under way attached (the next
- * generation, from where the oldest turn began), by session; every other one stopped, as the
- * bridge before would have stopped it (nothing of it is under way; its kind isn't one this bridge
- * takes up; or what it said since its turn began is no longer all there).
+ * This box's held agents, as a bridge starts (the one before made way, or crashed): each attached,
+ * the next generation. One with turns under way from where the oldest of them began, each taken up
+ * again in its session; one between turns as it is, for its next turn. Only one this bridge can't
+ * take up is stopped (its kind or version isn't one it speaks to, its agent ended, or what it said
+ * since its turn began is no longer all there). `skip`: those a bridge handover attached already.
  */
-export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefined): Promise<Map<string, HeldTurn>> {
-  const found = new Map<string, HeldTurn>()
+export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefined, skip: ReadonlySet<string> = new Set()): Promise<Adopted> {
+  const found: Adopted = { turns: new Map(), idle: [] }
   if (!folder) return found
   forgetOldPrograms(folder)
   for (const record of heldIn(folder)) {
+    if (skip.has(record.id)) continue
     const meta = record.meta as Partial<HeldMeta>
     const turns = Object.entries(meta.turns ?? {})
-    // Antigravity's transcript cursor belongs to a live checkpoint. After an unplanned
-    // crash, ordinary session repair closes that turn instead of guessing what was shown.
-    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" || !turns.length || record.exited) {
+    // Antigravity's turn goes on only from its place in its transcript, which the bridge before
+    // wrote as it made way: after a crash (none written), session repair ends that turn instead of
+    // guessing what was shown.
+    if (!meta.provider || !adoptable(meta) || (meta.kind === "antigravity" && turns.some(([, note]) => note.state === undefined)) || record.exited) {
       stopHolder(record)
       continue
     }
     let held: Held
     try {
-      held = await attach(folder, record, Math.max(0, Math.min(...turns.map(([, note]) => note.from))))
+      held = await attach(folder, record, turns.length ? Math.max(0, Math.min(...turns.map(([, note]) => note.from))) : Number.MAX_SAFE_INTEGER)
     } catch (error) {
       // (Another bridge starting at the same moment took it, a newer generation: it's that one's.)
       if (!/generation/.test(String((error as Error)?.message))) stopHolder(record)
+      continue
+    }
+    if (!turns.length) {
+      found.idle.push({ held, meta: meta as HeldMeta })
       continue
     }
     if (held.gap) {
@@ -210,7 +227,7 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
       continue
     }
     const gate = new HeldGate(held, turns.map(([thread]) => thread))
-    for (const [thread, note] of turns) found.set(note.session, { held, meta: meta as HeldMeta, thread, note, gate })
+    for (const [thread, note] of turns) found.turns.set(note.session, { held, meta: meta as HeldMeta, thread, note, gate, state: note.state })
   }
   return found
 }

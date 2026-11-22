@@ -36,8 +36,8 @@ import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
 import { workOrder, type WorkOrder } from "../shared/work-order"
-import { agentHoldFolder, type HeldTurn } from "./hold/adopt"
-import { heldIn } from "./hold/client"
+import { agentHoldFolder, type HeldMeta, type HeldTurn } from "./hold/adopt"
+import { heldIn, heldSessions, releaseHolders, type Held } from "./hold/client"
 import { noTokens } from "./wire"
 
 type Delivery = "steer" | "queue"
@@ -974,8 +974,10 @@ export class Sessions {
     for (const [id, turn] of held) {
       if (this.resumable(id, turn)) {
         const saved = transfer?.[id]
-        if (saved) this.transferred.set(id, saved)
-        turn.state = saved?.agentState
+        if (saved) {
+          this.transferred.set(id, saved)
+          turn.state = saved.agentState
+        }
         this.resuming.set(id, turn)
       }
       else turn.gate.drop(turn.thread)
@@ -3558,6 +3560,34 @@ export class Sessions {
       if (transfer) live.always = transfer.always
       this.start(id, live, { id: message.id, text: "", files: [], delivery: "steer", resume: held })
     }
+  }
+
+  /**
+   * The bridge making way for the next (a newer build, a release switch): every agent it holds is
+   * let go of first, idle or at work, so nothing that follows reaches one (hold/client.ts); their
+   * sessions stay as they are, written whole, for the next bridge to take up (hold/adopt.ts). The
+   * rest close as on a stop. Done once every holder has heard.
+   */
+  async makeWay() {
+    // (What the next bridge needs of a turn under way that only this one knows, written first.)
+    for (const live of this.live.values()) runOf(live.doing)?.agent?.thread.handOver?.()
+    const held = heldSessions()
+    const heard = releaseHolders()
+    this.closeAll(held)
+    this.store.flushForTransfer([...held])
+    await heard
+  }
+
+  /** An agent's process the bridge before this one held between turns (it made way, or crashed):
+   * its agent's again, or its session's (`meta.session`), as it is; false when none here takes it up. */
+  adoptIdle(held: Held, meta: HeldMeta): boolean {
+    // (One that serves its agent's sessions, Codex's app-server: its agent's.)
+    const agent = this.agent(meta.provider)
+    if (agent?.adoptIdle) return agent.adoptIdle(held, meta)
+    const id = typeof meta.session === "string" ? meta.session : undefined
+    const record = id ? this.store.get(id) : undefined
+    if (!id || !record || record.session.parentID) return false
+    return this.threadOf(id, this.state(id), record, meta.provider)?.adoptIdle?.(held, meta) ?? false
   }
 
   /** Messages held for this bridge by the one before it (renewal.ts), or by this one while it waited to

@@ -406,9 +406,9 @@ describe("an agent under a holder", () => {
     first.detach()
     await first.closed
     const [one, other] = await Promise.all([adoptHeld(folder), adoptHeld(folder)])
-    const taken = [one, other].filter((found) => found.size)
+    const taken = [one, other].filter((found) => found.turns.size)
     expect(taken.length).toBe(1)
-    const winner = taken[0]!.get("ses_x")!.held
+    const winner = taken[0]!.turns.get("ses_x")!.held
     // (Its agent still answers the one that has it.)
     const answered = new Promise<string>((resolve) => winner.onLine(() => resolve("answered")))
     winner.write("ping")
@@ -426,7 +426,7 @@ describe("an agent under a holder", () => {
     mkdirSync(folder, { recursive: true, mode: 0o700 })
     writeFileSync(join(folder, `${id}.json`), JSON.stringify({ proto: "hold/1", holder: HOLDER, id, kind: "jsonrpc", pid: other.pid, child: null, generation: 1, exited: null, meta: { provider: "codex-cli", kind: "codex", turns: { t1: { session: "ses_x", from: 0 } } }, key: "k".repeat(48) }))
     writeFileSync(join(folder, `${id}.sock`), "")
-    expect(await adoptHeld(folder)).toEqual(new Map())
+    expect(await adoptHeld(folder)).toEqual({ turns: new Map(), idle: [] })
     expect(existsSync(join(folder, `${id}.json`))).toBe(false)
     expect(existsSync(join(folder, `${id}.sock`))).toBe(false)
     expect(alive(other.pid!)).toBe(true)

@@ -3583,8 +3583,13 @@ bridge, checks the keeper's shell syntax, and asks the staged link
 with one rename. The plugin directory follows `bin/opencode-plugins` and the selected keeper names
 the engine. The existing `bin/kuvo-start` launch path stays in use. After a restart, the keeper uses
 `run/previous` to restore the previous target if the selected release can't start and answer within
-two minutes. The restarted bridge adopts live holders and the box continues interrupted turns it
-couldn't adopt. The macOS Helper is the signed supervisor for those workers. Its backing bundle lives
+two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of every holder, at
+work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in
+their sessions, and an agent between turns takes its session's next message. Antigravity's turn goes on from its
+place in its transcript, which the bridge writes to the holder's record as it makes way. Only an
+agent it can't take up is stopped, and its turn ends as interrupted: one from another Agent SDK or
+an older Claude Code, or an Antigravity turn whose place couldn't be written (a subagent at work,
+or a request of its own being answered). The macOS Helper is the signed supervisor for those workers. Its backing bundle lives
 at `helper/Kuvo Helper.app`, with `bin/Kuvo Helper.app` continuing to resolve there.
 
 **Repaired from the release it runs.** Every box keeps the signed release it runs, whole: as the one
@@ -4056,8 +4061,8 @@ new version without cutting a turn:
     can start something (any but `GET` and `HEAD`) coming in, starts the half minute again. Reads
     don't: the link asks the bridge whether it answers (`GET api/info`) every half minute, and
     clients read what they show; each is waited for while it's answered. Then it holds new turns, and a
-    second later, if it's still quiet, it stops as it always does (what it has is kept) and exits,
-    and its launch starts the new bundle. If that second wasn't quiet, it lets go and looks again.
+    second later, if it's still quiet, it makes way (what it has is kept): it lets go of every agent
+    it holds, stopping none, and exits, and its launch starts the new bundle, which takes each up. If that second wasn't quiet, it lets go and looks again.
   - **When there isn't one**: after an hour, in the night's window (02:00 to 05:00 in your time zone),
     or after a day whatever the hour, it holds new turns: a message (or a summary, a note) that
     would start a turn stays in its session's line (`inbox`, kept with the session, marked `held`,
@@ -4065,9 +4070,9 @@ new version without cutting a turn:
     steering into them too; a group chat's seat (`metadata.kuvo.seat`) isn't held, so a discussion
     under way goes on to its end (a new one, a message of yours to a chat meanwhile, starts too, and
     is waited for, within the half hour below), and so does a turn an agent starts on its own (a command it left
-    running ended). Then it goes, whatever else is under way (what agents left running in the
-    background, a side question, review, handoff or sign-in): each ends as it does at any restart,
-    and says so. Half an hour after it began holding, still not gone (a turn waiting on you
+    running ended). Then it goes, whatever else is under way (a side question, review, handoff
+    or sign-in): each ends as it does at any restart, and says so. What its held agents left
+    running in the background goes on with them. Half an hour after it began holding, still not gone (a turn waiting on you
     overnight, an update of the box that never finished), it lets go: what it held starts, and an
     hour later, that night still or the next, it holds again.
   - The new bridge, once it's up, starts what was held, each once (`held` cleared as it's woken).

@@ -20,10 +20,12 @@
 
 import { randomBytes } from "node:crypto"
 import { spawn, type ChildProcess } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
+import { writeSecret } from "../shared/files"
 import { fenceRules, fenceServer } from "./fence"
 import { kuvoTools, type KuvoTools } from "./kuvotools"
-import { onMachine, ownEnvironment } from "./machine"
+import { machineHome, onMachine, ownEnvironment } from "./machine"
 import { computerServers, reconnectServer, type ComputerServer, type ComputerServers } from "./servers"
 
 let server: ReturnType<typeof Bun.serve> | undefined
@@ -98,6 +100,7 @@ function hold(sessionID: string, holder: object): string {
     key = randomBytes(24).toString("hex")
     keys.set(sessionID, key)
     sessionsByKey.set(key, sessionID)
+    keepRelay()
   }
   return key
 }
@@ -244,8 +247,61 @@ async function answers(entry: ComputerServer, sessionID: string, directory: stri
   }
 }
 
+/**
+ * On a box, where the relay keeps its port and its sessions' keys (`run/agents/relay.json`, yours
+ * alone): an agent outlives its bridge under its holder, and its sandbox and its tools' settings
+ * name both, so the next bridge's relay answers there with the same keys.
+ */
+const relayRecord = machineHome ? join(machineHome, "run", "agents", "relay.json") : undefined
+
+function keepRelay() {
+  if (!relayRecord || !server) return
+  try {
+    writeSecret(relayRecord, JSON.stringify({ port: server.port, keys: Object.fromEntries(keys) }))
+  } catch (error) {
+    console.error("The tools relay's record couldn't be written:", (error as Error)?.message)
+  }
+}
+
+function listen(): ReturnType<typeof Bun.serve> {
+  let kept: { port?: unknown; keys?: Record<string, unknown> } | undefined
+  try {
+    kept = relayRecord ? JSON.parse(readFileSync(relayRecord, "utf8")) : undefined
+  } catch {}
+  for (const [sessionID, key] of Object.entries(kept?.keys ?? {})) {
+    if (typeof key !== "string" || keys.has(sessionID)) continue
+    keys.set(sessionID, key)
+    sessionsByKey.set(key, sessionID)
+  }
+  const at = (port: number) => Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 0, fetch: answer })
+  const port = Number(kept?.port)
+  try {
+    if (Number.isSafeInteger(port) && port > 0) return at(port)
+  } catch {
+    // (Taken by another program meanwhile: agents the bridge before started can't reach their tools until they start again.)
+    console.error("The tools relay's port is taken: it listens on another.", { port })
+  }
+  return at(0)
+}
+
 /** The relay's port (listening from then on). */
-export const relayPort = (): number => (server ??= Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch: answer })).port!
+export const relayPort = (): number => {
+  if (!server) {
+    server = listen()
+    keepRelay()
+  }
+  return server.port!
+}
+
+/** As a bridge starts: keys kept for sessions none of whose agents it took up from the bridge before go. */
+export function keepRelayKeys(sessions: ReadonlySet<string>) {
+  for (const [sessionID, key] of keys) {
+    if (sessions.has(sessionID) || holders.has(sessionID)) continue
+    keys.delete(sessionID)
+    sessionsByKey.delete(key)
+  }
+  keepRelay()
+}
 
 /**
  * `holder` is done with a session's tools: once nothing else holds them (another of its agents'
@@ -258,7 +314,7 @@ export function dropRelayed(sessionID: string, holder: object) {
   holders.delete(sessionID)
   const key = keys.get(sessionID)
   if (key) sessionsByKey.delete(key)
-  keys.delete(sessionID)
+  if (keys.delete(sessionID)) keepRelay()
   programs.get(sessionID)?.stop()
   programs.delete(sessionID)
   served.delete(sessionID)

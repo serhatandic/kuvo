@@ -26,7 +26,7 @@ import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
-import { usesToolRelay } from "./toolrelay"
+import { keepRelayKeys, relayPort, usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
@@ -46,8 +46,8 @@ import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalReco
 import { UnsupportedFormatVersion } from "../shared/format-version"
 import { installedLinkBuild, isInstalledBundle, KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
-import { adoptable, adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type TransferHolder } from "./hold/adopt"
-import { controlledHolders, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
+import { adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type HeldTurn, type TransferHolder } from "./hold/adopt"
+import { controlledHolders, heldIn, heldSessions, holdFolder, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
 import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
@@ -165,9 +165,13 @@ const temporary = process.env.TMPDIR?.replace(/\/$/, "") || join(home, "tmp")
 mkdirSync(temporary, { recursive: true })
 // What an agent left unpacked when the bridge last stopped without cleaning up (Antigravity's
 // agent unpacks itself, about 1 GB, for each run), and half-finished downloads.
-if (!transfer?.holders.some(holder => holder.kind === "antigravity")) {
-  rmSync(join(temporary, "antigravity"), { recursive: true, force: true })
-}
+// (But for those of agents still held, which this bridge takes up below.)
+const heldRuns = new Set(heldIn((machineHome && holdFolder(machineHome)) || join(temporary, "none")).map(record => record.meta.temporary))
+try {
+  for (const name of readdirSync(join(temporary, "antigravity"))) {
+    if (!heldRuns.has(join(temporary, "antigravity", name))) rmSync(join(temporary, "antigravity", name), { recursive: true, force: true })
+  }
+} catch {}
 // And the page of a sign-in one was in the middle of.
 leftSignIns(temporary)
 try {
@@ -239,9 +243,16 @@ const otherBridge = (() => {
     return false
   }
 })()
-const heldTurns = transfer
-  ? await adoptTransfer(machineHome!, transfer.holders, Boolean(recovered))
-  : onMachine && !otherBridge ? await adoptHeld() : new Map()
+const heldTurns = transfer ? await adoptTransfer(machineHome!, transfer.holders, Boolean(recovered)) : new Map<string, HeldTurn>()
+// Every other agent held here: the one before let go of them all (or crashed).
+const adopted = onMachine && (transfer || !otherBridge) ? await adoptHeld(undefined, new Set(transfer?.holders.map(holder => holder.id))) : { turns: new Map<string, HeldTurn>(), idle: [] }
+for (const [session, turn] of adopted.turns) heldTurns.set(session, turn)
+// On a box, the tools relay, at once where it was, with only the keys of the sessions taken up: their
+// agents reach their tools as before.
+if (onMachine && machineHome) {
+  relayPort()
+  keepRelayKeys(heldSessions())
+}
 if (standby && Object.keys(standby.transfer.sessions).some(id => !heldTurns.has(id))) throw new Error("A session is missing from the handover.")
 const sessions = new Sessions(
   store,
@@ -375,8 +386,11 @@ store.usageAccount = provider => boxServices.attribution().accounts?.[provider]
 // listens once the box has set up its sandbox: on this Mac the app starts it before the box, so an
 // agent started then would run outside the sandbox until it stops.
 await untilSandboxDecided()
-// The turns it left under way go on here, before anything can be sent to their sessions.
+// The turns it left under way go on here, before anything can be sent to their sessions; and the
+// agents it left between turns are their sessions' again, as they are. (One no session here takes
+// up, as for a session deleted meanwhile, is stopped.)
 sessions.resumeHeld()
+for (const { held, meta } of adopted.idle) if (!sessions.adoptIdle(held, meta)) held.stop()
 const gates = [...new Set([...heldTurns.values()].map(turn => turn.gate))]
 if (transfer) {
   let deadline: ReturnType<typeof setTimeout> | undefined
@@ -588,7 +602,7 @@ function liveTransfer(newer: string): Promise<void> | undefined {
       commitTransfer(bridgeRun, final, original!)
       committed = true
       console.error("Bridge transfer committed", { build, nextBuild: newer, next: final.next, holders: final.holders.length })
-      releaseHolders(new Set(final.holders.map(holder => holder.id)))
+      await releaseHolders()
       server.stop(true)
       process.exit(0)
     } finally {
@@ -723,13 +737,19 @@ function stop(reason: string, handOver = false, startReplacement = true) {
   try {
     if (record && readRendezvous<BridgeRecord>(bridgeRecordFormat, record).pid === process.pid) rmSync(record, { force: true })
   } catch {}
+  const end = () => {
+    server.stop(true)
+    if (handOver && run && kept && startReplacement) startNext(run)
+    process.exit(0)
+  }
+  // Making way: every agent it holds goes on, idle or at work, for the next bridge to take up, and
+  // it ends once each holder has heard.
+  if (handOver) return void sessions.makeWay().finally(end)
   sessions.closeAll()
-  // Every agent it holds stops with it (an app-server no session closes too), whatever exits first.
+  // The box stopping: every agent it holds stops with it (an app-server no session closes too).
   stopAllHeld()
   store.flush()
-  server.stop(true)
-  if (handOver && run && kept && startReplacement) startNext(run)
-  process.exit(0)
+  end()
 }
 
 /** The next bridge, started through its keeper's own command (`kuvo-start bridge`), once this one's
@@ -753,29 +773,9 @@ if (!onMachine) {
   process.stdin.on("close", () => stop("stdin closed"))
   process.stdin.resume()
 }
+// A release switch (its keeper starts the next bridge): it makes way, as for a newer build.
 process.on("SIGUSR2", () => {
-  if (!onMachine || stopping) return
-  // A release switch restarts this process and lets the next bridge adopt the live holders.
-  const controllers = controlledHolders()
-  if (!controllers) {
-    store.flush()
-    process.exit(0)
-  }
-  stopping = true
-  const keep = new Set<string>(), sessionsHeld = new Set<string>()
-  for (const held of controllers) {
-    const meta = held.meta as Partial<HeldMeta>
-    if (!adoptable(meta) || !meta.provider || meta.kind === "antigravity") continue
-    const turns = Object.values(meta.turns ?? {})
-    if (!turns.length) continue
-    keep.add(held.id)
-    for (const turn of turns) sessionsHeld.add(turn.session)
-  }
-  sessions.closeAll(sessionsHeld)
-  store.flushForTransfer([...sessionsHeld])
-  releaseHolders(keep)
-  server.stop(true)
-  process.exit(0)
+  if (onMachine) stop("release switch", true, false)
 })
 process.on("SIGTERM", () => stop("SIGTERM"))
 process.on("SIGINT", () => stop("SIGINT"))

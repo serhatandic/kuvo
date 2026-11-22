@@ -32,6 +32,45 @@ async function call(tools: { url: string; headers: Record<string, string> }, id:
   return { status: response.status, body: (response.status === 200 ? await response.json() : undefined) as any }
 }
 
+describe("a new bridge", () => {
+  /** A bridge's relay as a process of its own, on the box in `kuvo`: what it says first, and how to end it. */
+  async function relayBridge(kuvo: string, args: string[]) {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "support", "relay-bridge.ts"), ...args], { env: { ...process.env, KUVO_HOME: kuvo }, stdin: "pipe", stdout: "pipe", stderr: "inherit" })
+    const reader = child.stdout.getReader()
+    let said = ""
+    while (!said.includes("\n")) said += new TextDecoder().decode((await reader.read()).value)
+    reader.releaseLock()
+    return { said: JSON.parse(said.split("\n")[0]!), end: async () => (child.stdin.write("end\n"), child.stdin.flush(), await child.exited) }
+  }
+
+  test("an agent that outlived its bridge (held through an update) reaches its tools at the same address with the same key; a key the new bridge took up no agent for is turned down", async () => {
+    const kuvo = mkdtempSync(join(base, "kuvo-"))
+    const program = join(base, "said.js")
+    writeFileSync(program, `let buffer = ""
+process.stdin.on("data", (chunk) => {
+  buffer += chunk
+  let at
+  while ((at = buffer.indexOf("\\n")) >= 0) {
+    const message = JSON.parse(buffer.slice(0, at))
+    buffer = buffer.slice(at + 1)
+    if (message.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: process.env.KUVO_SESSION }] } }) + "\\n")
+  }
+})
+`)
+    const first = await relayBridge(kuvo, ["first", program, "ses_one", "ses_two"])
+    const given = first.said as Record<string, { url: string; headers: Record<string, string> }>
+    expect(await first.end()).toBe(0)
+    // The next bridge took up ses_one's agent; ses_two's was gone by then.
+    const next = await relayBridge(kuvo, ["next", program, "ses_one"])
+    try {
+      expect((await call(given.ses_one!, 1)).body.result.content[0].text).toBe("ses_one")
+      expect((await call(given.ses_two!, 2)).status).toBe(401)
+    } finally {
+      await next.end()
+    }
+  })
+})
+
 describe("on a machine: the program, run outside the sandbox", () => {
   test("each call reaches the program as its own session's, even one that names another, and answers its own request", async () => {
     // The program, as the machine's engine has it: says which session each call was for.

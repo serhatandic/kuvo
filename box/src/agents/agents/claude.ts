@@ -36,7 +36,7 @@ import { instructionsNote, toldOf } from "../told"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import type { Turn } from "../turn"
 import { hold, heldProcess, type Held } from "../hold/client"
-import { CLAUDE_SDK, agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
+import { CLAUDE_SDK, agentHoldFolder, noteTurn, type HeldMeta, type HeldTurn } from "../hold/adopt"
 
 /** How the agent SDK asks for Claude Code to be started (its `spawnClaudeCodeProcess`). */
 type SpawnOptions = { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal?: AbortSignal }
@@ -1083,6 +1083,7 @@ class ClaudeThread implements Thread {
     this.own = undefined
     own?.take?.()
     const sdk = await this.agent.sdk()
+    await this.adopting
     // Stopped while its SDK was coming.
     if (hooks.signal.aborted) return { outcome: "interrupted" }
     const modelID = input.model.id
@@ -1103,7 +1104,9 @@ class ClaudeThread implements Thread {
     const usage = this.usageGeneration
     const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.()
     // (What it left going in the background ends with it: this message says so.)
-    if (this.query && (signInChanged || this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
+    // (One taken up from the bridge before is told its instructions and tools instead, on its first
+    // turn here: those it started with weren't all kept.)
+    if (this.query && (signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork)
       this.close()
     }
@@ -1122,6 +1125,8 @@ class ClaudeThread implements Thread {
       if (this.opened?.effort !== effort) await this.query.applyFlagSettings({ effortLevel: effort ?? null }).catch(() => {})
       if (this.opened?.plan !== input.plan) await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {})
       this.opened = { model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
+      // (What it was taken up with is told it now: from here, as one started here.)
+      this.adopted = false
     }
     // Kuvo Code's own tools, as the engine's models have them, and those servers: told over its
     // pipe, not on its command line (where any process could read their key).
@@ -1228,6 +1233,32 @@ class ClaudeThread implements Thread {
   /** This conversation's Claude Code under a holder (hold/client.ts), and the holder once it's there. */
   private held?: Held
   private holding?: Promise<Held>
+  /** Its Claude Code was taken up from the bridge before (it made way, or crashed), not started here. */
+  private adopted = false
+  /** Its Claude Code being taken up between turns (`adoptIdle`): a turn waits for that. */
+  private adopting?: Promise<void>
+
+  /**
+   * Claude Code as the bridge before this one left it between turns (it made way, or crashed):
+   * this conversation's again, joined by a new SDK client at once (Claude Code takes a second
+   * `initialize`), so what it does meanwhile comes here (a command it left running ends, and it
+   * carries on), and the next turn goes to it as it is.
+   */
+  adoptIdle(held: Held, meta: HeldMeta): boolean {
+    if (this.query || meta.session !== this.session.id || meta.sdk !== SDK[0]!.version || typeof this.state.claudeSession !== "string" || !this.state.claudeStarted) return false
+    this.held = held
+    this.holding = Promise.resolve(held)
+    const opened = meta.opened as ClaudeThread["opened"] | undefined
+    this.adopting = this.agent.sdk().then(
+      (sdk) => {
+        if (this.query || !held.isOpen) return
+        this.open(sdk, opened?.model ?? "default", opened?.effort, opened?.plan ?? false, opened?.append ?? "", { saveState: () => {} }, opened?.skills, undefined, { held, meta })
+        if (opened) this.opened = opened
+      },
+      () => held.stop(),
+    )
+    return true
+  }
 
   /**
    * Claude Code rendered its instructions again, as it was started with them (a new conversation,
@@ -1463,7 +1494,7 @@ class ClaudeThread implements Thread {
     for (const { id } of this.backgroundTasks) await this.query?.stopTask?.(id).catch(() => {})
   }
 
-  private open(sdk: any, modelID: string, effort: string | undefined, plan: boolean, append: string, hooks: TurnHooks, skills?: string, subagents: ReturnType<typeof claudeSubagents> = { agents: {} }, taken?: HeldTurn) {
+  private open(sdk: any, modelID: string, effort: string | undefined, plan: boolean, append: string, hooks: Pick<TurnHooks, "saveState">, skills?: string, subagents: ReturnType<typeof claudeSubagents> = { agents: {} }, taken?: TakenUp) {
     // (Without it, the SDK's own words would be about a build of its own it doesn't have.)
     if (!this.agent.executable()) throw new Error(`Install Claude Code first: ${this.agent.install}`)
     // Why an earlier one ended is not this one's.
@@ -1497,7 +1528,8 @@ class ClaudeThread implements Thread {
     this.input = new Queue()
     const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
-    this.usageGeneration = taken ? null : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
+    this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
+    this.adopted = Boolean(taken)
     this.query = sdk.query({
       prompt: this.input,
       options: {
@@ -1509,12 +1541,12 @@ class ClaudeThread implements Thread {
         // Its subagents' words and thinking too, for their sessions (by default only their tools).
         forwardSubagentText: true,
         permissionMode: plan ? "plan" : "default",
-        canUseTool: (name: string, input: Record<string, unknown>, options: any) => taken?.gate.preparing
+        canUseTool: (name: string, input: Record<string, unknown>, options: any) => taken?.gate?.preparing
           ? taken.gate.activated.then(() => this.canUseTool(name, input, options))
           : this.canUseTool(name, input, options),
         // Before any tool runs, even one Claude Code's own settings allow (yours, or a project's).
         hooks: { PreToolUse: [{ hooks: [async (hookInput: any) => {
-          if (taken?.gate.preparing) await taken.gate.activated
+          if (taken?.gate?.preparing) await taken.gate.activated
           return this.preToolUse(hookInput)
         }] }] },
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
@@ -1621,7 +1653,7 @@ class ClaudeThread implements Thread {
       // (What it started with, for a bridge taking it up; but Kuvo Code's tools' key, which can hold
       // a server's environment, and is told again then.)
       const opened = this.opened ? { ...this.opened, tools: undefined } : undefined
-      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, sdk: SDK[0]!.version, turns: {} } })
+      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", session: this.session.id, signIn: this.agent.limits.signIn?.(), sandboxed: Boolean(whole), opened, sdk: SDK[0]!.version, turns: {} } })
       this.holding = holding
       void holding.then(
         (held) => {
@@ -1704,12 +1736,12 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any, taken?: HeldTurn) {
+  private async read(query: any, taken?: TakenUp) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
       for await (const message of query) {
-        if (taken?.gate.preparing) await taken.gate.activated
+        if (taken?.gate?.preparing) await taken.gate.activated
         this.handle(message, usage)
       }
     } catch (error) {
@@ -2489,6 +2521,9 @@ class ClaudeThread implements Thread {
     this.own = undefined
   }
 }
+
+/** A held Claude Code taken up from the bridge before: with its turn's gate, when a turn was under way in it. */
+type TakenUp = { held: Held; meta: HeldMeta; gate?: HeldTurn["gate"] }
 
 /**
  * What Claude Code sends, by kind: each is shown, used, or left out on purpose (tool_progress's

@@ -205,6 +205,14 @@ export class CursorWorker {
   private async agent(options: any, resume?: string) {
     const { agentId } = await this.rpc.request<{ agentId: string | null }>("create", { options, resume }).catch((error) => Promise.reject(revived(error)))
     if (!agentId) return undefined
+    return this.attached(agentId)
+  }
+
+  /**
+   * Its SDK agent `agentId`, live in it already (a worker the bridge before this one started, taken
+   * up as it is): only what every worker answers (`send`, `close`), whichever bridge wrote it.
+   */
+  attached(agentId: string) {
     const worker = this
     const rpc = this.rpc
     return {
@@ -225,6 +233,11 @@ export class CursorWorker {
         return active
       },
     }
+  }
+
+  /** More for its holder's record, for a bridge taking it up (none outside a holder). */
+  note(meta: Record<string, unknown>) {
+    this.rpc.holder?.note(meta)
   }
 
   stop() {

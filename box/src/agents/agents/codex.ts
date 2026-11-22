@@ -26,7 +26,7 @@ import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } fro
 import { CodexCredentials } from "../../usage/codex-credentials"
 import { RPC, RPCError } from "../rpc"
 import { hold, type Held } from "../hold/client"
-import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
+import { agentHoldFolder, noteTurn, type HeldMeta, type HeldTurn } from "../hold/adopt"
 import { CodexCitations, plainCitations, type Said } from "./codex-citations"
 import { engineSkills, skillsFolder, skillsFor, skillsRoot, turnedOff, upward, within } from "../skills"
 import { codexSubagents, subagentsFor, subagentsRoot } from "../subagents"
@@ -416,7 +416,7 @@ export class CodexAgent implements Agent {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
             console.error("Codex's holder didn't start:", error?.message ?? error)
             return undefined
           })
@@ -521,6 +521,25 @@ export class CodexAgent implements Agent {
       rpc.start()
     })
     return rpc
+  }
+
+  /**
+   * An app-server the bridge before this one held with no turn under way in it (it made way, or
+   * crashed): this bridge's own for its key again, as it is (initialized already), its threads
+   * loaded again in it as they're next used. Not when one of this bridge's own is there already.
+   */
+  adoptIdle(held: Held, meta: HeldMeta): boolean {
+    const slot = this.slot(String(meta.key ?? SHARED))
+    if ((slot.server && !slot.server.isClosed) || slot.opening) return false
+    // (Its own ids past those any earlier bridge sent it.)
+    const rpc = new RPC(held, { firstID: held.generation * 1_000_000_000 })
+    this.adopted.set(held, rpc)
+    slot.fence = String(meta.fence ?? "")
+    this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(held))
+    slot.server = rpc
+    slot.lastUse = Date.now()
+    rpc.start()
+    return true
   }
 
   private stop(key: string, reason: string) {
