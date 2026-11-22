@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 fa955890cb1e
+// Kuvo folder layout 23 e1799c75ce19
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fa955890cb1e";
+var BRIDGE_VERSION = "e1799c75ce19";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -13909,6 +13909,13 @@ function isBridge(target) {
     return false;
   }
 }
+async function messageReached(target, session, item) {
+  if (queueOf(session).waiting?.some((each) => each.id === item))
+    return true;
+  if ((await inboxOf(target, session, undefined, true)).some((entry) => entry.id === item))
+    return true;
+  return acceptedWaiting(target, session, item);
+}
 async function acceptedWaiting(target, session, item) {
   const bridge = isBridge(target);
   if (!bridge && (await inboxOf(target, session)).some((entry) => entry.id === item))
@@ -14359,6 +14366,8 @@ function queueWatcher(target, { after = DRAIN_AFTER, schedule = setTimeout, canc
           ended(session, drains, () => drain(target, session));
           break;
         }
+        if (event.data?.reason === "restart")
+          break;
         const at = Date.now();
         ended(session, stops, async (waited) => {
           if ((queueOf(session).resumed ?? 0) < at) {
@@ -14439,6 +14448,8 @@ async function queueEnd(target, session) {
   if (!Array.isArray(page?.data))
     return { failed: true };
   const last = page.data[0];
+  if (last?.type === "idle" && last.outcome === "interrupted" && last.reason === "restart")
+    return { failed: false, restarted: true, at: last.time?.created };
   const failed = last?.type === "idle" ? last.outcome !== "succeeded" : last?.type === "assistant" && isObject(last.error);
   const at = last?.time?.created;
   return { failed, at, ...failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {} };
@@ -14451,13 +14462,13 @@ async function settleFound(target, session, known) {
       await releaseLimit(target, session, saved);
     else
       await drain(target, session);
-  } else if (known && !end.failed)
+  } else if ((known || end.restarted) && !end.failed)
     await drain(target, session);
   else
     await holdQueue(target, session, end.limitStop ? end.at : undefined, [], end.limitStop);
 }
 async function scanQueues(target, found) {
-  const known = locked(FILES.lock, () => {
+  const seen = locked(FILES.lock, () => {
     let scanned = {};
     try {
       scanned = scannedFormat.read(JSON.parse(fs53.readFileSync(SCANNED_FILE, "utf8")));
@@ -14473,6 +14484,7 @@ async function scanQueues(target, found) {
     } catch {}
     return false;
   });
+  const known = seen || isBridge(target);
   const page = await asked(target, "GET", "api/session?parentID=null&limit=100&order=desc");
   const week = Date.now() - 7 * 86400000;
   for (const session of page?.data ?? []) {
@@ -43737,7 +43749,7 @@ function mutationOutcome(key, change) {
     return reused;
   return claim.answer && { ...claim.answer, acceptedAt: claim.at };
 }
-async function runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward) {
+async function runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward, orphaned) {
   const digest = fingerprint(change);
   const family = submission ? "submissions" : "mutations";
   const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
@@ -43772,7 +43784,22 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
     if (earlier.digest !== digest && !(forward && evidence && earlier.digest === forward.digestFor(evidence.owner)))
       return reused;
     const current = earlier.answer ? earlier : await running2.get(key);
-    return current?.answer ? { ...current.answer, acceptedAt: current.at } : uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
+    if (current?.answer)
+      return { ...current.answer, acceptedAt: current.at };
+    const settled = !earlier.answer && !current && !submission && earlier.digest === digest && orphaned ? await settleOrphan(key, orphaned) : null;
+    if (settled === "again")
+      return runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward);
+    if (settled) {
+      const at = Date.now();
+      locked(MUTATION_LOCK, () => {
+        const pending = readRecord2("mutations", key);
+        if (pending?.digest === digest && !pending.answer)
+          keepRecord("mutations", key, { ...pending, answer: settled, at });
+      }, { required: true });
+      const kept = readRecord2("mutations", key);
+      return kept?.answer ? { ...kept.answer, acceptedAt: kept.at } : { ...settled, acceptedAt: at };
+    }
+    return uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
   }
   const work = Promise.resolve().then(async () => {
     const answer = await run();
@@ -43811,7 +43838,28 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
       running2.delete(key);
   }
 }
-var MUTATION_ID, mutationKey = (setup, nonce) => recordKey(setup, nonce), running2, MUTATION_FEATURE = "data.mutation-identity", reused;
+function settleOrphan(key, orphaned) {
+  const under = settling2.get(key);
+  if (under)
+    return under.then((found) => found === "again" ? null : found);
+  const look = orphaned().catch(() => null).then((found) => {
+    if (found !== "again")
+      return found;
+    let released = false;
+    locked(MUTATION_LOCK, () => {
+      const pending = readRecord2("mutations", key);
+      if (pending && !pending.answer && !running2.has(key)) {
+        removeRecord("mutations", key);
+        syncDurableFile(path117.join(RUN, "owned-data", "mutations"), RUN);
+        released = true;
+      }
+    }, { required: true });
+    return released ? "again" : null;
+  }).finally(() => settling2.delete(key));
+  settling2.set(key, look);
+  return look;
+}
+var MUTATION_ID, mutationKey = (setup, nonce) => recordKey(setup, nonce), running2, settling2, MUTATION_FEATURE = "data.mutation-identity", reused;
 var init_mutation = __esm(() => {
   init_files();
   init_home();
@@ -43820,6 +43868,7 @@ var init_mutation = __esm(() => {
   init_forward_evidence();
   MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
   running2 = new Map;
+  settling2 = new Map;
   reused = { status: 409, value: { message: "That operation id is already in use." } };
 });
 
@@ -56203,9 +56252,9 @@ function forgetSettled() {
   settled = false;
 }
 async function settleStarted(atWork, now = Date.now()) {
-  if (settled || settling2)
+  if (settled || settling3)
     return;
-  settling2 = true;
+  settling3 = true;
   try {
     migrateOnce();
     const ids = new Set(startedThen());
@@ -56225,10 +56274,10 @@ async function settleStarted(atWork, now = Date.now()) {
     }
     settled = true;
   } catch {} finally {
-    settling2 = false;
+    settling3 = false;
   }
 }
-var settled = false, settling2 = false;
+var settled = false, settling3 = false;
 var init_started = __esm(() => {
   init_client();
   init_background();
@@ -63937,10 +63986,19 @@ async function* draftRoute(context, match, forwarded, from) {
     submittedThrough: from ?? own,
     submitter,
     draft: given
-  }, scoped ? draftKey(setup, session, given.id) : undefined).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
+  }, scoped ? draftKey(setup, session, given.id) : undefined, undefined, scoped ? undefined : () => orphanedDraft(context, session, given)).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
   const acceptedAt = "acceptedAt" in outcome && typeof outcome.acceptedAt === "number" ? outcome.acceptedAt : undefined;
   const value = isObject(outcome.value) && typeof outcome.value.message === "string" && outcome.status === 200 && acceptedAt ? { ...outcome.value, acceptedAt } : outcome.value;
   return yield* queuedRefusal(outcome.notAdmitted ? outcome : null, json) ?? json(outcome.status, value);
+}
+async function orphanedDraft(context, session, given) {
+  const text = given.text;
+  if (/^\s*[/!]/.test(text))
+    return null;
+  const place = await placeOfSession(session, targetsOf2(context)).catch(() => null);
+  if (!place)
+    return null;
+  return await messageReached(place.target, session, given.id) ? { status: 200, value: { answer: { send: { text } }, message: given.id } } : "again";
 }
 async function finishDraft(context, session, place, onAgents, given, answer, original) {
   if (answer.restore || answer.error)
@@ -64146,6 +64204,7 @@ var init_typed = __esm(() => {
   init_home();
   init_client();
   init_letter();
+  init_queue();
   init_tools3();
   init_sent_once();
   init_goals();
