@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, follow_lines};
 use crate::paths;
 use crate::transport::Request;
 
@@ -229,8 +229,8 @@ impl BoxClient {
     }
 
     /// Follows `session`'s asks: those now, and again as they change.
-    pub fn follow_asks(&self, session: &str, timing: Timing) -> Follow<Followed<Asks>> {
-        follow_lines(self, "kuvo-box asks", format!("{}/events", route(session)), route(session), timing)
+    pub fn follow_asks(&self, session: &str) -> Follow<Followed<Asks>> {
+        follow_lines(self, format!("{}/events", route(session)))
     }
 
     /// Answers `ask` in `session`. A refusal says why (an answer that didn't fit, or one already

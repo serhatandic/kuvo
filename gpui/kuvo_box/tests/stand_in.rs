@@ -162,14 +162,14 @@ fn the_session_list_follows_the_box_and_resumes_where_it_was() {
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
     assert_eq!(listing.facts("ses_a").unwrap().title.as_deref(), Some("Renamed"));
 
-    // The stream ends: it's opened again from where it was, and goes on.
+    // The list's own stream ends: the box opens it again, and the line goes on.
     drop(first);
     second.send(json!({ "archivedGroups": [], "at": "3", "sessions": { "ses_c": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 1, "updated": 40 } }, "projects": projects }).to_string()).unwrap();
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the list again") };
     assert_eq!(listing.sidebar().chats, vec!["ses_c"]);
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
     let opened: Vec<String> = stand_in.seen().iter().filter(|seen| seen.route() == "kuvo/sessions/list/events").map(|seen| seen.path.clone()).collect();
-    assert_eq!(opened, vec!["kuvo/sessions/list/events", "kuvo/sessions/list/events?since=2"]);
+    assert_eq!(opened, vec!["kuvo/sessions/list/events", "kuvo/sessions/list/events"]);
 
     // Stopped, it says nothing more and closes what it had open.
     follow.stop();
@@ -186,58 +186,6 @@ fn a_list_the_box_cant_read_yet_waits() {
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_sessions(at_once());
     assert_eq!(follow.next_blocking(), Some(ListUpdate::Waiting("The engine isn't answering yet.".into())));
-}
-
-#[test]
-fn an_unchanged_session_list_recovers_after_a_failed_line() {
-    let stand_in = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        _ => Answer::json(500, json!({})),
-    });
-    let stream = stand_in.stream_for("kuvo/sessions/list/events");
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_sessions(at_once());
-
-    let list = json!({
-        "archivedGroups": [], "at": "1", "full": true,
-        "sessions": { "ses_a": session("project", "/home/me/web", 10.0) },
-        "projects": { "/home/me/web": { "updated": 10 } }
-    });
-    stream.send(list.to_string()).unwrap();
-    let ListUpdate::Listing(before) = follow.next_blocking().unwrap() else { panic!("the first list") };
-
-    stream.send("{".into()).unwrap();
-    assert!(matches!(follow.next_blocking(), Some(ListUpdate::Failed(_))));
-
-    let mut resumed = list;
-    resumed["at"] = json!("2");
-    stream.send(resumed.to_string()).unwrap();
-    let updates = follow.updates().clone();
-    let (report, recovered) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
-        let _ = report.send(updates.recv_blocking());
-    });
-    let recovered = recovered.recv_timeout(Duration::from_secs(5));
-    follow.stop();
-    drop(stream);
-    reader.join().unwrap();
-    let recovered = recovered.expect("the unchanged answer should recover the list").unwrap();
-    let ListUpdate::Listing(recovered) = recovered else { panic!("the recovered list") };
-    assert_eq!(recovered.at(), Some("2"));
-    assert_eq!(recovered.sidebar(), before.sidebar());
-}
-
-#[test]
-fn a_box_without_bots_events_still_supplies_its_bots() {
-    let stand_in = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "kuvo/bots" => Answer::json(200, json!({ "bots": [], "elsewhere": [], "held": [], "refused": [] })),
-        _ => Answer::json(404, json!({})),
-    });
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_bots(at_once());
-    assert!(matches!(follow.next_blocking(), Some(kuvo_box::follow::Followed::Now(said)) if said.bots.is_empty()));
-    assert!(stand_in.seen().iter().any(|seen| seen.route() == "kuvo/bots/events"));
 }
 
 fn user(id: &str, text: &str, at: f64) -> Value {
@@ -325,44 +273,6 @@ fn a_conversation_streams_its_words_and_is_read_again_as_steps_end() {
     drop(follow);
 }
 
-#[test]
-fn conversation_reads_keep_up_when_the_open_event_feed_has_said_nothing() {
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    use std::time::Instant;
-
-    let newer = Arc::new(AtomicBool::new(false));
-    let seen = newer.clone();
-    let stand_in = StandInBox::start(move |request| match request.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_silent" => Answer::json(200, json!({ "data": { "id": "ses_silent" } })),
-        "api/session/active" => Answer::json(200, json!({ "data": {} })),
-        "api/session/ses_silent/message" => {
-            let mut rows = vec![user("msg_first", "First", 1.0)];
-            if seen.load(Ordering::Relaxed) {
-                rows.insert(0, user("msg_second", "Second", 2.0));
-            }
-            Answer::json(200, json!({ "data": rows }))
-        }
-        _ => Answer::json(404, json!({})),
-    });
-    let _silent = stand_in.stream_for("api/event");
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_silent", Timing { conversation_again: Duration::from_millis(20), ..at_once() });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let next = |expected| loop {
-        if let Ok(update) = follow.updates().try_recv() {
-            let ConversationUpdate::Conversation(shown) = update else { panic!("transcript read failed: {update:?}") };
-            if shown.messages.last().is_some_and(|row| row.id() == expected) {
-                break;
-            }
-        }
-        assert!(Instant::now() < deadline, "no transcript update for {expected}");
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    next("msg_first");
-    newer.store(true, Ordering::Relaxed);
-    next("msg_second");
-}
 
 #[test]
 fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
@@ -400,7 +310,7 @@ fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
         let mut queues = stand_in.stream_for(&queue_route);
         let (_home, _serve, client) = this_mac(&stand_in);
         let chat = client.follow_conversation(session, at_once());
-        let queue = client.follow_queue(session, at_once());
+        let queue = client.follow_queue(session);
         let expected = |first: usize| (first..=3).map(|n| format!("msg_user_{n}")).collect::<Vec<_>>();
         let check_queue = |first| {
             let Followed::Now(snapshot) = queue.next_blocking().unwrap() else { panic!("queue snapshot") };
@@ -603,7 +513,8 @@ fn a_box_whose_server_started_again_is_found_at_its_new_place_and_read_again() {
 
 #[test]
 fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
-    // After the initial page and the feed's catch-up, hold the delivery-triggered read.
+    // After the initial page, hold the delivery-triggered read. (Its events are on the line before
+    // that page is read, so nothing between them is missed and no catch-up read is needed.)
     let (release, held) = std::sync::mpsc::channel::<()>();
     let (reading, started) = std::sync::mpsc::channel::<()>();
     let held = std::sync::Mutex::new(held);
@@ -614,8 +525,8 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
         "api/session/active" => Answer::json(200, json!({ "data": { "ses_1": {} } })),
         "api/session/ses_1/message" => {
             match reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-                0 | 1 => return Answer::json(200, json!({ "data": [user("msg_1", "Hi", 1.0)] })),
-                2 => {
+                0 => return Answer::json(200, json!({ "data": [user("msg_1", "Hi", 1.0)] })),
+                1 => {
                     reading.send(()).unwrap();
                     held.lock().unwrap().recv().unwrap();
                 }
@@ -629,13 +540,9 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     });
     let events = stand_in.stream_for("api/event");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_1", Timing { conversation_again: Duration::from_secs(60), ..at_once() });
+    let follow = client.follow_conversation("ses_1", at_once());
     let ConversationUpdate::Conversation(read) = follow.next_blocking().unwrap() else { panic!() };
     assert!(read.running, "the box says a run is under way");
-    events.send(event("server.connected", "ses_1", json!({}))).unwrap();
-    let ConversationUpdate::Conversation(caught_up) = follow.next_blocking().unwrap() else { panic!() };
-    assert_eq!(caught_up, read, "the first stream event refreshes the initial page");
-
     events.send(event("session.step.started", "ses_1", json!({ "assistantMessageID": "msg_2" }))).unwrap();
     events.send(event("session.text.started", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0 }))).unwrap();
     events.send(event("session.text.delta", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0, "delta": "Hel" }))).unwrap();
@@ -657,9 +564,10 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     assert_eq!(last_words(&ConversationUpdate::Conversation(after)).as_deref(), Some("Hello"));
     events.send(event("session.text.delta", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0, "delta": "!" }))).unwrap();
     while last_words(&follow.next_blocking().expect("the follow goes on")).as_deref() != Some("Hello!") {}
-    // Only the initial, catch-up, and delivery reads were made: streamed words ask for none.
+    // Only the initial and delivery reads were made: streamed words ask for none, and the line
+    // needs no catch-up read.
     let reads: Vec<_> = stand_in.seen().into_iter().filter(|seen| seen.route() == "api/session/ses_1/message").collect();
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 2);
 }
 
 #[test]
@@ -818,34 +726,6 @@ fn after_a_gap_a_conversation_starts_again_from_its_newest() {
     assert_eq!(shown.earlier, None, "a page that wasn't full has nothing before it");
 }
 
-#[test]
-fn a_conversation_whose_stream_cant_be_opened_is_read_on_a_timer_meanwhile() {
-    let stored = std::sync::Arc::new(std::sync::Mutex::new(json!([user("msg_1", "Hi", 1.0)])));
-    let messages = stored.clone();
-    let stand_in = StandInBox::start(move |seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_1" => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
-        // Its events can't be followed now.
-        "api/event" => Answer::json(503, json!({ "message": "The engine is starting." })),
-        "api/session/ses_1/message" => {
-            let mut newest: Vec<Value> = messages.lock().unwrap().as_array().unwrap().clone();
-            newest.reverse();
-            Answer::json(200, json!({ "data": newest }))
-        }
-        _ => Answer::json(404, json!({})),
-    });
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_1", Timing { conversation_again: Duration::ZERO, ..at_once() });
-    // A reply comes while nothing streams: it's read all the same.
-    *stored.lock().unwrap() = json!([user("msg_1", "Hi", 1.0), assistant("msg_2", "Hello.", 2.0)]);
-    loop {
-        if let Some(words) = last_words(&follow.next_blocking().expect("the follow goes on"))
-            && words == "Hello."
-        {
-            break;
-        }
-    }
-}
 
 /// What waits on you is followed as the box says it: its counts now, and again as they change
 /// (`kuvo/waiting/events`), with nothing counted here.
@@ -859,7 +739,7 @@ fn what_waits_on_you_follows_the_boxs_counts() {
     });
     let lines = stand_in.stream_for("kuvo/waiting/events");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_waiting(at_once());
+    let follow = client.follow_waiting();
     lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();
     assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 2, bots: 1, queue: 0 })));
     // An ask is answered: the box says its counts again.
@@ -873,7 +753,7 @@ fn usage_follows_changes_and_skips_heartbeats() {
     let stand_in = StandInBox::start(|_| Answer::json(404, json!({})));
     let lines = stand_in.stream_for("kuvo/agents/api/kuvo/limits/events");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_usage(at_once());
+    let follow = client.follow_usage();
     // Older boxes send an empty object when the stream opens or limits change.
     lines.send("{}".into()).unwrap();
     assert_eq!(follow.next_blocking(), Some(Followed::Now(json!({}))));
@@ -1040,7 +920,7 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
     assert!(matches!(client.setting_action("browser", &site, &site.actions[0]).expect("done"), Changed::Done(_)));
     assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "was": "lh1" })));
 
-    let follow = client.follow_settings_page("browser", at_once());
+    let follow = client.follow_settings_page("browser");
     lines.send(page(true, "of1").to_string()).unwrap();
     match follow.next_blocking() {
         Some(Followed::Now(now)) => assert!(now.row("offers").unwrap().is_on()),

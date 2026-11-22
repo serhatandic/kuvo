@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, follow_lines};
 use crate::paths::segment;
 use crate::transport::Request;
 
@@ -680,9 +680,9 @@ impl BoxClient {
     }
 
     /// Follows a section's page: as it is now, and again as it changes.
-    pub fn follow_settings_page(&self, section: &str, timing: Timing) -> Follow<Followed<Page>> {
+    pub fn follow_settings_page(&self, section: &str) -> Follow<Followed<Page>> {
         let route = page_route(section);
-        follow_lines(self, "kuvo-box settings", format!("{route}/events"), route, timing)
+        follow_lines(self, format!("{route}/events"))
     }
 
     /// Changes `row` to `value`, from the revision it was read at.

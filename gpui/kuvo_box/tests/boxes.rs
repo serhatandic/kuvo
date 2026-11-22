@@ -33,6 +33,8 @@ struct StandInBox {
     pair: Mutex<Option<Pairs>>,
     /// The followed list's lines, written by the test.
     lines: Mutex<Option<Receiver<String>>>,
+    /// Whether its `kuvo/info` fails now (a slow or busy box), while its line goes on.
+    info_fails: std::sync::atomic::AtomicBool,
 }
 
 struct Lines(Receiver<String>, Vec<u8>);
@@ -54,9 +56,13 @@ impl Read for Lines {
 
 impl Transport for StandInBox {
     fn send(&self, request: &Request) -> kuvo_box::Result<Response> {
+        if let Some(answer) = kuvo_box::line::by_routes::send(request) {
+            return answer;
+        }
         self.seen.lock().unwrap().push(request.clone());
         let json = |status: u16, value: Value| Ok(Response { status, content_type: Some("application/json".into()), body: value.to_string().into_bytes() });
         match (request.method.as_str(), request.route()) {
+            ("GET", "kuvo/info") if self.info_fails.load(std::sync::atomic::Ordering::SeqCst) => json(504, json!({ "message": "It didn’t answer in time." })),
             ("GET", "kuvo/info") => {
                 let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().copied().chain(["update.fleet"]).map(str::to_owned).collect());
                 let mut info = json!({ "kind": "machine", "name": self.name, "features": features });
@@ -80,6 +86,16 @@ impl Transport for StandInBox {
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> kuvo_box::Result<Stream> {
         self.seen.lock().unwrap().push(request.clone());
+        // The one line, carrying the followed list as a box's does.
+        if request.route() == "kuvo/line" {
+            let lines = Mutex::new(self.lines.lock().unwrap().take());
+            let open: kuvo_box::line::by_routes::Open = Arc::new(move |_: &Request, hold: &dyn Fn(Closer) -> bool| {
+                hold(Closer::nothing());
+                let lines = lines.lock().unwrap().take().expect("followed once");
+                Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(std::io::BufReader::new(Lines(lines, Vec::new()))), closer: Closer::nothing() })
+            });
+            return kuvo_box::line::by_routes::open(request, hold, open).expect("the line");
+        }
         hold(Closer::nothing());
         let lines = self.lines.lock().unwrap().take().expect("followed once");
         Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(std::io::BufReader::new(Lines(lines, Vec::new()))), closer: Closer::nothing() })
@@ -348,6 +364,29 @@ fn a_computer_that_just_stopped_answering_isnt_called_away_at_once() {
     let _ = whoami(&boxes, "devbox");
     boxes.settle();
     assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::Connecting));
+}
+
+/// A computer whose line still says it's there isn't called away because one request failed
+/// (PROTOCOL.md, "The line"): only its line's silence says that.
+#[test]
+fn a_computer_whose_line_still_beats_isnt_away_when_one_request_fails() {
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let key = named(&boxes, "devbox");
+    let client = boxes.client(&key).expect("its client");
+    // Something followed there: its line is open, and the box has said hello on it.
+    let (_lines, list) = channel();
+    *setup.devbox.0.lines.lock().unwrap() = Some(list);
+    let _followed = client.follow_notices();
+    while !client.line().heard_within(Duration::from_secs(3600)) {
+        std::thread::yield_now();
+    }
+    // Its `kuvo/info` fails now (a busy box): it's still connected, not away.
+    setup.devbox.0.info_fails.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(boxes.check(&key), Some(Reach::Connected));
+    assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::Connected));
 }
 
 /// An older box on another computer that says it's held for this client is drawn held, as it

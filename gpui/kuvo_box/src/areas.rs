@@ -11,7 +11,7 @@ use crate::client::BoxClient;
 use crate::error::{Error, Result};
 use crate::paths::segment;
 use crate::transport::Request;
-use crate::follow::{Follow, Followed, Timing, follow_lines, follow_lines_filter_map};
+use crate::follow::{Follow, Followed, follow_lines, follow_lines_filter_map};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1011,8 +1011,8 @@ impl BoxClient {
     }
 
     /// Follows it: now, and again as a try changes.
-    pub fn follow_adding(&self, timing: Timing) -> Follow<Followed<Adding>> {
-        follow_lines(self, "kuvo-box adding", "kuvo/computers/add/events".into(), "kuvo/computers/add".into(), timing)
+    pub fn follow_adding(&self) -> Follow<Followed<Adding>> {
+        follow_lines(self, "kuvo/computers/add/events".into())
     }
 
     /// Asks the box to add the computer at `destination` (a Host from its `~/.ssh/config`, a
@@ -1082,8 +1082,8 @@ impl BoxClient {
     }
 
     /// Follows your computers: the list now, and again as it changes.
-    pub fn follow_computers(&self, timing: Timing) -> Follow<Followed<Computers>> {
-        follow_lines(self, "kuvo-box computers", "kuvo/computers/events".into(), "kuvo/computers".into(), timing)
+    pub fn follow_computers(&self) -> Follow<Followed<Computers>> {
+        follow_lines(self, "kuvo/computers/events".into())
     }
 
     /// Every account across your computers, in the box's order (its limits' `rows`).
@@ -1108,9 +1108,9 @@ impl BoxClient {
     }
 
     /// A signal to read the latest snapshot, also sent when first connecting to cover missed events.
-    pub fn follow_usage(&self, timing: Timing) -> Follow<Followed<serde_json::Value>> {
+    pub fn follow_usage(&self) -> Follow<Followed<serde_json::Value>> {
         let route = "kuvo/agents/api/kuvo/limits";
-        follow_lines_filter_map(self, "kuvo-box usage", format!("{route}/events"), route.into(), timing, false, |line: serde_json::Value| {
+        follow_lines_filter_map(self, format!("{route}/events"), |line: serde_json::Value| {
             (line["heartbeat"].as_bool() != Some(true)).then_some(line)
         })
     }
@@ -1139,8 +1139,8 @@ impl BoxClient {
     }
 
     /// Follows what waits on you: the counts now, and again as they change.
-    pub fn follow_waiting(&self, timing: Timing) -> Follow<Followed<Waiting>> {
-        follow_lines(self, "kuvo-box waiting", "kuvo/waiting/events".into(), "kuvo/waiting".into(), timing)
+    pub fn follow_waiting(&self) -> Follow<Followed<Waiting>> {
+        follow_lines(self, "kuvo/waiting/events".into())
     }
 }
 

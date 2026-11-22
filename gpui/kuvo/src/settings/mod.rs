@@ -1312,7 +1312,7 @@ impl SettingsView {
             if self.follow.as_ref().is_some_and(|(of, _)| of == section) {
                 return;
             }
-            let follow = client.follow_settings_page(section, Timing::default());
+            let follow = client.follow_settings_page(section);
             let updates = follow.updates().clone();
             self.follow = Some((id.clone(), follow));
             let task = cx.spawn(async move |this, cx| {

@@ -301,7 +301,7 @@ impl AreaView {
             })
             .unwrap_or_default();
         let groups_follow = (area == Area::Bots && live).then(|| {
-            let follow = client.follow_groups(kuvo_box::Timing::default());
+            let follow = client.follow_groups();
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -315,7 +315,7 @@ impl AreaView {
             (follow, task)
         });
         let bots_follow = (area == Area::Bots && live).then(|| {
-            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let follow = client.follow_bots();
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -627,7 +627,7 @@ impl AreaView {
                 continue;
             }
             let (bots, reachability) = before.map(|remote| (remote.bots.clone(), remote.reachability)).unwrap_or_default();
-            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let follow = client.follow_bots();
             let updates = follow.updates().clone();
             let followed_key = key.clone();
             let task = cx.spawn(async move |this, cx| {

@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
 };
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::side_chats::{Answering, SideThread, SideThreads};
 use kuvo_box::BoxClient;
 use kuvo_ui::markdown::Markdown;
@@ -82,7 +82,7 @@ impl SideChatView {
             self.read_again(cx);
             return;
         }
-        let follow = self.client.follow_side_threads(&self.session, Timing::default());
+        let follow = self.client.follow_side_threads(&self.session);
         let updates = follow.updates().clone();
         self._follow = Some(follow);
         self._task = Some(cx.spawn(async move |this, cx| {

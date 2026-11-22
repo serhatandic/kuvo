@@ -52,6 +52,19 @@ impl Machine {
         std::fs::rename(file.with_extension("new"), file).unwrap();
     }
 
+    /// What its line says, once (`kuvo/line?once=1`): the hello, then each topic's state, for the
+    /// first topic followed.
+    fn line(&self, states: &[Value]) {
+        let mut body = format!("{}\n", json!({ "hello": { "line": "once", "fresh": true, "beat": 5000 } }));
+        for (n, state) in states.iter().enumerate() {
+            body.push_str(&format!("{}\n", json!({ "t": "1", "n": n + 1, "d": state })));
+        }
+        let printed = json!({ "status": 200, "body": body });
+        let file = self.path().join("answers").join("line");
+        std::fs::write(file.with_extension("new"), format!("{printed}\n")).unwrap();
+        std::fs::rename(file.with_extension("new"), file).unwrap();
+    }
+
     /// What `box route` was asked, a request a line.
     fn asked(&self) -> Vec<Value> {
         std::fs::read_to_string(self.path().join("asked")).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
@@ -89,6 +102,7 @@ printf '%s\n' "$asked" >> "$dir/asked"
 case "$asked" in
   *'"path":"kuvo/info"'*) cat "$dir/answers/info" ;;
   *'"path":"kuvo/sessions/list'*) cat "$dir/answers/list" ;;
+  *'"path":"kuvo/line?'*) cat "$dir/answers/line" ;;
   *'"path":"kuvo/file'*) printf '%s\n' '{{"status":200,"bodyBase64":"AAEC/w==","type":"image/png"}}' ;;
   *'"path":"kuvo/broken'*) echo 'not an answer' ;;
   *'"path":"kuvo/gone'*) echo 'Connection to devbox closed.' >&2; exit 255 ;;
@@ -198,19 +212,21 @@ fn an_older_machine_is_held_as_it_says() {
 }
 
 #[test]
-fn a_machines_list_is_followed_by_reading_it_again() {
+fn a_machines_list_is_followed_on_its_line_asked_again() {
     let machine = Machine::new();
     machine.answer("info", 200, &machine_info(support::current_features()));
-    machine.answer("list", 200, &list());
-    // Read again at once each time, so the second read follows from what the machine says next.
-    let follow = machine.client().follow_sessions(Timing { retry_after: Duration::ZERO, lists_again: Duration::ZERO, ..Timing::default() });
+    machine.line(&[list()]);
+    let client = machine.client();
+    // (Asked again at once each time: what the machine says next is what comes.)
+    client.line().set_timing(kuvo_box::line::LineTiming { once_again: Duration::ZERO, ..Default::default() });
+    let follow = client.follow_sessions(Timing { retry_after: Duration::ZERO, ..Timing::default() });
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the list") };
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_m"]);
     assert_eq!(listing.at(), Some("4"));
 
-    // A session made there: read again from where it was, the list has it.
+    // A session made there: the next time its line is asked, the list has it.
     let made = json!({ "archivedGroups": [], "at": "5", "sessions": { "ses_n": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 3, "updated": 4 } }, "projects": { "/home/me/site": { "updated": 2 } } });
-    machine.answer("list", 200, &made);
+    machine.line(&[made]);
     let listing = loop {
         if let ListUpdate::Listing(listing) = follow.next_blocking().unwrap()
             && listing.at() == Some("5")
@@ -221,7 +237,9 @@ fn a_machines_list_is_followed_by_reading_it_again() {
     assert_eq!(listing.sidebar().chats, vec!["ses_n"]);
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_m"]);
     drop(follow);
-    // Read whole, not followed (a machine over SSH answers once), then from where it was.
-    let paths: Vec<Value> = machine.asked().iter().map(|asked| asked["path"].clone()).collect();
-    assert_eq!(paths[..3], [json!("kuvo/info"), json!("kuvo/sessions/list"), json!("kuvo/sessions/list?since=4")]);
+    // One request for everything followed, each time: the line, answered once (a machine over SSH
+    // answers once), never the list's own route.
+    let paths: Vec<String> = machine.asked().iter().filter_map(|asked| asked["path"].as_str().map(str::to_owned)).collect();
+    assert!(paths.iter().any(|path| path.starts_with("kuvo/line?watch=") && path.ends_with("&once=1")), "{paths:?}");
+    assert!(!paths.iter().any(|path| path.starts_with("kuvo/sessions/list")), "{paths:?}");
 }

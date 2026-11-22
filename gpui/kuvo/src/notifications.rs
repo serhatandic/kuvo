@@ -19,7 +19,7 @@ pub struct Post {
 }
 use kuvo_box::BoxClient;
 use kuvo_box::areas::Waiting;
-use kuvo_box::follow::{Followed, Timing};
+use kuvo_box::follow::{Followed};
 use kuvo_box::notices::{Told, ToldNotice};
 
 use crate::yours;
@@ -141,8 +141,8 @@ impl Notifier {
             if self.computers.contains_key(&key) {
                 continue;
             }
-            let notices = client.follow_notices(Timing::default());
-            let waiting = client.follow_waiting(Timing::default());
+            let notices = client.follow_notices();
+            let waiting = client.follow_waiting();
             let (told, waits) = (notices.updates().clone(), waiting.updates().clone());
             let told_key = key.clone();
             let told_task = cx.spawn(async move |this, cx| {

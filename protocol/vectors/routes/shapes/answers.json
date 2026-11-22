@@ -11116,6 +11116,9 @@
             "literal": "limits.titles"
            },
            {
+            "literal": "line"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -12061,6 +12064,9 @@
            },
            {
             "literal": "limits.titles"
+           },
+           {
+            "literal": "line"
            },
            {
             "literal": "mcp.catalog"
@@ -19417,6 +19423,84 @@
    }
   },
   {
+   "route": "GET kuvo/line",
+   "feature": "line",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "hello": {
+         "object": {
+          "line": "string",
+          "fresh": "bool",
+          "beat": "number"
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "t": "string",
+        "n": "number",
+        "d": "any"
+       }
+      },
+      {
+       "object": {
+        "t": "string",
+        "n": "number",
+        "refused": {
+         "object": {
+          "status": "number",
+          "message": "string",
+          "said?": "any"
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "t": "string",
+        "n": "number",
+        "gap": "bool"
+       }
+      },
+      {
+       "object": {
+        "beat": "number"
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/line/watch",
+   "feature": "line",
+   "body": {
+    "object": {
+     "line": "string",
+     "watch": {
+      "map": "string"
+     }
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "line": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "fresh": "bool",
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/library",
    "feature": "library",
    "answers": {
@@ -25953,7 +26037,14 @@
     },
     "404": {
      "object": {
-      "message": "string"
+      "message": "string",
+      "delivered?": "bool"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "arriving?": "bool"
      }
     },
     "502": {

@@ -189,7 +189,7 @@ impl Transport for LocalServer {
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
         let kept: Mutex<Option<Closer>> = Mutex::new(None);
-        let (head, body) = self.begin(request, request.event_timeout(), &|closer| {
+        let (head, body) = self.begin(request, None, &|closer| {
             *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(closer.clone());
             hold(closer)
         })?;

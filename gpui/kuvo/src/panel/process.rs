@@ -9,7 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::background::{Command, Output};
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::printed::{OUTPUT_STREAM, Printed, PrintedState};
 use kuvo_box::BoxClient;
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize, small::status_dot, theme::space};
@@ -76,7 +76,7 @@ impl ProcessView {
             self.read_once(cx);
             return;
         }
-        let follow = self.client.follow_printed(&self.session, &self.id, Timing::default());
+        let follow = self.client.follow_printed(&self.session, &self.id);
         let updates = follow.updates().clone();
         self._follow = Some(follow);
         self._task = Some(cx.spawn(async move |this, cx| {

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, follow_lines};
 use crate::paths;
 use crate::transport::Request;
 
@@ -257,10 +257,10 @@ impl BoxClient {
     }
 
     /// Follows `directory`'s changed files: now, and again as they change.
-    pub fn follow_git_files(&self, directory: &str, timing: Timing) -> Follow<Followed<GitFiles>> {
+    pub fn follow_git_files(&self, directory: &str) -> Follow<Followed<GitFiles>> {
         let route = files_route(directory);
         let events = route.replacen("kuvo/git/files?", "kuvo/git/files/events?", 1);
-        follow_lines(self, "kuvo-box git files", events, route, timing)
+        follow_lines(self, events)
     }
 
     /// One file's diff, in its repository (`root`), in the scope the box listed it with.

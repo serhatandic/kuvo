@@ -71,7 +71,7 @@ impl StandInBox {
             for connection in listener.incoming() {
                 let Ok(connection) = connection else { continue };
                 let (s, h, st, pw) = (s.clone(), h.clone(), st.clone(), pw.clone());
-                thread::spawn(move || serve(connection, &pw, &s, &h, &st));
+                thread::spawn(move || serve(connection, port, &pw, &s, &h, &st));
             }
         });
         StandInBox { port, password, seen, handler, streams }
@@ -98,7 +98,7 @@ impl StandInBox {
     }
 }
 
-fn serve(connection: TcpStream, password: &str, seen: &Mutex<Vec<Seen>>, handler: &Mutex<Arc<Handler>>, streams: &Mutex<HashMap<String, VecDeque<Receiver<String>>>>) {
+fn serve(connection: TcpStream, port: u16, password: &str, seen: &Mutex<Vec<Seen>>, handler: &Mutex<Arc<Handler>>, streams: &Mutex<HashMap<String, VecDeque<Receiver<String>>>>) {
     let mut writer = connection.try_clone().unwrap();
     let mut reader = BufReader::new(connection);
     let mut first = String::new();
@@ -135,6 +135,33 @@ fn serve(connection: TcpStream, password: &str, seen: &Mutex<Vec<Seen>>, handler
     }
     let request = Seen { method, path, headers, body: (!body.is_empty()).then(|| serde_json::from_slice(&body).expect("a JSON body")) };
     seen.lock().unwrap().push(request.clone());
+    // The one line, carrying the stand-in's own followed routes as a box's does (PROTOCOL.md,
+    // "The line"): each topic opened on this same server.
+    if matches!(request.route(), "kuvo/line" | "kuvo/line/watch") {
+        let asked = kuvo_box::transport::Request { method: request.method.clone(), path: request.path.clone(), headers: Vec::new(), body: request.body.clone() };
+        if request.route() == "kuvo/line/watch" {
+            let answer = kuvo_box::line::by_routes::send(&asked).expect("a watch").expect("its answer");
+            let head = format!("HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", answer.status, answer.body.len());
+            let _ = writer.write_all(head.as_bytes()).and_then(|_| writer.write_all(&answer.body));
+            return;
+        }
+        let local = Arc::new(kuvo_box::local::LocalServer::new(port, password, kuvo_box::local::Speaker::App, "stand-in"));
+        let open: kuvo_box::line::by_routes::Open = Arc::new(move |request: &kuvo_box::transport::Request, hold: &dyn Fn(kuvo_box::transport::Closer) -> bool| kuvo_box::transport::Transport::open(&*local, request, hold));
+        let Some(Ok(mut stream)) = kuvo_box::line::by_routes::open(&asked, &|_| true, open) else { return };
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        if writer.write_all(head.as_bytes()).is_err() {
+            stream.closer.close();
+            return;
+        }
+        while let Ok(Some(line)) = kuvo_box::lines::next_line(&mut *stream.reader) {
+            let piece = format!("{line}\n");
+            if writer.write_all(format!("{:x}\r\n{piece}\r\n", piece.len()).as_bytes()).and_then(|_| writer.flush()).is_err() {
+                break;
+            }
+        }
+        stream.closer.close();
+        return;
+    }
     let waiting = streams.lock().unwrap().get_mut(request.route()).and_then(VecDeque::pop_front);
     let answer = match waiting {
         Some(lines) => Answer::Stream { content_type: if request.route().ends_with("api/event") { "text/event-stream" } else { "application/x-ndjson" }, lines },

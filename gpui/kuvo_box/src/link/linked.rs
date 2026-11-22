@@ -131,7 +131,7 @@ impl Transport for LinkBox {
             return Err(Error::Unreachable(STOPPED.into()));
         }
         let (status, content_type) = answer.head()?;
-        Ok(Stream { status, content_type, reader: Box::new(BufReader::new(answer.reader().with_idle_timeout(request.event_timeout()))), closer })
+        Ok(Stream { status, content_type, reader: Box::new(BufReader::new(answer.reader())), closer })
     }
 
     fn socket(&self, request: &Request) -> Result<Socket> {

@@ -74,6 +74,16 @@ export async function sentOnce(key: string, send: () => Promise<SentAnswer>, now
   }
 }
 
+// Whether message `id` to `session` was handed to the engine or the coding agents' bridge (not only
+// put in what waits on the box): a client taking back one it sent hears that it went already.
+export function wentAlready(session: string, id: string): boolean {
+  for (const [key, entry] of sent) {
+    const [place, of, message] = key.split("\n");
+    if (place !== "queue" && of === session && message === id && entry.went !== undefined) return true;
+  }
+  return false;
+}
+
 // A message taken away (from what waits on the box, or the engine's inbox): sent again under its
 // id (Undo), it goes again.
 export function forgetSent(session: string, id: string) {
