@@ -1,6 +1,6 @@
 # How Kuvo works
 
-Current at `36db4ec2e` (22 November 2026). Paths are under `box/src/link/`
+Current on 22 November 2026. Paths are under `box/src/link/`
 unless otherwise stated. The [November simplicity check](../archive/simplicity-check-1122.md)
 records the earlier baseline. The remaining work is listed below.
 
