@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
 };
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::side_chats::{Answering, SideThread, SideThreads};
@@ -35,7 +35,6 @@ pub struct SideChatView {
     failed: Option<String>,
     on_screen: bool,
     scroll: ScrollHandle,
-    focus: FocusHandle,
     _field: Subscription,
     _follow: Option<Follow<Followed<SideThreads>>>,
     _task: Option<Task<()>>,
@@ -54,7 +53,7 @@ impl SideChatView {
             }
             _ => {}
         });
-        SideChatView { client, live, session, thread, threads: Load::Loading, field, asking: false, failed: None, on_screen: false, scroll: ScrollHandle::new(), focus: cx.focus_handle(), _field: watch, _follow: None, _task: None }
+        SideChatView { client, live, session, thread, threads: Load::Loading, field, asking: false, failed: None, on_screen: false, scroll: ScrollHandle::new(), _field: watch, _follow: None, _task: None }
     }
 
     pub fn field(&self) -> &Entity<TextField> {

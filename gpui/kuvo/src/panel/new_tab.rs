@@ -25,6 +25,11 @@ fn tiles(panel: &SidePanel, place: Option<&Place>) -> Vec<Tile> {
     if !panel.client.here() || panel.client.gate().has("pty.socket") {
         tiles.push(Tile { id: "tile-terminal", icon: IconName::TerminalWindow, label: "Terminal", kind: Kind::Terminal(0) });
     }
+    // That computer's browser, the one its agents use, where its box can show it live (a
+    // machine's; a Mac's box doesn't list it until it has a browser of its own, #693).
+    if panel.client.advertises(kuvo_box::browser_view::FEATURE) {
+        tiles.push(Tile { id: "tile-browser", icon: IconName::Globe, label: "Browser", kind: Kind::Browser(0) });
+    }
     if place.is_some() {
         tiles.push(Tile { id: "tile-files", icon: IconName::Folder, label: "Files", kind: Kind::Files });
     }

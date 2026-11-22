@@ -12,7 +12,6 @@ use gpui::{
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::subagents::{Ended, Subagents};
 use kuvo_box::{BoxClient, ConversationUpdate};
-use kuvo_ui::chat_list::{ChatListState, chat_list};
 use kuvo_ui::selection::SelectionState;
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, small::status_dot, theme::{radius, space}};
 
@@ -279,6 +278,9 @@ impl Render for SubagentsView {
     }
 }
 
+/// The most of a subagent's rows its tab draws: its latest.
+const ROWS_MOST: usize = 200;
+
 /// A subagent's conversation, read-only, drawn as a conversation draws its rows.
 pub struct Transcript {
     client: BoxClient,
@@ -287,7 +289,7 @@ pub struct Transcript {
     entries: Rc<Vec<Entry>>,
     read: Load<()>,
     open: HashSet<Fold>,
-    list: ChatListState,
+    scroll: gpui::ScrollHandle,
     selection: SelectionState,
     on_screen: bool,
     _follow: Option<Follow<ConversationUpdate>>,
@@ -295,8 +297,8 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    pub fn new(client: BoxClient, live: bool, session: String, cx: &mut Context<Self>) -> Transcript {
-        Transcript { client, live, session, entries: Rc::default(), read: Load::Loading, open: HashSet::new(), list: ChatListState::new(0, cx), selection: SelectionState::new(), on_screen: false, _follow: None, _task: None }
+    pub fn new(client: BoxClient, live: bool, session: String, _cx: &mut Context<Self>) -> Transcript {
+        Transcript { client, live, session, entries: Rc::default(), read: Load::Loading, open: HashSet::new(), scroll: gpui::ScrollHandle::new(), selection: SelectionState::new(), on_screen: false, _follow: None, _task: None }
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -314,11 +316,15 @@ impl Transcript {
             return;
         }
         if !self.live {
-            let read = match crate::conversation::read_now(&self.client, &self.session) {
-                Ok(conversation) => ConversationUpdate::Conversation(conversation),
-                Err(error) => ConversationUpdate::Failed(error),
-            };
-            self.take(read, cx);
+            // (Read at once, as the window reads a conversation in tests and shots.)
+            #[cfg(feature = "stand-in")]
+            {
+                let read = match crate::conversation::read_now(&self.client, &self.session) {
+                    Ok(conversation) => ConversationUpdate::Conversation(conversation),
+                    Err(error) => ConversationUpdate::Failed(error),
+                };
+                self.take(read, cx);
+            }
             return;
         }
         let follow = self.client.follow_conversation(&self.session, Timing::default());
@@ -337,10 +343,9 @@ impl Transcript {
         match update {
             ConversationUpdate::Conversation(conversation) => {
                 let (entries, _) = entries::entries(conversation);
-                let count = entries.len();
                 self.entries = Rc::new(entries);
-                self.list.reset(count);
                 self.read = Load::Ready(());
+                self.scroll.scroll_to_bottom();
             }
             ConversationUpdate::Failed(error) if self.read.ready().is_none() => self.read = Load::Failed(error.to_string()),
             ConversationUpdate::Gone(refusal) => self.read = Load::Failed(refusal.message),
@@ -357,7 +362,6 @@ impl Transcript {
                 if !this.open.remove(&fold) {
                     this.open.insert(fold);
                 }
-                this.list.remeasure();
                 cx.notify();
             })
             .ok();
@@ -374,11 +378,12 @@ impl Render for Transcript {
             Load::Loading => kuvo_ui::small::LoadingLabel::new("transcript-loading", "Reading…").fill().into_any_element(),
             Load::Failed(why) => super::changes::empty("Couldn’t Read This Subagent", why.clone(), None, cx),
             Load::Ready(()) if self.entries.is_empty() => super::changes::empty("Nothing Here Yet", "It hasn’t said anything yet.", None, cx),
-            Load::Ready(()) => chat_list(&self.list, move |ix, _window, cx| {
-                let cx: &App = cx;
-                view.read(cx).row(ix, &view, cx)
-            })
-            .into_any_element(),
+            // (The latest rows; what came before is in its conversation, a click on Open away.)
+            Load::Ready(()) => {
+                let start = self.entries.len().saturating_sub(ROWS_MOST);
+                let rows: Vec<AnyElement> = (start..self.entries.len()).map(|ix| self.row(ix, &view, cx)).collect();
+                div().id("transcript-rows").track_scroll(&self.scroll).size_full().overflow_y_scroll().pt(space::S3).children(rows).into_any_element()
+            }
         };
         div().debug_selector(|| "subagent-transcript".into()).size_full().flex().flex_col().child(body)
     }

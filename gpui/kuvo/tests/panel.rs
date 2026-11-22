@@ -657,6 +657,15 @@ fn the_subagents_tab_lists_those_at_work_and_done_and_opens_one_to_its_conversat
     let rows = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().unwrap().read(cx).opened().map(str::to_owned));
     assert_eq!(rows.as_deref(), Some("ses_dark"));
     click(cx, "subagent-back");
+    // One with a conversation: its rows drawn in the tab.
+    stand_in.set_subagents_done("ses_signup", vec![json!({ "session": "ses_limits", "title": "Audit email rate limits", "started": NOW - 9_000.0, "ended": NOW - 8_000.0, "state": "finished" })]);
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(Some("ses_limits".into())), cx));
+    cx.run_until_parked();
+    let transcript = bounds(cx, "subagent-transcript").unwrap();
+    let row = bounds(cx, "entry-msg_l1").expect("its first message drawn");
+    assert!(row.size.height > px(0.) && row.left() >= transcript.left(), "in the tab");
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(None), cx));
+    cx.run_until_parked();
     assert!(bounds(cx, "subagents-list").is_some());
     // Open, to talk to it: its conversation in the window.
     click(cx, "subagent-ses_dark");
@@ -721,4 +730,33 @@ fn a_terminal_opens_as_a_tab_in_the_conversations_folder_and_keeps_its_shell_whi
     click(cx, &format!("panel-tab-{tab}"));
     assert_eq!(stand_in.seen_at("POST", "api/pty").len(), 1, "no second shell");
     assert!(terminal.read_with(cx, |view, _| view.screen_text().join("\n")).contains("done"));
+}
+
+#[gpui::test]
+fn a_macs_box_offers_no_browser_tab_until_it_has_a_browser_of_its_own(cx: &mut TestAppContext) {
+    // This Mac's box: no browser of its own to show yet, so no tile.
+    {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (_workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+        cx.simulate_keystrokes("cmd-alt-0");
+        cx.run_until_parked();
+        assert!(bounds(cx, "tile-browser").is_none(), "never one that can't open");
+    }
+}
+
+#[gpui::test]
+fn a_machines_browser_opens_as_a_tab_named_after_its_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_elsewhere(true);
+    stand_in.browser_pages(json!({ "active": "P", "pages": [{ "targetId": "P", "url": "http://localhost:3000/signup", "title": "", "loading": false, "canGoBack": false, "canGoForward": false, "working": false }] }));
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-browser");
+    assert!(matches!(showing(&workspace, cx), Some(Kind::Browser(_))));
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).browser()).is_some());
+    let tab = tab_of(&workspace, cx, &Kind::Browser(0));
+    let title = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).browser().unwrap().read(cx).title());
+    assert_eq!(title.as_ref(), "localhost:3000", "its tab is named as the page is");
+    assert!(bounds(cx, &format!("panel-tab-{tab}")).is_some());
 }

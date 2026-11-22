@@ -157,6 +157,7 @@ enum View {
     Subagents(Entity<SubagentsView>),
     SideChat(Entity<SideChatView>),
     Terminal(Entity<crate::terminal::TerminalView>),
+    Browser(Entity<crate::browser_view::BrowserView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -183,6 +184,8 @@ pub struct SidePanel {
     shown: bool,
     /// The last tab number given.
     next: u64,
+    /// How far the strip's tabs are scrolled.
+    tab_scroll: gpui::ScrollHandle,
     /// The clock (tests and shots); the app's own otherwise.
     now: Option<f64>,
     /// Commands as the Outputs popover had them, for their tabs (by their ids).
@@ -208,6 +211,7 @@ impl SidePanel {
             key: None,
             shown: false,
             next: 0,
+            tab_scroll: gpui::ScrollHandle::new(),
             commands: HashMap::new(),
             now: None,
             search,
@@ -333,6 +337,7 @@ impl SidePanel {
         });
         self.found = None;
         self.start(cx);
+        self.reveal_active();
         self.tell(cx);
         cx.notify();
     }
@@ -402,6 +407,15 @@ impl SidePanel {
         self.now = Some(now);
     }
 
+    /// The browser tab showing.
+    pub fn browser(&self) -> Option<Entity<crate::browser_view::BrowserView>> {
+        let conversation = self.current()?;
+        match conversation.views.get(&conversation.strip.active().id) {
+            Some(View::Browser(view)) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// The terminal tab showing.
     pub fn terminal(&self) -> Option<Entity<crate::terminal::TerminalView>> {
         let conversation = self.current()?;
@@ -458,7 +472,15 @@ impl SidePanel {
 
     /// The showing tab moved: its view made where it's new, each told whether it's on screen, and
     /// what it needs read.
+    /// The tab showing, in view in the strip.
+    fn reveal_active(&self) {
+        if let Some(at) = self.current().and_then(|conversation| conversation.strip.tabs().iter().position(|tab| tab.id == conversation.strip.active().id)) {
+            self.tab_scroll.scroll_to_item(at);
+        }
+    }
+
     fn after_move(&mut self, cx: &mut Context<Self>) {
+        self.reveal_active();
         self.ensure_view(cx);
         self.tell(cx);
         // The New tab page takes the keyboard as it shows (once drawn).
@@ -507,6 +529,13 @@ impl SidePanel {
                     view.update(cx, |view, _| view.set_now(now));
                 }
                 conversation.views.insert(tab.id, View::Subagents(view));
+            }
+            Kind::Browser(_) if !conversation.views.contains_key(&tab.id) => {
+                let view = cx.new(|cx| crate::browser_view::BrowserView::new(client, live, cx));
+                conversation.subscriptions.push(cx.subscribe(&view, |_, _, event: &crate::browser_view::BrowserEvent, cx| match event {
+                    crate::browser_view::BrowserEvent::Changed => cx.notify(),
+                }));
+                conversation.views.insert(tab.id, View::Browser(view));
             }
             Kind::Terminal(_) if !conversation.views.contains_key(&tab.id) => {
                 let directory = conversation.place.as_ref().map(|place| place.directory.clone());
@@ -574,6 +603,7 @@ impl SidePanel {
                     View::Subagents(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::SideChat(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Terminal(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
+                    View::Browser(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -633,6 +663,7 @@ impl SidePanel {
         match (&tab.kind, conversation.views.get(&tab.id)) {
             (_, Some(View::Process(view))) => view.read(cx).title(),
             (_, Some(View::Terminal(view))) => view.read(cx).title(),
+            (_, Some(View::Browser(view))) => view.read(cx).title(),
             _ => Self::named(tab),
         }
     }
@@ -648,7 +679,7 @@ impl SidePanel {
             Kind::Subagents => "Subagents".into(),
             Kind::SideChat(_) => "Side chat".into(),
             Kind::Terminal(_) => "Terminal".into(),
-            Kind::Browser(_) => "New page".into(),
+            Kind::Browser(_) => "Browser".into(),
         }
     }
 
@@ -693,8 +724,8 @@ impl SidePanel {
                 .rounded(radius::NAV)
                 .border_1()
                 .border_color(gpui::transparent_black())
-                .when(dense && selected, |d| d.flex_none().min_w(px(108.)).max_w(px(152.)))
-                .when(dense && !selected, |d| d.min_w(px(46.)).max_w(px(98.)).flex_shrink_1())
+                .when(dense && selected, |d| d.flex_none().min_w(px(108.)).max_w(px(140.)))
+                .when(dense && !selected, |d| d.flex_none().w(px(64.)))
                 .when(!dense, |d| d.min_w(px(96.)).max_w(px(176.)).flex_shrink_1())
                 .when(selected, |d| d.bg(glass.pill).border_color(glass.pill_edge))
                 .when(!selected, |d| d.hover(|s| s.bg(c.hover)))
@@ -704,10 +735,12 @@ impl SidePanel {
                         this.close(id, cx);
                     }
                 }))
-                .child(match conversation.views.get(&tab.id) {
+                .children(match conversation.views.get(&tab.id) {
                     // A process still running: a calm dot in its icon's place.
-                    Some(View::Process(view)) if view.read(cx).running() => div().w(px(12.)).flex_none().flex().items_center().justify_center().child(kuvo_ui::small::status_dot(c.success)).into_any_element(),
-                    _ => Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }).into_any_element(),
+                    Some(View::Process(view)) if view.read(cx).running() => Some(div().w(px(12.)).flex_none().flex().items_center().justify_center().child(kuvo_ui::small::status_dot(c.success)).into_any_element()),
+                    // (Many tabs: the others keep their names rather than their icons.)
+                    _ if dense && !selected => None,
+                    _ => Some(Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }).into_any_element()),
                 })
                 .child(
                     div()
@@ -769,16 +802,21 @@ impl SidePanel {
             .border_b_1()
             .border_color(c.border)
             .child(
+                // (Many tabs scroll sideways rather than lose their names; the one showing stays
+                // in view.)
                 div()
+                    .id("panel-tabs")
+                    .track_scroll(&self.tab_scroll)
                     .flex()
-                    .flex_1()
+                    .flex_shrink_1()
                     .min_w_0()
                     .items_center()
                     .gap(px(2.))
-                    .overflow_hidden()
-                    .children(tabs)
-                    .when(!fresh, |d| d.child(button("panel-new-tab", IconName::Plus, IconSize::Nav, "New Tab").on_click(cx.listener(|this, _, _, cx| this.open_new(cx))))),
+                    .overflow_x_scroll()
+                    .children(tabs),
             )
+            .when(!fresh, |d| d.child(button("panel-new-tab", IconName::Plus, IconSize::Nav, "New Tab").on_click(cx.listener(|this, _, _, cx| this.open_new(cx)))))
+            .child(div().flex_1())
             .child(button("panel-close", IconName::Close, IconSize::XSmall, "Close Panel").on_click(cx.listener(|_, _, _, cx| cx.emit(PanelEvent::Close))))
             .into_any_element()
     }
@@ -795,7 +833,8 @@ impl SidePanel {
             (_, Some(View::Process(view))) => view.clone().into_any_element(),
             (_, Some(View::Subagents(view))) => view.clone().into_any_element(),
             (_, Some(View::SideChat(view))) => view.clone().into_any_element(),
-            (_, Some(View::Terminal(view))) => view.clone().into_any_element(),
+            (_, Some(View::Terminal(view))) => div().size_full().pl(space::S3).pt(space::S2).child(view.clone()).into_any_element(),
+            (_, Some(View::Browser(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),

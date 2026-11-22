@@ -363,6 +363,11 @@ impl BoxClient {
         Err(Error::NeedsUpdating { missing: vec![name.to_owned()] })
     }
 
+    /// Whether the box listed the optional feature `name`, as it last said (nothing is asked).
+    pub fn advertises(&self, name: &str) -> bool {
+        self.advertised(name)
+    }
+
     /// A feature from the negotiation that preceded an already open request.
     pub(crate) fn advertised(&self, name: &str) -> bool {
         self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).features.iter().any(|feature| feature == name)
