@@ -441,17 +441,19 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
     const usage = readServices(RUN);
     if (usage) return yield* forward(usage, path, request, signal, agentsAllowed, null, () => "The box's usage reader is starting. Try again in a moment.", true, () => readServices(RUN) ?? null);
   }
-  // While it restarts (a hand-over, a crash the keeper is starting it again after), the request
-  // waits for it, half a minute at most, rather than failing.
+  // Most routes allow the bridge half a minute to return during a restart or handover.
+  // The Outputs follower retries side threads itself, so its first answer can leave immediately.
   const canonical = canonicalPath(path)?.split("?", 1)[0] ?? "";
-  const target = liveConsentSession(canonical, request.method.toUpperCase()) ? bridge() : await bridgeBack(bridge, signal);
+  const method = request.method.toUpperCase();
+  const threads = method === "GET" && /^api\/kuvo\/btw\/ses_[A-Za-z0-9_]+\/threads(?:\/events)?$/.test(canonical);
+  const target = threads || liveConsentSession(canonical, method) ? bridge() : await bridgeBack(bridge, signal);
   if (!target) {
     yield { head: { status: 503, headers: { "content-type": "application/json" } } };
     yield { body: Buffer.from(JSON.stringify(agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" })) };
     return;
   }
   const notAnswering = "The coding agents aren't answering on this computer. Try again in a moment.";
-  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge, undefined, context);
+  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, threads ? undefined : bridge, undefined, context);
 }
 
 // What's left goes to the engine (the paths a phone may ask for), and a command stopped to whichever

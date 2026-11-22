@@ -18,12 +18,13 @@ export function record(store: ArtifactStore, { bots, watch = true, settle = 1000
   const recorder = new Recorder(store, {
     bots,
     handed,
-    turnEnded: ({ bot, folder, since, made }) => {
-      if (bot && folders) folders.turnEnded(bot, since, made)
+    turnEnded: async ({ bot, folder, since, made }) => {
+      const botFiles = bot && folders ? folders.turnEnded(bot, since, made) : undefined
       // A project's files a command changed (a bot's own folder is watched, or looked at above).
-      if (folder && !(bots && (folder + sep).startsWith(bots + sep))) {
-        void store.changeAll(changedSince(folder, since), made("shell"))
-      }
+      const projectFiles = folder && !(bots && (folder + sep).startsWith(bots + sep))
+        ? changedSince(folder, since).then(paths => paths.length ? store.changeAll(paths, made("shell")) : undefined)
+        : undefined
+      await Promise.all([botFiles, projectFiles])
     },
   })
   if (bots) {

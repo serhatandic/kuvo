@@ -18,7 +18,7 @@ import { fromPatch, unified } from "../../agents/diff"
 import { isBinary, isText, kindOf, typeOf, type Kind } from "./kinds"
 import { CopyPolicy, freeSpace, privateReasons, type NoCopy } from "./policy"
 import { inScratch } from "./turnfiles"
-import { realOf } from "./paths"
+import { realOf, realOfLater } from "./paths"
 import { budgetConfirmation } from "../../shared/artifact-budget"
 import { artifactIndexFormat, artifactSettingsFormat } from "../../shared/artifact-format"
 import { isObject } from "../../shared/json"
@@ -164,6 +164,39 @@ const sameStamp = (a: Stamp, b: Stamp) => a.size === b.size && a.mtime === b.mti
 const couldBeRewritten = (stamp: Stamp, at: number) =>
   at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100)
 
+type OrderedArtifact = { artifact: Artifact; updated: string }
+const newestFirst = (a: OrderedArtifact, b: OrderedArtifact) => {
+  if (a.updated !== b.updated) return a.updated > b.updated ? -1 : 1
+  return a.artifact.id === b.artifact.id ? 0 : a.artifact.id > b.artifact.id ? -1 : 1
+}
+
+class ArtifactBucket {
+  readonly ordered: OrderedArtifact[] = []
+  readonly pinned = new Set<Artifact>()
+
+  put(row: OrderedArtifact, before: OrderedArtifact | undefined, loading: boolean) {
+    if (row.artifact.pinned) this.pinned.add(row.artifact)
+    else this.pinned.delete(row.artifact)
+    if (before === row) return
+    if (loading) {
+      this.ordered.push(row)
+      return
+    }
+    if (before) this.ordered.splice(this.position(before), 1)
+    this.ordered.splice(this.position(row), 0, row)
+  }
+
+  private position(row: OrderedArtifact): number {
+    let start = 0, end = this.ordered.length
+    while (start < end) {
+      const middle = (start + end) >>> 1
+      if (newestFirst(this.ordered[middle]!, row) < 0) start = middle + 1
+      else end = middle
+    }
+    return start
+  }
+}
+
 export class ArtifactStore {
   private artifacts = new Map<string, Artifact>()
   /** How many kept versions use each copy, and its size. */
@@ -196,6 +229,9 @@ export class ArtifactStore {
     if (typeof budget === "number" && budget >= 0) this.chosenBudget = budget
     this.key = ArtifactStore.keyIn(root)
     this.load()
+    for (const index of [this.sessions, this.bots]) for (const bucket of index.values()) bucket.ordered.sort(newestFirst)
+    this.loading = false
+    void this.indexFiles()
   }
 
   private now() {
@@ -306,7 +342,7 @@ export class ArtifactStore {
   /** Each file's stamp as its newest version was read (`at`), this run. */
   private recorded = new Map<string, Stamp & { at: number }>()
 
-  private inTurn<T>(paths: string[], work: () => T, waits: Waiting | null = "read"): Promise<T | undefined> {
+  private inTurn<T>(paths: string[], work: () => T | Promise<T>, waits: Waiting | null = "read"): Promise<T | undefined> {
     const recording = waits ? paths : []
     for (const path of recording) this.waiting.set(path, [...(this.waiting.get(path) ?? []), waits!])
     const next = this.queue.then(async () => {
@@ -343,14 +379,16 @@ export class ArtifactStore {
   /** Each of `paths` as it is now, recorded as `made` it, git asked about them all at once. */
   changeAll(paths: string[], made: Made): Promise<unknown> {
     // (Read once git has answered, a file at a time: a turn's end, with nothing more to come of it.)
-    return this.inTurn(paths, () => {
-      paths.forEach((path) => {
+    return this.inTurn(paths, async () => {
+      for (const path of paths) {
         try {
           this.changeNow(path, made)
         } catch (error: any) {
           console.error("artifacts:", error?.message ?? error)
         }
-      })
+        // A batch can include large files. Let reads of the committed index run between them.
+        if (paths.length > 1) await new Promise<void>(done => setImmediate(done))
+      }
     })
   }
 
@@ -592,39 +630,94 @@ export class ArtifactStore {
    * `next` of the page before, an opaque cursor; `next` is null once there are no more.
    */
   list(scope: Scope, { limit = 200, before }: { limit?: number; before?: string } = {}): { artifacts: Summary[]; next: string | null } {
-    const key = (artifact: Artifact) => [artifact.updated, artifact.id]
-    // Each file once, before any page is cut, so every page agrees on which one stands for it.
-    const matching = this.oneEach([...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before)), key)
-    const pinned = before ? [] : matching.filter((artifact) => artifact.pinned).sort((a, b) => later(key(a), key(b)))
-    const after = before?.split("|")
-    const rest = matching.filter((artifact) => !artifact.pinned && (!after || later(key(artifact), after) > 0)).sort((a, b) => later(key(a), key(b)))
-    const page = rest.slice(0, Math.max(0, limit - pinned.length))
-    const next = rest.length > page.length && page.length ? key(page.at(-1)!).join("|") : null
-    return { artifacts: [...pinned, ...page].map(summary), next }
-  }
-
-  /**
-   * One of each file: of records that are one file by two paths (reached through a link, recorded
-   * before the record named each file one way), the pinned one, else the latest changed.
-   */
-  private oneEach(artifacts: Artifact[], key: (artifact: Artifact) => string[]): Artifact[] {
-    const first = (a: Artifact, b: Artifact) => Number(!!b.pinned) - Number(!!a.pinned) || later(key(a), key(b))
-    const best = new Map<string, Artifact>()
-    for (const artifact of artifacts) {
+    const scoped = scope.session || scope.bot
+    const bucket = this.bucket(scope)
+    if (scoped && !bucket) return { artifacts: [], next: null }
+    const key = (artifact: Pick<Artifact, "updated" | "id">) => [artifact.updated, artifact.id]
+    const visible = (artifact: Artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before)
+    const ordered = bucket?.ordered ?? [...this.artifacts.values()].filter(visible)
+      .map(artifact => ({ artifact, updated: artifact.updated })).sort(newestFirst)
+    const pins = [...(bucket?.pinned ?? ordered.filter(row => row.artifact.pinned).map(row => row.artifact))]
+      .filter(visible).sort((a, b) => later(key(a), key(b)))
+    // Pick one record per file before cutting the page. Pins win, then the newest record.
+    const seen = new Set<string>()
+    const artifacts: Summary[] = []
+    const first = (artifact: Artifact) => {
       const file = this.fileOf(artifact)
-      const other = best.get(file)
-      if (!other || first(artifact, other) < 0) best.set(file, artifact)
+      if (seen.has(file)) return false
+      seen.add(file)
+      return true
     }
-    return best.size === artifacts.length ? artifacts : artifacts.filter((artifact) => best.get(this.fileOf(artifact)) === artifact)
+    for (const pin of pins) if (first(pin) && !before) artifacts.push(summary(pin))
+    const maximum = Math.trunc(limit) || 0
+    if (artifacts.length >= maximum) return { artifacts, next: null }
+    const after = before?.split("|")
+    let next: string | null = null
+    for (const { artifact } of ordered) {
+      if (artifact.pinned || !visible(artifact) || !first(artifact)) continue
+      if (after && later(key(artifact), after) <= 0) continue
+      if (artifacts.length >= maximum) {
+        next = key(artifacts.at(-1)!).join("|")
+        break
+      }
+      artifacts.push(summary(artifact))
+    }
+    return { artifacts, next }
   }
 
-  /** Where each artifact's file really is (`realOf`), looked up once a run. */
-  private files = new Map<string, string>()
+  // Rebuilt from the journal at startup, then kept ordered as files are recorded and pinned.
+  private readonly sessions = new Map<string, ArtifactBucket>()
+  private readonly bots = new Map<string, ArtifactBucket>()
+  private readonly files = new Map<string, string>()
+  private loading = true
+  private readonly indexedWhere = new WeakMap<Artifact, { sessions: string[]; bots: string[]; row: OrderedArtifact; pinned: boolean }>()
+
+  private bucket(scope: Scope): ArtifactBucket | undefined {
+    return scope.session ? this.sessions.get(scope.session) : scope.bot ? this.bots.get(scope.bot) : undefined
+  }
+
+  private inScope(scope: Scope): Artifact[] {
+    if (scope.session || scope.bot) return this.bucket(scope)?.ordered.map(row => row.artifact) ?? []
+    return [...this.artifacts.values()]
+  }
+
+  private index(artifact: Artifact) {
+    if (!this.loading && !this.files.has(artifact.id)) this.files.set(artifact.id, realOf(artifact.path) ?? artifact.path)
+    const was = this.indexedWhere.get(artifact)
+    const { sessions, bots } = artifact.where
+    const row = was?.row.updated === artifact.updated ? was.row : { artifact, updated: artifact.updated }
+    const pinned = !!artifact.pinned
+    if (was?.sessions === sessions && was.bots === bots && was.row === row && was.pinned === pinned) return
+    for (const [ids, before, index] of [
+      [sessions, was?.sessions, this.sessions],
+      [bots, was?.bots, this.bots],
+    ] as const) {
+      // The recorder only appends to an artifact's attribution.
+      for (const [at, id] of ids.entries()) {
+        const bucket = index.get(id) ?? new ArtifactBucket()
+        if (!index.has(id)) index.set(id, bucket)
+        bucket.put(row, at < (before?.length ?? 0) ? was?.row : undefined, this.loading)
+      }
+    }
+    this.indexedWhere.set(artifact, { sessions, bots, row, pinned })
+  }
+
+  /** Old journal paths can name one file through different links. Resolve them off the read path. */
+  private async indexFiles() {
+    const artifacts = [...this.artifacts.values()]
+    for (let at = 0; at < artifacts.length; at += 16) {
+      const changed = await Promise.all(artifacts.slice(at, at + 16).map(async artifact => {
+        const file = await realOfLater(artifact.path)
+        if (this.files.has(artifact.id)) return undefined
+        this.files.set(artifact.id, file)
+        return file !== artifact.path ? artifact : undefined
+      }))
+      for (const artifact of changed) if (artifact) this.told(artifact)
+    }
+  }
 
   private fileOf(artifact: Artifact): string {
-    let file = this.files.get(artifact.id)
-    if (file === undefined) this.files.set(artifact.id, (file = realOf(artifact.path) ?? artifact.path))
-    return file
+    return this.files.get(artifact.id) ?? artifact.path
   }
 
   /**
@@ -636,7 +729,7 @@ export class ArtifactStore {
     const entries: { artifact: Header; version: Version }[] = []
     const key = (entry: { artifact: Header; version: Version }) => [entry.version.at, entry.artifact.id, String(entry.version.n).padStart(9, "0")]
     const after = before?.split("|")
-    for (const artifact of this.artifacts.values()) {
+    for (const artifact of this.inScope(scope)) {
       if (!this.matches(artifact, scope)) continue
       const { versions, ...header } = artifact
       for (const version of versions) {
@@ -924,6 +1017,7 @@ export class ArtifactStore {
     const { versions: _, ...header } = artifact
     const line: Line = { a: header, ...(version ? { v: version } : {}) }
     appendFileSync(join(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + "\n")
+    this.index(artifact)
   }
 
   private load() {
@@ -992,6 +1086,7 @@ export class ArtifactStore {
     if (any) this.compact(months)
     else for (const artifact of marked) this.write(artifact)
     for (const artifact of this.artifacts.values()) {
+      this.index(artifact)
       artifact.versions.sort((a, b) => a.n - b.n)
       // Recorded before its kind told its type (bytes that aren't text, said to be text).
       artifact.type = typeOf(artifact.path, artifact.kind === "file" || artifact.type === "application/octet-stream")

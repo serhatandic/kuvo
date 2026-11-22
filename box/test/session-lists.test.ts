@@ -1596,9 +1596,17 @@ test("schedule streams share root watches and skip unrelated or superseded updat
     await second.until(line => line.wakes.length === 1)
     const { BOTS, SESSION_WAKES } = await import("../src/link/home")
     const roots = [BOTS, SESSION_WAKES]
-    expect(watch.mock.calls.filter(([path]) => roots.includes(String(path)))).toHaveLength(2)
+    const rootWatches = () => watch.mock.calls.filter(([path]) => roots.includes(String(path)))
+    // The first snapshot comes before the filesystem subscription. Pull the next line of each
+    // generator, as the server does once it has sent the snapshot.
+    const nextFirst = first.until(() => true)
+    const nextSecond = second.until(() => true)
+    for (let tries = 0; tries < 50 && rootWatches().length < 2; tries++) await Bun.sleep(10)
+    expect(rootWatches()).toHaveLength(2)
     writeFileSync(join(a, "wakes/100-one"), "From the filesystem")
-    expect((await first.until(() => true)).wakes[0].summary).toBe("From the filesystem")
+    writeFileSync(join(b, "wakes/100-two"), "The other filesystem update")
+    expect((await nextFirst).wakes[0].summary).toBe("From the filesystem")
+    expect((await nextSecond).wakes[0].summary).toBe("The other filesystem update")
     read.mockClear()
     for (const summary of ["Second", "Third", "Last"]) {
       writeFileSync(join(a, "wakes/100-one"), summary)
