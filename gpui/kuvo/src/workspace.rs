@@ -426,9 +426,9 @@ impl Workspace {
             }
         }).detach();
         cx.subscribe_in(&library, window, |this: &mut Self, _, open: &crate::library::OpenInPanel, window, cx| {
-            this.show_area(Area::Sessions, window, cx);
-            if let Some(session) = &open.session {
-                this.open_session_at(session, None, window, cx);
+            match &open.session {
+                Some(session) => this.open_session_at(session, None, window, cx),
+                None => this.show_area(Area::Sessions, window, cx),
             }
             this.preview_file(&open.path, window, cx);
         }).detach();
@@ -711,6 +711,10 @@ impl Workspace {
     #[cfg(feature = "stand-in")]
     pub fn open_read_at_once(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.open_session(session, window, cx);
+        if self.bot_chat().is_some() {
+            // (A bot's: Bots read it at once as it opened.)
+            return;
+        }
         if let Some(view) = self.conversation().cloned() {
             self.read_conversation_at_once(&view, session, cx);
         }
@@ -1796,8 +1800,25 @@ impl Workspace {
         self.unsent.contains(session)
     }
 
-    /// Opens a session's conversation.
+    /// The bot whose own conversation `session` is, as its box says (the session lists' kind, else
+    /// the Bots list's own conversation): such a conversation belongs in Bots, never in Sessions.
+    pub fn own_bot(&self, session: &str, cx: &App) -> Option<String> {
+        if let Some(bot) = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone()) {
+            return Some(bot);
+        }
+        match self.area_view(Area::Bots)?.read(cx).bots() {
+            Reading::Ready(bots) => bots.bots.iter().find(|each| each.session == session).map(|each| each.id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Opens a conversation where it belongs: a bot's own in Bots (that bot picked), any other in
+    /// Sessions. Every "open this conversation" goes through here.
     pub fn open_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(bot) = self.own_bot(session, cx) {
+            self.open_bot_chat(&bot, session, None, window, cx);
+            return;
+        }
         self.area = Area::Sessions;
         self.session_menu.active_popover = None;
         self.session_menu.action_error = None;
@@ -1816,9 +1837,8 @@ impl Workspace {
         // Only the composer on screen asks again for what the box couldn't say.
         self.show_composer(Some(&composer), cx);
         let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer, live, cx));
-        // (A bot's own conversation, as the session lists say: its sessions show in Activity.)
-        let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
-        self.wire_bars(&view, bot, cx);
+        // (Not a bot's own, as far as the box has said yet: a bot's opens in Bots, above.)
+        self.wire_bars(&view, None, cx);
         self.wire_wakes(&view, session, cx);
         self.wire_shown_files(&view, cx);
         window.focus(&view.focus_handle(cx), cx);
@@ -2710,8 +2730,12 @@ impl Workspace {
     /// The Library's "Show in conversation": the conversation, brought to the message once it's there.
     pub fn open_session_at(&mut self, session: &str, message: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.open_session(session, window, cx);
+        let view = match self.bot_chat() {
+            Some((_, view)) => Some(view.clone()),
+            None => self.conversation().cloned(),
+        };
         if let Some(message) = message
-            && let Some(view) = self.conversation().cloned()
+            && let Some(view) = view
         {
             view.update(cx, |view, cx| view.reveal_message(message, cx));
         }
