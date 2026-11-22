@@ -1,3 +1,5 @@
+import type { ContextSize } from "../../shared/context";
+import { currentEngineContext } from "../engine/context";
 import { readServices, servicePath } from "../../shared/box-services";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
@@ -403,6 +405,15 @@ export async function* forward(target: Target | null, path: string, request: Lin
       // Archived while it waits on you: it stops, as a Mac's Archive has it.
       if (archived && target) await stopIfWaiting(target, decodeURIComponent(changed[1]!));
     }
+  }
+  if (!toAgents && method === "GET" && response.ok && /^\/api\/session\/[^/]+$/.test(url.pathname)) {
+    const page = await response.json() as { data?: EngineSession & { context?: ContextSize } } | null;
+    const context = await currentEngineContext(url, headers, signal, page?.data);
+    if (context && page?.data) page.data.context = context;
+    delete out["content-length"];
+    yield { head: { status: response.status, headers: out } };
+    yield { body: Buffer.from(JSON.stringify(page)) };
+    return;
   }
   if (method === "GET" && response.ok && /^\/?api\/session\/[^/]+\/message(?:\/[^/?]+)?(?:\?|$)/.test(path)) {
     // With the box's words: compaction's, its tool steps' and its sessions' news (shared/message-words.ts).

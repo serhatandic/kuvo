@@ -5,6 +5,7 @@
 //
 // The app tells the bridge where the engine is (`PUT /api/kuvo/engine`) each time either starts.
 
+import { stepContext } from "../shared/context"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Agent, PermissionAsk, RunInput, RunResult, Thread, TurnHooks } from "./agent"
@@ -659,6 +660,7 @@ class EngineThread implements Thread {
       shells.set(tool, setInterval(read, 1000))
     }
 
+    const model = (await this.link.offered(input.model.providerID).catch(() => undefined))?.models.find(each => each.id === input.model.id)
     const onEvent = (event: EngineEvent) => {
       if (done) return
       const data = event.data
@@ -673,6 +675,7 @@ class EngineThread implements Thread {
       }
       // A subagent's own steps show in its own conversation, not in this one.
       if (!ownSession) return
+      if (event.type === "session.compaction.ended") turn.clearContext()
       // A summary you asked for: how it ends, and none of its words.
       if (input.compact && !event.type.startsWith("session.execution.") && event.type !== "session.idle") return
       switch (event.type) {
@@ -734,6 +737,7 @@ class EngineThread implements Thread {
         case "session.step.failed":
           if (data.assistantMessageID !== step) return
           step = undefined
+          if (event.type === "session.step.ended") turn.context(stepContext(data.tokens), model?.limit.context)
           turn.endStep({ tokens: data.tokens as TokenUsage | undefined, cost: data.cost, finish: data.finish, error: data.error })
           return
         case "session.retry.scheduled": {

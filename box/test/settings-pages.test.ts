@@ -35,7 +35,8 @@ afterAll(() => {
   rmSync(outside, { recursive: true, force: true })
 })
 
-const files = [APPROVAL_FILE, CONFIG_FILE, ALLOWED_FILE, join(BROWSER_FOLDER, "settings.json"), join(BROWSER_FOLDER, "keeps-agent-tabs")]
+const compactionFile = join(process.env.KUVO_HOME!, "box", "conversation-compaction.json")
+const files = [APPROVAL_FILE, CONFIG_FILE, ALLOWED_FILE, join(BROWSER_FOLDER, "settings.json"), join(BROWSER_FOLDER, "keeps-agent-tabs"), compactionFile]
 const write = (file: string, value: unknown) => {
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(value))
@@ -56,11 +57,26 @@ const change = (section: string, row: any, value: unknown, was = row.revision) =
 const act = (section: string, row: any, action: string, was = row.revision) => ask(handler, "POST", `kuvo/settings/${section}/${encodeURIComponent(row.id)}/${action}`, { was })
 const kept = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : null)
 
+test("the box serves and keeps the automatic summary threshold for this computer", async () => {
+  const row = rowOf(await page("conversations"), "compaction")
+  expect(row.value).toBe("400000")
+  expect(row.choices.map((choice: any) => choice.id)).toEqual(["200000", "400000", "600000", "never"])
+  try {
+    expect((await change("conversations", row, "600000")).status).toBe(200)
+    expect(rowOf(await page("conversations"), "compaction").value).toBe("600000")
+    expect(kept(compactionFile)).toBe('"600000"')
+    expect((await change("conversations", row, "200000")).status).toBe(409)
+  } finally {
+    rmSync(compactionFile, { force: true })
+  }
+})
+
 test("the box lists its sections, each with what a sidebar and search show", async () => {
   const { status, json } = await ask(handler, "GET", "kuvo/settings")
   expect(status).toBe(200)
   expect(json.sections.map((section: any) => [section.id, section.title, section.group, section.icon])).toEqual([
     ["clock", "Clock", "General", "clock"],
+    ["conversations", "Conversations", "Agents & Tools", "message"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
     ["computer", process.platform === "darwin" ? "This Mac" : "This Computer", "System", "computer"],
@@ -77,7 +93,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
   ])
   expect((await ask(handler, "GET", "kuvo/settings/general")).status).toBe(404)
   expect(json.sections[0].keywords).toContain("time zone")
-  expect(json.sections[1].keywords).toContain("sandbox")
+  expect(json.sections.find((section: any) => section.id === "permissions").keywords).toContain("sandbox")
   expect((await ask(handler, "GET", "kuvo/settings/integrations")).status).toBe(404)
 })
 

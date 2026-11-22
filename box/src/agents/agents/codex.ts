@@ -3,6 +3,7 @@
 // serves every Codex session, each one of its threads; while the box's sandbox is on, each session
 // has one of its own, run whole in it.
 
+import { compactionChoice, tokenCount } from "../../shared/context"
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -313,6 +314,7 @@ export class CodexAgent implements Agent {
     ]
   }
 
+  private compaction = compactionChoice()
   private idleCheck?: ReturnType<typeof setInterval>
   private shutdowns = 0
 
@@ -337,6 +339,14 @@ export class CodexAgent implements Agent {
     const forgotten = thread && this.threads.get(thread.session.id) !== thread
     if (this.shutdowns !== shutdowns || forgotten || this.slots.get(pendingKey) !== pendingSlot) throw new Error("Codex stopped.")
     if (thread && !starting && thread.server && !thread.server.isClosed) return thread.server
+    const compaction = compactionChoice()
+    if (compaction !== this.compaction) {
+      this.compaction = compaction
+      for (const slot of this.slots.values()) {
+        slot.outdated = slot.server
+        void slot.starting?.then(server => { slot.outdated ??= server }, () => {})
+      }
+    }
     const key = serverKey()
     const slot = this.slot(key)
     slot.lastUse = Date.now()
@@ -416,7 +426,7 @@ export class CodexAgent implements Agent {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), compaction: this.compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
             console.error("Codex's holder didn't start:", error?.message ?? error)
             return undefined
           })
@@ -496,7 +506,10 @@ export class CodexAgent implements Agent {
     const slot = this.slot(String(meta.key ?? SHARED))
     slot.fence = String(meta.fence ?? "")
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held))
-    if (!slot.server || slot.server.isClosed) slot.server = rpc
+    if (!slot.server || slot.server.isClosed) {
+      slot.server = rpc
+      if (meta.compaction !== this.compaction) slot.outdated = rpc
+    }
     slot.lastUse = Date.now()
     // Turns let go of (their session couldn't take them up) are stopped: now, or once the turn
     // says its id as its lines come again.
@@ -1282,7 +1295,10 @@ class CodexThread implements Thread {
     // (On a machine, the machine's own folders too: Codex keeps its own in Kuvo Code's folder.)
     // In the box's sandbox, the launcher kept Kuvo Code's passwords out of Codex, and gave it the
     // conversation's wake-up folder.
+    const compaction = compactionChoice()
     const config = {
+      // Codex caps this setting at 90% of the model window. Without it, Codex chooses its limit.
+      ...(compaction === "never" ? {} : { model_auto_compact_token_limit: Number(compaction) }),
       "shell_environment_policy.set.OPENCODE_SESSION_ID": this.session.id,
       ...(onMachine ? ownFoldersConfig() : {}),
       ...(tools && server ? { [`mcp_servers.${tools.name}`]: server } : {}),
@@ -1931,7 +1947,6 @@ class CodexThread implements Thread {
         return
       case "thread/tokenUsage/updated": {
         // How much its model holds, as Codex says: the models list it.
-        this.agent.noteContext(active.model, params.tokenUsage?.modelContextWindow)
         this.laneNotification(active, method, params)
         return
       }
@@ -2049,7 +2064,12 @@ class CodexThread implements Thread {
         // Told as a model call ends (after the commands it ran): its step ends with what it used,
         // and what comes next is the next call's step, as the engine's steps are. (One with
         // nothing read or written, Codex's estimate after it compacted, isn't a call.)
+        const window = params.tokenUsage?.modelContextWindow
+        this.agent.noteContext(turn.currentModel.id, window)
         const last = params.tokenUsage?.last
+        const used = tokenCount(last?.totalTokens) ? last.totalTokens
+          : tokenCount(last?.inputTokens) && tokenCount(last?.outputTokens) ? last.inputTokens + last.outputTokens : undefined
+        turn.context(used, window)
         if (!last?.inputTokens && !last?.outputTokens) return
         lane.toolsSinceText = false
         turn.endStep({
