@@ -122,6 +122,8 @@ export function titleOf(path: string): string | undefined {
 
 const stamp = (date: Date) => date.toISOString()
 
+export type LibrarySnapshot = { items: Map<string, Item>; lines: number }
+
 export class LibraryStore {
   private items = new Map<string, Item>()
   private listeners = new Set<(item: Item) => void>()
@@ -130,10 +132,16 @@ export class LibraryStore {
   constructor(
     private readonly root: string,
     private readonly options: { bots?: string; now?: () => Date } = {},
+    prepared?: LibrarySnapshot,
   ) {
     mkdirSync(root, { recursive: true })
-    this.load()
+    if (prepared) {
+      this.items = prepared.items
+      this.lines = prepared.lines
+    } else this.load()
   }
+
+  snapshot(): LibrarySnapshot { return { items: this.items, lines: this.lines } }
 
   static idOf(path: string) {
     return "lib_" + createHash("sha256").update(path).digest("hex").slice(0, 24)

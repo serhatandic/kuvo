@@ -187,6 +187,11 @@ function* journalLines(fd: number) {
   if (pieces.length) yield Buffer.concat(pieces).toString("utf8")
 }
 
+type CopyInventory = {
+  copies: Map<string, { uses: number; size: number }>
+  copyBytes: number
+}
+
 export class ArtifactStore {
   private readonly artifacts: ArtifactIndex
   /** How many kept versions use each copy, and its size. */
@@ -211,7 +216,7 @@ export class ArtifactStore {
       /** Files shown before the record heard it (a kept reply's, read again), and when: marked as it loads. */
       shown?: { path: string; at: number }[]
     } = {},
-    defer = false,
+    startup?: CopyInventory | "prepare",
   ) {
     mkdirSync(join(root, "log"), { recursive: true })
     mkdirSync(join(root, "copies"), { recursive: true })
@@ -220,20 +225,29 @@ export class ArtifactStore {
     if (typeof budget === "number" && budget >= 0) this.chosenBudget = budget
     this.key = ArtifactStore.keyIn(root)
     this.artifacts = new ArtifactIndex(join(root, "log"), join(root, "index-v1.sqlite"))
-    if (!defer) {
+    if (startup === "prepare") return
+    if (startup) {
+      this.copies = startup.copies
+      this.copyBytes = startup.copyBytes
+    } else {
       for (const _ of this.load()) sweep?.()
-      this.resolveFiles()
     }
+    this.resolveFiles()
   }
 
-  static async open(root: string, options: ConstructorParameters<typeof ArtifactStore>[1]) {
-    const store = new ArtifactStore(root, options, true)
-    for (const _ of store.load()) {
-      await new Promise<void>(resolve => setTimeout(resolve, 0))
-      sweep?.()
-    }
-    store.resolveFiles()
-    return store
+  /** Finish journal replay and maintenance on the disk worker before handing the index to the recorder. */
+  static async prepare<Extra>(
+    root: string, options: ConstructorParameters<typeof ArtifactStore>[1], after: (store: ArtifactStore) => Extra,
+  ) {
+    const store = new ArtifactStore(root, options, "prepare")
+    try {
+      for (const _ of store.load()) {
+        sweep?.()
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
+      const extra = after(store)
+      return { inventory: { copies: store.copies, copyBytes: store.copyBytes }, extra }
+    } finally { store.artifacts.close() }
   }
 
   private resolveFiles() {
@@ -1062,31 +1076,33 @@ export class ArtifactStore {
     for (;;) {
       const batch = this.artifacts.page(after)
       if (!batch.length) break
-      for (const { id, body } of batch) {
-        after = id
-        const artifact: Artifact = JSON.parse(body)
-        const project = artifact.where.project
-        if (project && !artifact.where.bots.length && !artifact.pinned && !artifact.shown && inScratch(artifact.path, project)
-          && artifact.versions.every(version => version.via.length && version.via.every(via => via === "shell"))) {
-          this.artifacts.drop(id)
-          any = true
-          for (const version of artifact.versions) if (version.hash?.startsWith("sha256:")) dropped.add(version.hash)
-          continue
-        }
-        versions += artifact.versions.length + 1
-        const type = typeOf(artifact.path, artifact.kind === "file" || artifact.type === "application/octet-stream")
-        let modified = artifact.type !== type
-        artifact.type = type
-        for (const version of artifact.versions) {
-          if (!version.kept || !version.hash) continue
-          if (existsSync(this.copyPath(version.hash))) this.use(version.hash, version.size, 1)
-          else {
-            version.kept = false
-            modified = true
+      this.artifacts.update(() => {
+        for (const { id, body } of batch) {
+          const artifact: Artifact = JSON.parse(body)
+          const project = artifact.where.project
+          if (project && !artifact.where.bots.length && !artifact.pinned && !artifact.shown && inScratch(artifact.path, project)
+            && artifact.versions.every(version => version.via.length && version.via.every(via => via === "shell"))) {
+            this.artifacts.drop(id)
+            any = true
+            for (const version of artifact.versions) if (version.hash?.startsWith("sha256:")) dropped.add(version.hash)
+            continue
           }
+          versions += artifact.versions.length + 1
+          const type = typeOf(artifact.path, artifact.kind === "file" || artifact.type === "application/octet-stream")
+          let modified = artifact.type !== type
+          artifact.type = type
+          for (const version of artifact.versions) {
+            if (!version.kept || !version.hash) continue
+            if (existsSync(this.copyPath(version.hash))) this.use(version.hash, version.size, 1)
+            else {
+              version.kept = false
+              modified = true
+            }
+          }
+          if (modified) this.artifacts.put(artifact)
         }
-        if (modified) this.artifacts.put(artifact)
-      }
+      })
+      after = batch.at(-1)!.id
       if (++pages % 8 === 0) yield
     }
     if (any || (lines > 1000 && lines > versions * 2)) this.compact(months)

@@ -45,7 +45,7 @@ sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else sh
 build() {
   BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file run - "$raw" <<'BUILD'
 const worker = await Bun.build({
-  entrypoints: ["box/src/usage/insights-db-worker.ts"],
+  entrypoints: ["box/src/link/server/history-worker.ts"],
   target: "bun",
   format: "esm",
   minify: true,
@@ -60,7 +60,7 @@ const link = await Bun.build({
     "// Kuvo resident workers v1",
     "// Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.",
   ].join("\n"),
-  define: { __KUVO_INSIGHTS_WORKER__: JSON.stringify(await worker.outputs[0].text()) },
+  define: { __KUVO_HISTORY_WORKER__: JSON.stringify(await worker.outputs[0].text()) },
 });
 await Bun.write(process.argv[2], link.outputs[0]);
 BUILD
