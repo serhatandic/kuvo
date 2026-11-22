@@ -12,6 +12,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A project's longer session list says how many it has: "Show 10 more of 44", then "Show all 44" for the last of them. Activity's sessions fold the same way ("Show all 9").
 - Pointing at a Work Queue chip in a reply shows the pointing hand, not the text cursor.
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
+- Requests stay responsive while Kuvo reads saved artifacts and fills the Library at startup.
 
 - Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.
 - Side questions can include pictures. They're answered by the model you pick or the conversation's own, if it can see pictures. Side questions in a coding agent's conversation still take text files only.

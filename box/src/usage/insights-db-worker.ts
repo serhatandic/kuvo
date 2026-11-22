@@ -76,5 +76,3 @@ export function serveInsightsDB() {
     }
   })
 }
-
-if (process.argv.includes("--insights-db-source-worker")) serveInsightsDB()
