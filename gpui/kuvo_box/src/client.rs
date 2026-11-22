@@ -51,11 +51,13 @@ struct Capabilities {
     gate: Gate,
     server: u64,
     features: Vec<String>,
+    /// The gate last read, kept while it's read again for a server that started since.
+    known: Gate,
 }
 
 impl Default for Capabilities {
     fn default() -> Self {
-        Self { gate: Gate::Unknown, server: 0, features: Vec::new() }
+        Self { gate: Gate::Unknown, server: 0, features: Vec::new(), known: Gate::Unknown }
     }
 }
 
@@ -281,7 +283,16 @@ impl BoxClient {
     }
 
     fn set_gate(&self, gate: Gate, server: u64, features: Vec<String>) {
-        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Capabilities { gate, server, features };
+        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Capabilities { known: gate.clone(), gate, server, features };
+    }
+
+    /// The gate to draw by: the one read now, or, while it's read again for a box whose server
+    /// started again (a restart, a connection made anew), the one last read, so what's drawn by it
+    /// (the Library in the rail) doesn't blink out and back. Never for what's sent: that waits for
+    /// the gate read now.
+    pub fn drawn_gate(&self) -> Gate {
+        let capabilities = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if capabilities.gate == Gate::Unknown { capabilities.known.clone() } else { capabilities.gate.clone() }
     }
 
     /// The gate for the box's server now: not known yet for one that started again since it was
@@ -290,7 +301,8 @@ impl BoxClient {
         let server = self.transport.refresh();
         let mut gate = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if gate.server != server {
-            *gate = Capabilities { server, ..Capabilities::default() };
+            let known = if gate.gate == Gate::Unknown { gate.known.clone() } else { gate.gate.clone() };
+            *gate = Capabilities { server, known, ..Capabilities::default() };
         }
         gate.gate.clone()
     }
@@ -942,5 +954,60 @@ mod draft_submission_tests {
         }
         let sent = client.send_draft("ses_owned", &Draft::new("msg_refused", "Proven refusal"), None).unwrap();
         assert!(matches!(sent, Sent::Typed { answer, .. } if answer.ambiguous.is_none() && answer.restore.as_ref().is_some_and(|restore| restore.text == "Keep this draft")));
+    }
+}
+
+#[cfg(test)]
+mod drawn_gate_tests {
+    use super::*;
+    use crate::transport::{Closer, Response, Stream, Transport};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// A box that starts again (`server`), answering its info or not yet (`answers`), and with
+    /// which features.
+    struct Restarting {
+        server: Arc<AtomicU64>,
+        answers: Arc<AtomicBool>,
+        features: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Transport for Restarting {
+        fn send(&self, request: &Request) -> Result<Response> {
+            if !self.answers.load(Ordering::SeqCst) {
+                return Err(crate::Error::Unreachable("Starting".into()));
+            }
+            let value = match request.route() {
+                "kuvo/info" => json!({ "kind": "machine", "name": "lokum", "features": *self.features.lock().unwrap() }),
+                _ => json!({}),
+            };
+            Ok(Response { status: 200, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn refresh(&self) -> u64 { self.server.load(Ordering::SeqCst) }
+        fn describe(&self) -> String { "lokum".into() }
+    }
+
+    #[test]
+    fn what_a_box_has_stays_drawn_while_its_gate_is_read_again_after_it_starts_again() {
+        let (server, answers) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(true)));
+        let features = Arc::new(Mutex::new(crate::gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>()));
+        let client = BoxClient::new(Restarting { server: server.clone(), answers: answers.clone(), features: features.clone() });
+        client.connect().unwrap();
+        assert!(client.drawn_gate().has("library"));
+
+        // It starts again and doesn't answer yet: nothing's sent past the gate, but the Library
+        // stays drawn as it was.
+        server.store(1, Ordering::SeqCst);
+        answers.store(false, Ordering::SeqCst);
+        assert!(client.send(&Request::get("kuvo/library")).is_err());
+        assert_eq!(client.gate(), Gate::Unknown);
+        assert!(client.drawn_gate().has("library"));
+
+        // Back, an older version's without it: drawn as it says now.
+        answers.store(true, Ordering::SeqCst);
+        features.lock().unwrap().retain(|name| name != "library");
+        let _ = client.send(&Request::get("kuvo/library"));
+        assert!(!client.drawn_gate().has("library"));
     }
 }

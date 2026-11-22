@@ -4057,7 +4057,7 @@ impl Render for Workspace {
         insights.update(cx, |view, cx| view.shown(show_insights, cx));
         // The Library only where this computer's Kuvo has one: its rail button, ⌃7 and View ›
         // Library are hidden elsewhere, and a window left on it goes back to Sessions.
-        let library_here = self.client.gate().has("library");
+        let library_here = self.client.drawn_gate().has("library");
         if window.is_window_active() {
             crate::app_menu::show_library(library_here, cx);
         }

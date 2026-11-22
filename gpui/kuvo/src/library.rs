@@ -255,7 +255,7 @@ impl LibraryView {
     }
 
     fn follow_now(&mut self, cx: &mut Context<Self>) {
-        if !self.client.gate().has("library") {
+        if !self.client.drawn_gate().has("library") {
             self.follow = None;
             return;
         }
