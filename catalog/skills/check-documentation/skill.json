@@ -1,0 +1,7 @@
+{
+  "id": "check-documentation",
+  "title": "Check documentation",
+  "category": "Writing",
+  "summary": "Find documentation that has drifted from behavior.",
+  "version": "1.0.0"
+}

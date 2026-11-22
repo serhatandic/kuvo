@@ -1,0 +1,10 @@
+{
+  "id": "linear",
+  "title": "Linear",
+  "category": "Work",
+  "summary": "Issues, projects and cycles.",
+  "url": "https://mcp.linear.app/mcp",
+  "auth": "oauth",
+  "asset": "https://linear.app/static/apple-touch-icon.png",
+  "brand": "https://linear.app/brand"
+}

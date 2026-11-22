@@ -1,0 +1,10 @@
+{
+  "id": "sentry",
+  "title": "Sentry",
+  "category": "Code",
+  "summary": "Errors and performance problems in your apps.",
+  "url": "https://mcp.sentry.dev/mcp",
+  "auth": "oauth",
+  "asset": "https://sentry.io/favicon.ico",
+  "brand": "https://sentry.io/brand"
+}

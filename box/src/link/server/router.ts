@@ -80,6 +80,7 @@ import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIG
 import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
 import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
+import { marketplaceRoute } from "../areas/marketplace";
 import { skillsRoute } from "../areas/skills";
 import { moveReceiptRoute, moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
 import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
@@ -182,6 +183,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "plugins.search", when: route => route === "kuvo/plugins/search", answer: pluginSearchRoute },
   { feature: "programs", when: route => route === "kuvo/programs", answer: programsRoute },
   { feature: "providers.models", when: route => route === "kuvo/providers/models", answer: providerModelsRoute },
+  { feature: "marketplace", when: route => /^kuvo\/marketplace(?:\/|$)/.test(route), answer: marketplaceRoute },
   { feature: "skills", when: route => /^kuvo\/(skills|skill-library)(\/|$)/.test(route), answer: skillsRoute },
   { feature: "skills.trash", when: route => /^kuvo\/skill-trash(\/|$)/.test(route), answer: skillsRoute },
   { feature: "config", when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },

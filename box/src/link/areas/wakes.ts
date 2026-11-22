@@ -3,6 +3,7 @@ import { queuedRefusal } from "../server/context";
 // Wake-ups and watches (PROTOCOL.md, `kuvo/wakes`): a conversation's or a bot's, kept beside it as
 // `kuvo-wake` keeps them, listed, added, held, cancelled and sent now from any client.
 
+import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -307,6 +308,17 @@ async function whereIs(session: string, readEngine: () => EngineRecord, bridge: 
   const agents = bridge();
   const there = await ask(agents);
   return agents && there ? { target: agents, found: there, agents: true } : null;
+}
+
+/** Seed a routine before a new bot becomes visible to the wake worker. The keeper fills in the
+ * local time of day and weekly anchor when it next advances this standard wake file. */
+export function seedRoutine(folder: string, routine: { every: "1d" | "1w"; title: string; note: string }, now = Date.now()): void {
+  const due = Math.floor(now / 1000) + (routine.every === "1w" ? 7 : 1) * 86_400;
+  const letters = randomBytes(8).toString("hex");
+  const summaries = path.join(folder, "summaries");
+  fs.mkdirSync(summaries, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(summaries, letters), routine.title, { mode: 0o600 });
+  fs.writeFileSync(path.join(folder, "wakes", `${due}-${letters}-${routine.every}`), routine.note, { mode: 0o600 });
 }
 
 // Takes a wake-up off the schedule by its letters, which a repeating one keeps as its time moves on,

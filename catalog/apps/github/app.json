@@ -1,0 +1,10 @@
+{
+  "id": "github",
+  "title": "GitHub",
+  "category": "Code",
+  "summary": "Repositories, pull requests and issues.",
+  "url": "https://api.githubcopilot.com/mcp/",
+  "auth": "token",
+  "asset": "https://github.githubassets.com/favicons/favicon.png",
+  "brand": "https://github.com/logos"
+}

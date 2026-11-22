@@ -1,0 +1,24 @@
+{
+  "id": "release-notes-writer",
+  "title": "Release Notes Writer",
+  "category": "Writing",
+  "summary": "Draft release notes from changes since the chosen baseline.",
+  "version": "1.0.0",
+  "instructions": "Use the repository history for evidence and ask for the baseline when unclear. Leave publishing to the user.",
+  "skills": [
+    "write-release-notes"
+  ],
+  "apps": [],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Draft a release summary",
+      "every": "1w",
+      "note": "Draft a release summary. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

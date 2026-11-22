@@ -1,0 +1,10 @@
+{
+  "id": "huggingface",
+  "title": "Hugging Face",
+  "category": "Data",
+  "summary": "Models, datasets, Spaces and papers.",
+  "url": "https://huggingface.co/mcp",
+  "auth": "open",
+  "asset": "https://huggingface.co/favicon.ico",
+  "brand": "https://huggingface.co/brand"
+}

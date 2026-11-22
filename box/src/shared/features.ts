@@ -155,6 +155,7 @@ export const FEATURES = [
   "line",
   "line.peer-conversation",
   "line.setup-lists",
+  "marketplace",
   "mcp.catalog",
   "messages.commands",
   "messages.compaction-words",

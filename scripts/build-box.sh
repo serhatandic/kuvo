@@ -31,6 +31,7 @@ if [ -z "${BUN:-}" ] || [ "$(version "$BUN")" != "$BUN_VERSION" ]; then
   exit 1
 fi
 real_app_guard "scripts/build-box.sh" "$BUN"
+BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file catalog/build.ts --check
 
 # For Node too, not only Bun: the bridge's tests import it with Node, and it uses Node's modules only.
 # Its version (BRIDGE_VERSION, box/src/link/version.ts) is the first 12 hex digits of the

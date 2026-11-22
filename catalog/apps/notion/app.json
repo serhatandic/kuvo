@@ -1,0 +1,10 @@
+{
+  "id": "notion",
+  "title": "Notion",
+  "category": "Work",
+  "summary": "Pages and databases in your workspace.",
+  "url": "https://mcp.notion.com/mcp",
+  "auth": "oauth",
+  "asset": "https://www.notion.com/front-static/favicon.ico",
+  "brand": "https://www.notion.com"
+}

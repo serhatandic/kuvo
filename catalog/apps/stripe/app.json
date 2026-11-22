@@ -1,0 +1,10 @@
+{
+  "id": "stripe",
+  "title": "Stripe",
+  "category": "Data",
+  "summary": "Payments, customers and Stripe documentation.",
+  "url": "https://mcp.stripe.com",
+  "auth": "oauth",
+  "asset": "https://stripe.com/favicon.ico",
+  "brand": "https://stripe.com/newsroom/information"
+}

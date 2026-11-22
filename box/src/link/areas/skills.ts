@@ -3,9 +3,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { parsed } from "../../shared/json";
+import { isObject, parsed } from "../../shared/json";
 import type { EngineRecord } from "../../shared/records";
 import type { DeletedSkill, SkillAbout, SkillCollection, SkillRepository as LibraryRepository, SkillLibrary, SkillNamed, Skills, SkillText, SkillTrash } from "../../shared/routes/skills";
+import { itemID, limitedBytes, relativeFile, sha256, skillFiles, type SkillFile } from "../marketplace/catalog";
 import { pluginsSetUp } from "../engine/client";
 import { listOf, textOf } from "../files";
 import { ENGINE_CONFIG, IN_TEST_FOLDER, K, homeFolder } from "../home";
@@ -53,7 +54,7 @@ export interface SkillsBody {
 
 /** A repository's file list, as GitHub's API answers it (`git/trees`). */
 interface GitHubTree {
-  tree?: { type?: string; path: string }[];
+  tree?: { type?: string; mode?: string; path: string }[];
   truncated?: boolean;
 }
 
@@ -62,6 +63,8 @@ interface GitHubTree {
 // Mac's skills stay where they've always been.
 const SKILLS = path.join(ENGINE_CONFIG || path.join(K, "config"), "opencode", "skills");
 export const SKILLS_FOLDER = SKILLS;
+import { MARKETPLACE_SKILL_MARKER as MARKETPLACE_SKILL } from "../../shared/marketplace";
+export { MARKETPLACE_SKILL };
 const SKILL_SOURCE = ".kuvo-source.json";
 // GitHub, or a test's stand-in for it, in a test's folder only (never a machine's own).
 const testGitHub = IN_TEST_FOLDER ? process.env.KUVO_TEST_GITHUB : undefined;
@@ -82,14 +85,14 @@ export const SKILL_REPOSITORIES: SkillRepository[] = [
   ["wshobson", "agents", "wshobson/agents", "A big set of plugins with skills for many languages and tools."],
 ].map(([owner, name, title, summary]) => ({ id: `${owner}/${name}`, owner, name, title, summary, branch: "main" }));
 
-class SkillFailure extends Error {
+export class SkillFailure extends Error {
   declare status: OtherStatus;
   constructor(status: OtherStatus, message: string) { super(message); this.status = status; }
 }
 const limited = () => new SkillFailure(503, "GitHub is limiting requests for now. Try again in a while.");
 
 /** A folder's name in the skills folder: not a path, nor hidden. */
-const isSkillFolder = (name: unknown): name is string => typeof name === "string" && name.length > 0 && name.length <= 128 && !name.startsWith(".") && !/[\/\\\0]/.test(name);
+export const isSkillFolder = (name: unknown): name is string => typeof name === "string" && name.length > 0 && name.length <= 128 && !name.startsWith(".") && !/[\/\\\0]/.test(name);
 
 /** A skill's name from what's typed, as Settings makes it (SkillFile.name). */
 export function skillName(text: unknown): string {
@@ -162,7 +165,7 @@ function skillSources(): Skills["github"] {
   for (const name of listOf(SKILLS)) {
     try {
       const source = JSON.parse(fs.readFileSync(path.join(SKILLS, name, SKILL_SOURCE), "utf8"));
-      if (typeof source?.repository === "string") sources[name] = { repository: source.repository, path: typeof source.path === "string" ? source.path : "" };
+      if (typeof source?.repository === "string") sources[name] = { repository: source.repository, path: typeof source.path === "string" ? source.path : "", ...(/^[0-9a-f]{40}$/.test(source.commit ?? "") ? { commit: source.commit } : {}) };
     } catch {}
   }
   return sources;
@@ -229,10 +232,10 @@ function skillPlace(file: string | undefined): string {
  * SKILL.md, with every file in it (the deepest skill's, for skills inside skills), or the
  * repository itself when its SKILL.md is at the top (without its hidden folders). */
 export async function skillsIn(repository: SkillRepository): Promise<{ skills: RepositorySkill[]; partial: boolean }> {
-  const response = await github(`${GITHUB.api}/repos/${repository.owner}/${repository.name}/git/trees/${repository.branch}?recursive=1`);
+  const response = await github(`${GITHUB.api}/repos/${repository.owner}/${repository.name}/git/trees/${encodeURIComponent(repository.branch)}?recursive=1`);
   if (response.status !== 200) throw new SkillFailure(404, `${repository.id} wasn’t found on GitHub.`);
   const tree = await response.json() as GitHubTree;
-  const files = (tree.tree ?? []).filter(entry => entry.type === "blob").map(entry => entry.path);
+  const files = (tree.tree ?? []).filter(entry => entry.type === "blob" && entry.mode !== "120000").map(entry => entry.path);
   const dirname = (file: string) => (file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "");
   const folders = new Set(files.filter(file => file.split("/").at(-1) === "SKILL.md").map(dirname).filter(Boolean));
   const isSkill = files.includes("SKILL.md");
@@ -281,7 +284,7 @@ async function aboutSkill(repository: SkillRepository, folder: string): Promise<
   }
 }
 
-const rawURL = (repository: SkillRepository, file: string) => `${GITHUB.raw}/${repository.owner}/${repository.name}/${repository.branch}/${file.split("/").map(encodeURIComponent).join("/")}`;
+const rawURL = (repository: SkillRepository, file: string) => `${GITHUB.raw}/${repository.owner}/${repository.name}/${encodeURIComponent(repository.branch)}/${file.split("/").map(encodeURIComponent).join("/")}`;
 
 /** The front matter's name and description. */
 export function skillAbout(markdown: unknown): SkillAbout {
@@ -308,26 +311,131 @@ export function skillAbout(markdown: unknown): SkillAbout {
   return about;
 }
 
-/** Fetches a skill's files beside the folder, then moves them in whole, so the engine never finds half of it. */
-async function installSkill(repository: SkillRepository, skill: RepositorySkill): Promise<void> {
+export interface SkillSource { repository: string; path: string; commit: string; ref?: string }
+export interface SkillPackage { name: string; files: SkillFile[]; source?: SkillSource }
+const commitID = /^[0-9a-f]{40}$/;
+const repoID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,38}\/[a-zA-Z0-9_.-]{1,100}$/;
+const fileLimit = 64 * 1024;
+// GitHub repositories may keep skills in a hidden directory such as .claude/skills.
+const githubFolder = (folder: string) => folder === "" || relativeFile(folder.replace(/(^|\/)\.(?=[^.\/])/g, "$1_"));
+const packFile = (file: string, bytes: Buffer): SkillFile =>
+  ({ path: file, data: bytes.toString("base64"), sha256: sha256(bytes) });
+
+export function skillSource(value: unknown): value is SkillSource {
+  return isObject(value) && typeof value.repository === "string" && repoID.test(value.repository)
+    && typeof value.path === "string" && githubFolder(value.path)
+    && typeof value.commit === "string" && commitID.test(value.commit)
+    && (value.ref === undefined || typeof value.ref === "string" && value.ref.length <= 240);
+}
+
+/** Resolve a ref once and read every preview byte from that immutable commit. */
+export async function githubSkill(given: { link?: unknown; repository?: unknown; path?: unknown; ref?: unknown }, legacy = false): Promise<SkillPackage> {
+  let repository = given.repository;
+  let folder = given.path ?? "";
+  let ref = given.ref;
+  if (typeof given.link === "string") {
+    try {
+      const url = new URL(given.link);
+      if (url.origin !== "https://github.com" || url.username || url.password) throw new Error();
+      const [owner, repo, kind, version, ...rest] = url.pathname.slice(1).replace(/\/$/, "").split("/").map(decodeURIComponent);
+      repository = `${owner}/${repo?.replace(/\.git$/, "")}`;
+      if (!repo || kind && (!version || !["tree", "blob"].includes(kind))) throw new Error();
+      if (kind) {
+        ref = version;
+        if (kind === "blob" && rest.pop() !== "SKILL.md") throw new Error();
+        folder = rest.join("/");
+      }
+    } catch { throw new SkillFailure(400, "Give a GitHub repository or a link to a skill folder or SKILL.md."); }
+  }
+  if (typeof repository !== "string" || !repoID.test(repository) || typeof folder !== "string" || !githubFolder(folder)
+    || ref !== undefined && (typeof ref !== "string" || !ref || ref.length > 240))
+    throw new SkillFailure(400, "Give a GitHub repository, a skill folder, and optionally a branch, tag or commit.");
+  const [owner, repo] = repository.split("/");
+  const known = await skillRepository(owner!, repo!);
+  const selected = typeof ref === "string" ? ref : known.branch;
+  const response = await github(`${GITHUB.api}/repos/${known.id}/commits/${encodeURIComponent(selected)}`);
+  const answer = response.ok ? await response.json() : null;
+  if (!isObject(answer) || typeof answer.sha !== "string" || !commitID.test(answer.sha)) throw new SkillFailure(404, "GitHub could not resolve that version.");
+  const commit = answer.sha;
+  const pinned = { ...known, branch: commit };
+  const { skills, partial } = await skillsIn(pinned);
+  const entry = skills.find(each => each.path === folder);
+  if (partial && !legacy) throw new SkillFailure(422, "GitHub returned an incomplete file list. Give a smaller repository or install from a folder.");
+  if (!entry) throw new SkillFailure(404, "There is no SKILL.md in that folder.");
+  const files: SkillFile[] = [];
+  let left = legacy ? 20 * 1024 * 1024 : fileLimit;
+  for (const file of entry.files) {
+    const relative = folder ? file.slice(folder.length + 1) : file;
+    if (!relativeFile(relative) || !legacy && files.length >= 100) throw new SkillFailure(422, "The skill has an unsupported path or too many files.");
+    const response = await github(rawURL(pinned, file), false);
+    if (!response.ok) throw new SkillFailure(404, `${relative} couldn’t be read at that commit.`);
+    const bytes = await limitedBytes(response, left);
+    left -= bytes.length;
+    files.push(packFile(relative, bytes));
+  }
+  return { ...(legacy ? { name: entry.name, files } : namedPackage(entry.name, files)), source: { repository, path: folder, commit, ...(typeof ref === "string" ? { ref } : {}) } };
+}
+
+function namedPackage(fallback: string, files: SkillFile[]): SkillPackage {
+  if (!skillFiles(files)) throw new SkillFailure(422, "That folder does not contain a complete skill.");
+  const readme = files.find(each => each.path === "SKILL.md")!;
+  const about = skillAbout(Buffer.from(readme.data, "base64").toString("utf8"));
+  const name = skillName(about.name || fallback);
+  if (!itemID.test(name)) throw new SkillFailure(422, "Give the skill a name in SKILL.md.");
+  return { name, files };
+}
+
+export function localSkill(folder: unknown): SkillPackage {
+  if (typeof folder !== "string" || !path.isAbsolute(folder) || !fs.lstatSync(folder).isDirectory())
+    throw new SkillFailure(400, "Choose a folder on this computer that contains SKILL.md.");
+  const files: SkillFile[] = [];
+  let size = 0;
+  const read = (prefix: string) => {
+    for (const entry of fs.readdirSync(path.join(folder, prefix), { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const relative = prefix ? prefix + "/" + entry.name : entry.name;
+      if (!relativeFile(relative) || relative.split("/").length > 12 || !entry.isDirectory() && !entry.isFile())
+        throw new SkillFailure(422, "Skill folders can contain regular files and folders only.");
+      if (entry.isDirectory()) { read(relative); continue; }
+      const file = fs.openSync(path.join(folder, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        const info = fs.fstatSync(file);
+        if (!info.isFile() || files.length >= 100 || size + info.size > fileLimit)
+          throw new SkillFailure(422, "The skill is too large to share with the setup.");
+        const bytes = Buffer.alloc(info.size);
+        if (fs.readSync(file, bytes) !== info.size) throw new SkillFailure(409, "A skill file changed while it was read.");
+        size += bytes.length;
+        files.push(packFile(relative, bytes));
+      } finally { fs.closeSync(file); }
+    }
+  };
+  read("");
+  return namedPackage(path.basename(folder), files);
+}
+
+/** Stage a complete skill before exposing it to the engine and bridge. */
+export function writeSkillPackage(skill: SkillPackage, managed?: string): void {
+  if (managed ? !itemID.test(skill.name) || !skillFiles(skill.files)
+    : !isSkillFolder(skill.name) || !skill.files.some(file => file.path === "SKILL.md"))
+    throw new SkillFailure(422, "That skill’s files could not be verified.");
   const target = path.join(SKILLS, skill.name);
-  if (fs.existsSync(target)) throw new SkillFailure(409, `A skill named ${skill.name} is already installed.`);
-  // Its own: two installs at once never share one.
   const staging = path.join(SKILLS, `.${skill.name}.kuvo-new-${crypto.randomUUID()}`);
+  const replacing = fs.existsSync(target);
+  if (replacing && (!managed || textOf(path.join(target, MARKETPLACE_SKILL)) === null))
+    throw new SkillFailure(409, `A skill named ${skill.name} is already installed on this computer.`);
+  const previous = staging + "-before";
   try {
     for (const file of skill.files) {
-      const response = await github(rawURL(repository, file), false);
-      if (response.status !== 200) throw new SkillFailure(404, `${file} wasn’t found on GitHub.`);
-      const relative = skill.path ? file.slice(skill.path.length + 1) : file;
-      const into = path.join(staging, relative);
-      if (!into.startsWith(staging + path.sep)) continue;
-      fs.mkdirSync(path.dirname(into), { recursive: true });
-      fs.writeFileSync(into, Buffer.from(await response.arrayBuffer()));
+      const into = path.join(staging, file.path);
+      fs.mkdirSync(path.dirname(into), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(into, Buffer.from(file.data, "base64"), { mode: 0o600 });
     }
-    fs.mkdirSync(staging, { recursive: true });
-    fs.writeFileSync(path.join(staging, SKILL_SOURCE), JSON.stringify({ branch: repository.branch, path: skill.path, repository: repository.id }, null, 2));
-    if (fs.existsSync(target)) throw new SkillFailure(409, `A skill named ${skill.name} is already installed.`);
-    fs.renameSync(staging, target);
+    if (skill.source) fs.writeFileSync(path.join(staging, SKILL_SOURCE), JSON.stringify(skill.source), { mode: 0o600 });
+    if (managed) fs.writeFileSync(path.join(staging, MARKETPLACE_SKILL), managed, { mode: 0o600 });
+    if (replacing) fs.renameSync(target, previous);
+    try { fs.renameSync(staging, target); }
+    catch (error) { if (replacing) fs.renameSync(previous, target); throw error; }
+    if (replacing) fs.rmSync(previous, { recursive: true, force: true });
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
@@ -353,6 +461,7 @@ export async function answerSkills(method: string, requestPath: string, body: Sk
         const text = textOf(file);
         return text === null ? { status: 404, value: {} } : { status: 200, value: { text } satisfies SkillText };
       }
+      if (["PUT", "DELETE"].includes(method) && textOf(path.join(folder, MARKETPLACE_SKILL)) !== null) return { status: 409, value: message("Change this setup-wide skill in Marketplace.") };
       if ((method === "PUT" || method === "DELETE") && body && "was" in body && (textOf(file) ?? null) !== body.was) return { status: 409, value: message("It changed since you read it.") };
       if (method === "PUT") {
         const text = body?.text;
@@ -413,12 +522,8 @@ export async function answerSkills(method: string, requestPath: string, body: Sk
     if (parts[1] === "skill-library") {
       if (parts.length === 2 && method === "GET") return { status: 200, value: { repositories: SKILL_REPOSITORIES.map(({ branch, ...shown }) => shown) } satisfies SkillLibrary };
       if (parts.length === 3 && parts[2] === "install" && method === "POST") {
-        const [owner, name] = String(body?.repository ?? "").split("/");
-        if (!owner || !name || typeof body?.path !== "string") return { status: 400, value: message('Send {"repository": "owner/name", "path": …}.') };
-        const repository = await skillRepository(owner, name);
-        const skill = (await skillsIn(repository)).skills.find(each => each.path === body.path);
-        if (!skill) return { status: 404, value: message(`There’s no skill at ${body.path} in ${repository.id}.`) };
-        await installSkill(repository, skill);
+        const skill = await githubSkill(body ?? {}, true);
+        writeSkillPackage(skill);
         return { status: 200, value: { name: skill.name } satisfies SkillNamed };
       }
       if (parts.length === 4 && method === "GET") {

@@ -13006,3 +13006,56 @@ pull from the last SQLite sequence they have applied and take at most
 100 usage records in a page. Records contain origin, native identity,
 model, session metadata, skill names and observed token counts. Estimates
 are calculated by the receiving computer with its own current catalog.
+
+### Marketplace
+
+A box advertises `marketplace` and serves `kuvo/marketplace` to paired Kuvo clients. The box includes an
+offline catalog snapshot. `POST kuvo/marketplace/refresh` reads the configured public index and validates
+the snapshot before replacing the last good copy. It answers `{refreshed, message?}`. A catalog refresh
+leaves previously installed endpoints and skill bytes at the version reviewed by the user.
+
+- **Browse.** `GET kuvo/marketplace[?q=&category=&origin=kuvo|yours]` returns three ordered `areas`.
+  Each includes `id`, `title`, `count`, `categories` (title and count), visible `items`, `actions`, empty
+  text, and optional filters. It includes the computer choices with their key, name and availability.
+  `GET kuvo/marketplace/{apps|agents|skills}/<id>` returns the details and action labels. An app's
+  advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.
+- **Apps.** `POST apps/<id>/add` or `POST apps/custom` with `{title,url,id?,summary?,auth?}` under
+  `kuvo/marketplace/` enables a Streamable HTTP server across the setup. Custom endpoints use HTTPS
+  without inline credentials or query parameters. `auth` is `open`, `token`, or `oauth`. The box
+  reports connection state on the computer answering. `POST apps/<id>/connect` takes `{token}`
+  for a personal-token server or returns an OAuth flow (202 with `attempt`, `opens` and display words).
+  Open `opens` in the browser. A browser on the box can finish on loopback. From another computer,
+  submit the complete callback address and original `attempt` to `POST apps/<id>/finish`.
+  Follow completion with `GET apps/<id>/status?attempt=…` or cancel with `POST apps/<id>/cancel`
+  and `{attempt}`. `POST apps/<id>/disconnect` removes this computer's credentials.
+  `DELETE apps/<id>` removes the app from the setup. Each computer needing service authentication
+  keeps its own credentials in its vault. Engines and agents receive connection settings and a scoped
+  local relay credential, and the relay supplies the service token.
+- **Agents.** `GET agents/<id>/options?computer=<key>` reads models and accounts from that computer.
+  It includes missing app dependencies and each routine with `enabled: false`.
+  `POST agents/<id>/add` takes `{computer,model,request,version,name?,routine?}`, using an offered
+  `model` and the same stable URL-safe `request` on retries. It installs required catalog skills
+  and creates a bot on the selected computer using the existing bot creation boundary. The result
+  is the usual `201 {bot,firstMessage}`. The scheduled routines are created paused unless `routine: true`.
+  Required apps must already be connected on that computer. Marketplace bots' workspaces carry the
+  selected Marketplace apps and skills, and the box and bridge use that selection when exposing tools.
+- **Skills.** `POST skills/preview` takes `{link}`, `{repository,path,ref?}`, or `{folder}` on
+  the answering computer. It returns `{preview,skill,files,action}`. Each file has its relative
+  `path`, base64 `data` and SHA-256 `sha256`. GitHub sources include `repository`, `path` and
+  `commit`. `POST skills/install` with `{preview,was?}` installs the exact bytes reviewed on that
+  box. For a catalog skill, `POST skills/<id>/add` takes the available `{version,revision,was?}`.
+  `POST skills/create` takes `{name,description,instructions}`. To edit an authored or folder
+  skill, use `PATCH skills/<id>` with `{description,instructions,was}`. `DELETE skills/<id>`
+  takes `{was}` for a shared skill. `was` is the installed revision from details. To update an
+  installed GitHub skill, explicitly ask `POST skills/<id>/update-preview` and install with its
+  preview ID and the previous revision. Legacy local skills still use the existing skills routes.
+- **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
+  primary and published in signed setup state. The Work Queue peer mail carries requests to the
+  primary and bot creation to the selected owner. An offline computer projects the last accepted
+  copy and catches up when it sees the newer one. An installation receipt can precede the replica
+  on another computer, so the client can reread after a pending change. `problems` on an install
+  response gives projection conflicts on the computer that processed it.
+
+All writes live in the box. The bridge uses OpenCode's discovered skill and MCP settings, passes the
+skills as a Claude/Grok plugin tree, Codex additional skill paths, a Cursor workspace skill tree,
+or a private Antigravity skills directory, and supplies each agent's native MCP connection settings.
