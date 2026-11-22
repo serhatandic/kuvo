@@ -14,8 +14,11 @@ import { macsOf, ownKey } from "../peers/known";
 import { readLink, updateLink } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
 import { archiveDeviceRevocations } from "./device-revocations";
+import { captureMembership } from "./access";
 import { writeCard } from "./card";
+import { checkpointedTransition } from "./checkpoint";
 import { followedSetup, newSetupID } from "./record";
+import { installShared } from "./shared";
 import { settleSetup } from "./settle";
 import type { LinkState } from "../state";
 
@@ -70,10 +73,28 @@ export function settleOwnSetup(link: LinkState, now = Date.now()): void {
       if (link.removed?.length) link.departedKey ??= own;
       archiveDeviceRevocations(link);
     }
-    link.setup = { id: newSetupID(), epoch: 1, primary: own, sign, role: "primary" };
+    startSetup(link);
   }
-  if (leads) delete link.setup.aside;
-  else link.setup.aside = true;
+  if (leads) delete link.setup!.aside;
+  else link.setup!.aside = true;
+}
+
+/** A new setup of this computer alone, as every setup is now: epoch 1's certificate, and the
+ * checkpoint naming this computer its only member. (Below the checkpoint layout, the bare setup
+ * that its first relay lease converts.) */
+export function startSetup(link: LinkState, id = newSetupID()): void {
+  const own = ownKey(link);
+  const sign = ownSign(link);
+  if (!own || !sign) return;
+  link.setup = { id, epoch: 1, primary: own, sign, role: "primary" };
+  installShared(link, undefined);
+  const membership = captureMembership(link);
+  const shared = membership ? { membershipAndAccess: { sequence: 1, value: membership } } : null;
+  const doc = shared && checkpointedTransition(link, { setup: { id, epoch: 1, primary: own } }, shared);
+  if (!doc || !shared) return;
+  link.setup = { ...link.setup, managed: true, checkpointed: true };
+  link.leadership = { 1: doc.envelope };
+  installShared(link, shared);
 }
 
 /** Initialize an independent machine before any client needs to pair or add a member.

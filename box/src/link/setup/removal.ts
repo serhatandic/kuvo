@@ -24,6 +24,7 @@ import { takeLeadership } from "./leadership";
 import { holdMemberWipe, scheduleWipe, wipeSupportedHere } from "./wipe";
 import { usesAutomaticRelayBackup } from "../backup/engine";
 import { followedSetup, newSetupID } from "./record";
+import { startSetup } from "./lead";
 import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
@@ -125,12 +126,16 @@ async function finishUnlinkLocked(host: Host | null | undefined) {
     const { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion } = link;
     const releasedSetup = newSetupID();
     archiveDeviceRevocations(link);
-    return { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion, phones: [], departedKey: own,
+    const released: LinkState = { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion, phones: [], departedKey: own,
       formerDeviceRevocations: link.formerDeviceRevocations, formerPhoneIssuers: link.formerPhoneIssuers,
       ...releasedWorkBaseline(),
       installerCancellations: link.installerCancellations,
       localUnlink: { ...link.localUnlink, completed: true },
-      releasedSetup, setup: { id: releasedSetup, epoch: 1, primary: own, sign: origin, role: "primary", managed: true } };
+      releasedSetup };
+    startSetup(released, releasedSetup);
+    // (Below the checkpoint layout, the bare setup, as it always was: never one it follows.)
+    released.setup = { ...released.setup!, managed: true };
+    return released;
   }, { durable: true });
   if (!finished) return;
   if (!pending.completed) {
