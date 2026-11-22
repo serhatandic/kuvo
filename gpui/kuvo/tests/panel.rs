@@ -524,6 +524,35 @@ fn each_conversation_keeps_its_own_tabs_and_the_panel_follows_the_one_in_view(cx
 }
 
 #[gpui::test]
+fn tabs_keep_their_names_while_the_strip_has_room(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    for kind in [Kind::Changes, Kind::Files, Kind::Subagents, Kind::SideChat(None)] {
+        workspace.update(cx, |workspace, cx| workspace.show_panel(kind, cx));
+    }
+    cx.run_until_parked();
+    let panel = bounds(cx, "side-panel").expect("the panel");
+    let tabs: Vec<u64> = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().iter().map(|tab| tab.id).collect());
+    assert_eq!(tabs.len(), 4);
+    let widths: Vec<Pixels> = tabs.iter().map(|id| bounds(cx, &format!("panel-tab-{id}")).expect("each tab").size.width).collect();
+    // Four short names fit a panel this wide: none is squeezed to an icon's width.
+    assert!(widths.iter().sum::<Pixels>() < panel.size.width, "they fit: {widths:?} in {:?}", panel.size.width);
+    // Each as wide as its name: Subagents' tab wider than Files', none pinned to one width.
+    assert!(widths[2] > widths[1] + px(15.), "each as wide as its name: {widths:?}");
+    assert!(widths.iter().all(|width| *width > px(72.)), "none squeezed: {widths:?}");
+
+    // More than fit: the strip scrolls, the one showing in view with its name.
+    for file in ["src/lib/validate.ts", "src/components/SignupForm.tsx"] {
+        workspace.update_in(cx, |workspace, window, cx| workspace.preview_file(&format!("{}/{file}", website()), window, cx));
+        cx.run_until_parked();
+    }
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().unwrap().id);
+    let tab = bounds(cx, &format!("panel-tab-{showing}")).expect("the file's tab");
+    let strip = bounds(cx, "panel-strip").unwrap();
+    assert!(tab.left() >= strip.left() && tab.right() <= strip.right(), "the tab showing is in view: {tab:?} in {strip:?}");
+}
+
+#[gpui::test]
 fn plus_opens_the_new_tab_page_a_tile_takes_its_place_and_closing_the_last_tab_leaves_it(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
