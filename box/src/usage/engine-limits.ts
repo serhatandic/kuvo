@@ -197,7 +197,7 @@ const title = (value: unknown) =>
   typeof value === "string" && value.trim() ? value.trim().split(/[_\s]+/).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ") : undefined
 
 /** ChatGPT's plan for Codex: its 5-hour and weekly windows, and each other limit's (Spark's). */
-async function readChatGPT(secret: string, credential: Credential, now: number, agentResets?: () => Promise<LimitExtra | undefined>): Promise<LimitReading> {
+async function readChatGPT(secret: string, credential: Credential, now: number): Promise<LimitReading> {
   const account = credential.value.metadata?.accountID
   const body = await fetched(engineEndpoints.chatgpt, { Authorization: `Bearer ${secret}`, ...(typeof account === "string" && account ? { "ChatGPT-Account-Id": account } : {}) }, now, "ChatGPT")
   const windows = [...whamWindows(body?.rate_limit, "", undefined, now)]
@@ -210,15 +210,9 @@ async function readChatGPT(secret: string, credential: Credential, now: number, 
   // Its credits, and its reset credits: their list (with when each expires) where there are any.
   const signIn = chatGPTSignInOf(credential)
   const embedded = body?.rate_limit_reset_credits
-  const listed = agentResets ? await agentResets() : signIn && Number(embedded?.available_count) > 0 ? await readCodexResets(signIn, now) : undefined
+  const listed = signIn && Number(embedded?.available_count) > 0 ? await readCodexResets(signIn, now) : undefined
   const extras = [codexCredits(body?.credits), listed ?? codexResets(undefined, embedded, now)].filter((extra): extra is LimitExtra => !!extra)
   return { windows, ...(plan ? { plan } : {}), ...(extras.length ? { extras } : {}) }
-}
-
-/** Codex CLI and the engine use the same ChatGPT plan endpoint with their own sign-ins. */
-export function readCodexPlan(signIn: ChatGPTSignIn, now: number, resets: () => Promise<LimitExtra | undefined>): Promise<LimitReading> {
-  return readChatGPT(signIn.token, { integrationID: "openai", active: true,
-    value: { access: signIn.token, metadata: { accountID: signIn.account } } }, now, resets)
 }
 
 /** The engine's ChatGPT sign-in, to read and spend its reset credits with. */
@@ -240,9 +234,13 @@ function whamWindows(limit: any, prefix: string, model: string | undefined, now:
   })
 }
 
-/** SuperGrok's weekly pool, as the Grok CLI reads it (the engine's xAI sign-in, or the Grok agent's own). */
+/** SuperGrok's weekly pool, as the Grok CLI reads it with the engine's xAI sign-in. */
 export async function readGrok(secret: string, _credential: unknown, now: number): Promise<LimitReading> {
-  const body = await fetched(engineEndpoints.grok, { Authorization: `Bearer ${secret}`, "X-XAI-Token-Auth": "xai-grok-cli" }, now, "xAI")
+  return grokBilling(await fetched(engineEndpoints.grok, { Authorization: `Bearer ${secret}`, "X-XAI-Token-Auth": "xai-grok-cli" }, now, "xAI"), now)
+}
+
+/** xAI's billing answer (the endpoint's, or the Grok agent's own `_x.ai/billing`) as SuperGrok's weekly pool. */
+export function grokBilling(body: any, _now: number): LimitReading {
   const period = body?.config?.currentPeriod
   // An account with no SuperGrok plan now (it ended, or never was) is answered with no period to
   // count: its plan ended, never a reading that failed (proto JSON leaves an unset period out).

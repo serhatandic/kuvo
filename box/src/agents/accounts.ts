@@ -1,17 +1,16 @@
-// Your accounts with each coding agent. The first is the agent's own sign-in, where it always
-// keeps it (`~/.claude`, `~/.codex`, `~/.grok`; Cursor's and Antigravity's in the bridge's
-// folder); each one you add gets a folder of its own in the bridge's (`<agent>/accounts/<id>`),
-// which the agent is pointed at (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME…), as T3 Code runs a
-// second instance. An added account's models and sessions are its own: its provider is
-// `<agent's provider>@<id>`. On a machine, the agent's own sign-in is in the bridge's folder too
-// (`<agent>/home`): nothing goes in the machine's home. A Mac's box in a home of its own is on your
-// Mac: the defaults stay yours (`yourHomes`).
+// Your accounts with each coding agent (docs/architecture/agent-accounts.md): an account is one
+// agent pointed at one folder on one box. The first is the agent's own sign-in, where it always
+// keeps it (`~/.claude`, `~/.codex`, `~/.grok`, on a Mac and on Linux alike, shared with Terminal;
+// Cursor's and Antigravity's in the bridge's folder); each one you add gets a folder of its own in
+// the bridge's (`<agent>/accounts/<id>`), which the agent is pointed at (CLAUDE_CONFIG_DIR,
+// CODEX_HOME, GROK_HOME…), as T3 Code runs a second instance. An added account's models and
+// sessions are its own: its provider is `<agent's provider>@<id>`.
 
 import { randomBytes } from "node:crypto"
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
 import { additiveListFormat, UnsupportedFormatVersion } from "../shared/format-version"
-import { yourHomes } from "./machine"
 
 export type AgentKind = "claude" | "codex" | "cursor" | "grok" | "antigravity"
 
@@ -58,7 +57,7 @@ const accountFormat = additiveListFormat("Managed accounts")
 export class Accounts {
   private records: AccountRecord[]
 
-  constructor(private readonly root: string, private readonly managedDefaults = !yourHomes) {
+  constructor(private readonly root: string) {
     this.records = this.read()
   }
 
@@ -81,14 +80,9 @@ export class Accounts {
     return [...kinds.map((kind) => ({ kind, id: "default" })), ...this.records]
   }
 
-  home(record: AccountRecord, create = true): string | undefined {
-    if (record.id !== "default") return join(this.root, record.kind, "accounts", record.id)
-    // (Cursor's and Antigravity's own are in the bridge's folder anyway. A Mac's box in a home of
-    // its own keeps yours, as the app's did.)
-    if (!this.managedDefaults || !["claude", "codex", "grok"].includes(record.kind)) return undefined
-    const home = join(this.root, record.kind, "home")
-    if (create) mkdirSync(home, { recursive: true, mode: 0o700 })
-    return home
+  /** The folder an added account is kept in; none for the first, which is the agent's own. */
+  home(record: AccountRecord): string | undefined {
+    return record.id === "default" ? undefined : join(this.root, record.kind, "accounts", record.id)
   }
 
   add(kind: AgentKind, label?: string): AccountRecord {
@@ -126,4 +120,77 @@ export class Accounts {
     renameSync(this.file + ".new", this.file)
     this.records = records
   }
+}
+
+// COMPAT(0.8 machine homes): before 22 November 2026 a Linux box kept its agents' first sign-ins in
+// the bridge's folder (`<agent>/home`). Goes 3 months after the release that carries this.
+/** The agent's own folder, as the agent finds it (its variable, else its usual place). */
+function ownFolder(kind: "claude" | "codex" | "grok"): string {
+  const home = homedir()
+  const set = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME, grok: process.env.GROK_HOME }[kind]?.trim()
+  if (set) return set === "~" ? home : set.startsWith("~/") ? join(home, set.slice(2)) : set
+  return join(home, `.${kind}`)
+}
+
+/** What the agent keeps there that's moved: its sign-in, and its conversations (each by its ID). */
+const MOVED = {
+  claude: { signIn: ".credentials.json", conversations: ["projects"] },
+  codex: { signIn: "auth.json", conversations: ["sessions", "archived_sessions"] },
+  grok: { signIn: "auth.json", conversations: ["sessions"] },
+} as const
+
+/** Each file of `from` moved into `to` where `to` has none by that name; `from` emptied of them. */
+function moveInto(from: string, to: string) {
+  let names: string[] = []
+  try { names = readdirSync(from) } catch { return }
+  mkdirSync(to, { recursive: true, mode: 0o700 })
+  for (const name of names) {
+    const source = join(from, name), target = join(to, name)
+    if (statSync(source).isDirectory()) moveInto(source, target)
+    else if (!existsSync(target)) renameSync(source, target)
+  }
+}
+
+/**
+ * A first account an earlier bridge kept in its folder (`<agent>/home`, on Linux), taken over by
+ * the agent's own folder, once: its conversations moved there (so a session goes on with its
+ * thread), and its sign-in too where the agent's own folder has none (moved, never copied: one
+ * sign-in, which the agent renews). Where you're signed in there already, that one is the first
+ * account, and the earlier one becomes an account you added ("Earlier sign-in"), its folder moved
+ * whole. What's left of `<agent>/home` goes.
+ */
+export function adoptOwnFolders(root: string, accounts = new Accounts(root)) {
+  for (const kind of ["claude", "codex", "grok"] as const) {
+    const old = join(root, kind, "home")
+    if (!existsSync(old)) continue
+    try {
+      adoptOne(kind, old, accounts)
+    } catch (error) {
+      // (Another disk, a file in the way: left as it is, and tried again at the next start.)
+      console.error(`Couldn't move ${kind}'s earlier sign-in to its own folder:`, error instanceof Error ? error.message : error)
+    }
+  }
+}
+
+function adoptOne(kind: "claude" | "codex" | "grok", old: string, accounts: Accounts) {
+  const own = ownFolder(kind)
+  const { signIn, conversations } = MOVED[kind]
+  for (const folder of conversations) moveInto(join(old, folder), join(own, folder))
+  if (existsSync(join(old, signIn))) {
+    if (!existsSync(join(own, signIn))) {
+      mkdirSync(own, { recursive: true, mode: 0o700 })
+      renameSync(join(old, signIn), join(own, signIn))
+      // Claude Code's record of who's signed in, which it keeps in your home without CLAUDE_CONFIG_DIR.
+      const record = process.env.CLAUDE_CONFIG_DIR?.trim() ? join(own, ".claude.json") : join(homedir(), ".claude.json")
+      if (kind === "claude" && existsSync(join(old, ".claude.json")) && !existsSync(record)) renameSync(join(old, ".claude.json"), record)
+    } else {
+      const record = accounts.add(kind, "Earlier sign-in")
+      const folder = accounts.home(record)!
+      rmSync(folder, { recursive: true, force: true })
+      mkdirSync(dirname(folder), { recursive: true })
+      renameSync(old, folder)
+      return
+    }
+  }
+  rmSync(old, { recursive: true, force: true })
 }

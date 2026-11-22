@@ -22,10 +22,6 @@ export const onMacBox = onMachine && !!machineHome && (() => {
   }
 })()
 
-/** The agents' own sign-ins and history are in your home (`~/.claude`, `~/.codex`, `~/.grok`), as
- * they keep them for you: on a Mac, whichever way its box runs. On a machine, in Kuvo Code's folder. */
-export const yourHomes = !onMachine || onMacBox
-
 /** The key a bot's own conversation remembers the group chats here under: on a Mac, the one its app
  * always used (`kuvo.groups`), whichever way its box runs, which a bot moved from an earlier Kuvo
  * Code remembers them under already (another key would leave that one as it was, beside the new);

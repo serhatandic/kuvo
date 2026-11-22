@@ -198,49 +198,10 @@ test("an xAI answer in a shape Kuvo doesn't know is a read that failed, never a 
   expect(accounts[0]!.problem?.kind).toBe("failed")
 })
 
-test("the Grok agent's own sign-in, in its folder, reads the same pool", async () => {
-  const { UsageAccounts } = await import("../../src/usage/accounts")
-  const { agentAccounts } = await import("../../src/usage/limits")
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-grok-limits-"))
-  try {
-    writeFileSync(join(folder, "auth.json"), JSON.stringify({ "https://auth.x.ai": { key: "grok-token", expires_at: "2026-11-09T20:00:00Z" } }))
-    answers["/grok"] = () => Response.json({ config: { currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-05T00:00:00Z", end: "2026-11-12T00:00:00Z" }, creditUsagePercent: 12.5 } })
-    const grok = new UsageAccounts(folder, true).source("grok", "grok-cli@a1", { id: "a1", label: "Side", home: folder })
-    const limits = new Limits(() => agentAccounts([grok]), undefined, () => NOW)
-    const accounts = (((await (await limitsRoutes(limits, "POST", ["refresh"])).json()) as any).data.accounts) as AccountLimits[]
-    expect(accounts.map((each) => [each.provider, each.service, each.agent, each.label, each.windows[0]?.used])).toEqual([["grok-cli@a1", "grok", "grok", "Side", 0.125]])
-    expect(reads[0]!.headers.get("authorization")).toBe("Bearer grok-token")
-  } finally {
-    rmSync(folder, { recursive: true, force: true })
-  }
-})
-
 test("OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again", async () => {
   answers["/opencodeGo"] = () => Response.json({ type: "error", error: { type: "EntitlementError", message: "No active subscription" } }, { status: 403 })
   const { accounts } = await stated([credential("opencode-go", { type: "api", key: "go-key" })])
   expect(accounts).toEqual([])
-})
-
-test("a Grok sign-in that lapsed waits for Grok to renew it, without asking xAI", async () => {
-  const { UsageAccounts } = await import("../../src/usage/accounts")
-  const { agentAccounts } = await import("../../src/usage/limits")
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs")
-  const { tmpdir } = await import("node:os")
-  const { join } = await import("node:path")
-  const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-grok-limits-"))
-  try {
-    writeFileSync(join(folder, "auth.json"), JSON.stringify({ "https://auth.x.ai": { key: "grok-token", expires_at: "2026-11-08T19:00:00Z" } }))
-    const grok = new UsageAccounts(folder, true).source("grok", "grok-cli@a1", { id: "a1", home: folder })
-    const limits = new Limits(() => agentAccounts([grok]), undefined, () => NOW)
-    const accounts = (((await (await limitsRoutes(limits, "POST", ["refresh"])).json()) as any).data.accounts) as AccountLimits[]
-    expect(accounts.map((each) => each.problem?.kind)).toEqual(["expired"])
-    expect(reads).toHaveLength(0)
-  } finally {
-    rmSync(folder, { recursive: true, force: true })
-  }
 })
 
 test("a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early", async () => {
@@ -320,7 +281,9 @@ test("each sign-in says who it is, the same on every computer: a key by the key,
   const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-grok-identity-"))
   try {
     writeFileSync(join(folder, "auth.json"), JSON.stringify({ "https://auth.x.ai": { key: jwt({ sub: "xai-user-1" }), expires_at: "2026-11-09T20:00:00Z" } }))
-    const grok = new UsageAccounts(folder, true).source("grok", "grok-cli@a1", { id: "a1", home: folder })
+    writeFileSync(join(folder, "billing.json"), JSON.stringify({ config: { currentPeriod: { start: "2026-11-05T00:00:00Z", end: "2026-11-12T00:00:00Z" }, creditUsagePercent: 10 } }))
+    const { agentPrograms } = await import("./support/agent-programs")
+    const grok = new UsageAccounts(folder, { programs: agentPrograms(join(folder, "programs")) }).source("grok", "grok-cli@a1", { id: "a1", home: folder })
     const limits = new Limits(() => agentAccounts([grok]), undefined, () => NOW)
     const accounts = (((await (await limitsRoutes(limits, "POST", ["refresh"])).json()) as any).data.accounts) as AccountLimits[]
     expect(accounts[0]!.identity).toBe(here.accounts.find((each) => each.provider === "xai")!.identity!)

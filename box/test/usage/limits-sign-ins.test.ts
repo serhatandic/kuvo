@@ -40,7 +40,7 @@ afterEach(() => {
 /** Cursor as the agent has it, its sign-in in its folder; whether it's signed in, as Cursor's SDK
  * would answer the agent (`turnedDown`: Cursor said no, though the key is still in its folder). */
 class TestCursor extends CursorAgent {
-  override readonly limits = new UsageAccounts(this.context.home, true).source("cursor", this.providerID, this.instance).limits!
+  override readonly limits = new UsageAccounts(this.context.home).source("cursor", this.providerID, this.instance).limits!
   turnedDown = false
   /** Its check fails (Cursor out of reach), or never answers. */
   failing: "throws" | "hangs" | undefined

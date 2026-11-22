@@ -35,16 +35,15 @@ export interface UsageOptions {
   box: string
   bots: string
   engineData?: string
-  managedDefaults: boolean
   bundle?: string
   conversationHome?: (session: string, origin?: string) => string | undefined
 }
 
-export function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle, conversationHome }: UsageOptions, fixtures?: {
+export function usageReader({ home, run, box, bots, engineData, bundle, conversationHome }: UsageOptions, fixtures?: {
   accounts: () => UsageAgent[]
   engineCredentials: () => Promise<unknown>
 }) {
-  const accounts = new UsageAccounts(home, managedDefaults)
+  const accounts = new UsageAccounts(home)
   const live = process.env.KUVO_TEST_PRICE_FEEDS !== "off" && isRealBridgeFolder(home)
   const agents = fixtures?.accounts ?? (() => accounts.all())
   const reading = live || !!fixtures
