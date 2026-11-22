@@ -414,14 +414,17 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agents-rail-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
-    Screen { slug: "insights-overview", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-tokens", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-computer", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-breakdown-skill", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-session-drilldown", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-default", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-expanded", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-providers", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-narrowed", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-partial", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "insights-ring-filter", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-grid", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-list", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-bot", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-images", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-menu", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-empty", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -2392,8 +2395,10 @@ fn main() -> anyhow::Result<()> {
                     facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
                 });
             }
+            if screen.slug.starts_with("library-") {
+                stand_in.library_sample(screen.slug == "library-empty");
+            }
             match screen.slug {
-                "insights-partial" => stand_in.set_insights_partial(),
                 "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
@@ -2917,6 +2922,9 @@ fn main() -> anyhow::Result<()> {
                     if screen.slug.starts_with("insights-") {
                         workspace.insights_sample(screen.slug, window, cx);
                     }
+                    if screen.slug.starts_with("library-") {
+                        workspace.library_sample(screen.slug, NOW, window, cx);
+                    }
                     if let Some(panel) = screen.panel {
                         panel(workspace, window, cx);
                     }
@@ -2937,6 +2945,13 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "panel-terminal" {
                 shell.pty_print("pty_1", b"\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf bun test src/components/SignupForm.test.tsx\r\n\r\n \x1b[32m\xe2\x9c\x93\x1b[0m keeps the email on 409 \x1b[2m9ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m focuses the email after the error \x1b[2m6ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m submits a new account \x1b[2m14ms\x1b[0m\r\n\r\n \x1b[32m3 pass\x1b[0m \x1b[2m0 fail [42ms]\x1b[0m\r\n\r\n\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf ");
+                cx.run_until_parked();
+            }
+            if screen.slug == "library-menu" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).library().clone().update(cx, |view, cx| view.open_sample_menu(window, cx));
+                })?;
                 cx.run_until_parked();
             }
             if screen.slug == "composer-queue-dragging" {

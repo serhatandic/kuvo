@@ -1734,6 +1734,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     keys: ["GET", "kuvo/keys"],
     // (What its agents' mail says it takes (a letter that reads a conversation), on the agents' tools.)
     "letters-read": ["POST", "kuvo/agent-tools"],
+    // (What was handed over to you, on this computer and your others.)
+    library: ["GET", "kuvo/library"],
     // (Each account's plan limits, on the coding agents' bridge.)
     limits: ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Using a plan's resets, and the agents' tool for it: the bridge's `limits/reset`.)

@@ -8353,6 +8353,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `integrations` | `kuvo/integrations…` |
 | `keys` | `kuvo/keys…` |
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
+| `library` | `kuvo/library…`: what was handed over to you, on this computer and gathered from your others, and in a peer's agents' mail, it answers the `library` area's acts ("Library") |
 | `limits` | `kuvo/agents/api/kuvo/limits…` and `plan_limits`: each account's plan limits ("Plan limits") |
 | `limits.resets` | `kuvo/agents/api/kuvo/limits/reset…` and `use_limit_reset`: using a plan's resets, once, on the computer with its sign-in ("Plan limits", "Resets") |
 | `limits.bar` | `bar` on each of the plan limits' `rows`, and `expired` on a window that started over, the rows and `accounts` told again when one does ("Plan limits", "Rings and levels", #668) |
@@ -10284,6 +10285,50 @@ the same chat made the version before; `restored`, it put back version `n`.
   versions (older ones past it go at once), and answers the same; `POST
   kuvo/artifacts/storage/clear {before?}`: older versions' copies cleared (those from before
   `before`, in seconds), `{cleared, …}`.
+
+### Library
+
+Each box keeps a Library: what was handed over to you there, not everything its agents touched
+(`library` in `features`). Its services keep it beside the artifact record, in `library/` under the
+box's folder (`~/.kuvo-code/library` on a machine), told by the same recorder:
+
+- **What counts**: a file an agent showed in the conversation (`show_file`: a picture, a PDF, a
+  page it built; a subagent's counts as its parent conversation's), a picture `generate_image`
+  made, and a file you attached to a message (its `file:` address, or what the attached-files note
+  names, but not what stayed on the computer it was sent from). Never edits or writes, what
+  `show_in_panel` opens, a bot's memory, job or chat recaps, skills, logs, a file on its way, a
+  likely secret, or the screenshots an agent takes to check its own work.
+- **One item a file** (`lib_<24 hex>`, from its path): handed over again, its time, where and how
+  are the latest; one you removed comes back. A page is named by its `<title>` when it has one.
+- **Filled once** as a box first has it, from the coding agents' saved conversations (each at its
+  message) and, for the engine's, from what the artifact record saw `show_file` show or
+  `generate_image` make (at the turn's message).
+- **Removing** one hides it (`hidden`): its file stays where it is.
+- **Thumbnails**, made on the computer it's on and kept in `library/thumbnails`: on macOS a picture
+  made small (`sips`) and a PDF, document or page by Quick Look; on Linux a picture as it is, and
+  none for the rest, which a client draws as its kind.
+
+An item: `{id, name, kind: "image|document|page|other", type, how: "shown|generated|attached", path,
+bot?, session?, group?, message?, part?, at, hidden?, there, thumbnail, computer: {key, name, here?}}`.
+`bot`: whose conversation it was (none: one of your own sessions); `session` (or `group` for a chat),
+`message` and `part` say where it was handed over, for a client to show it there; `there`: its file is
+on disk, or the artifact record keeps a copy of it; `thumbnail`: one can be made of it. Times are
+seconds since 1970.
+
+- `GET kuvo/library[?source=all|you|<bot>][&kind=image|document|page|other][&q=<words>][&hidden=1]`:
+  `{items, more, sources: {bots: [{id, name, look?, computer}], you}, computers: [{key, name, here?, state,
+  message?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
+  ones; a search finds them). A bot's `look` is as `kuvo/bots` gives it, to draw it by. `q` matches words in an item's name, its bot's name and its computer's.
+  The box asks each of your other computers for its part by mail (an act in the `library` area,
+  `GET list {query}`) and labels each item with the computer it's on: `state` is `here` (this one),
+  `there`, `away` (not answering now), `older` (its Kuvo Code has no Library yet) or `failed`, with a
+  `message` to show. A client shows the computer only when there's more than one.
+- `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
+  part changes or, asked again every 20 seconds, another's does.
+- `GET kuvo/library/<id>[?computer=<key>]`: the item; `…/file`: its bytes, with its type (the record's
+  copy once the file is gone; `410` when there's neither); `…/thumbnail`: a PNG, or the picture as it
+  is (`404` for none); `POST …/hide {hidden}`: removed from the Library (`hidden: false` puts it back),
+  the item. `computer` is the computer it's on (none: this one); another's is asked by mail.
 
 ### Settings per box
 
@@ -12667,6 +12712,44 @@ bucket or cost means it could not be determined. Cost is estimated in USD
 at current catalog rates. Token totals without cache reads, processed
 tokens with cache reads, and the individual buckets are separate fields.
 Cursor's context-only results are partial.
+
+The `usage.insights.summary` feature adds `GET /insights/summary`, the
+whole Insights screen as a box makes it. It takes `period` (7, 30 or 90),
+`zone`, and at most one of `bot`, `provider`, `account`, `model` (a model
+row's `id`), `computer` or `session` to narrow it. Every grouping is made
+by the box; a client draws it as it comes:
+
+- `totals`: `cost` (USD at current API rates), `tokens` (every token,
+  cache reads included) and `cacheRate` (cached input over all input,
+  null where no input was counted). Every row and standout has the same
+  three, and `lowCache` where its rate is well under the period's.
+- `change`: against the period of the same length just before, `cost`
+  and `tokens` as fractions and `cacheRate` as the difference of the two
+  rates, each null where it can't be said; `change` is null where
+  nothing was recorded then.
+- `trend`: each day's `day`, `cost` and `tokens`, oldest first.
+- `lists`: ranked by cost, each `{key, name, rows}`: `bots` (a bot's row
+  is its own conversations and every session it's over, their subagents
+  counted in, with `sessions` it expands to; a session no bot is over is
+  a row of its own), then `providers`, `models` (one name per model,
+  however its id was written) and `computers`. Narrowed to a bot or a
+  session, the first list is `sessions` instead: the bot's, or the
+  session and its subagents. A row has `kind` (`bot`, `session`,
+  `provider`, `model`, `computer`), the `id` that narrows to it, `name`,
+  and where there's more to say `note` ("4 subagents", "No bot", "Own
+  chat"), `provider` (whose mark to draw) and a bot's `look`. At most 200
+  rows a list.
+- `standouts`: at most three sessions, each with one short `reason` and
+  its `kind` (`cost`, `cache` or `subagents`).
+- `state`: `loading`, `empty` or `ready`.
+
+Each usage record carries the bot over it: a bot's own conversation and
+group-chat seat are its, a session it started (`kuvo.by`) is its, a
+subagent is its parent's, as far up as is known, and a session started
+before its starts were marked is its starter's. `root` names the
+top-level conversation a subagent's calls count under, and `botOwn`
+says that conversation is the bot's own. Records from an older box lack
+them: its subagents count as sessions of their own.
 
 Authenticated peer mail uses `kind: "insights"`. Direct peers resume a
 pull from the last SQLite sequence they have applied and take at most

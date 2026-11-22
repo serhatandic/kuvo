@@ -18,6 +18,8 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unapplyExactly } from "./changes"
 import type { ArtifactStore, Made, Trigger } from "./store"
+import type { Handover } from "../library/store"
+import { attachmentNote } from "../../shared/attachment-paths"
 
 export interface Event {
   type: string
@@ -93,6 +95,8 @@ export class Recorder {
        * command's files), recorded as that turn's with `made`, in its bot's folder or its project.
        */
       turnEnded?: (turn: { bot?: string; folder?: string; since: number; made: (via: string) => Made }) => void
+      /** A file handed over to you: one `show_file` showed, or a picture `generate_image` made (the Library). */
+      handed?: (handover: Handover) => void
     } = {},
   ) {}
 
@@ -162,6 +166,14 @@ export class Recorder {
         // A wake-up's note: the turn it starts is a wake-up's.
         const text = data.item?.payload?.text
         if (typeof data.inboxID === "string" && typeof text === "string" && text.startsWith(wakeMarker)) remember(this.wakes, data.inboxID, true)
+        // A message of yours with files: what you attached is handed over (the Library).
+        if (data.item?.type === "user" && this.options.handed) {
+          const attached = attachedPaths(data.item.payload)
+          if (attached.length) {
+            const context = await this.context(source, id, live, event.location?.directory)
+            if (context) for (const path of attached) this.handed(context.made("attach"), path, "attached", { message: data.inboxID })
+          }
+        }
         return
       }
       case "session.inbox.delivered":
@@ -185,7 +197,7 @@ export class Recorder {
       case "session.tool.success": {
         const call = live.calls.get(data.id) ?? {}
         live.calls.delete(data.id)
-        await this.succeeded(source, id, live, call, data.metadata, data.content, event.location?.directory)
+        await this.succeeded(source, id, live, call, data.metadata, data.content, event.location?.directory, { message: data.assistantMessageID, part: data.id })
         return
       }
       case "session.tool.failed":
@@ -245,7 +257,7 @@ export class Recorder {
     return { made, bot, folder }
   }
 
-  private async succeeded(source: Source, id: string, live: Live, call: Call, metadata: any, content: any, directory?: string) {
+  private async succeeded(source: Source, id: string, live: Live, call: Call, metadata: any, content: any, directory?: string, at: { message?: unknown; part?: unknown } = {}) {
     const context = await this.context(source, id, live, directory)
     if (!context) return
     const { made, folder } = context
@@ -275,13 +287,37 @@ export class Recorder {
           continue
         }
         await this.store.change(path, made(name))
+        if (name === "generate_image") this.handed(made(name), path, "generated", at)
       }
     }
     // Kuvo Code's own tools.
     if ((name === "show_file" || name === "show_in_panel") && typeof input.path === "string") await this.store.shown(absolute(input.path), made(name))
+    // What's shown in the conversation itself is handed over; what's opened in the panel isn't.
+    if (name === "show_file" && typeof input.path === "string") this.handed(made(name), absolute(input.path), "shown", at)
     if (name === "mark_final" && typeof input.path === "string") {
       const artifact = (await this.store.change(absolute(input.path), made(name))) ?? this.store.at(absolute(input.path))
       if (artifact) await this.store.pin(artifact.id, { by: "bot", ...(typeof input.note === "string" && input.note ? { note: input.note } : {}) })
+    }
+  }
+
+  /** Told to the Library: a file handed over in this turn, where and when, and the message it's in. */
+  private handed(made: Made, path: string, how: Handover["how"], at: { message?: unknown; part?: unknown }) {
+    const where = made.where ?? {}
+    // A subagent's: in its parent's conversation, at the turn it worked for. (Yours: your message.)
+    const own = how === "attached" || made.by.session === where.session
+    const message = own ? at.message : made.turn?.message
+    try {
+      this.options.handed?.({
+        path, how,
+        ...(where.bot ? { bot: where.bot } : {}),
+        ...(where.session ? { session: where.session } : {}),
+        ...(where.group ? { group: where.group } : {}),
+        ...(typeof message === "string" ? { message } : {}),
+        ...(own && typeof at.part === "string" ? { part: at.part } : {}),
+        ...(made.at ? { at: made.at } : {}),
+      })
+    } catch (error: any) {
+      console.error("library:", error?.message ?? error)
     }
   }
 
@@ -364,6 +400,24 @@ export class Recorder {
     } catch {}
     return undefined
   }
+}
+
+/**
+ * The files a message of yours carries on this computer: its files' `file:` addresses (a client's
+ * own, or where the box kept what was sent inline) and what its attached-files note names, but not
+ * what stayed on the computer it was sent from.
+ */
+export function attachedPaths(payload: any): string[] {
+  const paths = new Set<string>()
+  for (const file of Array.isArray(payload?.files) ? payload.files : []) {
+    const address = typeof file?.source?.uri === "string" ? file.source.uri : typeof file?.uri === "string" ? file.uri : typeof file?.url === "string" ? file.url : undefined
+    if (!address?.startsWith("file:")) continue
+    try {
+      paths.add(fileURLToPath(address))
+    } catch {}
+  }
+  if (typeof payload?.text === "string") for (const { path, stayed } of attachmentNote(payload.text)) if (!stayed) paths.add(path)
+  return [...paths]
 }
 
 /** `value` kept by `key`, the oldest going past a few hundred. */

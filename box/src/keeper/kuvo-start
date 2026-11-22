@@ -117,6 +117,7 @@ if [ "${1:-}" = check-rollback-layout ]; then check_rollback_layout; exit $?; fi
 mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
+resident_release() { head -n 3 "${1:-$K/bin}/kuvo-link.js" 2>/dev/null | grep -qx '// Kuvo resident serve v1'; }
 machine_helper() { [ -f "$R/machine-helper" ] && ! own_mac && [ "$(uname -s)" = Darwin ]; }
 under_helper() {
   [ -n "${KUVO_MACHINE_HELPER_PID-}" ] &&
@@ -368,10 +369,24 @@ valid_bin() {
   printf '%s\n' "$1" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' &&
     [ -f "$K/$1/kuvo-start" ]
 }
+# These files are written by the running box. The engine and bridge use their stable paths
+# through bin, including while the new box checks its sandbox. Keep their contents and mtimes.
+carry_worker_state() {
+  local target=$1 file source saved
+  for file in kuvo-fence kuvo-fence.js opencode-plugins/kuvo-sandbox.js opencode-plugins/kuvo-defaults.js; do
+    source="$K/bin/$file"; saved="$K/$target/$file"
+    if [ -f "$source" ]; then
+      cp -p "$source" "$saved.new.$$" && mv -f "$saved.new.$$" "$saved" || return 1
+    else
+      rm -f "$saved" || return 1
+    fi
+  done
+}
 select_bin() {
   valid_bin "$1" && [ -L "$K/bin" ] || return 1
   next="$K/bin.new"
   [ ! -e "$next" ] || [ -L "$next" ] || return 1
+  carry_worker_state "$1" || return 1
   rm -f "$next" && ln -s "$1" "$next" || return 1
   # Both variants rename the link itself, even when it points to a directory.
   if [ "$(uname -s)" = Darwin ]; then mv -fh "$next" "$K/bin"; else mv -fT "$next" "$K/bin"; fi
@@ -398,6 +413,44 @@ stop_worker() {
     ! worker_here "$worker" "$command"
   fi
 }
+client_pids() {
+  local owner pid
+  # link.pid has no newline. Emit each source separately before deduplicating.
+  { printf '%s\n' "$(cat "$R/link.pid" 2>/dev/null)"
+    for owner in "$R/.client-owner"/owner-*; do
+      [ -f "$owner" ] || continue
+      pid=${owner##*/owner-}; printf '%s\n' "${pid%%-*}"
+    done
+    sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null
+  } | awk 'NF && !seen[$1]++ {print $1}'
+}
+stop_clients() {
+  local pid
+  for pid in $(client_pids); do
+    if is "$pid" 'kuvo-link.js run' || is "$pid" 'kuvo-link.js serve'; then
+      stop_worker "$pid" "$K/bin/kuvo-link.js" || return 1
+    fi
+  done
+}
+# A release that changes only the client process keeps the worker identities and their work.
+stop_for_switch() {
+  local target=$1 before after file
+  before=$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)
+  after=$(sed -n 's/^V=//p' "$K/$target/kuvo-start" | head -n 1)
+  if [ -n "$before" ] && [ "$before" = "$after" ] &&
+     { resident_release || resident_release "$K/$target"; }; then
+    for file in kuvo-launch kuvo-agents.js kuvo-browser.js kuvo-wake; do
+      if [ -e "$K/bin/$file" ] || [ -e "$K/$target/$file" ]; then
+        cmp -s "$K/bin/$file" "$K/$target/$file" || { switch_workers; return $?; }
+      fi
+    done
+    if diff -qr -x kuvo-sandbox.js -x kuvo-defaults.js "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1; then
+      stop_clients
+      return $?
+    fi
+  fi
+  switch_workers
+}
 switch_workers() {
   disposition=TERM
   if grep -q '^// Kuvo release switch v1$' "$K/bin/kuvo-agents.js" 2>/dev/null; then
@@ -412,9 +465,8 @@ switch_workers() {
   done
   rm -f "$R/agents.pid"
   # Keep the signed helper supervising on macOS. Its serve child is restarted through bin.
-  for p in "$(cat "$R/link.pid" 2>/dev/null)" \
-    "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)" \
-    "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)" \
+  stop_clients || return 1
+  for p in "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)" \
     "$(cat "$R/.browser-installing/pid" 2>/dev/null)" "$(cat "$R/repair.pid" 2>/dev/null)"; do
     stop_worker "$p" "$K/bin/kuvo-link.js" || return 1
   done
@@ -679,7 +731,7 @@ keep)
       # (When the link was put there: its change time, which a copy can't carry over, as it
       # carries the release's own time over, for a file a Mac's disk clones.)
       m=$(stat -c %Z "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %c "$K/bin/kuvo-link.js" 2>/dev/null)
-      for s in "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)" "$(cat "$R/link.pid" 2>/dev/null)"; do
+      for s in $(client_pids); do
         is "$s" "$K/bin/kuvo-link.js" || continue
         # (How long it has run, from `ps`'s [[dd-]hh:]mm:ss, the same on macOS and Linux.)
         e=$(ps -o etime= -p "$s" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '{ s = $NF + 60 * $(NF - 1); if (NF >= 3) s += 3600 * $(NF - 2); if (NF >= 4) s += 86400 * $(NF - 3); print s }')
@@ -730,15 +782,27 @@ keep)
     if [ ! -f "$R/link.json" ] && [ ! -L "$HOME/.kuvo-code-adding" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! own_mac; then
       (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" setup-local >>"$R/link.log" 2>&1 </dev/null)
     fi
-    # The relay link, while there are devices or members to reach, or a pairing is open.
-    if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
-      (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" run >>"$R/link.log" 2>&1 </dev/null &)
-    fi
-    # The box's server for clients (`serve --kept`, which says where it answers in
-    # run/serve.json), while one wants it here (run/serve.needed): not on a Mac's own box,
-    # whose server Kuvo Code runs itself.
-    if [ -f "$R/serve.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! own_mac && ! { s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null); is "$s" kuvo-link.js && is "$s" --kept; }; then
-      (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --kept >"$R/serve.log" 2>&1 </dev/null &)
+    if resident_release; then
+      if ! own_mac && [ ! -e "$R/off" ] && [ ! -e "$R/paused" ] && [ ! -d "$R/.rolling-back" ] && [ -n "$V" ] &&
+         ! worker_here "$(cat "$R/link.pid" 2>/dev/null)" 'kuvo-link.js serve --resident' &&
+         ! worker_here "${resident_starting-}" 'kuvo-link.js serve --resident'; then
+        if stop_clients; then
+          (environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+           exec env KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --resident) >"$R/serve.log" 2>&1 </dev/null &
+          resident_starting=$!
+        fi
+      fi
+    else
+      # The relay link, while there are devices or members to reach, or a pairing is open.
+      if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
+        (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" run >>"$R/link.log" 2>&1 </dev/null &)
+      fi
+      # The box's server for clients (`serve --kept`, which says where it answers in
+      # run/serve.json), while one wants it here (run/serve.needed): not on a Mac's own box,
+      # whose server Kuvo Code runs itself.
+      if [ -f "$R/serve.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! own_mac && ! { s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null); is "$s" kuvo-link.js && is "$s" --kept; }; then
+        (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --kept >"$R/serve.log" 2>&1 </dev/null &)
+      fi
     fi
     # A separate owner for these services is a capability of the installed bridge. The live
     # bridge may be stopped, or may still be running older code while it finishes a turn.
@@ -859,17 +923,18 @@ serve)
   while switch_waiting; do sleep 1; done
   # If the helper entered this script during a switch, reload the selected engine line.
   if [ "$P" != "$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)" ]; then
-    exec sh "$K/bin/kuvo-start" serve
+    exec sh "$K/bin/kuvo-start" "$@"
   fi
   # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which
   # starts it and keeps it running, its password and the vault's secrets on its stdin: here,
   # in the foreground, as the helper's own child (it goes when its stdin closes).
   own_mac || { echo "Only a Mac's own box's helper runs its server so." >&2; exit 3; }
-  [ -f "$R/off" ] && exit 0
+  { [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
   [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] || exit 1
   environment; cd "$K/workspace" 2>/dev/null || cd "$K"
   export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
-  exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve >"$R/serve.log" 2>&1
+  if resident_release; then set -- serve --resident; else set -- serve; fi
+  exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" "$@" >"$R/serve.log" 2>&1
   ;;
 start)
   if [ "${2:-}" = --switch ]; then
@@ -891,7 +956,7 @@ stop)
     old=$(previous)
     target=${3:-}
     valid_bin "$old" && valid_bin "$target" && [ "$old" = "$(bin_target)" ] || exit 1
-    switch_workers && select_bin "$target" || exit 1
+    stop_for_switch "$target" && select_bin "$target" || exit 1
     unlock
     exec sh "$K/bin/kuvo-start" start --switch
   fi
@@ -969,12 +1034,21 @@ start-guard)
   while still_selected && [ "$(date +%s)" -lt "$deadline" ]; do
     if up && bridge_runs && folder_current; then
       reply="$R/.update-info.$$"
-      link_command box route --internal kuvo/info >"$reply" 2>/dev/null </dev/null &
+      if resident_release; then
+        link_command box resident-info >"$reply" 2>/dev/null </dev/null &
+      else
+        link_command box route --internal kuvo/info >"$reply" 2>/dev/null </dev/null &
+      fi
       probe=$!
       while kill -0 "$probe" 2>/dev/null && [ "$(date +%s)" -lt "$deadline" ] && still_selected; do sleep 1; done
       if kill -0 "$probe" 2>/dev/null; then kill -KILL "$probe" 2>/dev/null; fi
-      wait "$probe" && grep -q '^{"status":200,"internal":true,' "$reply" &&
-        grep -Fq '\"agents\":true' "$reply" && still_selected && healthy=1
+      if wait "$probe" && still_selected; then
+        if resident_release; then
+          grep -Fq '"agents":true' "$reply" && healthy=1
+        elif grep -q '^{"status":200,"internal":true,' "$reply" && grep -Fq '\"agents\":true' "$reply"; then
+          healthy=1
+        fi
+      fi
       rm -f "$reply"
       if [ "${healthy:-}" = 1 ]; then
         rm -f "$R/update-cannot" "$R/previous"
@@ -988,7 +1062,7 @@ start-guard)
   trap 'trap "" HUP INT TERM; unlock' EXIT
   trap 'exit 1' HUP INT TERM
   still_selected || exit 0
-  switch_workers || exit 1
+  stop_for_switch "$old" || exit 1
   (umask 077; printf '%s %s %s\n' "$(date +%s)" "$version" "$digest" >"$R/update-cannot.new") &&
     mv -f "$R/update-cannot.new" "$R/update-cannot" &&
     select_bin "$old" || exit 1
@@ -1084,6 +1158,7 @@ rollback)
   if ! grep -q '^// Box services ownership v1$' "$K/updates/rollback/files/bin/kuvo-agents.js" 2>/dev/null; then
     sh "$0" quiesce-services || exit 1
   fi
+  stop_clients || exit 1
   sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 || exit 1
   rm -f "$R/update-restore" "$R/update-settle.tries"
   [ ! -f "$R/update-trial" ]
@@ -1095,7 +1170,7 @@ pause)
   # next keeper to start (the helper's, at your next login or as the app opens) takes the mark away.
   own_mac || { echo "Only a Mac's own box is stopped until it next starts." >&2; exit 3; }
   touch "$R/paused"
-  l=$(cat "$R/link.pid" 2>/dev/null); is "$l" kuvo-link && kill "$l" 2>/dev/null
+  stop_clients
   b=$(cat "$R/box.pid" 2>/dev/null); if is "$b" kuvo-start; then kill -- "-$b" 2>/dev/null || kill "$b" 2>/dev/null; fi; rm -f "$R/box.pid"
   if lock 600; then halt; unlock; else halt; fi
   ;;
@@ -1108,9 +1183,8 @@ off)
   # under way goes on to start the engine once it sees it.
   touch "$R/off" "$R/stopped"
   rm -f "$R/link.needed" "$R/serve.needed"
-  l=$(cat "$R/link.pid" 2>/dev/null); is "$l" kuvo-link && kill "$l" 2>/dev/null
+  stop_clients
   # The server it keeps for clients (only one it keeps: `"kept":true`; a Mac's own box's is its app's).
-  if grep -q '"kept":true' "$R/serve.json" 2>/dev/null; then l=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json"); is "$l" kuvo-link.js && is "$l" --kept && kill "$l" 2>/dev/null; fi
   # The keeper with the start it's at (its engine's tries and their launch, in its session),
   # which would go on after it.
   b=$(cat "$R/box.pid" 2>/dev/null); if is "$b" kuvo-start; then kill -- "-$b" 2>/dev/null || kill "$b" 2>/dev/null; fi; rm -f "$R/box.pid"

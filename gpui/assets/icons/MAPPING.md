@@ -33,10 +33,13 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 | folder | folder |
 | folder-open | folder-open |
 | globe | globe |
+| grid | layout-grid |
 | hand | hand |
 | image | image |
 | info | info |
+| library | library |
 | link | link |
+| list | list |
 | message | message-square |
 | mic | mic |
 | minus | minus |

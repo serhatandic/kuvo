@@ -30,6 +30,7 @@ pub mod model_picker;
 pub mod moves;
 mod landing;
 pub mod launch;
+pub mod library;
 pub mod notifications;
 pub mod panel;
 pub mod pasted;

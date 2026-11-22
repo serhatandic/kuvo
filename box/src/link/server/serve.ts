@@ -4,13 +4,12 @@ import { viewUpgrade } from "../browser/websocket";
 import { browserView } from "../browser/view";
 import crypto from "node:crypto";
 import http from "node:http";
-import os from "node:os";
 import { engineConnect } from "../areas/engine";
 import { readEngineFile } from "../engine/client";
 import { IS_MAC } from "../home";
 import type { EngineRecord } from "../../shared/records";
 import { canonicalPath } from "./paths";
-import { engineHandler } from "./router";
+import { createBoxDispatcher } from "./router";
 import type { AnyPiece, LinkHandler } from "./context";
 
 // `serve`: this box's routes over HTTP, for a Mac, whose app starts its own box as it starts the
@@ -39,7 +38,7 @@ const IDLE_KEPT = 60_000;
 export const HEARTBEAT = 20_000;
 // Its sockets (`viewUpgrade`): the browser's live view, and a terminal's on the engine found by
 // `readEngine`, as through the relay (PROTOCOL.md, "Sockets").
-export function serveBox(password: string, handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), readEngine: () => EngineRecord = readEngineFile): http.Server {
+export function serveBox(password: string, handle: LinkHandler = createBoxDispatcher().entry(), readEngine: () => EngineRecord = readEngineFile): http.Server {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   // (`any`: nothing reads what it gives back, and its early `return response.end()` lines would
   // otherwise each need a return on every path.)

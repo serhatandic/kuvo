@@ -363,7 +363,8 @@ impl BoxClient {
         Err(Error::NeedsUpdating { missing: vec![name.to_owned()] })
     }
 
-    /// Whether the box listed the optional feature `name`, as it last said (nothing is asked).
+    /// Whether the box said it has `name`, one this client draws without where it hasn't (not
+    /// one of [`gate::REQUIRED`], which [`Self::gate`] answers for).
     pub fn advertises(&self, name: &str) -> bool {
         self.advertised(name)
     }

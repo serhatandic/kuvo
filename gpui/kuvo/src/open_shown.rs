@@ -66,6 +66,35 @@ pub fn open_shown_file(client: &BoxClient, shown: &ShownFile) -> Result<(), Open
     open_path(&path, reveal)
 }
 
+/// A Library item opened in its default app: this Mac's own file where it's on this Mac, else its
+/// bytes from the computer it's on (or the record's copy once it's gone), kept in the same cache as a
+/// shown file's. What could run something is revealed, as for a shown file.
+pub fn open_library_item(client: &BoxClient, item: &kuvo_box::library::LibraryItem) -> Result<(), OpenShownError> {
+    let path = Path::new(&item.path);
+    if client.here() && item.is_here() && path.is_file() {
+        return open_path(path, false);
+    }
+    let root = cache_root()?;
+    let bytes = client.library_file(item)?;
+    let shown = ShownFile {
+        id: item.id.clone(),
+        uri: format!("library:{}", item.id),
+        path: item.path.clone(),
+        name: item.name.clone(),
+        caption: None,
+        kind: kuvo_box::shown_files::FileKind::Other,
+        computer: item.computer.as_ref().map(|computer| computer.key.clone()),
+        session: Some(item.session.clone().or_else(|| item.group.clone()).unwrap_or_else(|| "library".into())),
+    };
+    let (path, reveal) = {
+        let _cache = cache::LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let prepared = materialize_download(&root, &shown, &bytes, Some(false))?;
+        cache::prune(&root, prepared.0.parent());
+        prepared
+    };
+    open_path(&path, reveal)
+}
+
 fn materialize_download(
     root: &Path,
     shown: &ShownFile,

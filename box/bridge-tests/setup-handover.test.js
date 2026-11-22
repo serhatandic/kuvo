@@ -16,7 +16,7 @@ import { CODEX_STAND_IN } from "./codex-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { runningAs } from "./running-as.js";
 import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
-import { recoveryNeighborBuild } from "./failure-bench-legacy.js";
+import { recoveryNeighborBuild, splitLaunchBuild } from "./failure-bench-legacy.js";
 import { benchRelease, durablePhase, put, recoveryEngine } from "./recovery-bench.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
@@ -66,7 +66,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false, resident = false, splitIndex } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -84,6 +84,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       fs.writeFileSync(legacyScript, old.stdout);
     }
   }
+  const splitScript = path.join(root, "pre-resident.mjs");
+  if (splitIndex !== undefined) fs.writeFileSync(splitScript, splitLaunchBuild());
   if (releaseKey) {
     const source = fs.readFileSync(script, "utf8");
     assert.ok(source.includes(link.UPDATE_KEYS[0]));
@@ -156,6 +158,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       if (groupPath[2] === "activate") chat.status = "active";
       if (groupPath[2] === "release") groupCopies.delete(box);
       return send(200, chat);
+    }
+    // The bridge lists its running group chats to its link (`/api/kuvo/link/groups`), which
+    // tells the other computers which groups live here.
+    if (movingGroup && request.url === "/api/kuvo/link/groups") {
+      const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
+      const chat = groupCopies.get(box);
+      const groups = chat?.status === "active" ? [{ id: chat.group.id, name: chat.group.name }] : [];
+      return response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ groups }));
     }
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
@@ -280,7 +290,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
       pid: bridgePID, port: engine.address().port, password: liveAsks && name === "Lab" ? "Lab-bridge" : name,
     }));
-    const nodeScript = name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
+    const nodeScript = index === splitIndex ? splitScript : name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
     if (nodeScript === legacyScript) {
       fs.mkdirSync(path.join(home, "bin"), { recursive: true });
       fs.writeFileSync(path.join(home, "bin", "box-version"), "0.8.0-beta.35");
@@ -355,6 +365,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const wire = JSON.parse(out.trim().split("\n").at(-1));
         return { status: wire.status, value: JSON.parse(wire.body) };
       },
+      async residentRoute(method, route, body, headers) {
+        const { port, password, pid } = read("serve.json");
+        assert.equal(pid, this.child.pid);
+        const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
+          method, headers: { ...headers, authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"),
+            "content-type": "application/json", "x-kuvo-from": "mac" }, body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return { status: response.status, value: await response.json() };
+      },
       async labelTool(args) {
         labelCall = args;
         return (await this.route("POST", "kuvo/work-queue/tools", { name: "queue_labels", arguments: args, session: "ses_labels" }, true)).value;
@@ -370,7 +389,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       start() {
         this.output = "";
         const flags = this.onShutdown ? ["--import", `data:text/javascript,${encodeURIComponent(this.onShutdown)}`] : [];
-        const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        const command = mac ? ["serve"] : resident && index !== splitIndex ? ["serve", "--resident"] : ["run"];
+        const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, ...command], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
           if (this.child !== child) return;
@@ -585,7 +605,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   phase("group move committed");
   assert.equal(JSON.parse(fs.readFileSync(savedPath(a), "utf8")).forward.owner, c.key);
   const destinationClient = await at(a);
-  assert.equal((await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" })).status, 200);
+  const retitled = await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" });
+  assert.equal(retitled.status, 200, JSON.stringify(retitled));
   const replay = await destinationClient.ask("PATCH", itemPath, intent, headers);
   assert.equal(replay.status, 200, JSON.stringify(replay));
   assert.equal(replay.value.item.title, intent.title);
@@ -599,6 +620,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   await until("replacement ownership replica", () => b.read().shared?.ownershipRecovery?.value?.["replacement:" + c.key], t.signal);
 
   phase("replacement assignment verified");
+  const told = () => { try { return JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
+  await until("the replacement heard the destination announce the group", () => told()[a.key]?.groups?.includes(group.id), t.signal);
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
   assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
   assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
@@ -1048,11 +1071,15 @@ test("failure bench: unlink retries credential cleanup before acknowledging comp
   for (const file of [bot, native]) assert.equal(fs.readFileSync(file, "utf8"), "fixture");
 });
 
-test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 20_000 }, async t => {
-  const { a, c, phone, relay } = await network(t);
+// A computer's own pairing is independent work: SSH refuses that computer, and it joins through a
+// setup merge (installer-enrollment.test.js). A member keeps a pairing it made before joining aside
+// (`preJoinPairings`) until its main grants it; re-enrolling it takes an explicit decision.
+test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 45_000 }, async t => {
+  // The main grants this phone with `pairing`, which the member paired on its own before joining.
+  const { a, c, phone, pairing, relay } = await network(t);
   await c.stop("SIGTERM");
   const file = path.join(c.run, "link.json");
-  const local = { ...c.identity, phones: [{ key: phone, pairing: "independent-pairing", from: "pair" }] };
+  const local = { ...c.read(), preJoinPairings: [{ key: phone, pairing, from: "pair", local: true }] };
   fs.writeFileSync(file, JSON.stringify(local));
   // Keep this CLI fixture from launching a second, untracked bridge.
   fs.mkdirSync(path.join(c.run, ".updating"));
@@ -1067,11 +1094,12 @@ test("an unmatched pre-join pairing requires an explicit enrollment decision", {
 
   const roster = link.signDoc(a.seed, "peers", 2, { setup: { id: a.read().setup.id, epoch: 1, primary: a.key },
     boxes: [a.entry, c.entry], moved: [], left: [] });
-  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing: "independent-pairing" }], removed: [] });
+  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing }], removed: [] });
   const joined = await c.command(["setup", token], JSON.stringify({ mac: a.key, macSign: a.sign, relay: relay.url, docs: [roster, matching] }));
   assert.equal(joined.status, 0, joined.err);
-  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, "independent-pairing");
+  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, pairing);
   assert.equal(c.read().phones.find(grant => grant.key === phone)?.from, "mac");
+  assert.equal(c.read().preJoinPairings, undefined, "the main's grant replaced the pairing kept aside");
 });
 
 test("failure bench: local uninstall refuses a primary before clearing identity or stopping it", { timeout: 30_000 }, async t => {
@@ -3854,10 +3882,11 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const recordPackets = relay.intercept(a.address, b.address, packet => {
       const move = mail(packet, b)?.move;
       if (move?.op !== "part" && move?.op !== "switch") return false;
-      if (!inbound.has(move.op)) inbound.set(move.op, packet);
-      // pc4 activates from the accepted assignment. Every switch delivered
-      // after that comes from the replay harness, so its answers are causal.
-      return move.op === "switch";
+      const first = !inbound.has(move.op);
+      if (first) inbound.set(move.op, packet);
+      // pc4 activates from pc2's first switch: the hand-over is between the two computers.
+      // Every switch delivered after that comes from the replay harness, so its answers are causal.
+      return move.op === "switch" && !first;
     });
     const { move } = good(await a.route("POST", "kuvo/moves", { kind: "chat", id: session, to: b.key, receipt: true }, true), 202);
     await until("pc4's staged move reply", () => arrived, t.signal);
@@ -3878,41 +3907,38 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const release = benchRelease(root, script, privateKey, pin);
     put(path.join(a.home, "bin", "kuvo-link.js"), fs.readFileSync(script));
     put(path.join(a.home, "bin", "box-version"), "0.8.0");
-    put(path.join(a.home, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n");
+    put(path.join(a.home, "bin", "kuvo-start"), `#!/bin/sh\n# Kuvo release switch v1\nV=${release.engine}\nexit 0\n`);
     const runner = path.join(a.home, "engine", release.engine, "opencode");
     put(runner, `#!/bin/sh\nBUN_BE_BUN=1 exec '${bun.replaceAll("'", "'\\''")}' "$@"\n`);
     fs.chmodSync(runner, 0o700);
     put(path.join(a.run, "engine.json"), JSON.stringify({ ...read(path.join(a.run, "engine.json")), version: release.engine }));
-    const trial = path.join(a.run, "update-trial");
-    const cut = `
+    // Cut the updater as the verified release lands beside the running one, before it says it's
+    // ready for the main's switch. (The updater runs on the engine's Bun, as the keeper starts it.)
+    const cut = path.join(root, "update-cut.mjs");
+    put(cut, `
       import fs from "node:fs";
+      import path from "node:path";
       const rename = fs.renameSync;
       fs.renameSync = (from, to) => {
         rename(from, to);
-        if (to === ${JSON.stringify(trial)}) {
-          const fd = fs.openSync(to, "r");
-          fs.fsyncSync(fd);
-          fs.closeSync(fd);
-          const dir = fs.openSync(${JSON.stringify(a.run)}, "r");
+        if (/\\/versions\\/${release.version.replaceAll(".", "\\.")}-[0-9a-f]{12}\\/bin$/.test(String(to))) {
+          const dir = fs.openSync(path.dirname(String(to)), "r");
           fs.fsyncSync(dir);
           fs.closeSync(dir);
           process.kill(process.pid, "SIGKILL");
         }
       };
-    `;
-    const interrupted = await a.evaluate(process.execPath, [
-      "--import", `data:text/javascript,${encodeURIComponent(cut)}`,
+    `);
+    const interrupted = await a.evaluate(bun, [
+      "--config=/dev/null", "--no-env-file", "--preload", cut,
       script, "update", "--now", "--from", release.folder, "--key", release.key,
     ]);
     assert.equal(interrupted.signal, "SIGKILL", JSON.stringify(interrupted));
-    assert.equal(fs.readFileSync(trial, "utf8").trim(), release.version);
-    assert.equal(read(path.join(a.run, "update.json")).trial.installing, true);
-    const updatePoint = read(path.join(a.home, "backup", "configuration.json")).last.id;
-    assert.match(updatePoint, /-update-/);
-    assert.ok(fs.existsSync(path.join(destination.path, "kuvo-backups", source, updatePoint + ".kuvo")));
-    assert.equal(fs.readFileSync(path.join(a.home, "bin", "box-version"), "utf8"), "0.8.0");
+    assert.ok(fs.readdirSync(path.join(a.home, "versions")).some(name => name.startsWith(release.version + "-")));
+    assert.equal(fs.readFileSync(path.join(a.home, "bin", "box-version"), "utf8"), "0.8.0", "pc2 still runs its own version");
+    assert.equal(fs.existsSync(path.join(a.run, "previous")), false, "nothing switched");
     assert.equal(read(staged).complete, true);
-    phase("signed updater killed after its durable trial marker, with the move still held");
+    phase("signed release cut while it was prepared beside the running one, with the move still held");
 
     relay.replay(arrived);
     await until("pc2 sent its switch and pc4's activation reply was dropped",
@@ -3952,7 +3978,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     fs.rmSync(a.home, { recursive: true });
     assert.equal(fs.existsSync(a.home), false);
     assert.equal(fs.existsSync(path.join(destination.path, "kuvo-backups", source, point.id + ".kuvo")), true);
-    phase("pc2 disk erased with its update and move journals unresolved");
+    phase("pc2 disk erased with its prepared release and move journals unresolved");
     leaseRelay.advance(125_000);
     await see(b, 3, b);
     const decided = b.read().sharedOutcomes?.[read(receiptFile).operation];
@@ -3962,13 +3988,21 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("pc4 elected and the client receipt resolved from its durable replica");
 
     unpause.forEach(resume => resume());
-    await until("pc5 follows the replacement primary and grants its lease", () =>
-      c.read().setup.primary === b.key && b.lease(b.read().setup.epoch, c), t.signal);
+    // A build from before the relay lease takes a certificate only from its main (or that main's
+    // standby, which the converted setup no longer has), so it can't follow a takeover. pc5 follows
+    // pc4 once it runs a build that knows the lease.
+    await c.stop();
+    fs.copyFileSync(path.join(root, "kuvo-link.mjs"), path.join(root, "neighbor.mjs"));
+    c.start();
+    await until("pc5 follows the replacement primary", () => c.read().setup.primary === b.key && b.lease(), t.signal);
+    phase("pc5, on this build now, follows pc4 at its relay term");
     good(await b.route("DELETE", `kuvo/computers/${a.key}`));
     const restore = { destination, source, id: point.id, recoveryKey, confirm: true };
     assert.match(good(await backup(c, "restore", restore), 409).message, /Confirm the replacement on the main computer/);
     good(await backup(b, "match", { source, previous: a.key, replacement: c.key }));
     await until("pc5 sees its approved replacement mapping", () => c.read().shared?.ownershipRecovery?.value?.["replacement:" + a.key], t.signal);
+    const told = () => { try { return JSON.parse(fs.readFileSync(path.join(c.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
+    await until("pc5 heard pc4 announce the conversation it owns", () => told()[b.key]?.list?.some(agent => agent.session === session), t.signal);
     const restored = good(await backup(c, "restore", restore));
     assert.ok(restored.unavailable.some(entry => entry.entry === item && entry.reason === "moved or transfer needs review"),
       JSON.stringify(restored.unavailable));
@@ -4002,7 +4036,8 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
         db.close();
       }
     };
-    const reset = insightsPage(c, 1, 2, "reindexed", true);
+    // pc2 is a historical origin on pc5 now, so pc5 reads pc4's stream again from zero.
+    const reset = insightsPage(c, 0, 2, "reindexed", true);
     const following = insightsPage(c, 2, 3, "reindexed");
     await deliverPage(following);
     assert.equal(usageCursor(), 1);
@@ -4022,13 +4057,8 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.equal(kept.number, itemNumber);
     assert.deepEqual(fs.readFileSync(path.join(b.home, attachment)), bytes);
     assert.deepEqual(read(fixtureEngine.file(b.name)).messages, fixtureEngine.messages);
+    // The new main numbers from its own counter, with pc2 gone.
     const next = await make(b, "numbered-on-successor");
-    assert.equal(next.number, undefined);
-    // The old reader can spend its existing block. Upgrade it before expecting
-    // a new majority allocation with pc2's original voter now unavailable.
-    await c.stop();
-    fs.copyFileSync(path.join(root, "kuvo-link.mjs"), path.join(root, "neighbor.mjs"));
-    c.start();
     const nextNumber = await numbered(b, next.id);
     assert.ok(![itemNumber, firstNumber, offline.number].includes(nextNumber));
     const replayedCreate = await make(c, "numbered-offline");
@@ -4060,11 +4090,12 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
 
-async function relayLeaseNetwork(t, { ranked = false, standby = true, oldMember = false } = {}) {
+async function relayLeaseNetwork(t, { ranked = false, standby = true, oldMember = false, resident = false } = {}) {
   const leaseRelay = relayLeaseStandIn();
   const net = await network(t, true, undefined, false, undefined, false, true, undefined, {
     leaseRelay,
     oldMember,
+    resident,
     acceptedRoster: true,
     prepare([a, b]) {
       for (const box of [a, b]) {
@@ -4203,16 +4234,75 @@ test("main saves alone: a dead standby is unlinked in one request", { timeout: 2
   assert.ok(!a.read().shared.membershipAndAccess.value.boxes.some(peer => peer.key === b.key));
 });
 
-test("main saves alone: a sleeping standby catches up to a save that already committed", { timeout: 20_000 }, async t => {
-  const { a, b, leaseRelay } = await relayLeaseNetwork(t);
+test("main saves alone: a resident member catches up to a save committed while it was down", { timeout: 40_000 }, async t => {
+  const { a, b, leaseRelay } = await relayLeaseNetwork(t, { standby: false, resident: true });
   await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
   await b.stop();
-  const result = await rename(a, b, "Renamed while asleep");
-  assert.equal(result.status, 200, JSON.stringify(result.value));
+  const { port, password, pid } = JSON.parse(fs.readFileSync(path.join(a.run, "serve.json"), "utf8"));
+  assert.equal(pid, a.child.pid);
+  const result = await fetch(`http://127.0.0.1:${port}/kuvo/computers/${b.key}`, {
+    method: "PATCH",
+    headers: { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64"),
+      "x-kuvo-from": "mac", "content-type": "application/json" },
+    body: JSON.stringify({ name: "Renamed while asleep" }),
+    signal: t.signal,
+  });
+  const receipt = await result.json();
+  assert.equal(result.status, 200, JSON.stringify(receipt));
+  assertReceipt(a, "setupNames", "committed", receipt);
   assert.equal(a.read().shared.setupNames.value[b.key], "Renamed while asleep");
   b.start();
-  await until("standby copies the committed name", () => b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep", t.signal);
+  await until("member copies the committed name and its receipt", () =>
+    b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep" &&
+    b.read().sharedOutcomes?.[receipt.operation]?.status === "committed", t.signal);
 });
+
+for (const splitIndex of [0, 1]) {
+  test(`mixed resident pilot: ${splitIndex === 0 ? "split" : "resident"} main hands over with receipts and a direct move`, { timeout: 80_000 }, async t => {
+    const group = { id: "grp_pilot", name: "Pilot group", members: ["bot_one", "bot_two"], created: "2026-11-21T00:00:00Z", seats: {}, heard: {} };
+    const { a, b, see, leaseRelay, groupCopies } = await network(t, true, undefined, false, group, false, true, ["Studio", "Lab"], {
+      resident: true, splitIndex, acceptedRoster: true,
+    });
+    const split = [a, b][splitIndex];
+    const ask = (box, ...args) => box === split ? box.route(...args) : box.residentRoute(...args);
+    const term = leaseRelay.lease.term;
+    assert.equal(leaseRelay.lease.holder, a.key);
+
+    const saveName = async (main, member, name) => {
+      const receipt = await ask(member, "PATCH", `kuvo/computers/${member.key}`, { name });
+      assert.equal(receipt.status, 200, JSON.stringify(receipt));
+      assertReceipt(main, "setupNames", "committed", receipt.value);
+      const operation = receipt.value.operation;
+      await until("the member receives the committed receipt", () => member.read().sharedOutcomes?.[operation]?.status === "committed", t.signal);
+      assert.equal(member.read().shared.setupNames.value[member.key], name);
+      return operation;
+    };
+    const before = await saveName(a, b, "Before handover");
+    const handover = await ask(a, "POST", "kuvo/setup/handover", { primary: b.key, epoch: 2 });
+    assert.ok([200, 202].includes(handover.status), JSON.stringify(handover));
+    await Promise.all([see(a, 3, b), see(b, 3, b)]);
+    assert.equal(leaseRelay.lease.holder, b.key);
+    assert.equal(leaseRelay.lease.term, term + 1);
+    assert.equal(b.read().sharedOutcomes[before].status, "committed");
+    await saveName(b, a, "After handover");
+
+    const folder = path.join(b.home, "groups", group.id);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: "active", group }));
+    fs.writeFileSync(path.join(folder, "messages.json"), "[]");
+    const moved = await ask(b, "POST", "kuvo/moves", { kind: "group", id: group.id, to: a.key, receipt: true });
+    assert.equal(moved.status, 202, JSON.stringify(moved));
+    const receiptRoute = `kuvo/moves/receipt?id=${moved.value.move.id}`;
+    const done = await until("the source reports its move outcome", async () => {
+      const receipt = await ask(b, "GET", receiptRoute);
+      return receipt.status === 200 && receipt.value.state && receipt.value.state !== "moving" && receipt;
+    }, t.signal);
+    assert.equal(done.value.state, "done", JSON.stringify(done));
+    assert.equal(done.value.move.to, a.key);
+    assert.equal(groupCopies.get("Studio")?.status, "active");
+    await until("the source exports and releases its old copy", () => !groupCopies.has("Lab"), t.signal);
+  });
+}
 
 test("unlinking the main of two computers hands its role to the other, on an older version, and unlinks it", { timeout: 30_000 }, async t => {
   const { a, b, leaseRelay, see } = await relayLeaseNetwork(t, { oldMember: true });

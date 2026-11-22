@@ -5,7 +5,7 @@
 use gpui::{App, KeyBinding, actions};
 use kuvo_ui::IconName;
 
-actions!(area, [ShowSessions, ShowBots, ShowQueue, ShowComputers, ShowSettings, ShowUsage, ShowAccounts, OpenHelp, Back, Forward]);
+actions!(area, [ShowSessions, ShowBots, ShowQueue, ShowComputers, ShowSettings, ShowUsage, ShowLibrary, ShowAccounts, OpenHelp, Back, Forward]);
 
 #[derive(Clone, Debug, PartialEq, Eq, gpui::Action)]
 #[action(namespace = area, no_json)]
@@ -26,10 +26,11 @@ pub enum Area {
     Computers,
     Settings,
     Insights,
+    Library,
 }
 
 impl Area {
-    pub const ALL: [Area; 6] = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers, Area::Insights, Area::Settings];
+    pub const ALL: [Area; 7] = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Computers, Area::Insights, Area::Settings];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -39,6 +40,7 @@ impl Area {
             Area::Computers => "Computers",
             Area::Settings => "Settings",
             Area::Insights => "Insights",
+            Area::Library => "Library",
         }
     }
 
@@ -50,6 +52,7 @@ impl Area {
             Area::Computers => IconName::Computer,
             Area::Settings => IconName::Settings,
             Area::Insights => IconName::Chart,
+            Area::Library => IconName::Library,
         }
     }
 
@@ -62,6 +65,7 @@ impl Area {
             Area::Computers => "⌃4",
             Area::Settings => "⌃5",
             Area::Insights => "⌃6",
+            Area::Library => "⌃7",
         }
     }
 
@@ -74,6 +78,7 @@ impl Area {
             Area::Computers => "computers",
             Area::Settings => "settings",
             Area::Insights => "insights",
+            Area::Library => "library",
         }
     }
 }
@@ -92,6 +97,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-4", ShowComputers, workspace),
         KeyBinding::new("ctrl-5", ShowSettings, workspace),
         KeyBinding::new("ctrl-6", ShowUsage, workspace),
+        KeyBinding::new("ctrl-7", ShowLibrary, workspace),
         // Back and forward, as a browser's and Xcode's.
         KeyBinding::new("cmd-[", Back, workspace),
         KeyBinding::new("cmd-]", Forward, workspace),
