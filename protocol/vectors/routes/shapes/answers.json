@@ -39013,7 +39013,8 @@
              }
             ]
            },
-           "computer?": "string"
+           "computer?": "string",
+           "subagent?": "bool"
           }
          }
         }
@@ -39296,7 +39297,8 @@
              }
             ]
            },
-           "computer?": "string"
+           "computer?": "string",
+           "subagent?": "bool"
           }
          }
         }
@@ -39355,7 +39357,8 @@
              }
             ]
            },
-           "computer?": "string"
+           "computer?": "string",
+           "subagent?": "bool"
           }
          }
         }
