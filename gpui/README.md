@@ -137,7 +137,7 @@ answers the routes the app uses; with `--stand-in`, a message sent gets a reply 
 Shots (`gpui/shots/screens-*-{light,dark}.png`), from the stand-in at a fixed time:
 
 ```sh
-../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots [-- conversation landing asking slash narrow empty]
+../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots [-- conversation landing asking narrow empty]
 ```
 
 ## Running the gallery

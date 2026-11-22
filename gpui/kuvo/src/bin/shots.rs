@@ -125,8 +125,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "model-picker-search", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_search) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "compaction-running", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
@@ -186,7 +184,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "asking-sandbox", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "asking-vault", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "slash", width: 1280., height: 820., session: Some("ses_recipes"), typed: Some("/"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 2), ("msg_s5", 4)], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "search", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: Some("redis"), walks: 1, attach: &[], panel: None },
@@ -366,8 +363,6 @@ const SCREENS: &[Screen] = &[
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
     Screen { slug: "settings-skills", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(skills_list) },
     Screen { slug: "settings-skills-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(skills_add) },
-    Screen { slug: "settings-commands", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(commands_list) },
-    Screen { slug: "settings-commands-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(commands_add) },
     Screen { slug: "settings-custom-auto", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(custom_auto_list) },
     Screen { slug: "settings-custom-auto-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(custom_auto_add) },
     Screen { slug: "settings-mcp", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
@@ -1046,8 +1041,6 @@ fn flow_add(w: &mut Workspace, section: &str, window: &mut Window, cx: &mut Cont
 }
 fn skills_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "skills", window, cx); }
 fn skills_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "skills", window, cx); }
-fn commands_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "commands", window, cx); }
-fn commands_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "commands", window, cx); }
 fn custom_auto_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "custom-auto", window, cx); }
 fn custom_auto_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "custom-auto", window, cx); }
 fn mcp_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "mcp", window, cx); }
@@ -2488,9 +2481,6 @@ fn main() -> anyhow::Result<()> {
                 "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
                 _ => {}
             }
-            if screen.slug.starts_with("settings-commands") {
-                stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));
-            }
             if screen.slug.starts_with("settings-custom-auto") {
                 stand_in.add_settings_section(kuvo::stand_in::settings::custom_auto::section(), kuvo::stand_in::settings::custom_auto::page());
             }
@@ -3118,30 +3108,6 @@ fn main() -> anyhow::Result<()> {
                             settings(workspace, "Accounts", window, cx);
                             settings(workspace, "Usage", window, cx);
                         }
-                    });
-                })?;
-                cx.run_until_parked();
-            }
-            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
-                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
-                let session = screen.session.expect("a session");
-                cx.update_window(any, |root, _window, cx| {
-                    let workspace = root.downcast::<Workspace>().expect("the workspace");
-                    workspace.update(cx, |workspace, cx| {
-                        let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
-                        composer.update(cx, |composer, cx| {
-                            composer.field().clone().update(cx, |field, cx| field.set_text(text, cx));
-                            composer.send(cx);
-                        });
-                    });
-                })?;
-                cx.run_until_parked();
-                cx.update_window(any, |root, window, cx| {
-                    let workspace = root.downcast::<Workspace>().expect("the workspace");
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.open_read_at_once(session, window, cx);
-                        let field = workspace.conversation().expect("the conversation").read(cx).composer().read(cx).field().clone();
-                        window.focus(&field.focus_handle(cx), cx);
                     });
                 })?;
                 cx.run_until_parked();

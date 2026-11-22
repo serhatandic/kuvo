@@ -659,7 +659,7 @@ impl FormSheet {
             }
             // Models: the model picker, its choices the box's (one that isn't a model, ahead of them).
             FieldKind::Choice if !disabled && (field.choices.iter().any(|choice| choice.model.is_some())
-                || (id == "model" && matches!(self.target.section.as_str(), "agents" | "commands" | "custom-auto"))) => {
+                || (id == "model" && matches!(self.target.section.as_str(), "agents" | "custom-auto"))) => {
                 let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
                 let shown = field.choices.iter().find(|choice| choice.id == chosen).map(|choice| choice.title.clone()).unwrap_or_else(|| chosen.clone());
                 let (choices, this) = (field.choices.clone(), cx.entity().downgrade());

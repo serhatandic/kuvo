@@ -128,7 +128,7 @@ fn writing_names_a_bot_with_and_its_list_offers_the_chats_bots(cx: &mut TestAppC
     assert!(shown(cx, "group-intro"));
     // The keyboard is in its composer. "&" offers what the chat's box offers there: its bots first,
     // then the guests a message can name.
-    let offers = |cx: &mut VisualTestContext| chat.read_with(cx, |chat, cx| chat.composer().read(cx).shown_offers(cx).0.into_iter().map(|offer| (offer.name, offer.summary)).collect::<Vec<_>>());
+    let offers = |cx: &mut VisualTestContext| chat.read_with(cx, |chat, cx| chat.composer().read(cx).shown_offers(cx).into_iter().map(|offer| (offer.name, offer.summary)).collect::<Vec<_>>());
     cx.simulate_input("&Ke");
     let listed = offers(cx);
     assert_eq!(listed.first(), Some(&("Docs Keeper".to_owned(), "In this chat".to_owned())), "the chat's own bot first");

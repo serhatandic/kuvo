@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Slash commands are gone. Typing "/" no longer opens a list of commands, and a message starting with "/" or "!" goes to the agent as you wrote it, so a coding agent's own commands (like Claude Code's) reach it as typed. /goal, /loop, /plan, /autopilot, /review, /btw, /handoff and /compact, "!" shell commands, your own commands and Settings › Commands are removed; the side chat is in the side panel's New tab.
+- The side panel's New tab lines its tiles up in two even columns.
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
 - Messages waiting in a conversation's queue are no longer lost or paused when Kuvo Code's coding agents restart (an update, a restart): they go once, in order, when the agent is back.
 
