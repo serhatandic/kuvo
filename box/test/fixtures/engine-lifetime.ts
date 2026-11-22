@@ -60,7 +60,7 @@ const headers = { authorization: "Basic " + Buffer.from("opencode:fixture").toSt
 const info = async () => (await fetch(`http://127.0.0.1:${port}/kuvo/info`, { headers })).json();
 const create = async () => {
   const result = await fetch(`http://127.0.0.1:${port}/kuvo/sessions`, {
-    method: "POST", headers, body: JSON.stringify({ title: "New conversation", model: { providerID: "opencode", id: "big-pickle" } }),
+    method: "POST", headers, body: JSON.stringify({ title: "New conversation", folder: path.join(K, "workspace"), model: { providerID: "opencode", id: "big-pickle" } }),
   });
   assert.equal(result.status, 200, await result.clone().text());
   return (await result.json() as { session: string }).session;
