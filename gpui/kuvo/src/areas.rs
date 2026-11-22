@@ -165,7 +165,6 @@ pub struct AreaView {
     /// The group chats followed, in Bots (the app): the list as it changes.
     _groups_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<kuvo_box::groups::Groups>>, Task<()>)>,
     /// The bots followed, in Bots (the app): what each is doing, as it changes.
-    remote_bots: std::collections::HashMap<String, RemoteBots>,
     _bots_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>, Task<()>)>,
     reachability: Reachability,
     /// Whether this workspace is the one the window currently shows: background computers keep
@@ -183,13 +182,7 @@ struct FollowedDuringRead {
     newer_than_read: bool,
 }
 
-struct RemoteBots {
-    client: BoxClient,
-    bots: Vec<Bot>,
-    reachability: Reachability,
-    _follow: kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>,
-    _task: Task<()>,
-}
+
 
 pub struct QueueDelivered(pub Option<QueueSaid>);
 impl EventEmitter<QueueDelivered> for AreaView {}
@@ -324,7 +317,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reachability: Reachability::Unanswered, shown: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { moves: None, _bots_follow: bots_follow, reachability: Reachability::Unanswered, shown: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -421,13 +414,10 @@ impl AreaView {
     }
 
     fn elsewhere_state(&self, listed: &Elsewhere) -> State {
-        match self.remote_bots.get(&listed.computer_key) {
-            Some(remote) if remote.reachability == Reachability::Unreachable => State::Offline,
-            Some(remote) if remote.reachability == Reachability::Reached => remote.bots.iter()
-                .find(|bot| bot.id == listed.id)
-                .map_or(State::Idle, |bot| crate::bot_face::state_of(&bot.now)),
-            _ if listed.away => State::Offline,
-            _ => State::Idle,
+        if listed.away {
+            State::Offline
+        } else {
+            listed.now.as_ref().map_or(State::Idle, crate::bot_face::state_of)
         }
     }
 
@@ -589,7 +579,6 @@ impl AreaView {
 
     /// Your computers, as the window read them.
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
-        if let Reading::Ready(ready) = &computers { self.follow_remote_bots(ready, cx); }
         if self.computers != computers {
             if let Some(page) = &self.computers_page {
                 let computers = computers.clone();
@@ -600,48 +589,6 @@ impl AreaView {
                 settings.update(cx, |settings, cx| settings.set_computers(computers, cx));
             }
             self.computers = computers;
-            self.tell_faces(cx);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn follow_remote_bots(&mut self, computers: &[Computer], cx: &mut Context<Self>) {
-        if self.area != Area::Bots || !self.live { return; }
-        let previous_count = self.remote_bots.len();
-        self.remote_bots.retain(|key, _| computers.iter().any(|computer| &computer.key == key && !computer.here));
-        let mut changed = self.remote_bots.len() != previous_count;
-        for computer in computers.iter().filter(|computer| !computer.here && !computer.key.is_empty()) {
-            let key = computer.key.clone();
-            let Some(client) = self.client.computer(computer) else {
-                changed |= self.remote_bots.remove(&key).is_some();
-                continue;
-            };
-            let before = self.remote_bots.get(&key);
-            if before.is_some_and(|remote| remote.client.same_connection(&client)) {
-                continue;
-            }
-            let (bots, reachability) = before.map(|remote| (remote.bots.clone(), remote.reachability)).unwrap_or_default();
-            let follow = client.follow_bots();
-            let updates = follow.updates().clone();
-            let followed_key = key.clone();
-            let task = cx.spawn(async move |this, cx| {
-                while let Ok(update) = updates.recv().await {
-                    if this.update(cx, |this, cx| {
-                        let Some(remote) = this.remote_bots.get_mut(&followed_key) else { return };
-                        match update {
-                            Followed::Now(said) => { remote.bots = said.bots; remote.reachability = Reachability::Reached; }
-                            Followed::Failed(kuvo_box::Error::NeedsUpdating { .. }) => remote.reachability = Reachability::Unanswered,
-                            Followed::Failed(_) => remote.reachability = Reachability::Unreachable,
-                        }
-                        this.tell_faces(cx);
-                        cx.notify();
-                    }).is_err() { break; }
-                }
-            });
-            self.remote_bots.insert(key, RemoteBots { client, bots, reachability, _follow: follow, _task: task });
-            changed = true;
-        }
-        if changed {
             self.tell_faces(cx);
             cx.notify();
         }
@@ -1107,13 +1054,10 @@ impl AreaView {
         if there.refused {
             return Some(SidebarMark::ChangeRefused(format!("Change declined on {}", there.computer)));
         }
-        if let Some(remote) = self.remote_bots.get(&listed.computer_key)
-            && remote.reachability == Reachability::Reached
-            && let Some(bot) = remote.bots.iter().find(|bot| bot.id == listed.id)
+        if let Some(activity) = &listed.now
+            && let Some(mark) = SidebarMark::of_activity(activity, listed.paused, listed.wakes, now)
         {
-            if let Some(mark) = SidebarMark::of(bot, true, now) {
-                return Some(mark);
-            }
+            return Some(mark);
         }
         if there.waiting {
             return Some(SidebarMark::ChangeWaiting(format!("Waiting for {}", there.computer)));

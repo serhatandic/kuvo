@@ -198,7 +198,7 @@ async function finishDraft(context: RouteContext, session: string, given: Record
   const input = given.message as Record<string, unknown>;
   const message = {
     id: given.id, words: answer.send.quoted && typeof given.quotedText === "string" ? given.quotedText : answer.send.text,
-    files: input.files, notes: input.notes, delivery: input.delivery, comments: input.comments, named: input.named, widget: input.widget,
+    files: input.files, notes: input.notes, delivery: context.deliveryMode ?? input.delivery, comments: input.comments, named: input.named, widget: input.widget,
   };
   const route = `kuvo/sessions/${encodeURIComponent(session)}/send`;
   const headers = { ...context.request.headers };
@@ -207,6 +207,9 @@ async function finishDraft(context: RouteContext, session: string, given: Record
     : await routeAnswer(sendRoute({ ...context, route, request: { ...context.request, headers, path: route, method: "POST", body: Buffer.from(JSON.stringify(message)) } }, route.match(SEND_ROUTE)!));
   if ("notAdmitted" in result && result.notAdmitted) throw new DraftNotAdmitted({ ...result, notAdmitted: true });
   if (result.status < 300) return { answer, message: given.id };
+  // Keep the owner claim open if the runtime might already have accepted this ID. Its next
+  // attempt reconciles the inbox or transcript before deciding whether to send again.
+  if (context.durableDelivery && result.status >= 500) throw new Error("The runtime’s acceptance is still being checked.");
   // Not sent: what was written goes back, unless the box can't tell whether it went.
   return { answer: { ...(result.status >= 500 ? { ambiguous: true } : { restore: { text: answer.send.text } }),
     error: typeof result.value.message === "string" ? result.value.message : "Check the conversation to see whether the draft went before sending again." } };

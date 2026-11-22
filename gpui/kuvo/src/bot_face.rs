@@ -102,19 +102,23 @@ impl SidebarMark {
         if !reached {
             return Some(Self::Offline);
         }
-        if bot.now.asking > 0 || bot.now.state == BotState::NeedsYou {
+        Self::of_activity(&bot.now, bot.paused, bot.wakes, now)
+    }
+
+    pub(crate) fn of_activity(activity: &BotNow, paused: bool, wakes: Option<f64>, now: f64) -> Option<Self> {
+        if activity.asking > 0 || activity.state == BotState::NeedsYou {
             return Some(Self::NeedsYou);
         }
-        if bot.now.state == BotState::Blocked {
+        if activity.state == BotState::Blocked {
             return Some(Self::Blocked);
         }
-        if bot.now.working > 0 || matches!(bot.now.state, BotState::Working | BotState::Thinking) {
+        if activity.working > 0 || matches!(activity.state, BotState::Working | BotState::Thinking) {
             return Some(Self::AtWork);
         }
-        if bot.now.waking || bot.paused {
+        if activity.waking || paused {
             return None;
         }
-        let due = bot.wakes? * 1000.;
+        let due = wakes? * 1000.;
         let when = crate::time::next_wake(due, now)?;
         let short = terse_wake(due, now)?;
         Some(Self::Wake { short, tooltip: format!("Wakes {when}") })

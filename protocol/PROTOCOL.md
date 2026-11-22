@@ -258,6 +258,15 @@ actions. On sessions, `open` opens the conversation and `manage` opens its owner
 to open the conversation, `pause` or `resume` for the box's `…/queue/hold` or `…/queue/resume`,
 and `messages` for the per-session queue. The owning box validates each action when asked.
 
+Feature `line.merged-sessions` adds `kuvo/setup/sessions/list/events`. Follow this topic in
+place of the single-box session-list topic. It sends full `kuvo/sessions/list` snapshots,
+including the answering box's project order, start project, pending runtimes and archived
+groups. Every session and project includes `computer: {id, name}`. Remote rows also carry
+`on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
+`<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
+chooses one row for each session ID. The snapshot includes every listed session in a remote
+project, so remote projects have no paging cursor.
+
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start
 fields. A successful response echoes the destination as `computer: {id, name}`. The wrong
@@ -282,6 +291,36 @@ Send ordinary messages through the nearest box with
 `POST kuvo/data/messages?session=<session>&computer=<computer>` and the usual stable message ID.
 The nearest box keeps its receipt and the owner delivers it. The setup list can identify the
 owner even when its agents announcement omitted the session.
+
+#### Durable composer delivery
+
+Feature `typed.delivery`. A client submits `POST kuvo/sessions/<session>/delivery?computer=<id>`
+to its nearest box with the ordinary draft payload `{id, text, message, quotedText?}`. Omit
+`computer` or use `here` for that box. The box records a draft before answering `202` with its
+message receipt. Retry the same request and ID if that reply is lost. A retry of a delivered
+draft answers `200` with its message ID. A different draft cannot reuse the ID. For another
+computer, files travel inline in the peer mail, with up to 5 MiB for the encoded draft.
+
+The box sends the oldest pending draft for each conversation first, with or without a connected
+client. It retries when that computer or the runtime cannot answer. The owner deduplicates by
+draft ID using its draft claim and reconciles an uncertain handoff against the conversation and
+queue. Only an authenticated owner's receipt advances delivery to the next draft. A known
+ownership change interrupts the pinned delivery rather than resending it to a second owner.
+
+- `GET …/delivery/events?computer=<id>` is a line topic with the message queue from the owning
+  box, plus drafts waiting at the nearest box. Where the owner is away, `deliveryLine` gives the
+  quiet composer note. `GET …/delivery?computer=<id>` reads the nearest box's pending drafts.
+- `GET kuvo/data/messages/<operation>/events` follows the draft receipt on the nearest box.
+  Receipts use the same fields as `GET kuvo/data/messages/<operation>`.
+- `DELETE …/delivery/<message>?computer=<id>` removes a draft still waiting at the nearest box
+  and returns its text and files in `removed`. To recover the result after disconnect, pass an
+  opaque `receipt` query value and replay the removal with the same value. After restoring the
+  draft, `POST …/delivery/<message>/ack?computer=<id>&receipt=<receipt>` clears the recovery copy.
+  A removal stops further delivery attempts. A draft already being taken can still reach the owner.
+- `POST …/delivery/<message>/steer?computer=<id>` and `…/now?computer=<id>` change how the
+  owner submits a draft that is still waiting at the nearest box. Use the owner's queue action
+  where the draft has already been handed off and the nearest box answers `404`.
+
 
 ## Mail
 
@@ -952,8 +991,10 @@ A revoked held-bot action can retain its draft and refusal in the Box's held lis
 
 ### Peers
 
-With `line.setup-lists`, peers mail `{setupLists: {at, sessions, projects, waiting, queues, catalog}}`
+With `line.setup-lists`, peers mail `{setupLists: {at, sessions, projects, waiting, queues, catalog, bots?}}`
 using the same authenticated envelope as their agents' lists. Each box publishes its own rows.
+Peers that advertise `bots.peer-activity` receive a `bots` map keyed by bot ID. Each entry has
+`{session, now, paused?, wakes?}`, used with the matching bot, computer and conversation.
 A large snapshot is split into `setupLists.part` envelopes using the same part framing as documents.
 A receiver takes only a complete, newer snapshot from a current peer, records when it arrived, and
 keeps the last copy under `run/peers/<key>/lists-v1.json`. The publisher resends periodically to
@@ -6078,8 +6119,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   same flag); `personality` (its id) and `model` (`{providerID, id, variant}`) as Edit Bot shows
   them, left out when it has none; and `folder`, `project` (as the box names them; left out for a
   folder of its own) and `created`; and `deletes`, what deleting it takes with it (below). A client
-  asks each box for its own bots; what one last said shows while it's away. `GET kuvo/bots/events` follows the list (`application/x-ndjson`): the
-  list now, then again each time it changes (`bots.events` in `features`).
+  follows its nearest box's `GET kuvo/bots/events` (`application/x-ndjson`). The `elsewhere`
+  rows carry each owning box's last bot activity as `now`, with `paused` or `wakes` when supplied.
+  Older peers can omit activity. The route gives the list now, then again each time it changes (`bots.events` in `features`).
   - A bot's job is its box's record of it (`job.json` in its folder): the bot keeps it with its
     set_job tool (`{summary, details}`), and Edit Bot can change it (`PATCH` with `job`); its memory
     is its own to write as it likes. A job from before that is taken once from where it was: the

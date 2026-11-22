@@ -5,7 +5,7 @@
 use serde::Deserialize;
 use std::time::Duration;
 
-use crate::client::BoxClient;
+use crate::client::{BoxClient, Draft, Sent, draft_body};
 use crate::error::{Error, Refusal, Result};
 use crate::follow::{Follow, Followed, follow_lines};
 use crate::parts::File;
@@ -22,6 +22,8 @@ pub struct Queue {
     /// "A new engine"); none otherwise.
     #[serde(default)]
     pub line: Option<String>,
+    #[serde(default, rename = "deliveryLine")]
+    pub delivery_line: Option<String>,
 }
 
 /// One message waiting: your words (without what the box adds for the agent), its files' names, the
@@ -171,4 +173,66 @@ impl BoxClient {
 
 pub fn removal_retryable(error: &Error) -> bool {
     matches!(error, Error::Unreachable(_) | Error::NotRunning(_)) || matches!(error.status(), Some(409 | 502..=504))
+}
+
+pub const DELIVERY_FEATURE: &str = "typed.delivery";
+
+/// The client's own box takes responsibility for delivery to this conversation's computer.
+#[derive(Clone)]
+pub struct DeliveryBox {
+    pub client: BoxClient,
+    computer: Option<String>,
+}
+
+impl DeliveryBox {
+    pub fn new(client: BoxClient, computer: Option<String>) -> Option<Self> {
+        client.advertises(DELIVERY_FEATURE).then_some(Self { client, computer })
+    }
+
+    fn path(&self, session: &str, suffix: &str) -> String {
+        let computer = self.computer.as_deref().unwrap_or("here");
+        format!("kuvo/sessions/{}/delivery{suffix}?computer={}", paths::segment(session), paths::query_value(computer))
+    }
+
+    pub fn send(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
+        let response = self.client.send(&Request::post(self.path(session, ""), draft_body(draft, quote)))?;
+        match response.status {
+            202 => Ok(Sent::Pending { id: draft.id.clone(), receipt: crate::client::decode(&response)? }),
+            200 => Ok(Sent::Message { id: draft.id.clone() }),
+            status => Err(Error::Refused(Refusal::from_answer(status, &response.body))),
+        }
+    }
+
+    pub fn follow_receipt(&self, operation: &str) -> Follow<Followed<crate::client::DraftReceipt>> {
+        follow_lines(&self.client, format!("kuvo/data/messages/{}/events", paths::segment(operation)))
+    }
+
+    pub fn follow_queue(&self, session: &str) -> Follow<Followed<Queue>> {
+        follow_lines(&self.client, self.path(session, "/events"))
+    }
+
+    pub fn queue(&self, session: &str) -> Result<Queue> {
+        self.client.get(&self.path(session, ""))
+    }
+
+    pub fn remove(&self, session: &str, item: &str, receipt: Option<&str>) -> Result<Option<Removed>> {
+        #[derive(Deserialize)]
+        struct Answer { removed: Option<Removed> }
+        let mut path = self.path(session, &format!("/{}", paths::segment(item)));
+        if let Some(receipt) = receipt {
+            path.push_str(&format!("&receipt={}", paths::query_value(receipt)));
+        }
+        self.client.value::<Answer>(&Request::delete(path)).map(|answer| answer.removed)
+    }
+
+    pub fn acknowledge_removal(&self, session: &str, item: &str, token: &str) -> Result<()> {
+        let path = self.path(session, &format!("/{}/ack", paths::segment(item)));
+        self.client.done(&Request::post(format!("{path}&receipt={}", paths::query_value(token)), serde_json::json!({})))
+    }
+
+    pub fn change(&self, session: &str, item: &str, now: bool) -> Result<()> {
+        let action = if now { "now" } else { "steer" };
+        let path = self.path(session, &format!("/{}/{action}", paths::segment(item)));
+        self.client.done(&Request::post(path, serde_json::json!({})))
+    }
 }

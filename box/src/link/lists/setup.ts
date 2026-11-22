@@ -1,6 +1,8 @@
 // Setup-wide line topics. Every box publishes only its own rows and can draw the whole setup from
 // its peers' last copies. A peer's settings or a row's action still go to its box.
 
+import path from "node:path";
+import { botsWithNow } from "../areas/bots";
 import type { Infer } from "../../shared/shape";
 import type { START_CATALOG } from "../../shared/routes/sessions";
 import { offeredAnswer } from "../areas/models-offered";
@@ -16,8 +18,9 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink } from "../state";
 import { listsHere } from "../work/model-rule";
 import { listComputer } from "./computer";
-import { keepsList, keptList, listFollowers, listNow } from "./sessions";
+import { answerFrom, keepsList, keptList, listFollowers, listNow } from "./sessions";
 
+export const SETUP_SESSION_LIST_ROUTE = /^kuvo\/setup\/sessions\/list\/events$/;
 export const SETUP_LIST_ROUTE = /^kuvo\/setup\/(sessions|waiting|queues|runs-on)\/events$/;
 
 type Readers = Pick<RouteContext, "readEngine" | "bridge">;
@@ -57,10 +60,14 @@ function startCatalog(readers: Readers): Promise<Catalog> {
   return readingCatalog;
 }
 
-type LocalRows = Omit<SetupLists, "catalog">;
+type LocalRows = Omit<SetupLists, "catalog" | "bots">;
 
-async function ownRows(readers: Readers, signal?: AbortSignal): Promise<LocalRows | null> {
-  const list = (keepsList() ? await listNow(readers, signal) : null) ?? keptList() ?? await listNow(readers, signal);
+async function readList(readers: Readers, signal?: AbortSignal) {
+  return (keepsList() ? await listNow(readers, signal) : null) ?? keptList() ?? await listNow(readers, signal);
+}
+
+async function ownRows(readers: Readers): Promise<LocalRows | null> {
+  const list = await readList(readers);
   if (!list) return null;
   const moving = frozen();
   const sessions: SetupLists["sessions"] = Object.entries(list.sessions).flatMap(([id, { facts }]) => {
@@ -106,13 +113,17 @@ export async function shareSetupLists(host: Pick<LinkHost, "send">, readers: Rea
   try {
     await pushSetupLists(host, async () => {
       const rows = await ownRows(readers);
-      return rows && { ...rows, catalog: await startCatalog(readers) };
+      if (!rows) return null;
+      const bots = Object.fromEntries(botsWithNow().map(({ id, session, now, paused, wakes }) => [
+        id, { session, now, ...(paused ? { paused } : {}), ...(wakes !== undefined ? { wakes } : {}) },
+      ]));
+      return { ...rows, bots, catalog: await startCatalog(readers) };
     });
   }
   finally { publishing = false; }
 }
 
-type Topic = "sessions" | "waiting" | "queues" | "runs-on";
+type Topic = "session-list" | "sessions" | "waiting" | "queues" | "runs-on";
 
 async function merged(topic: Topic, context: RouteContext) {
   const link = readLink();
@@ -126,7 +137,42 @@ async function merged(topic: Topic, context: RouteContext) {
     };
   }
 
-  const [peers, here] = await Promise.all([peerSetupLists(link), ownRows(context, context.signal)]);
+  if (topic === "session-list") {
+    const [peers, here] = await Promise.all([peerSetupLists(link), readList(context, context.signal)]);
+    if (!here) return;
+    const listing = answerFrom(here, null);
+    for (const [id, facts] of Object.entries(listing.sessions)) listing.sessions[id] = { ...facts, computer };
+    for (const [directory, facts] of Object.entries(listing.projects)) listing.projects[directory] = { ...facts, computer };
+    const moved = movedOf(link);
+    const stamp = (origin: typeof local, actions: readonly ("open" | "manage")[] = []) => ({
+      computer: origin.computer,
+      on: { ...origin.computer, away: origin.away, lastSeen: origin.lastSeen, updating: origin.updating, actions: origin.away ? [] : actions },
+    });
+    for (const { saved, origin } of peers) {
+      const keyOf = (directory: string) => `${origin.computer.id}:${directory}`;
+      const project = (directory: string) => ({
+        name: path.posix.basename(directory) || directory, asking: 0, working: 0, ...stamp(origin),
+      });
+      // The peer snapshot already contains all session rows, so remote projects need no owner cursor.
+      for (const { directory, facts: { shown: _, more: __, total: ___, ...facts } } of saved.projects)
+        listing.projects[keyOf(directory)] = { ...project(directory), ...facts };
+      for (const { id, facts, actions } of saved.sessions) {
+        const before = listing.sessions[id];
+        if (before && !(before.away && !before.on && moved.get(id) === origin.computer.id) ||
+            moved.has(id) && moved.get(id) !== origin.computer.id) continue;
+        const row = { ...facts, ...stamp(origin, actions) };
+        if (facts.kind === "project") {
+          const directory = facts.project ?? facts.directory;
+          row.project = keyOf(directory);
+          listing.projects[row.project] ??= project(directory);
+        }
+        listing.sessions[id] = row;
+      }
+    }
+    return listing;
+  }
+
+  const [peers, here] = await Promise.all([peerSetupLists(link), ownRows(context)]);
   const boxes = here ? [{ saved: here, origin: local }, ...peers] : peers;
   const moved = movedOf(link);
   const owns = (id: string, owner: string) => !moved.has(id) || moved.get(id) === owner;
@@ -149,9 +195,16 @@ async function merged(topic: Topic, context: RouteContext) {
 export async function* setupListsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
-  const topic = match[1] as Topic;
+  const topic = (match[1] ?? "session-list") as Topic;
+  // A new client can use the same 503 and retry behavior as the single-box list.
+  let first = topic === "session-list" ? await merged(topic, context) : undefined;
+  if (topic === "session-list" && !first) return yield* json(503, { message: "The engine isn’t running." });
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  yield* followedLive(() => merged(topic, context), tell => {
+  yield* followedLive(async () => {
+    const initial = first;
+    first = undefined;
+    return initial ?? merged(topic, context);
+  }, tell => {
     const followers = [listFollowers, queueFollowers, peerListFollowers];
     for (const set of followers) set.add(tell);
     return () => { for (const set of followers) set.delete(tell); };

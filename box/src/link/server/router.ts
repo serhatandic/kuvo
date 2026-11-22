@@ -5,7 +5,7 @@ import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, 
 import { isObject, parsed } from "../../shared/json";
 import { ownerWrite, runOwnerWrite, sendOwnerWrite } from "../ownership/write";
 import { mayActivate, ownerOf, DATA_ID } from "../ownership/resolve";
-import { ownerMessageHere, messageReceipt, queuedDraftOutcome, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
+import { DELIVERY_FEATURE, DELIVERY_ROUTE, ownerMessageHere, messageReceipt, queuedDraftOutcome, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
 import { readOwned } from "../ownership/read";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
@@ -56,7 +56,8 @@ import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { keepsList, LIST_ROUTE, listRoute, PAGE_ROUTE, pageRoute } from "../lists/sessions";
 import { OWN_CONVERSATION, PEER_CONVERSATION, ownConversation } from "../lists/conversation";
 import { peerConversation } from "../peers/session-follow";
-import { SETUP_LIST_ROUTE, setupListsRoute } from "../lists/setup";
+import { DELIVERY_RECEIPT_EVENTS, deliveryReceiptEvents, deliveryRoute } from "../lists/delivery";
+import { SETUP_LIST_ROUTE, SETUP_SESSION_LIST_ROUTE, setupListsRoute } from "../lists/setup";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
@@ -239,6 +240,9 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sessions.list.pages", when: route => route.match(PAGE_ROUTE), answer: pageRoute },
   { feature: "line.peer-conversation", when: route => route.match(PEER_CONVERSATION), answer: peerConversation },
   { feature: "line.peer-conversation", when: route => route.match(OWN_CONVERSATION), answer: ownConversation },
+  { feature: DELIVERY_FEATURE, when: route => route.match(DELIVERY_RECEIPT_EVENTS), answer: deliveryReceiptEvents },
+  { feature: DELIVERY_FEATURE, when: route => route.match(DELIVERY_ROUTE), answer: deliveryRoute },
+  { feature: "line.merged-sessions", when: route => route.match(SETUP_SESSION_LIST_ROUTE), answer: setupListsRoute },
   { feature: "line.setup-lists", when: route => route.match(SETUP_LIST_ROUTE), answer: setupListsRoute },
   { feature: "waiting", when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
@@ -378,13 +382,17 @@ export function createBoxDispatcher({
     const sessionNote = SESSION_NOTE_ROUTE.exec(route);
     if (sessionNote) return yield* sessionNoteRoute(context, sessionNote);
     const paired = phone?.key && pairedSubmitter(context, readLink());
+    const deliveryReceipt = route.match(DELIVERY_RECEIPT_EVENTS);
+    if (deliveryReceipt) return yield* deliveryReceiptEvents(context, deliveryReceipt);
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
       if (!(desktop || paired)) return yield* json(403, { message: "Open this from Kuvo Code." });
       if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")
         return yield* await sendAddressedMessage(context);
       if (route === "kuvo/data/messages" || request.method.toUpperCase() !== "GET") return yield* json(405, {});
-      return yield* (route === "kuvo/data/owner" ? await readOwned(context) : messageReceipt(context, route.slice("kuvo/data/messages/".length)));
+      return yield* (route === "kuvo/data/owner" ? await readOwned(context) : await messageReceipt(context, route.slice("kuvo/data/messages/".length)));
     }
+    const delivery = route.match(DELIVERY_ROUTE);
+    if (delivery) return yield* deliveryRoute(context, delivery);
     if (ownershipReady() && !["GET", "HEAD"].includes(request.method.toUpperCase())) {
       const body = parsed(request.body);
       const proposal = isObject(body) && ordinaryEdit(context, body);

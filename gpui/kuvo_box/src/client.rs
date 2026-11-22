@@ -270,10 +270,10 @@ impl BoxClient {
 
     /// The setup's sessions, read once (a stand-in's: its events route answers its state and ends).
     #[cfg(feature = "stand-in")]
-    pub fn setup_sessions_at_once(&self) -> Result<crate::sessions::SetupSessions> {
-        let response = self.transport.send(&Request::get(crate::sessions::SETUP_SESSIONS_ROUTE))?;
-        let text = String::from_utf8_lossy(&response.body);
-        serde_json::from_str(text.lines().next().unwrap_or("{}")).map_err(|error| Error::BadAnswer(error.to_string()))
+    pub fn merged_sessions_at_once(&self) -> Result<Line> {
+        let response = self.transport.send(&Request::get(sessions::MERGED_SESSIONS_ROUTE))?;
+        let line: Line = decode(&response)?;
+        line.check_start(self.advertised(sessions::LIST_START))
     }
 
     /// Whether a followed route would use the same connection as before.
@@ -562,21 +562,7 @@ impl BoxClient {
             answer: Answer,
             message: Option<String>,
         }
-        let mut prepared = draft.clone();
-        if prepared.quote.is_none() && let Some(quote) = quote {
-            prepared.capture_quote(quote);
-        }
-        let message = Sending {
-            files: draft.files.clone(), notes: draft.notes.clone(), comments: draft.comments.clone(),
-            named: draft.named.clone(), widget: draft.widget.clone(), delivery: Some(draft.delivery),
-            ..Sending::default()
-        };
-        let mut body = json!({
-            "id": draft.id, "text": draft.text, "message": message
-        });
-        if let Some(rendered) = prepared.quote {
-            body["quotedText"] = rendered.into();
-        }
+        let mut body = draft_body(draft, quote);
         let action = if let Some(submission) = draft.submission() {
             body["submission"] = submission.into();
             "submit"
@@ -713,6 +699,25 @@ impl BoxClient {
     pub fn describe(&self) -> String {
         self.transport.describe()
     }
+}
+
+pub(crate) fn draft_body(draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Value {
+    let mut prepared = draft.clone();
+    if prepared.quote.is_none() && let Some(quote) = quote {
+        prepared.capture_quote(quote);
+    }
+    let message = Sending {
+        files: draft.files.clone(), notes: draft.notes.clone(), comments: draft.comments.clone(),
+        named: draft.named.clone(), widget: draft.widget.clone(), delivery: Some(draft.delivery),
+        ..Sending::default()
+    };
+    let mut body = json!({
+        "id": draft.id, "text": draft.text, "message": message
+    });
+    if let Some(rendered) = prepared.quote {
+        body["quotedText"] = rendered.into();
+    }
+    body
 }
 
 fn uncertain_draft() -> Sent {
