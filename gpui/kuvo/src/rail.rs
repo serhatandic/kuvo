@@ -37,8 +37,8 @@ const INNER_GAP: Pixels = px(1.5);
 const MOST_RINGS: usize = 4;
 /// The room a ring takes in the rail, its gap included.
 const RING_ROOM: f32 = 48.;
-/// The rail's height besides its rings: the title bar, the four areas, Help and Settings, gaps.
-const RAIL_REST: f32 = 44. + 5. * 46. + 2. * 46. + 40.;
+/// The rail's height besides its rings: the title bar, the six areas, Help and Settings, gaps.
+const RAIL_REST: f32 = 44. + 6. * 46. + 2. * 46. + 40.;
 /// How often the accounts are read again while the app runs (the box reads them on its own clock;
 /// this only picks up what it read), and sooner after a read that failed (a box still starting).
 const REREAD: Duration = Duration::from_secs(120);
@@ -54,7 +54,9 @@ pub const CARD_GRACE: Duration = Duration::from_millis(120);
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let open = workspace.area();
     let waiting = workspace.waiting();
-    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers, Area::Insights].into_iter().map(|area| {
+    // (The Library only where this computer's Kuvo has one: nothing to explain where it hasn't.)
+    let library = workspace.client().gate().has("library");
+    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Computers, Area::Insights].into_iter().filter(|area| *area != Area::Library || library).map(|area| {
         // How many things wait on you there, as the box counts them (`kuvo/waiting`).
         let count = match area {
             Area::Sessions => waiting.sessions,

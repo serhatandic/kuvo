@@ -142,6 +142,7 @@ export const FEATURES = [
   "integrations",
   "keys",
   "letters-read",
+  "library",
   "limits",
   "limits.bar",
   "limits.resets",

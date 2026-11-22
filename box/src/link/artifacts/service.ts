@@ -12,6 +12,7 @@ import { record } from "./record"
 import type { Event, Source } from "./recorder"
 import { artifactRoutes, notedRoute } from "./routes"
 import { ArtifactStore } from "./store"
+import { libraryService } from "../library/service"
 
 const sessionRoute = (id: string) => `api/session/${encodeURIComponent(id)}`
 const sessionFrom = async (target: Target, id: string) => {
@@ -19,7 +20,8 @@ const sessionFrom = async (target: Target, id: string) => {
   return found?.data ?? found
 }
 
-export function artifactService(root: string, bots: string, sessions: string) {
+/** `library`: the Library's folder, told by the same recorder what was handed over (none: no Library). */
+export function artifactService(root: string, bots: string, sessions: string, { library, computer }: { library?: string; computer?: () => string } = {}) {
   let store: ArtifactStore
   try {
     const shown: { path: string; at: number }[] = []
@@ -38,11 +40,29 @@ export function artifactService(root: string, bots: string, sessions: string) {
     store = new ArtifactStore(root, { bots, shown })
   } catch (error) {
     console.error("artifacts:", error)
-    return (request: Request) => error instanceof UnsupportedFormatVersion
+    return (request: Request) => /^\/api\/kuvo\/(link\/)?library(?:\/|$)/.test(new URL(request.url).pathname)
+      ? Promise.resolve(Response.json({ message: "This computer's Library isn't running. Try again in a moment." }, { status: 503 }))
+      : error instanceof UnsupportedFormatVersion
       ? Response.json({ code: "unsupportedFormatVersion", message: error.message }, { status: 409 })
       : artifactRoutes(undefined, request.method, [], new URLSearchParams(), async () => ({}))
   }
-  const { recorder } = record(store, { bots })
+  let shelf: ReturnType<typeof libraryService> | undefined
+  if (library) {
+    try {
+      shelf = libraryService(library, { bots, sessions, artifacts: store, computer })
+    } catch (error) {
+      console.error("library:", error)
+    }
+  }
+  const { recorder } = record(store, { bots, handed: shelf?.handed })
+  // Filled once from what came before it, after the start (the record's own reading comes first).
+  if (shelf) setTimeout(() => {
+    try {
+      shelf!.backfill()
+    } catch (error) {
+      console.error("library:", error)
+    }
+  }, 0)
   const engine: Source = { name: "engine", session: id => sessionFrom(readEngineFile(), id), agent: () => "engine" }
   const bridge: Source = {
     name: "bridge",
@@ -69,6 +89,9 @@ export function artifactService(root: string, bots: string, sessions: string) {
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
+    if (/^\/api\/kuvo\/(link\/)?library(?:\/|$)/.test(url.pathname)) {
+      return shelf ? shelf.handle(request) : Response.json({ message: "This computer's Library isn't running. Try again in a moment." }, { status: 503 })
+    }
     const body = () => request.json().catch(() => ({}))
     if (url.pathname === "/api/kuvo/artifacts/noted") {
       return notedRoute((id, path, via) => recorder.noted([engine, bridge], id, path, via), request.method, body)

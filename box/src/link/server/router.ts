@@ -38,6 +38,7 @@ import { fileAt } from "../areas/file";
 import { folderTreeRoute, foldersRoute } from "../areas/folders";
 import { FOLDERS_SUGGESTED_ROUTE, foldersSuggestedRoute } from "../areas/folders-suggested";
 import { ARTIFACT_ROUTE, artifactsRoute } from "../areas/artifacts";
+import { LIBRARY_ROUTE, libraryRoute } from "../areas/library";
 import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
 import { integrationsRoute } from "../areas/integrations";
@@ -286,6 +287,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "bots.edit", when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { feature: "groups", when: route => GROUP_ROUTE.test(route), answer: groupsRoute },
   { feature: "artifacts", when: route => ARTIFACT_ROUTE.test(route), answer: artifactsRoute },
+  { feature: "library", when: route => LIBRARY_ROUTE.test(route), answer: libraryRoute },
   { feature: "bots", when: route => route.match(/^kuvo\/bots\/([^/]+)\/arrived$/), answer: arrivedRoute },
   { feature: "bots.state", when: route => route.match(/^kuvo\/bots\/([^/]+)\/seen$/), answer: botSeenRoute },
   { feature: "bots.elsewhere", when: route => route === "kuvo/bots/retell", answer: retellRoute },

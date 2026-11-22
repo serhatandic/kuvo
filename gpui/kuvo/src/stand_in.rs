@@ -25,6 +25,7 @@ pub mod git;
 pub mod groups;
 pub mod moves;
 pub mod insights;
+mod library;
 pub mod queue;
 pub mod settings;
 pub mod work_bars;
@@ -145,6 +146,8 @@ struct State {
     git_followers: HashMap<u64, (String, Sender<String>)>,
     /// How it answers for the rail's areas, and the moment its samples are made at.
     areas: areas::Areas,
+    /// What was handed over (`kuvo/library`).
+    library: library::Library,
     made: Option<f64>,
     /// Its accounts, sign-ins and settings.
     settings: settings::Settings,
@@ -723,6 +726,21 @@ impl StandIn {
     /// From now on, it says this of its sandbox (`kuvo/sandbox`).
     pub fn set_sandbox(&self, sandbox: Value) {
         self.state().settings.set_sandbox(sandbox);
+    }
+
+    /// The Library's sample: draft A's five bots, here, and what they handed over across two
+    /// computers; `empty`: nothing handed over yet, on one computer.
+    pub fn library_sample(&self, empty: bool) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.library.empty = empty;
+        state.bots.bots.clear();
+        state.bots.elsewhere.clear();
+        state.bots.held.clear();
+        for (id, name, color, shape) in library::BOTS {
+            state.bots.add(id, name, json!({ "color": color, "shape": shape, "face": "calm" }), now);
+        }
+        state.sync_bots();
     }
 
     /// From now on, Insights answers with `sample` (a month of work, a first week, nothing, or a failure).
@@ -1970,6 +1988,15 @@ impl StandIn {
             state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
             state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;
         }
+        if route.starts_with("kuvo/library") {
+            let asked = |name: &str| query(path, name).map(decoded);
+            if let Some((status, kind, body)) = state.library.answer(method, route, &asked, made) {
+                if method == "POST" && status < 300 {
+                    state.library.tell(made);
+                }
+                return Ok(Response { status, content_type: Some(kind.into()), body });
+            }
+        }
         let sample = state.areas.insights.unwrap_or(if state.areas.empty { insights::Sample::Little } else { insights::Sample::Full });
         if let Some((status, value)) = insights::answer(method, route, |name| query(path, name).map(decoded), made, sample) {
             return answer(status, value);
@@ -2923,6 +2950,28 @@ impl Transport for StandIn {
             let closer = Closer::new(move || {
                 let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.work_bars.session_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // The Library, followed: as its query lists it now, then again as something's removed.
+        if route == "kuvo/library/events" {
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let id = state.next;
+                state.next += 1;
+                let made = state.made.unwrap_or_else(now_ms);
+                let _ = sender.send(state.library.now_line(&request.path, made));
+                state.library.followers.insert(id, (request.path.clone(), sender));
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).library.followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

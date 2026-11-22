@@ -408,6 +408,12 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "insights-providers", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-narrowed", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-grid", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-list", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-bot", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-images", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-menu", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "library-empty", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -2310,6 +2316,9 @@ fn main() -> anyhow::Result<()> {
                     facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
                 });
             }
+            if screen.slug.starts_with("library-") {
+                stand_in.library_sample(screen.slug == "library-empty");
+            }
             match screen.slug {
                 "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
@@ -2813,6 +2822,9 @@ fn main() -> anyhow::Result<()> {
                     if screen.slug.starts_with("insights-") {
                         workspace.insights_sample(screen.slug, window, cx);
                     }
+                    if screen.slug.starts_with("library-") {
+                        workspace.library_sample(screen.slug, NOW, window, cx);
+                    }
                     if let Some(panel) = screen.panel {
                         panel(workspace, window, cx);
                     }
@@ -2823,6 +2835,13 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "library-menu" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).library().clone().update(cx, |view, cx| view.open_sample_menu(window, cx));
+                })?;
+                cx.run_until_parked();
+            }
             if screen.slug == "composer-queue-dragging" {
                 let to = cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");

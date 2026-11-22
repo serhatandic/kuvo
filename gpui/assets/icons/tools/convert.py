@@ -12,8 +12,8 @@ import sys
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
-MAP = {name: name for name in '''archive arrow-down arrow-left arrow-right arrow-up bell bot check chevron-down chevron-left chevron-right chevron-up clock copy eye eye-off file folder folder-open globe hand image info link mic minus moon panel-right paperclip pencil pin plus search send settings shield sun terminal trash undo user'''.split()}
-MAP.update(dict(alarm='alarm-clock', bolt='zap', branch='git-branch', close='x', compose='square-pen', computer='monitor', drive='hard-drive', external='external-link', message='message-square', more='ellipsis', question='circle-help', queue='list-todo', **{'return': 'corner-down-left'}, sidebar='panel-left', sliders='sliders-horizontal', sparkle='sparkles', spinner='loader-circle', stop='square', warning='triangle-alert'))
+MAP = {name: name for name in '''archive arrow-down arrow-left arrow-right arrow-up bell bot check chevron-down chevron-left chevron-right chevron-up clock copy eye eye-off file folder folder-open globe hand image info library link list mic minus moon panel-right paperclip pencil pin plus search send settings shield sun terminal trash undo user'''.split()}
+MAP.update(dict(alarm='alarm-clock', bolt='zap', branch='git-branch', grid='layout-grid', close='x', compose='square-pen', computer='monitor', drive='hard-drive', external='external-link', message='message-square', more='ellipsis', question='circle-help', queue='list-todo', **{'return': 'corner-down-left'}, sidebar='panel-left', sliders='sliders-horizontal', sparkle='sparkles', spinner='loader-circle', stop='square', warning='triangle-alert'))
 
 def fmt(n):
     return f'{n:.6f}'.rstrip('0').rstrip('.') if n else '0'

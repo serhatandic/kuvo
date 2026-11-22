@@ -162,6 +162,8 @@ export const DATA_DECLARATIONS = {
   gitBackupRefs: { owner: "local computer", conflict: "native format", backup: false, restore: "machine-local", families: ["Git preferences and backups"] },
   artifactStorageSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", storage: ["artifacts/settings.json"], families: ["Artifacts"] },
   managedArtifacts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["artifacts/log/*.jsonl", "artifacts/copies/"], families: ["Artifacts"] },
+  libraryIndex: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["library/log.jsonl"], families: ["Artifacts"] },
+  libraryThumbnails: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Artifacts"] },
 
   setupPersonalities: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["bots/personalities.json"], families: ["Personalities", "Signed documents"] },
   setupTimeZone: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/time-zone.json"], families: ["Time zone"] },

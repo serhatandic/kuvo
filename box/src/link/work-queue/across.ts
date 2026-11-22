@@ -338,6 +338,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       case "devices": return deviceAct(sender, act);
       case "setup": return setupAct(sender, act);
       case "queue-agent": return queueToolForPeer(act, places().targets);
+      case "library": return (await import("../areas/library")).libraryForPeer(act);
       default: return actForPeer(act, places().targets);
     }
   };

@@ -39,6 +39,7 @@ git.pull-request
 git.status
 groups.mentions
 groups.task-title
+library
 limits.bar
 limits.rings
 limits.titles

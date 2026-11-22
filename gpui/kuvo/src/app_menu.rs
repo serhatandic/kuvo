@@ -9,7 +9,7 @@
 use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
 use kuvo_ui::text_field::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
-use crate::area::{Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings};
+use crate::area::{Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowQueue, ShowSessions, ShowSettings};
 use crate::{CheckForUpdates, NewSession, Quit, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar};
 
 actions!(app_menu, [About, Hide, HideOthers, ShowAll, Minimize, Zoom, BringAllToFront]);
@@ -46,7 +46,28 @@ pub fn init(cx: &mut App) {
         }
     });
     let updates = crate::updates::Updates::get(cx).is_some_and(|updates| updates.read(cx).facts().updates());
-    cx.set_menus(menus_with(updates));
+    cx.set_global(Shown { updates, library: false });
+    cx.set_menus(menus_for(updates, false));
+}
+
+/// What the menu bar shows that depends on the app and the window in front.
+struct Shown {
+    updates: bool,
+    library: bool,
+}
+
+impl gpui::Global for Shown {}
+
+/// View › Library, shown only while the window in front shows a computer whose Kuvo has the
+/// Library (hidden, not greyed, where it hasn't).
+pub fn show_library(library: bool, cx: &mut App) {
+    let Some(shown) = cx.try_global::<Shown>() else { return };
+    if shown.library == library {
+        return;
+    }
+    let updates = shown.updates;
+    cx.set_global(Shown { updates, library });
+    cx.set_menus(menus_for(updates, library));
 }
 
 /// The menu bar's menus, in an app that doesn't update itself.
@@ -57,6 +78,11 @@ pub fn menus() -> Vec<Menu> {
 /// The menu bar's menus; with Check for Updates… after About where the app updates itself
 /// (`updates`), as 0.7's.
 pub fn menus_with(updates: bool) -> Vec<Menu> {
+    menus_for(updates, true)
+}
+
+/// The same, with View › Library where the window in front has it (`library`).
+pub fn menus_for(updates: bool, library: bool) -> Vec<Menu> {
     let mut about = vec![MenuItem::action("About Kuvo", About)];
     if updates {
         about.push(MenuItem::action("Check for Updates…", CheckForUpdates));
@@ -87,21 +113,22 @@ pub fn menus_with(updates: bool) -> Vec<Menu> {
         ]),
         Menu::new("View").items([
             // Both fold away and bring back, as 0.7's Show Sessions and Show Panel did.
-            MenuItem::action("Show Sidebar", ToggleSidebar),
-            MenuItem::action("Show Panel", TogglePanel),
-            MenuItem::action("Show Changes", ShowChanges),
-            MenuItem::action("Show Files", ShowFiles),
-            MenuItem::separator(),
-            MenuItem::action("Bots", ShowBots),
-            MenuItem::action("Sessions", ShowSessions),
-            MenuItem::action("Work Queue", ShowQueue),
-            MenuItem::action("Computers", ShowComputers),
-            MenuItem::separator(),
-            MenuItem::action("Back", Back),
-            MenuItem::action("Forward", Forward),
-            MenuItem::separator(),
-            MenuItem::action("Switch Light and Dark", ToggleAppearance),
-        ]),
+            Some(MenuItem::action("Show Sidebar", ToggleSidebar)),
+            Some(MenuItem::action("Show Panel", TogglePanel)),
+            Some(MenuItem::action("Show Changes", ShowChanges)),
+            Some(MenuItem::action("Show Files", ShowFiles)),
+            Some(MenuItem::separator()),
+            Some(MenuItem::action("Bots", ShowBots)),
+            Some(MenuItem::action("Sessions", ShowSessions)),
+            Some(MenuItem::action("Work Queue", ShowQueue)),
+            library.then(|| MenuItem::action("Library", ShowLibrary)),
+            Some(MenuItem::action("Computers", ShowComputers)),
+            Some(MenuItem::separator()),
+            Some(MenuItem::action("Back", Back)),
+            Some(MenuItem::action("Forward", Forward)),
+            Some(MenuItem::separator()),
+            Some(MenuItem::action("Switch Light and Dark", ToggleAppearance)),
+        ].into_iter().flatten()),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),

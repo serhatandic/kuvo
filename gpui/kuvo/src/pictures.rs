@@ -118,12 +118,28 @@ pub fn shown(bytes: Vec<u8>) -> Read {
     };
     match size {
         Some((width, height)) if width > 0 && height > 0 => {
-            let thumb = thumbnail(format, &bytes, width, height).map(Arc::new);
+            let thumb = thumbnail(format, &bytes, width, height, THUMB_SIDE).map(Arc::new);
             let image = Arc::new(Image::from_bytes(format, bytes));
             Read::Shown { thumb: thumb.unwrap_or_else(|| image.clone()), image, width, height }
         }
         _ => failed(false),
     }
+}
+
+/// Bytes as a small picture for a tile (the Library's grid), its longest side at most `side`:
+/// made small once, off the UI thread, so a grid of pictures doesn't keep each whole. None for
+/// bytes that aren't a picture.
+pub fn small(bytes: Vec<u8>, side: u32) -> Option<Arc<Image>> {
+    let format = format_of(&bytes)?;
+    let (width, height) = if format == ImageFormat::Svg {
+        (side, side)
+    } else {
+        image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().ok()?.into_dimensions().ok()?
+    };
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(Arc::new(thumbnail(format, &bytes, width, height, side).unwrap_or_else(|| Image::from_bytes(format, bytes))))
 }
 
 /// The longest side a picture is drawn from in the conversation: twice the largest it's drawn there
@@ -133,8 +149,8 @@ const THUMB_SIDE: u32 = 1120;
 /// A large picture made small for the conversation (as a PNG), so a screenshot of a 5K screen isn't
 /// decoded and kept whole for a tile of a few hundred points; none for one that's small already, or
 /// that can't be made small (an SVG, an animated GIF). Off the UI thread, once, as it's read.
-fn thumbnail(format: ImageFormat, bytes: &[u8], width: u32, height: u32) -> Option<Image> {
-    if width.max(height) <= THUMB_SIDE || matches!(format, ImageFormat::Svg | ImageFormat::Gif) {
+fn thumbnail(format: ImageFormat, bytes: &[u8], width: u32, height: u32, side: u32) -> Option<Image> {
+    if width.max(height) <= side || matches!(format, ImageFormat::Svg | ImageFormat::Gif) {
         return None;
     }
     use image::ImageDecoder as _;
@@ -145,7 +161,7 @@ fn thumbnail(format: ImageFormat, bytes: &[u8], width: u32, height: u32) -> Opti
     if let Some(orientation) = orientation {
         decoded.apply_orientation(orientation);
     }
-    let small = decoded.thumbnail(THUMB_SIDE, THUMB_SIDE);
+    let small = decoded.thumbnail(side, side);
     let mut out = std::io::Cursor::new(Vec::new());
     // A JPEG where nothing shows through (a photo, a screenshot): far smaller than a PNG of it.
     if small.color().has_alpha() {

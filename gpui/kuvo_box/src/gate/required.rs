@@ -41,6 +41,7 @@ pub const REQUIRED: &[&str] = &[
     "git.status",
     "groups.mentions",
     "groups.task-title",
+    "library",
     "limits.bar",
     "limits.rings",
     "limits.titles",
