@@ -76,7 +76,7 @@ impl WorkBars {
             let asking = rows.iter().filter(|row| row["asking"] == true).count();
             let sessions = rows.iter().map(|row| json!({
                 "session": row["session"], "title": row["title"].as_str().unwrap_or("Subagent"),
-                "state": if row["asking"] == true { "asking" } else { "working" },
+                "state": if row["asking"] == true { "asking" } else { "working" }, "subagent": true,
             })).collect::<Vec<_>>();
             work["activity"] = json!({ "working": sessions.len() - asking, "asking": asking, "sessions": sessions });
         }

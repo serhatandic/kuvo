@@ -201,6 +201,11 @@ impl WakeSchedule {
         schedule
     }
 
+    /// Its schedule was read, or couldn't be (the Outputs popover waits for it before drawing).
+    pub(crate) fn is_read(&self) -> bool {
+        self.schedule.is_some() || self.failed
+    }
+
     /// Plain-word count summary for the outer popover header (e.g. "2 wake-ups · 2 watches").
     pub(crate) fn summary_counts(&self) -> Option<String> {
         let schedule = self.schedule.as_ref()?;

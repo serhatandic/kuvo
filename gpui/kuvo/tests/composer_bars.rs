@@ -157,9 +157,10 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     let popover = bounds(cx, "conversation-activity-popover").unwrap();
     assert!(popover.top() >= trigger.bottom());
     // Codex Quiet omits empty sections instead of showing an "Outputs" heading over an empty body.
-    assert!(!shown(cx, "No outputs yet") && !shown(cx, "activity-outputs"));
-    assert!(shown(cx, "activity-sessions") && shown(cx, "activity-processes"));
-    assert!(!shown(cx, "activity-wakes") && shown(cx, "activity-session-ses_sub"));
+    assert!(!shown(cx, "activity-empty") && !shown(cx, "activity-outputs"));
+    assert!(shown(cx, "activity-subagents") && shown(cx, "activity-processes"));
+    // Its subagent is counted in the Subagents row, not listed as a session of its own.
+    assert!(!shown(cx, "activity-wakes") && !shown(cx, "activity-sessions") && !shown(cx, "activity-session-ses_sub"));
 
     // A process opens what it prints in a tab of its own in the side panel, as the box reads it.
     click(cx, "activity-process-sh_dev");
@@ -177,14 +178,14 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     bars.update(cx, |bars, cx| bars.read_at_once(cx));
     cx.run_until_parked();
     click(cx, "conversation-activity-button");
-    assert!(!shown(cx, "activity-processes") && shown(cx, "activity-sessions"));
+    assert!(!shown(cx, "activity-processes") && shown(cx, "activity-subagents"));
 
-    // A subagent opens in the side panel's Subagents tab, its conversation shown there.
-    click(cx, "activity-session-ses_sub");
-    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().and_then(|view| view.read(cx).opened().map(str::to_owned)));
-    assert_eq!(opened.as_deref(), Some("ses_sub"));
+    // The Subagents row opens the side panel's Subagents tab, the conversation staying.
+    click(cx, "activity-subagents-row");
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().map(|tab| tab.kind.clone()));
+    assert_eq!(showing, Some(kuvo::panel::Kind::Subagents));
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_signup".into()), "the conversation stays");
-    assert!(!shown(cx, "conversation-activity-popover") && shown(cx, "subagent-transcript"));
+    assert!(!shown(cx, "conversation-activity-popover") && shown(cx, "subagent-ses_sub"));
 }
 
 #[gpui::test]
@@ -198,8 +199,9 @@ fn empty_activity_opens_with_keyboard_and_escape_restores_focus(cx: &mut TestApp
     cx.simulate_keystrokes("enter");
     cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("enter").unwrap() });
     cx.run_until_parked();
-    assert!(shown(cx, "No outputs yet"));
-    for hidden in ["activity-sessions", "activity-processes", "activity-wakes", "conversation-activity-running"] {
+    // One calm note, never section headings over nothing.
+    assert!(shown(cx, "activity-empty"));
+    for hidden in ["activity-outputs", "activity-sessions", "activity-subagents", "activity-side-chats", "activity-processes", "activity-wakes", "conversation-activity-running"] {
         assert!(!shown(cx, hidden), "{hidden}");
     }
     assert!(!cx.update(|window, _| focus.is_focused(window)));
@@ -224,7 +226,7 @@ fn activity_lists_this_conversations_outputs_and_opens_the_recorded_version(cx: 
     }
     let (_, cx) = conversation(cx, &stand_in, "ses_signup");
     click(cx, "conversation-activity-button");
-    assert!(!shown(cx, "No outputs yet") && !shown(cx, "activity-output-art_000000000000000000000002"));
+    assert!(!shown(cx, "activity-empty") && !shown(cx, "activity-output-art_000000000000000000000002"));
     click(cx, "activity-output-art_000000000000000000000001");
     assert!(shown(cx, "activity-output-preview"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/artifacts/art_000000000000000000000001/versions/3").len(), 1);
@@ -240,15 +242,19 @@ fn a_subagent_waiting_on_you_is_discoverable_without_a_running_dot(cx: &mut Test
     let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
     assert!(!shown(cx, "conversation-activity-running"));
     click(cx, "conversation-activity-button");
-    assert!(shown(cx, "activity-sessions") && !shown(cx, "activity-processes"));
-    assert!(shown(cx, "activity-session-ses_sub"));
+    assert!(shown(cx, "activity-subagents") && !shown(cx, "activity-processes"));
+    assert!(shown(cx, "activity-subagents-row"));
     let view = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).bars().clone());
     assert!(view.read_with(cx, |bars, _| bars.background().subagents[0].asking));
 
     stand_in.set_background("ses_signup", json!({ "commands": [{ "id": "sh_1", "command": "sleep 180", "started": NOW }], "subagents": [] }), &[]);
     view.update(cx, |bars, cx| bars.read_at_once(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "conversation-activity-running") && shown(cx, "activity-processes") && !shown(cx, "activity-sessions"));
+    // (Opened again: a popover read once, as tests read, keeps the subagents it read then.)
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "conversation-activity-running") && shown(cx, "activity-processes") && !shown(cx, "activity-subagents"));
 
     stand_in.set_background("ses_signup", json!({ "commands": [], "subagents": [] }), &[]);
     view.update(cx, |bars, cx| bars.read_at_once(cx));
@@ -256,35 +262,27 @@ fn a_subagent_waiting_on_you_is_discoverable_without_a_running_dot(cx: &mut Test
     assert!(!shown(cx, "conversation-activity-running") && !shown(cx, "activity-processes"));
 }
 
+/// Its subagents in one row, as Codex's: each model's mark once, how many work and are done; no
+/// row for each, and no disc behind the marks.
 #[gpui::test]
-fn activity_shows_live_provider_faces_inline_and_expands_overflow_active_sessions(cx: &mut TestAppContext) {
+fn subagents_show_in_one_row_with_their_marks_and_counts(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let sessions = [
-        ("ses_sub", "codex-cli", "codex"),
-        ("ses_sub2", "claude-code", "claude"),
-        ("ses_sub3", "codex-cli", "codex"),
-        ("ses_sub4", "claude-code", "claude"),
-        ("ses_sub5", "codex-cli", "codex"),
-        ("ses_sub6", "claude-code", "claude"),
-    ];
-    for (id, provider, _) in sessions {
-        stand_in.set_model_state(id, json!({ "model": { "providerID": provider, "id": "example" }, "runs": true }));
-    }
     stand_in.set_background("ses_signup", json!({
-        "subagents": sessions.iter().map(|(id, _, _)| json!({ "session": id, "since": NOW })).collect::<Vec<_>>(),
+        "subagents": [
+            { "session": "ses_sub", "since": NOW, "title": "Check the forms", "model": "GPT-5.4" },
+            { "session": "ses_sub2", "since": NOW, "title": "Read the logs", "model": "Claude Sonnet 4.6" },
+        ],
     }), &[]);
+    stand_in.set_subagents_done("ses_signup", (0..6).map(|ix| json!({
+        "session": format!("ses_done{ix}"), "title": format!("Done {ix}"), "started": NOW - 9_000., "ended": NOW - 1_000.,
+        "state": "finished", "model": if ix % 2 == 0 { "Claude Sonnet 4.6" } else { "GPT-5.4" },
+    })).collect());
     let (_, cx) = conversation(cx, &stand_in, "ses_signup");
     click(cx, "conversation-activity-button");
-    // First 5 live subagents render directly inline with their provider avatars; 6th sits behind "+1 more active".
-    for (id, _, service) in &sessions[..5] {
-        assert!(shown(cx, &format!("activity-row-avatar-{id}-{service}")));
-    }
-    assert!(!shown(cx, "activity-row-avatar-ses_sub6-claude"));
-    assert!(shown(cx, "activity-toggle-sessions"));
-    click(cx, "activity-toggle-sessions");
-    for (id, _, service) in sessions {
-        assert!(shown(cx, &format!("activity-row-avatar-{id}-{service}")));
-    }
+    assert!(shown(cx, "activity-subagents-row"));
+    assert!(shown(cx, "activity-subagents-mark-codex") && shown(cx, "activity-subagents-mark-claude"));
+    assert!(!shown(cx, "activity-session-ses_sub") && !shown(cx, "activity-session-ses_done0"));
+    assert!(shown(cx, "activity-subagents-label-2 working · 6 done"));
 }
 
 #[gpui::test]
@@ -691,8 +689,8 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
     assert!(!shown(cx, "picture-viewer"));
 }
 
-/// The Stage viewer covers the whole window, title bar included: its name pill starts past the
-/// window's own buttons at the top left (the user's beta.37: they sat over "Outputs"), and Esc
+/// The Stage viewer covers the whole window, title bar included: its name pill is centred, clear of
+/// the window's own buttons at the top left (the user's beta.37: they sat over "Outputs"), and Esc
 /// still closes it, with no key label beside its close button.
 #[gpui::test]
 fn stage_viewer_leaves_room_for_the_window_buttons_and_esc_closes_it(cx: &mut TestAppContext) {
@@ -715,6 +713,9 @@ fn stage_viewer_leaves_room_for_the_window_buttons_and_esc_closes_it(cx: &mut Te
     click(cx, "attached-picture-0");
     let pill = bounds(cx, "picture-identity-pill").expect("the viewer's name pill");
     assert!(pill.origin.x >= px(kuvo::title_bar::LIGHTS), "starts at {:?}, under the window's buttons", pill.origin.x);
+    // Centred over the picture, as Preview titles it (#948): its middle is the window's.
+    let middle = pill.origin.x + pill.size.width / 2.;
+    assert!((f32::from(middle) - 640.).abs() <= 1., "its middle is at {middle:?}, not the window's");
     let close = bounds(cx, "picture-close").expect("its close button");
     assert_eq!(close.size.width, close.size.height, "a plain round close button, no Esc label");
     cx.simulate_keystrokes("escape");
@@ -740,4 +741,24 @@ fn the_outputs_popover_scrolls_as_one_with_a_long_schedule_folded(cx: &mut TestA
     assert!(last.origin.y + last.size.height <= entries.origin.y + entries.size.height + px(1.), "laid out whole, not clipped by a scroll of its own");
     click(cx, "wake-show-all");
     assert!(shown(cx, "wake-wk_5") && !shown(cx, "wake-show-all"));
+}
+
+/// Each section folds from its heading, as Codex's do: its rows go, its heading and counts stay, and
+/// it stays folded when the popover opens again, until unfolded.
+#[gpui::test]
+fn a_section_folds_from_its_heading_and_stays_folded(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    running(&stand_in);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-process-sh_dev") && shown(cx, "activity-subagents-row"));
+    click(cx, "activity-fold-processes");
+    assert!(shown(cx, "activity-processes-header") && !shown(cx, "activity-process-sh_dev"));
+    assert!(shown(cx, "activity-subagents-row"), "the others stay open");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-processes-header") && !shown(cx, "activity-process-sh_dev"), "still folded");
+    click(cx, "activity-fold-processes");
+    assert!(shown(cx, "activity-process-sh_dev"));
 }
