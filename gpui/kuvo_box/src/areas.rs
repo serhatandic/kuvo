@@ -603,6 +603,10 @@ pub struct FleetUpdate {
     pub last_failure_at: Option<u64>,
     pub can_retry: bool,
     pub fixable: Option<bool>,
+    /// Its line in the box's words ("Switching to beta.42…"), drawn as it is; none from a box
+    /// from before them.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// Progress across the setup, included in every Computers snapshot.

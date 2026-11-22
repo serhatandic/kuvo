@@ -543,7 +543,8 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
     let retrying = workspace.fleet_retrying().map(str::to_owned);
     let segments = rows.iter().map(|row| {
         let color = match row.standing.line {
-            Line::UpToDate { .. } | Line::Ready { .. } => c.success,
+            // (Switching is past ready: it stays green, never steps back.)
+            Line::UpToDate { .. } | Line::Ready { .. } | Line::Switching { .. } => c.success,
             Line::GettingReady { .. } => c.accent,
             Line::Cannot { .. } => c.warning,
             Line::Off { .. } => c.border_strong,
@@ -581,7 +582,7 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                     .flex_col()
                     .gap(space::S0_5)
                     .child(div().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(row.name.clone()))
-                    .child(crate::fleet::status_line(&format!("card-{}", row.key), &row.standing.line, cx)),
+                    .child(crate::fleet::status_line(&format!("card-{}", row.key), &row.standing, cx)),
             )
             .children(button)
     });

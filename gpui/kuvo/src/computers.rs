@@ -1115,7 +1115,7 @@ impl ComputersView {
                                     .flex_col()
                                     .gap(space::S1)
                                     .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(format!("Kuvo on {name}")))
-                                    .child(crate::fleet::status_line("page", &standing.line, cx))
+                                    .child(crate::fleet::status_line("page", &standing, cx))
                                     ,
                             )
                             .children(button),
@@ -1300,7 +1300,7 @@ impl ComputersView {
                                     .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
                                     .children(role.map(|role| manage::chip(role, &id)))
                                     .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(what)))
-                                .child(crate::fleet::status_line(&id, &update.line, cx))
+                                .child(crate::fleet::status_line(&id, &update, cx))
                         }
                         None => d
                             .child(div().flex().items_center().gap(space::S2).min_w_0()

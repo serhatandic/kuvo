@@ -385,20 +385,32 @@ impl Boxes {
         self.state().fleet_update.clone()
     }
 
-    fn take_snapshot(&self, list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
-        let has_fleet = list.fleet_update.is_some() || {
-            if client.current_gate() == Gate::Unknown {
-                client.connect().is_ok_and(|info| info.has("update.fleet"))
-            } else {
-                client.has_fleet_updates()
-            }
+    fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
+        // Whether the box takes part in setup updates: unknown (None) while it can't say, as just
+        // after it restarted (its features read again), which changes nothing.
+        let has_fleet = if list.fleet_update.is_some() {
+            Some(true)
+        } else if client.current_gate() == Gate::Unknown {
+            client.connect().ok().map(|info| info.has("update.fleet"))
+        } else {
+            Some(client.has_fleet_updates())
         };
         let mut state = self.state();
         if following.is_some_and(|follow| !state.follow.as_ref().is_some_and(|active| Arc::ptr_eq(active, follow))) {
             return false;
         }
-        if from_nearest {
+        if from_nearest && let Some(has_fleet) = has_fleet {
             state.nearest_has_fleet = Some(has_fleet);
+        }
+        // A line without the setup's update (a box restarting, not yet knowing its target, or one
+        // from before them standing in while the one that told it is away): what was last received
+        // stays, the summary and each computer's line, until a box says them again.
+        if list.fleet_update.is_none() {
+            list.fleet_update = state.fleet_update.clone();
+            for computer in list.computers.iter_mut().filter(|computer| computer.fleet_update.is_none()) {
+                computer.fleet_update = state.list.iter().find(|before| before.key == computer.key)
+                    .and_then(|before| before.fleet_update.clone());
+            }
         }
         state.fleet_update = list.fleet_update;
         self.take_list(&mut state, &list.computers, from_nearest);

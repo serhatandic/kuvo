@@ -20,6 +20,7 @@ pub enum Line {
     UpToDate { version: String },
     Ready { target: String },
     GettingReady { target: String },
+    Switching { target: String },
     Off { current: Option<String> },
     Cannot { current: Option<String>, reason: String, fixable: bool },
 }
@@ -27,6 +28,8 @@ pub enum Line {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Standing {
     pub line: Line,
+    /// The line in the box's words, where it says them.
+    pub title: Option<String>,
     pub target: String,
     pub target_sha256: Option<String>,
     pub can_update: bool,
@@ -37,6 +40,7 @@ pub fn standing(computer: &Computer, _now: f64) -> Option<Standing> {
     let line = match update.state.as_str() {
         "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
         "ready" => Line::Ready { target: update.target.clone() },
+        "updating" if update.stage.as_deref() == Some("switching") => Line::Switching { target: update.target.clone() },
         "getting-ready" | "updating" | "behind" => Line::GettingReady { target: update.target.clone() },
         "off" => Line::Off { current: update.current.clone() },
         "cannot" => Line::Cannot {
@@ -47,6 +51,7 @@ pub fn standing(computer: &Computer, _now: f64) -> Option<Standing> {
         _ => return None,
     };
     Some(Standing {
+        title: update.title.clone(),
         can_update: matches!(line, Line::Cannot { fixable: true, .. }) && update.can_retry,
         line,
         target: update.target.clone(),
@@ -63,6 +68,7 @@ pub fn words(line: &Line) -> String {
         Line::UpToDate { version } => format!("{} · Up to date", short(version)),
         Line::Ready { target } => format!("Ready for {}", short(target)),
         Line::GettingReady { target } => format!("Getting {} ready…", short(target)),
+        Line::Switching { target } => format!("Switching to {}…", short(target)),
         Line::Off { current } => with_version(current.as_deref(), "Off: updates when it’s back"),
         Line::Cannot { current, reason, fixable } => {
             let words = with_version(current.as_deref(), reason);
@@ -84,11 +90,19 @@ pub fn dot(line: &Line, cx: &App) -> Option<Hsla> {
     matches!(line, Line::Cannot { fixable: true, .. }).then(|| cx.theme().colors.warning)
 }
 
-pub fn status_line(id: &str, line: &Line, cx: &App) -> AnyElement {
+impl Standing {
+    /// Its line in words: the box's, or (a box from before them) as the line reads.
+    pub fn words(&self) -> String {
+        self.title.clone().unwrap_or_else(|| words(&self.line))
+    }
+}
+
+pub fn status_line(id: &str, standing: &Standing, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
+    let line = &standing.line;
     let leading: AnyElement = match line {
         Line::UpToDate { .. } | Line::Ready { .. } => Icon::new(IconName::Check).size(IconSize::XSmall).color(c.success).into_any_element(),
-        Line::GettingReady { .. } => spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, c.accent).into_any_element(),
+        Line::GettingReady { .. } | Line::Switching { .. } => spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, c.accent).into_any_element(),
         Line::Cannot { fixable: true, .. } => Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element(),
         _ => div().pt(px(2.)).child(status_dot(c.border_strong)).into_any_element(),
     };
@@ -103,7 +117,7 @@ pub fn status_line(id: &str, line: &Line, cx: &App) -> AnyElement {
         .text_ui(TypeSize::Small)
         .text_color(color(line, cx))
         .child(div().pt(px(3.)).flex_none().child(leading))
-        .child(div().flex_1().min_w_0().child(words(line)))
+        .child(div().flex_1().min_w_0().child(standing.words()))
         .into_any_element()
 }
 
