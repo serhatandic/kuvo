@@ -333,7 +333,9 @@ function merged(boxes: { box: LimitsBox; account: AccountLimits }[]): AccountLim
   // (A reading without them says there are none now: the newest that read without a problem;
   // else, while none could read lately, what was last read, before what a sign-in can't read.)
   const read = newest.find((member) => member.checked && !member.problem)
-  const extras = read ? read.extras : (newest.find((member) => member.extras?.some((extra) => extra.kind !== "unreadable")) ?? newest.find((member) => member.extras?.length))?.extras
+  const chosen = read ? read.extras : (newest.find((member) => member.extras?.some((extra) => extra.kind !== "unreadable")) ?? newest.find((member) => member.extras?.length))?.extras
+  // (One it can't read itself, a Mac's Claude resets: as the newest of the others that can says.)
+  const extras = chosen?.map((extra) => (extra.kind === "unreadable" ? (newest.map((member) => member.extras?.find((each) => each.id === extra.id && each.kind !== "unreadable")).find(Boolean) ?? extra) : extra))
   const checked = Math.max(0, ...members.map((member) => member.checked ?? 0))
   const next = Math.min(...members.map((member) => member.next ?? Infinity))
   for (const key of ["plan", "balance", "extras", "checked", "next", "problem"] as const) delete account[key]

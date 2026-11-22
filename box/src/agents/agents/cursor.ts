@@ -209,6 +209,17 @@ export class CursorAgent implements Agent {
     if (!this.instance.home && process.env.CURSOR_API_KEY?.trim()) throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell’s environment. Remove it there to sign out.")
   }
 
+  /** An added account signs out as it goes, as the SDK's own logout does: its key, kept in its
+   * folder, is forgotten (CURSOR_API_KEY is only ever your first account's, so it's never touched).
+   * Cursor's logout is local only: the key it made lapses by itself, or goes sooner from the API
+   * keys page of Cursor's dashboard. */
+  async removeAccount() {
+    if (!this.instance.home) return
+    rmSync(this.authFile, { force: true })
+    this.known.reset()
+    this.modelList = undefined
+  }
+
   async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
     const sdk = await this.sdk()
     const apiKey = await this.apiKey(sdk)

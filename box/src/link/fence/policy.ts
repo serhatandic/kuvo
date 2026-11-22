@@ -45,6 +45,9 @@ export interface FencePolicy {
   homeKept?: string[];
   /** Inside those, and kept, where files are added and changed again (~/Library's logs). */
   homeOpen?: string[];
+  /** Your login Keychain on a Mac (`~/Library/Keychains/login.keychain-db`): written only by
+   * Apple's own `security` tool, so an agent renews its own sign-in kept there (Claude Code's). */
+  loginKeychains?: string[];
   /** Your personal folders: on a Mac only new files are added (nothing changed, deleted or moved),
    * on Linux they're only read; the conversation's folder and Also Allowed inside one are its own. */
   personal?: string[];
@@ -424,6 +427,7 @@ export function fencePolicy(ports: number[] = []): FencePolicy {
       home, kuvo, kuvoReadable, readOnly: [...runsLater, ...inHomes(MAC_RUNS_LATER), ...homeRunsLater, ...inHomes(MAC_HOME_RUNS_LATER),
         ...homes.flatMap(each => startingWith(each, HOME_RUNS_LATER_PREFIXES))], ports, commandCaches,
       homeWrites: homes, homeKept: inHomes(MAC_HOME_KEPT), homeOpen: inHomes(MAC_HOME_OPEN), personal: inHomes(MAC_PERSONAL),
+      loginKeychains: homes.map(each => path.join(each, "Library", "Keychains", "login.keychain-db")),
       // bunx's packages, in your temporary folder (`T/bunx-<uid>-<package>`), which it runs again
       // as they are (a command's own bunx is in its own temporary folder); and p10k's files in your
       // cache folder by any name, as it writes each beside it first (`.tmp.<pid>`), then moves it.

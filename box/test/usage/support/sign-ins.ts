@@ -43,14 +43,6 @@ export class SignIns {
     })
   }
 
-  /** A provider's plan token was just stored, even if the last round saw no credentials. */
-  planTokenStored(provider: string) {
-    const before = this.signedIn(provider)
-    this.none.delete(provider)
-    this.said.set(provider, true)
-    if (before !== true) this.changed?.(provider)
-  }
-
   /** Does `change`, telling `changed` where it changed whether the account counts as signed in. */
   private telling(provider: string, change: () => void) {
     const before = this.signedIn(provider)

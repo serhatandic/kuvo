@@ -21,14 +21,11 @@ import type { ServerEvent } from "../../src/agents/wire"
 let root: string
 let bin: string
 const path = process.env.PATH
-const keychain = ClaudeAgent.keychain
 // Each agent's program check (`maintenance`), put back after: every kind of agent this file makes
 // that has one (Cursor's has none).
 const checks = [ClaudeAgent, CodexAgent, GrokAgent].map((kind) => [kind.prototype, kind.prototype.maintenance] as const)
 
 beforeAll(() => {
-  // Claude Code's own sign-in, as a machine's is (a Mac's is Kuvo Code's own: its describe below).
-  ClaudeAgent.keychain = false
   root = mkdtempSync(join(tmpdir(), "kuvo-accounts-check-"))
   bin = join(root, "bin")
   mkdirSync(bin)
@@ -42,7 +39,6 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  ClaudeAgent.keychain = keychain
   process.env.PATH = path
   for (const [prototype, check] of checks) prototype.maintenance = check
   rmSync(root, { recursive: true, force: true })
@@ -350,11 +346,11 @@ describe("an agent's sign-in that can't be checked just now", () => {
 })
 
 describe("signing out of an agent's own sign-in", () => {
-  test("on a machine it's Kuvo Code's own, in its folder there: Sign Out signs it out with the agent's own command, or says why it couldn't", async () => {
+  test("your own Claude sign-in: Sign Out signs it out with Claude Code's own command, in your own folder (Terminal's too, as the app says), or says why it couldn't", async () => {
     const said = join(root, "claude-logout")
     const signedIn = `echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}'`
     const claude = program("claude", {
-      in: `if [ "$2" = logout ]; then echo "$CLAUDE_CONFIG_DIR" > '${said}'; echo out > '${join(root, "claude.mode")}'; exit 0; fi; ${signedIn}`,
+      in: `if [ "$2" = logout ]; then echo "dir:$CLAUDE_CONFIG_DIR" > '${said}'; echo out > '${join(root, "claude.mode")}'; exit 0; fi; ${signedIn}`,
       locked: `if [ "$2" = logout ]; then echo 'The Keychain is locked.' >&2; exit 1; fi; ${signedIn}`,
       out: `echo '{"loggedIn":false,"authMethod":"none"}'; exit 1`,
     })
@@ -364,30 +360,24 @@ describe("signing out of an agent's own sign-in", () => {
       return { status: response.status, said: ((await response.json()) as any)?.message as string | undefined }
     }
 
-    // Without a home of its own (a Mac's, in the describe below, is Kuvo Code's own token): never
-    // your ~/.claude's sign-in.
     claude("in")
     const yours = new ClaudeAgent(context())
-    expect((await bridge([yours]).account(yours)).metadata.signsOut).toBe(false)
-
-    // A machine's: in Kuvo Code's folder there.
-    const home = mkdtempSync(join(root, "machine-claude-"))
-    const machine = new ClaudeAgent(context(), { id: "default", home })
-    const box = bridge([machine])
-    const account = await box.account(machine)
+    const box = bridge([yours])
+    const account = await box.account(yours)
     expect(account.connections[0]?.label).toBe("ada@example.com")
-    expect(account.metadata).toMatchObject({ signsOut: true, signOutShared: false })
+    expect(account.metadata).toMatchObject({ signsOut: true, signOutShared: true })
 
     claude("locked")
-    const refused = await signOut(machine)
+    const refused = await signOut(yours)
     expect(refused.status).not.toBe(200)
     expect(refused.said).toContain("The Keychain is locked.")
-    expect((await box.account(machine)).connections[0]?.label).toBe("ada@example.com")
+    expect((await box.account(yours)).connections[0]?.label).toBe("ada@example.com")
 
     claude("in")
-    expect((await signOut(machine)).status).toBe(200)
-    expect(readFileSync(said, "utf8").trim()).toBe(home)
-    expect((await box.account(machine)).connections).toEqual([])
+    expect((await signOut(yours)).status).toBe(200)
+    // Claude Code's own folder: no other one named.
+    expect(readFileSync(said, "utf8").trim()).toBe("dir:")
+    expect((await box.account(yours)).connections).toEqual([])
   })
 })
 
@@ -500,358 +490,53 @@ describe("Sign Out for every agent's own sign-in, Remove for one you added", () 
   })
 })
 
-describe("Claude Code on a Mac: Kuvo Code's own sign-in", () => {
-  const TOKEN = "sk-ant-oat01-kuvo_test-token_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5AA"
-  // Show the masked paste before reading Return, as setup-token does.
-  const rawTTY = "stty -icanon -echo min 1 time 0"
-  const readPaste = String.raw`IFS= read -r -d '~' start
-    IFS= read -r -d $'\033' code
-    IFS= read -r -d '~' end
-    [ "$start" = "$(printf '\033[200')" ] && [ "$end" = "[201" ] || exit 3
-    printf '****'
-    IFS= read -r submit
-    [ -z "$submit" ] || exit 3
-    printf '\n'`
-
-  test("signed in once, in a terminal of its own; kept in Kuvo Code's folder and handed to Claude Code; your own sign-in only read, and never signed out of", async () => {
-    const said = join(root, "claude-mac-status")
-    const logout = join(root, "claude-mac-logout")
-    writeFileSync(join(bin, "claude"), `#!/bin/bash
-case "$1" in
-  setup-token)
-    [ -t 0 ] || exit 3
-    ${rawTTY}
-    printf 'https://claude.com/cai/oauth/authorize?code=true&scope=user%%3Ainference\\n\\nPaste code here if prompted > '
-    ${readPaste}
-    [ "$code" = "good#state" ] || { echo "OAuth error: That code wasn't accepted."; exit 1; }
-    printf '\\nYour OAuth token (valid for 1 year):\\n\\nsk-ant-oat01-kuvo_test-token_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5AA\\n\\nStore this token securely.\\n'
-    read wait ;;
-  auth)
-    echo "\${CLAUDE_CODE_OAUTH_TOKEN:-none}" >> '${said}'
-    [ "$2" = logout ] && { echo out > '${logout}'; exit 0; }
-    # Kuvo Code's own folder has no sign-in of Claude Code's; yours does.
-    [ -n "$CLAUDE_CONFIG_DIR" ] && { echo '{"loggedIn":false,"authMethod":"none"}'; exit 1; }
-    echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com","subscriptionType":"max"}' ;;
+describe("Claude Code's own sign-in, the same on a Mac and on Linux", () => {
+  /** A Claude Code that keeps a sign-in per folder (CLAUDE_CONFIG_DIR, else your `~/.claude`), as
+   * `auth login` leaves it, and notes any token it was handed. */
+  function folderClaude() {
+    const tokens = join(root, "claude-tokens-seen")
+    writeFileSync(join(bin, "claude"), `#!/bin/sh
+dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo "$CLAUDE_CODE_OAUTH_TOKEN" >> '${tokens}'
+case "$1 $2" in
+  "auth login") mkdir -p "$dir"; echo "$3" > "$dir/signed-in" ;;
+  "auth logout") rm -f "$dir/signed-in" ;;
+  "auth status")
+    [ -f "$dir/signed-in" ] || { echo '{"loggedIn":false,"authMethod":"none"}'; exit 1; }
+    grep -q console "$dir/signed-in" && echo '{"loggedIn":true,"authMethod":"console","email":"ops@example.com"}' || echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com","subscriptionType":"max"}' ;;
 esac
 `)
     chmodSync(join(bin, "claude"), 0o755)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const box = bridge([agent])
-      expect((await box.account(agent)).connections).toEqual([])
+    return { yours: join(process.env.HOME!, ".claude"), tokens }
+  }
 
-      const sign = await agent.signIn("claudeai", { remote: true })
-      expect(sign.url).toContain("scope=user%3Ainference")
-      await sign.complete!("good#state")
+  test("your first account signs in with Claude Code's own sign-in, where Terminal's is; an added one in a folder of its own; neither is handed a token", async () => {
+    const { yours, tokens } = folderClaude()
+    rmSync(yours, { recursive: true, force: true })
+    try {
+      const first = new ClaudeAgent(context())
+      expect((await bridge([first]).account(first)).connections).toEqual([])
+      const sign = await first.signIn("claudeai", {})
       for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
       expect(sign.status().status).toBe("complete")
-
-      const account = await box.account(agent)
+      expect(readFileSync(join(yours, "signed-in"), "utf8").trim()).toBe("--claudeai")
+      const account = await bridge([first]).account(first)
       expect(account.connections[0]?.label).toBe("ada@example.com · Max plan")
-      expect(account.metadata.signsOut).toBe(true)
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-kuvo_test-token_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5AA")
-      // Kept where only Kuvo Code reads it, and never shown to `claude auth status`.
-      expect(agent.tokenFile.startsWith(agent.context.home + "/")).toBe(true)
-      expect(statSync(agent.tokenFile).mode & 0o777).toBe(0o600)
-      expect(readFileSync(said, "utf8")).not.toContain("sk-ant")
+      // Signing out of it signs Terminal out too, and the app says so.
+      expect(account.metadata).toMatchObject({ signsOut: true, signOutShared: true })
 
-      // Sign Out: Kuvo Code's own sign-in goes; yours stays.
-      const answer = handler({ roster: { all: () => [agent], find: (id: string) => (id === agent.providerID ? agent : undefined) }, password: "pw" } as any)
-      const out = await answer(new Request(`http://box/api/integration/${encodeURIComponent(agent.providerID)}/disconnect`, { method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
-      expect(out.status).toBe(200)
-      expect(existsSync(logout)).toBe(false)
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
-      expect((await box.account(agent)).connections).toEqual([])
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-  /** A Claude Code whose setup-token prints its token as `printed` says (after `good#state`), and
-   * then does as `after` says. */
-  function setupToken(printed: string, after = "read wait") {
-    writeFileSync(join(bin, "claude"), `#!/bin/bash
-case "$1" in
-  setup-token)
-    ${rawTTY}
-    printf 'https://claude.com/cai/oauth/authorize?code=true\\n\\nPaste code here if prompted > '
-    ${readPaste}
-    [ "$code" = "good#state" ] || { printf "OAuth error: That code wasn't accepted. Press Enter to retry.\\n"; read again; printf 'https://claude.com/cai/oauth/authorize?code=true&again\\n'; read wait; exit 1; }
-    printf '${printed}'
-    ${after} ;;
-  auth) echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}' ;;
-esac
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-  }
-
-  test("a token drawn with the next line's text after a cursor move is kept whole", async () => {
-    setupToken(`\\nYour OAuth token (valid for 1 year):\\n\\n${TOKEN}\\033[2BStore this token securely.\\n`)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("claudeai", { remote: true })
-      await sign.complete!("good#state")
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect(sign.status().status).toBe("complete")
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN)
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  // A token shaped like a real one: sk-ant-oat01- and 100 more.
-  const LONG = "sk-ant-oat01-" + "Ab3_xY9-kQ".repeat(10)
-  /** Signs in with `good#state`, and waits for the end. */
-  async function signInWith(printed: string, after?: string) {
-    setupToken(printed, after)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("claudeai", { remote: true })
-      await sign.complete!("good#state")
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      return { status: sign.status(), token: agent.env().CLAUDE_CODE_OAUTH_TOKEN, sign }
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  }
-
-  test("a token Claude Code draws over its last screen, jumping over the cells that didn't change, is kept whole", async () => {
-    // Its screen redraws only what changed: where the line before had the same characters (the
-    // pasted code, here), it jumps over them, with ESC[nG and ESC[nC.
-    const before = "x".repeat(40) + LONG.slice(40, 44) + "x".repeat(26) + LONG.slice(70, 73) + "xxxx"
-    const redrawn = `${LONG.slice(0, 40)}\\033[45G${LONG.slice(44, 70)}\\033[3C${LONG.slice(73)}\\033[K`
-    const { status, token } = await signInWith(`\\n${before}\\r${redrawn}\\n\\nStore this token securely.\\n`)
-    expect(status.status).toBe("complete")
-    expect(token).toBe(LONG)
-  })
-
-  test("a token among a terminal's codes (colors, a link, keyboard modes, a character set) is kept whole", async () => {
-    const link = (text: string) => `\\033]8;;https://claude.ai\\033\\\\${text}\\033]8;;\\033\\\\`
-    const { status, token } = await signInWith(`\\033[1m\\033[38;5;174m${link(LONG)}\\033[39m\\033[22m\\033(B\\n\\nStore this token securely.\\n\\033[<u\\033(B`)
-    expect(status.status).toBe("complete")
-    expect(token).toBe(LONG)
-  })
-
-  test("a token cut short is never kept: its line still being drawn when it stops", async () => {
-    const ended = await signInWith(LONG.slice(0, 90), "exit 1")
-    expect(ended.token).toBeUndefined()
-    expect(ended.status.status).toBe("failed")
-  })
-
-  test("a failed sign-in's words have no terminal codes, and nothing of a token", async () => {
-    // It stops before any code is pasted, with private output in its last lines.
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
-case "$1" in
-  setup-token)
-    printf 'https://claude.com/cai/oauth/authorize?code=true\\n\\nPaste code here if prompted > '
-    printf '\\r\\033[2K${LONG.slice(0, 70)}\\n${LONG.slice(70)}\\n\\n\\033[31mOAuth error: Request failed\\033[39m\\n\\033[<u\\033(B'
-    exit 1 ;;
-  auth) echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}' ;;
-esac
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("claudeai", { remote: true })
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      const status = sign.status()
-      expect(status.status).toBe("failed")
-      const message = (status as { message: string }).message
-      expect(message).toBe("The sign-in ended before it finished. Try again.")
-      expect(message).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]|\[<u|\(B/)
-      expect(message).not.toContain(LONG.slice(20, 40))
-      expect(message).not.toContain(LONG.slice(75, 95))
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("a code Claude turns away ends the sign-in, to start again with a new page", async () => {
-    setupToken(`${TOKEN}\\n`)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("claudeai", { remote: true })
-      await expect(sign.complete!("half-a-code")).rejects.toThrow("Start again for a new one")
-      expect(sign.status()).toEqual({ status: "failed", message: "Claude didn't take that code. Start again for a new one." })
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("an Anthropic Console sign-in is kept in Kuvo Code's own folder: yours in Terminal is never written or signed out", async () => {
-    const yours = join(root, "claude-yours")
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
-dir="\${CLAUDE_CONFIG_DIR:-${yours}}"
-case "$1 $2" in
-  "auth login") mkdir -p "$dir"; echo "$3" > "$dir/signed-in" ;;
-  "auth logout") rm -f "$dir/signed-in" ;;
-  "auth status")
-    [ -f "$dir/signed-in" ] || { echo '{"loggedIn":false,"authMethod":"none"}'; exit 1; }
-    echo '{"loggedIn":true,"authMethod":"console","email":"ops@example.com"}' ;;
-esac
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-    mkdirSync(yours, { recursive: true })
-    writeFileSync(join(yours, "signed-in"), "--claudeai")
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const box = bridge([agent])
-      // Yours doesn't count: Kuvo Code's Claude Code would renew it.
-      expect((await box.account(agent)).connections).toEqual([])
-
-      const sign = await agent.signIn("console", {})
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect(sign.status().status).toBe("complete")
+      const home = join(root, "claude-added-folder")
+      const added = new ClaudeAgent(context(), { id: "work", home })
+      const other = await added.signIn("console", {})
+      for (let waited = 0; waited < 10_000 && other.status().status === "pending"; waited += 50) await Bun.sleep(50)
+      expect(other.status().status).toBe("complete")
+      expect(readFileSync(join(home, "signed-in"), "utf8").trim()).toBe("--console")
+      expect((await bridge([added]).account(added)).connections[0]?.label).toBe("ops@example.com")
+      // Yours is as it was.
       expect(readFileSync(join(yours, "signed-in"), "utf8").trim()).toBe("--claudeai")
-      expect((await box.account(agent)).connections[0]?.label).toBe("ops@example.com")
-      expect(agent.env().CLAUDE_CONFIG_DIR).toBe(agent.consoleHome)
-      expect(agent.consoleHome.startsWith(agent.context.home + "/")).toBe(true)
-
-      await agent.signOut!()
-      expect((await box.account(agent)).connections).toEqual([])
-      expect(readFileSync(join(yours, "signed-in"), "utf8").trim()).toBe("--claudeai")
+      expect(existsSync(tokens)).toBe(false)
     } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  /** A Claude Code that keeps a sign-in per folder (yours by default), as `auth login` says. */
-  function consoleClaude(yours: string) {
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
-dir="\${CLAUDE_CONFIG_DIR:-${yours}}"
-case "$1 $2" in
-  "auth login") mkdir -p "$dir"; echo "$3" > "$dir/signed-in" ;;
-  "auth logout") rm -f "$dir/signed-in" ;;
-  "auth status")
-    [ -f "$dir/signed-in" ] || { echo '{"loggedIn":false,"authMethod":"none"}'; exit 1; }
-    grep -q console "$dir/signed-in" && echo '{"loggedIn":true,"authMethod":"console","email":"ops@example.com"}' || echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}' ;;
-esac
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-    mkdirSync(yours, { recursive: true })
-    writeFileSync(join(yours, "signed-in"), "--claudeai")
-  }
-
-  function ownToken(agent: ClaudeAgent) {
-    mkdirSync(dirname(agent.tokenFile), { recursive: true })
-    writeFileSync(agent.tokenFile, JSON.stringify({ token: TOKEN, made: Date.now() }))
-  }
-
-  test("a Console sign-in while Kuvo Code has its own plan sign-in takes its place, and never writes yours", async () => {
-    const yours = join(root, "claude-yours-switch")
-    consoleClaude(yours)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      ownToken(agent)
-      const sign = await agent.signIn("console", {})
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect(sign.status().status).toBe("complete")
-      expect(readFileSync(join(yours, "signed-in"), "utf8").trim()).toBe("--claudeai")
-      expect(agent.env().CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
-      expect((await bridge([agent]).account(agent)).connections[0]?.label).toBe("ops@example.com")
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("Sign Out after moving from a Console sign-in to a Claude plan signs out of both", async () => {
-    const yours = join(root, "claude-yours-out")
-    consoleClaude(yours)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("console", {})
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      ownToken(agent)
-      await agent.signOut!()
-      expect((await bridge([agent]).account(agent)).connections).toEqual([])
-      expect(readFileSync(join(yours, "signed-in"), "utf8").trim()).toBe("--claudeai")
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("a Sign Out whose Console sign-out fails still leaves Kuvo Code's own plan sign-in signed out", async () => {
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
-case "$1 $2" in
-  "auth logout") echo "The Keychain is locked." >&2; exit 1 ;;
-  "auth status")
-    [ -n "$CLAUDE_CONFIG_DIR" ] && echo '{"loggedIn":true,"authMethod":"console","email":"ops@example.com"}' || echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}' ;;
-esac
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      ownToken(agent)
-      expect((await agent.account()).label).toBe("ada@example.com")
-      await expect(agent.signOut!()).rejects.toThrow("The Keychain is locked.")
-      // Its own plan sign-in is gone, and said so at once (a Console one is still there).
-      expect((await agent.account()).label).toBe("ops@example.com")
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("an added account an earlier version signed in to a Claude plan in its folder asks to sign in again", async () => {
-    consoleClaude(join(root, "claude-yours-added"))
-    const home = join(root, "claude-added-old")
-    mkdirSync(home, { recursive: true })
-    writeFileSync(join(home, "signed-in"), "--claudeai")
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context(), { id: "old", home })
-      expect((await bridge([agent]).account(agent)).connections).toEqual([])
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("a code Claude turns away only after checking it still ends the sign-in", async () => {
-    const go = join(root, "refuse-now")
-    writeFileSync(join(bin, "claude"), `#!/bin/bash
-${rawTTY}
-printf 'https://claude.com/cai/oauth/authorize?code=true\\n\\nPaste code here if prompted > '
-${readPaste}
-while [ ! -f '${go}' ]; do sleep 0.05; done
-printf "OAuth error: That code wasn't accepted. Press Enter to retry.\\n"
-read again
-`)
-    chmodSync(join(bin, "claude"), 0o755)
-    ClaudeAgent.keychain = true
-    try {
-      const agent = new ClaudeAgent(context())
-      const sign = await agent.signIn("claudeai", { remote: true })
-      await sign.complete!("a-whole-code#state")
-      expect(sign.status().status).toBe("pending")
-      writeFileSync(go, "")
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect(sign.status()).toEqual({ status: "failed", message: "Claude didn't take that code. Start again for a new one." })
-    } finally {
-      ClaudeAgent.keychain = keychain
-    }
-  })
-
-  test("an added account is never named after your own sign-in", async () => {
-    setupToken(`${TOKEN}\\n`)
-    ClaudeAgent.keychain = true
-    try {
-      const home = join(root, "claude-added")
-      const agent = new ClaudeAgent(context(), { id: "work", home })
-      const sign = await agent.signIn("claudeai", { remote: true })
-      await sign.complete!("good#state")
-      for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect((await bridge([agent]).account(agent)).connections[0]).toMatchObject({ label: "Claude plan", what: true })
-    } finally {
-      ClaudeAgent.keychain = keychain
+      rmSync(yours, { recursive: true, force: true })
     }
   })
 
@@ -865,15 +550,11 @@ echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}'
     const before = process.env.CLAUDE_CODE_OAUTH_TOKEN
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-yours"
     try {
-      for (const mac of [false, true]) {
-        ClaudeAgent.keychain = mac
-        await new ClaudeAgent(context()).account(true)
-      }
+      await new ClaudeAgent(context()).account(true)
       expect(readFileSync(said, "utf8")).not.toContain("sk-ant")
     } finally {
       if (before === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
       else process.env.CLAUDE_CODE_OAUTH_TOKEN = before
-      ClaudeAgent.keychain = keychain
     }
   })
 })
