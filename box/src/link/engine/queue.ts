@@ -276,7 +276,7 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
       if (!message) throw new Error("The waiting draft couldn't be read.");
       const { from, text: words, keyword } = shown;
       saveRemoved({ ...message, ...(from ? { from } : {}), words, keyword: keyword ?? null,
-        draft: from ? words : draftOf({ words, keyword }), ...(before ? { before } : {}) });
+        draft: from ? words : draftOf({ words }), ...(before ? { before } : {}) });
     }
     return { ...(resume ? letQueueGo(state) : state), held: state.held.filter(id => id !== shown!.id), waiting: state.waiting!.filter(each => each !== shown) };
   });
@@ -698,7 +698,7 @@ function removedInbox(entry: InboxEntry, before: string | undefined): RemovedWai
     id: entry.id, text, ...(files.length ? { files } : {}), delivery: entry.delivery,
     ...(isObject(metadata) ? { metadata } : {}), ...(shown.from ? { from: shown.from } : {}),
     words: shown.words, keyword: shown.keyword,
-    draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }),
+    draft: shown.from ? shown.words : draftOf(shown),
     ...(before ? { before } : {}),
   };
 }

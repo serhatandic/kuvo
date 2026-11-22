@@ -18,7 +18,7 @@ import { announce, toldPeers } from "../peers/agents";
 import { computerName } from "../peers/computer-name";
 import { isPutAway, peerOf, readPeerAgents } from "../peers/directory";
 import { KEY, mailFor, movedOf, ownKey, ownListed, peersOf, removedBoxes } from "../peers/known";
-import { bridgeAsk, giveUpSeat, ONLINE_STEP, SEAT_LETTER_LIFE, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
+import { bridgeAsk, giveUpSeat, ONLINE_STEP, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
 import { readLink } from "../state";
 import { READ_BY_MAIL, readConversation, TranscriptRefusal } from "./conversation";
 import { composeLetter, cutText, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, letterTries, NOTE_MEMORY, OUTBOX, waitingNote, placeOfSession, SENDING } from "./letter";
@@ -581,7 +581,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
       continue;
     }
     // A group chat's mail that mustn't be lost: to its computer only (never through a Mac), each
-    // minute until it says it has it, for two days of this link online (SEAT_LETTER_LIFE).
+    // minute until it says it has it, for two days of this link online (LETTER_MEMORY).
     if (isObject(letter.seat)) {
       const last = seatRounds.get(id);
       seatRounds.set(id, now);
@@ -591,7 +591,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
         // Kept a minute at a time: a restart loses no more.
         if (Math.floor(letter.aged! / 60_000) !== Math.floor(before / 60_000)) try { writePrivate(file, JSON.stringify(letter)); } catch {}
       }
-      if (letter.gaveUp === true || seatAge(letter) > SEAT_LETTER_LIFE) {
+      if (letter.gaveUp === true || seatAge(letter) > LETTER_MEMORY) {
         const told = giveUpSeat(id, letter as SeatLetter, ask);
         if (told) telling.push(told);
         continue;

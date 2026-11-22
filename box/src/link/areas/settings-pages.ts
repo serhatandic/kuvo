@@ -31,7 +31,6 @@ import { listsHere } from "../work/model-rule";
 import type { Refused, Section, SettingChange } from "./settings-kit";
 import { skillsSection } from "./settings-skills";
 import { customAutoSection } from "./settings-custom-auto";
-import { commandsSection } from "./settings-commands";
 import { mcpSection } from "./settings-mcp";
 import { agentsSection } from "./settings-agents";
 import { ACTIONS, choiceIn, EFFECTS, engineDefault, isRule } from "./permission-rules";
@@ -106,7 +105,6 @@ const SECTIONS: SettingsSection[] = [
   agentsSection.listed,
   vaultSection.listed,
   mcpSection.listed,
-  commandsSection.listed,
   customAutoSection.listed,
   skillsSection.listed,
 ];
@@ -830,7 +828,6 @@ const PAGES: Record<string, Section> = {
   agents: agentsSection,
   vault: vaultSection,
   mcp: mcpSection,
-  commands: commandsSection,
   "custom-auto": customAutoSection,
   skills: skillsSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
@@ -903,7 +900,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
 
   if (method === "GET" && rowPart === undefined) {
     const query = new URLSearchParams(request.path.split("?")[1]);
-    if (query.get("refresh-models") === "1" && (id === "agents" || id === "commands" || id === "custom-auto")) {
+    if (query.get("refresh-models") === "1" && (id === "agents" || id === "custom-auto")) {
       if (yield* heldRead(request, signal)) return;
       let engine = null;
       try { engine = context.readEngine(); } catch {}

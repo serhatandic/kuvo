@@ -71,7 +71,6 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["agents", "Agents", "Agents & Tools", "bot"],
     ["vault", "Vault", "Agents & Tools", "shield"],
     ["mcp", "MCP Servers", "Agents & Tools", "sliders"],
-    ["commands", "Commands", "Agents & Tools", "terminal"],
     ["custom-auto", "Custom Auto", "Models", "sliders"],
     ["skills", "Skills", "Agents & Tools", "pencil"],
   ])

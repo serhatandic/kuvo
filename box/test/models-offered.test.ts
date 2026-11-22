@@ -380,7 +380,7 @@ test("a GitLab folder that finishes before its deferred refresh is recorded is s
   } finally { engine.stop(true); forgetModelLists() }
 })
 
-test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-models=1"])("two independent SSH route processes share the host's picker refresh for %s", async path => {
+test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/agents?refresh-models=1"])("two independent SSH route processes share the host's picker refresh for %s", async path => {
   const { holdVault } = await import("../src/link/vault/holder")
   const { engineHandler } = await import("../src/link/server/router")
   const { ENGINE_FILE } = await import("../src/link/home")
@@ -423,7 +423,7 @@ test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-mode
       const result = await ask()
       expect(result.status).toBe(200)
       const page = JSON.parse(result.body)
-      if (path.includes("/settings/")) expect(page.id).toBe("commands")
+      if (path.includes("/settings/")) expect(page.id).toBe("agents")
       else expect(page.models[0].id).toBe("latest")
     }
     expect(hostPaths).toEqual([path, path])

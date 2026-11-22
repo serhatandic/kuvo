@@ -1,24 +1,20 @@
-// What Settings › Agents and Settings › Commands offer to bring over from Claude Code on this box's
-// computer (PROTOCOL.md, `kuvo/claude-code`): the subagents and slash commands in its own
-// `~/.claude`, which the engine doesn't read by itself (it does read skills), each with what Import
-// writes in this box's settings and whether they have it already. Each box lists its own, a Mac's
+// What Settings › Agents offers to bring over from Claude Code on this box's computer (PROTOCOL.md,
+// `kuvo/claude-code`): the subagents in its own `~/.claude`, which the engine doesn't read by itself
+// (it does read skills), each with what Import writes in this box's settings and whether they have
+// it already. (Its slash commands aren't offered: Kuvo has no commands to bring them to.) Each box lists its own, a Mac's
 // and a machine's alike, with its app closed too; a client writes one through `kuvo/config`.
 
 import fs from "node:fs";
 import path from "node:path";
 import { APP_KEY_FILES, INTEGRATION_DATA, K, homeFolder } from "../home";
-import { engineList } from "../engine/client";
 import { askedAbout, homeSecrets, throughLinks } from "../fence/policy";
 import { readSettings, valueAt } from "./config";
-import type { EngineRecord } from "../../shared/records";
 import type { ClaudeCode, ClaudeCodeImport } from "../../shared/routes/settings";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 /** The engine's own agents, on every computer whether its settings name them or not: one of
  * Claude Code's by a name of theirs comes over as `<name>-claude`. */
 const BUILT_IN_AGENTS = new Set(["build", "plan", "general", "explore", "compaction", "title", "summary"]);
-/** The engine's own commands, taken also before its list can be read. */
-const ENGINE_COMMANDS = new Set(["init", "review"]);
 
 /** A file's header of fields (between `---` lines) and what comes after it. */
 export function parseClaudeFile(text: string): { fields: Record<string, string>; body: string } {
@@ -56,12 +52,11 @@ function unquote(text: string): string {
 /** A name the engine takes: lowercase, with hyphens for anything else. */
 export const claudeID = (name: string): string => [...name.toLowerCase()].map(each => /[\p{L}\p{N}_-]/u.test(each) ? each : "-").join("");
 
-/** The most read of one file (an agent's instructions or a command's prompt is a few kilobytes),
- * of all of them, of the files and folders looked at, and how deep commands' folders go. */
+/** The most read of one file (an agent's instructions are a few kilobytes), of all of them, and of
+ * the files and folders looked at. */
 export const CLAUDE_FILE_LIMIT = 256 * 1024;
 const CLAUDE_TOTAL_LIMIT = 4 * 1024 * 1024;
 const CLAUDE_ENTRY_LIMIT = 2000;
-const CLAUDE_DEPTH_LIMIT = 4;
 
 /** What's left of one listing's limits, where its links may lead, and the folders it has listed
  * (by where they are: a link to one of them, or to itself, isn't listed again). */
@@ -167,13 +162,11 @@ async function readClaudeFile(file: string, walk: Walk): Promise<string | null> 
   }
 }
 
-/** The Markdown files in `folder`, read one at a time, within `walk`'s limits; `depth`, how many
- * folders deep it may go into (commands: in their folders too, each named with them,
- * "frontend/component" for frontend/component.md, as Claude Code names them). Links are followed,
- * to folders and files alike, where they may lead (`mayLeadTo`, `readClaudeFile`): a folder once,
- * so one linked to itself isn't listed again and again. Read off the box's thread, and asked of
+/** The Markdown files in `folder` (not in its folders), read one at a time, within `walk`'s limits.
+ * Links are followed where they may lead (`mayLeadTo`, `readClaudeFile`): a folder once, so one
+ * linked to itself isn't listed again and again. Read off the box's thread, and asked of
  * macOS first where it would ask (a link into your Documents), so that holds this request only. */
-async function markdownFiles(folder: string, walk: Walk, depth = 0): Promise<{ name: string; text: string }[]> {
+async function markdownFiles(folder: string, walk: Walk): Promise<{ name: string; text: string }[]> {
   await askedAbout([folder]);
   let real: string;
   try { real = await fs.promises.realpath(folder); } catch { return []; }
@@ -185,32 +178,21 @@ async function markdownFiles(folder: string, walk: Walk, depth = 0): Promise<{ n
   for (const entry of entries.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0)) {
     if (walk.entries-- <= 0 || walk.bytes <= 0) break;
     const file = path.join(real, entry.name);
-    let isFolder = entry.isDirectory();
-    if (entry.isSymbolicLink()) {
-      await askedAbout([file]);
-      isFolder = (await fs.promises.stat(file).catch(() => null))?.isDirectory() ?? false;
-    }
-    if (isFolder) {
-      if (depth > 0 && !entry.name.startsWith(".")) {
-        for (const each of await markdownFiles(file, walk, depth - 1)) found.push({ name: `${entry.name}/${each.name}`, text: each.text });
-      }
-      continue;
-    }
-    if (path.extname(entry.name) !== ".md") continue;
+    if (entry.isDirectory() || path.extname(entry.name) !== ".md") continue;
+    if (entry.isSymbolicLink()) await askedAbout([file]);
     const text = await readClaudeFile(file, walk);
     if (text !== null) found.push({ name: entry.name.slice(0, -3), text });
   }
   return found;
 }
 
-/** Claude Code's subagents (`agents`) and commands (`commands`) in `folder`, as they'd come over to
- * this box: named so they take none of its own (the engine's agents and commands, and `others`,
- * the commands its engine has that aren't in its settings: a plugin's, an MCP server's), and marked
- * `imported` where `settings` have them already. */
-export async function claudeCodeList(folder: string, settings: unknown, others: ReadonlySet<string>): Promise<ClaudeCode> {
+/** Claude Code's subagents (`agents`) in `folder`, as they'd come over to this box: named so they
+ * take none of the engine's own, and marked `imported` where `settings` have them already.
+ * (`commands`, which 0.7.x clients read, is always empty.) */
+export async function claudeCodeList(folder: string, settings: unknown): Promise<ClaudeCode> {
   const entry = (name: string, description: string, at: string[], value: Record<string, string>): ClaudeCodeImport =>
     ({ name, description, path: at, settings: value, imported: valueAt(settings, at) !== undefined });
-  // (Where its links lead: a ~/.claude, or its agents or commands, linked to your dotfiles is read there.)
+  // (Where its links lead: a ~/.claude, or its agents, linked to your dotfiles is read there.)
   const walk: Walk = { bytes: CLAUDE_TOTAL_LIMIT, entries: CLAUDE_ENTRY_LIMIT, places: await claudePlaces(folder), listed: new Set() };
   const agents = (await markdownFiles(path.join(folder, "agents"), walk)).flatMap(file => {
     const { fields, body } = parseClaudeFile(file.text);
@@ -222,42 +204,21 @@ export async function claudeCodeList(folder: string, settings: unknown, others: 
     const description = (fields.description ?? "").replaceAll("\\n", "\n");
     return [{ id, name, description, body }];
   }).sort((one, other) => one.name.localeCompare(other.name, undefined, { sensitivity: "base" }));
-  const commands = (await markdownFiles(path.join(folder, "commands"), walk, CLAUDE_DEPTH_LIMIT)).flatMap(file => {
-    const { fields, body } = parseClaudeFile(file.text);
-    const id = claudeID(file.name);
-    return id && body ? [{ id, description: fields.description ?? "", body }] : [];
-  }).sort((one, other) => one.id < other.id ? -1 : one.id > other.id ? 1 : 0);
   return {
     agents: agents.map(agent => entry(agent.name, agent.description, ["agents", agent.id], { mode: "subagent", description: agent.description, system: agent.body })),
-    commands: commands.map(command => {
-      const name = others.has(command.id) || ENGINE_COMMANDS.has(command.id) ? `${command.id}-claude` : command.id;
-      return entry(name, command.description, ["commands", name], { template: command.body, description: command.description });
-    }),
+    commands: [],
   };
-}
-
-/** The names of the commands this box's engine has that aren't in its settings: none while it
- * isn't answering. */
-async function otherCommands(engine: EngineRecord | null, settings: unknown): Promise<Set<string>> {
-  if (!engine?.port) return new Set();
-  const yours = valueAt(settings, ["commands"]);
-  // (Once its plugins are set up: one just started lists its own before theirs.)
-  const listed = await engineList(engine, "api/command") as { name?: unknown }[] | null;
-  return new Set((listed ?? []).map(each => each?.name)
-    .filter((name): name is string => typeof name === "string" && !(yours && typeof yours === "object" && name in yours)));
 }
 
 // `GET kuvo/claude-code`: this computer's own, on every box. (`?machine=`, which a Mac's app once
 // answered with the Mac's ~/.claude for one of its machines, isn't another's here: each machine's
 // box lists its own.)
-export async function* claudeCodeRoute({ request, readEngine, json }: RouteContext): AsyncGenerator<AnswerPiece> {
+export async function* claudeCodeRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   if (new URLSearchParams(request.path.split("?")[1] ?? "").has("machine")) return yield* json(404, { message: "This computer lists its own Claude Code only." });
   // (~/.claude may lead into a folder macOS asks about, your Desktop say: `markdownFiles` asks it
   // off the box's thread first, so only this request waits for the answer.)
   const folder = path.join(homeFolder(), ".claude");
   const { settings } = readSettings();
-  let engine: EngineRecord | null = null;
-  try { engine = readEngine(); } catch {}
-  return yield* json(200, await claudeCodeList(folder, settings ?? {}, await otherCommands(engine, settings ?? {})));
+  return yield* json(200, await claudeCodeList(folder, settings ?? {}));
 }

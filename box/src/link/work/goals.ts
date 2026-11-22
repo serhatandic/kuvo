@@ -859,13 +859,12 @@ const GOAL_PLANNING = [
 ];
 
 /** /goal in a bot's chat: the bot asked to plan `words` as a goal and put it to you, now. */
-export async function askGoal(session: string, words: string, targets: () => Target[], admit?: () => boolean): Promise<{ text: string } | { refused: GoalRefusal }> {
+export async function askGoal(session: string, words: string, targets: () => Target[]): Promise<{ text: string } | { refused: GoalRefusal }> {
   const said = text(words, 2000);
   if (!said) return { refused: { status: 400, message: "Say the goal (goal)." } };
   if (frozen().has(session)) return { refused: { status: 409, message: MOVING } };
   const place = await placeOfSession(session, targets()).catch(() => null);
   if (!place) return { refused: { status: 404, message: "There's no such conversation here." } };
-  if (admit?.() === false) return { refused: { status: 409, message: "The draft no longer has authority here." } };
   // You asked for it now: as a message of yours to go now, the queue goes on.
   changeQueue(session, state => ({ ...state, paused: false }));
   const asking = [said, "", "<sent-with>", GOAL_HEADING, "/goal", ...GOAL_PLANNING, "</sent-with>"].join("\n");

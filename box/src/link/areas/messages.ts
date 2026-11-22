@@ -9,12 +9,11 @@ import { MOVING } from "../bots/here";
 import { messageID } from "../engine/sessions";
 import { isRefused, placeOfSessionPatiently } from "../letters/letter";
 import { heldAsItComes, underWay } from "../messages/arriving";
-import { commandParts, commandsSettled, commandTemplate, keptCommand, madeText, sendingCommand } from "../messages/commands";
-import { composeArguments, composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
+import { keptCommand } from "../messages/commands";
+import { composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
 import { withAttachedNote } from "../peers/naming";
 import type { MessageFields } from "../messages/parts";
 import { keepsList } from "../lists/sessions";
-import { folderOf } from "../lists/rule";
 import { frozen } from "../moves/records";
 import { keptFiles } from "../server/attached";
 import type { PromptFile } from "../server/attached";
@@ -23,15 +22,12 @@ import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
 import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
-import { swapLine, swapUnderWay } from "../../shared/engine-swap";
-import { RUN } from "../home";
 import { answering, BUSY, SENDING_PATIENCE, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
 import { fromAPhone } from "../server/context";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 import { performsMutation } from "../ownership/admission";
-import { liveMutationRefusal } from "../ownership/authority";
 
 export const SEND_ROUTE = /^kuvo\/sessions\/([^/]+)\/send$/;
 export const PARTS_ROUTE = "kuvo/messages/parts";
@@ -56,12 +52,9 @@ function messageFiles(target: Target | null, toAgents: boolean, signal?: AbortSi
 
 /** `fields` (with the `files` it carries, as the engine takes them) as the message the conversation
  * `session` at `target` gets: its files kept here as `attachedIn` keeps them, and its text written
- * for the agent (`composeMessage`), from a phone unless `request` is a Kuvo Code app's; a
- * `command`'s arguments as written with only its files' note (`composeArguments`). */
-export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target | null, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, command = false, authorize?: () => void): Promise<Composed> {
+ * for the agent (`composeMessage`), from a phone unless `request` is a Kuvo Code app's. */
+export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target | null, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, authorize?: () => void): Promise<Composed> {
   const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents, authorize);
-  // A command's arguments: as written, with its files' note alone.
-  if (command) return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: (kept?.files ?? files) as PromptFile[], metadata: {} };
   // (Everyone worked out again only for a message that names someone.)
   const everyone = fields.words.includes("&") ? await everyoneFor(fields.words, readEngine, fields.named ?? []) : listedAgents();
   const phone = fromAPhone(request);
@@ -92,15 +85,14 @@ export class NotListed extends Error {
 
 /** Whether `fields` and `files` make no message: nothing written, and nothing with it. */
 export const isEmpty = (fields: MessageFields, files: unknown[]): boolean =>
-  !fields.words.trim() && fields.keyword === undefined && fields.widget === undefined && !fields.comments?.length && !files.length
+  !fields.words.trim() && fields.widget === undefined && !fields.comments?.length && !files.length
   && !fields.notes?.included?.length && !fields.notes?.paths?.length && !fields.notes?.unsent?.length;
 
-// `kuvo/sessions/<id>/send`: `{id, words, files?, delivery?, keyword?, widget?, comments?, named?,
+// `kuvo/sessions/<id>/send`: `{id, words, files?, delivery?, widget?, comments?, named?,
 // (`delivery`: `steer`, the default; `queue`, after the run; `now`, the step under way stopped for it)
-// notes?}` as a message, or with `command`, that command run with `words` as its arguments (only
-// its files' note goes with them); `{id, text, files?, delivery?}`, one sent before sent again as
-// the agent read it (Retry), its files as they went. Answered as the engine (or the coding agents'
-// bridge) answers it; a message sent again under its id goes once (`sentOnce`), whoever sent it
+// notes?}` as a message (as written, one starting with "/" or "!" too); `{id, text, files?,
+// delivery?}`, one sent before sent again as the agent read it (Retry), its files as they went.
+// Answered as the engine (or the coding agents' bridge) answers it; a message sent again under its id goes once (`sentOnce`), whoever sent it
 // going meanwhile.
 export async function* sendRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
@@ -124,9 +116,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   const fields = isObject(given) && again === null ? fieldsOf(given) : null;
   if (!isObject(given) || (!fields && again === null)) return yield* json(400, { message: "Send what was written (words)." });
   const files = Array.isArray(given.files) ? given.files : [];
-  const command = fields && typeof given.command === "string" && given.command.trim() ? given.command.trim() : null;
-  // (A command runs with nothing after its name: /init.)
-  if (!command && (fields ? isEmpty(fields, files) : !again!.trim() && !files.length)) return yield* json(400, { message: "There's nothing to send." });
+  if (fields ? isEmpty(fields, files) : !again!.trim() && !files.length) return yield* json(400, { message: "There's nothing to send." });
   if (frozen().has(session)) return yield* json(409, { message: MOVING });
   const engineHere = () => { try { return readEngine(); } catch { return null; } };
   const engine = engineHere();
@@ -179,19 +169,14 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   if (target) headers.authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS) if (typeof asked[name] === "string") headers[name] = asked[name] as string;
-  if (!command && given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
-  const id = !command && isWaitingID(given.id) ? given.id : undefined;
-  // A command's message shows as typed: its parts go with it to the coding agents' bridge, and for
-  // the engine's, which take none, are kept here once it says which message it made (commands.ts).
-  const typed = command && fields ? commandParts(command, fields.words) : null;
-  const at = target && new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`);
-  // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one); a command
-  // stops with its sender: it has no id, and sent again it would run twice.
+  if (given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
+  const id = isWaitingID(given.id) ? given.id : undefined;
+  const at = target && new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/prompt`);
+  // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one).
   const denied = (): SentAnswer | null => {
-    if (command) signal?.throwIfAborted();
-    if (!command && !performsMutation("queuedSessionWork", { kind: "conversations", id: session }))
+    if (!performsMutation("queuedSessionWork", { kind: "conversations", id: session }))
       return notAdmitted({ message: MOVING }, 409);
-    const veto = context.admitQueued?.() ?? (command ? liveMutationRefusal("command", context, session) : null);
+    const veto = context.admitQueued?.();
     return veto ? { ...notAdmitted(veto.value, veto.status), notAdmitted: veto.notAdmitted } : null;
   };
   const authorize = () => {
@@ -201,10 +186,8 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   const send = async (): Promise<SentAnswer> => {
     try {
       authorize?.();
-      // (One of yours as the engine has it, asked meanwhile: what it will make, where this box can say.)
-      const template = typed && !toAgents && place ? commandTemplate(place.target, folderOf(place.data), command!, signal) : null;
       const message = fields
-        ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null, authorize)
+        ? await composed(fields, files, session, target, toAgents, request, readEngine, undefined, undefined, authorize)
         : await sentAgain(again!, files, session, target, toAgents, undefined, undefined, authorize);
       return await admitPrompt(session, async () => {
         const veto = denied();
@@ -214,30 +197,25 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         // the first thing to reach a stopped conversation), not set going.
         const held = heldAsItComes(session, id);
         // `now` (Send Now): to go now, the step under way stopped for it once the engine has it.
-        const now = !held && !command && given.delivery === "now";
-        const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || now || !command ? "steer" : undefined;
-        const body = command
-          ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
-          : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
+        const now = !held && given.delivery === "now";
+        const delivery = held || given.delivery === "queue" ? "queue" : "steer";
+        const body = { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
         if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
-        // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
-        // said, in words, to send again once it's back.
         const engineTarget = toAgents ? undefined : target;
         const holding = engineTarget !== undefined && swapHoldsFor(engineTarget, session);
-        if (command && holding) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox."} Send this command again then.`, engineChanging: true })) };
         // For after this run while its queue is paused (a Stop, from any client), or while its engine
         // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
         // (the engine would run all it holds with the next thing it had).
-        if (!command && (delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, engineTarget)) {
+        if ((delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, engineTarget)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
         if (!target || !at) return notAdmitted({ message: "The engine isn't running." });
         let answeredBy = target;
         const post = async (): Promise<SentAnswer> => {
           const deadline = AbortSignal.timeout(SENDING_PATIENCE.ms);
-          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command && signal ? AbortSignal.any([signal, deadline]) : deadline };
+          const options = { method: "POST", headers, body: JSON.stringify(body), signal: deadline };
           authorize?.();
           const result = toAgents ? await bridgeRequest(target, at, options, bridge, false, authorize) : { response: await fetch(at, options), target };
           const { response } = result;
@@ -248,10 +226,9 @@ async function* sending(context: RouteContext, session: string, retry = true): A
           }
           return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         };
-        const made = template ? madeText(await template, message.text) : null;
-        const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
+        const answer = await post();
         // (Taken by the agent meanwhile, it isn't waiting any more: that's as good.)
-        if (now && answer.status >= 200 && answer.status < 300) await sendNow(answeredBy, session, (body as { id: string }).id).catch(() => false);
+        if (now && answer.status >= 200 && answer.status < 300) await sendNow(answeredBy, session, body.id).catch(() => false);
         // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
         if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(answeredBy, session, undefined, [id]).catch(() => {});
         return answer;
@@ -260,11 +237,10 @@ async function* sending(context: RouteContext, session: string, retry = true): A
       if (error instanceof QueuedAdmission) return error.answer;
       if (error instanceof NotListed || error instanceof MoveAdmissionClosed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
       if (error instanceof UnsupportedBridgeRouteVersion) return { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) };
-      if (signal?.aborted && command) throw new Error("Stopped.");
       return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: toAgents ? "The coding agents aren't answering on this computer. Try again in a moment." : "The engine isn't answering. Try again in a moment." })) };
     }
   };
-  const once = command ? null : sentKey(toAgents ? "agents" : "engine", session, request.body);
+  const once = sentKey(toAgents ? "agents" : "engine", session, request.body);
   const answer = once ? await sentOnce(once, send) : await send();
   if (!target && retry && answer.status === 503 && engineHere()) return yield* sending(context, session, false);
   return yield* answering(answer);
@@ -272,9 +248,8 @@ async function* sending(context: RouteContext, session: string, retry = true): A
 
 // `kuvo/messages/parts`: `{texts, ids?, session?}`, the texts of messages from before (which carry
 // no parts) and their ids, read as `{parts}`, one for each, in order: one that ran one of the
-// engine's commands as it was typed (commands.ts; once each command on its way in `session` has been
-// given its message, so one a client sees before the command's answer still reads as typed), any
-// other from its text.
+// engine's commands (when Kuvo still sent them) as it was typed (commands.ts), any other from its
+// text. (`session`, which older clients send, is no longer needed.)
 export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Send the texts with POST." });
@@ -284,13 +259,6 @@ export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerP
   if (texts.length > PARTS_MOST) return yield* json(400, { message: `Send at most ${PARTS_MOST} texts at once.` });
   const ids = isObject(given) && Array.isArray(given.ids) ? given.ids : null;
   if (ids && (ids.length !== texts.length || ids.some(id => typeof id !== "string"))) return yield* json(400, { message: "Send an id for each text (ids)." });
-  const session = isObject(given) && typeof given.session === "string" ? given.session : null;
-  const kept = () => ids?.map(id => keptCommand(id as string)) ?? [];
-  let commands = kept();
-  // (Only that conversation's commands on their way are waited for.)
-  if (session && commands.some(parts => !parts)) {
-    await commandsSettled(session);
-    commands = kept();
-  }
+  const commands = ids?.map(id => keptCommand(id as string)) ?? [];
   return yield* json(200, { parts: (texts as string[]).map((text, at) => commands[at] ?? partsOf(text)) });
 }

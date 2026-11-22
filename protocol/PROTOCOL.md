@@ -1711,9 +1711,7 @@ the same for every client and with none connected, and keeps them in `run/queues
   `waits: true|false`. `DELETE …/queue/<item>`: one waiting on the box taken away, its answer
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
-  composer: its words with the command or keyword it went with in front (`/review main`, `/plan
-  sketch it`, `/goal Ship v2`), so sending it again does what it did, but a /loop's words alone (its
-  wake-up was set as it was sent: "/loop …" again would set a second);
+  composer: its words alone, without the keyword or command an older one went with;
   `before`, what came after it, left out when it was last; `queue.removed.keyword`). A successful
   removal can include `removed.receipt`. A client can supply `?receipt=<operation-id>` in the
   message ID format and save it before asking to remove the item. Repeating that DELETE recovers
@@ -1743,7 +1741,8 @@ the same for every client and with none connected, and keeps them in `run/queues
   `[{id, words, files, keyword, from, on, delivery, held}]`. `words` is what was written, without
   what the box added for the agent (a message's kept parts' words; another agent's letter, a
   wake-up or the box's own note in its own words, its line); `files` its files' names; `keyword`
-  the one it was sent with (`/goal`), or the command it runs (`/review`, its arguments `words`), else null; `from` who it's from (an agent's name, `Wake-up`,
+  the one it was sent with (a bot's `/goal`, or an older message's keyword or command, its
+  arguments `words`), else null; `from` who it's from (an agent's name, `Wake-up`,
   `Goal`…), null for yours; `on` `engine` (the engine's or the coding agents' bridge's inbox) or
   `box`; `delivery` `steer` or `queue`; `held` whether Stop held it. `items` is null while the
   place the session runs can't be read, or is slow to say (a client keeps what it showed). A client draws the list
@@ -2793,8 +2792,7 @@ box decides it from what its engine and coding agents list, so every client show
   waits for a model where `choose`, and otherwise a message is refused with `refusal`, kept in the
   field; a sign-in card's help is `action.help`; a failed turn's card, for the model the
   conversation is on, names its button by `action.label` (or Sign In Again for a sign-in that
-  ended). A client sends a plain message without asking the box, so it refuses one with `refusal`
-  itself; the typed send decides it on the box ("What a typed message means"). How a signed-out engine
+  ended). A draft's send decides it on the box ("What a typed message means"). How a signed-out engine
   provider is signed in to is held to `vectors/plan-sign-ins.json` in the box and KuvoClient's
   `PlanSignIns` and `Integration.offeredSignInMethods`, which both apps' Accounts offer from. A
   box without `sessions.models` leaves the Mac deciding from its accounts and models as it did
@@ -4870,8 +4868,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     too: it runs those through an engine session of its own, which carries
     `metadata.kuvo.engineFor` and is never shown (hide it in the engine's session list).
     `…/session/<id>/fork {before}` makes a new session from a message.
-  - `POST …/session/<id>/compact` summarizes a conversation, on the engine as on the agents (the
-    command `/compact`, and a lead's `compact_session`). On the agents: `{"data": {"state":
+  - `POST …/session/<id>/compact` summarizes a conversation, on the engine as on the agents (a
+    lead's `compact_session`). On the agents: `{"data": {"state":
     "compacting"}}`, or `"waiting"` while a turn runs (held to its end, first in the queue, as an
     inbox item of type `compaction`, and dropped with a notice if the turn doesn't succeed; asked
     twice is once). On the engine it waits for the next step; Stop and a failed run take it from the
@@ -5220,7 +5218,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   Cursor's `agents`, a plugin of Grok's with an agent each, Antigravity's custom agents; a model
   of one of that agent's accounts, never its maker's API models in the engine), on a
   Mac from where its box's `KUVO_ENGINE_CONFIG` says, on a machine from `box/opencode.json`;
-  Settings › Commands, `commands.<name>`; Settings › MCP Servers, `mcp.servers.<name>`; Settings ›
+  Settings › MCP Servers, `mcp.servers.<name>`; Settings ›
   Git (`git.words`), which the engine doesn't read either: `branch_prefix` (what a worktree's branch
   starts with; `""` for nothing, none: `kuvo/`), `commit_instructions` and
   `pull_request_instructions` (added to what a model is asked, see `kuvo/git/commit-diff` and
@@ -5893,13 +5891,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   `backgroundWorkFailure`. A `keepsAwake` that isn't true or false is `400`, and nothing is kept
   of a request that's refused.
 - `GET kuvo/claude-code` (every box, from #341; before, a Mac's app only): what Settings › Agents
-  and Settings › Commands offer to bring over from Claude Code on this computer (its own
-  `~/.claude/agents` and `~/.claude/commands`), with its app closed too:
-  `{"agents": [{name, description, path, settings, imported}], "commands": [...]}`. An agent's
-  `name` is the one it's shown by; a command's is the one it comes over as, `<name>-claude` when
-  this computer has one by its name already (the engine's own, a plugin's or an MCP server's, as
-  its engine lists them). Import is writing `settings` at `path` (`["agents", "<id>"]` or
-  `["commands", "<name>"]`) through this computer's `kuvo/config`; `imported` says whether its
+  offers to bring over from Claude Code on this computer (its own `~/.claude/agents`), with its
+  app closed too: `{"agents": [{name, description, path, settings, imported}], "commands": []}`
+  (`commands` is always empty: Kuvo has no commands to bring Claude Code's to). An agent's
+  `name` is the one it's shown by. Import is writing `settings` at `path` (`["agents", "<id>"]`) through this computer's `kuvo/config`; `imported` says whether its
   settings have it there. A computer with no `~/.claude` lists none. Links, to folders and files
   alike, are followed where they lead in the user's home folder, `/nix/store` (dotfiles kept with
   GNU stow or home-manager) or where `~/.claude` itself leads, each folder listed once, but never
@@ -5908,8 +5903,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   where it's an ordinary file of 256 KB at most whose own name, where its links lead, ends in `.md`:
   a link `x.md` to a key or to Claude Code's sign-in isn't, nor a hard link (its other names can't
   be told; but root's in the Nix store, which an optimised store makes of every file), a pipe or a
-  device. Commands' folders are read four deep, and no
-  more than 2,000 entries and 4 MB in all. Each computer offers its own:
+  device. No more than 2,000 entries and 4 MB in all. Each computer offers its own:
   a client asks a machine's box for the machine's, never a Mac for it (`?machine=`, which a Mac's
   app once answered with the Mac's `~/.claude`, is `404`).
 - `POST kuvo/engine/restart`: the computer's engine starts over, as Settings › Engine's Restart
@@ -6197,14 +6191,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   there are to name there (not the chat's own bots), for every client alike: send only the words,
   and a block sent is not taken. Show a message from its parts (`agents`), each `&<name>` they
   list in bold (a bot's in its color), opening that session.
-- A message a keyword sends (/plan's words, /loop's when it sends now, a bot's /goal) carries the
-  keyword as typed, right after its words and before every other block: a line `<sent-with>`, a
-  heading in `SentWithKeyword.swift`, the keyword on one line (`/plan`, `/loop every hour`,
-  `/goal`), and a line `</sent-with>`. Its box writes it from the message's `keyword` (and for a
-  bot's /goal). Show the keyword (its parts' `keyword`) in front of the message's words, drawn as the composer draws it (its
-  mark for the "/", the rest in bold, in the accent; Plan's in orange). Taken back (Undo, a failed
-  send), it's the words alone, so sending them again sets no second loop; editing a queued one puts
-  back what its box says (`removed.draft`), the keyword in front (a /loop's words alone).
+- A bot's goal asked for (`kuvo/work/goals/ask`), and older messages sent with a keyword (/plan,
+  /loop), carry it right after the words and before every other block: a line `<sent-with>`, a
+  heading in `SentWithKeyword.swift`, the keyword on one line (`/goal`, `/plan`, `/loop every
+  hour`), and a line `</sent-with>`. Show the keyword (its parts' `keyword`) in front of the
+  message's words, its mark for the "/", the rest in bold, in the accent (Plan's in orange). Taken
+  back (Undo, a failed send, Edit on a queued one: `removed.draft`), it's the words alone.
 - A message the box writes to an agent in its conversation (a goal starting, changed, at its
   end, declined or carrying on after a limit reset; its sessions' news to the bot that started
   them; your answer told late) is a user message to the engine, marked in its `metadata`:
@@ -6371,7 +6363,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
 - `kuvo/groups`: the group chats that live on the computer asked, with their bots (face, name, session), who's
   talking, whether one is under way or paused, and the last thing said; `kuvo/groups/events`
   streams that list as it changes, and `kuvo/groups/<id>/events` one chat's latest messages,
-  the same way. `POST kuvo/groups/<id>` writes to it (`{"text"}`; 400 `{"message"}` for `/compact`, which a chat of several has no one conversation for); `…/stop`, `…/keep-going`
+  the same way. `POST kuvo/groups/<id>` writes to it (`{"text"}`, as written); `…/stop`, `…/keep-going`
   and `…/viewed` do what they say; `…/undo` (`{"message"}`) takes a message of yours back and
   answers with what was taken. A wrap-up can carry `tasks`, who does what: each with `id`, `bot`,
   `task`, `state` (`proposed`, `waiting`, `working`, `done` or `failed`), `title` (`groups.task-title`: the box’s display words for that state, including a working task waiting on a stopped conversation, drawn as sent), `started`/`finished`,
@@ -6501,9 +6493,8 @@ Grok). With none to answer, the goal pauses and says so. A client reaches them a
   stopped is checked once it's back, as any turn, and one is never checked twice. While its
   conversation is archived (`kuvo.archived` in its metadata, or the engine's own), the goal waits,
   still `working`: its last turn is checked once the conversation is brought back (bridge 0.9.121).
-- "/goal" in a composer: `/goal <condition>` sets it, `/goal` alone shows it, and `/goal pause`,
-  `/goal resume` and `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`) do what they say
-  (OpenCodeKit's `GoalCommand`, for every client alike).
+- There's no "/goal" in a composer any more: "/goal …" typed goes to the agent as words. A goal is
+  set by the routes above, or by the agent (`propose_goal`).
 
 ### Plan limits
 
@@ -7947,7 +7938,7 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 
 ### Side questions, handoffs and reviews
 
-Three more keywords each box answers in its agents bridge, as it does goals ("Goals"), and its
+Three more features each box answers in its agents bridge, as it does goals ("Goals"), and its
 branches, for the engine's sessions and the coding agents' alike, with no client there: `kuvo/agents/api/kuvo/…` on
 the box the conversation lives on (the Mac app at `api/kuvo/…` on the bridge), while `kuvo/info` has
 `agents: true` (503 otherwise), where `features` names them. Each answers `400`, `404` (no such
@@ -7955,11 +7946,11 @@ conversation, or nothing of it), `409` and `503` with `{message}` to show. Times
 A conversation deleted takes its side questions and its review with it (`kuvo.btw.removed`
 `{sessionID}`, `kuvo.review.updated` with `review: null`), also one deleted while the box was stopped.
 
-- **Side questions** (`btw`, "/btw <question>"; threads `btw.threads`): a question about a
+- **Side questions** (`btw`; threads `btw.threads`): a question about a
   conversation, answered from what it knows (on the engine, from inside its context; with the
   coding agents, the conversation goes with the question), and kept out of it: the conversation
   is told nothing. A question can be followed up, in a side thread: each follow-up is answered
-  with its thread so far (the latest dozen answers), and a new "/btw" starts a thread of its own,
+  with its thread so far (the latest dozen answers), and a new question starts a thread of its own,
   afresh. Each conversation keeps its own list (the newest 100), which a client shows apart from
   the conversation (the Mac's sidebar has them under it).
   - `POST …/kuvo/btw/<session>` with `{"question", "thread"?}` (at most 4,000 characters) →
@@ -7985,7 +7976,7 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
     a side thread, all of it, and `DELETE …/kuvo/btw/<session>` all of them.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
     `kuvo.btw.removed` `{sessionID, id?}` (a thread's, one for each of its questions).
-- **Handoffs** (`handoff`, "/handoff [what to do next]"): a conversation carried on in a fresh one.
+- **Handoffs** (`handoff`): a conversation carried on in a fresh one.
   Its model writes a handoff note from inside it, and a new conversation in the same folder, on
   the same model, effort, agent and permissions, titled "<title> (continued)", starts on that note
   (a note whose text starts with `[Handoff] `: show its `description`, "Carried on from “…”"), and
@@ -8014,7 +8005,7 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
   - `POST …/kuvo/branch/<session>` with `{"before"}`, the message's id → `{data: session}`, the new
     conversation, marked. `400` with no `before`, `404` for a message not in it, `409` for a
     subagent's.
-- **Reviews** (`reviews`, "/review"; scopes `reviews.scopes`): what `scope` names in the conversation's folder, read by a
+- **Reviews** (`reviews`; scopes `reviews.scopes`): what `scope` names in the conversation's folder, read by a
   model with none of the conversation's context: on the engine, its own model afresh, or `model`
   when given; with the coding agents, its own agent (another one you're signed in to when it
   can't), `model` left out. A scope:
@@ -8026,7 +8017,7 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
     committed yet;
   - `{"kind": "commits", "from", "to"?}`: what the commits after `from`, up to `to` (HEAD when
     left out), changed, git's `from..to`; `from` as `<commit>^` starts with that commit, the
-    first one too ("/review since <commit>");
+    first one too;
   - `{"kind": "folder", "path"}` and `{"kind": "project"}`: the files themselves, of a folder in
     the project (a path inside it, never `..` or absolute: `400`) or all of it, numbered line by
     line: those git keeps or would (all but hidden ones and `node_modules` out of a repository),
@@ -8043,8 +8034,7 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
   and its summary says how many files), each by a fresh model.
   - `POST …/kuvo/reviews/<session>` with `{"model"?: {providerID, id}, "focus"?, "scope"?}` →
     `{data: review}`, `state` `reviewing`; `409` while one is under way, `400` for a scope that
-    makes no sense. `focus` is what to look at especially, as the user wrote it ("/review with
-    <model> <focus>"), or `security`, `performance` or `accessibility`, which the box spells out
+    makes no sense. `focus` is what to look at especially, as the user wrote it, or `security`, `performance` or `accessibility`, which the box spells out
     for the reviewer. A review: `{id, session, state: "reviewing" | "done" | "failed", model?,
     scope?, focus?, progress?: {read, of}, stopped?: {read, of}, summary?, findings: [finding],
     error?, fix?, started, ended?}`, its findings bugs first; `scope` is left out for the changes
@@ -8106,79 +8096,23 @@ for one with no folder.
 
 ### What a typed message means
 
-What a conversation's composer sends is its box's to read: `kuvo/sessions/<session>/typed` on the
-box the conversation lives on. A client needs a box whose `features` has `typed`, and has no other
-way: with one from before, it keeps what was written and says that computer needs a newer Kuvo
-Code (a Mac updates its machines before it uses them; a phone can meet a Mac not updated yet). The box decides what the text means, does what's its own, and says what the
-client does with the rest; a client keeps the draft, puts back what it's told to, and draws.
+Kuvo has no typed keywords or commands: what's written in a composer goes to the agent as a
+message, as written, one starting with "/" or "!" too (Claude Code's own "/" commands, typed in its
+conversation, are its to read). A client sends it through the conversation's box:
 
-- **The order a text is tried in:** a goal ("/goal …"), a keyword this conversation offers, the
-  engine's own review ("/review-quick …"), a "!" command ("!" first, then words), one of the
-  engine's commands in the conversation's folder ("/name arguments"), else a message. With the
-  engine's commands unread, a goal or keyword still goes; anything else answers `503`. A text whose
-  first character that isn't a space is neither "/" nor "!" is always a message: a client sends it
-  without asking (with a model that can't run, it shows the `refusal` its box gave in
-  `kuvo/sessions/models` and keeps it, as the box would).
-- `GET` → what "/" offers there: `{keywords: [{name, title, summary, argument}], commands:
-  [{name, description?}]}`. `keywords` in the order to list them, `argument` what's written in grey
-  after one until something is (null: it takes nothing). None in a subagent's conversation; `goal`,
-  `review`, `btw` and `handoff` while the box's agents bridge runs; `loop`, `plan`, `autopilot` and
-  `compact` always. `commands` is the engine's and yours as "/" lists them: never its `goal`, and
-  its `review` as `review-quick` while the keyword has the name. Read it again when the conversation
-  opens and as its agents bridge comes or goes.
-- `POST` with `{"id"?, "text", "files"?, "side"?, "reviewer"?}`: the send's own id
-  (or `idempotency-key`, with which the phone's link sends it again after its session drops: "Sending
-  again"), under which the box answers the same send again as it did, never doing it twice,
-  whatever became of the first request: an answer that went is kept on disk an hour (the latest
-  1000), so it holds after the box starts again too; one that didn't go (refused, the engine not
-  there) is tried again; one cut off as its step was done (the box stopped meanwhile) may be done
-  again; the text as typed; whether
-  pictures or files are attached; whether the side thread's tag is on the composer; the model picked last in "Who reads it"
-  (`{providerID, id}`, which wins a tie between two of the same name). It answers `200` with what it
-  meant, `400` without `text`, `404` for a conversation that isn't there, `503` when the engine
-  can't be asked; on any of those the client puts it all back, saying why.
-- **The answer**, every field left out where it doesn't apply, applied in this order:
-  - What the box did, to show at once, before its events come: `goal` (as set, paused or resumed),
-    `goalCleared`, `askedBot` (a bot's chat: the bot was asked to plan it, "Work › Goals"),
-    `autopilot` (on, as `kuvo/sessions/<id>/autopilot` answers), `wakeUp` (`{due, every, note}`, a
-    /loop's, `due` in seconds), `sideQuestion`, `handoff`, `review` (as the agents bridge answers
-    them, "Side questions, handoffs and reviews"). `keyword` names the keyword it ran (not
-    "/goal", which is a goal's).
-  - What the client does: `showGoal` (show the goal bar), `agent` (the mode the box switched the
-    conversation to, to show: `plan`, or, for "/plan" alone in Plan, the one a conversation starts in
-    there: Build, or the first mode there is where Build is off), `toggleAutopilot`, `compact` (ask `…/session/<id>/compact`; `said` is the box's line to show once that's asked, "Asked to summarize the conversation.": a client writes none of its own), `shell` (run it in the conversation's folder), `command`
-    (`{name, arguments}`, run with the composer's files), `send` (`{text, typed?, quoted?, steer?}`:
-    send it as a message with the composer's files; `typed` is the keyword as typed, "/plan", to
-    send it with; `quoted`: what the composer replies to goes with it; `steer`: to the agent now,
-    never to wait in the queue, whatever Send asked: a /loop's first), `sideThread` (a follow-up in the side
-    thread that shows, as one without "/" is: one at a time, and none with files attached).
-  - What goes back: the composer's files stay unless `send` or `command` took them, and what it
-    replies to unless `send.quoted` did; `restore` `{text, beside?}` goes back ahead of anything
-    written since: `text` into an empty composer, else `beside` where it's given (a keyword's words
-    alone, which the keyword would otherwise take in; nothing for a goal's pause), else `text`;
-    `error` says why, over the composer.
-  - The conversation's model is checked first, by the box, as `kuvo/sessions/models` says it (a text
-    that needs it: all but a "!" command and showing, pausing, resuming or taking away a goal): with a `refusal`, that's the
-    `error`, all of it goes back, and `action` says what to offer doing about it, as there. One the
-    box can't say about now goes on. (A `refusal` a client still sends is ignored.)
-- **Meanwhile** a client shows the text at once where it was sent (as a message waiting to go; a
-  side question, or a follow-up while the side thread's tag shows, in its side thread, being
-  answered: it never joins the conversation), and puts what the box says in its place; "/" and "!" texts are asked one after another, and a message sent meanwhile
-  goes at once.
-- **What each keyword does:** "/plan" alone toggles Plan (one "/plan" after another in each
-  conversation, each from the mode the one before left; the Mac's Plan Mode item goes this way too), with words turns it on and sends them
-  (with files alone, on); "/autopilot" alone toggles it, with words or files the box turns it on
-  first; "/loop <how often> <what to do>" adds a wake-up that sends the words again, first due by the
-  box's clock (your time zone, "Your time zone"), and sends them now unless it keeps a time of day ("every morning at 9"
-  waits for it); "/btw", "/handoff" and "/review …" start one; "/goal" alone shows the goal (with
-  none, "/goal " comes back to finish), "/goal pause|resume|clear" changes it, "/goal <words>" sets
-  it, or in a bot's chat asks the bot to plan it.
-- How the words read ("every 30 min", "weekdays at 8:30", "since abc1234", "with GPT-5 Mini"), so a
-  client draws a keyword as it's typed the way the box reads it once sent, and what the box decides
-  for each kind of text: `vectors/typed.json`, which the box (`test/typed.test.ts`) and KuvoClient
-  (`TypedVectorsTests`) are held to.
-- Kept in clients, as drawing: which keyword or command a text starts with as it's typed (to draw
-  it), the side thread's tag following what runs as typed, and whether Send needs a model.
+- `POST kuvo/sessions/<session>/draft` (feature `typed.draft`; `…/submit` and `…/submissions`
+  through another computer, `typed.submission-recovery`) with `{id, text, message, quotedText?,
+  submission?}`, once per `id` whatever becomes of the request. The box checks the conversation's
+  model first, as `kuvo/sessions/models` says it (one it can't say about now goes on), then sends
+  `message` (the send route's fields below, `words` aside) as the message `text`, or `quotedText`
+  with what the composer replies to. `200 {answer, message?, acceptedAt?}`: `answer` is `{send:
+  {text, quoted: true}}` with `message` its id once sent; `{restore: {text}, error, action?}` where
+  the model can't run (`action` as `kuvo/sessions/models` says it) or the send was refused, for the
+  client to put the text back and say why; `{ambiguous: true, error}` where the box can't tell
+  whether it went. `400` without `id`, `text` and `message`; `404`/`503` `{message, restore}`.
+- `kuvo/sessions/<session>/typed` (feature `typed`) stays for 0.7.x clients: `POST {text, id?}`
+  answers the same `answer` (the client then sends the message itself), and `GET` answers
+  `{"keywords": [], "commands": []}`: nothing is offered after "/".
 
 ### A message's parts
 
@@ -8186,15 +8120,14 @@ A client sends what was written and what goes with it as fields, and the convers
 the text the agent reads (feature `messages.send`, which the update gate requires); every message
 the box sends keeps its parts, which clients draw it by. No client writes or reads the blocks.
 
-- `POST kuvo/sessions/<session>/send` `{id, words, files?, delivery?, keyword?, widget?, comments?,
+- `POST kuvo/sessions/<session>/send` `{id, words, files?, delivery?, widget?, comments?,
   named?, notes?}`: `words` as written (the composer's text, quotes and all), `files` as the engine
   takes them (`file://` on the box's own disk, or `data:` inline, which the box keeps as
-  `attachedIn` does), `keyword` as typed (from `typed`'s `send.typed`), `widget` the title of the
+  `attachedIn` does), `widget` the title of the
   widget it answers (`""` for none), `comments` `[{file, line, side: "new"|"old", snippet, text}]`,
   `named` the sessions picked from the "&" list (of two agents with one name, these), `notes`
   `{included?, paths?, unsent?}` (files the client sent with their contents, by path, or couldn't
-  send). With `command`, that command runs with `words` as its arguments, as written, and only the
-  files' note after them. `{id, text, files?, delivery?}` sends one sent before again as the agent
+  send). `{id, text, files?, delivery?}` sends one sent before again as the agent
   read it (Retry; another agent's letter put back; one from before whose parts couldn't be read),
   `words` then only how it's shown; its files are kept as a message's are (a picture for a model that
   only reads words goes as a path, in the note it has). A session picked in `named` that this box
@@ -8206,53 +8139,42 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   back (Undo) with the parts it had; `text` alone is an older client's own envelope.
 - **What the agent reads,** in this order (the words Kuvo Code wrote before, byte for byte): the
   words (trimmed; the widget's block after them: a line `<from-widget>`, a heading, its title on one
-  line, `</from-widget>`), the keyword's block (`<sent-with>`, a heading, the keyword on one line,
-  `</sent-with>`; a bot's /goal has its own heading and how to plan it), who the "&" names are
+  line, `</from-widget>`), for a bot's goal asked for (`kuvo/work/goals/ask`) its block
+  (`<sent-with>`, a heading and how to plan it, `/goal`, `</sent-with>`), who the "&" names are
   (`<named-agents>`, from everyone the box lists then, `- &<name> (<session>): <what it is>`), the
   comments (`<review-comments>`, a heading, then for each a blank line, `[<file>:<line>]` or
   `[<file>:<line> (removed)]`, `> <the line>`, what was said), the files' note (`<attached-files>`,
   the client's `notes` then what the box keeps, each list under its heading), and from a phone
   (a request that isn't a Kuvo Code app's, nor the desktop app's over the link: `clients.kind`,
-  "Sessions") `<from-phone>`. An `&` in a keyword or a title is written
+  "Sessions") `<from-phone>`. An `&` in a title is written
   `＆`; words ending like the named, comments' or files' block get a space after its tag, so they
   stay words.
 - **Parts:** kept in the engine message's (and inbox item's) `metadata.kuvo.parts`: `{words,
   keyword?, widget?, comments?, paths?, agents?: [{name, session}], phone?: true, mail?: {name,
   session}, command?: true}` (`paths`: files its note names that it doesn't carry; `mail`: another agent wrote it,
-  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote; `command`: it ran a
-  command, `keyword` (`/review`), with `words` as its arguments). Those sent here and
+  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote; `keyword`, a bot's
+  `/goal`, or the keyword an older message was sent with; `command`: an older message ran a command,
+  `keyword` (`/review`), with `words` as its arguments). Those sent here and
   `queue/add`'s with fields keep them, as do a started session's task and a bot's /goal; a letter
   between agents, a prompt passed on the way before (`api/session/<id>/prompt`) and anything else
   the box sends keep them where there's more to them than the text. The box's own notes keep none
   (`kuvo.note`), nor does a plain message, which a client asks about once.
 - **Messages from before** keep no parts: `POST kuvo/messages/parts {texts}` (at most 500) answers
-  `{parts}`, one for each, read from the text as the apps read it before (every block, a /goal
+  `{parts}`, one for each, read from the text as the apps read it before (every block, an older
+  keyword's `<sent-with>` among them, a /goal
   sent as `[Goal] …`, a file listed with ` (on the user's Mac: …)`, the named block's earlier
   heading). A client asks once for each message (KuvoClient's `MessageParts.read`), before it shows
   the page, and shows one its box couldn't read as written.
-- **A command shows as typed** (`messages.commands`): the message a command sent with `command`
-  made has the parts `{words, keyword: "/<name>", command: true}`, so a client draws "/review this
-  branch" as it draws a keyword, never the prompt the command made. A coding agent's keeps them
-  with the message, as any message's. The engine's commands take no metadata and say no id, so
-  for one of the engine's its box keeps them itself, by the message's id, once the engine's events
-  say which it made (its inbox item, an item's id being its message's), the latest 2000 in
-  `run/commands.json`. It's the first in that conversation that the box didn't mark as its own, nor
-  someone else's (a wake-up, another agent's letter), that the engine made after the command was
-  sent and before it answered, and that is the very prompt the command makes, where the box can
-  work it out (one of your commands, from the engine's settings or a command file, filled in as the
-  engine fills it, what was typed on a line after it where it names no `$ARGUMENTS` or `$1`…, with
-  no `` !`…` `` step), else one with each word typed after the command in it (quotes aside); a command
-  with nothing after it that the box can't work out is never matched, and shows as the engine kept
-  it. `kuvo/messages/parts` takes `{texts, ids, session?}` (an id for each text) and answers those
-  by id; with `session`, the conversation they're in, it waits a moment (2 s at most) for a command
-  still on its way there, so a client that sees the message first still reads it as typed; the queue's items and `removed` say them too. A
-  client sends `ids` and `session` with every text it asks about, commands' messages included, and keeps no
-  record of its own of which ran one. A command run before its box kept them, or one the engine
-  never said of (its events down meanwhile), shows as the engine kept it.
+- **An older command shows as typed** (`messages.commands`): Kuvo no longer runs the engine's
+  commands, but messages that ran one before keep the parts `{words, keyword: "/<name>", command:
+  true}`, so a client draws "/review this branch", never the prompt the command made: a coding
+  agent's with the message, the engine's kept by the box by message id in `run/commands.json`.
+  `kuvo/messages/parts` takes `{texts, ids}` (an id for each text; `session`, which older clients
+  send, is no longer needed) and answers those by id; the queue's items and `removed` say them too.
 - Both directions: `vectors/message-parts.json` (written from the apps' Swift before this), which
   the box (`test/message-parts.test.ts`) and KuvoClient (`MessagePartsTests`) are held to.
-- One waiting on the box (`waiting` in a queue) says the keyword it was sent with (`keyword`), for
-  its row to show in front of its words.
+- One waiting on the box (`waiting` in a queue) says the keyword it was sent with (`keyword`: a
+  bot's /goal, or an older message's), for its row to show in front of its words.
 - A group chat's message still carries the widget it answers as its own block (`WidgetAnswer`).
 
 - **Quotes and picture names in `words`**, written the same by every client (KuvoClient's
@@ -8434,7 +8356,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open; a box in a home of its own answers all of it itself, "Machines") |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
-| `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
+| `messages.commands` | An older command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("An older command shows as typed", #668) |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
 | `messages.tool-failures` | `failure` (`{line, reason, error}`) on every failed tool step, in every message page ("Tool steps") |
@@ -8521,7 +8443,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sign-in.return` | `POST kuvo/sign-in/return` |
 | `skills` | `kuvo/skills…` and `kuvo/skill-library…` |
 | `skills.trash` | `kuvo/skill-trash…`: Recently Deleted, and restoring from it |
-| `typed` | `kuvo/sessions/<id>/typed`: what "/" offers, and what a typed text means ("What a typed message means") |
+| `typed` | `kuvo/sessions/<id>/typed`, for 0.7.x clients: nothing offered after "/", and a typed text sent as a message ("What a typed message means") |
 | `update` | a machine only: `kuvo/update` |
 | `usage.history` | `kuvo/agents/api/kuvo/usage…`: what your accounts used, by the day, read, priced and added up by the boxes ("Usage history") |
 | `usage.notices` | The box decides quota notices from plan limits and shares their facts with your computers ("Usage notices") |
