@@ -334,7 +334,11 @@ test("a server-only switch keeps the running engine and its generated sandbox fi
   await stageVersion(root, release, next, "{}");
   const script = path.join(root, "engine/1.0.0/worker.js");
   put(script, 'console.log("ready"); setInterval(() => {}, 1000);');
-  const engine = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, HOME: path.dirname(root) }, stdio: ["ignore", "pipe", "inherit"] });
+  // On Linux the test runner can be the embedded Bun inside the engine executable.
+  const engine = spawn(process.execPath, [script], {
+    env: { PATH: process.env.PATH, HOME: path.dirname(root), BUN_BE_BUN: "1" },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
   const ended = once(engine, "exit");
   try {
     await once(engine.stdout!, "data");
