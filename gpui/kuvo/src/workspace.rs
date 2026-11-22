@@ -1618,6 +1618,7 @@ impl Workspace {
             chat.view.clone().update(cx, |view, _| view.set_now(now));
         }
         self.rings.update(cx, |rings, _| rings.set_now(now));
+        self.insights.update(cx, |insights, _| insights.set_now(now));
         if let Some(run) = self.first_run().cloned() {
             run.update(cx, |run, _| run.set_now(now));
         }

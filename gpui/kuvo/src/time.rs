@@ -78,25 +78,6 @@ pub fn next_wake(due: f64, now: f64) -> Option<String> {
     Some(format!("{weekday} {}", clock(due)))
 }
 
-/// A turn's length: "Worked for 25s", "Worked for 3m 10s", "Worked for 1h 5m".
-pub fn worked_for(ms: f64) -> String {
-    let seconds = (ms / 1000.0).round().max(1.0) as u64;
-    let length = if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        match seconds % 60 {
-            0 => format!("{}m", seconds / 60),
-            rest => format!("{}m {rest}s", seconds / 60),
-        }
-    } else {
-        match (seconds % 3600) / 60 {
-            0 => format!("{}h", seconds / 3600),
-            rest => format!("{}h {rest}m", seconds / 3600),
-        }
-    };
-    format!("Worked for {length}")
-}
-
 /// The days from 1970-01-01 to a day of the calendar.
 pub fn day_number(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
@@ -185,9 +166,6 @@ mod tests {
         assert_eq!(ago_(2.0 * 86_400_000.0), "2d");
         assert_eq!(ago_(8.0 * 86_400_000.0), "1w");
         assert_eq!(ago_(45.0 * 86_400_000.0), "1mo");
-        assert_eq!(worked_for(25_000.0), "Worked for 25s");
-        assert_eq!(worked_for(190_000.0), "Worked for 3m 10s");
-        assert_eq!(worked_for(3_900_000.0), "Worked for 1h 5m");
     }
 
     #[test]

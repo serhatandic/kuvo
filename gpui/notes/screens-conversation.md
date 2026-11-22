@@ -22,8 +22,13 @@ Read: `crates/agent_ui/src/conversation_view/thread_view.rs`, `crates/agent_ui/s
 - Rows come from the box's messages (`kuvo_box::follow_conversation`): your messages drawn by
   their parts (the words, the keyword they went with as a chip, who wrote it, files and comments as
   chips), never by parsing text; the agent's words as Markdown with code blocks; thinking and tool
-  steps as one quiet line each, with a spinner while a step runs and a warning when it failed; the
-  turn's end as "Worked for 25s", or "Stopped", or that it didn't finish.
+  steps as one quiet line each, with a spinner while a step runs and a warning when it failed; a
+  turn's end as "Stopped" or that it didn't finish (a finished turn shows nothing there: no
+  "Worked for" line, the user, 11-17). One time, Copy and Quote per reply, at its end, shown
+  while the pointer is on any of its rows; Copy takes all its words. A Work Queue item named in
+  the text is a chip where it's written (status mark, muted number, title; its label is part of
+  the text, so it's selected and copied as words), and a Work Queue step's row carries its item's
+  chip; either opens the item in the Work Queue.
 - What's only for the agent shows nothing: the box's notes to it, switches of mode or model.
 - The chat list block (phase 0) follows a run as it streams and keeps your place when you scroll
   back, with its jump-to-latest button. A run under way ends with "Working…".

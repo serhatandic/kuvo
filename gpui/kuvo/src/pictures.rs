@@ -48,6 +48,8 @@ pub struct Looks<'a> {
     /// Files shown via `kuvo-browser_show_file` in this row, adapted to pure view-models.
     pub files: &'a [crate::shown_files::ViewModel],
     pub file_actions: crate::shown_files::Actions,
+    /// The Work Queue items the conversation names, drawn as chips (none: as written).
+    pub items: Option<Rc<crate::queue::chat_references::Items>>,
 }
 
 impl Looks<'static> {
@@ -61,6 +63,7 @@ impl Looks<'static> {
             again: Rc::new(|_, _, _| {}),
             files: &[],
             file_actions: crate::shown_files::Actions::none(),
+            items: None,
         }
     }
 }
@@ -302,6 +305,7 @@ pub fn words_pictures(step: &str, n: usize, text: &str, most: (f32, f32), looks:
                 again: again.clone(),
                 files: &[],
                 file_actions: crate::shown_files::Actions::none(),
+                items: None,
             };
             return picture(&found, most.0, most.1, &looks, cx);
         }

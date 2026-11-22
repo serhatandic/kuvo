@@ -12,6 +12,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
 - The Library leaves out files from coding agents’ project skill folders.
 
+- A Work Queue item named in a reply shows as a small chip right where it's written (its status, number and title), and a Work Queue step shows its item's chip in its own line. Clicking a chip opens the item in the Work Queue.
+- Time, Copy and Quote now show once per reply, at its end, and Copy takes the whole reply.
+- Replies no longer end with a "Worked for …" line.
+- Insights has a refresh button beside 7d, 30d and 90d that counts your usage again, and says when its numbers were last counted ("Updated 5m ago").
 - A conversation on another computer no longer freezes on an old "Working…" step: its steps, replies, asks and queue keep arriving as they happen, through a restart of that computer or a slow connection, and what you missed while the connection was down fills in once it's back. A computer shows as offline only after it has been silent for 30 seconds, not when one answer is slow, and what it asks you stays on screen while it restarts.
 - A message waiting over the composer always has its actions, even while it's still on its way: Remove and Edit take it out as soon as it arrives, or say it was already sent.
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.

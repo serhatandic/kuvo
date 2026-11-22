@@ -80,6 +80,74 @@ impl Reference {
             .child(div().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(self.item.title.clone()));
         self.hover_popover((id, "hover"), chip, false)
     }
+
+    /// Its chip where it's named in a message's text, `size` as its label was laid out there: the
+    /// label's glyphs are the text's (its number, its title), drawn over this; this is the chip's
+    /// face (its fill, edge and status mark), its hover card and its click.
+    pub fn inline_chip(&self, size: gpui::Size<Pixels>, open: Rc<dyn Fn(&mut Window, &mut App)>, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        let number = self.item.number;
+        let id = ElementId::from(("inline-item", number.unwrap_or_default() as usize));
+        let mark = div().flex_none().child(status_mark(&self.item.status, cx));
+        #[cfg(feature = "shots")]
+        let mark = match number {
+            Some(number) => ShotHoverPoint::capture(ShotHoverTarget::Reference(number), mark),
+            None => mark,
+        };
+        let face = div()
+            .id(id.clone())
+            .debug_selector(move || number.map_or_else(|| "item-chip".into(), |number| format!("item-chip-{number}")))
+            .w(size.width)
+            .h(size.height)
+            .flex()
+            .items_center()
+            .pl(px(2.))
+            .rounded(radius::SMALL)
+            .bg(c.sunken)
+            .border_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .hover(|d| d.bg(c.hover))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                open(window, cx);
+            })
+            .child(mark);
+        self.hover_popover((id, "hover"), face, false)
+    }
+
+    /// Its chip in a Work Queue step's row ("Updated [○ #954 Remove slash commands]"): the row's
+    /// size, its title truncated.
+    pub fn row_chip(&self, id: impl Into<ElementId>, open: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        let id = id.into();
+        let number = self.item.number;
+        let chip = div()
+            .id(id.clone())
+            .debug_selector(move || number.map_or_else(|| "row-item-chip".into(), |number| format!("row-item-chip-{number}")))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S1)
+            .h(TypeSize::Small.line_height())
+            .max_w(px(320.))
+            .min_w_0()
+            .px(space::S1)
+            .rounded(radius::SMALL)
+            .bg(c.sunken)
+            .border_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .hover(|d| d.bg(c.hover))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                open(window, cx);
+            })
+            .child(div().flex_none().child(status_mark(&self.item.status, cx)))
+            .children(number.map(|number| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("#{number}"))))
+            .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(self.item.title.clone()));
+        self.hover_popover((id, "hover"), chip, false)
+    }
 }
 
 #[cfg(feature = "shots")]

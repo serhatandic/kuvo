@@ -12849,6 +12849,15 @@ by the box; a client draws it as it comes:
   (a client asks again shortly). Its last summaries are kept on disk, so
   a box that just started answers at once too. One read in the last 30 s
   is answered as it is, without `asOf`; a `loading` one is never kept.
+- `countedAt`: when the box last counted its own usage (ms), absent
+  before its first count. Older boxes don't send it.
+
+`refresh=1` on `GET /insights/summary` asks the box to count again first
+(after a count already under way, and syncing its peers as
+`POST /insights/refresh` does), waiting up to a minute for it, then
+answers the summary read afresh, never `asOf`, and keeps it as the last.
+An older box ignores it and answers as usual, so a client can send it to
+any box.
 
 Each usage record carries the bot over it: a bot's own conversation and
 group-chat seat are its, a session it started (`kuvo.by`) is its, a

@@ -370,8 +370,11 @@ pub fn answer(method: &str, route: &str, query: impl Fn(&str) -> Option<String>,
         json!({ "key": "models", "name": "Models", "rows": models }),
         json!({ "key": "computers", "name": "Computers", "rows": computers }),
     ];
+    // (When it last counted: five minutes ago, as its regular count would have; just now when asked
+    // to count again, `refresh=1`. It keeps no count time of its own between answers.)
+    let counted = if query("refresh").as_deref() == Some("1") { now } else { now - 5. * 60_000. };
     Some((200, json!({ "data": {
-        "state": state, "period": days, "zone": query("zone"), "totals": totals.json(None), "change": change, "trend": trend,
+        "state": state, "period": days, "zone": query("zone"), "countedAt": counted, "totals": totals.json(None), "change": change, "trend": trend,
         "lists": lists, "standouts": standouts,
     } })))
 }
