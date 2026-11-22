@@ -652,7 +652,9 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   // (Where a client of your own reaches each: its box's address, and this box's relay.)
   const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", unreached: "Can’t be reached from this app" };
   const reached = address => ({ address, relay: link.readLink().relay, reachTitles });
-  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [],
+  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said",
+    // (It answers every feature the app needs: open to it.)
+    compatibility: { state: "open" }, title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [],
     // (How its coding agents stand: this test's box has no bridge's program.)
     agents: { state: "down", why: "notInstalled" } });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
