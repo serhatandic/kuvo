@@ -15,8 +15,11 @@ struct Tile {
 }
 
 /// The tools this conversation can open.
-fn tiles(place: Option<&Place>) -> Vec<Tile> {
+fn tiles(panel: &SidePanel, place: Option<&Place>) -> Vec<Tile> {
     let mut tiles = Vec::new();
+    if panel.key.is_some() && panel.client.gate().has(kuvo_box::side_chats::SIDE_CHATS) {
+        tiles.push(Tile { id: "tile-side-chat", icon: IconName::Message, label: "Side chat", kind: Kind::SideChat(None) });
+    }
     if place.is_some() {
         tiles.push(Tile { id: "tile-files", icon: IconName::Folder, label: "Files", kind: Kind::Files });
     }
@@ -44,7 +47,7 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
         .child(Icon::new(IconName::Search).size(IconSize::Nav).color(c.text_faint))
         .child(div().flex_1().min_w_0().child(panel.search.clone()));
 
-    let tiles = tiles(place);
+    let tiles = tiles(panel, place);
     let rows: Vec<AnyElement> = tiles
         .chunks(2)
         .map(|pair| {
@@ -98,10 +101,10 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
                 .max_w(px(436.))
                 .flex()
                 .flex_col()
-                .child(search)
+                .when(place.is_some(), |d| d.child(search))
                 .children(found(panel, cx))
                 .when(panel.found().is_none() && !rows.is_empty(), |d| {
-                    d.child(div().mt(space::S6).mb(space::S2).text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Open"))
+                    d.child(div().when(place.is_some(), |d| d.mt(space::S6)).mb(space::S2).text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Open"))
                         .child(div().flex().flex_col().gap(space::S2).children(rows))
                 }),
         )

@@ -808,6 +808,9 @@ struct ActivityCard {
     force_wakes: bool,
     _activity_subscription: Subscription,
     _outputs: Option<(Follow<Followed<Outputs>>, Task<()>)>,
+    /// The conversation's side chats, followed while the popover's open.
+    side: Option<kuvo_box::side_chats::SideThreads>,
+    _side: Option<(Follow<Followed<kuvo_box::side_chats::SideThreads>>, Task<()>)>,
 }
 
 impl Focusable for ActivityCard {
@@ -878,6 +881,8 @@ impl ActivityCard {
                 cx.notify();
             }),
             _outputs: None,
+            side: None,
+            _side: None,
         };
         card.read_providers(client.clone(), live, sessions, recent, cx);
         if live {
@@ -893,9 +898,62 @@ impl ActivityCard {
             card._outputs = Some((follow, task));
         } else {
             let outputs = client.session_outputs(&session, None);
-            card.take_outputs_with(match outputs { Ok(page) => Followed::Now(page), Err(error) => Followed::Failed(error) }, client, false, cx);
+            card.take_outputs_with(match outputs { Ok(page) => Followed::Now(page), Err(error) => Followed::Failed(error) }, client.clone(), false, cx);
+        }
+        // Its side chats, where its box keeps them as threads.
+        if client.gate().has(kuvo_box::side_chats::SIDE_CHATS) {
+            if live {
+                let follow = client.follow_side_threads(&session, Timing::default());
+                let updates = follow.updates().clone();
+                let task = cx.spawn(async move |this, cx| {
+                    while let Ok(update) = updates.recv().await {
+                        let taken = this.update(cx, |this, cx| {
+                            if let Followed::Now(threads) = update {
+                                this.side = Some(threads);
+                                cx.notify();
+                            }
+                        });
+                        if taken.is_err() {
+                            break;
+                        }
+                    }
+                });
+                card._side = Some((follow, task));
+            } else {
+                card.side = client.side_threads(&session).ok();
+            }
         }
         card
+    }
+
+    /// The conversation's side chats, each opening its tab in the side panel.
+    fn side_chats(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
+        let threads = self.side.as_ref().filter(|side| !side.threads.is_empty())?;
+        let c = cx.theme().colors.clone();
+        let now = bars.now.unwrap_or_else(crate::time::now_ms);
+        Some(
+            div()
+                .debug_selector(|| "activity-side-chats".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(2.))
+                .child(div().px(space::S2).pb(px(2.)).text_ui(TypeSize::Small).medium().text_color(c.text).child("Side chats"))
+                .children(threads.threads.iter().map(|thread| {
+                    let id = thread.id.clone();
+                    let row = TextRow::truncated(format!("activity-side-chat-{id}"), thread.title.clone())
+                        .debug_selector(format!("activity-side-chat-{id}"))
+                        .leading(Icon::new(IconName::Message).size(IconSize::Nav).color(c.icon))
+                        .trailing(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if thread.answering { "Answering…".to_owned() } else { crate::time::ago(thread.latest, now) }));
+                    popover_row(row, cx).on_click(cx.listener(move |this, _, window, cx| {
+                        this.dismiss(cx);
+                        this.open_in_panel(crate::panel::Arrival::SideChat(id.clone()), window, cx);
+                    }))
+                }))
+                .into_any_element(),
+        )
     }
 
     fn show_outputs_kind(&mut self, kind: OutputKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -2237,6 +2295,7 @@ impl Render for ActivityCard {
                 self.outputs(cx),
                 self.sessions(bars, cx),
                 self.processes(bars, cx),
+                self.side_chats(bars, cx),
                 wake,
             ]
             .into_iter()

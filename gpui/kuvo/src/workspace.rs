@@ -1948,6 +1948,7 @@ impl Workspace {
                 }
             }
             // (A group chat's composer is its chat's; what's on its way, its conversation's.)
+            ComposerEvent::AskedAside { thread } => self.arrive(panel::Arrival::SideChat(thread.clone()), cx),
             ComposerEvent::Wrote | ComposerEvent::Outgoing => {}
         }
     }

@@ -663,3 +663,38 @@ fn the_subagents_tab_lists_those_at_work_and_done_and_opens_one_to_its_conversat
     click(cx, "subagent-open");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_dark"));
 }
+
+#[gpui::test]
+fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outputs(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.answer_side_questions(&["Postgres raises 23505 atomically.", "Yes: both count."]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-side-chat");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(None)));
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).side_chat()).unwrap();
+    let field = view.read_with(cx, |view, _| view.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_input("Why check 23505?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(sent(&stand_in, "kuvo/agents/api/kuvo/btw/ses_signup"), [json!({ "question": "Why check 23505?" })]);
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))), "the tab is its thread's now");
+    assert!(bounds(cx, "side-question-btw_1").is_some());
+
+    // A follow-up goes in the same thread.
+    cx.simulate_input("And the bucket?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(sent(&stand_in, "kuvo/agents/api/kuvo/btw/ses_signup").last().unwrap(), &json!({ "question": "And the bucket?", "thread": "btw_1" }));
+    let thread = view.read_with(cx, |view, _| view.thread().map(|thread| thread.questions.len()));
+    assert_eq!(thread, Some(2));
+
+    // Closed, it's in the conversation's Outputs, and opens its tab again.
+    let tab = tab_of(&workspace, cx, &Kind::SideChat(Some("btw_1".into())));
+    click(cx, &format!("panel-tab-close-{tab}"));
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-side-chat-btw_1");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+}

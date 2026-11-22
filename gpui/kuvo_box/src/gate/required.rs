@@ -17,6 +17,7 @@ pub const REQUIRED: &[&str] = &[
     "bots.now",
     "bots.state",
     "bots.wake-ups",
+    "btw.threads.events",
     "clients.kind",
     "computers",
     "computers.add",

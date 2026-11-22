@@ -14,6 +14,7 @@ pub mod file;
 pub mod files;
 mod new_tab;
 pub mod process;
+pub mod side_chat;
 pub mod subagents;
 pub mod tabs;
 
@@ -32,6 +33,7 @@ pub use changes::ChangesView;
 pub use file::FileView;
 pub use files::FilesView;
 pub use process::ProcessView;
+pub use side_chat::SideChatView;
 pub use subagents::SubagentsView;
 pub use tabs::{Kind, Strip, Tab};
 
@@ -98,6 +100,8 @@ pub enum Arrival {
     Process { session: String, command: kuvo_box::background::Command },
     /// Its subagents, one of them open.
     Subagents(Option<String>),
+    /// A side chat, by its thread.
+    SideChat(String),
 }
 
 /// What the panel asks of the window around it.
@@ -151,6 +155,7 @@ enum View {
     File(Entity<FileView>),
     Process(Entity<ProcessView>),
     Subagents(Entity<SubagentsView>),
+    SideChat(Entity<SideChatView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -193,7 +198,7 @@ impl EventEmitter<PanelEvent> for SidePanel {}
 
 impl SidePanel {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SidePanel {
-        let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search files or enter a URL"));
+        let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search files"));
         let watch = cx.subscribe(&search, |this: &mut SidePanel, _, event, cx| this.searched(event, cx));
         let mut panel = SidePanel {
             client,
@@ -318,7 +323,8 @@ impl SidePanel {
             return;
         }
         self.key = key;
-        let words = if place.is_some() { "Search files or enter a URL" } else { "Search files" };
+        // (Pages open once the browser's live view is in the panel: until then, files only.)
+        let words = "Search files";
         self.conversation(cx).place = place;
         self.search.update(cx, |field, cx| {
             field.set_placeholder(words);
@@ -369,6 +375,7 @@ impl SidePanel {
                 self.commands.insert(id.clone(), command);
                 self.open(Kind::Process { session, command: id }, cx);
             }
+            Arrival::SideChat(thread) => self.open(Kind::SideChat(Some(thread)), cx),
             Arrival::Subagents(open) => {
                 self.open(Kind::Subagents, cx);
                 if let Some(view) = self.subagents() {
@@ -392,6 +399,15 @@ impl SidePanel {
     /// The clock its times are said against (tests and shots).
     pub fn set_now(&mut self, now: f64) {
         self.now = Some(now);
+    }
+
+    /// The side chat tab showing.
+    pub fn side_chat(&self) -> Option<Entity<SideChatView>> {
+        let conversation = self.current()?;
+        match conversation.views.get(&conversation.strip.active().id) {
+            Some(View::SideChat(view)) => Some(view.clone()),
+            _ => None,
+        }
     }
 
     /// The process tab showing.
@@ -482,6 +498,21 @@ impl SidePanel {
                 }
                 conversation.views.insert(tab.id, View::Subagents(view));
             }
+            Kind::SideChat(thread) if !conversation.views.contains_key(&tab.id) => {
+                let Some(session) = key else { return };
+                let view = cx.new(|cx| SideChatView::new(client, live, session, thread, cx));
+                let id = tab.id;
+                // Its first question started a thread: the tab is that thread's from now on.
+                conversation.subscriptions.push(cx.subscribe(&view, move |this: &mut SidePanel, _, event: &side_chat::SideChatEvent, cx| match event {
+                    side_chat::SideChatEvent::Started(thread) => {
+                        if let Some(conversation) = this.conversations.get_mut(&this.key) {
+                            conversation.strip.set_kind(id, Kind::SideChat(Some(thread.clone())));
+                        }
+                        cx.notify();
+                    }
+                }));
+                conversation.views.insert(tab.id, View::SideChat(view));
+            }
             Kind::Changes if !conversation.views.contains_key(&tab.id) => {
                 let view = cx.new(|cx| ChangesView::new(client, live, cx));
                 conversation.subscriptions.push(cx.subscribe(&view, |this: &mut SidePanel, _, event: &changes::ChangesEvent, cx| match event {
@@ -510,6 +541,7 @@ impl SidePanel {
                     View::File(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Process(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Subagents(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
+                    View::SideChat(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -729,6 +761,7 @@ impl SidePanel {
             (_, Some(View::File(view))) => view.clone().into_any_element(),
             (_, Some(View::Process(view))) => view.clone().into_any_element(),
             (_, Some(View::Subagents(view))) => view.clone().into_any_element(),
+            (_, Some(View::SideChat(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),

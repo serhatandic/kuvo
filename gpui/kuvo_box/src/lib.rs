@@ -56,6 +56,7 @@ pub mod settings;
 pub mod settings_pages;
 pub mod setup;
 pub mod shown_files;
+pub mod side_chats;
 mod socket;
 pub mod ssh;
 pub mod transport;
