@@ -20,6 +20,7 @@ import { WORK_QUEUE } from "../work-queue/store";
 import { readBackground, WORK_BACKGROUND } from "../work/background";
 import { WORK_ASKS } from "../work/asks";
 import { WORK_WAKES } from "../work/wakes";
+import { hasBootstrapMembership } from "./membership";
 import { readZoneSetting, ZONE_FILE } from "../zone/setting";
 
 function entries(folder: string): string[] {
@@ -279,7 +280,7 @@ export function hasSetupWork(link: LinkState | null): boolean {
   if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge
     || installerInvitesLive(link) || (link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now())
     || (link?.appPairing?.expires ?? 0) > Date.now()
-    || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length
+    || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length && !hasBootstrapMembership(link)
     || link?.untold?.length) return true;
   try {
     jsonFile(LINK_FILE);

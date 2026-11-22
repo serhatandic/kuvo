@@ -3,7 +3,7 @@
 // `transferStartsNow`: a hand-over's new grant starts at once, where the relay starts it when the
 // old one ends (a bench that isn't about that minute skips it).
 export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
-  let lease;
+  const leases = new Map();
   let offset = 0;
   const now = () => Date.now() + offset;
   let graceUntil = now() + 120_000;
@@ -11,7 +11,8 @@ export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
   const calls = [];
   return {
     calls,
-    get lease() { return lease; },
+    get lease() { return leases.values().next().value; },
+    leaseFor(setup) { return leases.get(setup); },
     advance(ms) { offset += ms; },
     restart() { graceUntil = now() + 120_000; },
     disconnect(computer) {
@@ -23,10 +24,11 @@ export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const { data } = JSON.parse(Buffer.concat(chunks).toString());
-      const { action, computer, sign, term, high, roster, alwaysOn, bootstrap, target } = JSON.parse(Buffer.from(data, "base64url"));
+      const { setup, action, computer, sign, term, high, roster, alwaysOn, bootstrap, target } = JSON.parse(Buffer.from(data, "base64url"));
       calls.push({ action, computer, term });
       if (offline.has(computer)) return response.writeHead(503).end();
       const at = now();
+      let lease = leases.get(setup);
       const takeoverAt = () => Math.max(graceUntil, (lease?.expires ?? 0) + (alwaysOn ? 0 : 60_000));
       if (!lease && action === "claim" && bootstrap ||
           lease && action === "claim" && term === lease.term && at >= takeoverAt()) {
@@ -40,6 +42,7 @@ export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
         const starts = transferStartsNow ? at : lease.expires;
         lease = { holder: target, sign: roster[target], term: lease.term + 1, starts, expires: starts + 60_000, high: Math.max(high, lease.high), roster };
       }
+      if (lease) leases.set(setup, lease);
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(lease
         ? { lease: { holder: lease.holder, sign: lease.sign, term: lease.term, expires: lease.expires, high: lease.high },
           remaining: Math.max(0, lease.expires - at), startsIn: Math.max(0, lease.starts - at), takeoverIn: Math.max(0, takeoverAt() - at), relayHost: true }
