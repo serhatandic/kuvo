@@ -8165,6 +8165,15 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
     (`kuvo/agents/api/kuvo/btw/<session>/threads/events`).
   - `DELETE …/kuvo/btw/<session>/<id>` takes one away, `DELETE …/kuvo/btw/<session>/threads/<thread>`
     a side thread, all of it, and `DELETE …/kuvo/btw/<session>` all of them.
+  - Choices (`btw.choices`): the `POST` can carry `"model": {providerID, id, variant?}` and
+    `"files": [{uri, name?}]` (as a message's files go: `file://` on the box, or a `data:` URI;
+    at most 10). A model other than the conversation's own is answered on that model (its effort
+    as `variant`) with the conversation in the prompt, the conversation staying on its own; with
+    the coding agents it must be one of the conversation's own agent's (`400` otherwise). Files
+    must be text: they go in the prompt (200,000 characters together at most); a picture, or
+    anything that isn't text, is refused with `400` saying so, since the routes a side question
+    is answered by take no pictures. The question then has `model` (where it isn't the
+    conversation's) and `files`, their names; their words aren't sent back.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
     `kuvo.btw.removed` `{sessionID, id?}` (a thread's, one for each of its questions).
 - **Handoffs** (`handoff`): a conversation carried on in a fresh one.
