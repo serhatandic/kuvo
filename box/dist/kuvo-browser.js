@@ -1,4 +1,4 @@
-// kuvo-browser 5bb6b6ccaa4233a6
+// kuvo-browser 6e90828d3d20c0d3
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "0d206aa9588c";
+const KEEPER = "db2259eb4e8b";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -2782,8 +2782,8 @@ const KEPT_WHOLE = new Set(["schedule_wake_up", "watch_for_change", "cancel_wake
 // machine's box answers them, as every box does (`POST kuvo/agent-tools`), so they're the same on all
 // your computers. A call that waits for an answer holds up to eleven minutes; stopped, the
 // box stops waiting, and an answer that comes later reaches the conversation as a message.
-async function mail(name, args, from, cancelled = () => false) {
-  const answer = await boxRoute({ method: "POST", path: "kuvo/agent-tools", body: { name, arguments: args, session: from } }, { timeout: 720_000, cancelled });
+async function mail(name, args, from, operation, cancelled = () => false) {
+  const answer = await boxRoute({ method: "POST", path: "kuvo/agent-tools", body: { name, arguments: args, session: from, operation } }, { timeout: 720_000, cancelled });
   let said = null;
   try {
     said = JSON.parse(answer?.body || "null");
@@ -3029,7 +3029,7 @@ function closedVaultTools(tools) {
 
 async function vaultTools() {
   if (vaultToolList) return vaultToolList;
-  const answer = await vaultRoute({ method: "GET", path: "kuvo/vault/tools" }, null, 15_000);
+  const answer = await vaultRoute({ method: "GET", path: "kuvo/vault/tools" }, null, 90_000);
   if (answer?.status === 200 && Array.isArray(answer.value?.tools)) vaultToolList = answer.value.tools;
   return vaultToolList ?? [];
 }
@@ -3039,7 +3039,7 @@ async function vaultTools() {
 let workQueueList = null;
 async function workQueueTools() {
   if (workQueueList) return workQueueList;
-  const answer = await vaultRoute({ method: "GET", path: "kuvo/work-queue/tools" }, null, 15_000);
+  const answer = await vaultRoute({ method: "GET", path: "kuvo/work-queue/tools" }, null, 90_000);
   if (answer?.status === 200 && Array.isArray(answer.value?.tools)) workQueueList = { tools: answer.value.tools, instructions: typeof answer.value.instructions === "string" ? answer.value.instructions : "" };
   return workQueueList ?? { tools: [], instructions: "" };
 }
@@ -3049,7 +3049,7 @@ async function workQueueTools() {
 let sandboxToolList = null;
 async function sandboxTools() {
   if (sandboxToolList) return sandboxToolList;
-  const answer = await vaultRoute({ method: "GET", path: "kuvo/sandbox/tools" }, null, 15_000);
+  const answer = await vaultRoute({ method: "GET", path: "kuvo/sandbox/tools" }, null, 90_000);
   if (answer?.status === 200 && Array.isArray(answer.value?.tools) && answer.value.tools.length) sandboxToolList = answer.value.tools;
   return sandboxToolList ?? [];
 }
@@ -3568,6 +3568,8 @@ async function mcp() {
         // The session it's for: the engine says so with each call; an agent of the agents bridge
         // starts this for one session, named in KUVO_SESSION.
         call = { id: message.id, name: params.name || "", args: params.arguments || {}, session: params._meta?.["ai.opencode/sessionID"] ?? (process.env.KUVO_SESSION || null), cancelled: false, stops: new Set(), notes: [], pages: new Set() };
+        const fromRelay = params._meta?.["kuvo.operation"];
+        const operation = typeof fromRelay === "string" && /^[a-f0-9-]{36}$/.test(fromRelay) ? fromRelay : crypto.randomUUID();
         calls.set(call.id, call);
         // Showing something in Kuvo Code's panel needs no browser, nor a turn in the line.
         // Nor does writing to another agent.
@@ -3578,14 +3580,14 @@ async function mcp() {
           : params.name.startsWith("queue_") ? ["kuvo/work-queue/tools", "Kuvo on this machine can't be reached now. Try again in a moment."] : null);
         if (boxTool) {
           const asked = call;
-          vaultRoute({ method: "POST", path: boxTool[0], body: { name: params.name, arguments: params.arguments || {}, session: asked.session } }, asked, 16 * 60_000)
+          vaultRoute({ method: "POST", path: boxTool[0], body: { name: params.name, arguments: params.arguments || {}, session: asked.session, operation } }, asked, 16 * 60_000)
             .then((answer) => reply(answer?.status === 200 && typeof answer.value?.text === "string" ? text(answer.value.text, answer.value.isError === true) : text(answer?.value?.message || boxTool[1], true)));
           return;
         }
         if (MAIL_TOOLS.has(params.name)) {
           // (A wake-up or a job is never stopped half way: what's kept would be half of it.)
           const stops = !KEPT_WHOLE.has(params.name);
-          mail(params.name, params.arguments || {}, call.session, () => stops && call.cancelled).then(reply, (error) => reply(text(error instanceof ToolError ? error.message : String(error), true)));
+          mail(params.name, params.arguments || {}, call.session, operation, () => stops && call.cancelled).then(reply, (error) => reply(text(error instanceof ToolError ? error.message : String(error), true)));
           return;
         }
         // A Mac's own box: the browser is its app's panel's.

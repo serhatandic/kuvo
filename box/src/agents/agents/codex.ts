@@ -14,7 +14,7 @@ import { fileDiff, fromPatch } from "../diff"
 import { emit } from "../events"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "../fence"
 import { kuvoTools, toolServerName } from "../kuvotools"
-import { dropRelayed, relayedServers, relayedTools, relayPort, serversKey } from "../toolrelay"
+import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { elicitationField } from "../forms"
@@ -385,7 +385,7 @@ export class CodexAgent implements Agent {
       homes,
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...(skills ? [skills] : []), ...(subagents ? [subagents] : []), ...(attached ? [attached] : [])],
+      read: [...(onMachine ? [process.execPath] : []), ...(skills ? [skills] : []), ...(subagents ? [subagents] : []), ...(attached ? [attached] : [])],
       port: relayPort(),
       session: sessionID,
       bot,
@@ -1248,7 +1248,7 @@ class CodexThread implements Thread {
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join("\n\n")
     // Loaded again with what the app adds to its instructions, when that changed. (In the box's
     // sandbox, through the bridge's relay: the sandbox hides where they are.)
-    const tools = fenced ? relayedTools(this.session.id, this.agent) : kuvoTools(this.session.id)
+    const tools = fenced ? forwardedTools(this.session.id, this.agent) : kuvoTools(this.session.id)
     // Settings › Skills' skills, as extra ones (but those it reads itself), and those of its own
     // you turned off, off for this thread.
     const directory = this.session.location.directory

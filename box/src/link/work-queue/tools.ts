@@ -1,3 +1,4 @@
+import { ToolCallPending } from "../server/tool-call";
 import fs from "node:fs";
 import { isObject } from "../../shared/json";
 import { setupSeedRefusal } from "../setup/seed";
@@ -282,7 +283,7 @@ function filesForPeer(given: unknown, caller: QueueCaller, computer: string): un
   }
 }
 
-async function changeThere(name: QueueAgent["tool"], args: Record<string, unknown>, caller: QueueCaller, item: ItemElsewhere, signal?: AbortSignal): Promise<ToolAnswer> {
+async function changeThere(name: QueueAgent["tool"], args: Record<string, unknown>, caller: QueueCaller, item: ItemElsewhere, signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const action = name !== "queue_remove" ? "change" : args.undo === true ? "restore" : "delete";
   const method = action === "change" ? "PATCH" : action === "restore" ? "POST" : "DELETE";
   if (!takesForwarded(item.computer.key, AGENT_FORWARD)) {
@@ -294,8 +295,11 @@ async function changeThere(name: QueueAgent["tool"], args: Record<string, unknow
     area: "queue-agent", method, ...(action === "restore" ? { action } : {}), item: item.id,
     body: { ...fields, ...(carried === undefined ? {} : { files: carried }) },
     agent: { tool: name, owner: caller.owner, ...caller.who },
-  }, signal);
-  if ("refused" in result) return refused(result.refused);
+  }, signal, undefined, undefined, { operation });
+  if ("refused" in result) {
+    if (operation && result.status === 503) throw new ToolCallPending(`Waiting for ${item.computer.name} to confirm the Work Queue change.`);
+    return refused(result.refused);
+  }
   const value = isObject(result.value) ? result.value : {};
   if (result.status !== 200 || typeof value.text !== "string" || typeof value.isError !== "boolean") {
     return refused(typeof value.message === "string" ? value.message : `${item.computer.name} didn't confirm the change.`);
@@ -311,7 +315,9 @@ export async function queueToolForPeer(act: Act, targets: Target[]): Promise<Act
   const { session, name, owner } = agent;
   const caller: QueueCaller = { owner, session, who: { session, name }, files: null, seat: owner.startsWith("grp_"), forwarded: true };
   try {
-    const answer = await run(agent.tool, { ...act.body, item: act.item, undo: act.action === "restore" }, caller, targets);
+    const operation = act.id.startsWith("wqa_tool_") ? act.id : undefined;
+    const answer = (operation && allItems().find(item => item.id === act.item)?.toolReplies?.[operation]) ||
+      await run(agent.tool, { ...act.body, item: act.item, undo: act.action === "restore" }, caller, targets, undefined, operation);
     const kept = answer.isError ? undefined : allItems().find(item => item.id === act.item);
     return { status: 200, value: { ...answer, ...(kept ? { item: summaryOf(kept, new Set(), new Map()) } : {}) } };
   } catch (error) {
@@ -325,14 +331,17 @@ const deletedWords = (item: Item) => (byUser(item.removed!.by)
   : `${nameOf(item)} was deleted by ${whoWords(item.removed!.by)}: queue_remove with undo brings it back.`);
 
 /** A tool's call, from the conversation `session` names: what it says back. */
-export async function callQueueTool(name: unknown, args: Record<string, unknown>, session: unknown, readEngine: () => EngineRecord, readBridge: () => BridgeRecord, targets: Target[], signal?: AbortSignal): Promise<ToolAnswer> {
+export async function callQueueTool(name: unknown, args: Record<string, unknown>, session: unknown, readEngine: () => EngineRecord, readBridge: () => BridgeRecord, targets: Target[], signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   if (typeof name !== "string" || !QUEUE_TOOL_NAMES.includes(name)) return refused(`There's no tool ${String(name)}.`);
+  const answer = operation && allItems().find(item => item.toolReplies?.[operation])?.toolReplies?.[operation];
+  if (answer) return answer;
   if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge)) return refused("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it.");
   const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge, name === "queue_add" || name === "queue_import");
   if ("refused" in found) return refused(found.refused);
   try {
-    return await run(name, args, found, targets, signal);
+    return await run(name, args, found, targets, signal, operation);
   } catch (error) {
+    if (error instanceof ToolCallPending) throw error;
     if (error instanceof Refusal) return refused(error.message);
     return refused(`The Work Queue couldn't do that: ${why(error)}`);
   }
@@ -356,18 +365,29 @@ function editFields(item: Item): Record<string, string | undefined> {
     .map(([key, value]) => [key, JSON.stringify(value)]));
 }
 
-async function run(name: string, args: Record<string, unknown>, caller: QueueCaller, targets: Target[], signal?: AbortSignal): Promise<ToolAnswer> {
+async function run(name: string, args: Record<string, unknown>, caller: QueueCaller, targets: Target[], signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const now = Date.now();
   const acting: Acting = { who: caller.who, now, fileOps: [] };
   if (editsItem(name) && !caller.forwarded) {
     const { item } = await lookupItem(args.item, signal, name === "queue_remove" && args.undo === true);
-    if ("computer" in item) return changeThere(name, args, caller, item, signal);
+    if ("computer" in item) return changeThere(name, args, caller, item, signal, operation);
     // Pin the lookup to the same item through the queue lock.
     args = { ...args, item: item.id };
   }
   // (An agent that still says category, as before statuses: told what to say, never left thinking
   // it was taken.)
   if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
+  // Commit the first answer with the item itself, after numbering it and before the queue file is published.
+  const edit = (work: (book: Book) => Item, answer: (item: Item) => ToolAnswer): ToolAnswer => {
+    const primary = primaryOf();
+    return changeQueues(book => {
+      const item = work(book);
+      numberWaiting(book, primary, null);
+      const reply = answer(item);
+      if (operation) (item.toolReplies ??= {})[operation] = reply;
+      return reply;
+    }, now, { durable: operation !== undefined });
+  };
   switch (name) {
     case "queue_list":
       return said(await listWords(caller, args, await factsOf(targets, signal), targets));
@@ -380,7 +400,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
       const starting = args.working === true && !caller.seat && args.status === undefined;
       const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
-      const item = withFiles(args, caller, acting, () => change(book => {
+      return withFiles(args, caller, acting, () => edit(book => {
         refuseQueueOwner(caller.owner);
         if (issue) refuseTaken(book.items(), issue.at, caller, undefined, issue.read.id);
         const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
@@ -388,15 +408,16 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         if (args.working === true && !caller.seat && !isClosed(made.status)) startWork(book, made, caller.session, acting, { keep: args.status !== undefined });
         applyFileOps(acting);
         return made;
+      }, item => {
+        const where = statusName(item.status);
+        if (issue) {
+          const ignored = [args.title !== undefined ? "title" : "", args.body !== undefined ? "body" : ""].filter(Boolean);
+          return said(`Added ${nameOf(item)} (${seenWords(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source!.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
+        }
+        return said(item.number !== undefined
+          ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.`
+          : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's main computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
       }));
-      const where = statusName(item.status);
-      if (issue) {
-        const ignored = [args.title !== undefined ? "title" : "", args.body !== undefined ? "body" : ""].filter(Boolean);
-        return said(`Added ${nameOf(item)} (${seenWords(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source!.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
-      }
-      return said(item.number !== undefined
-        ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.`
-        : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's main computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
     }
     case "queue_update": {
       // (Linking it to an issue or a pull request: read from GitHub first, outside the lock.)
@@ -408,7 +429,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         issue = await issueFor(args.issue, caller, before.id);
       }
       const linkedFrom = { number: undefined as number | undefined };
-      const item = withFiles(args, caller, acting, () => change(book => {
+      return withFiles(args, caller, acting, () => edit(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
@@ -436,15 +457,16 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         if (fields.length) noteEvent(item, { at: now, by: caller.who, kind: "edited", fields });
 
         return item;
+      }, item => {
+        const where = statusName(item.status);
+        if (issue) return said(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf(item)} now (${seenWords(issue.read.state)} on GitHub), ${where}: refer to it as ${item.source!.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
+        return said(item.status === "done" ? `Marked ${nameOf(item)} done.` : item.status === "canceled" ? `Marked ${nameOf(item)} canceled.` : `Changed ${nameOf(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
       }));
-      const where = statusName(item.status);
-      if (issue) return said(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf(item)} now (${seenWords(issue.read.state)} on GitHub), ${where}: refer to it as ${item.source!.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
-      return said(item.status === "done" ? `Marked ${nameOf(item)} done.` : item.status === "canceled" ? `Marked ${nameOf(item)} canceled.` : `Changed ${nameOf(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
     }
     case "queue_hand": {
       const to = await handTarget(args.to, targets);
       if ("refused" in to) return refused(to.refused);
-      const item = change(book => {
+      return edit(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
@@ -457,12 +479,13 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         if (to.peer) handElsewhere(item, { owner: to.owner, peer: to.peer, name: to.name }, caller.who, now);
         else handItem(book, item, to.owner, caller.who, now);
         return item;
+      }, item => {
+        if (to.peer) return said(`Handing ${nameOf(item)} to ${to.name} on ${computerName(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
+        return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
       });
-      if (to.peer) return said(`Handing ${nameOf(item)} to ${to.name} on ${computerName(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
-      return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
-      const item = change(book => {
+      return edit(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         refuseMoving([item.owner]);
@@ -479,8 +502,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
           removeItem(item, caller.who, now);
         }
         return item;
-      });
-      return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. Bring it back within 30 days with queue_remove and undo.`);
+      }, item => said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. Bring it back within 30 days with queue_remove and undo.`));
     }
     case "queue_labels": {
       const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());

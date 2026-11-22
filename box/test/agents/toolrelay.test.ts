@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setToolProgram, setToolServer } from "../../src/agents/kuvotools"
 import { dropRelayed, relayedTools } from "../../src/agents/toolrelay"
+import { toolForwarder } from "../../src/agents/tool-forwarder"
 import { noteToolServer } from "../../src/agents/fence"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-relay-test-"))
@@ -31,6 +32,39 @@ async function call(tools: { url: string; headers: Record<string, string> }, id:
   })
   return { status: response.status, body: (response.status === 200 ? await response.json() : undefined) as any }
 }
+
+test("the stdio forwarder waits for the relay and resends the same tool identity", async () => {
+  const seen: string[] = []
+  let listening = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 503 }) })
+  const port = listening.port
+  await listening.stop(true)
+  const client = Bun.spawn([process.execPath, "--config=/dev/null", "--no-env-file", "-e", toolForwarder], {
+    env: { ...process.env, KUVO_TOOL_RELAY: `http://127.0.0.1:${port}/mcp`, KUVO_TOOL_RELAY_KEY: "Bearer fixture", KUVO_TOOL_TIMEOUT: "5000" },
+    stdin: "pipe", stdout: "pipe", stderr: "inherit",
+  })
+  const reader = client.stdout.getReader()
+  try {
+    client.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message" } }) + "\n")
+    client.stdin.flush()
+    await Bun.sleep(350)
+    listening = Bun.serve({ hostname: "127.0.0.1", port, async fetch(request) {
+      const body: any = await request.json()
+      seen.push(body.params._meta["kuvo.operation"])
+      if (seen.length === 1) return Response.json({ jsonrpc: "2.0", id: 1, error: { data: { kuvoRelayRestart: true } } })
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "Sent." }] } })
+    } })
+    const answer = JSON.parse(new TextDecoder().decode((await reader.read()).value))
+    expect(answer.result.content[0].text).toBe("Sent.")
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatch(/^[a-f0-9-]{36}$/)
+    expect(seen[0]).toBe(seen[1])
+  } finally {
+    reader.releaseLock()
+    client.stdin.end()
+    await client.exited
+    await listening.stop(true)
+  }
+})
 
 describe("a new bridge", () => {
   /** A bridge's relay as a process of its own, on the box in `kuvo`: what it says first, and how to end it. */

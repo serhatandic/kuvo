@@ -1,3 +1,5 @@
+import { ToolCallPending, toolProgress } from "../server/tool-call";
+import { messageReached } from "../engine/queue";
 // Work on another of your computers (PROTOCOL.md, "Peers", `call`, start_session): a lead starts a
 // session on another box as if it lived there, and reads the models and projects there first. It
 // goes there as a call. Who's calling, with what approval, mode and rules (`as.start`), is filled
@@ -42,7 +44,7 @@ import type { WorkLimits, WorksFor } from "../../shared/routes/work";
 import type { Peer } from "../peers/known";
 import type { Approval } from "../work/approval";
 import type { Caller, Lead } from "../work/tools";
-import type { MadeTree, Making, RemoteLead, StartGiven } from "./start";
+import type { MadeTree, Making, RemoteLead, Starter, StartGiven, StartPlace } from "./start";
 import type { ToolAnswer, ToolPlace } from "./tools";
 
 /** What a start's call asks for, as start_session takes it: never a step of a goal, nor where. */
@@ -338,6 +340,47 @@ function finished(journal: StartJournal, done: Done): Done {
 // now (both get a new address and password each time they start); null where it isn't running.
 function targetOf(making: Pick<Making, "agents">, places: Places): Target | null {
   try { return making.agents ? places.bridge() : places.readEngine(); } catch { return null; }
+}
+
+/** Local starts keep the same recovery landmarks as starts received from another box. */
+export async function startToolSession(given: StartGiven, by: Starter, place: StartPlace) {
+  if (!place.operation) return startSession(given, by, place);
+  const operation = place.operation;
+  const journal = toolProgress<{ making?: Making; session?: string; tree?: MadeTree; marked?: boolean; prompted?: boolean }>(operation);
+  const kept = journal.read() ?? {};
+  const { making } = kept;
+  if (making) {
+    const target = targetOf(making, { ...place, bridge: place.bridge ?? (() => null) });
+    if (!target) throw new ToolCallPending("Waiting for the new session's engine.");
+    try {
+      kept.session ??= await madeFor(target, operation, AbortSignal.timeout(LOOK)) ?? undefined;
+      if (kept.session) {
+        const session = kept.session;
+        if (!kept.marked) kept.marked = await markMade(making, target, session);
+        if (!kept.prompted) {
+          if (!await messageReached(target, session, making.prompt.id)) {
+            linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
+            await promptMade(making, target, session);
+          }
+          kept.prompted = true;
+        }
+        journal.keep(kept);
+        return { started: { session, ...making.started, ...(kept.marked && by.place ? {} : { wakes: undefined }) } };
+      }
+    } catch {
+      throw new ToolCallPending("Waiting for the engine to confirm the new session and its task.");
+    }
+  }
+  return startSession(given, by, {
+    ...place, tree: kept.tree,
+    steps: {
+      tree: tree => { kept.tree = tree; journal.keep(kept); },
+      making: making => { kept.making = making; journal.keep(kept); },
+      made: session => { kept.session = session; journal.keep(kept); },
+      marked: () => { kept.marked = true; journal.keep(kept); },
+      prompted: () => { kept.prompted = true; journal.keep(kept); },
+    },
+  });
 }
 
 // The session a start's call made, as its mark says: its address, null for none made, or

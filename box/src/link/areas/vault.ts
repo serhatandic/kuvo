@@ -8,6 +8,7 @@
 // only with the vault's unlock key (`x-kuvo-vault-key`), which only your clients keep. Agents reach
 // only the tools and fills, under their grants.
 
+import { answerToolCall } from "../server/tool-call";
 import crypto from "node:crypto";
 import { isObject, parsed } from "../../shared/json";
 import { oneLine } from "../../shared/text";
@@ -149,14 +150,16 @@ async function* answerVault(context: RouteContext): AsyncGenerator<AnswerPiece> 
     // What a tool server lists (`tools/list`), in this box's own words.
     if (method === "GET") return yield* json(200, { tools: agentsUseVault() ? VAULT_TOOLS : [] });
     if (method !== "POST") return yield* json(405, {});
-    if (!agentsUseVault()) return yield* json(200, { text: AGENTS_LATER, isError: true });
-    // Only a call the conversation it names is making now, with these arguments (vault/who.ts).
-    const args = isObject(given.arguments) ? given.arguments : {};
-    if (typeof given.name !== "string" || !await isCalling(stringOf(given.session), [given.name], args, readEngine, readBridge)) {
-      return yield* json(200, { text: NOT_CALLING, isError: true });
-    }
-    const caller = await callerOf(given.session, readEngine, readBridge);
-    return yield* json(200, await callTool(given.name, args, caller, signal));
+    const answer = await answerToolCall(request, given, async () => {
+      if (!agentsUseVault()) return { text: AGENTS_LATER, isError: true };
+      const args = isObject(given.arguments) ? given.arguments : {};
+      if (typeof given.name !== "string" || !await isCalling(stringOf(given.session), [given.name], args, readEngine, readBridge)) {
+        return { text: NOT_CALLING, isError: true };
+      }
+      const caller = await callerOf(given.session, readEngine, readBridge);
+      return callTool(given.name, args, caller, signal);
+    });
+    return yield* json(answer.status, answer.value);
   }
   if (route === "kuvo/vault/fill") {
     if (method !== "POST") return yield* json(405, {});
