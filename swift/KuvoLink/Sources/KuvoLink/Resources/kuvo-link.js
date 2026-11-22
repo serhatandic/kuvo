@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 45908b89aa0f
+// Kuvo folder layout 23 6c729ce3a4e3
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "45908b89aa0f";
+var BRIDGE_VERSION = "6c729ce3a4e3";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -11940,12 +11940,15 @@ function keptComputer(given) {
   const layout = count(given.layout);
   const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
   const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate : undefined;
-  return {
+  const update = {
     staged: releaseRef(given.staged),
     cannot: cannotFact(given.cannot),
     candidate: toldVersion(given.candidate),
     releaseManifest: short(given.releaseManifest, 16384),
-    runningManifest: short(given.runningManifest, 16384),
+    runningManifest: short(given.runningManifest, 16384)
+  };
+  return {
+    ...Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)),
     ...installedSha256 ? { installedSha256 } : {},
     ...layout !== undefined ? { layout } : {},
     ...fleetUpdate ? { fleetUpdate } : {},
@@ -35286,7 +35289,7 @@ function workInventory() {
       stable?.update(entry);
     return info.size;
   }
-  for (const file of [...settings2, ...sessionMetadata, ...queueFiles3(), BOTS, storage, ...payloads])
+  for (const file of [...settings2(), ...sessionMetadata, ...queueFiles3(), BOTS, storage, ...payloads])
     stamp(file);
   const content = hash.copy();
   const stable = hash.copy();
@@ -35342,12 +35345,12 @@ function hasSetupWork(link) {
     const numbers = readNumbers();
     if ((numbers.next ?? 1) > 1 || numbers.leases.length || numbers.used?.length || numbers.asking || Object.keys(numbers.given ?? {}).length || Object.keys(numbers.granted ?? {}).length || pendingOwnerWork() || pendingSessionWork() || setupQueueItems().kept)
       return true;
-    for (const file of settings2)
+    for (const file of settings2())
       jsonFile(file);
     const files = databases();
     const library = readPersonalities();
     const labels = localLabels();
-    const hasWork = labels.labels.length || labels.removed.length || !!jsonFile(categoriesFile) || library.personalities.length || library.removed.length || readZoneSetting() || Object.keys(new UsageSettings(usageFile).kept()).length || sessionMetadata.some((file) => Object.keys(jsonFile(file) ?? {}).length) || payloads.some((folder) => entries(folder).some((name) => name !== ".DS_Store")) || entries(BOTS).some((name) => {
+    const hasWork = labels.labels.length || labels.removed.length || !!jsonFile(categoriesFile()) || library.personalities.length || library.removed.length || readZoneSetting() || Object.keys(new UsageSettings(usageFile).kept()).length || sessionMetadata.some((file) => Object.keys(jsonFile(file) ?? {}).length) || payloads.some((folder) => entries(folder).some((name) => name !== ".DS_Store")) || entries(BOTS).some((name) => {
       const folder = path91.join(BOTS, name);
       const info = fs90.lstatSync(folder, { throwIfNoEntry: false });
       return info?.isSymbolicLink() || info?.isDirectory() && entries(folder).includes("bot.json");
@@ -35363,7 +35366,7 @@ function hasSetupWork(link) {
     return true;
   }
 }
-var agents, engine, storage, usageFile, categoriesFile, settings2, sessionMetadata, sessionQueues, payloads, sqlName = (name) => '"' + name.replaceAll('"', '""') + '"', DB_SCAN_BYTES, DB_SCAN_MS = 1500, DatabaseScanLimit, queues, lastDatabaseStamp;
+var agents, engine, storage, usageFile, categoriesFile = () => path91.join(WORK_QUEUE2, "categories.json"), settings2 = () => [PERSONALITIES_FILE, LABELS_FILE2, categoriesFile(), ZONE_FILE, usageFile], sessionMetadata, sessionQueues, payloads, sqlName = (name) => '"' + name.replaceAll('"', '""') + '"', DB_SCAN_BYTES, DB_SCAN_MS = 1500, DatabaseScanLimit, queues, lastDatabaseStamp;
 var init_existing_work = __esm(() => {
   init_format_version();
   init_queues();
@@ -35384,8 +35387,6 @@ var init_existing_work = __esm(() => {
   engine = process.env.KUVO_ENGINE_DB_FOLDER || ENGINE_DATA;
   storage = path91.join(engine, "storage");
   usageFile = path91.join(agents, "usage", "settings.json");
-  categoriesFile = path91.join(WORK_QUEUE2, "categories.json");
-  settings2 = [PERSONALITIES_FILE, LABELS_FILE2, categoriesFile, ZONE_FILE, usageFile];
   sessionMetadata = ["session-settings.json", "named.json", "archived.json", "work/goals.json"].map((file) => path91.join(RUN, file));
   sessionQueues = queueFiles(RUN);
   payloads = [
@@ -127158,7 +127159,8 @@ async function setup() {
         return null;
       }
     }
-    if (mac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign) && hasSetupWork(current)) {
+    const sameMac = !!mac && !current?.setup && macsOf(current).includes(mac);
+    if (mac && !sameMac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign) && hasSetupWork(current)) {
       alreadySetUp = true;
       return null;
     }
