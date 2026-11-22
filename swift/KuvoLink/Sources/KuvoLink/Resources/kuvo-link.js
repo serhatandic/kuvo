@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 b4f919a25fcf
+// Kuvo folder layout 23 12518dd13011
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b4f919a25fcf";
+var BRIDGE_VERSION = "12518dd13011";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -3151,6 +3151,17 @@ function database(work) {
   privateFolder(folder);
   const SQLite = process.versions.bun ? __require(["bun", "sqlite"].join(":")).Database : __require("node:sqlite").DatabaseSync;
   const db = new SQLite(file);
+  const statements = new Map;
+  const queries = {
+    prepare(sql) {
+      let statement = statements.get(sql);
+      if (!statement) {
+        statement = db.prepare(sql);
+        statements.set(sql, statement);
+      }
+      return statement;
+    }
+  };
   try {
     db.exec(`
       PRAGMA busy_timeout=500;
@@ -3171,7 +3182,7 @@ function database(work) {
     `);
     db.exec("BEGIN IMMEDIATE");
     try {
-      const result = work(db);
+      const result = work(queries);
       db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -3181,6 +3192,8 @@ function database(work) {
       throw error;
     }
   } finally {
+    for (const statement of statements.values())
+      statement.finalize?.();
     db.close();
   }
 }
@@ -42958,19 +42971,30 @@ function markFullAccess(session, on, root = session, folder = FULL_ACCESS_FOLDER
   } catch {}
 }
 function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
-  markFullAccess(root, on, root, folder);
-  if (on)
+  markConversations([[root, on]], folder);
+}
+function markConversations(marks, folder = FULL_ACCESS_FOLDER) {
+  const revoked = new Set;
+  for (const [root, on] of marks) {
+    if (!named4(root))
+      continue;
+    markFullAccess(root, on, root, folder);
+    if (!on)
+      revoked.add(root);
+  }
+  if (!revoked.size)
     return;
   let names = [];
   try {
     names = fs107.readdirSync(folder);
   } catch {}
   for (const name of names) {
-    if (!named4(name) || name === root)
+    if (!named4(name) || revoked.has(name))
       continue;
+    const file = path109.join(folder, name);
     try {
-      if (fs107.readFileSync(path109.join(folder, name), "utf8") === root)
-        fs107.rmSync(path109.join(folder, name), { force: true });
+      if (revoked.has(fs107.readFileSync(file, "utf8")))
+        fs107.rmSync(file, { force: true });
     } catch {}
   }
 }
@@ -43152,25 +43176,32 @@ async function reapplyApprovals(engine, bridge, settings = false) {
       if (!page)
         return false;
       const listed = Array.isArray(page.data) ? page.data : [];
+      const marks = new Map;
+      const rewrites = [];
       for (const data of listed) {
         if (!data?.id)
           continue;
         const kept = data.metadata?.kuvo?.approval;
         if (data.parentID && kept === undefined)
           continue;
-        const bot = found2(target, data, agents).bot;
+        const at = found2(target, data, agents);
+        const { bot } = at;
         const now = approvalOf(data, { agents, bot }, since, byDefault);
         if (!data.parentID)
-          markConversation(data.id, now.effective === "fullAccess");
+          marks.set(data.id, now.effective === "fullAccess");
         if (!data.parentID && now.effective !== "auto")
           try {
             clearPlaces(data.id);
           } catch {}
-        const remade = settings && now.stored && changeFor(found2(target, data, agents), now.approval) !== null;
+        const remade = settings && now.stored && changeFor(at, now.approval) !== null;
         if (!remade && kept !== "auto" && kept !== "fullAccess" && !(bot && kept === undefined) && !now.pending)
           continue;
         if (!remade && (now.stored ? now.applied === now.effective && !madeBefore(data.permissions ?? [], now.effective) : !(bot || now.pending)))
           continue;
+        rewrites.push({ data, remade });
+      }
+      markConversations(marks);
+      for (const { data, remade } of rewrites) {
         const fresh = (await engineGet(target, `api/session/${encodeURIComponent(data.id)}`).catch(() => null))?.data;
         if (!fresh?.id) {
           done = false;
