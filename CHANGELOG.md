@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
+- With two or more accounts on Claude Code, Codex, Cursor, Grok or Antigravity, the model picker lists that agent's models once, under an Account row showing the account's name and plan. Open the row to switch accounts (with seven or more, type to filter). A new conversation runs on the account you picked. A search lists each account's matches with the account's name and plan.
 - Messages waiting in a conversation's queue are no longer lost or paused when Kuvo Code's coding agents restart (an update, a restart): they go once, in order, when the agent is back.
 
 - Claude Code, Codex, Cursor, Grok and Antigravity sessions keep running through a Kuvo update: one at work carries on with its turn and still shows as working, a command it's running isn't stopped, and one between turns takes your next message in the same session. Their Kuvo tools keep working afterwards.

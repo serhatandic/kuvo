@@ -72,6 +72,11 @@ const ROW: f32 = 46.;
 const MOST_ROWS: usize = 7;
 /// How many rows have a ⌘ number.
 const NUMBERED: usize = 9;
+/// How many accounts the switch's list has before it offers a filter.
+const FILTERED: usize = 7;
+/// An account's row in the switch's list, and how many show before it scrolls.
+const ACCOUNT_ROW: f32 = 30.;
+const MOST_ACCOUNTS: usize = 7;
 
 // MARK: What it offers
 
@@ -88,6 +93,9 @@ pub struct Entry {
     /// Where it's from: its provider (with its account's label), and "Free" for one that needs no
     /// account.
     pub line: SharedString,
+    /// Where it's from under its rail's account switch, which names the account: its agent's name
+    /// ("Claude Code"); none where its rail has no switch.
+    pub switched_line: Option<SharedString>,
     pub provider: SharedString,
     /// Its place in the rail.
     pub rail: usize,
@@ -117,6 +125,28 @@ pub struct RailEntry {
     pub name: SharedString,
     pub mark: Option<&'static str>,
     pub color: Option<Hsla>,
+    /// Your accounts with its coding agent, in the box's order, where there are two or more: its
+    /// list shows one at a time, switched between above it.
+    pub accounts: Vec<AccountChoice>,
+}
+
+/// One of your accounts with a coding agent, as the box names it (`models.offered.accounts`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountChoice {
+    /// Its provider (`claude-code@w0rk`): its models', and what a model picked under it runs on.
+    pub provider: SharedString,
+    pub name: SharedString,
+    pub plan: Option<SharedString>,
+}
+
+impl AccountChoice {
+    /// "Work · Max".
+    pub fn line(&self) -> String {
+        match &self.plan {
+            Some(plan) => format!("{} · {plan}", self.name),
+            None => self.name.to_string(),
+        }
+    }
 }
 
 /// The choice ahead of the models where a setting can be left to something else ("The engine's
@@ -153,7 +183,7 @@ impl Catalog {
             let rail = match catalog.rails.iter().position(|rail| rail.id.as_ref() == group) {
                 Some(at) => at,
                 None => {
-                    catalog.rails.push(RailEntry { id: group.into(), name: name.clone().into(), mark, color: kuvo_ui::icon::provider_mark_color(&model.provider_id) });
+                    catalog.rails.push(RailEntry { id: group.into(), name: name.clone().into(), mark, color: kuvo_ui::icon::provider_mark_color(&model.provider_id), accounts: Vec::new() });
                     catalog.rails.len() - 1
                 }
             };
@@ -165,18 +195,42 @@ impl Catalog {
             if model.free {
                 line.push_str(" · Free");
             }
-            let rest_key = format!("{} {} {} {}", model.id, model.provider_id, line, model.aliases.join(" ")).to_lowercase();
+            if let Some(account) = provider.and_then(|each| each.account.as_ref()) {
+                let accounts = &mut catalog.rails[rail].accounts;
+                if !accounts.iter().any(|each| each.provider.as_ref() == model.provider_id) {
+                    accounts.push(AccountChoice { provider: model.provider_id.clone().into(), name: account.name.clone().into(), plan: account.plan.clone().map(Into::into) });
+                }
+            }
             catalog.entries.push(Entry {
                 reference: model.reference(),
                 name_key: model.name.to_lowercase(),
                 name: model.name.clone().into(),
                 line: line.into(),
+                switched_line: None,
                 provider: model.provider_id.clone().into(),
                 rail,
                 efforts: model.efforts.clone(),
                 aliases: model.aliases.clone(),
-                rest_key,
+                rest_key: String::new(),
             });
+        }
+        // A rail with two or more accounts switches between them: each of its models says which
+        // account it's on wherever it's shown with others' (a search, Starred), and its agent's
+        // name under the switch. One with a single account is as it was.
+        for rail in &mut catalog.rails {
+            if rail.accounts.len() < 2 {
+                rail.accounts.clear();
+            }
+        }
+        for entry in &mut catalog.entries {
+            let rail = &catalog.rails[entry.rail];
+            if let Some(account) = rail.accounts.iter().find(|each| each.provider == entry.provider) {
+                let agent = offered.providers.iter().find(|each| each.id == entry.provider.as_ref()).and_then(|each| each.account.as_ref()).map(|each| each.agent_name.clone()).unwrap_or_else(|| rail.name.to_string());
+                entry.line = account.line().into();
+                entry.switched_line = Some(agent.into());
+            }
+            let model = &entry.reference;
+            entry.rest_key = format!("{} {} {} {}", model.id, model.provider_id, entry.line, entry.aliases.join(" ")).to_lowercase();
         }
         catalog
     }
@@ -317,6 +371,15 @@ pub struct ModelPicker {
     /// A star the box couldn't keep, and why.
     problem: Option<SharedString>,
     height: f32,
+    /// The account each rail with an account switch shows, by rail id (none chosen: the current
+    /// model's, else the first).
+    accounts: std::collections::HashMap<SharedString, SharedString>,
+    /// The account switch's list is open, with this one highlighted; its filter (from
+    /// `FILTERED` accounts up), and what's typed in it.
+    accounts_open: bool,
+    account_highlight: usize,
+    account_filter: Entity<TextField>,
+    account_query: String,
     on_pick: OnPick,
     on_effort: Option<OnEffort>,
     on_starred: Option<OnStarred>,
@@ -326,6 +389,7 @@ pub struct ModelPicker {
     star_sending: Option<Task<()>>,
     box_starred: Vec<Starred>,
     _field: Subscription,
+    _account_filter: Subscription,
 }
 
 impl EventEmitter<DismissEvent> for ModelPicker {}
@@ -345,6 +409,14 @@ impl ModelPicker {
             if let TextFieldEvent::Changed = event {
                 let query = field.read(cx).text().to_owned();
                 this.search(query, window, cx);
+            }
+        });
+        let account_filter = cx.new(|cx| TextField::new(cx).bare().placeholder("Filter accounts…"));
+        let filter_subscription = cx.subscribe_in(&account_filter, window, |this: &mut ModelPicker, field, event: &TextFieldEvent, _, cx| {
+            if let TextFieldEvent::Changed = event {
+                this.account_query = field.read(cx).text().to_owned();
+                this.account_highlight = 0;
+                cx.notify();
             }
         });
         let starred = starred.filter(|_| client.is_some());
@@ -381,8 +453,21 @@ impl ModelPicker {
             star_queue: Default::default(),
             star_sending: None,
             box_starred: Vec::new(),
+            accounts: Default::default(),
+            accounts_open: false,
+            account_highlight: 0,
+            account_filter,
+            account_query: String::new(),
             _field: subscription,
+            _account_filter: filter_subscription,
         };
+        // Its account's list, where the current model is on one of several.
+        if let Some(entry) = at.map(|at| &picker.catalog.entries[at]) {
+            let rail = &picker.catalog.rails[entry.rail];
+            if rail.accounts.iter().any(|each| each.provider == entry.provider) {
+                picker.accounts.insert(rail.id.clone(), entry.provider.clone());
+            }
+        }
         picker.box_starred = picker.starred.clone().unwrap_or_default();
         picker.show_list();
         // The current one highlighted, in sight.
@@ -521,13 +606,93 @@ impl ModelPicker {
         let models: Vec<Row> = match self.shown {
             // Your starred ones that are offered here, in the order starred.
             Shown::Starred => self.starred.iter().flatten().filter_map(|each| self.catalog.entries.iter().position(|entry| entry.is(&each.provider_id, &each.id))).map(Row::Model).collect(),
-            Shown::Rail(rail) => self.catalog.entries.iter().enumerate().filter(|(_, entry)| entry.rail == rail).map(|(ix, _)| Row::Model(ix)).collect(),
+            // (Under its account switch, the account shown's.)
+            Shown::Rail(rail) => {
+                let account = self.account_shown(rail).cloned();
+                self.catalog.entries.iter().enumerate().filter(|(_, entry)| entry.rail == rail && account.as_ref().is_none_or(|account| entry.switched_line.is_none() || entry.provider == account.provider)).map(|(ix, _)| Row::Model(ix)).collect()
+            }
         };
         self.rows = unset.into_iter().chain(models).collect();
     }
 
+    /// The account `rail`'s list shows, where it has a switch.
+    fn account_shown(&self, rail: usize) -> Option<&AccountChoice> {
+        let rail = self.catalog.rails.get(rail)?;
+        let chosen = self.accounts.get(&rail.id);
+        rail.accounts.iter().find(|each| Some(&each.provider) == chosen).or(rail.accounts.first())
+    }
+
+    /// The rail whose account switch shows now: a provider's list with two or more accounts, while
+    /// nothing's typed.
+    fn switch_rail(&self) -> Option<usize> {
+        match self.shown {
+            Shown::Rail(rail) if self.query.trim().is_empty() && self.notice.is_none() && self.catalog.rails.get(rail).is_some_and(|each| each.accounts.len() >= 2) => Some(rail),
+            _ => None,
+        }
+    }
+
+    /// The accounts the switch's list shows, as filtered: their places in the rail's.
+    fn accounts_listed(&self, rail: usize) -> Vec<usize> {
+        let query = self.account_query.trim().to_lowercase();
+        self.catalog.rails[rail].accounts.iter().enumerate().filter(|(_, each)| query.is_empty() || each.line().to_lowercase().contains(&query)).map(|(ix, _)| ix).collect()
+    }
+
+    fn toggle_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accounts_open {
+            self.close_accounts(window, cx);
+            return;
+        }
+        let Some(rail) = self.switch_rail() else { return };
+        self.accounts_open = true;
+        self.account_filter.update(cx, |field, cx| field.set_text("", cx));
+        self.account_query.clear();
+        let shown = self.account_shown(rail).map(|each| each.provider.clone());
+        self.account_highlight = self.catalog.rails[rail].accounts.iter().position(|each| Some(&each.provider) == shown.as_ref()).unwrap_or(0);
+        if self.catalog.rails[rail].accounts.len() >= FILTERED {
+            let focus = self.account_filter.focus_handle(cx);
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.accounts_open = false;
+        let focus = self.field.focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Shows the account at `at` (its place in the rail's) in `rail`'s list.
+    fn choose_account(&mut self, rail: usize, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(account) = self.catalog.rails.get(rail).and_then(|each| each.accounts.get(at)) else { return };
+        self.accounts.insert(self.catalog.rails[rail].id.clone(), account.provider.clone());
+        self.close_accounts(window, cx);
+        self.show_list();
+        // The current model, where it's on this account; else the first.
+        let current = self.current.as_ref().and_then(|current| self.catalog.position(current));
+        self.selected = self.rows.iter().position(|row| matches!(row, Row::Model(ix) if Some(*ix) == current)).or((!self.rows.is_empty()).then_some(0));
+        self.scroll.scroll_to_item(self.selected.unwrap_or(0), ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Shows the account named `name` in the list shown (shots and tests).
+    pub fn show_account(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Shown::Rail(rail) = self.shown else { return };
+        if let Some(at) = self.catalog.rails[rail].accounts.iter().position(|each| each.name.as_ref() == name) {
+            self.choose_account(rail, at, window, cx);
+        }
+    }
+
+    /// Opens the account switch's list (shots).
+    pub fn open_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.accounts_open {
+            self.toggle_accounts(window, cx);
+        }
+    }
+
     fn choose(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
+        self.accounts_open = false;
         if !self.query.is_empty() {
             // (Clearing the search shows the list.)
             self.field.update(cx, |field, cx| field.set_text("", cx));
@@ -548,6 +713,9 @@ impl ModelPicker {
 
     fn run_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
         self.query = query.clone();
+        if !query.trim().is_empty() {
+            self.accounts_open = false;
+        }
         self.cancel.store(true, Ordering::Relaxed);
         self.searching = None;
         // (A Return pressed for the search before is for that one only.)
@@ -580,6 +748,14 @@ impl ModelPicker {
     }
 
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
+        if let Some(rail) = self.switch_rail().filter(|_| self.accounts_open) {
+            let listed = self.accounts_listed(rail);
+            if let Some(at) = listed.iter().position(|ix| *ix == self.account_highlight).or((!listed.is_empty()).then_some(0)) {
+                self.account_highlight = listed[(at as isize + by).clamp(0, listed.len() as isize - 1) as usize];
+                cx.notify();
+            }
+            return;
+        }
         if self.rows.is_empty() {
             return;
         }
@@ -630,6 +806,13 @@ impl ModelPicker {
     }
 
     fn pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(rail) = self.switch_rail().filter(|_| self.accounts_open) {
+            let listed = self.accounts_listed(rail);
+            if let Some(at) = listed.iter().find(|ix| **ix == self.account_highlight).or(listed.first()).copied() {
+                self.choose_account(rail, at, window, cx);
+            }
+            return;
+        }
         // Return before the search has found anything: what it finds first.
         if self.searching.is_some() {
             self.pick_when_found = Some(0);
@@ -715,6 +898,8 @@ impl ModelPicker {
     fn rows_in(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         let stars = self.starred.is_some();
+        // (Under the account switch, which names the account, a model says its agent alone.)
+        let switched = self.switch_rail().is_some();
         range
             .filter_map(|row| {
                 let kind = *self.rows.get(row)?;
@@ -730,7 +915,8 @@ impl ModelPicker {
                         let rail = &self.catalog.rails[entry.rail];
                         let current = self.current.as_ref().is_some_and(|current| entry.is(&current.provider_id, &current.id));
                         let star = stars.then(|| (ix, self.is_starred(entry)));
-                        (format!("model-row-{}/{}", entry.reference.provider_id, entry.reference.id), entry.name.clone(), entry.line.clone(), Some((rail.mark, rail.color)), current, star)
+                        let line = entry.switched_line.clone().filter(|_| switched).unwrap_or_else(|| entry.line.clone());
+                        (format!("model-row-{}/{}", entry.reference.provider_id, entry.reference.id), entry.name.clone(), line, Some((rail.mark, rail.color)), current, star)
                     }
                 };
                 let star_selector = selector.replacen("model-row-", "model-star-", 1);
@@ -858,6 +1044,123 @@ impl ModelPicker {
             .into_any_element()
     }
 
+    /// The account switch over a provider's list with two or more accounts: the account shown, by
+    /// name and plan, and ▾ for the others. Its edges, corners and text line up with the rows'
+    /// highlight below it.
+    fn account_switch(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let rail = self.switch_rail()?;
+        let account = self.account_shown(rail)?.clone();
+        let c = cx.theme().colors.clone();
+        let open = self.accounts_open;
+        let count = self.catalog.rails[rail].accounts.len();
+        Some(
+            div()
+                .px(space::S1)
+                .pt(space::S1)
+                .child(
+                    div()
+                        .id("model-account-switch")
+                        .debug_selector(|| "model-account-switch".into())
+                        .flex()
+                        .items_center()
+                        .gap(space::S1_5)
+                        .h(scaled(px(34.)))
+                        .pl(space::S3)
+                        .pr(space::S2)
+                        .rounded(radius::NAV)
+                        .border_1()
+                        .border_color(if open { c.accent } else { c.border })
+                        .bg(if open { c.elevated } else { c.hover })
+                        .cursor_pointer()
+                        .hover(|d| d.border_color(c.border_strong))
+                        .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(format!("Switch between your {count} accounts")).build(cx))
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_accounts(window, cx)))
+                        .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Account"))
+                        .child(div().min_w_0().truncate().text_ui(TypeSize::Caption).medium().text_color(c.text).child(account.name.clone()))
+                        .children(account.plan.clone().map(|plan| div().flex().flex_none().gap(space::S1_5).text_ui(TypeSize::Caption).child(div().text_color(c.text_faint).child("·")).child(div().text_color(c.text_muted).child(plan))))
+                        .child(div().flex_1())
+                        .child(Icon::new(if open { IconName::ChevronUp } else { IconName::ChevronDown }).size(IconSize::XSmall).color(c.icon)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The account switch's list, open over the models: each account by name and plan, the one
+    /// shown checked, and a filter from `FILTERED` accounts up.
+    fn account_list(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let rail = self.switch_rail().filter(|_| self.accounts_open)?;
+        let theme = cx.theme().clone();
+        let c = theme.colors.clone();
+        let accounts = self.catalog.rails[rail].accounts.clone();
+        let shown = self.account_shown(rail).map(|each| each.provider.clone());
+        let listed = self.accounts_listed(rail);
+        let filter = accounts.len() >= FILTERED;
+        // (As many as fit over the list, up to `MOST_ACCOUNTS`.)
+        let fit = ((self.height - 12. - if filter { 31. } else { 0. }) / ACCOUNT_ROW).floor().max(2.) as usize;
+        let visible = listed.len().clamp(1, MOST_ACCOUNTS.min(fit));
+        let rows = listed.iter().map(|&at| {
+            let account = &accounts[at];
+            let current = Some(&account.provider) == shown.as_ref();
+            let highlighted = at == self.account_highlight;
+            let selector = format!("model-account-{}", account.provider);
+            div()
+                .id(("model-account", at))
+                .debug_selector(move || selector)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S1_5)
+                .h(scaled(px(ACCOUNT_ROW)))
+                .pl(space::S2)
+                .pr(space::S2)
+                .rounded(radius::SMALL)
+                .cursor_pointer()
+                .when(highlighted, |d| d.bg(c.hover))
+                .hover(|d| d.bg(c.hover))
+                .on_click(cx.listener(move |this, _, window, cx| this.choose_account(rail, at, window, cx)))
+                .child(div().flex_none().w(px(14.)).when(current, |d| d.child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.accent))))
+                .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(account.name.clone()))
+                .children(account.plan.clone().map(|plan| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(plan)))
+                .into_any_element()
+        });
+        let empty = listed.is_empty().then(|| div().h(scaled(px(ACCOUNT_ROW))).px(space::S2).flex().items_center().text_ui(TypeSize::Small).text_color(c.text_muted).child("No accounts match."));
+        Some(
+            div()
+                .id("model-account-list")
+                .debug_selector(|| "model-account-list".into())
+                .absolute()
+                .top(space::S1)
+                .left(space::S1)
+                .right(space::S1)
+                .flex()
+                .flex_col()
+                .p(space::S1)
+                .rounded(radius::NAV)
+                .bg(c.elevated)
+                .border_1()
+                .border_color(c.border)
+                .shadow(theme.elevated_shadow())
+                .occlude()
+                .when(filter, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(space::S1_5)
+                            .h(scaled(px(28.)))
+                            .px(space::S2)
+                            .mb(px(3.))
+                            .border_b_1()
+                            .border_color(c.border)
+                            .child(Icon::new(IconName::Search).size(IconSize::XSmall).color(c.text_faint))
+                            .child(div().flex_1().min_w_0().child(self.account_filter.clone())),
+                    )
+                })
+                .child(div().id("model-account-rows").flex().flex_col().max_h(scaled(px(ACCOUNT_ROW * visible as f32))).overflow_y_scroll().children(rows).children(empty))
+                .into_any_element(),
+        )
+    }
+
     /// What the list says where it has no rows.
     fn empty_words(&self) -> SharedString {
         if let Some(notice) = &self.notice {
@@ -913,7 +1216,8 @@ impl Render for ModelPicker {
             .on_action(cx.listener(|this, _: &NextRail, _, cx| this.step_rail(1, cx)))
             .on_action(cx.listener(|this, _: &PreviousRail, _, cx| this.step_rail(-1, cx)))
             .on_action(cx.listener(|this, _: &Pick, window, cx| this.pick(window, cx)))
-            .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
+            // (Escape closes the account list first.)
+            .on_action(cx.listener(|this, _: &Close, window, cx| if this.accounts_open { this.close_accounts(window, cx) } else { cx.emit(DismissEvent) }))
             .on_action(cx.listener(|this, _: &Row1, window, cx| this.pick_number(0, window, cx)))
             .on_action(cx.listener(|this, _: &Row2, window, cx| this.pick_number(1, window, cx)))
             .on_action(cx.listener(|this, _: &Row3, window, cx| this.pick_number(2, window, cx)))
@@ -944,7 +1248,8 @@ impl Render for ModelPicker {
                     // The search's underline, as 0.7's.
                     .child(div().mx(space::S3).h(px(1.)).bg(c.accent))
                     .children(self.effort_controls(cx))
-                    .child(list)
+                    .children(self.account_switch(cx))
+                    .child(div().relative().child(list).children(self.account_list(cx)))
                     .children(self.problem.clone().map(|problem| div().debug_selector(|| "model-picker-problem".into()).px(space::S3).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(problem)))
                     .children(self.note.clone().map(|note| div().px(space::S3).py(space::S2).border_t_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))),
             )
