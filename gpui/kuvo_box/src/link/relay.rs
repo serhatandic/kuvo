@@ -155,6 +155,8 @@ impl Incoming for ChannelIncoming {
 
 #[cfg(unix)]
 pub use unix::serve as pump;
+#[cfg(unix)]
+pub(crate) use unix::Wake;
 
 #[cfg(unix)]
 mod unix {
@@ -173,13 +175,13 @@ mod unix {
     use super::{CONNECT_TIMEOUT, ChannelIncoming, Dial, Incoming, Outgoing, PING_EVERY, PONG_WITHIN, PingClock, SEND_BUFFER, STALL_WITHIN, WebSocketDial};
 
     /// A pipe that wakes the socket's thread: written by whoever hands it something to send.
-    struct Wake {
-        read: RawFd,
+    pub(crate) struct Wake {
+        pub(crate) read: RawFd,
         write: RawFd,
     }
 
     impl Wake {
-        fn new() -> io::Result<Wake> {
+        pub(crate) fn new() -> io::Result<Wake> {
             let mut ends = [0 as RawFd; 2];
             // SAFETY: `ends` is two descriptors' room, which pipe fills.
             if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
@@ -195,12 +197,12 @@ mod unix {
             Ok(Wake { read: ends[0], write: ends[1] })
         }
 
-        fn wake(&self) {
+        pub(crate) fn wake(&self) {
             // SAFETY: one byte from a buffer of one, to a descriptor this owns. Full means woken already.
             unsafe { libc::write(self.write, [1u8].as_ptr().cast(), 1) };
         }
 
-        fn drain(&self) {
+        pub(crate) fn drain(&self) {
             let mut buffer = [0u8; 64];
             // SAFETY: reads at most the buffer's length from a descriptor this owns.
             while unsafe { libc::read(self.read, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}

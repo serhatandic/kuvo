@@ -1,27 +1,23 @@
-//! Files: the session's folder as its box lists it, one folder at a time as each opens (`kuvo/folders`
-//! with `files=1`), folders first; a folder the box can't read says why, with Try Again. A file opens
-//! read-only, highlighted as the conversation's code blocks are, where the box says it's text
-//! (`kuvo/file/text`).
+//! Files: the conversation's folder as its box lists it, one folder at a time as each opens
+//! (`kuvo/folders` with `files=1`), folders first; a folder the box can't read says why, with Try
+//! Again. Above it, "Filter files…" asks the box for the files whose path has what's typed
+//! (`kuvo/files/find`), best first as it ranks them. A file picked opens in a tab of its own.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use kuvo_box::BoxClient;
+use kuvo_box::find::{FILES_FIND, Found};
 use kuvo_box::folders::{FileText, Folder, Unreadable};
 use kuvo_ui::code_block::CodeBlock;
-use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, theme::{radius, space}};
+use kuvo_ui::text_field::TextFieldEvent;
+use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TypeSize, theme::{radius, space}};
 
 use super::changes::empty;
 use super::{Load, Place, run};
-
-actions!(files, [CloseFile]);
-
-pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", CloseFile, Some("Files"))]);
-}
 
 /// The most lines a file shows: past it, the rest is counted.
 pub const LINES_MOST: usize = 3_000;
@@ -52,6 +48,10 @@ pub enum Row {
     Note { folder: String, depth: usize, read: Read },
 }
 
+/// A file picked in the tree, or among what the filter found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenFile(pub String);
+
 pub struct FilesView {
     client: BoxClient,
     live: bool,
@@ -59,32 +59,41 @@ pub struct FilesView {
     shown: bool,
     folders: HashMap<String, Read>,
     open: HashSet<String>,
-    opened: Option<(String, Load<Shown>)>,
     /// The tree's rows, worked out as folders are read, opened or closed (not on each frame).
     rows: std::rc::Rc<Vec<Row>>,
+    /// The file showing in its tab, marked in the tree.
+    selected: Option<String>,
+    filter: Entity<TextField>,
+    /// What the box found for the filter's text, and the text it was asked.
+    found: Option<(String, Load<Found>)>,
     focus: FocusHandle,
-    /// The editor a file opens in (Your settings › General), where it's on this Mac.
-    editor: Option<crate::yours::editors::Editor>,
-    _yours: gpui::Subscription,
+    _filter: Subscription,
 }
+
+impl EventEmitter<OpenFile> for FilesView {}
 
 impl FilesView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> FilesView {
-        // (The editor picked changed: the button names the new one.)
-        let yours = cx.observe_global::<crate::yours::Store>(|this: &mut FilesView, cx| {
-            this.editor = crate::yours::editors::picked(cx);
-            cx.notify();
+        let filter = cx.new(|cx| TextField::new(cx).bare().placeholder("Filter files…"));
+        let watch = cx.subscribe(&filter, |this: &mut FilesView, _, event: &TextFieldEvent, cx| match event {
+            TextFieldEvent::Changed => this.find(cx),
+            TextFieldEvent::Submit(_) => {
+                if let Some(first) = this.found().and_then(|found| found.files.first()).map(|file| file.path.clone()) {
+                    cx.emit(OpenFile(first));
+                }
+            }
+            TextFieldEvent::Cancel => this.filter.update(cx, |field, cx| field.set_text("", cx)),
         });
-        FilesView { client, live, place: None, shown: false, folders: HashMap::new(), open: HashSet::new(), opened: None, rows: Default::default(), focus: cx.focus_handle(), editor: None, _yours: yours }
+        FilesView { client, live, place: None, shown: false, folders: HashMap::new(), open: HashSet::new(), rows: Default::default(), selected: None, filter, found: None, focus: cx.focus_handle(), _filter: watch }
     }
 
-    /// The editor "Open in" names, where one's picked and on this Mac.
-    pub fn editor(&self) -> Option<&crate::yours::editors::Editor> {
-        self.editor.as_ref()
+    pub fn filter(&self) -> &Entity<TextField> {
+        &self.filter
     }
 
-    pub fn opened(&self) -> Option<&(String, Load<Shown>)> {
-        self.opened.as_ref()
+    /// What the box found for the filter's text, once it's said.
+    pub fn found(&self) -> Option<&Found> {
+        self.found.as_ref().and_then(|(_, found)| found.ready())
     }
 
     pub fn set_place(&mut self, place: Option<Place>, shown: bool, cx: &mut Context<Self>) {
@@ -95,7 +104,7 @@ impl FilesView {
         if moved {
             self.folders.clear();
             self.open.clear();
-            self.opened = None;
+            self.found = None;
             self.rebuild();
         }
         // As it shows (again): its open folders read again, so what the agent made since is there.
@@ -103,6 +112,14 @@ impl FilesView {
             self.reload(cx);
         }
         cx.notify();
+    }
+
+    /// Marks the file showing in its tab.
+    pub fn set_selected(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        if self.selected != path {
+            self.selected = path;
+            cx.notify();
+        }
     }
 
     /// Reads the top folder, and each open one, again.
@@ -133,6 +150,31 @@ impl FilesView {
         });
     }
 
+    /// Asks the box for the files whose path has the filter's text.
+    fn find(&mut self, cx: &mut Context<Self>) {
+        let query = self.filter.read(cx).text().trim().to_owned();
+        let Some(place) = self.place.clone().filter(|_| !query.is_empty()) else {
+            self.found = None;
+            cx.notify();
+            return;
+        };
+        self.found = Some((query.clone(), Load::Loading));
+        let client = self.client.clone();
+        let asked = query.clone();
+        run(self, self.live, cx, move || client.find_files(&place.directory, &asked), move |this, found, cx| {
+            // (Only the answer to what's typed now.)
+            if this.found.as_ref().map(|(at, _)| at) != Some(&query) {
+                return;
+            }
+            this.found = Some((query, match found {
+                Ok(found) => Load::Ready(found),
+                Err(error) => Load::Failed(error.to_string()),
+            }));
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     /// Opens or closes a folder; opened the first time, it's read.
     pub fn toggle(&mut self, folder: &str, cx: &mut Context<Self>) {
         if !self.open.remove(folder) {
@@ -149,39 +191,6 @@ impl FilesView {
     pub fn retry(&mut self, folder: &str, cx: &mut Context<Self>) {
         self.folders.insert(folder.to_owned(), Read::Loading);
         self.read(folder.to_owned(), cx);
-        cx.notify();
-    }
-
-    /// Opens a file to read, as its box sends it. Image files present an option to open in the
-    /// unified Stage viewer.
-    pub fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.opened = Some((path.to_owned(), Load::Loading));
-        // (Looked up as a file opens: an editor installed or removed since is found.)
-        if self.client.here() {
-            self.editor = crate::yours::editors::picked(cx);
-        }
-        window.focus(&self.focus, cx);
-        let client = self.client.clone();
-        let asked = path.to_owned();
-        let path = path.to_owned();
-        run(self, self.live, cx, move || client.read_text(&asked), move |this, read, cx| {
-            if this.opened.as_ref().map(|(at, _)| at) != Some(&path) {
-                return;
-            }
-            let shown = match read {
-                Ok(file) => Load::Ready(shown(file)),
-                Err(error) if error.status() == Some(413) => Load::Ready(Shown::Unshown("Too big to show here.".into())),
-                Err(error) => Load::Failed(error.to_string()),
-            };
-            this.opened = Some((path, shown));
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub fn close_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.opened = None;
-        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -221,53 +230,54 @@ impl FilesView {
         }
     }
 
+    fn line(id: String) -> gpui::Stateful<gpui::Div> {
+        let selector = id.clone();
+        div()
+            .id(SharedString::from(id))
+            .debug_selector(move || selector)
+            .flex()
+            .w_full()
+            .items_center()
+            .gap(space::S1_5)
+            .h(px(26.))
+            .pr(space::S2)
+            .rounded(radius::NAV)
+    }
+
     fn row(&self, row: &Row, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let glass = super::glass(cx);
         let indent = |depth: usize| space::S2 + px(14. * depth as f32);
-        let line = |id: String| {
-            let selector = id.clone();
-            div()
-                .id(SharedString::from(id))
-                .debug_selector(move || selector)
-                .flex()
-                .w_full()
-                .items_center()
-                .gap(space::S1_5)
-                .h(px(26.))
-                .pr(space::S2)
-                .rounded(radius::NAV)
-        };
         match row {
             Row::Folder { path, name, depth, open } => {
                 let toggled = path.clone();
-                line(format!("tree-{path}"))
+                Self::line(format!("tree-{path}"))
                     .pl(indent(*depth))
                     .cursor_pointer()
                     .hover(move |s| s.bg(c.hover))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggled, cx)))
-                    .child(Icon::new(if *open { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint))
-                    .child(Icon::new(IconName::Folder).size(IconSize::Nav).color(c.text_muted))
+                    .child(Icon::new(if *open { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::XSmall).color(c.text_faint))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .into_any_element()
             }
             Row::File { path, name, depth } => {
                 let opened = path.clone();
-                let selected = self.opened.as_ref().is_some_and(|(at, _)| at == path);
+                let selected = self.selected.as_ref() == Some(path);
                 let icon = if crate::image_viewer::is_image_path(name) { IconName::Image } else { IconName::File };
-                line(format!("tree-{path}"))
+                Self::line(format!("tree-{path}"))
                     .pl(indent(*depth) + px(18.))
                     .cursor_pointer()
-                    .when(selected, |d| d.bg(c.selected))
-                    .hover(move |s| s.bg(c.hover))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_file(&opened, window, cx)))
-                    .child(Icon::new(icon).size(IconSize::Nav).color(c.text_faint))
+                    .when(selected, |d| d.bg(glass.pill).medium())
+                    .when(!selected, |d| d.hover(move |s| s.bg(c.hover)))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(OpenFile(opened.clone()))))
+                    .child(Icon::new(icon).size(IconSize::XSmall).color(c.text_faint))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .into_any_element()
             }
             Row::Note { folder, depth, read } => {
-                let note = |text: String| line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).text_ui(TypeSize::Caption).text_color(c.text_faint).child(text);
+                let note = |text: String| Self::line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).text_ui(TypeSize::Caption).text_color(c.text_faint).child(text);
                 match read {
-                    Read::Loading => line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).child(kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("tree-loading-{folder}")), "Reading…").compact()).into_any_element(),
+                    Read::Loading => Self::line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).child(kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("tree-loading-{folder}")), "Reading…").compact()).into_any_element(),
                     Read::Listed(_) => note("Empty".into()).into_any_element(),
                     Read::Unreadable(Unreadable { reason, message }) => self.unreadable(folder, *depth, reason.clone().unwrap_or_else(|| message.clone()), cx),
                     Read::Failed(why) => self.unreadable(folder, *depth, why.clone(), cx),
@@ -304,157 +314,80 @@ impl FilesView {
             .into_any_element()
     }
 
-    fn open_image_in_viewer(&self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // Gather sibling image files in the same open folder so the user can step through them.
-        let parent = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-        let mut paths: Vec<String> = match self.folders.get(parent) {
-            Some(Read::Listed(folder)) => folder
-                .files
-                .iter()
-                .filter(|file| crate::image_viewer::is_image_path(&file.name))
-                .map(|file| file.path.clone())
-                .collect(),
-            _ => Vec::new(),
-        };
-        if !paths.iter().any(|p| p == path) {
-            paths.push(path.to_owned());
-        }
-        let active = paths.iter().position(|p| p == path).unwrap_or(0);
-        let here = self.client.here();
-        let items: Vec<crate::image_viewer::ViewerItem> = paths
-            .into_iter()
-            .map(|file_path| {
-                let name = file_path.rsplit('/').next().unwrap_or(&file_path).to_owned();
-                let client = self.client.clone();
-                let uri = crate::image_viewer::file_uri(&file_path);
-                crate::image_viewer::ViewerItem {
-                    id: format!("file:{file_path}"),
-                    name,
-                    caption: None,
-                    source_tag: "Files".into(),
-                    local_path: here.then(|| std::path::PathBuf::from(&file_path)),
-                    read: crate::pictures::Read::Reading,
-                    loader: Some(std::sync::Arc::new(move || {
-                        crate::pictures::read(&client, &kuvo_box::pictures::Source::File(uri.clone()))
-                    })),
-                }
-            })
-            .collect();
-        crate::image_viewer::open(
-            crate::image_viewer::OpenRequest {
-                items,
-                active,
-                return_focus: Some(self.focus.clone()),
-                on_change: None,
-            },
-            window,
-            cx,
-        );
-    }
-
-    fn viewer(&self, path: &str, shown: &Load<Shown>, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
-        let place = self.place.as_ref().map(|place| place.directory.clone()).unwrap_or_default();
-        let relative = path.strip_prefix(&format!("{place}/")).unwrap_or(path).to_owned();
-        let name = relative.rsplit('/').next().unwrap_or(&relative).to_owned();
-        let folder = relative.rsplit_once('/').map(|(folder, _)| folder.to_owned()).unwrap_or_default();
-        let is_image = crate::image_viewer::is_image_path(path);
-        let body: AnyElement = match shown {
-            Load::Loading => kuvo_ui::small::LoadingLabel::new("file-loading", "Reading…").fill().into_any_element(),
-            Load::Failed(why) => div().p(space::S4).text_color(c.text_faint).child(format!("It couldn’t be read: {why}")).into_any_element(),
-            Load::Ready(Shown::Unshown(_)) if is_image => {
-                let open_path = path.to_owned();
-                div()
-                    .p(space::S5)
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(space::S3)
-                    .rounded(radius::CARD)
-                    .bg(c.sunken)
-                    .border_1()
-                    .border_color(c.border)
-                    .child(Icon::new(IconName::Image).size(IconSize::Card).color(c.text_muted))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(2.))
-                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(name.clone()))
-                            .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Open full screen in the image viewer")),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "files-open-image".into())
-                            .child(
-                                Button::new("files-open-image", "View Image")
-                                    .icon(IconName::ExpandEditor)
-                                    .size(ButtonSize::Small)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_image_in_viewer(&open_path, window, cx);
-                                    })),
-                            ),
-                    )
-                    .into_any_element()
-            }
-            Load::Ready(Shown::Unshown(why)) => div().p(space::S4).text_color(c.text_faint).child(why.clone()).into_any_element(),
-            Load::Ready(Shown::Text { text, lines }) => {
-                text_preview(&name, text, *lines, cx)
-            }
-        };
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(space::S1)
-                    .h(px(40.))
-                    .pl(space::S2)
-                    .pr(space::S3)
-                    .border_b_1()
-                    .border_color(c.border)
-                    .child(Button::icon_only("files-back", IconName::ChevronLeft, "Back to Files").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).on_click(cx.listener(|this, _, window, cx| this.close_file(window, cx))))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().truncate().medium().child(name))
-                            .child(div().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if folder.is_empty() { "Read only".to_owned() } else { format!("{folder} · Read only") })),
-                    )
-                    .children(self.open_in(path)),
-            )
-            .child(div().id("file-scroll").debug_selector(|| "file-viewer".into()).flex_1().min_h_0().overflow_y_scroll().p(space::S3).when(matches!(shown, Load::Loading), |d| d.flex().flex_col()).child(body))
-            .into_any_element()
-    }
-}
-
-impl FilesView {
-    /// Opens the file in the editor picked in Your settings › General, else in its own app: only
-    /// a file on this computer, which this Mac's apps can open.
-    // BOX-NEEDED: another computer's file would need its contents fetched to a copy here
-    // (`kuvo/file`), and an editor's remote opening; Files leaves the button out there.
-    fn open_in(&self, path: &str) -> Option<Button> {
-        if !self.client.here() {
+    /// "Filter files…", where the box finds files.
+    fn filter_box(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.client.gate().has(FILES_FIND) {
             return None;
         }
-        let (label, tooltip) = match &self.editor {
-            Some(editor) => (format!("Open in {}", editor.name), None),
-            None => ("Open".to_owned(), Some("In your default text editor. Pick another in Settings › General.")),
-        };
-        let (path, editor) = (path.to_owned(), self.editor.as_ref().map(|editor| editor.id.clone()));
-        let button = Button::new("file-open-in", label).ghost().size(ButtonSize::Small).icon_after(IconName::External).on_click(move |_, _, cx| crate::yours::editors::open(std::path::Path::new(&path), editor.as_deref(), cx));
-        Some(match tooltip {
-            Some(tooltip) => button.tooltip(tooltip),
-            None => button,
-        })
+        let c = cx.theme().colors.clone();
+        Some(
+            div()
+                .debug_selector(|| "files-filter".into())
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S1_5)
+                .h(px(30.))
+                .mx(space::S2)
+                .mt(space::S2)
+                .mb(space::S1)
+                .px(space::S2)
+                .rounded(radius::NAV)
+                .border_1()
+                .border_color(c.border)
+                .bg(c.card)
+                .child(Icon::new(IconName::Search).size(IconSize::XSmall).color(c.text_faint))
+                .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).child(self.filter.clone()))
+                .into_any_element(),
+        )
+    }
+
+    /// What the box found for the filter: each file with the folder it's in, best first.
+    fn found_list(&self, query: &str, found: &Load<Found>, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let glass = super::glass(cx);
+        match found {
+            Load::Loading => div().p(space::S3).child(kuvo_ui::small::LoadingLabel::new("files-finding", "Finding…").compact()).into_any_element(),
+            Load::Failed(why) => div()
+                .debug_selector(|| "files-find-failed".into())
+                .flex()
+                .items_center()
+                .gap(space::S2)
+                .p(space::S3)
+                .text_ui(TypeSize::Caption)
+                .child(div().flex_1().min_w_0().text_color(c.text_muted).child(format!("Couldn’t search: {why}")))
+                .child(Button::new("files-find-again", "Try Again").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.find(cx))))
+                .into_any_element(),
+            Load::Ready(found) if found.files.is_empty() => div()
+                .debug_selector(|| "files-found-none".into())
+                .p(space::S3)
+                .text_ui(TypeSize::Caption)
+                .text_color(c.text_faint)
+                .child(format!("No files match “{query}”."))
+                .into_any_element(),
+            Load::Ready(found) => div()
+                .id("files-found")
+                .debug_selector(|| "files-found".into())
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(space::S2)
+                .pb(space::S2)
+                .children(found.files.iter().map(|file| {
+                    let opened = file.path.clone();
+                    let selected = self.selected.as_ref() == Some(&file.path);
+                    Self::line(format!("found-{}", file.path))
+                        .pl(space::S2)
+                        .cursor_pointer()
+                        .when(selected, |d| d.bg(glass.pill))
+                        .when(!selected, |d| d.hover(move |s| s.bg(c.hover)))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(OpenFile(opened.clone()))))
+                        .child(Icon::new(IconName::File).size(IconSize::XSmall).color(c.text_faint))
+                        .child(div().flex_none().max_w(px(160.)).truncate().child(file.name.clone()))
+                        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(file.folder.clone()))
+                }))
+                .into_any_element(),
+        }
     }
 }
 
@@ -489,41 +422,34 @@ impl Focusable for FilesView {
 
 impl Render for FilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if let Some((path, shown)) = self.opened.clone() {
-            self.viewer(&path, &shown, cx)
-        } else {
-            let top = self.place.as_ref().map(|place| place.directory.clone()).unwrap_or_default();
-            match self.folders.get(&top) {
-                // The top folder unreadable: the whole room says so.
-                Some(Read::Unreadable(Unreadable { message, reason })) => empty(
-                    "Couldn’t Read This Folder",
-                    reason.clone().unwrap_or_else(|| message.clone()),
-                    Some(Button::new("files-again", "Try Again").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.retry(&top, cx))).into_any_element()),
-                    cx,
-                ),
-                _ => uniform_list("files-tree", self.rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                    let rows = this.rows.clone();
-                    range.filter_map(|ix| rows.get(ix)).map(|row| this.row(row, cx)).collect::<Vec<_>>()
-                }))
-                .size_full()
-                .p(space::S2)
-                .into_any_element(),
-            }
+        let top = self.place.as_ref().map(|place| place.directory.clone()).unwrap_or_default();
+        let content = match (self.found.clone(), self.folders.get(&top)) {
+            (Some((query, found)), _) => self.found_list(&query, &found, cx),
+            // The top folder unreadable: the whole room says so.
+            (None, Some(Read::Unreadable(Unreadable { message, reason }))) => empty(
+                "Couldn’t Read This Folder",
+                reason.clone().unwrap_or_else(|| message.clone()),
+                Some(Button::new("files-again", "Try Again").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.retry(&top, cx))).into_any_element()),
+                cx,
+            ),
+            (None, _) => uniform_list("files-tree", self.rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                let rows = this.rows.clone();
+                range.filter_map(|ix| rows.get(ix)).map(|row| this.row(row, cx)).collect::<Vec<_>>()
+            }))
+            .flex_1()
+            .min_h_0()
+            .px(space::S2)
+            .pb(space::S2)
+            .into_any_element(),
         };
         div()
             .key_context("Files")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &CloseFile, window, cx| {
-                if this.opened.is_some() {
-                    this.close_file(window, cx);
-                } else {
-                    cx.propagate();
-                }
-            }))
             .flex()
             .flex_col()
             .size_full()
-            .child(content)
+            .children(self.filter_box(cx))
+            .child(div().flex().flex_col().flex_1().min_h_0().child(content))
     }
 }
 

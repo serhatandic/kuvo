@@ -81,7 +81,8 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
         Button::icon_only("toggle-panel", IconName::PanelRight, if workspace.is_panel_open() { "Hide Panel" } else { "Show Panel" })
             .ghost()
             .size(ButtonSize::Medium)
-                .icon_size(IconSize::Large)
+            .icon_size(IconSize::Large)
+            .selected(workspace.is_panel_open())
             .tooltip("⌥⌘0")
             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx)))
     });

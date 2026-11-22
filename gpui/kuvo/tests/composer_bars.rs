@@ -161,19 +161,30 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     assert!(shown(cx, "activity-sessions") && shown(cx, "activity-processes"));
     assert!(!shown(cx, "activity-wakes") && shown(cx, "activity-session-ses_sub"));
 
+    // A process opens what it prints in a tab of its own in the side panel, as the box reads it.
     click(cx, "activity-process-sh_dev");
-    assert!(shown(cx, "command-output"));
-    assert_eq!(stand_in.seen_at("GET", "api/shell/sh_dev/output").len(), 2);
-    click(cx, "activity-process-sh_dev");
-    assert!(!shown(cx, "command-output"));
-    click(cx, "activity-process-sh_dev");
-    click(cx, "activity-stop-process");
+    assert!(!shown(cx, "conversation-activity-popover"));
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().map(|tab| tab.kind.clone()));
+    assert_eq!(showing, Some(kuvo::panel::Kind::Process { session: "ses_signup".into(), command: "sh_dev".into() }));
+    assert!(shown(cx, "process-text"));
+    assert_eq!(stand_in.seen_at("GET", "kuvo/work/background/ses_signup/commands/sh_dev/output").len(), 1);
+    // Stopped there, it says it ended, its last output kept.
+    click(cx, "process-stop");
     assert_eq!(stand_in.stopped_commands(), vec!["sh_dev".to_owned()]);
+    assert!(shown(cx, "process-text") && shown(cx, "process-note"));
+    // (The bars read again, as their follow would hand them what the box says.)
+    let bars = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).bars().clone());
+    bars.update(cx, |bars, cx| bars.read_at_once(cx));
+    cx.run_until_parked();
+    click(cx, "conversation-activity-button");
     assert!(!shown(cx, "activity-processes") && shown(cx, "activity-sessions"));
 
+    // A subagent opens in the side panel's Subagents tab, its conversation shown there.
     click(cx, "activity-session-ses_sub");
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_sub".into()));
-    assert!(!shown(cx, "conversation-activity-popover"));
+    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().and_then(|view| view.read(cx).opened().map(str::to_owned)));
+    assert_eq!(opened.as_deref(), Some("ses_sub"));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_signup".into()), "the conversation stays");
+    assert!(!shown(cx, "conversation-activity-popover") && shown(cx, "subagent-transcript"));
 }
 
 #[gpui::test]
@@ -650,9 +661,8 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
     let _ = std::fs::remove_file(&tmp);
 
     // 2. Files side panel image opens Stage viewer via "View Image".
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-f");
     cx.run_until_parked();
-    click(cx, "panel-tab-Files");
     click(cx, &format!("tree-{WEBSITE}/public"));
     click(cx, &format!("tree-{WEBSITE}/public/favicon.png"));
     assert!(shown(cx, "files-open-image"));
@@ -667,11 +677,12 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
         vec![json!({ "path": "public/favicon.png", "group": "unstaged", "status": "modified", "scope": "unstaged" })],
     );
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     changes.update(cx, |view, cx| view.take(client.git_files(WEBSITE), cx));
     cx.run_until_parked();
-    click(cx, "panel-tab-Changes");
-    click(cx, "change-Unstaged:public/favicon.png");
+    // (The first file shows open, under its header.)
     assert!(shown(cx, "changes-open-image"));
     click(cx, "changes-open-image");
     assert!(shown(cx, "picture-viewer"));

@@ -7,7 +7,8 @@
 // questions").
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
-import { emit } from "./events"
+import type { SideThreads } from "../shared/routes/sessions"
+import { emit, subscribe } from "./events"
 import type { GoalPlaces } from "./goals"
 import { transcript } from "./goals"
 import { newID } from "./ids"
@@ -28,6 +29,11 @@ export interface SideQuestion {
   asked: number
   answered?: number
 }
+
+/** A side thread, as a client shows it, one side chat (`GET …/btw/<session>/threads`): its id (its
+ * first question's), that question as asked (`title`), when it was asked and when anything in it last
+ * happened (ms), whether one in it is still being answered, and its questions, oldest first. */
+export type SideThread = SideThreads["threads"][number]
 
 /** A question is at most this long. */
 export const questionLimit = 4_000
@@ -121,6 +127,23 @@ export class SideQuestions {
     return [...this.kept]
       .filter(([, list]) => list.length)
       .map(([session, list]) => ({ session, count: list.length, threads: new Set(list.map(threadOf)).size, latest: list.at(-1)! }))
+  }
+
+  /** A conversation's side threads, the one with the latest activity first (a question asked, or
+   * answered), worked out here so no client groups them. */
+  threads(session: string): SideThread[] {
+    const each = new Map<string, SideQuestion[]>()
+    for (const question of this.list(session)) each.set(threadOf(question), [...(each.get(threadOf(question)) ?? []), question])
+    return [...each]
+      .map(([id, questions]) => ({
+        id,
+        title: questions[0]!.question,
+        asked: questions[0]!.asked,
+        latest: Math.max(...questions.map((question) => question.answered ?? question.asked)),
+        answering: questions.some((question) => question.state === "answering"),
+        questions: questions.map((question) => ({ ...question })),
+      }))
+      .sort((a, b) => b.latest - a.latest || b.asked - a.asked || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
   }
 
   /** Asks one about `session`, a new side thread, or a follow-up in `thread`: answered in a
@@ -219,13 +242,57 @@ ${question.question}
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 
-export async function sideQuestionRoutes(questions: SideQuestions | undefined, method: string, parts: string[], body: () => Promise<any>): Promise<Response> {
+/** A conversation's side threads (ndjson): a line now, `{threads}`, and one each time anything in its
+ * side questions changes (asked, answered, failed, taken away), until its client goes. */
+function followThreads(questions: SideQuestions, session: string, signal?: AbortSignal): Response {
+  const encoder = new TextEncoder()
+  let stop = () => {}
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let last = ""
+      const look = () => {
+        const line = JSON.stringify({ threads: questions.threads(session) })
+        if (line === last) return
+        last = line
+        try {
+          controller.enqueue(encoder.encode(line + "\n"))
+        } catch {
+          stop()
+        }
+      }
+      const unsubscribe = subscribe((event) => {
+        if ((event.type === "kuvo.btw.updated" || event.type === "kuvo.btw.removed") && event.data?.sessionID === session) look()
+      })
+      const gone = () => {
+        stop()
+        try {
+          controller.close()
+        } catch {}
+      }
+      stop = () => {
+        unsubscribe()
+        signal?.removeEventListener("abort", gone)
+      }
+      signal?.addEventListener("abort", gone, { once: true })
+      look()
+    },
+    cancel() {
+      stop()
+    },
+  })
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } })
+}
+
+export async function sideQuestionRoutes(questions: SideQuestions | undefined, method: string, parts: string[], body: () => Promise<any>, signal?: AbortSignal): Promise<Response> {
   if (!questions) return json({ message: "Side questions aren't running on this computer." }, 503)
   const [session, id] = parts
   try {
     if (!session) return method === "GET" ? json({ data: questions.summary() }) : json({ message: "Not allowed" }, 405)
     if (!/^ses_[A-Za-z0-9_]+$/.test(session)) return json({ message: "There's no such conversation here." }, 404)
     if (method === "GET" && !id) return json({ data: questions.list(session) })
+    // Its side threads, each one side chat: now, and as they change.
+    if (method === "GET" && id === "threads" && !parts[2]) return json({ threads: questions.threads(session) })
+    if (method === "GET" && id === "threads" && parts[2] === "events" && !parts[3]) return followThreads(questions, session, signal)
     if (method === "POST" && !id) {
       const { question, thread } = (await body()) ?? {}
       if (typeof question !== "string") return json({ message: "Say what you'd like to know." }, 400)

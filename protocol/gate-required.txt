@@ -15,6 +15,7 @@ bots.job-fields
 bots.now
 bots.state
 bots.wake-ups
+btw.threads.events
 clients.kind
 computers
 computers.add
@@ -25,6 +26,7 @@ computers.reach-words
 computers.words
 devices.pair
 file.text
+files.find
 folders.suggested
 folders.tree
 git.branches
@@ -52,6 +54,7 @@ models.offered.free
 models.offered.sides
 models.readiness
 names.titles
+pty.socket
 queue.items
 queue.removed.keyword
 queue.stop.arriving
@@ -87,3 +90,5 @@ work-queue.attachments
 work-queue.counts
 work-queue.edit
 work.background.items
+work.background.output
+work.subagents

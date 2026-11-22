@@ -247,6 +247,10 @@ impl Transport for Via {
         self.inner.open(request, hold)
     }
 
+    fn socket(&self, request: &Request) -> Result<crate::transport::Socket> {
+        self.inner.socket(request)
+    }
+
     fn refresh(&self) -> u64 {
         self.inner.refresh()
     }

@@ -302,11 +302,15 @@ pub struct DiffView {
     /// Its unchanged stretches folded (but those opened), each fold opening on a click.
     folding: Option<(Rc<HashSet<usize>>, Expand)>,
     selectable: Option<Selectable>,
+    /// Flush with the view it's in (no well around it).
+    flush: bool,
+    /// Its lines coloured as code in this language.
+    language: Option<SharedString>,
 }
 
 impl DiffView {
     pub fn new(id: impl Into<ElementId>, lines: Rc<Vec<DiffLine>>) -> Self {
-        Self { id: id.into(), lines, title: None, counts: None, whole: false, on_toggle: None, folding: None, selectable: None }
+        Self { id: id.into(), lines, title: None, counts: None, whole: false, on_toggle: None, folding: None, selectable: None, flush: false, language: None }
     }
 
     /// Shown whole but for its long unchanged stretches, each folded to a row that opens it (a
@@ -325,6 +329,19 @@ impl DiffView {
     /// Lines added and removed, beside the title.
     pub fn counts(mut self, added: usize, removed: usize) -> Self {
         self.counts = Some((added, removed));
+        self
+    }
+
+    /// Flush with the view it's in, without the well around it (a Changes tab's files).
+    pub fn flush(mut self) -> Self {
+        self.flush = true;
+        self
+    }
+
+    /// Each line coloured as code in `language` (its file's extension).
+    pub fn language(mut self, language: impl Into<SharedString>) -> Self {
+        let language: SharedString = language.into();
+        self.language = (!language.is_empty()).then_some(language);
         self
     }
 
@@ -381,6 +398,7 @@ impl RenderOnce for DiffView {
         let gutter = px(8. * widest as f32 + 8.);
         let number = |n: Option<u32>| div().w(gutter).flex_none().text_right().pr(space::S1).text_color(c.syntax.line_number).child(n.map(|n| n.to_string()).unwrap_or_default());
         let expand = self.folding.as_ref().map(|(_, expand)| expand.clone());
+        let language = self.language.clone();
         let id = self.id.clone();
         let selectable = self.selectable.clone();
         let rows = shown.iter().map(|row| {
@@ -426,7 +444,12 @@ impl RenderOnce for DiffView {
                 .child(div().flex_none().pr(space::S3).text_color(c.syntax.plain).child({
                     // (An empty line is drawn as a space, to keep its height; it copies as nothing.)
                     let text = if line.text.is_empty() { " ".to_owned() } else { capped(&line.text).into_owned() };
-                    SelectableText::new((id.clone(), SharedString::from(format!("line-{ix}"))), text).selectable(selectable.as_ref().map(|sel| sel.unit(&[ix as u32])))
+                    let text_runs = language.as_ref().map(|language| crate::code_block::runs(&text, language, &c.syntax));
+                    let text = SelectableText::new((id.clone(), SharedString::from(format!("line-{ix}"))), text).selectable(selectable.as_ref().map(|sel| sel.unit(&[ix as u32])));
+                    match text_runs {
+                        Some(text_runs) => text.runs(text_runs),
+                        None => text,
+                    }
                 }))
                 .into_any_element()
         });
@@ -447,7 +470,9 @@ impl RenderOnce for DiffView {
         });
         let more = (unshown > 0).then(|| div().px(space::S3).text_color(c.text_faint).child(format!("… and {unshown} more lines")));
         let selector = self.id.to_string();
+        let flush = self.flush;
         well(self.id.clone(), cx)
+            .when(flush, |d| d.rounded(px(0.)).border_0().bg(gpui::transparent_black()))
             .debug_selector(move || selector)
             .children(header)
             .child(

@@ -1,14 +1,16 @@
-//! Changes: the folder's changed files as the box groups them (conflicts, staged, unstaged, new),
-//! followed live; each opens to its diff. Stage, unstage and discard (with a confirm) send back what
-//! the box listed; a commit takes what's staged, or everything when nothing is, as the box says.
+//! Changes: the folder's changed files as the box lists them (conflicts, staged, unstaged, new),
+//! followed live, each under its own header with its diff below it, the first few open and the
+//! rest a click away. Stage, unstage and discard (with a confirm) send back what the box listed; a
+//! commit takes what's staged, or everything when nothing is, as the box says. The branch it's on
+//! opens Branches in a tab of its own.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, actions, div, prelude::FluentBuilder as _, px,
-    uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, actions, div,
+    prelude::FluentBuilder as _, px,
 };
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::git::{ChangedFile, Committed, DiscardKind, FileDiff, GitFiles, Group, Stage};
@@ -24,6 +26,9 @@ actions!(changes, [Commit, Back]);
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-enter", Commit, Some("Changes")), KeyBinding::new("escape", Back, Some("Changes"))]);
 }
+
+/// How many of the first files show open as the tab opens; the rest open on a click.
+pub const OPEN_FIRST: usize = 3;
 
 /// A file opened to its diff.
 pub struct Opened {
@@ -44,17 +49,25 @@ pub enum CommitSaid {
     Pushed,
 }
 
+/// What the Changes tab asks of the panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangesEvent {
+    /// Its branch was clicked: Branches, in a tab.
+    ShowBranches,
+}
+
 pub struct ChangesView {
     client: BoxClient,
     live: bool,
     place: Option<Place>,
     shown: bool,
     files: Load<GitFiles>,
-    /// The list's rows, worked out as the files change (a header for each group, then its files).
-    lines: Rc<Vec<Line>>,
     /// Reading again failed after a first read: what was read stays, with this.
     stale: Option<String>,
-    opened: Option<Opened>,
+    /// Each file showing its diff, by its key.
+    opened: HashMap<String, Opened>,
+    /// Files folded or opened by hand (else the first few show open), by their keys.
+    chosen: HashMap<String, bool>,
     /// The file whose discard waits for its confirm.
     confirming: Option<ChangedFile>,
     /// Files with an action on its way, by their keys.
@@ -65,11 +78,14 @@ pub struct ChangesView {
     push: bool,
     committing: bool,
     said: Option<CommitSaid>,
+    scroll: ScrollHandle,
     focus: FocusHandle,
     _follow: Option<Follow<Followed<GitFiles>>>,
     _follow_task: Option<Task<()>>,
     _message: Subscription,
 }
+
+impl EventEmitter<ChangesEvent> for ChangesView {}
 
 impl ChangesView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> ChangesView {
@@ -88,9 +104,9 @@ impl ChangesView {
             place: None,
             shown: false,
             files: Load::Loading,
-            lines: Rc::default(),
             stale: None,
-            opened: None,
+            opened: HashMap::new(),
+            chosen: HashMap::new(),
             confirming: None,
             busy: HashSet::new(),
             failed: None,
@@ -98,6 +114,7 @@ impl ChangesView {
             push: false,
             committing: false,
             said: None,
+            scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
             _follow: None,
             _follow_task: None,
@@ -109,8 +126,9 @@ impl ChangesView {
         &self.files
     }
 
-    pub fn opened(&self) -> Option<&Opened> {
-        self.opened.as_ref()
+    /// The file `key` names, as it shows open: its diff, or that it's on its way.
+    pub fn opened(&self, key: &str) -> Option<&Opened> {
+        self.opened.get(key)
     }
 
     pub fn message(&self) -> &Entity<TextField> {
@@ -130,8 +148,8 @@ impl ChangesView {
         let moved = self.place.as_ref().map(|place| &place.directory) != place.as_ref().map(|place| &place.directory);
         if moved {
             self.files = Load::Loading;
-            self.lines = Rc::default();
-            self.opened = None;
+            self.opened.clear();
+            self.chosen.clear();
             self.confirming = None;
             self.failed = None;
             self.said = None;
@@ -184,30 +202,34 @@ impl ChangesView {
         });
     }
 
-    /// What the box said of the folder's files.
+    /// Whether the file at `at` in the box's list shows open.
+    fn is_open(&self, at: usize, file: &ChangedFile) -> bool {
+        self.chosen.get(&file.key()).copied().unwrap_or(at < OPEN_FIRST)
+    }
+
+    /// What the box said of the folder's files: each file showing open has its diff read (again,
+    /// where the file changed since: an agent's edit), its lines kept meanwhile; a file gone from
+    /// the list (committed, discarded) is let go.
     pub fn take(&mut self, read: kuvo_box::Result<GitFiles>, cx: &mut Context<Self>) {
         match read {
             Ok(files) => {
-                let changed = self.files.ready() != Some(&files);
-                // The file open, as the list has it now: the same row, else the same file in another
-                // group (staged, unstaged); read again as the list changes (an agent's edit), its
-                // lines kept meanwhile. Gone from the list (committed, discarded): back to it.
-                if let Some(opened) = &self.opened {
-                    let same = files
-                        .files
-                        .iter()
-                        .find(|file| file.key() == opened.file.key())
-                        .or_else(|| files.files.iter().find(|file| file.path == opened.file.path))
-                        .cloned();
-                    match same {
-                        Some(file) if changed => self.reload(file, cx),
-                        Some(_) => {}
-                        None => self.opened = None,
-                    }
+                let keys: HashSet<String> = files.files.iter().map(ChangedFile::key).collect();
+                // A file that moved group (staged, unstaged) shows as it did.
+                let moved: Vec<(String, String, bool)> = self
+                    .chosen
+                    .iter()
+                    .filter(|(key, _)| !keys.contains(*key))
+                    .filter_map(|(key, open)| {
+                        let path = key.split_once(':').map(|(_, path)| path)?;
+                        files.files.iter().find(|file| file.path == path).map(|file| (key.clone(), file.key(), *open))
+                    })
+                    .collect();
+                for (old, new, open) in moved {
+                    self.chosen.remove(&old);
+                    self.chosen.entry(new).or_insert(open);
                 }
-                if changed {
-                    self.lines = Rc::new(lines_of(&files));
-                }
+                self.chosen.retain(|key, _| keys.contains(key));
+                self.opened.retain(|key, _| keys.contains(key));
                 // A discard waiting for its confirm is for the file as it was shown: changed or gone
                 // since, it's put away (the box would refuse it too).
                 if let Some(confirming) = &self.confirming
@@ -215,8 +237,19 @@ impl ChangesView {
                 {
                     self.confirming = None;
                 }
+                let wanted: Vec<ChangedFile> = files
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter(|(at, file)| self.is_open(*at, file))
+                    .filter(|(_, file)| self.opened.get(&file.key()).is_none_or(|opened| &opened.file != *file))
+                    .map(|(_, file)| file.clone())
+                    .collect();
                 self.files = Load::Ready(files);
                 self.stale = None;
+                for file in wanted {
+                    self.load(file, cx);
+                }
             }
             Err(error) => match self.files {
                 Load::Ready(_) => self.stale = Some(error.to_string()),
@@ -230,25 +263,44 @@ impl ChangesView {
         self.files.ready().and_then(|files| files.root.clone())
     }
 
-    /// Opens `file` to its diff, as the box sends it.
+    /// Shows `file` open, its diff read as the box sends it.
     pub fn open(&mut self, file: ChangedFile, cx: &mut Context<Self>) {
-        self.confirming = None;
-        self.opened = Some(Opened { file: file.clone(), diff: Load::Loading, unshown: None, expanded: Rc::default() });
-        self.reload(file, cx);
+        let at = self.files.ready().and_then(|files| files.files.iter().position(|listed| listed.key() == file.key()));
+        if at.is_some() {
+            self.chosen.insert(file.key(), true);
+        }
+        if !self.opened.contains_key(&file.key()) {
+            self.load(file, cx);
+        }
         cx.notify();
     }
 
-    /// Reads the open file's diff again, as the box lists it now: what showed stays until it's in,
-    /// and the stretches opened stay open.
-    fn reload(&mut self, file: ChangedFile, cx: &mut Context<Self>) {
-        let Some(root) = self.root().or_else(|| self.files.ready().and_then(|files| files.root.clone())) else { return };
-        if let Some(opened) = self.opened.as_mut() {
-            opened.file = file.clone();
+    /// Folds an open file, or opens a folded one.
+    pub fn toggle(&mut self, file: ChangedFile, cx: &mut Context<Self>) {
+        let at = self.files.ready().and_then(|files| files.files.iter().position(|listed| listed.key() == file.key()));
+        let Some(at) = at else { return };
+        if self.is_open(at, &file) {
+            self.chosen.insert(file.key(), false);
+            cx.notify();
+        } else {
+            self.open(file, cx);
+        }
+    }
+
+    /// Reads `file`'s diff, as the box lists it now: what showed stays until it's in, and the
+    /// stretches opened stay open.
+    fn load(&mut self, file: ChangedFile, cx: &mut Context<Self>) {
+        let Some(root) = self.root() else { return };
+        let key = file.key();
+        match self.opened.get_mut(&key) {
+            Some(opened) => opened.file = file.clone(),
+            None => {
+                self.opened.insert(key.clone(), Opened { file: file.clone(), diff: Load::Loading, unshown: None, expanded: Rc::default() });
+            }
         }
         let client = self.client.clone();
-        let key = file.key();
         run(self, self.live, cx, move || client.file_diff(&root, &file), move |this, diff, cx| {
-            let Some(opened) = this.opened.as_mut().filter(|opened| opened.file.key() == key) else { return };
+            let Some(opened) = this.opened.get_mut(&key) else { return };
             match diff {
                 Ok(FileDiff { big: true, .. }) => {
                     opened.diff = Load::Ready(Rc::default());
@@ -269,15 +321,9 @@ impl ChangesView {
         });
     }
 
-    pub fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.opened = None;
-        window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    /// Opens an unchanged stretch of the file shown.
-    pub fn expand(&mut self, start: usize, cx: &mut Context<Self>) {
-        if let Some(opened) = self.opened.as_mut() {
+    /// Opens an unchanged stretch of `key`'s diff.
+    pub fn expand(&mut self, key: &str, start: usize, cx: &mut Context<Self>) {
+        if let Some(opened) = self.opened.get_mut(key) {
             let mut expanded = (*opened.expanded).clone();
             expanded.insert(start);
             opened.expanded = Rc::new(expanded);
@@ -377,46 +423,50 @@ impl ChangesView {
 
     // MARK: Drawing
 
-    fn header(&self, files: &GitFiles, cx: &App) -> AnyElement {
+    /// A group's label, over its files, where the list has more than one group.
+    fn group_label(group: Group, count: usize, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
-        let (added, removed) = files.files.iter().fold((0, 0), |(a, r), file| (a + file.additions.unwrap_or(0), r + file.deletions.unwrap_or(0)));
+        let title = match group {
+            Group::Conflicted => "Conflicts",
+            Group::Staged => "Staged",
+            Group::Unstaged => "Unstaged",
+            Group::Untracked => "New Files",
+        };
         div()
             .flex()
-            .flex_none()
-            .items_center()
-            .gap(space::S2)
-            .h(px(36.))
-            .px(space::S4)
+            .items_end()
+            .gap(space::S1)
+            .h(px(28.))
+            .pb(space::S1)
+            .px(space::S3)
             .text_ui(TypeSize::Caption)
-            .child(Icon::new(IconName::Branch).size(IconSize::Nav).color(c.text_muted))
-            .child(div().min_w_0().truncate().text_color(c.text_muted).child(files.branch.clone().unwrap_or_else(|| "No branch".into())))
-            .child(div().flex_1())
-            .when(added + removed > 0, |d| {
-                d.child(div().flex().flex_none().gap(space::S1).child(div().text_color(c.diff_added).child(format!("+{added}"))).child(div().text_color(c.diff_removed).child(format!("−{removed}"))))
-            })
+            .text_color(if group == Group::Conflicted { c.warning } else { c.text_faint })
+            .child(title)
+            .child(div().text_color(c.text_faint).child(count.to_string()))
             .into_any_element()
     }
 
-    fn row(&self, file: &ChangedFile, cx: &mut Context<Self>) -> AnyElement {
+    /// A file's header: folded or open, its path, and what changed (its actions on hover).
+    fn header(&self, file: &ChangedFile, open: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let key = file.key();
         let group: SharedString = format!("change-{key}").into();
         let busy = self.busy.contains(&key);
-        let (letter, color) = mark(file, &c);
+        let mark = mark(file, &c);
         let lines = match (file.additions, file.deletions) {
             (Some(added), Some(removed)) if added + removed > 0 => Some(
                 div()
                     .flex()
                     .flex_none()
                     .gap(space::S1)
-                    .text_ui(TypeSize::Caption)
+                    .text_mono(TypeSize::Caption)
                     .when(added > 0, |d| d.child(div().text_color(c.diff_added).child(format!("+{added}"))))
                     .when(removed > 0, |d| d.child(div().text_color(c.diff_removed).child(format!("−{removed}")))),
             ),
             _ => None,
         };
         let actions = self.actions(file, cx);
-        let open = file.clone();
+        let toggled = file.clone();
         let selector = format!("change-{key}");
         div()
             .id(SharedString::from(format!("change-{key}")))
@@ -427,21 +477,35 @@ impl ChangesView {
             .min_w_0()
             .overflow_hidden()
             .items_center()
-            .gap(space::S2)
-            .h(px(28.))
-            .px(space::S2)
-            .rounded(radius::NAV)
+            .gap(space::S1_5)
+            .h(px(34.))
+            .pl(space::S2)
+            .pr(space::S3)
+            .border_b_1()
+            .border_color(c.border)
             .cursor_pointer()
             .hover(move |s| s.bg(c.hover))
             .when(busy, |d| d.opacity(0.5))
             .on_click(cx.listener(move |this, _, window, cx| {
-                // The keyboard comes along, so Escape goes back.
+                // The keyboard comes along, so Escape puts a confirm away.
                 window.focus(&this.focus, cx);
-                this.open(open.clone(), cx);
+                this.toggle(toggled.clone(), cx);
             }))
-            .child(div().w(px(14.)).flex_none().text_center().text_mono(TypeSize::Caption).text_color(color).child(letter))
-            .child(div().min_w_0().max_w(px(220.)).truncate().text_color(c.text).when(file.status == "deleted", |d| d.line_through()).child(file.name().to_owned()))
-            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(file.folder().to_owned()))
+            .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::XSmall).color(c.text_faint))
+            .children(mark.map(|(letter, color)| div().w(px(12.)).flex_none().text_center().text_mono(TypeSize::Caption).text_color(color).child(letter)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_mono(TypeSize::Small)
+                    .text_color(c.text)
+                    .when(file.status == "deleted", |d| d.line_through())
+                    .child(match &file.old_path {
+                        Some(old) => format!("{old} → {}", file.path),
+                        None => file.path.clone(),
+                    }),
+            )
             .child(
                 div()
                     .relative()
@@ -496,53 +560,113 @@ impl ChangesView {
         actions
     }
 
-    /// One of the list's rows: a group's header, or a file.
-    fn line(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// An open file's diff, under its header.
+    fn body(&self, file: &ChangedFile, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let file = match self.lines.get(ix) {
-            Some(Line::Header(group, count)) => {
-                let title = match group {
-                    Group::Conflicted => "Conflicts",
-                    Group::Staged => "Staged",
-                    Group::Unstaged => "Unstaged",
-                    Group::Untracked => "New Files",
-                };
-                return div()
-                    .flex()
-                    .items_end()
-                    .gap(space::S1)
-                    .h(px(28.))
-                    .pb(space::S1)
-                    .px(space::S2)
-                    .text_ui(TypeSize::Caption)
-                    .text_color(if *group == Group::Conflicted { c.warning } else { c.text_faint })
-                    .child(title)
-                    .child(div().text_color(c.text_faint).child(count.to_string()))
-                    .into_any_element();
-            }
-            Some(Line::More(more)) => {
-                let said = if *more == 1 { "and 1 more new file".to_owned() } else { format!("and {more} more new files") };
-                return div().flex().items_center().h(px(28.)).pl(space::S2 + px(22.)).text_ui(TypeSize::Caption).text_color(c.text_faint).child(said).into_any_element();
-            }
-            Some(Line::File(at)) => self.files.ready().and_then(|files| files.files.get(*at)).cloned(),
-            None => None,
+        let key = file.key();
+        let Some(opened) = self.opened.get(&key) else {
+            return kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("diff-loading-{key}")), "Reading its changes…").compact().into_any_element();
         };
-        match file {
-            Some(file) => self.row(&file, cx),
-            None => div().h(px(28.)).into_any_element(),
-        }
+        let can_view_image = file.status != "deleted" && crate::image_viewer::is_image_path(&file.path);
+        let body = match &opened.diff {
+            Load::Loading => div().px(space::S4).py(space::S2).child(kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("diff-loading-{key}")), "Reading its changes…").compact()).into_any_element(),
+            Load::Failed(why) => {
+                let again = file.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .px(space::S4)
+                    .py(space::S2)
+                    .text_ui(TypeSize::Caption)
+                    .child(div().flex_1().min_w_0().text_color(c.text_muted).child(format!("Its changes couldn’t be read: {why}")))
+                    .child(Button::new(SharedString::from(format!("diff-again-{key}")), "Try Again").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.load(again.clone(), cx))))
+                    .into_any_element()
+            }
+            Load::Ready(_) if opened.unshown.is_some() && can_view_image => {
+                let clicked = file.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .px(space::S4)
+                    .py(space::S2)
+                    .child(Icon::new(IconName::Image).size(IconSize::Nav).color(c.text_muted))
+                    .child(div().flex_1().text_ui(TypeSize::Caption).text_color(c.text_faint).child("A binary image"))
+                    .child(
+                        div().debug_selector(|| "changes-open-image".into()).child(
+                            Button::new(SharedString::from(format!("changes-open-image-{key}")), "View Image")
+                                .icon(IconName::ExpandEditor)
+                                .ghost()
+                                .size(ButtonSize::Small)
+                                .on_click(cx.listener(move |this, _, window, cx| this.open_image_in_viewer(&clicked, window, cx))),
+                        ),
+                    )
+                    .into_any_element()
+            }
+            Load::Ready(_) if opened.unshown.is_some() => note(opened.unshown.unwrap_or_default(), &c).into_any_element(),
+            Load::Ready(lines) if lines.is_empty() => note("Nothing to show.", &c).into_any_element(),
+            Load::Ready(lines) => {
+                let this = cx.entity().downgrade();
+                let at = key.clone();
+                let language = file.path.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
+                DiffView::new(SharedString::from(format!("diff-{key}")), lines.clone())
+                    .flush()
+                    .language(language)
+                    .folding(opened.expanded.clone(), move |start, _, cx| {
+                        this.update(cx, |this, cx| this.expand(&at, start, cx)).ok();
+                    })
+                    .into_any_element()
+            }
+        };
+        div().w_full().border_b_1().border_color(c.border).child(body).into_any_element()
     }
 
-    fn list(&self, cx: &mut Context<Self>) -> AnyElement {
-        uniform_list("changes-list", self.lines.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|ix| this.line(ix, cx)).collect::<Vec<_>>()))
+    /// Every file, each under its header, the open ones with their diffs.
+    fn list(&self, files: &GitFiles, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let groups = files.files.windows(2).filter(|pair| pair[0].group != pair[1].group).count() + 1;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (at, file) in files.files.iter().enumerate() {
+            if groups > 1 && (at == 0 || files.files[at - 1].group != file.group) {
+                let count = files.files[at..].iter().take_while(|next| next.group == file.group).count();
+                rows.push(Self::group_label(file.group, count, cx));
+            }
+            let open = self.is_open(at, file);
+            rows.push(self.header(file, open, cx));
+            if open {
+                rows.push(self.body(file, cx));
+            }
+        }
+        if files.more > 0 {
+            let said = if files.more == 1 { "and 1 more new file".to_owned() } else { format!("and {} more new files", files.more) };
+            rows.push(div().flex().items_center().h(px(30.)).px(space::S4).text_ui(TypeSize::Caption).text_color(c.text_faint).child(said).into_any_element());
+        }
+        div()
+            .id("changes-list")
+            .debug_selector(|| "changes-list".into())
+            .track_scroll(&self.scroll)
             .flex_1()
             .min_h_0()
-            .px(space::S2)
-            .pb(space::S3)
+            .overflow_y_scroll()
+            .children(rows)
             .into_any_element()
     }
 
-    /// The commit's place at the foot: the message, what it takes, Push, and Commit.
+    /// The branch it's on, opening Branches.
+    fn branch(&self, files: &GitFiles, cx: &mut Context<Self>) -> AnyElement {
+        let label = files.branch.clone().unwrap_or_else(|| "No branch".into());
+        Button::new("changes-branch", label)
+            .icon(IconName::Branch)
+            .ghost()
+            .size(ButtonSize::Small)
+            .truncate_at(px(180.))
+            .tooltip("Branches")
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(ChangesEvent::ShowBranches)))
+            .into_any_element()
+    }
+
+    /// The commit's place at the foot: the message, what it takes, the branch, Push, and Commit.
     fn foot(&self, files: &GitFiles, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         if let Some(file) = &self.confirming {
@@ -572,6 +696,7 @@ impl ChangesView {
                 })
         });
         let push = self.push;
+        let has_files = !files.files.is_empty();
         div()
             .flex()
             .flex_col()
@@ -580,29 +705,32 @@ impl ChangesView {
             .p(space::S3)
             .border_t_1()
             .border_color(c.border)
-            .child(self.message.clone())
+            .when(has_files, |d| d.child(self.message.clone()))
             .children(said)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(space::S2)
-                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(takes))
-                    .child({
-                        let this = cx.entity().downgrade();
-                        Checkbox::new("commit-push", push).label("Push").on_change(move |on, _, cx| {
-                            this.update(cx, |this, cx| this.set_push(on, cx)).ok();
+                    .child(div().flex_none().ml(-space::S2).child(self.branch(files, cx)))
+                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).when(has_files, |d| d.child(takes)))
+                    .when(has_files, |d| {
+                        d.child({
+                            let this = cx.entity().downgrade();
+                            Checkbox::new("commit-push", push).label("Push").on_change(move |on, _, cx| {
+                                this.update(cx, |this, cx| this.set_push(on, cx)).ok();
+                            })
                         })
-                    })
-                    .child(
-                        Button::new("commit", if push { "Commit and Push" } else { "Commit" })
-                            .primary()
-                            .size(ButtonSize::Small)
-                            .disabled(!written || self.committing)
-                            .loading(self.committing)
-                            .tooltip("⌘↩")
-                            .on_click(cx.listener(|this, _, _, cx| this.commit(cx))),
-                    ),
+                        .child(
+                            Button::new("commit", if push { "Commit and Push" } else { "Commit" })
+                                .primary()
+                                .size(ButtonSize::Small)
+                                .disabled(!written || self.committing)
+                                .loading(self.committing)
+                                .tooltip("⌘↩")
+                                .on_click(cx.listener(|this, _, _, cx| this.commit(cx))),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -692,14 +820,7 @@ impl ChangesView {
         let mut paths: Vec<String> = self
             .files
             .ready()
-            .map(|files| {
-                files
-                    .files
-                    .iter()
-                    .filter(|f| f.status != "deleted" && crate::image_viewer::is_image_path(&f.path))
-                    .map(|f| full_path(&f.path))
-                    .collect()
-            })
+            .map(|files| files.files.iter().filter(|f| f.status != "deleted" && crate::image_viewer::is_image_path(&f.path)).map(|f| full_path(&f.path)).collect())
             .unwrap_or_default();
         paths.dedup();
         if !paths.iter().any(|p| p == &target) {
@@ -720,114 +841,11 @@ impl ChangesView {
                     source_tag: "Changes".into(),
                     local_path: here.then(|| std::path::PathBuf::from(&file_path)),
                     read: crate::pictures::Read::Reading,
-                    loader: Some(std::sync::Arc::new(move || {
-                        crate::pictures::read(&client, &kuvo_box::pictures::Source::File(uri.clone()))
-                    })),
+                    loader: Some(std::sync::Arc::new(move || crate::pictures::read(&client, &kuvo_box::pictures::Source::File(uri.clone())))),
                 }
             })
             .collect();
-        crate::image_viewer::open(
-            crate::image_viewer::OpenRequest {
-                items,
-                active,
-                return_focus: Some(self.focus.clone()),
-                on_change: None,
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// A file opened to its diff, with its actions.
-    fn file_page(&self, opened: &Opened, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
-        let file = &opened.file;
-        let group = match file.group {
-            Group::Conflicted => "In conflict",
-            Group::Staged => "Staged",
-            Group::Unstaged => "Unstaged",
-            Group::Untracked => "New file",
-        };
-        let actions = self.actions(file, cx);
-        let can_view_image = file.status != "deleted" && crate::image_viewer::is_image_path(&file.path);
-        let body: AnyElement = match &opened.diff {
-            Load::Loading => kuvo_ui::small::LoadingLabel::new("diff-loading", "Reading its changes…").fill().into_any_element(),
-            Load::Failed(why) => note(format!("Its changes couldn’t be read: {why}"), &c).into_any_element(),
-            Load::Ready(_) if opened.unshown.is_some() && can_view_image => {
-                let clicked = file.clone();
-                div()
-                    .p(space::S5)
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(space::S3)
-                    .rounded(radius::CARD)
-                    .bg(c.sunken)
-                    .border_1()
-                    .border_color(c.border)
-                    .child(Icon::new(IconName::Image).size(kuvo_ui::IconSize::Card).color(c.text_muted))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(2.))
-                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(file.name().to_owned()))
-                            .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Binary image — open full screen in the image viewer")),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "changes-open-image".into())
-                            .child(
-                                Button::new("changes-open-image", "View Image")
-                                    .icon(IconName::ExpandEditor)
-                                    .size(ButtonSize::Small)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_image_in_viewer(&clicked, window, cx);
-                                    })),
-                            ),
-                    )
-                    .into_any_element()
-            }
-            Load::Ready(_) if opened.unshown.is_some() => note(opened.unshown.unwrap_or_default(), &c).into_any_element(),
-            Load::Ready(lines) if lines.is_empty() => note("Nothing to show.", &c).into_any_element(),
-            Load::Ready(lines) => {
-                let this = cx.entity().downgrade();
-                DiffView::new("file-diff", lines.clone())
-                    .folding(opened.expanded.clone(), move |start, _, cx| {
-                        this.update(cx, |this, cx| this.expand(start, cx)).ok();
-                    })
-                    .into_any_element()
-            }
-        };
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(space::S1)
-                    .h(px(40.))
-                    .pl(space::S2)
-                    .pr(space::S3)
-                    .border_b_1()
-                    .border_color(c.border)
-                    .child(Button::icon_only("changes-back", IconName::ChevronLeft, "Back to Changes").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).on_click(cx.listener(|this, _, window, cx| this.back(window, cx))))
-                    .child(div().flex().flex_col().flex_1().min_w_0().child(div().truncate().medium().child(file.name().to_owned())).child(
-                        div().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(match &file.old_path {
-                            Some(old) => format!("{group} · from {old}"),
-                            None if file.folder().is_empty() => group.to_owned(),
-                            None => format!("{group} · {}", file.folder()),
-                        }),
-                    ))
-                    .children(actions),
-            )
-            .child(div().id("file-diff-scroll").flex_1().min_h_0().overflow_y_scroll().p(space::S3).when(matches!(opened.diff, Load::Loading), |d| d.flex().flex_col()).child(body))
-            .into_any_element()
+        crate::image_viewer::open(crate::image_viewer::OpenRequest { items, active, return_focus: Some(self.focus.clone()), on_change: None }, window, cx);
     }
 }
 
@@ -849,35 +867,7 @@ pub fn commit_takes(files: &GitFiles) -> String {
     }
 }
 
-/// A row of the list.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Line {
-    /// A group's header, with how many it has.
-    Header(Group, usize),
-    /// A file, by where it is in the box's list.
-    File(usize),
-    /// New files past the most the box lists, counted.
-    More(usize),
-}
-
-/// The list's rows: each group's header, then its files, in the box's order.
-fn lines_of(files: &GitFiles) -> Vec<Line> {
-    let mut lines = Vec::new();
-    let mut at = 0;
-    while at < files.files.len() {
-        let group = files.files[at].group;
-        let count = files.files[at..].iter().take_while(|file| file.group == group).count();
-        lines.push(Line::Header(group, count));
-        lines.extend((at..at + count).map(Line::File));
-        at += count;
-    }
-    if files.more > 0 {
-        lines.push(Line::More(files.more));
-    }
-    lines
-}
-
-/// What can be done to a file from its row.
+/// What can be done to a file from its header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Stage,
@@ -895,22 +885,23 @@ impl Action {
     }
 }
 
-/// A file's mark: what happened to it, as a letter in its colour.
-fn mark(file: &ChangedFile, c: &kuvo_ui::theme::Colors) -> (&'static str, gpui::Hsla) {
+/// A file's mark beside its path, where it's more than changed: a conflict, or added, deleted or
+/// moved, as a letter in its colour.
+fn mark(file: &ChangedFile, c: &kuvo_ui::theme::Colors) -> Option<(&'static str, gpui::Hsla)> {
     if file.group == Group::Conflicted {
-        return ("!", c.warning);
+        return Some(("!", c.warning));
     }
     match file.status.as_str() {
-        "added" => ("A", c.diff_added),
-        "deleted" => ("D", c.diff_removed),
-        "renamed" => ("R", c.accent),
-        _ => ("M", c.text_muted),
+        "added" | "untracked" => Some(("A", c.diff_added)),
+        "deleted" => Some(("D", c.diff_removed)),
+        "renamed" => Some(("R", c.accent)),
+        _ => None,
     }
 }
 
 /// A quiet line in a view's place.
 fn note(text: impl Into<SharedString>, c: &kuvo_ui::theme::Colors) -> impl IntoElement {
-    div().p(space::S4).text_ui(TypeSize::Small).text_color(c.text_faint).child(text.into())
+    div().px(space::S4).py(space::S2).text_ui(TypeSize::Caption).text_color(c.text_faint).child(text.into())
 }
 
 /// A view's whole room saying something: a title and a line under it, and an action.
@@ -940,73 +931,66 @@ impl Focusable for ChangesView {
 impl Render for ChangesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
-        let content: AnyElement = if let Some(opened) = &self.opened {
-            self.file_page(opened, cx)
-        } else {
-            match &self.files {
-                Load::Loading => kuvo_ui::small::LoadingLabel::new("changes-loading", "Reading changes…").fill().into_any_element(),
-                Load::Failed(why) => empty(
-                    "Couldn’t Read the Changes",
-                    why.clone(),
-                    Some(Button::new("changes-again", "Try Again").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.read_again(cx))).into_any_element()),
-                    cx,
-                ),
-                Load::Ready(files) if !files.repository => empty("Not a Git Repository", "This folder isn’t in one, so there are no changes to show.", None, cx),
-                Load::Ready(files) => {
-                    let files = files.clone();
-                    let failed = self.failed.clone().or_else(|| self.stale.clone().map(|why| format!("The list couldn’t be read again: {why}")));
-                    let body = if files.files.is_empty() {
-                        empty("No Changes", "Everything in this folder is committed.", None, cx)
-                    } else {
-                        self.list(cx)
-                    };
-                    div()
-                        .flex()
-                        .flex_col()
-                        .size_full()
-                        .child(self.header(&files, cx))
-                        .children(files.underway.as_deref().map(|underway| {
-                            let said = match underway {
-                                "rebasing" => "A rebase is under way here: finish it, or stop it, in a terminal.",
-                                "cherry-picking" => "A cherry-pick is under way here: finish it, or stop it, in a terminal.",
-                                "reverting" => "A revert is under way here: finish it, or stop it, in a terminal.",
-                                _ => "A merge is under way here: resolve its conflicts, then commit.",
-                            };
-                            div()
-                                .id("changes-underway")
-                                .debug_selector(|| "changes-underway".into())
-                                .flex()
-                                .items_center()
-                                .gap(space::S2)
-                                .mx(space::S3)
-                                .mb(space::S1)
-                                .px(space::S3)
-                                .py(space::S2)
-                                .rounded(radius::NAV)
-                                .bg(c.sunken)
-                                .text_ui(TypeSize::Caption)
-                                .text_color(c.text_muted)
-                                .child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.warning))
-                                .child(said)
-                        }))
-                        .children(failed.map(|why| {
-                            div().id("changes-failed").debug_selector(|| "changes-failed".into()).mx(space::S3).mb(space::S1).px(space::S3).py(space::S2).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.danger).child(why)
-                        }))
-                        .child(body)
-                        .when(!files.files.is_empty() || self.said.is_some(), |d| d.child(self.foot(&files, cx)))
-                        .into_any_element()
-                }
+        let content: AnyElement = match &self.files {
+            Load::Loading => kuvo_ui::small::LoadingLabel::new("changes-loading", "Reading changes…").fill().into_any_element(),
+            Load::Failed(why) => empty(
+                "Couldn’t Read the Changes",
+                why.clone(),
+                Some(Button::new("changes-again", "Try Again").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.read_again(cx))).into_any_element()),
+                cx,
+            ),
+            Load::Ready(files) if !files.repository => empty("Not a Git Repository", "This folder isn’t in one, so there are no changes to show.", None, cx),
+            Load::Ready(files) => {
+                let files = files.clone();
+                let failed = self.failed.clone().or_else(|| self.stale.clone().map(|why| format!("The list couldn’t be read again: {why}")));
+                let body = if files.files.is_empty() {
+                    empty("No Changes", "Everything in this folder is committed.", None, cx)
+                } else {
+                    self.list(&files, cx)
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .children(files.underway.as_deref().map(|underway| {
+                        let said = match underway {
+                            "rebasing" => "A rebase is under way here: finish it, or stop it, in a terminal.",
+                            "cherry-picking" => "A cherry-pick is under way here: finish it, or stop it, in a terminal.",
+                            "reverting" => "A revert is under way here: finish it, or stop it, in a terminal.",
+                            _ => "A merge is under way here: resolve its conflicts, then commit.",
+                        };
+                        div()
+                            .id("changes-underway")
+                            .debug_selector(|| "changes-underway".into())
+                            .flex()
+                            .items_center()
+                            .gap(space::S2)
+                            .mx(space::S3)
+                            .my(space::S2)
+                            .px(space::S3)
+                            .py(space::S2)
+                            .rounded(radius::NAV)
+                            .bg(c.sunken)
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.text_muted)
+                            .child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.warning))
+                            .child(said)
+                    }))
+                    .children(failed.map(|why| {
+                        div().id("changes-failed").debug_selector(|| "changes-failed".into()).mx(space::S3).my(space::S2).px(space::S3).py(space::S2).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.danger).child(why)
+                    }))
+                    .child(body)
+                    .child(self.foot(&files, cx))
+                    .into_any_element()
             }
         };
         div()
             .key_context("Changes")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Commit, _, cx| this.commit(cx)))
-            .on_action(cx.listener(|this, _: &Back, window, cx| {
+            .on_action(cx.listener(|this, _: &Back, _, cx| {
                 if this.confirming.take().is_some() {
                     cx.notify();
-                } else if this.opened.is_some() {
-                    this.back(window, cx);
                 } else {
                     cx.propagate();
                 }

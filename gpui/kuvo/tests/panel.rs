@@ -7,7 +7,7 @@
 //! The views read the box at once here, as the follows would hand them what it says.
 
 use gpui::{Bounds, Entity, Focusable as _, Modifiers, MouseButton, Pixels, TestAppContext, VisualTestContext, point, px, size};
-use kuvo::panel::Tab;
+use kuvo::panel::Kind;
 use kuvo::panel::changes::CommitSaid;
 use kuvo::panel::files::Shown;
 use kuvo::panel::{Load, branches::Said};
@@ -38,10 +38,20 @@ fn open<'a>(cx: &'a mut TestAppContext, stand_in: StandIn, session: &str) -> (En
     (workspace, cx)
 }
 
+/// `open`, in a window tall enough for every changed file's header with the first ones open.
+fn open_tall<'a>(cx: &'a mut TestAppContext, stand_in: StandIn, session: &str) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    let (workspace, cx) = open(cx, stand_in, session);
+    cx.simulate_resize(size(px(1280.), px(2400.)));
+    cx.run_until_parked();
+    (workspace, cx)
+}
+
+#[track_caller]
 fn bounds(cx: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> {
     cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
 }
 
+#[track_caller]
 fn click(cx: &mut VisualTestContext, selector: &str) {
     let at = bounds(cx, selector).unwrap_or_else(|| panic!("{selector} isn't on screen"));
     cx.simulate_click(at.center(), Modifiers::default());
@@ -58,8 +68,13 @@ fn the_panel_opens_beside_the_conversation_and_keeps_its_width(cx: &mut TestAppC
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
     assert!(bounds(cx, "side-panel").is_none(), "closed until it's asked for");
 
-    // ⌥⌘0, as the Mac app's Show Panel: the session's folder's changes, as the box groups them.
+    // ⌥⌘0, as the Mac app's Show Panel: the New tab page, nothing open yet.
     cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    assert!(bounds(cx, "new-tab").is_some());
+    assert!(bounds(cx, "tile-files").is_some(), "the session works in a folder");
+    // ⌥⌘I: the session's folder's changes, as the box groups them, in a tab of their own.
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     let panel = bounds(cx, "side-panel").expect("the panel");
     let staged = bounds(cx, "change-Staged:src/components/SignupForm.tsx").expect("the sign-up form, staged");
@@ -125,41 +140,40 @@ fn a_session_started_with_the_panel_open_shows_its_folder_once_the_box_lists_it(
 }
 
 #[gpui::test]
-fn a_file_opens_to_its_diff_as_the_box_sends_it(cx: &mut TestAppContext) {
+fn each_file_shows_its_diff_under_its_header_as_the_box_sends_it(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let (_workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    let (_workspace, cx) = open_tall(cx, stand_in.clone(), "ses_signup");
     cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
 
-    click(cx, "change-Staged:src/components/SignupForm.tsx");
+    // The first files show open at once, each read in the scope the box listed it with.
     let asked = sent(&stand_in, "kuvo/git/changes");
-    assert_eq!(asked.last().unwrap(), &json!({ "directory": website(), "scope": "staged", "path": "src/components/SignupForm.tsx" }), "in the scope the box listed it with");
-    assert!(bounds(cx, "file-diff").is_some());
+    assert!(asked.contains(&json!({ "directory": website(), "scope": "staged", "path": "src/components/SignupForm.tsx" })), "in the scope the box listed it with");
+    let staged = "diff-Staged:src/components/SignupForm.tsx";
+    assert!(bounds(cx, staged).is_some());
+    assert!(bounds(cx, "change-Untracked:src/components/SignupForm.test.tsx").is_some());
+    assert!(bounds(cx, "diff-Untracked:src/components/SignupForm.test.tsx").is_none(), "the rest a click away");
     // Its long unchanged stretch is folded; a click opens it.
-    let fold = "file-diff-unchanged-34";
-    assert!(bounds(cx, fold).is_some(), "the unchanged lines between its changes fold");
-    click(cx, fold);
-    assert!(bounds(cx, fold).is_none());
-
-    // Back to the list: Escape, or the back button.
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
-    assert!(bounds(cx, "file-diff").is_none(), "Escape goes back");
-    // Staged while open, it stays open as the staged file it became.
-    click(cx, "change-Unstaged:src/lib/validate.ts");
+    let fold = format!("{staged}-unchanged-34");
+    assert!(bounds(cx, &fold).is_some(), "the unchanged lines between its changes fold");
+    click(cx, &fold);
+    assert!(bounds(cx, &fold).is_none());
+    // Its header folds it, and opens it again.
+    click(cx, "change-Staged:src/components/SignupForm.tsx");
+    assert!(bounds(cx, staged).is_none());
+    click(cx, "change-Staged:src/components/SignupForm.tsx");
+    assert!(bounds(cx, staged).is_some());
+    // Staged while open, it stays open as the staged file it became, read in its new scope.
     click(cx, "stage-Unstaged:src/lib/validate.ts");
-    assert!(bounds(cx, "file-diff").is_some(), "still open");
+    assert!(bounds(cx, "diff-Staged:src/lib/validate.ts").is_some(), "still open");
     assert_eq!(sent(&stand_in, "kuvo/git/changes").last().unwrap()["scope"], json!("staged"), "read again in its new scope");
-    click(cx, "changes-back");
-    assert!(bounds(cx, "file-diff").is_none());
-    assert!(bounds(cx, "change-Staged:src/components/SignupForm.tsx").is_some());
 }
 
 #[gpui::test]
 fn staging_sends_back_what_the_box_listed_and_a_discard_is_asked_first(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let (_workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    let (_workspace, cx) = open_tall(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
 
     click(cx, "stage-Unstaged:src/lib/validate.ts");
@@ -211,8 +225,8 @@ fn a_discard_with_no_stamp_is_refused_as_the_box_refuses_it(cx: &mut TestAppCont
 #[gpui::test]
 fn a_discard_waiting_for_its_confirm_goes_once_its_file_changes(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    let (workspace, cx) = open_tall(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     click(cx, "discard-Unstaged:src/lib/validate.ts");
     assert!(bounds(cx, "discard-confirm").is_some());
@@ -235,7 +249,7 @@ fn a_discard_waiting_for_its_confirm_goes_once_its_file_changes(cx: &mut TestApp
         })
         .collect();
     stand_in.set_git_files(&website(), files);
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
     cx.run_until_parked();
     assert!(bounds(cx, "discard-confirm").is_none(), "an old confirm never discards what came after");
@@ -246,7 +260,7 @@ fn a_discard_waiting_for_its_confirm_goes_once_its_file_changes(cx: &mut TestApp
 fn a_files_button_does_what_the_box_says_whatever_group_it_is_in(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     // The box's word alone picks the button: here one that goes against the file's group, and one
     // this app doesn't know.
@@ -259,7 +273,7 @@ fn a_files_button_does_what_the_box_says_whatever_group_it_is_in(cx: &mut TestAp
         ],
     );
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
     cx.run_until_parked();
     assert!(bounds(cx, "unstage-Unstaged:a.ts").is_some());
@@ -277,16 +291,16 @@ fn a_files_button_does_what_the_box_says_whatever_group_it_is_in(cx: &mut TestAp
 fn a_binary_files_diff_says_so_as_the_box_does(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     stand_in.set_git_files(&website(), vec![json!({ "path": "public/favicon.png", "group": "unstaged", "status": "modified", "scope": "unstaged" })]);
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
     cx.run_until_parked();
-    click(cx, "change-Unstaged:public/favicon.png");
-    assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), Some("A binary file: no lines to show."));
-    assert!(bounds(cx, "file-diff").is_none());
+    // (The first file shows open.)
+    assert_eq!(view.read_with(cx, |view, _| view.opened("Unstaged:public/favicon.png").and_then(|opened| opened.unshown)), Some("A binary file: no lines to show."));
+    assert!(bounds(cx, "diff-Unstaged:public/favicon.png").is_none());
 
     // And only the box's word: git's words for a binary file in a patch the box doesn't call one
     // (here with no lines either) aren't read as it.
@@ -294,8 +308,7 @@ fn a_binary_files_diff_says_so_as_the_box_does(cx: &mut TestAppContext) {
     stand_in.set_git_patch(&website(), "notes.txt", "diff --git a/notes.txt b/notes.txt\nBinary files a/notes.txt and b/notes.txt differ\n");
     view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
     cx.run_until_parked();
-    click(cx, "change-Unstaged:notes.txt");
-    assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), None);
+    assert_eq!(view.read_with(cx, |view, _| view.opened("Unstaged:notes.txt").and_then(|opened| opened.unshown)), None);
 }
 
 #[gpui::test]
@@ -303,10 +316,10 @@ fn a_merge_under_way_and_files_staged_elsewhere_are_said(cx: &mut TestAppContext
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
     stand_in.set_git_state(&website(), 2, Some("merging"));
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     assert!(bounds(cx, "changes-underway").is_some());
-    let files = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().read(cx).files().ready().cloned()).unwrap();
+    let files = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap().read(cx).files().ready().cloned()).unwrap();
     assert_eq!(kuvo::panel::changes::commit_takes(&files), "Commits the 3 staged files, 2 of them outside this folder.");
 }
 
@@ -314,9 +327,9 @@ fn a_merge_under_way_and_files_staged_elsewhere_are_said(cx: &mut TestAppContext
 fn a_commit_goes_with_its_message_and_a_push_that_didnt_go_offers_push(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     let field = view.read_with(cx, |view, _| view.message().clone());
 
     // Nothing written: Commit does nothing.
@@ -355,27 +368,35 @@ fn files_open_a_folder_at_a_time_and_one_that_cant_be_read_says_why(cx: &mut Tes
 
     click(cx, &format!("tree-{root}/secrets"));
     assert!(bounds(cx, &format!("unreadable-{root}/secrets")).is_some(), "never shown as empty");
-    let rows = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().read(cx).rows().to_vec());
+    let rows = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().unwrap().read(cx).rows().to_vec());
     assert!(rows.iter().any(|row| matches!(row, kuvo::panel::files::Row::Note { read: kuvo::panel::files::Read::Unreadable(why), .. } if why.reason.as_deref() == Some("Permission denied"))));
 
+    // A file picked opens in a tab of its own, in the Files tab's place, the folder's files beside it.
     click(cx, &format!("tree-{root}/src/components"));
-    click(cx, &format!("tree-{root}/src/components/SignupForm.tsx"));
-    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().read(cx).opened().cloned()).unwrap();
-    assert!(matches!(opened.1, Load::Ready(Shown::Text { lines: 58, .. })));
-    assert!(bounds(cx, "file-viewer").is_some());
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
-    assert!(bounds(cx, "file-viewer").is_none(), "Escape goes back to the tree");
+    let form = format!("{root}/src/components/SignupForm.tsx");
+    click(cx, &format!("tree-{form}"));
+    assert_eq!(showing(&workspace, cx), Some(Kind::File(form.clone())));
+    let file = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).file()).unwrap();
+    assert!(matches!(file.read_with(cx, |file, _| file.read().clone()), Load::Ready(Shown::Text { lines: 58, .. })));
+    assert!(bounds(cx, "file-viewer").is_some() && bounds(cx, "file-tree").is_some());
+    assert!(bounds(cx, &format!("tree-{root}/src/components/Button.tsx")).is_some(), "the tree as it was left");
+    // Another from the tree beside it: a tab of its own too, the first kept.
     click(cx, &format!("tree-{root}/README.md"));
-    click(cx, "files-back");
-    assert!(bounds(cx, "file-viewer").is_none());
+    assert_eq!(showing(&workspace, cx), Some(Kind::File(format!("{root}/README.md"))));
+    let tabs = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().len());
+    assert_eq!(tabs, 2);
+    // The tree hides by its button, and comes back.
+    click(cx, "file-tree-toggle");
+    assert!(bounds(cx, "file-tree").is_none() && bounds(cx, "file-viewer").is_some());
+    click(cx, "file-tree-toggle");
 
     // One the box says isn't text (a picture) says so in the viewer's place; the box is asked for
     // the file as a viewer shows it, never for its bytes to look through.
     click(cx, &format!("tree-{root}/public"));
     click(cx, &format!("tree-{root}/public/favicon.png"));
-    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().read(cx).opened().cloned()).unwrap();
-    assert!(matches!(opened.1, Load::Ready(Shown::Unshown(_))));
+    let file = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).file()).unwrap();
+    assert!(matches!(file.read_with(cx, |file, _| file.read().clone()), Load::Ready(Shown::Unshown(_))));
+    assert!(bounds(cx, "files-open-image").is_some());
     assert!(stand_in.seen_at("GET", "kuvo/file").is_empty());
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let path = URL_SAFE_NO_PAD.encode(format!("{root}/public/favicon.png"));
@@ -385,10 +406,9 @@ fn files_open_a_folder_at_a_time_and_one_that_cant_be_read_says_why(cx: &mut Tes
 #[gpui::test]
 fn branches_switch_and_a_new_one_starts_where_this_one_is(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let (_workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Branches, cx));
     cx.run_until_parked();
-    click(cx, "panel-tab-Branches");
     assert!(bounds(cx, "branch-fix/signup-taken-email").is_some());
     assert!(bounds(cx, "branch-merge").is_none(), "Merge into… is a worktree's");
 
@@ -407,9 +427,9 @@ fn branches_switch_and_a_new_one_starts_where_this_one_is(cx: &mut TestAppContex
 fn a_worktrees_branch_merges_where_the_box_says_and_says_why_it_cant(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_dark");
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Tab::Branches, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Branches, cx));
     cx.run_until_parked();
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).branches().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).branches().unwrap());
 
     stand_in.merges_conflict(&["src/styles/theme.css"]);
     click(cx, "branch-merge");
@@ -426,11 +446,11 @@ fn a_worktrees_branch_merges_where_the_box_says_and_says_why_it_cant(cx: &mut Te
 fn a_pull_request_starts_from_the_boxs_draft_and_is_made_from_the_session(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Tab::Branches, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Branches, cx));
     cx.run_until_parked();
     click(cx, "branch-pull-request");
     assert!(bounds(cx, "pull-request").is_some());
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).branches().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).branches().unwrap());
     let title = view.read_with(cx, |view, cx| view.writing().unwrap().title.read(cx).text().to_owned());
     assert_eq!(title, "Keep the sign-up form when an email is taken", "the box's draft");
 
@@ -447,7 +467,7 @@ fn a_pull_request_isnt_offered_where_the_box_says_none_can_be_made(cx: &mut Test
     let stand_in = StandIn::at(Replies::Never, NOW);
     // The API's session is on main, the branch pull requests go into.
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_limits");
-    workspace.update(cx, |workspace, cx| workspace.show_panel(Tab::Branches, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Branches, cx));
     cx.run_until_parked();
     assert!(bounds(cx, "branch-current").is_some());
     assert!(bounds(cx, "branch-pull-request").is_none(), "never offered only to be refused");
@@ -458,16 +478,285 @@ fn a_pull_request_isnt_offered_where_the_box_says_none_can_be_made(cx: &mut Test
 fn the_list_follows_the_box_as_it_changes(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();
     // What a follow hands on (an agent's edit, staged elsewhere), taken as it would be.
     stand_in.set_git_files(&website(), vec![json!({ "path": "src/main.tsx", "group": "conflicted", "status": "modified", "scope": "uncommitted" })]);
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
     cx.run_until_parked();
     assert!(bounds(cx, "change-Conflicted:src/main.tsx").is_some());
     assert!(bounds(cx, "discard-Conflicted:src/main.tsx").is_none(), "a conflict is resolved, not discarded");
     assert!(bounds(cx, "stage-Conflicted:src/main.tsx").is_some(), "Mark as Resolved");
     assert!(bounds(cx, "change-Staged:src/components/SignupForm.tsx").is_none());
+}
+
+/// The kind of tab showing in the conversation in view.
+fn showing(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Kind> {
+    workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().map(|tab| tab.kind.clone()))
+}
+
+fn tab_of(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, kind: &Kind) -> u64 {
+    workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().iter().find(|tab| &tab.kind == kind).map(|tab| tab.id)).expect("its tab")
+}
+
+#[gpui::test]
+fn each_conversation_keeps_its_own_tabs_and_the_panel_follows_the_one_in_view(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::Changes));
+
+    // Another conversation: its own strip, on its New tab page.
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_limits", window, cx));
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::New));
+    assert!(bounds(cx, "new-tab").is_some());
+    assert!(bounds(cx, "change-Staged:src/components/SignupForm.tsx").is_none());
+
+    // Back: its Changes tab is there as it was left.
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_signup", window, cx));
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::Changes));
+    assert!(bounds(cx, "change-Staged:src/components/SignupForm.tsx").is_some());
+}
+
+#[gpui::test]
+fn plus_opens_the_new_tab_page_a_tile_takes_its_place_and_closing_the_last_tab_leaves_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    assert!(bounds(cx, "panel-new-tab").is_none(), "nothing but the New tab page: no + beside it");
+
+    click(cx, "tile-files");
+    assert_eq!(showing(&workspace, cx), Some(Kind::Files));
+    assert!(bounds(cx, &format!("tree-{}/src", website())).is_some());
+    let strip = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().len());
+    assert_eq!(strip, 1, "the tile took the New tab page's place");
+
+    click(cx, "panel-new-tab");
+    assert_eq!(showing(&workspace, cx), Some(Kind::New));
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::Changes), "it took the New tab page's place too");
+
+    let files = tab_of(&workspace, cx, &Kind::Files);
+    let changes = tab_of(&workspace, cx, &Kind::Changes);
+    click(cx, &format!("panel-tab-close-{changes}"));
+    assert_eq!(showing(&workspace, cx), Some(Kind::Files));
+    click(cx, &format!("panel-tab-close-{files}"));
+    assert_eq!(showing(&workspace, cx), Some(Kind::New), "never an empty panel");
+
+    click(cx, "panel-close");
+    assert!(bounds(cx, "side-panel").is_none());
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.is_panel_open()));
+}
+
+#[gpui::test]
+fn in_a_narrow_window_the_panel_slides_over_the_conversation_and_a_click_beside_it_closes_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_resize(size(px(860.), px(760.)));
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    let sheet = bounds(cx, "panel-sheet").expect("over the conversation");
+    let content = bounds(cx, "workspace-content").unwrap();
+    assert!(bounds(cx, "panel-edge").is_none(), "not beside it");
+    assert!(content.right() > sheet.left(), "the conversation keeps its width under it");
+    assert!(bounds(cx, "change-Staged:src/components/SignupForm.tsx").is_some());
+
+    let beside = point(content.left() + px(40.), content.center().y);
+    cx.simulate_click(beside, Modifiers::default());
+    cx.run_until_parked();
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.is_panel_open()));
+
+    // A wide window again: beside it.
+    cx.simulate_resize(size(px(1280.), px(820.)));
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    assert!(bounds(cx, "panel-edge").is_some());
+    assert!(bounds(cx, "panel-sheet").is_none());
+}
+
+#[gpui::test]
+fn the_filter_and_the_new_tab_search_open_what_the_box_finds(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    let root = website();
+    // Files: what the box finds for the filter, best first, in the tree's place.
+    cx.simulate_keystrokes("cmd-alt-f");
+    cx.run_until_parked();
+    let filter = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().unwrap().read(cx).filter().clone());
+    cx.update(|window, cx| window.focus(&filter.focus_handle(cx), cx));
+    cx.simulate_input("signup");
+    cx.run_until_parked();
+    let asked = stand_in.seen_at("GET", "kuvo/files/find");
+    assert!(asked.last().unwrap().path.contains("q=signup"), "the box is asked");
+    let found = bounds(cx, &format!("found-{root}/src/components/SignupForm.tsx")).expect("the form");
+    let test = bounds(cx, &format!("found-{root}/src/components/SignupForm.test.tsx")).expect("its test");
+    assert!(found.top() < test.top(), "in the box's order");
+    assert!(bounds(cx, &format!("tree-{root}/src")).is_none());
+    let first = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().unwrap().read(cx).found().unwrap().files[0].path.clone());
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::File(first)), "Enter opens the first the box found");
+
+    // The New tab page: the same, and a file found opens in its place.
+    let tabs = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().map(|strip| strip.tabs().to_vec()));
+    assert!(bounds(cx, "panel-new-tab").is_some(), "+ beside {tabs:?}");
+    click(cx, "panel-new-tab");
+    cx.simulate_input("validate");
+    cx.run_until_parked();
+    click(cx, &format!("new-tab-found-{root}/src/lib/validate.ts"));
+    assert_eq!(showing(&workspace, cx), Some(Kind::File(format!("{root}/src/lib/validate.ts"))));
+    assert!(bounds(cx, "new-tab").is_none());
+    // Closed and opened again: its tabs as they were, + beside them.
+    click(cx, "panel-close");
+    click(cx, "toggle-panel");
+    let tabs = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().map(|strip| strip.tabs().to_vec()));
+    assert!(bounds(cx, "panel-new-tab").is_some(), "+ beside {tabs:?} once it's open again");
+    click(cx, "panel-new-tab");
+    cx.simulate_input("nothing-like-this");
+    cx.run_until_parked();
+    assert!(bounds(cx, "tile-files").is_none(), "what it found (none) in the tiles' place");
+}
+
+#[gpui::test]
+fn a_file_the_conversation_names_opens_in_its_tab(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open_tall(cx, stand_in.clone(), "ses_signup");
+    // (Its step's group opened, as you would.)
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    view.update(cx, |view, cx| view.open_step("msg_s2", 1, cx));
+    cx.run_until_parked();
+    click(cx, "tool-file-msg_s2:1");
+    assert!(workspace.read_with(cx, |workspace, _| workspace.is_panel_open()));
+    assert_eq!(showing(&workspace, cx), Some(Kind::File(format!("{}/src/components/SignupForm.tsx", website()))));
+    assert!(bounds(cx, "file-viewer").is_some());
+}
+
+#[gpui::test]
+fn the_subagents_tab_lists_those_at_work_and_done_and_opens_one_to_its_conversation(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_background("ses_signup", json!({ "commands": [], "subagents": [{ "session": "ses_sub", "since": NOW - 30_000.0, "title": "Check the other forms" }] }), &[]);
+    stand_in.set_subagents_done("ses_signup", vec![json!({ "session": "ses_dark", "title": "Read the error codes", "started": NOW - 260_000_000.0, "ended": NOW - 259_000_000.0, "state": "finished", "model": "Claude Sonnet 4.6", "effort": "High" })]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(None), cx));
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::Subagents));
+    let working = bounds(cx, "subagent-ses_sub").expect("at work");
+    let done = bounds(cx, "subagent-ses_dark").expect("done");
+    assert!(working.top() < done.top());
+    assert_eq!(stand_in.seen_at("GET", "kuvo/work/subagents/ses_signup").len(), 1, "as the box lists them");
+
+    click(cx, "subagent-ses_dark");
+    assert!(bounds(cx, "subagent-transcript").is_some() && bounds(cx, "subagents-list").is_none());
+    let rows = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().unwrap().read(cx).opened().map(str::to_owned));
+    assert_eq!(rows.as_deref(), Some("ses_dark"));
+    click(cx, "subagent-back");
+    // One with a conversation: its rows drawn in the tab.
+    stand_in.set_subagents_done("ses_signup", vec![json!({ "session": "ses_limits", "title": "Audit email rate limits", "started": NOW - 9_000.0, "ended": NOW - 8_000.0, "state": "finished" })]);
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(Some("ses_limits".into())), cx));
+    cx.run_until_parked();
+    let transcript = bounds(cx, "subagent-transcript").unwrap();
+    let row = bounds(cx, "entry-msg_l1").expect("its first message drawn");
+    assert!(row.size.height > px(0.) && row.left() >= transcript.left(), "in the tab");
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(None), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "subagents-list").is_some());
+    // Open, to talk to it: its conversation in the window.
+    click(cx, "subagent-ses_dark");
+    click(cx, "subagent-open");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_dark"));
+}
+
+#[gpui::test]
+fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outputs(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.answer_side_questions(&["Postgres raises 23505 atomically.", "Yes: both count."]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-side-chat");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(None)));
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).side_chat()).unwrap();
+    let field = view.read_with(cx, |view, _| view.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_input("Why check 23505?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(sent(&stand_in, "kuvo/agents/api/kuvo/btw/ses_signup"), [json!({ "question": "Why check 23505?" })]);
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))), "the tab is its thread's now");
+    assert!(bounds(cx, "side-question-btw_1").is_some());
+
+    // A follow-up goes in the same thread.
+    cx.simulate_input("And the bucket?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(sent(&stand_in, "kuvo/agents/api/kuvo/btw/ses_signup").last().unwrap(), &json!({ "question": "And the bucket?", "thread": "btw_1" }));
+    let thread = view.read_with(cx, |view, _| view.thread().map(|thread| thread.questions.len()));
+    assert_eq!(thread, Some(2));
+
+    // Closed, it's in the conversation's Outputs, and opens its tab again.
+    let tab = tab_of(&workspace, cx, &Kind::SideChat(Some("btw_1".into())));
+    click(cx, &format!("panel-tab-close-{tab}"));
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-side-chat-btw_1");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+}
+
+#[gpui::test]
+fn a_terminal_opens_as_a_tab_in_the_conversations_folder_and_keeps_its_shell_while_hidden(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-terminal");
+    assert!(matches!(showing(&workspace, cx), Some(Kind::Terminal(_))));
+    assert_eq!(stand_in.seen_at("POST", "api/pty")[0].body, Some(json!({ "cwd": website() })), "in the conversation's folder");
+    let terminal = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).terminal()).unwrap();
+    stand_in.pty_print("pty_1", b"~/website $ ");
+    cx.run_until_parked();
+    assert!(terminal.read_with(cx, |view, _| view.screen_text().join("\n")).contains("~/website $"));
+
+    // Another tab, and back: the same shell, what it printed meanwhile there.
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    stand_in.pty_print("pty_1", b"done\r\n");
+    let tab = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().iter().find(|tab| matches!(tab.kind, Kind::Terminal(_))).map(|tab| tab.id)).unwrap();
+    click(cx, &format!("panel-tab-{tab}"));
+    assert_eq!(stand_in.seen_at("POST", "api/pty").len(), 1, "no second shell");
+    assert!(terminal.read_with(cx, |view, _| view.screen_text().join("\n")).contains("done"));
+}
+
+#[gpui::test]
+fn a_macs_box_offers_no_browser_tab_until_it_has_a_browser_of_its_own(cx: &mut TestAppContext) {
+    // This Mac's box: no browser of its own to show yet, so no tile.
+    {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (_workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+        cx.simulate_keystrokes("cmd-alt-0");
+        cx.run_until_parked();
+        assert!(bounds(cx, "tile-browser").is_none(), "never one that can't open");
+    }
+}
+
+#[gpui::test]
+fn a_machines_browser_opens_as_a_tab_named_after_its_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_elsewhere(true);
+    stand_in.browser_pages(json!({ "active": "P", "pages": [{ "targetId": "P", "url": "http://localhost:3000/signup", "title": "", "loading": false, "canGoBack": false, "canGoForward": false, "working": false }] }));
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-browser");
+    assert!(matches!(showing(&workspace, cx), Some(Kind::Browser(_))));
+    assert!(workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).browser()).is_some());
+    let tab = tab_of(&workspace, cx, &Kind::Browser(0));
+    let title = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).browser().unwrap().read(cx).title());
+    assert_eq!(title.as_ref(), "localhost:3000", "its tab is named as the page is");
+    assert!(bounds(cx, &format!("panel-tab-{tab}")).is_some());
 }

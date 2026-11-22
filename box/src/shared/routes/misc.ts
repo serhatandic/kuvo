@@ -1,6 +1,6 @@
 // A box's folders to choose one from (PROTOCOL.md, `kuvo/folders`), those worth starting in
 // (`kuvo/folders/suggested`), every file under one
-// (`kuvo/folders/tree`), npm's plugins its engine can
+// (`kuvo/folders/tree`), the files under one that what's typed finds (`kuvo/files/find`), npm's plugins its engine can
 // load (`kuvo/plugins/search`), an MCP server's program (`kuvo/programs`), a provider of your
 // own's models (`kuvo/providers/models`), a sign-in's return loaded on the computer it's for
 // (`kuvo/sign-in/return`), and the ways to sign in to an account and how a sign-in is going, in the
@@ -32,6 +32,10 @@ export const FOLDERS_SUGGESTED = object({ home: string, folders: list(object({ p
 export const FOLDER_REFUSED = object({ message: string, "reason?": string });
 /** A new folder, made where it was asked. */
 export const FOLDER_MADE = object({ path: string });
+/** The files under one of this box's folders that what's typed finds, best first
+ * (`kuvo/files/find`): each one's full path, its name, and the folder it's in there ("" at the
+ * top); and the web address the text reads as, with its scheme (`url`, null where it reads as none). */
+export const FILES_FOUND = object({ url: nullable(string), files: list(object({ path: string, name: string, folder: string })) });
 
 /** npm's packages a search finds, the one it names exactly first: each one's name, version, what
  * it says it is and its downloads last week, where npm says; `missing`, a package (or version)
@@ -118,6 +122,7 @@ export type FolderList = Infer<typeof FOLDER_LIST>;
 export type FolderMade = Infer<typeof FOLDER_MADE>;
 export type FoldersSuggested = Infer<typeof FOLDERS_SUGGESTED>;
 export type FolderRefused = Infer<typeof FOLDER_REFUSED>;
+export type FilesFound = Infer<typeof FILES_FOUND>;
 export type PluginSearch = Infer<typeof PLUGIN_SEARCH>;
 export type ProgramFound = Infer<typeof PROGRAM_FOUND>;
 export type ProviderModels = Infer<typeof PROVIDER_MODELS>;
@@ -140,6 +145,7 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "POST kuvo/folders", feature: "folders", answers: { 200: FOLDER_MADE } },
   { route: "GET kuvo/folders/suggested", feature: "folders.suggested", answers: { 200: FOLDERS_SUGGESTED } },
   { route: "GET kuvo/folders/tree", feature: "folders.tree", answers: { 200: FOLDER_TREE, 400: object({ message: string }), 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED, 503: object({ message: string }) } },
+  { route: "GET kuvo/files/find", feature: "files.find", answers: { 200: FILES_FOUND, 400: object({ message: string }), 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED, 503: object({ message: string }) } },
   { route: "GET kuvo/plugins/search", feature: "plugins.search", answers: { 200: PLUGIN_SEARCH } },
   { route: "GET kuvo/programs", feature: "programs", answers: { 200: PROGRAM_FOUND } },
   { route: "POST kuvo/providers/models", feature: "providers.models", answers: { 200: PROVIDER_MODELS } },

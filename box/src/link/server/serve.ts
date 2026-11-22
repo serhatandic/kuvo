@@ -1,8 +1,13 @@
 // The box's server on this Mac (`serve`)
 
 import { viewUpgrade } from "../browser/websocket";
+import { browserView } from "../browser/view";
 import crypto from "node:crypto";
 import http from "node:http";
+import { engineConnect } from "../areas/engine";
+import { readEngineFile } from "../engine/client";
+import { IS_MAC } from "../home";
+import type { EngineRecord } from "../../shared/records";
 import { canonicalPath } from "./paths";
 import { createBoxDispatcher } from "./router";
 import type { AnyPiece, LinkHandler } from "./context";
@@ -31,7 +36,9 @@ const IDLE_KEPT = 60_000;
  * wants a limit on the whole request keeps its own (the keeper's, KeeperBoxTools). An HTTP/1.0
  * client, which mustn't get one, never does. */
 export const HEARTBEAT = 20_000;
-export function serveBox(password: string, handle: LinkHandler = createBoxDispatcher().entry()): http.Server {
+// Its sockets (`viewUpgrade`): the browser's live view, and a terminal's on the engine found by
+// `readEngine`, as through the relay (PROTOCOL.md, "Sockets").
+export function serveBox(password: string, handle: LinkHandler = createBoxDispatcher().entry(), readEngine: () => EngineRecord = readEngineFile): http.Server {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   // (`any`: nothing reads what it gives back, and its early `return response.end()` lines would
   // otherwise each need a return on every path.)
@@ -90,6 +97,6 @@ export function serveBox(password: string, handle: LinkHandler = createBoxDispat
     if (!headed) response.writeHead(502);
     response.end();
   });
-  viewUpgrade(server, password);
+  viewUpgrade(server, password, browserView, !IS_MAC, engineConnect(readEngine));
   return server;
 }

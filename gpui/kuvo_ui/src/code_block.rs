@@ -14,7 +14,7 @@ use std::{
 use gpui::{
     App, ClipboardItem, ElementId, Hsla, InteractiveElement, IntoElement,
     ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
-    TextRun, Window, div, px,
+    TextRun, Window, div, prelude::FluentBuilder as _, px,
 };
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
@@ -226,11 +226,13 @@ pub struct CodeBlock {
     shown_copied: bool,
     /// Where its code sits in a transcript's selection (none: it isn't selectable).
     unit: Option<(SelectionState, UnitId)>,
+    /// Drawn flush with the view it fills (a file's tab): no card, header or border.
+    flush: bool,
 }
 
 impl CodeBlock {
     pub fn new(id: impl Into<ElementId>, code: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), code: code.into(), language: None, line_numbers: false, compact: false, shown_copied: false, unit: None }
+        Self { id: id.into(), code: code.into(), language: None, line_numbers: false, compact: false, shown_copied: false, unit: None, flush: false }
     }
 
     pub fn language(mut self, language: impl Into<SharedString>) -> Self {
@@ -245,6 +247,13 @@ impl CodeBlock {
     }
 
     pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Flush with the view it fills: no card, header or border (a file shown in a tab of its own).
+    pub fn flush(mut self) -> Self {
+        self.flush = true;
         self.compact = true;
         self
     }
@@ -332,14 +341,12 @@ impl RenderOnce for CodeBlock {
                 .child(copy)
         });
 
+        let flush = self.flush;
         div()
             .flex()
             .flex_col()
             .w_full()
-            .rounded(radius::CARD)
-            .border_1()
-            .border_color(c.border)
-            .bg(c.sunken)
+            .when(!flush, |d| d.rounded(radius::CARD).border_1().border_color(c.border).bg(c.sunken))
             .overflow_hidden()
             .children(header)
             .child(

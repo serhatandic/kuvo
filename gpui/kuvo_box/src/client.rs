@@ -12,7 +12,7 @@ use crate::info::BoxInfo;
 use crate::messages::{self, Message, Page, Where};
 use crate::sessions::{self, Line};
 use crate::ssh::SshBox;
-use crate::transport::{Closer, Request, Response, Stream, Transport};
+use crate::transport::{Closer, Request, Response, Socket, Stream, Transport};
 use crate::parts::{self, Comment, Delivery, File, Notes, Parts, Sending};
 use crate::typed::{self, Answer, Ask, ModelRef, Offers};
 use crate::{ids, place};
@@ -385,6 +385,13 @@ impl BoxClient {
     pub fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
         self.check_gate(request)?;
         self.transport.open(&said(request), hold)
+    }
+
+    /// Opens a socket on the box's engine (behind the gate; PROTOCOL.md, "Sockets"), where the way
+    /// it's reached can carry one; where it can't, says so ([`crate::transport::sockets_not_here`]).
+    pub fn socket(&self, request: &Request) -> Result<Socket> {
+        self.check_gate(request)?;
+        self.transport.socket(request)
     }
 
     /// Its answer, read as `T`; what the box refuses, as it said it.

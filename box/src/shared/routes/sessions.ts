@@ -1,8 +1,8 @@
 // A conversation carried on with the coding agents (PROTOCOL.md, `kuvo/sessions/<id>/agents`), as
 // picking one of their models in it does; a session started with a task (`kuvo/sessions`), and the
 // agents' tools every box answers (`kuvo/agent-tools`; PROTOCOL.md, "Agents' tools"). A
-// conversation's queue, what it asks you ("A conversation's asks") and what "@" and "&" suggest in
-// it ("Mentions").
+// conversation's queue, what it asks you ("A conversation's asks"), what "@" and "&" suggest in
+// it ("Mentions"), and its side threads ("Side questions, handoffs and reviews").
 
 import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
@@ -350,6 +350,23 @@ export type Glance = Infer<typeof GLANCE>;
 export type GlancePull = Infer<typeof GLANCE_PULL>;
 export type GlanceChecks = Infer<typeof GLANCE_CHECKS>;
 
+/** A side question about a conversation (PROTOCOL.md, "Side questions, handoffs and reviews"), as
+ * its box's agents bridge keeps it: the side thread it's in (`thread`, its first question's id),
+ * where it stands, its answer or why it couldn't be answered, and when it was asked and answered (ms). */
+export const SIDE_QUESTION = object({
+  id: string, session: string, "thread?": string, question: string, state: words("answering", "answered", "failed"),
+  "answer?": string, "error?": string, asked: number, "answered?": number,
+});
+/** A conversation's side threads, each a side chat (`kuvo/agents/api/kuvo/btw/<session>/threads`),
+ * the one with the latest activity first: its id, its first question as asked (`title`), when that
+ * was asked and when anything in it last happened (ms), whether one in it is still being answered,
+ * and its questions, oldest first. */
+export const SIDE_THREADS = object({
+  threads: list(object({ id: string, title: string, asked: number, latest: number, answering: bool, questions: list(SIDE_QUESTION) })),
+});
+
+export type SideThreads = Infer<typeof SIDE_THREADS>;
+
 export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
   { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string }), 404: REFUSED, 405: REFUSED, 502: REFUSED, 503: REFUSED } },
@@ -388,5 +405,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED, 502: REFUSED } },
+  // (The coding agents' bridge's, passed on by the box's link as it came.)
+  { route: "GET kuvo/agents/api/kuvo/btw/:session/threads", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/agents/api/kuvo/btw/:session/threads/events", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
   { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
 ];

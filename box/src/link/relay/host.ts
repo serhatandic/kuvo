@@ -36,18 +36,33 @@ export interface BoxHello {
 /** A phone with a session here: its static key, the name it gave, and where it is on the relay. */
 export type SessionPhone = Required<Pick<Asker, "key" | "name" | "address">> & Pick<Asker, "kind" | "pairing">;
 
-/** A socket opened for a phone, as the box's side gives it: what the phone sends, and its end. */
-export interface SocketHandle {
-  send: (data: Buffer) => void;
-  close: () => void;
+/** How one side of a socket closed it: its close code and reason, as it said them (RFC 6455). */
+export interface SocketClose {
+  code: number;
+  reason: string;
 }
 
-/** What the box's side of a socket tells the phone: it's open, a message either way, its end. */
+/** Whether a close code may be sent in a close frame: not 1005, 1006 or 1015, which only say none
+ * was given or the connection was cut (RFC 6455, 7.4). */
+export const sendableClose = (code: number): boolean =>
+  (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
+
+/** A socket opened for a phone, as the box's side gives it: what the phone sends, and its end
+ * (with how the phone closed it, where its transport says). */
+export interface SocketHandle {
+  send: (data: Buffer) => void;
+  /** A binary message, where the box's side keeps it binary (the engine's); otherwise it goes to `send`. */
+  binary?: (data: Buffer) => void;
+  close: (closed?: SocketClose) => void;
+}
+
+/** What the box's side of a socket tells the phone: it's open, a message either way, its end (with
+ * how the other side closed it, where it said). */
 export interface SocketEvents {
   open: () => void;
   text: (data: Buffer) => void;
   binary: (data: Buffer) => void;
-  end: (error?: Error) => void;
+  end: (error?: Error, closed?: SocketClose) => void;
 }
 
 /** What a LinkHost is made with (each said in the constructor's comment). */

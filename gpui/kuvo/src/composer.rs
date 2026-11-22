@@ -98,6 +98,8 @@ pub enum ComposerEvent {
     Wrote,
     /// What's on its way from here changed (`outgoing`): the conversation draws it again.
     Outgoing,
+    /// A question was asked aside ("/btw"): its side chat, by its thread.
+    AskedAside { thread: String },
 }
 
 /// A message sent from here, drawn in its conversation at once as your message (0.7's "Sending"
@@ -1287,6 +1289,10 @@ impl Composer {
         }
         let Answer { restore, error, .. } = (*answer).clone();
         let note = said(&answer);
+        // Asked aside: its answer shows in its side chat, in the panel.
+        if let Some(thread) = answer.side_question.as_ref().and_then(|asked| asked.get("thread").or_else(|| asked.get("id"))).and_then(|thread| thread.as_str()) {
+            cx.emit(ComposerEvent::AskedAside { thread: thread.to_owned() });
+        }
         if restore.is_none() && answer.ambiguous != Some(true) && is_clients_to_do(&answer) {
             self.put_back(written, None, cx);
         }
@@ -2408,7 +2414,7 @@ fn said(answer: &Answer) -> Option<Note> {
         return note("Autopilot changed. It isn’t shown in this app yet.", false);
     }
     if answer.side_question.is_some() {
-        return note("Asked aside. The answer isn’t shown in this app yet.", false);
+        return note("Asked aside. The answer shows in a side chat in the panel.", false);
     }
     if answer.handoff.is_some() {
         return note("Writing a handoff note. The new session shows in the sidebar once it’s ready.", false);

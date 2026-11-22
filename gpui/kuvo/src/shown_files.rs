@@ -109,6 +109,8 @@ pub struct Actions {
     pub open_file: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     pub preview_file: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
     pub retry: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    /// Opens the folder's changes in the side panel.
+    pub show_changes: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 impl Actions {
@@ -118,6 +120,7 @@ impl Actions {
             open_file: Rc::new(|_, _, _| {}),
             preview_file: None,
             retry: Rc::new(|_, _, _| {}),
+            show_changes: None,
         }
     }
 }

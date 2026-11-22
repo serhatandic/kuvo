@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use std::time::Duration;
 
-use gpui::{
+use gpui::{AnimationExt as _, 
     AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
     Subscription, Task, Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::accounts::Confirm;
@@ -38,7 +38,7 @@ use crate::session_menu::{
     RenamePopover, RenameSession, SessionMenu,
 };
 use crate::sidebar::{FocusSearch, Line};
-use crate::panel::{self, Place, SidePanel, Tab};
+use crate::panel::{self, Kind, PanelEvent, Place, SidePanel};
 use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
 #[path = "quick_search.rs"]
@@ -420,6 +420,13 @@ impl Workspace {
                 None => this.open_session_at(&at.session, at.message.as_deref(), window, cx),
             }
         }).detach();
+        cx.subscribe_in(&library, window, |this: &mut Self, _, open: &crate::library::OpenInPanel, window, cx| {
+            this.show_area(Area::Sessions, window, cx);
+            if let Some(session) = &open.session {
+                this.open_session_at(session, None, window, cx);
+            }
+            this.preview_file(&open.path, window, cx);
+        }).detach();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
@@ -499,6 +506,15 @@ impl Workspace {
         let image_viewer = cx.new(|cx| crate::image_viewer::ImageViewer::new(live, cx));
         crate::image_viewer::register(window, &image_viewer, cx);
         area_subscriptions.push(cx.observe_global::<crate::yours::Store>(|_, cx| cx.notify()));
+        let side_panel = cx.new(|cx| SidePanel::new(client.clone(), live, cx));
+        area_subscriptions.push(cx.subscribe_in(&side_panel, window, |this: &mut Workspace, _, event: &PanelEvent, window, cx| match event {
+            PanelEvent::Close => {
+                if this.panel_open {
+                    this.toggle_panel(cx);
+                }
+            }
+            PanelEvent::OpenSession(session) => this.open_session_now(session, window, cx),
+        }));
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
@@ -537,7 +553,7 @@ impl Workspace {
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
             session_menu: SessionMenu::default(),
-            panel: cx.new(|cx| SidePanel::new(client.clone(), live, cx)),
+            panel: side_panel,
             panel_open: false,
             panel_width: panel::WIDTH,
             resizing: None,
@@ -1538,6 +1554,7 @@ impl Workspace {
     /// Counts the sidebar's times from `now` (shots, so they read the same each time).
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
+        self.panel.update(cx, |panel, _| panel.set_now(now));
         self.refresh_conversation_wakes(cx);
         if let Some(view) = self.conversation().cloned() {
             view.update(cx, |view, _| view.set_now(now));
@@ -1645,10 +1662,15 @@ impl Workspace {
         let preview = std::rc::Rc::new(move |path: &str, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| workspace.preview_file(path, window, cx)).ok();
         });
+        let workspace = cx.entity().downgrade();
+        let show_changes = std::rc::Rc::new(move |_: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Changes, cx)).ok();
+        });
         let now = self.now;
         view.update(cx, |view, cx| {
             view.set_computer_key(computer_key, cx);
             view.set_preview_file(preview);
+            view.set_show_changes(show_changes);
             if let Some(now) = now {
                 view.set_now(now);
             }
@@ -1681,8 +1703,13 @@ impl Workspace {
                 }
             }).ok();
         });
+        let workspace = cx.entity().downgrade();
+        let panel: crate::work_bars::PanelOpener = std::rc::Rc::new(move |arrival: panel::Arrival, _: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.arrive(arrival, cx)).ok();
+        });
         view.read(cx).bars().clone().update(cx, |bars, cx| {
             bars.set_opener(opener);
+            bars.set_panel_opener(panel);
             bars.set_bot_look(bot_look);
             bars.set_bot(bot, cx);
         });
@@ -1951,6 +1978,7 @@ impl Workspace {
                 }
             }
             // (A group chat's composer is its chat's; what's on its way, its conversation's.)
+            ComposerEvent::AskedAside { thread } => self.arrive(panel::Arrival::SideChat(thread.clone()), cx),
             ComposerEvent::Wrote | ComposerEvent::Outgoing => {}
         }
     }
@@ -1978,24 +2006,32 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Opens the side panel on `tab`.
-    pub fn show_panel(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        self.panel.update(cx, |panel, cx| panel.show(tab, cx));
+    /// Opens the side panel on `kind`, in the conversation in view: its tab, or a new one.
+    pub fn show_panel(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        // (Opened first: what's asked for is what it starts on.)
+        self.panel.update(cx, |panel, cx| panel.open(kind, cx));
         if !self.panel_open {
             self.toggle_panel(cx);
         }
     }
 
-    /// Opens `path` in the side panel's Files view so the user can preview a shown text file.
-    pub fn preview_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_panel(Tab::Files, cx);
-        let files = self.panel.read(cx).files().clone();
-        files.update(cx, |files, cx| files.open_file(path, window, cx));
+    /// Opens the side panel on what the conversation sent you to (from its Outputs).
+    pub fn arrive(&mut self, arrival: panel::Arrival, cx: &mut Context<Self>) {
+        self.panel.update(cx, |panel, cx| panel.arrive(arrival, cx));
+        if !self.panel_open {
+            self.toggle_panel(cx);
+        }
     }
 
-    /// The folder the panel shows: the open session's (its worktree's, for one in a worktree), or on
-    /// the landing view the project a new one starts in.
+    /// Opens `path` in its own tab in the side panel (a file the conversation names or shows).
+    pub fn preview_file(&mut self, path: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_panel(Kind::File(path.to_owned()), cx);
+    }
+
+    /// The conversation the panel follows, and the folder it shows: the open session's (its
+    /// worktree's, for one in a worktree), or on the landing view the project a new one starts in.
     fn place_panel(&mut self, cx: &mut Context<Self>) {
+        let key = self.opened().map(str::to_owned);
         let place = match self.opened() {
             Some(session) => self.listing.facts(session).filter(|facts| !facts.kind.is_chat()).map(|facts| Place { directory: facts.directory.clone(), session: Some(session.to_owned()) }),
             None => match self.landing_place() {
@@ -2003,7 +2039,7 @@ impl Workspace {
                 _ => None,
             },
         };
-        self.panel.update(cx, |panel, cx| panel.set_place(place, cx));
+        self.panel.update(cx, |panel, cx| panel.set_conversation(key, place, cx));
     }
 
     /// A drag of the panel's edge started at `x`.
@@ -2033,6 +2069,61 @@ impl Workspace {
     pub fn reset_panel_width(&mut self, cx: &mut Context<Self>) {
         self.panel_width = panel::WIDTH;
         cx.notify();
+    }
+
+    /// The side panel over the conversation, in a window too narrow for it beside it: a sheet that
+    /// slides in from the right over a dimmed conversation, which closes it when clicked.
+    fn panel_sheet(&self, viewport: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let glass = panel::glass(cx);
+        let room = viewport - rail::WIDTH - CARD_EDGE;
+        let width = self.panel_width.min(room - px(48.)).max(px(0.));
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                div()
+                    .id("panel-scrim")
+                    .debug_selector(|| "panel-scrim".into())
+                    .absolute()
+                    .inset_0()
+                    .bg(glass.scrim)
+                    .occlude()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.panel_open {
+                            this.toggle_panel(cx);
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .id("panel-sheet")
+                    .debug_selector(|| "panel-sheet".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(width)
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .border_l_1()
+                    .border_color(glass.sheet_edge)
+                    .shadow(theme.elevated_shadow())
+                    .occlude()
+                    .child(self.panel.clone())
+                    // It slides in, in the app (tests and shots see where it comes to rest).
+                    .map(|sheet| if self.live {
+                        sheet.with_animation(
+                            "panel-sheet-in",
+                            gpui::Animation::new(kuvo_ui::motion::MotionDuration::Slow.duration()).with_easing(gpui::ease_out_quint()),
+                            move |sheet, progress| sheet.right(-(width * (1. - progress))),
+                        ).into_any_element()
+                    } else {
+                        sheet.into_any_element()
+                    }),
+            )
+            .into_any_element()
     }
 
     /// The side panel, in the raised panel beside the conversation, with its edge to drag.
@@ -3636,11 +3727,16 @@ impl Workspace {
     }
 
     fn sidebar_width(&self, viewport: Pixels, cx: &App) -> Pixels {
+        self.sidebar_width_within(self.sidebar_viewport(viewport, cx), cx)
+    }
+
+    /// The sidebar's width with `room` for it and the conversation.
+    fn sidebar_width_within(&self, room: Pixels, cx: &App) -> Pixels {
         let preferred = self.sidebar_drag.as_ref().map_or_else(
             || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
             |drag| drag.width,
         );
-        sidebar::visible_width(sidebar::fit_width(preferred, self.sidebar_viewport(viewport, cx), self.can_show_bot_strip()))
+        sidebar::visible_width(sidebar::fit_width(preferred, room, self.can_show_bot_strip()))
     }
 
     fn sidebar_available(&self, cx: &App) -> bool {
@@ -3662,11 +3758,19 @@ impl Workspace {
     }
 
     fn sidebar_viewport(&self, viewport: Pixels, cx: &App) -> Pixels {
-        if self.panel_shown(cx) {
+        if self.panel_shown(cx) && self.panel_docks(viewport, cx) {
             viewport - panel::NARROWEST - CARD_EDGE
         } else {
             viewport
         }
+    }
+
+    /// Whether a window `wide` has room for the side panel beside the conversation, each at its
+    /// narrowest (the sidebar fit beside them); in one that hasn't, it slides over the conversation.
+    pub fn panel_docks(&self, wide: Pixels, cx: &App) -> bool {
+        let shows_sidebar = self.area != Area::Insights && self.sidebar_shown() && self.sidebar_available(cx);
+        let sidebar = if shows_sidebar { self.sidebar_width_within(wide - panel::NARROWEST - CARD_EDGE, cx) } else { px(0.) };
+        wide - rail::WIDTH - CARD_EDGE - sidebar - panel::CONVERSATION_NARROWEST - CARD_EDGE >= panel::NARROWEST
     }
 
     fn can_show_bot_strip(&self) -> bool {
@@ -3885,7 +3989,9 @@ impl Render for Workspace {
                 .child(content)
                 .child(self.sidebar_handle(width, cx))
         });
-        let panel = self.panel_shown(cx).then(|| self.panel_card(window, cx));
+        let docks = self.panel_docks(viewport, cx);
+        let panel = (self.panel_shown(cx) && docks).then(|| self.panel_card(window, cx));
+        let sheet = (self.panel_shown(cx) && !docks).then(|| self.panel_sheet(viewport, cx));
         div()
             .relative()
             .key_context("Workspace")
@@ -3906,13 +4012,13 @@ impl Render for Workspace {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);
                 }
-                this.show_panel(Tab::Changes, cx);
+                this.show_panel(Kind::Changes, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);
                 }
-                this.show_panel(Tab::Files, cx);
+                this.show_panel(Kind::Files, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowSessions, window, cx| this.show_area(Area::Sessions, window, cx)))
             .on_action(cx.listener(|this, _: &ShowBots, window, cx| this.show_area(Area::Bots, window, cx)))
@@ -3986,9 +4092,11 @@ impl Render for Workspace {
                         .border_l_1()
                         .border_color(c.border)
                         .overflow_hidden()
+                        .relative()
                         .children(sidebar)
                         .child(div().debug_selector(|| "workspace-content".into()).relative().flex_1().min_w_0().h_full().child(content))
-                        .children(panel),
+                        .children(panel)
+                        .children(sheet),
                 ),
             )
             .children(self.render_quick_search(cx))

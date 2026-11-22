@@ -172,6 +172,8 @@ pub struct ConversationView {
     computer_key: Option<String>,
     /// Previews a shown text file in the workspace side panel.
     preview_file: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
+    /// Opens the folder's changes in the side panel (a step's lines added and removed).
+    show_changes: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     /// Each row's extracted `kuvo-browser_show_file` calls, cached by row revision.
     row_shown_files: HashMap<String, (u64, Vec<kuvo_box::shown_files::ShownFile>)>,
     /// Metadata fetched via `BoxClient::file_info` for non-picture shown files, by `ShownFile::id`.
@@ -249,6 +251,7 @@ impl ConversationView {
             viewing: None,
             computer_key: None,
             preview_file: None,
+            show_changes: None,
             row_shown_files: HashMap::new(),
             shown_info: HashMap::new(),
             shown_open: HashMap::new(),
@@ -335,6 +338,10 @@ impl ConversationView {
                 Err(error) => self.queue_failed = Some(format!("It couldn’t read the pending queue removals: {error}")),
             }
         }
+    }
+
+    pub fn set_show_changes(&mut self, show: Rc<dyn Fn(&mut Window, &mut App)>) {
+        self.show_changes = Some(show);
     }
 
     pub fn set_preview_file(&mut self, preview: Rc<dyn Fn(&str, &mut Window, &mut App)>) {
@@ -1880,6 +1887,7 @@ impl Render for ConversationView {
                     open_file: open_file.clone(),
                     preview_file: this.preview_file.clone(),
                     retry: retry_file.clone(),
+                    show_changes: this.show_changes.clone(),
                 };
                 let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone(), files: &files, file_actions };
                 let actions = entries::copyable(entry).map(|(_, time)| {

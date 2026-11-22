@@ -13,6 +13,7 @@ pub mod ask_card;
 pub mod blocked;
 pub mod bot_face;
 pub mod bots;
+pub mod browser_view;
 pub mod composer;
 pub mod confirm_you;
 pub mod computers;
@@ -46,6 +47,7 @@ pub mod shown_files;
 pub mod sidebar;
 #[cfg(feature = "stand-in")]
 pub mod stand_in;
+pub mod terminal;
 pub mod time;
 pub mod title_bar;
 pub mod tool_step;
@@ -74,7 +76,7 @@ pub fn bind_keys(cx: &mut App) {
     session_menu::bind_keys(cx);
     area::bind_keys(cx);
     panel::changes::bind_keys(cx);
-    panel::files::bind_keys(cx);
+    terminal::bind_keys(cx);
     app_menu::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-n", NewSession, Some("Workspace")),

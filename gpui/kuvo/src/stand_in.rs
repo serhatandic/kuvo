@@ -19,6 +19,7 @@ pub use crate::time::now_ms;
 
 pub mod areas;
 pub mod bots;
+pub mod browser;
 pub mod first_run;
 pub mod permissions;
 pub mod git;
@@ -26,12 +27,14 @@ pub mod groups;
 pub mod moves;
 pub mod insights;
 mod library;
+pub mod panel;
 pub mod queue;
 pub mod settings;
+pub mod terminals;
 pub mod work_bars;
 
 use kuvo_box::Result;
-use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+use kuvo_box::transport::{Closer, Request, Response, Socket, SocketMessage, SocketOut, Stream, Transport};
 use serde_json::{Value, json};
 
 /// Whether a message sent gets an answer.
@@ -179,8 +182,14 @@ struct State {
     pending_compacts: HashSet<String>,
     /// Its modes, and what runs for each conversation besides its turn.
     work_bars: work_bars::WorkBars,
+    /// The side panel's own answers: files found, a command's output, subagents, side chats.
+    panel: panel::Panel,
     /// How each new session was asked to start: in a worktree, and its mode.
     starts: Vec<Value>,
+    /// Its engine's terminals.
+    terminals: terminals::Terminals,
+    /// Its browser, live (a machine's box's).
+    browser: browser::Browser,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -910,6 +919,124 @@ impl StandIn {
         state.group_changed(group);
     }
 
+    /// Its terminals' sockets can't be opened (`Some`: why, as the box's way there says it), or
+    /// can again.
+    pub fn terminals_not_here(&self, why: Option<&str>) {
+        self.state().terminals.not_here = why.map(str::to_owned);
+    }
+
+    /// Its engine won't make a terminal now (`Some`: why), or will again.
+    pub fn terminals_refused(&self, why: Option<&str>) {
+        self.state().terminals.refuses = why.map(str::to_owned);
+    }
+
+    /// The way it's reached can't carry a socket (`Some`: why, as that way says it), for a
+    /// terminal or the browser: or can again.
+    pub fn sockets_not_here(&self, why: Option<&str>) {
+        self.terminals_not_here(why);
+    }
+
+    /// Its browser's keeper runs (the live view's socket opens), or doesn't.
+    pub fn browser_running(&self, running: bool) {
+        self.state().browser.running = running;
+    }
+
+    /// Its browser's pages are now `pages` (`{active, pages}`, as `Kuvo.pages` says them): its open
+    /// socket says so.
+    pub fn browser_pages(&self, pages: Value) {
+        let mut state = self.state();
+        state.browser.pages = pages.clone();
+        state.browser.say(browser::fact("Kuvo.pages", &pages));
+    }
+
+    /// A page's size is now `viewport` (`{targetId, width, height, scale, by}`): its open socket says so.
+    pub fn browser_viewport(&self, viewport: Value) {
+        let mut state = self.state();
+        let target = viewport["targetId"].clone();
+        state.browser.viewports.retain(|each| each["targetId"] != target);
+        state.browser.viewports.push(viewport.clone());
+        state.browser.say(browser::fact("Kuvo.viewport", &viewport));
+    }
+
+    /// Its browser sends a picture (`params`: the frame header's `{targetId, frameId, width,
+    /// height, scrollX, scrollY}`) of `jpeg`.
+    pub fn browser_frame(&self, params: Value, jpeg: &[u8]) {
+        self.state().browser.say(browser::picture(&params, jpeg));
+    }
+
+    /// Each command the app sent its browser, in order, as JSON.
+    pub fn browser_sent(&self) -> Vec<Value> {
+        self.state().browser.sent.clone()
+    }
+
+    /// Those of them for `method`: their params.
+    pub fn browser_sent_of(&self, method: &str) -> Vec<Value> {
+        self.browser_sent().into_iter().filter(|command| command["method"] == method).map(|command| command["params"].clone()).collect()
+    }
+
+    /// How many times its browser's socket was opened, and whether the app closed it.
+    pub fn browser_opened(&self) -> (usize, bool) {
+        let state = self.state();
+        (state.browser.opened, state.browser.closed)
+    }
+
+    /// Its browser's socket ends (the keeper stopped, or the connection went): why, where said.
+    pub fn browser_end(&self, why: Option<&str>) {
+        if let Some(socket) = self.state().browser.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(why.map(str::to_owned)));
+        }
+    }
+
+    /// The terminals it has now (made and not removed), by id.
+    pub fn ptys(&self) -> Vec<String> {
+        self.state().terminals.ids()
+    }
+
+    /// The shell in terminal `id` prints `bytes`: its open socket brings them, and one opened later
+    /// replays them first.
+    pub fn pty_print(&self, id: &str, bytes: &[u8]) {
+        let mut state = self.state();
+        let Some(pty) = state.terminals.get(id) else { return };
+        pty.printed.extend_from_slice(bytes);
+        if let Some(socket) = &pty.socket {
+            let _ = socket.send_blocking(SocketMessage::Text(bytes.to_vec()));
+        }
+    }
+
+    /// The shell in terminal `id` exits with `code`: its socket ends, as the engine's does.
+    pub fn pty_exit(&self, id: &str, code: i64) {
+        let mut state = self.state();
+        let Some(pty) = state.terminals.get(id) else { return };
+        pty.info["status"] = json!("exited");
+        pty.info["exitCode"] = json!(code);
+        if let Some(socket) = pty.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(None));
+        }
+    }
+
+    /// Terminal `id`'s socket drops, its shell still running (the connection went).
+    pub fn pty_drop(&self, id: &str) {
+        let mut state = self.state();
+        if let Some(socket) = state.terminals.get(id).and_then(|pty| pty.socket.take()) {
+            let _ = socket.send_blocking(SocketMessage::Ended(Some("The connection closed.".into())));
+        }
+    }
+
+    /// What was typed in terminal `id`, as it went, in order.
+    pub fn pty_typed(&self, id: &str) -> Vec<String> {
+        self.state().terminals.get(id).map(|pty| pty.typed.clone()).unwrap_or_default()
+    }
+
+    /// Each size terminal `id` was told it's drawn at, in order (rows, columns).
+    pub fn pty_sizes(&self, id: &str) -> Vec<(u16, u16)> {
+        self.state().terminals.get(id).map(|pty| pty.sizes.clone()).unwrap_or_default()
+    }
+
+    /// Whether terminal `id`'s socket was closed from the app.
+    pub fn pty_closed(&self, id: &str) -> bool {
+        self.state().terminals.get(id).is_some_and(|pty| pty.closed)
+    }
+
     /// Every request it was sent, in order.
     pub fn seen(&self) -> Vec<Seen> {
         self.state().seen.clone()
@@ -938,6 +1065,22 @@ impl StandIn {
         }
         state.work_bars.background.insert(session.to_owned(), background);
         state.work_bars.changed();
+    }
+
+    /// `session`'s subagents that are done, newest first (as `kuvo/work/subagents/<session>` lists
+    /// them under `done`).
+    pub fn set_subagents_done(&self, session: &str, done: Vec<Value>) {
+        self.state().panel.done.insert(session.to_owned(), done);
+    }
+
+    /// What the next side questions are answered, in order (none left: they stay being answered).
+    pub fn answer_side_questions(&self, answers: &[&str]) {
+        self.state().panel.answers = answers.iter().map(|answer| (*answer).to_owned()).collect();
+    }
+
+    /// `session`'s side questions, as the box keeps them, oldest first.
+    pub fn side_questions(&self, session: &str) -> Vec<Value> {
+        self.state().panel.questions.get(session).cloned().unwrap_or_default()
     }
 
     /// A bot's work changed (`kuvo/work/events`): its clients read it again.
@@ -1333,7 +1476,7 @@ fn signup(now: f64) -> Vec<Value> {
         user("msg_s1", t, "Users say the sign-up form gets completely wiped if the email is already taken. Can you look?", None),
         json!({ "type": "assistant", "id": "msg_s2", "time": { "created": t + 1000.0, "completed": t + 25_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "finish": "stop", "content": [
             { "type": "reasoning", "text": "The form likely resets its state on any error from the server, not only on success.", "time": { "created": t + 1000.0, "completed": t + 3000.0 } },
-            tool("call_1", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
+            tool("call_1", "read", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" })),
             tool_with("call_2", "grep", "completed", json!({ "pattern": "reset\\(" }), json!({ "content": [{ "type": "text", "text": "Found 3 matches\nweb/src/signup/Form.tsx:\n  Line 48:     reset();\n  Line 71:   const { reset, setError } = useForm();\nweb/src/settings/Profile.tsx:\n  Line 33:     reset(profile);" }] })),
             { "type": "text", "text": "Found it. When the server answers **409** (the email is taken), the error path calls `reset()` before it shows the message, so every field is cleared:\n\n```tsx\n} catch (error) {\n  reset();\n  setError(error.message);\n}\n```\n\nMoving `reset()` into the success path keeps what was typed. Want me to do that, and put the error under the email field?" }
         ] }),
@@ -1352,8 +1495,8 @@ fn signup(now: f64) -> Vec<Value> {
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
             // Kuvo Code's own tool, by the title its box gives it.
             json!({ "type": "tool", "id": "call_k1", "name": "kuvo-browser_read_conversation", "title": "Read Check the other forms’s conversation", "doing": "Reading Check the other forms’s conversation", "state": { "status": "completed", "input": { "of": "Check the other forms" } } }),
-            tool("call_r2", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
-            tool_with("call_3", "edit", "completed", json!({ "filePath": "web/src/signup/Form.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
+            tool("call_r2", "read", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" })),
+            tool_with("call_3", "edit", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
             tool_with("call_t1", "shell", "failed", json!({ "command": "npx tsc --noEmit" }), json!({ "error": "error TS2304: Cannot find name 'setFieldError'.\nFound 1 error." })),
             tool_with("call_4", "shell", "completed", json!({ "command": "npm test -- signup" }), json!({ "content": [{ "type": "text", "text": test_output() }], "metadata": { "exit": 0 } })),
             { "type": "text", "text": "Moved the reset into the success path, and the 409 now sets the error on the email field. The sign-up tests pass; checking the lint" },
@@ -1874,6 +2017,12 @@ impl StandIn {
         let mut state = self.state();
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
+        if route.starts_with("api/pty") {
+            let directory = request.headers.iter().find(|(name, _)| name == "x-opencode-directory").map(|(_, value)| decoded(value));
+            if let Some((status, value)) = state.terminals.answer(method, route, request.body.as_ref(), directory) {
+                return answer(status, value);
+            }
+        }
         if let Some((status, value)) = moves::answer(&mut state, request) {
             return answer(status, value);
         }
@@ -1909,6 +2058,15 @@ impl StandIn {
                 return answer(status, value);
             }
             if let Some((status, value)) = state.permissions.answer(method, route, &body) {
+                return answer(status, value);
+            }
+        }
+        {
+            let now = state.made.unwrap_or_else(now_ms);
+            let body = request.body.clone().unwrap_or(Value::Null);
+            let state = &mut *state;
+            state.panel.now = now;
+            if let Some((status, value)) = state.panel.answer(method, route, |name| query(path, name).map(decoded), &body, &state.work_bars, state.git.as_ref()) {
                 return answer(status, value);
             }
         }
@@ -2079,6 +2237,8 @@ impl StandIn {
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push("computers.update.here"); }
                 if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
+                // (A machine's box shows its browser live; a Mac's has none of its own.)
+                if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
@@ -2752,6 +2912,67 @@ fn title_from(words: &str) -> String {
     if title.is_empty() { "New session".into() } else { title }
 }
 
+/// A terminal's socket on the stand-in, as the app sends on it: what's typed is kept for a test to
+/// read, and echoed back where it answers live (the app's `--stand-in`), as a shell would.
+struct Shell {
+    stand_in: StandIn,
+    id: String,
+}
+
+impl SocketOut for Shell {
+    fn send_text(&self, text: &str) -> Result<()> {
+        let live = self.stand_in.inner.replies == Replies::Live;
+        let mut state = self.stand_in.state();
+        let Some(pty) = state.terminals.get(&self.id).filter(|pty| pty.socket.is_some()) else {
+            return Err(kuvo_box::Error::Unreachable("The connection closed.".into()));
+        };
+        pty.typed.push(text.to_owned());
+        if live {
+            let echoed = text.replace('\r', "\r\n").replace('\u{7f}', "\u{8} \u{8}");
+            pty.printed.extend_from_slice(echoed.as_bytes());
+            if let Some(socket) = &pty.socket {
+                let _ = socket.send_blocking(SocketMessage::Text(echoed.into_bytes()));
+            }
+        }
+        Ok(())
+    }
+
+    fn close(&self) {
+        let mut state = self.stand_in.state();
+        if let Some(pty) = state.terminals.get(&self.id) {
+            pty.closed = true;
+            if let Some(socket) = pty.socket.take() {
+                let _ = socket.send_blocking(SocketMessage::Ended(None));
+            }
+        }
+    }
+}
+
+/// Its browser's socket, as the app sends on it: each command kept for a test to read, and those with
+/// an id answered.
+struct Viewer {
+    stand_in: StandIn,
+}
+
+impl SocketOut for Viewer {
+    fn send_text(&self, text: &str) -> Result<()> {
+        let mut state = self.stand_in.state();
+        if state.browser.socket.is_none() {
+            return Err(kuvo_box::Error::Unreachable("The connection closed.".into()));
+        }
+        state.browser.heard(text);
+        Ok(())
+    }
+
+    fn close(&self) {
+        let mut state = self.stand_in.state();
+        state.browser.closed = true;
+        if let Some(socket) = state.browser.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(None));
+        }
+    }
+}
+
 impl Transport for StandIn {
     fn send(&self, request: &Request) -> Result<Response> {
         if self.state().down {
@@ -2767,6 +2988,45 @@ impl Transport for StandIn {
 
     fn peer(&self, key: &str) -> Option<Arc<dyn Transport>> {
         self.state().peers.get(key).map(|peer| Arc::new(peer.clone()) as Arc<dyn Transport>)
+    }
+
+    /// A terminal's socket, as its engine opens one: what its shell printed so far first.
+    fn socket(&self, request: &Request) -> Result<Socket> {
+        let mut state = self.state();
+        state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+        if state.down {
+            return Err(kuvo_box::Error::Unreachable("The computer is away.".into()));
+        }
+        if let Some(why) = state.terminals.not_here.clone() {
+            return Err(kuvo_box::transport::sockets_not_here(why));
+        }
+        if request.route() == "kuvo/browser/view" {
+            // A Mac's box has no live view; a machine's opens it on its keeper, where that runs.
+            if !state.elsewhere {
+                let said = json!({ "message": browser::NO_VIEW_ON_MAC }).to_string();
+                return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, said.as_bytes())));
+            }
+            if !state.browser.running {
+                let said = json!({ "message": format!("connect ENOENT {HOME}/.kuvo-code/run/browser.sock") }).to_string();
+                return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(502, said.as_bytes())));
+            }
+            let incoming = state.browser.open();
+            return Ok(Socket { incoming, outgoing: Arc::new(Viewer { stand_in: self.clone() }) });
+        }
+        let id = request.route().strip_prefix("api/pty/").and_then(|rest| rest.strip_suffix("/connect")).map(decoded).unwrap_or_default();
+        let Some(pty) = state.terminals.get(&id).filter(|pty| pty.info["status"] == "running") else {
+            let said = json!({ "message": "That terminal isn’t there any more." }).to_string();
+            return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, said.as_bytes())));
+        };
+        let (sender, incoming) = async_channel::unbounded();
+        if !pty.printed.is_empty() {
+            let _ = sender.send_blocking(SocketMessage::Text(pty.printed.clone()));
+        }
+        // (The engine's note on where its output had got to.)
+        let _ = sender.send_blocking(SocketMessage::Binary(format!("\0{{\"cursor\":{}}}", pty.printed.len()).into_bytes()));
+        pty.socket = Some(sender);
+        pty.closed = false;
+        Ok(Socket { incoming, outgoing: Arc::new(Shell { stand_in: self.clone(), id }) })
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
