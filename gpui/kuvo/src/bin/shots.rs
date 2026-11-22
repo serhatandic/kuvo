@@ -137,8 +137,8 @@ const SCREENS: &[Screen] = &[
     // #950: a subagent under its session, opened: its model and approval said, no choice; one that takes no messages.
     Screen { slug: "conversation-subagent", width: 1280., height: 820., session: Some("ses_sub"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "conversation-subagent-no-messages", width: 1280., height: 820., session: Some("ses_sub"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    // #951: a long project's list, "Show more" tapped twice.
-    Screen { slug: "sidebar-show-more", width: 1280., height: 1400., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(show_more_twice) },
+    // #951: a long project's list, "Show more" tapped once: 16 shown, with Show 20 more and Show fewer.
+    Screen { slug: "sidebar-show-more", width: 1280., height: 1400., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(show_more_once) },
     // While the agent works (#776): a message written, the way beside Send, and the queue with one
     // steered in, one queued and another agent's letter; then the menu beside Send open.
     Screen { slug: "send-while-working", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -604,9 +604,8 @@ fn group_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_release", window, cx);
 }
-fn show_more_twice(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+fn show_more_once(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     let website = format!("{}/Projects/website", kuvo::stand_in::HOME);
-    workspace.show_more(&website, cx);
     workspace.show_more(&website, cx);
 }
 
