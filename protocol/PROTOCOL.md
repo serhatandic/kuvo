@@ -540,6 +540,9 @@ once both computers are connected. On the wire, `primary` means the main compute
   roles have no bearing on this choice. A lost SSH reply to a write is reported back to the
   caller so the client does not send the same write again over the relay.
 
+  A client over SSH runs `~/.kuvo-code/bin/kuvo-start route-to` (or `route`), its request on
+  standard input: the keeper runs it on the engine it runs itself, never one the client picks.
+
   On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
   input. `computer` is the expected box public key and `hello` is the first Noise IK message
   (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?, app?, setupProtocol?}`). The box answers with
