@@ -1,6 +1,7 @@
-// What this computer already has that Kuvo Code can use, for the first launch's "Bring your
-// subscriptions" (PROTOCOL.md, "kuvo/accounts/found"): the coding agents' programs and their
-// sign-ins, as the agents bridge sees them; the keys and sign-ins of an opencode you use apart
+// COMPAT(0.7 first launch): what this computer already has that Kuvo Code can use, as Kuvo Code
+// 0.7's first launch asked (PROTOCOL.md, "kuvo/accounts/found"); Kuvo Code 1.0's first run reads
+// the accounts themselves (`kuvo/sign-in/accounts`), where an agent's own sign-in is its first
+// account. The coding agents' programs and their sign-ins, as the agents bridge sees them; the keys and sign-ins of an opencode you use apart
 // from Kuvo Code; and keys in the shell that the engine already uses. The same on macOS and
 // Linux. No key leaves the box: a client sees names, and asks for one to be used by its id.
 

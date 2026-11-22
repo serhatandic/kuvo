@@ -410,3 +410,15 @@ export function groupNotice(event: GroupEvent): Notice | null {
   if (event.type === "kuvo.group.done") return { ...about, subtitle: `${data.who} finished its part`, body: oneSentence(data.text) };
   return null;
 }
+/** A coding agent's update notice as the bridge served it (`kuvo.updates.notice`), as your
+ * notifications show it: its words, threaded by its program. Null for anything else. */
+export function updateNotice(served: unknown): Notice | null {
+  if (!isObject(served) || typeof served.id !== "string" || typeof served.title !== "string" || typeof served.program !== "string") return null;
+  return {
+    category: "update",
+    title: served.title,
+    ...(typeof served.body === "string" && served.body ? { body: served.body } : {}),
+    thread: `update:${served.program}`,
+    data: { notice: served.id },
+  };
+}

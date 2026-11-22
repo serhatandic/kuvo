@@ -30,7 +30,10 @@ export interface Maintenance {
 export interface MaintenanceDefinition {
   name: string
   executable: string
-  npmPackage: string
+  /** Its npm package, where npm has its releases. */
+  npmPackage?: string
+  /** Its newest version from its maker's own release feed, where npm doesn't have it (Antigravity's). */
+  newest?: (fresh: boolean) => Promise<string | undefined>
   /**
    * The agent's own updater, how to tell its own installer put the program there, and the npm
    * dist-tag it updates to (its channel), when not `latest`.
@@ -68,7 +71,7 @@ export async function maintenance(definition: MaintenanceDefinition, fresh = fal
   if (!fresh && kept && Date.now() - kept.at < 10 * 60_000) return kept.value
   const [installed, updater] = await Promise.all([installedVersion(definition.executable), resolveUpdater(definition)])
   // Homebrew's own newest, or none known: npm's may not have reached it.
-  const latest = updater.homebrew ? updater.latest : (updater.latest ?? (await npmLatest(definition.npmPackage, fresh, updater.distTag)))
+  const latest = updater.homebrew ? updater.latest : (updater.latest ?? (definition.newest ? await definition.newest(fresh).catch(() => undefined) : definition.npmPackage ? await npmLatest(definition.npmPackage, fresh, updater.distTag) : undefined))
   const value: Maintenance = { installed, latest, command: updater.command, shown: updater.shown, env: updater.env }
   checked.set(definition.executable, { at: Date.now(), value })
   return value
@@ -246,7 +249,7 @@ async function resolveUpdater(definition: MaintenanceDefinition): Promise<Update
 
   // npm names the package, so it outranks a Homebrew keg the path passes through (a Homebrew
   // Node keeps its globals in its own keg).
-  const prefix = npmGlobalPrefix(realPath, definition.npmPackage)
+  const prefix = definition.npmPackage ? npmGlobalPrefix(realPath, definition.npmPackage) : undefined
   if (prefix) {
     const npm = existsSync(join(prefix, "bin", "npm")) ? join(prefix, "bin", "npm") : "npm"
     return {

@@ -9,7 +9,7 @@ import { masked } from "./mask";
 import { shortNotice } from "./plain";
 
 /** What a notice is about (PROTOCOL.md, "Notifications"), for its buttons: what's asked of you, or news. */
-export type NoticeCategory = "permission" | "question" | "ask" | "finished" | "failed" | "report" | "blocked" | "message" | "usage";
+export type NoticeCategory = "permission" | "question" | "ask" | "finished" | "failed" | "report" | "blocked" | "message" | "usage" | "update";
 
 /** Where a notice opens (`session` or `group`), and what answering takes it back (`request`, `ask`). */
 export interface NoticeData {

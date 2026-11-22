@@ -64,14 +64,36 @@ notice when it changes, and never sends a token anywhere:
   journal's request as Codex's idempotency key.
 - **Grok:** a short `grok agent stdio`: ACP `_x.ai/billing`, after `authenticate` with its kept sign-in.
 - **Claude:** the Agent SDK's usage call with `skipBehaviors`, on the account's sign-in (step 4).
-- **Cursor:** as today, with the account's SDK key. **Antigravity:** its quota reader (step 5).
+- **Cursor:** as today, with the account's SDK key.
+- **Antigravity (`agy`):** its own server while it runs (`RetrieveUserQuotaSummary`,
+  `GetUserStatus` on its loopback port), with no credential sent; while it isn't running, the
+  row says its usage shows once it runs. `agy` keeps its sign-in itself, so Kuvo has no token to
+  read Google's quota service with. An account still on 1.3 reads as before.
 
 ## Install, updates and notices
 
 Each agent runs from **its own normal install**. Where it isn't installed, **Install** runs the
-maker's installer. Antigravity is the exception today: Kuvo downloads Google's standalone ACP server
-pinned to 1.3.0, which never updates. That's why its updates were missing. It moves to Google's
-`agy` CLI (`agy acp`).
+maker's installer. Antigravity is Google's `agy` CLI (step 5, built), run as `agy acp
+--gemini-dir <home> --app-data-dir antigravity-acp`, installed with
+`curl -fsSL https://antigravity.google/cli/install.sh | bash` (to `~/.local/bin/agy`), updated
+with `agy update`. Confirmed on a Linux test machine with 1.5.14 (22 November 2026): its
+`--version` (`1.5.14`), `acp --help`, `AGY_CLI_DISABLE_AUTO_UPDATE`, the `--login` page and prompt
+("Then paste the authorization code, or the full URL of the page you land on, and press Enter:"),
+`initialize` (`agentInfo.version`, `oauth-personal`, `agentCapabilities.auth.logout`) and its
+refusal with no sign-in (-32603 "No browser is available here…"). Not confirmed (needs a real
+Google account): where the per-home sign-in file lands, and macOS.
+
+- **Private home:** every account, the first too, has its own GEMINI_HOME in Kuvo's folder. `agy`
+  1.5 keeps one keyring sign-in for every home unless it believes it runs over SSH, so Kuvo starts
+  it with `SSH_CONNECTION=127.0.0.1 0 127.0.0.1 0`, as T3 Code does: it then keeps the sign-in in
+  a file of that home.
+- **Sign-in:** `agy acp … --login` prints Google's page and takes the code it ends on (pasted in
+  Kuvo's sign-in sheet, from any device). Once it exits cleanly, `agy` is asked to use the
+  sign-in and list the account's models; only then is it signed in, noted in
+  `antigravity-acp/kuvo-sign-in.json` (an id of Kuvo's, never a secret).
+- **Sign-out and removal:** ACP `logout`, then Kuvo's note and model list go.
+- **Models:** as the account's session lists them; Claude and GPT models are named
+  "Claude Opus 5.5 (Antigravity)", "GPT-6.2 Sol (Antigravity)", apart from Claude Code's and Codex's.
 
 **"Update coding agents automatically"** is a box setting, **off by default**.
 - **Off:** Kuvo starts each agent with its own updater turned off where it can. Settings shows the
@@ -82,14 +104,20 @@ pinned to 1.3.0, which never updates. That's why its updates were missing. It mo
   app's notifications bell and macOS notifications draw them.
 - Using an agent in Terminal can still update a shared install. Kuvo then notices the new version.
 
-Planned per agent (not built yet; each row is confirmed when it's built):
+Built (step 6): the box checks each installed agent's newest version as accounts are read and
+every hour, and keeps its notices in `<agents home>/update-notices.json`, one per program and
+version (`box/src/agents/update-notices.ts`, PROTOCOL.md "Update notices"). Each is told once on
+`kuvo/notices` (category `update`) for macOS and phones, and served at
+`kuvo/agents/api/kuvo/updates/notices` for the notifications bell.
+
+Per agent:
 
 | Agent | Turn its updater off | Newest version from |
 |---|---|---|
 | Claude Code | yes: `DISABLE_AUTOUPDATER=1` | `claude update` channel (npm `@anthropic-ai/claude-code`) |
 | Codex | yes: `check_for_update_on_startup=false` | npm `@openai/codex` / GitHub releases |
 | Grok | yes: `GROK_DISABLE_AUTOUPDATER=1` (already set) | npm `@xai-official/grok` |
-| Antigravity (`agy`) | to check on 1.5 | Google's release feed, to confirm on 1.5 |
+| Antigravity (`agy`) | yes: `AGY_CLI_DISABLE_AUTO_UPDATE=1` (in its binary; T3 sets it) | Google's feed: `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<os>_<arch>.json` (`version`), as its installer reads it |
 | Cursor SDK | n/a: a library inside Kuvo | updates with Kuvo's releases; no notice |
 
 **Two pinned libraries, in plain words.** Two of the agents are reached through a code library that
@@ -135,5 +163,6 @@ The box's path that copied a sign-in into Kuvo's folder goes, along with any fir
   until your own sign-in is there), the token-based usage read and the terminal-screen scraping in
   `signin.ts`. Claude's resets still read Claude Code's `.credentials.json` where it keeps one
   (Linux): Claude Code has no reset request to ask.
-- Next: Antigravity: the pinned 1.3.0 download, `AGY_ACP_FORCE_FILE_STORAGE`, and the ACP token
-  file. Onboarding's sign-in copy.
+- Done (step 5): Antigravity's pinned 1.3.0 download for new sign-ins (an account still on it keeps
+  running until it's signed in again, which removes its token file). Left: removing the 1.3.0
+  download and its code once no account uses it.

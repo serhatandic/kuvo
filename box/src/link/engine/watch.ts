@@ -14,7 +14,7 @@ import { letAttachmentsGo } from "../server/attached";
 import { nameDueWorktrees, nameWorktreeBranch, settleNewSession, tidyWorktrees } from "../areas/worktrees";
 import { finishDeletes } from "../bots/edit";
 import { freshenBot, freshenBots } from "../bots/tell";
-import { ANSWERED, GROUP_NEWS, NEWS, RUN_ENDS, groupNotice, noticeFor, settleHeld } from "../notices/news";
+import { ANSWERED, GROUP_NEWS, NEWS, RUN_ENDS, groupNotice, noticeFor, settleHeld, updateNotice } from "../notices/news";
 import { keepReadThroughSummary, keepWorkRead, settleWorkRead } from "../work/tree";
 import { markChatOn } from "./chats";
 import { bridgeTarget, engineGet, peerTargets, readBridgeFile, readEngineFile } from "./client";
@@ -451,6 +451,12 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
         if ((RUN_ENDS.has(event.type) || event.type === "session.deleted") && typeof event.data?.sessionID === "string") settleRunReviews(event.data.sessionID);
         if ((event.type === "kuvo.usage.notices" || event.type === "kuvo.limits.updated") && !readServices(RUN) && readUsageEvent(event.type, (event.data ?? {}) as Record<string, unknown>, tell, hold)) usageRevision++;
         if (!notices) continue;
+        // A coding agent's update notice, decided and worded by the bridge, told once as it's made.
+        if (event.type === "kuvo.updates.notice") {
+          const notice = updateNotice((event.data as { notice?: unknown } | undefined)?.notice);
+          if (notice) tell(notice);
+          continue;
+        }
         if (ANSWERED.has(event.type)) answered(event.data?.requestID ?? event.data?.id);
         // A run's end: what it asked the engine let go with it, without a word (stopped, say). Looked
         // up before what comes next, which may be its news.

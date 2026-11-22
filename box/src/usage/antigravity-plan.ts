@@ -267,8 +267,12 @@ export class AntigravityPlan {
     } catch { /* An indeterminate read never changes the known account or its sign-in generation. */ }
     return this.lastCredential
   }
-  signIn() { this.credential(); return this.lastSignIn }
-  account() { this.credential(); return this.lastAccount }
+  /** `agy`'s sign-in here, by the id the agents bridge gave it once `agy` took it (`kuvo-sign-in.json`; never a secret). */
+  private agySignIn(): string | undefined {
+    try { const id = JSON.parse(readFileSync(join(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id; return typeof id === "string" && id ? fingerprint(id) : undefined } catch { return undefined }
+  }
+  signIn() { this.credential(); return this.lastSignIn ?? this.agySignIn() }
+  account() { this.credential(); return this.lastAccount ?? this.agySignIn() }
   private async request(url: string, init: RequestInit & { tls?: { rejectUnauthorized: boolean } }, now: number, allowMissing = false): Promise<any> {
     let response: Response
     try { response = await this.fetcher(url, { ...init, redirect: "error", signal: AbortSignal.timeout(15000) }) } catch { throw new LimitsProblem("failed", "Antigravity's quota service is unavailable.") }
@@ -285,15 +289,18 @@ export class AntigravityPlan {
   }
   private async read(now: number): Promise<LimitReading> {
     if (!antigravityTransport.live && this.bases === productionBases) return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo’s data folder.", undefined, false))
+    // Google's `agy` 1.5 keeps its sign-in in the system keyring, never in a file Kuvo Code reads:
+    // its quotas come from its own server while it runs (below). Google's earlier agent kept a
+    // token file, also used for Google's quota service while it isn't running.
     const raw = this.raw()
-    if (!raw) throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false)
     let c: Credential | undefined
-    try { c = antigravityCredential(JSON.parse(raw)) } catch {}
-    if (!c) throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false)
+    if (raw) {
+      try { c = antigravityCredential(JSON.parse(raw)) } catch {}
+      if (!c) throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false)
+    }
     this.loadRefusals()
     this.saveRefusals()
-    const signIn = antigravityGeneration(c)
-    if (this.denied.has(signIn)) throw new LimitsProblem("expired", "Antigravity refused this sign-in. Sign in again.", undefined, false)
+    if (c && this.denied.has(antigravityGeneration(c))) throw new LimitsProblem("expired", "Antigravity refused this sign-in. Sign in again.", undefined, false)
     try {
       // Own-account local LS is useful while the agent is running. Its certificate exception is
       // scoped to the literal loopback URL; remote calls always retain TLS verification.
@@ -313,7 +320,7 @@ export class AntigravityPlan {
             if (error instanceof LimitsProblem && error.kind === "rate-limited") { this.hold(local("GetUserStatus"), error, now); waiting = true }
             console.warn("Antigravity optional plan status is unavailable; quota windows are kept.")
           }
-          return { windows, plan, partial: waiting || windows.filter(w => w.id !== "argon-weekly").length < 4, identity: c.identity }
+          return { windows, plan, partial: waiting || windows.filter(w => w.id !== "argon-weekly").length < 4, identity: c?.identity }
         }
         // (Its status waiting: this server's legacy quotas wait with it, and the next way is tried.)
         if (this.holding(local("GetUserStatus"), now)) continue
@@ -321,9 +328,11 @@ export class AntigravityPlan {
           const status = await call("GetUserStatus")
           let legacy = antigravityLegacy(status?.userStatus?.cascadeModelConfigData?.clientModelConfigs ?? [])
           if (!legacy.length) { const configs = await call("GetCommandModelConfigs"); legacy = antigravityLegacy(configs?.clientModelConfigs ?? []) }
-          if (legacy.length) return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c.identity }
+          if (legacy.length) return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c?.identity }
         } catch (error) { if (error instanceof LimitsProblem && error.kind === "rate-limited") throw error; if (error instanceof LimitsProblem && error.kind === "expired") e.csrf && this.refuse(this.deniedCSRF, fingerprint(e.csrf)!) }
       }
+      // Its sign-in in the keyring: only its running server can say (none sends a credential).
+      if (!c) throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false)
       const cached = this.access && this.access.credential === this.account() && this.access.expires > now + 60_000 ? this.access : undefined
       let access = cached?.token ?? c.access
       if (access && this.deniedAccess.has(fingerprint(access)!)) access = undefined
@@ -424,6 +433,6 @@ export class AntigravityPlan {
       const status = await optional("/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI" } }, "Antigravity optional plan lookup is unavailable; successful quota windows are kept.")
       const plan = status && (({ "g1-pro-tier": "Pro", "g1-ultra-tier": "Ultra", "g1-ultra-lite-tier": "Ultra Lite" } as Record<string, string>)[status?.paidTier?.id] ?? antigravityPlanName(status?.paidTier?.name ?? status?.currentTier?.name))
       return { windows, plan, partial: waiting || windows.filter(w => w.id !== "argon-weekly").length < 4, identity: c.identity }
-    } catch (e) { if (e instanceof LimitsProblem && e.kind === "expired") this.refuse(this.denied, signIn); throw e }
+    } catch (e) { if (e instanceof LimitsProblem && e.kind === "expired" && c) this.refuse(this.denied, antigravityGeneration(c)); throw e }
   }
 }
