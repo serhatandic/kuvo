@@ -111,6 +111,7 @@ export KUVO_TEST_BUN=${KUVO_TEST_BUN:-$own} OPENCODE_TEST_BINARY=${OPENCODE_TEST
 seen() { ls -a "$HOME" "$HOME/.kuvo-code-test" /tmp 2>/dev/null; }
 seen > "$T/before"
 cd "$T/code/box/bridge-tests" || exit 1
+export KUVO_TEST_WRAPPER_PID=$$
 if [ "$runner" = engine ]; then
     # (Bun's runner wants paths that start with ./, and gives each test 5 seconds unless told more.)
     BUN_BE_BUN=1 "$KUVO_TEST_BUN" test --timeout 120000 $(for file in "$@"; do printf './%s ' "$file"; done)

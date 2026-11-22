@@ -7,7 +7,7 @@
 // and `crontab`/`launchctl`.
 //
 // Run with `node --test box/bridge-tests/computers-add.test.js`.
-import "./test-safety.js";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -17,14 +17,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd } from "./at-end.js";
-import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
 // (Short: a shared connection's socket goes under the box's folder on Linux.)
 const base = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
-const { scope, stop } = await watchTestHome(base);
-process.env[PROCESS_SCOPE] = scope;
-atEnd(stop);
+removeTestHomeAtExit(base);
 const home = path.join(base, "here", ".kuvo-code");
 const there = path.join(base, "there");
 const remote = path.join(there, ".kuvo-code");
@@ -231,7 +228,7 @@ for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "
     const keeper = source.toString();
     assert.match(keeper, /^  ctl=\/bin\/launchctl$/m);
     source = keeper.replace(/^  ctl=\/bin\/launchctl$/m, '  ctl="$KUVO_TEST_UNINSTALL_TOOLS/launchctl"')
-      .replace(/^#![^\n]+\n/, `$&export KUVO_TEST_UNINSTALL_TOOLS='${tools}' ${PROCESS_SCOPE}='${scope}'\n`);
+      .replace(/^#![^\n]+\n/, `$&export KUVO_TEST_UNINSTALL_TOOLS='${tools}'\n`);
   }
   write(path.join(root, file), source);
 }

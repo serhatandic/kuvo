@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import { pathToFileURL } from "node:url";
 import { mapAttachmentPaths, visitAttachmentPaths } from "../src/shared/attachment-paths";

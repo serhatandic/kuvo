@@ -24,7 +24,12 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { watchTestProcesses } from "./test-home-processes.js";
 
+const runnerParents = [
+  ...(process.env.NODE_TEST_CONTEXT && process.argv[1] ? [process.ppid] : []),
+  ...(process.env.KUVO_TEST_WRAPPER_PID ? [Number(process.env.KUVO_TEST_WRAPPER_PID)] : []),
+];
 const realHome = process.env.KUVO_TEST_REAL_HOME || process.env.HOME || os.homedir();
 
 // The account's own home folder as the system has it, whatever HOME says (Bun's `os.userInfo()`
@@ -72,6 +77,33 @@ if (kuvoCodes.test(`${givenTemporary}/`)) {
 // a box judges by where it is (a command in your home, or in a scratch folder) comes out as it would.
 const testsRoot = path.join(realHome, ".kuvo-code-test");
 const original = { rmSync: fs.rmSync, rmdirSync: fs.rmdirSync };
+const processRoots = new Map();
+let lifetime;
+function trackRoot(folder, remove = false) {
+  const root = fs.realpathSync(folder);
+  if (processRoots.has(root) && (!remove || processRoots.get(root))) return;
+  processRoots.set(root, remove);
+  lifetime?.addRoot(root, remove);
+}
+
+function processEnv(env) {
+  if (!lifetime) {
+    lifetime = watchTestProcesses(runnerParents);
+    for (const [root, remove] of processRoots) {
+      if (fs.existsSync(root)) lifetime.addRoot(root, remove);
+    }
+  }
+  return lifetime.env(env ?? process.env);
+}
+
+// A fixture with detached workers can keep its home around until all its processes have stopped.
+export function removeTestHomeAtExit(folder) {
+  refuseOutside(folder, "register for removal");
+  trackRoot(folder, true);
+}
+
+export const stopTestProcesses = () => lifetime?.stop();
+
 
 function inTestsRoot(make) {
   // (Another run's last file may be removing that folder, empty by then, between these two.)
@@ -96,6 +128,7 @@ export function testsFolder(prefix) {
   original.rmSync(folder, { recursive: true, force: true });
   inTestsRoot(() => fs.mkdirSync(folder, { mode: 0o700 }));
   own.add(resolved(folder));
+  trackRoot(folder);
   return folder;
 }
 
@@ -127,6 +160,7 @@ function ownHome() {
 const own = new Set();
 const ownRoot = fs.realpathSync(ownHome());
 own.add(ownRoot);
+trackRoot(ownRoot, true);
 process.env.KUVO_TEST_REAL_HOME = realHome;
 process.env.HOME = ownRoot;
 
@@ -436,7 +470,11 @@ const startWith = (program, rest) => {
   const given = at >= 0 ? rest[at].env : undefined;
   const env = childEnv(program, given);
   refuseStart(program, env);
-  if (at >= 0 && env !== given) rest[at] = { ...rest[at], env };
+  const scoped = processEnv(env);
+  if (at >= 0) rest[at] = { ...rest[at], env: scoped };
+  else if (typeof rest[0] === "function") rest.unshift({ env: scoped });
+  else if (Array.isArray(rest[0])) rest[1] = { env: scoped };
+  else rest[0] = { env: scoped };
   return rest;
 };
 for (const name of ["spawn", "spawnSync", "execFile", "execFileSync", "fork"]) {
@@ -456,13 +494,17 @@ const makes = fs.mkdtempSync;
 fs.mkdtempSync = function (...given) {
   const made = makes.apply(this, given);
   own.add(resolved(made));
+  trackRoot(made);
   return made;
 };
 const makesLater = fs.mkdtemp;
 fs.mkdtemp = function (prefix, ...rest) {
   const done = rest.pop();
   return makesLater.call(this, prefix, ...rest, (error, made) => {
-    if (!error) own.add(resolved(made));
+    if (!error) {
+      own.add(resolved(made));
+      trackRoot(made);
+    }
     done(error, made);
   });
 };
@@ -471,6 +513,7 @@ for (const holder of new Set([fs.promises, fsPromises])) {
   holder.mkdtemp = async function (...given) {
     const made = await real.apply(this, given);
     own.add(resolved(made));
+    trackRoot(made);
     return made;
   };
 }
@@ -506,15 +549,17 @@ if (process.versions.bun) {
     const start = Bun[name];
     Bun[name] = (first, options) => {
       const [command, given] = typeof first === "string" || Array.isArray(first) ? [[first].flat(), options?.env] : [first.cmd, first.env];
-      const env = given ? childEnv(command?.[0], given) : process.env;
-      refuseStart(command?.[0], env);
+      const checked = given ? childEnv(command?.[0], given) : process.env;
+      refuseStart(command?.[0], checked);
+      const env = processEnv(checked);
       return typeof first === "string" || Array.isArray(first)
         ? start.call(Bun, first, { ...options, env })
         : start.call(Bun, { ...first, env });
     };
   }
   for (const name of ["child_process", "node:child_process"]) mock.module(name, () => ({ ...named(childProcess), default: childProcess }));
-  Bun.$.env(process.env);
+  // Bun's shell snapshots its environment, so it needs the scope before the first command.
+  Bun.$.env(processEnv(process.env));
 }
 
 // The run's folder goes as it ends, and the folder they're in with the last of them. Exit runs this
@@ -525,6 +570,10 @@ const removeOwn = () => {
   try { original.rmSync(ownRoot, { recursive: true, force: true, maxRetries: 3 }); } catch {}
   try { if (path.dirname(ownRoot) === fs.realpathSync(testsRoot)) original.rmdirSync(testsRoot); } catch {}
 };
+// Normal Node exits wait for cleanup. The detached monitor also handles abrupt exits.
+if (!process.versions.bun) process.once("beforeExit", () => {
+  stopTestProcesses()?.catch(() => { process.exitCode = 1; });
+});
 process.on("exit", removeOwn);
 // A run that reached your real agents fails, whatever its tests made of the refusal.
 process.on("exit", () => {

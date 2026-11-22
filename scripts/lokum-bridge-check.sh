@@ -37,21 +37,6 @@ if [ ! -d "$HOME/.kuvo-code-test" ]; then
     mkdir "$HOME/.kuvo-code-test" && parent_created=1
 fi
 mkdir -m 700 "$T"
-# The processes this run started that are still running, by PID: this shell's descendants (not
-# zombies), but for the subshell asking and what it runs.
-started() {
-    # (Read here: in the pipeline, each side has a BASHPID of its own.)
-    local self=$BASHPID
-    ps -e -o pid=,ppid=,stat= | awk -v root=$$ -v self="$self" '
-        { parent[$1] = $2; state[$1] = $3 }
-        END {
-            for (pid in parent) {
-                if (state[pid] ~ /^Z/) continue
-                for (up = parent[pid]; up != "" && up != 0 && up != 1 && up != self && up != root; up = parent[up]) {}
-                if (up == root && pid != self) print pid
-            }
-        }'
-}
 cleanup() {
     status=$?
     set +e
@@ -60,24 +45,6 @@ cleanup() {
     cd "$real_home"
     ls -A /tmp > "$T/tmp-after"
     ls -A "$real_home" > "$T/home-after"
-    # What this run started and left running (an interrupted test's box), by its PIDs: this shell is
-    # their subreaper, so even what detached from its parent is still among its descendants.
-    # Asked again each time, so a PID is signalled only while it's still one of them, and what one
-    # of them started again meanwhile is stopped too.
-    left=$(started)
-    if [ -n "$left" ]; then
-        echo "Stopping what this run left running:"; ps -o pid=,args= -p "${left//$'\n'/,}" | cut -c1-200
-        for attempt in $(seq 50); do
-            kill -TERM $left 2>/dev/null; sleep 0.1
-            left=$(started); [ -n "$left" ] || break
-        done
-        for attempt in $(seq 20); do
-            left=$(started); [ -n "$left" ] || break
-            kill -KILL $left 2>/dev/null; sleep 0.1
-        done
-        left=$(started)
-        [ -z "$left" ] || echo "Still running after this run: ${left//$'\n'/ }" >&2
-    fi
     # A child finishing its cleanup can race removal; retry only this run's folder.
     for attempt in 1 2 3; do
         rm -rf -- "$T" && break
@@ -109,7 +76,7 @@ done
 # home (the sandbox's tool caches) need HOME to be the account's, as the system has it. A scratch
 # HOME put this scratch's name in every test folder's path, so a long name took the sockets in them
 # past Linux's 108 bytes.
-export TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache
+export TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache KUVO_TEST_WRAPPER_PID=$$
 export BUN_INSTALL_CACHE_DIR=$T/cache/bun npm_config_cache=$T/cache/npm UV_CACHE_DIR=$T/cache/uv
 export BUN_RUNTIME_TRANSPILER_CACHE_PATH=$T/cache/transpiler
 mkdir "$T/bin"
@@ -138,12 +105,7 @@ if [ -n "$pattern" ]; then
 fi
 node --test --test-reporter=tap "$@"
 REMOTE
-# The run's shell is made a child subreaper (Linux's prctl, kept across exec), so what its tests start
-# stays its descendant even once detached, and its cleanup stops exactly those PIDs, never by pattern.
-subreaper='import ctypes, os, sys
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0: sys.exit("Could not track what this run starts (prctl).")
-os.execv("/bin/bash", ["bash", "-c"] + sys.argv[1:])'
-printf -v command 'python3 -I -c %q %q -- %q %q' "$subreaper" "$remote" "$NAME" "$pattern"
+printf -v command 'bash -c %q -- %q %q' "$remote" "$NAME" "$pattern"
 for file in "${files[@]}"; do printf -v quoted ' %q' "$file"; command+=$quoted; done
 # compat.test.js inspects source markers on every side, including Swift and shell code.
 # Send those tracked sources too, without assets, dependency folders or build output.

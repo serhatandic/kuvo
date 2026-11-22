@@ -35,6 +35,7 @@ impl RealBox {
                 command.env_remove(name);
             }
         }
+        command.env("KUVO_TEST_WRAPPER_PID", std::process::id().to_string());
         let mut child = command.spawn().expect("node runs the box's fixture (it must be on the PATH, as for the bridge tests)");
         let mut line = String::new();
         BufReader::new(child.stdout.take().expect("its output")).read_line(&mut line).expect("its first line");

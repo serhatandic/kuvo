@@ -16,7 +16,7 @@
 // `open` start that program for `kickstart` and `open -n`.
 //
 // Run with `node --test box/bridge-tests/helper-handover.test.js`.
-import "./test-safety.js";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -24,14 +24,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd } from "./at-end.js";
-import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 
 const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const AGENT = "run.kuvo.code.machine";
 const mac = process.platform === "darwin";
 const root = mac ? fs.realpathSync(fs.mkdtempSync("/tmp/k")) : null;
-const lifetime = root ? await watchTestHome(root) : null;
-if (lifetime) atEnd(lifetime.stop);
+if (root) removeTestHomeAtExit(root);
 
 const write = (file, text, mode = 0o600) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -130,7 +128,7 @@ exit 0
   write(path.join(tools, "crontab"), "#!/bin/sh\nexit 1\n", 0o755);
   // Its environment: nothing of Kuvo's but the test's own.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KUVO_")));
-  Object.assign(env, { [PROCESS_SCOPE]: lifetime.scope, HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools, KUVO_TEST_CODE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" });
+  Object.assign(env, { HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools, KUVO_TEST_CODE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" });
   return {
     home, K, env,
     /** The helper's build in place: one from before beta.31 (it doesn't renew itself) or since. */
