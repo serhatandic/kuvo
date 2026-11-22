@@ -257,13 +257,13 @@ test.skipIf(!canFence || process.platform !== "linux")("on Linux, a repository w
 // And where a folder can't be made read-only in a command's namespace (each command in a repository
 // then refuses), the box finds so as it checks the sandbox, to say it (`gaps`: `git`), as it does
 // on this machine's own unshare.
-test.skipIf(process.platform !== "linux")("on Linux, the box finds whether a folder can be made read-only in a command's namespace", () => {
+test.skipIf(process.platform !== "linux")("on Linux, the box finds whether a folder can be made read-only in a command's namespace", async () => {
   const unshare = UNSHARE.find(each => existsSync(each))
   const root = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-sandbox-git-ro-")))
   try {
     mkdirSync(join(root, "ns"))
     if (!unshare || !triedNamespace(join(root, "ns"))?.startsWith("/")) return
-    expect([readOnlyHere(unshare, join(root, "ns")), readOnlyHere(unshare, join(root, "none"))]).toEqual([true, false])
+    expect(await Promise.all([readOnlyHere(unshare, join(root, "ns")), readOnlyHere(unshare, join(root, "none"))])).toEqual([true, false])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

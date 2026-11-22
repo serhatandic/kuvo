@@ -47,7 +47,7 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
   if (route === "kuvo/sandbox/check") {
     if (method !== "POST") return yield* json(405, {});
     // (One that can't be set up now, a full disk, say, is as it was: tried again in the box's round.)
-    try { setUpFence(); } catch {}
+    try { await setUpFence(); } catch {}
     return yield* json(200, shown());
   }
   if (route === "kuvo/sandbox") {

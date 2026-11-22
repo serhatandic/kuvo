@@ -123,7 +123,7 @@ function boxOfLength(length: number) {
   const home = join(import.meta.dir, "..", "src", "link", "home.ts")
   const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(root, "home"), KUVO_HOME: kuvo, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
   // (Agents told as once the engine has loaded the sandbox's plugin, which isn't running here.)
-  const setUp = Bun.spawnSync([process.execPath, "-e", `const fs = await import("node:fs"); const fence = await import(${JSON.stringify(box)}); const home = await import(${JSON.stringify(home)}); fence.setUpFence(); fence.tellAgents(true); console.log(JSON.stringify(fs.readFileSync(home.SANDBOX_NOTE, "utf8")))`], { cwd: root, env })
+  const setUp = Bun.spawnSync([process.execPath, "-e", `const fs = await import("node:fs"); const fence = await import(${JSON.stringify(box)}); const home = await import(${JSON.stringify(home)}); await fence.setUpFence(); fence.tellAgents(true); console.log(JSON.stringify(fs.readFileSync(home.SANDBOX_NOTE, "utf8")))`], { cwd: root, env })
   expect(setUp.exitCode, setUp.stderr.toString()).toBe(0)
   const note: string = JSON.parse(setUp.stdout.toString().trim().split("\n").at(-1) ?? '""')
   const run = (project: "one" | "two", script: string) => {

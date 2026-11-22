@@ -36,7 +36,7 @@ import {
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
-import { LOST_FOR, numberWaiting, primaryOf } from "./numbers";
+import { LOST_FOR, numberWaitingLater, primaryOf } from "./numbers";
 import { nameOf, titlesHere } from "./view";
 import { itemElsewhere, itemsElsewhere, type ItemElsewhere } from "./across";
 import { sameSource } from "./sources";
@@ -77,13 +77,14 @@ const sent = new Map<string, { at: number; key: string }>();
 
 // What goes for `item`: it whole (without where it's going), its files' bytes, and the labels it
 // has.
-function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Record<string, unknown> {
+async function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Promise<Record<string, unknown>> {
   const { handing, relations: _local, ...rest } = item;
   if (handing!.released) return { hand: { id: handing!.id, to: handing!.to, release: handing!.released } };
-  const files = item.files.flatMap(file => {
-    const bytes = readAttachment(item.id, file.name);
-    return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
-  });
+  const files: { name: string; data: string }[] = [];
+  for (const file of item.files) {
+    const bytes = await readAttachment(item.id, file.name);
+    if (bytes !== null) files.push({ name: file.name, data: bytes.toString("base64") });
+  }
 
   const has = labels().filter(each => item.labels.includes(each.id));
   return { [evidence ? "evidenceHand" : "hand"]: { ...(evidence ? { evidence } : {}), id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
@@ -183,7 +184,7 @@ async function sendCurrentHandings(host: Pick<LinkHost, "send">, link: LinkState
     if (!peer || awaySince(peer.key) !== null) continue;
     const evidence = hand.released ? undefined : packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE)) continue;
-    const mails = mailsFor(peer, handPayload(item, evidence), link, now);
+    const mails = mailsFor(peer, await handPayload(item, evidence), link, now);
     if (!mails) {
       await giveBack([item.handing!.id], "it's too big to send", now);
       continue;
@@ -426,7 +427,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
         await writeDurablePrivateLater(path.join(filesOf(item.id), file.name), file.bytes);
     }
     // (One that came without a number takes one here, as one added here would.)
-    if (item.number === undefined) numberWaiting(book, primary, null);
+    if (item.number === undefined) await numberWaitingLater(book, primary, null);
     const own = link && ownKey(link);
     if (checkpointed && own) noteMovedAway([item.id], own, now, { arrived: true, queue: owner });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });

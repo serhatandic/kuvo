@@ -1,7 +1,7 @@
 import { linkSession, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner } from "./ops";
 import { references } from "./relations";
 import { isClosed } from "./statuses";
-import { allItems, changeQueues, matching, type Who } from "./store";
+import { allItems, changeQueuesLater, matching, type Who } from "./store";
 import { refOf, visibleItem } from "./view";
 
 /** An explicit item takes precedence over the first Work Queue reference in the task. */
@@ -14,10 +14,10 @@ export function startItem(args: Record<string, unknown>): string | number | unde
 }
 
 /** Link before the new session sees its task. */
-export function linkStartedItem(given: unknown, starter: Who, session: string): void {
+export async function linkStartedItem(given: unknown, starter: Who, session: string): Promise<void> {
   const ref = refOf(given);
   if (!ref || !matching(allItems(), ref).some(item => !item.removed && !isClosed(item.status))) return;
-  changeQueues(book => {
+  await changeQueuesLater(book => {
     const item = matching(book.items(), ref).find(each => visibleItem(each, { owner: "all" }));
     if (!item || isClosed(item.status)) return;
     try {

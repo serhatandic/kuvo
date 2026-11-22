@@ -416,7 +416,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (sought && "refuse" in sought) return yield* json(503, sought.refuse);
       far = sought?.far ?? null;
     }
-    let file = far ? null : fileOf(ref, name);
+    let file = far ? null : await fileOf(ref, name);
     if (far) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id, action: "file", name }, signal);
       if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
@@ -472,7 +472,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   const attaching = Array.isArray(given.files) && given.files.length > 0;
   if (attaching && !takesForwarded(far.computer.key, ATTACHMENTS)) return yield* json(409, { message: `${far.computer.name} needs an update before it can keep attached files. Update it and try again.`, computer: far.computer });
   let files: unknown;
-  try { files = attaching ? carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
+  try { files = attaching ? await carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
     if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }

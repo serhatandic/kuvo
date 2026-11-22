@@ -675,7 +675,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   }
   const id = making.prompt.id;
   try {
-    if (starter && by) linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
+    if (starter && by) await linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
     await promptMade(making, target, session);
   } catch (error) {
     went(session, true);

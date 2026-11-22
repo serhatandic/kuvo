@@ -1,5 +1,8 @@
 import "./safety";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import { addHere } from "../src/link/work-queue/acts";
 import { once } from "node:events";
 import { processRuns } from "../src/shared/platform";
 import { keepList, listPlaceHeard } from "../src/link/lists/sessions";
@@ -64,5 +67,62 @@ test("the resident HTTP box delivers from kept routes to the engine and each cod
     bridge.stop(true);
     child.kill();
     await child.exited;
+  }
+});
+
+test("resident HTTP answers while a Work Queue attachment waits on disk", async () => {
+  const dispatcher = createBoxDispatcher({
+    readEngine: () => { throw new Error("No engine in this fixture"); },
+    readBridge: () => { throw new Error("No bridge in this fixture"); },
+  });
+  const box = serveBox("test", dispatcher.entry({ info: { name: "attachment fixture" } }));
+  box.listen(0, "127.0.0.1");
+  await once(box, "listening");
+  const address = box.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const ask = () => fetch(`http://127.0.0.1:${address.port}/kuvo/info`, {
+    headers: { authorization: "Basic " + Buffer.from("opencode:test").toString("base64"), "x-kuvo-from": "app" },
+  });
+  const slowName = "slow-fixture.png";
+  const entered = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const link = fs.promises.link;
+  const linkSync = fs.linkSync;
+  const slow = spyOn(fs.promises, "link").mockImplementation(async (from, to) => {
+    if (String(to).endsWith("/" + slowName)) {
+      entered.resolve(performance.now());
+      await release.promise;
+    }
+    return link(from, to);
+  });
+  const oldSlow = spyOn(fs, "linkSync").mockImplementation((from, to) => {
+    if (String(to).endsWith("/" + slowName)) {
+      entered.resolve(performance.now());
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+    return linkSync(from, to);
+  });
+  let writing: ReturnType<typeof addHere> | undefined;
+  try {
+    const warm = await ask();
+    await warm.arrayBuffer();
+    writing = addHere({ title: "Slow attachment", files: [{ name: slowName, uri: "data:image/png;base64,YWJj" }] }, false, randomUUID());
+    const started = await Promise.race([entered.promise, writing.then(() => { throw new Error("The attachment never reached the disk hook"); })]);
+    const response = await ask();
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+    const elapsed = performance.now() - started;
+    console.log(`Resident HTTP during attachment write: ${elapsed.toFixed(1)} ms`);
+    expect(elapsed).toBeLessThan(100);
+    release.resolve();
+    expect((await writing).status).toBe(200);
+  } finally {
+    release.resolve();
+    try { await writing; } finally {
+      oldSlow.mockRestore();
+      slow.mockRestore();
+      box.closeAllConnections();
+      box.close();
+    }
   }
 });

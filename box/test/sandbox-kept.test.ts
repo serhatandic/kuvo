@@ -30,7 +30,7 @@ function inBox(steps: string): Record<string, unknown> {
       const path = await import("node:path");
       const fence = await import(${JSON.stringify(box)});
       const rounds = [];
-      fence.keepFence(each => rounds.push(each));
+      await fence.keepFence(each => rounds.push(each));
       const round = rounds[0];
       const folder = fence.fenceFiles.folder;
       const said = {};
@@ -54,7 +54,7 @@ test.skipIf(!canFence)("the engine's plugin, gone, is back on the box's next rou
     for (const name of ["0ld0ld00", "n0wn0wn0"]) fs.mkdirSync(path.join(temporary, name), { recursive: true });
     const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     fs.utimesSync(path.join(temporary, "0ld0ld00"), old, old);
-    round();
+    await round();
     said.back = fs.existsSync(plugin);
     said.kept = fs.readdirSync(temporary).sort();
     fs.rmSync(temporary, { recursive: true, force: true });`)
@@ -68,7 +68,7 @@ test.skipIf(!canFence)("a box updated to keep commands' temporary folders in `t`
   const said = inBox(`
     fs.mkdirSync(path.join(folder, "tmp", "n0wn0wn0", "build"), { recursive: true });
     fs.writeFileSync(path.join(folder, "temporary"), path.join(folder, "tmp") + "\\n" + "0".repeat(64) + "\\n");
-    fence.setUpFence();
+    await fence.setUpFence();
     said.now = path.relative(folder, fs.readFileSync(path.join(folder, "temporary"), "utf8").split("\\n")[0]) !== "tmp";
     said.kept = fs.readdirSync(path.join(folder, "tmp", "n0wn0wn0"));`)
   expect(said).toEqual({ now: true, kept: ["build"] })
@@ -90,13 +90,13 @@ test.skipIf(!canFence || !namespaces)("commands get a namespace of their own on 
     const ownNamespace = () => spawnSync(fence.fenceFiles.launcher, ["-c", "readlink /proc/self/ns/user"], { cwd: work, encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, KUVO_FENCE_WORK: work } }).stdout.trim() !== fs.readlinkSync("/proc/self/ns/user");
     // A try that found none while commands have theirs (as one that fails only because the machine
     // is busy): the check goes through it, finds it still works, and it's kept.
-    fence.setUpFence(null);
+    await fence.setUpFence(null);
     said.kept = ownNamespace();
     // Set up without one (the machine didn't let them have one then).
     fs.writeFileSync(path.join(folder, "namespace"), "-");
-    fence.setUpFence(null);
+    await fence.setUpFence(null);
     said.atFirst = ownNamespace();
-    for (let each = 0; each < 5; each++) round();
+    for (let each = 0; each < 5; each++) await round();
     said.before = ownNamespace();
     // The sixth round's check runs while the box goes on: its answer, once it's set up again.
     await round();

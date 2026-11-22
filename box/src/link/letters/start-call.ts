@@ -360,7 +360,7 @@ export async function startToolSession(given: StartGiven, by: Starter, place: St
         if (!kept.marked) kept.marked = await markMade(making, target, session);
         if (!kept.prompted) {
           if (!await messageReached(target, session, making.prompt.id)) {
-            linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
+            await linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
             await promptMade(making, target, session);
           }
           kept.prompted = true;
@@ -412,7 +412,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     if (!journal.prompted) {
       try {
         if (!(await (journal.id.startsWith("cal_tool_") ? messageReached(target, session, making.prompt.id) : toldAlready(target, making, session)))) {
-          linkStartedItem(journal.given.item, { session: journal.from, name: journal.name }, session);
+          await linkStartedItem(journal.given.item, { session: journal.from, name: journal.name }, session);
           await promptMade(making, target, session);
         }
       } catch (error) {

@@ -123,7 +123,7 @@ test("a typed note returns the same stable mention and offsets as its backlink",
 
 test("a saved attachment read rejects symlink replacements for the file and the item folder", async () => {
   const id = await add("Attachment containment", { files: [png("photo.png", "legitimate")] });
-  expect(fileOf({ id }, "photo.png")?.bytes.toString()).toBe("legitimate");
+  expect((await fileOf({ id }, "photo.png"))?.bytes.toString()).toBe("legitimate");
   const outside = fs.mkdtempSync(path.join(WORK_QUEUE, "outside-attachments-"));
   const file = path.join(outside, "photo.png");
   fs.writeFileSync(file, "outside");
@@ -131,11 +131,11 @@ test("a saved attachment read rejects symlink replacements for the file and the 
     const saved = path.join(filesOf(id), "photo.png");
     fs.unlinkSync(saved);
     fs.symlinkSync(file, saved);
-    expect(fileOf({ id }, "photo.png")).toBeNull();
+    expect(await fileOf({ id }, "photo.png")).toBeNull();
     fs.unlinkSync(saved);
     fs.rmdirSync(filesOf(id));
     fs.symlinkSync(outside, filesOf(id), "dir");
-    expect(fileOf({ id }, "photo.png")).toBeNull();
+    expect(await fileOf({ id }, "photo.png")).toBeNull();
   } finally {
     fs.rmSync(filesOf(id), { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
@@ -151,7 +151,7 @@ test("case collisions and names occupied on disk keep both anchors on their own 
   const saved = find(id);
   expect(saved.files.map(file => file.name)).toEqual(["Photo.png", "photo 3.png"]);
   expect(fs.readFileSync(occupied, "utf8")).toBe("already there");
-  const byAnchor = new Map(saved.files.map(file => [file.anchor, fileOf({ id }, file.name)?.bytes.toString()]));
+  const byAnchor = new Map(await Promise.all(saved.files.map(async file => [file.anchor, (await fileOf({ id }, file.name))?.bytes.toString()] as const)));
   expect([...saved.body.matchAll(/kuvo-attachment:file\/([a-f0-9]+)/g)].map(match => byAnchor.get(match[1]))).toEqual(["first", "second"]);
 });
 
@@ -169,7 +169,7 @@ test("removing a picture marker preserves the latest description and other attac
   expect(removed.value).toMatchObject({ inlineImagesApplied: true });
   expect((await patch(id, request)).status).toBe(200);
   expect((await read(id)).body).toBe(`The bot edited the text. Earlier  / ![b.png](kuvo-attachment:file/${second.anchor})\n\n${code}`);
-  expect(fileOf({ id }, second.name)?.bytes.toString()).toBe("b");
+  expect((await fileOf({ id }, second.name))?.bytes.toString()).toBe("b");
 });
 
 test("soft deletion hides a manual link at both ends and purging prunes its stored edge", async () => {

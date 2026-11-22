@@ -9,7 +9,7 @@ import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { writeLink, type LinkState } from "../src/link/state";
 import { changeNumbers, giveBlock, NUMBERS_FILE, readNumbers, takeNumber } from "../src/link/work-queue/numbers";
 
-import { changeQueues } from "../src/link/work-queue/store";
+import { changeQueues, changeQueuesLater } from "../src/link/work-queue/store";
 import { addItem } from "../src/link/work-queue/ops";
 import { actHere } from "../src/link/work-queue/acts";
 
@@ -108,11 +108,11 @@ test("a missing primary lease blocks a new grant while an already granted number
 test("offline creation spends the final local lease and leaves the next item usable by id", async () => {
   setupLedger(100, 100, false);
   const owner = "ses_WaitingNumberTest";
-  const make = (title: string) => changeQueues(book => addItem(book, owner, { title },
+  const make = (title: string) => changeQueuesLater(book => addItem(book, owner, { title },
     { who: { user: true }, now: Date.now(), fileOps: [] }, self));
   changeNumbers(kept => { kept.leases = [[99, 99]]; });
-  const last = make("Final leased number");
-  const waiting = make("Works before numbering");
+  const last = await make("Final leased number");
+  const waiting = await make("Works before numbering");
   expect(last.number).toBe(99);
   expect(waiting.number).toBeUndefined();
   expect(readNumbers()).toMatchObject({ leases: [], asking: { id: expect.any(String) } });

@@ -655,19 +655,18 @@ export async function worktreesWhere(directory: unknown, engine: Target | null, 
   if (engine?.port) {
     try {
       for (const known of (await call(engine, "GET", "/api/project", undefined, signal)) as ({ id?: unknown; canonical?: unknown; vcs?: unknown } | null)[]) {
-        if (typeof known?.id === "string" && typeof known?.canonical === "string") ids.set(realOr(known.canonical), known.vcs === "git" && known.id !== "global" ? known.id : null);
+        if (typeof known?.id === "string" && typeof known?.canonical === "string") ids.set(await realOr(known.canonical), known.vcs === "git" && known.id !== "global" ? known.id : null);
       }
     } catch {}
   }
   for (const project of projects) {
-    if (!fs.existsSync(project)) continue;
     // The repository's own checkout (of a worktree, or of a folder in it, its main one), which
     // the engine resolves a relative folder from. (Without --path-format, which older git lacks.)
     const common = await gitLater(project, ["rev-parse", "--git-common-dir"]);
     if (!common) continue;
     const gitFolder = path.resolve(project, common);
     if (path.basename(gitFolder) !== ".git") continue;
-    const checkout = realOr(path.dirname(gitFolder));
+    const checkout = await realOr(path.dirname(gitFolder));
     // One the engine doesn't take for a repository has no worktrees: a repository with no commit
     // yet is its "global" project (asked of git when the engine hasn't said).
     const id = ids.get(checkout);
@@ -677,8 +676,8 @@ export async function worktreesWhere(directory: unknown, engine: Target | null, 
       : value.startsWith("~/") ? path.join(answer.home, value.slice(2)) : path.resolve(checkout, value);
     const entry: WhereProject = { project, name: path.basename(project), folder };
     if (folder) {
-      entry.exists = (() => { try { return fs.statSync(folder).isDirectory(); } catch { return false; } })();
-      if (!entry.exists) entry.canMake = canMake(folder);
+      entry.exists = await fs.promises.stat(folder).then(stat => stat.isDirectory(), () => false);
+      if (!entry.exists) entry.canMake = await canMake(folder);
       if (inside(folder, checkout)) {
         entry.inside = true;
         // What's in it, as git sees a worktree there: ignored, or a new folder in the checkout.
@@ -689,6 +688,33 @@ export async function worktreesWhere(directory: unknown, engine: Target | null, 
   }
   apart(answer.projects, answer.home);
   return answer;
+}
+
+// Settings can ask again while painting or refreshing the page. Keep the last complete preview
+// for that set of projects and directory, with one shared refresh for each input.
+type WherePreview = { answer?: WorktreesWhere; at: number; reading?: Promise<WorktreesWhere> };
+const wherePreviews = new Map<string, WherePreview>();
+function whereForSettings(directory: string | null, engine: Target | null, signal?: AbortSignal): Promise<WorktreesWhere> | WorktreesWhere {
+  const projects = readProjects().filter(each => !each.removed).map(each => each.directory);
+  if (!keepsList()) return worktreesWhere(directory, engine, signal, projects);
+  const key = JSON.stringify([directory, engine?.port ?? null, projects]);
+  const preview = wherePreviews.get(key) ?? { at: 0 };
+  if (!wherePreviews.has(key)) {
+    if (wherePreviews.size >= 16) wherePreviews.delete(wherePreviews.keys().next().value!);
+    wherePreviews.set(key, preview);
+  }
+  if (!preview.reading && (!preview.answer || Date.now() - preview.at >= 5_000)) {
+    preview.reading = worktreesWhere(directory, engine, AbortSignal.timeout(2_000), projects)
+      .then(answer => {
+        preview.answer = answer;
+        preview.at = Date.now();
+        return answer;
+      })
+      .finally(() => { preview.reading = undefined; });
+    // The latest complete preview remains available during a refresh.
+    void preview.reading.catch(() => {});
+  }
+  return preview.answer ?? preview.reading!;
 }
 
 /** Projects that share a name, told apart by the folders they're in, as few as it takes:
@@ -715,16 +741,16 @@ function apart(projects: WhereProject[], home: string): void {
 }
 
 /** A folder through any links in its path, as the engine names a checkout; as it is when it isn't there. */
-function realOr(folder: string): string {
-  try { return fs.realpathSync(folder); } catch { return folder; }
+function realOr(folder: string): Promise<string> {
+  return fs.promises.realpath(folder).catch(() => folder);
 }
 
 /** Whether `folder` can be made: the nearest folder of it that's there is one you can write in. */
-function canMake(folder: string): boolean {
+async function canMake(folder: string): Promise<boolean> {
   for (let at = path.dirname(folder); ; at = path.dirname(at)) {
     try {
-      if (!fs.statSync(at).isDirectory()) return false;
-      fs.accessSync(at, fs.constants.W_OK);
+      if (!(await fs.promises.stat(at)).isDirectory()) return false;
+      await fs.promises.access(at, fs.constants.W_OK);
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT" || at === path.dirname(at)) return false;
@@ -752,7 +778,7 @@ export async function* worktreesRoute(context: RouteContext): AsyncGenerator<Ans
   try { engine = readEngine(); } catch {}
   if (route === "kuvo/worktrees/where") {
     if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-    return yield* json(200, await worktreesWhere(new URLSearchParams(request.path.split("?")[1] ?? "").get("directory"), engine, signal));
+    return yield* json(200, await whereForSettings(new URLSearchParams(request.path.split("?")[1] ?? "").get("directory"), engine, signal));
   }
   const { status, value } = await answerWorktrees(request.method.toUpperCase(), request.path, parsed(request.body) as WorktreesBody | null | undefined, engine, signal);
   return yield* json(status, value);

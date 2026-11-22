@@ -9,7 +9,7 @@
 // (`keepsAwake` in `box/work.json`, on unless you turn it off), where its app's keeper did by the
 // app's. Its `kuvo-start` holds nothing for it while it does (`box/kind`, `WORK_AWAKE_FILE`).
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { alive } from "../../shared/platform";
@@ -58,19 +58,20 @@ let gone: ChildProcess | null = null;
 
 // What `onPower` last found, for half a minute: a card's checks are read at every change.
 let power: { at: number; on: boolean | null } | null = null;
+let checkingPower = false;
 
 /** Whether this Mac runs on power now (null on a machine, or when it can't tell). */
 export function onPower(): boolean | null {
   if (!keepsAwake()) return null;
-  if (power && Date.now() - power.at < 30_000) return power.on;
-  let on: boolean | null = null;
-  try {
-    const said = execFileSync("/usr/bin/pmset", ["-g", "batt"], { encoding: "utf8", timeout: 5000 });
-    if (/AC Power/.test(said)) on = true;
-    else if (/Battery Power/.test(said)) on = false;
-  } catch {}
-  power = { at: Date.now(), on };
-  return on;
+  if (!checkingPower && (!power || Date.now() - power.at >= 30_000)) {
+    checkingPower = true;
+    execFile("/usr/bin/pmset", ["-g", "batt"], { encoding: "utf8", timeout: 5_000 }, (error, said) => {
+      const on = error ? null : /AC Power/.test(said) ? true : /Battery Power/.test(said) ? false : null;
+      power = { at: Date.now(), on };
+      checkingPower = false;
+    });
+  }
+  return power?.on ?? null;
 }
 
 /** Whether this box keeps its Mac awake while agents work, by its own setting: a Mac's in a home of

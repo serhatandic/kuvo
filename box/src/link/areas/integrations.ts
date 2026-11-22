@@ -13,7 +13,8 @@ import { locked } from "../files";
 import { CONFIG_LOCK, INTEGRATION_DATA, IS_MAC, K, OWN_HOME_MAC, OWN_RUNTIME, SCRIPT } from "../home";
 import { answeringOnce } from "../once";
 import { KeysUnavailable, siteSignIns } from "../host-interface";
-import { siteSignInsHere, type SignInCookie } from "../browser/sites";
+import type { SignInCookie } from "../browser/sites";
+import { browserDisk } from "../server/disk-worker";
 import { deleteKey, keyNames, keyWork, STORED_KEY, writeKey } from "../keys";
 import type { AnswerPiece, JSONAnswer, RouteContext } from "../server/context";
 import { updateOnTrial } from "../updates/update";
@@ -253,7 +254,7 @@ async function integrationEntries(catalog: CatalogIntegration[], engine: EngineR
   // Whether the browser is signed in to the sites used there: this Mac's app's panel says for a
   // Mac's box (its agents browse there); every other box's own browser, from its cookies.
   const onSite = catalog.filter(entry => entry.way === "browser");
-  const sites = !onSite.length ? null : IS_MAC ? await siteSignIns() : await siteSignInsHere(onSite).catch(() => null);
+  const sites = !onSite.length ? null : IS_MAC ? await siteSignIns() : await browserDisk.run("siteSignInsHere", onSite).catch(() => null);
   const entries = catalog.map(({ settings: _, variables, signInFile, signInCookie: __, ...entry }) => {
     const added = valueAt(settings ?? {}, [...SERVERS, entry.id]) !== undefined;
     const shown: Integration = { ...entry, added };

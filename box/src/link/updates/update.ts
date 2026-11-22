@@ -1,3 +1,4 @@
+import { releaseDisk } from "../server/disk-worker";
 import { additiveObjectFormat } from "../../shared/format-version";
 import { readVersionedFile } from "../../shared/versioned-file";
 import { boxFilesFormat, installedFormat, readInstalled } from "../../shared/release-formats";
@@ -888,7 +889,7 @@ export async function* boxUpdateRoute({ request, json }: RouteContext): AsyncGen
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code offers Kuvo on this computer a release." });
   const given = parsed(request.body);
-  const kept = receiveRelease(isObject(given) ? given.from : undefined);
+  const kept = await releaseDisk.run("receiveRelease", isObject(given) ? given.from : undefined);
   if (kept.status !== 202) return yield* json(kept.status, { message: kept.message });
   return yield* json(202, updateStatus());
 }

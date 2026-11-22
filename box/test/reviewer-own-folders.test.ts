@@ -83,7 +83,7 @@ async function inBox(sessions: Record<string, string>, steps: string): Promise<{
       const engine = { port: ${engine.port}, password: "pw" };
       fs.mkdirSync(path.dirname(home.ENGINE_FILE), { recursive: true });
       fs.writeFileSync(home.ENGINE_FILE, JSON.stringify({ pid: process.pid, port: engine.port, password: "pw", version: "test" }));
-      const state = fence.setUpFence();
+      const state = await fence.setUpFence();
       if (!state.on && !fs.existsSync(path.join(fence.fenceFiles.folder, "ready"))) throw new Error("The sandbox didn't set up: " + JSON.stringify(state));
       const run = (command, folder) => spawnSync(fence.fenceFiles.launcher, ["-c", command], { cwd: folder, encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, KUVO_FENCE_WORK: folder } });
       let asked = 0;

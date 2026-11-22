@@ -9,7 +9,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inline } from "../server/attached";
-import { syncDurableFile } from "../../shared/files";
+import { syncDurableFileLater } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { accountHome, APP_FOLDER, BOTS, homeFolder, K, OWN_HOME_MAC } from "../home";
@@ -17,7 +17,7 @@ import { APP_TEMPORARY_PATTERN } from "../fence/policy";
 import { labelNamed, MOST_LABELS_EACH } from "./labels";
 import { isClosed, priorityNamed, PRIORITIES, statusName, statusNamed, STATUSES } from "./statuses";
 import { assigneeFor } from "./assignees";
-import { takeNumber, type Primary } from "./numbers";
+import { takeNumberLater, type Primary } from "./numbers";
 import {
   changeQueues, dayOf, FILE_NAME, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
   type Book, type Item, type ItemEvent, type KeptFile, type Source, type Who,
@@ -42,10 +42,12 @@ const refuse = (words: string): never => { throw new Refusal(words); };
 const STAGING = path.join(path.dirname(FILES), "staging");
 
 /** What's left in the staging folder by a box that stopped midway: gone, once it's an hour old. */
-export function clearStaging(now = Date.now()): void {
-  for (const name of (() => { try { return fs.readdirSync(STAGING); } catch { return []; } })()) {
+export async function clearStaging(now = Date.now()): Promise<void> {
+  const entries = await fs.promises.readdir(STAGING).catch(() => []);
+  for (const name of entries) {
     try {
-      if (now - fs.statSync(path.join(STAGING, name)).mtimeMs > 3_600_000) fs.rmSync(path.join(STAGING, name), { recursive: true, force: true });
+      const staged = path.join(STAGING, name);
+      if (now - (await fs.promises.stat(staged)).mtimeMs > 3_600_000) await fs.promises.rm(staged, { recursive: true, force: true });
     } catch {}
   }
 }
@@ -83,19 +85,17 @@ export function refuseHanding(item: Item): void {
  * and the temporary folders; never Kuvo Code's own (but for its own folder there, a bot's). */
 export interface FilePlaces { own: string | null; others: readonly string[] }
 
-const real = (place: string): string | null => {
-  try { return fs.realpathSync(place); } catch { return null; }
-};
+const real = (place: string): Promise<string | null> => fs.promises.realpath(place).catch(() => null);
 const within = (file: string, folder: string) => file === folder || file.startsWith(folder.endsWith(path.sep) ? folder : folder + path.sep);
 
 /** Whether `file` (where it really is) is in this Mac's app's folders, for a Mac's box in a home of its
  * own, whose home isn't in them: any copy's, in your Library (`~/Library/<Application Support,
  * Caches…>/run.kuvo.code…`) or its temporary folder (`/private/var/folders/…/run.kuvo.code…`), as the
  * sandbox keeps them (fence/policy.ts, `kuvoPatterns`). */
-function inMacApp(file: string): boolean {
+async function inMacApp(file: string): Promise<boolean> {
   if (!OWN_HOME_MAC || process.platform !== "darwin") return false;
   if (new RegExp(APP_TEMPORARY_PATTERN, "i").test(file)) return true;
-  return [...new Set([homeFolder(), accountHome()].map(each => real(each) ?? each))]
+  return [...new Set(await Promise.all([homeFolder(), accountHome()].map(async each => await real(each) ?? each)))]
     .some(home => within(file, path.join(home, "Library")) && /^run\.kuvo\.code/i.test(path.relative(path.join(home, "Library"), file).split(path.sep)[1] ?? ""));
 }
 
@@ -103,65 +103,68 @@ function inMacApp(file: string): boolean {
  * is (links followed) to be a plain file of a size the queue keeps, in one of `places`, with no
  * hidden folder or file on the way; then opened without following a link or waiting on it, and
  * kept only if what was opened is that same file, with no other name (a hard link elsewhere). */
-export function stageFile(given: string, places: FilePlaces, staging: string): Staged {
+export async function stageFile(given: string, places: FilePlaces, staging: string): Promise<Staged> {
   if (!path.isAbsolute(given)) refuse(`Give ${given} as a full path.`);
-  const file = real(given) ?? refuse(`There's no file at ${given}.`);
-  const own = places.own ? real(places.own) : null;
-  const roots = [own, ...places.others.map(real), real(os.tmpdir()), real("/tmp")].filter((each): each is string => Boolean(each));
+  const file = await real(given) ?? refuse(`There's no file at ${given}.`);
+  const own = places.own ? await real(places.own) : null;
+  const roots = (await Promise.all([own, ...places.others.map(real), real(os.tmpdir()), real("/tmp")])).filter((each): each is string => Boolean(each));
   const root = roots.find(each => within(file, each));
   // Kuvo Code's own folders (on a Mac, the app's around its box's): never, unless the conversation's
   // own folder is itself in them (a bot's, a chat's), and then only what's in that folder. A project
   // that holds them (one at the home folder) doesn't make them its own.
-  const boxes = [real(K), real(BOTS), APP_FOLDER ? real(APP_FOLDER) : null].filter((each): each is string => Boolean(each));
+  const boxes = (await Promise.all([real(K), real(BOTS), APP_FOLDER ? real(APP_FOLDER) : null])).filter((each): each is string => Boolean(each));
   const ownOK = own !== null && root === own && boxes.some(box => within(own, box));
-  if (!root || (!ownOK && (boxes.some(box => within(file, box)) || inMacApp(file)))) refuse(`${given} isn't in this conversation's folder, its project or a temporary folder: only files from there are kept with an item.`);
+  if (!root || (!ownOK && (boxes.some(box => within(file, box)) || await inMacApp(file)))) refuse(`${given} isn't in this conversation's folder, its project or a temporary folder: only files from there are kept with an item.`);
   if (path.relative(root!, file).split(path.sep).some(part => part.startsWith("."))) refuse(`${given} is hidden (a name starting with a dot): it isn't kept with an item.`);
-  const checked = fs.lstatSync(file);
+  const checked = await fs.promises.lstat(file);
   if (!checked.isFile()) refuse(`${given} isn't a file.`);
   if (checked.size > MOST_FILE) refuse(`${given} is over ${Math.round(MOST_FILE / 1_000_000)} MB: too big to keep with an item.`);
-  let handle: number;
+  let handle: fs.promises.FileHandle;
   try {
-    handle = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   } catch {
     return refuse(`${given} can't be read.`);
   }
   try {
-    const opened = fs.fstatSync(handle);
+    const opened = await handle.stat();
     // (And still where it was found: a folder on the way swapped for a link meanwhile is said.)
-    if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino || real(given) !== file) refuse(`${given} changed as it was read: try again.`);
+    if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino || await real(given) !== file) refuse(`${given} changed as it was read: try again.`);
     if (opened.nlink !== 1) refuse(`${given} has other names (a hard link): it isn't kept with an item.`);
     const size = Math.min(opened.size, MOST_FILE);
     const bytes = Buffer.alloc(size);
     let read = 0;
     while (read < size) {
-      const got = fs.readSync(handle, bytes, read, size - read, read);
+      const { bytesRead: got } = await handle.read(bytes, read, size - read, read);
       if (!got) break;
       read += got;
     }
-    fs.mkdirSync(staging, { recursive: true, mode: 0o700 });
+    await fs.promises.mkdir(staging, { recursive: true, mode: 0o700 });
     const staged = path.join(staging, `${crypto.randomBytes(8).toString("hex")}`);
-    fs.writeFileSync(staged, bytes.subarray(0, read), { mode: 0o600 });
+    await fs.promises.writeFile(staged, bytes.subarray(0, read), { mode: 0o600 });
     return { staged, name: path.basename(file), size: read };
   } finally {
-    fs.closeSync(handle);
+    await handle.close();
   }
 }
 
 /** A file read for an item, waiting in the staging folder until the change that keeps it. */
 export interface Staged { id?: string; staged: string; name: string; size: number; clientIndex?: number }
+export interface StagedFiles { staged: Staged[]; clear: () => Promise<void> }
 
 /** The files an agent named, read before the queue's lock is taken: what was read, and a way to
  * clear what's left of it. */
-export function stageFiles(given: unknown, places: FilePlaces | null): { staged: Staged[]; clear: () => void } {
+export async function stageFiles(given: unknown, places: FilePlaces | null): Promise<StagedFiles> {
   const named = given === undefined ? [] : (Array.isArray(given) ? given : [given]).map(each => (typeof each === "string" ? each.trim() : "")).filter(Boolean);
   if (named.length && !places) refuse("Only an agent's own files are kept with an item.");
   if (named.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
   const staging = path.join(STAGING, crypto.randomBytes(8).toString("hex"));
-  const clear = () => fs.rmSync(staging, { recursive: true, force: true });
+  const clear = () => fs.promises.rm(staging, { recursive: true, force: true });
   try {
-    return { staged: named.map(each => stageFile(each, places!, staging)), clear };
+    const staged: Staged[] = [];
+    for (const each of named) staged.push(await stageFile(each, places!, staging));
+    return { staged, clear };
   } catch (error) {
-    clear();
+    await clear();
     throw error;
   }
 }
@@ -170,7 +173,7 @@ export function stageFiles(given: unknown, places: FilePlaces | null): { staged:
  * local `file://` URL is read only for Kuvo Code's app on this same computer (`local`): from a
  * phone, another computer or a forwarded act it's refused, so nothing can read this computer's
  * files through an item. */
-function clientFile(entry: unknown, local: boolean): { bytes: Buffer; name: string } {
+async function clientFile(entry: unknown, local: boolean): Promise<{ bytes: Buffer; name: string }> {
   if (!isObject(entry) || typeof entry.uri !== "string") return refuse("A file needs its carried URI.");
   let name = typeof entry.name === "string" ? entry.name : "";
   const carried = inline(entry);
@@ -179,42 +182,50 @@ function clientFile(entry: unknown, local: boolean): { bytes: Buffer; name: stri
     return { bytes: carried.bytes, name: name || `attachment${Object.entries(TYPES).find(([, mime]) => mime === carried.mime)?.[0] ?? ".bin"}` };
   }
   if (!local || !entry.uri.startsWith("file://")) return refuse("Send the file's contents with it.");
-  let handle: number;
+  let handle: fs.promises.FileHandle;
   try {
-    handle = fs.openSync(fileURLToPath(entry.uri), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    handle = await fs.promises.open(fileURLToPath(entry.uri), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   } catch {
     return refuse("That attached file can't be read: attach it again.");
   }
   try {
-    const opened = fs.fstatSync(handle);
+    const opened = await handle.stat();
     if (!opened.isFile()) refuse("That attached file isn't a file.");
     if (opened.size > MOST_FILE) refuse(`A file is over ${Math.round(MOST_FILE / 1_000_000)} MB: too big to keep with an item.`);
-    return { bytes: fs.readFileSync(handle), name: name || path.basename(fileURLToPath(entry.uri)) };
+    const bytes = Buffer.alloc(opened.size);
+    let read = 0;
+    while (read < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, read, bytes.length - read, read);
+      if (!bytesRead) break;
+      read += bytesRead;
+    }
+    return { bytes: bytes.subarray(0, read), name: name || path.basename(fileURLToPath(entry.uri)) };
   } finally {
-    fs.closeSync(handle);
+    await handle.close();
   }
 }
 
 /** The files a client attached to an item it adds or changes (`files`), read into `staging` before
  * the queue's lock is taken, as an agent's are (`stageFiles`); the change keeps them with the item. */
-export function stageClientFiles(given: unknown, local: boolean): { staged: Staged[]; clear: () => void } {
-  if (given === undefined) return { staged: [], clear: () => {} };
+export async function stageClientFiles(given: unknown, local: boolean): Promise<StagedFiles> {
+  if (given === undefined) return { staged: [], clear: async () => {} };
   if (!Array.isArray(given)) return refuse("Send files as a list.");
   if (given.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
   const folder = path.join(STAGING, crypto.randomBytes(8).toString("hex"));
-  const clear = () => fs.rmSync(folder, { recursive: true, force: true });
+  const clear = () => fs.promises.rm(folder, { recursive: true, force: true });
   try {
-    const staged = given.map((entry, index) => {
-      const { bytes, name: named } = clientFile(entry, local);
+    const staged: Staged[] = [];
+    for (const [index, entry] of given.entries()) {
+      const { bytes, name: named } = await clientFile(entry, local);
       const name = shortName(path.basename(named.replace(/\\/g, "/")));
       if (!FILE_NAME.test(name)) refuse("That file needs a name.");
-      fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
-      const staged = path.join(folder, String(index));
-      fs.writeFileSync(staged, bytes, { mode: 0o600 });
-      return { staged, name, size: bytes.length, clientIndex: index };
-    });
+      await fs.promises.mkdir(folder, { recursive: true, mode: 0o700 });
+      const file = path.join(folder, String(index));
+      await fs.promises.writeFile(file, bytes, { mode: 0o600 });
+      staged.push({ staged: file, name, size: bytes.length, clientIndex: index });
+    }
     return { staged, clear };
-  } catch (error) { clear(); throw error; }
+  } catch (error) { await clear(); throw error; }
 }
 
 /** Files more than can go to another computer at once (413). */
@@ -223,17 +234,19 @@ export class TooBig extends Refusal {}
 /** What a client attached, for another computer's box (`there`, by name): a local file's bytes
  * carried with it (only Kuvo Code's app here may name one, `local`), as the other box never reads
  * a path it's sent; `most` bytes in all, as much as goes between boxes at once. */
-export function carriedFiles(given: unknown, local: boolean, there: string, most: number): unknown {
+export async function carriedFiles(given: unknown, local: boolean, there: string, most: number): Promise<unknown> {
   if (!Array.isArray(given)) return given;
   if (given.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
   let total = 0;
-  return given.map(entry => {
+  const files: unknown[] = [];
+  for (const entry of given) {
     const carried = isObject(entry) && typeof entry.uri === "string" ? inline(entry) : null;
-    const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : clientFile(entry, local);
+    const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : await clientFile(entry, local);
     total += bytes.length;
     if (total > most) throw new TooBig(`These files are too big to send to ${there} with one change (${most / 1_000_000} MB in all at most). Attach fewer or smaller files.`);
-    return carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
-  });
+    files.push(carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name });
+  }
+  return files;
 }
 
 const TYPES: Record<string, string> = {
@@ -426,11 +439,11 @@ export interface Fields {
 
 /** Who acts, when, the files it read for the change (`stageFiles`), and what's to be done on disk
  * once the change is sure (`applyFileOps`). */
-export interface Acting { who: Who; now: number; staged?: Staged[]; fileOps: (() => void)[] }
+export interface Acting { who: Who; now: number; staged?: Staged[]; fileOps: (() => Promise<void>)[] }
 
 /** What a change does on disk, done once nothing more can refuse it. */
-export function applyFileOps(acting: Acting): void {
-  for (const op of acting.fileOps.splice(0)) op();
+export async function applyFileOps(acting: Acting): Promise<void> {
+  for (const op of acting.fileOps.splice(0)) await op();
 }
 
 // (An issue or a pull request closed on GitHub is Done, whatever status it's kept with.)
@@ -438,7 +451,7 @@ const openIn = (book: Book, owner: string) => book.queue(owner).items.filter(ite
 
 /** A new item in `owner`'s queue: numbered now if there's a number to give, else once one comes;
  * an outside source's (`source`, an issue or a pull request) never. */
-export function addItem(book: Book, owner: string, fields: Fields, acting: Acting, primary: Primary, source?: Source, id = newItemID()): Item {
+export async function addItem(book: Book, owner: string, fields: Fields, acting: Acting, primary: Primary, source?: Source, id = newItemID()): Promise<Item> {
   const title = plainName(text(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
   if (!title) refuse("Say what it is (title), in a line.");
   if (openIn(book, owner) >= MOST_ITEMS) refuse(`Your queue has ${MOST_ITEMS} open items already: mark some done or remove them first.`);
@@ -467,7 +480,7 @@ export function addItem(book: Book, owner: string, fields: Fields, acting: Actin
   changeItem(book, item, { ...fields, title: undefined, status: undefined, top: undefined }, acting, { added: true });
   // (An outside source's item is named by its ref, never numbered.)
   if (item.source) return item;
-  const number = takeNumber(primary);
+  const number = await takeNumberLater(primary);
   if (number !== null) item.number = number;
   return item;
 }
@@ -603,7 +616,7 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
   if (left.length + staged.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most: take some away first (remove).`);
   const removed = item.files.filter(file => gone.has(file.name));
   item.files = left;
-  if (staged.length || removed.length) acting.fileOps.push(() => {
+  if (staged.length || removed.length) acting.fileOps.push(async () => {
     const folder = filesOf(item.id);
     const reserved: string[] = [];
     const anchors = new Map<number, KeptFile>();
@@ -613,7 +626,7 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
       for (const each of staged) {
         const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
         const ext = path.extname(base);
-        fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+        await fs.promises.mkdir(folder, { recursive: true, mode: 0o700 });
         let kept = false;
         for (let n = 1; n <= 1_000; n++) {
           const name = n === 1 ? base : `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
@@ -622,18 +635,18 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
           try {
             // Staging lives under the same queue directory. Linking either takes the name or
             // fails without overwriting even on a case-insensitive volume.
-            fs.linkSync(each.staged, destination);
+            await fs.promises.link(each.staged, destination);
             reserved.push(name);
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") return refuse("The attachment couldn’t be saved. Check the available space and try again.");
             // A previous crash may have landed these bytes before the queue file. Reuse the
             // unlisted file when it has the same contents. Listed files were skipped above.
-            if (!each.id || !fs.lstatSync(destination).isFile() || !fs.readFileSync(destination).equals(fs.readFileSync(each.staged))) continue;
+            if (!each.id || !(await fs.promises.lstat(destination)).isFile() || !(await fs.promises.readFile(destination)).equals(await fs.promises.readFile(each.staged))) continue;
           }
-          if (each.id) syncDurableFile(destination, path.dirname(FILES));
+          if (each.id) await syncDurableFileLater(destination, path.dirname(FILES));
           used.add(fold(name));
           const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
-          const file: KeptFile = { ...(each.id ? { id: each.id } : {}), name, size: each.size, sha256: crypto.createHash("sha256").update(fs.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
+          const file: KeptFile = { ...(each.id ? { id: each.id } : {}), name, size: each.size, sha256: crypto.createHash("sha256").update(await fs.promises.readFile(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
           if (each.clientIndex !== undefined) anchors.set(each.clientIndex, file);
           item.files.push(file);
           kept = true;
@@ -650,10 +663,10 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
         }), MOST_BODY, "The description (body)");
       }
     } catch (error) {
-      for (const name of reserved) fs.rmSync(path.join(folder, name), { force: true });
+      for (const name of reserved) await fs.promises.rm(path.join(folder, name), { force: true });
       throw error;
     }
-    for (const file of removed) fs.rmSync(path.join(folder, file.name), { force: true });
+    for (const file of removed) await fs.promises.rm(path.join(folder, file.name), { force: true });
   });
   item.updated = { at: now, by: who };
 }

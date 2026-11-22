@@ -536,7 +536,7 @@ async function run(owner?: ClientOwner): Promise<void> {
   keepEngineDefaults();
   // Agents' commands, in the sandbox wherever it can run (fence/state.ts), set up before the vault
   // goes by it.
-  keepFence();
+  await keepFence();
   // Conversations' approval kept to what it comes to as the sandbox starts or stops.
   keepApprovals();
   // What its group chats go by, worked out here and given to the bridge that runs them.
@@ -1192,7 +1192,7 @@ async function serve(owner?: ClientOwner): Promise<void> {
   // this server too, there before it says where it is (holdVault, below, makes it too).
   try { socketKey(); } catch {}
   fenceOwnPort(port);
-  keepFence();
+  await keepFence();
   keepApprovals();
   keepGroupSettings();
   keepEngineDefaults();

@@ -12,6 +12,10 @@ import type { restoreProjects } from "../backup/projects";
 import type { restoreEngineDatabase } from "../backup/session-files";
 import type { mergeInsightsDatabase, prepareEngineBootstrap } from "../backup/sqlite";
 import type { scanSourceGeneration } from "../setup/removal-generation";
+import type { browserSites, removeSiteData, siteSignInsHere } from "../browser/sites";
+import type { sweepWakeFolders } from "../fence/state";
+import type { allocateNumbers } from "../work-queue/numbers";
+import type { receiveRelease } from "../updates/update";
 import type { readPermissionSettings } from "../permissions";
 
 type Operations = {
@@ -37,6 +41,12 @@ type Operations = {
   readPermissionSettings: typeof readPermissionSettings;
   mergeInsightsDatabase: typeof mergeInsightsDatabase;
   prepareEngineBootstrap: typeof prepareEngineBootstrap;
+  receiveRelease: typeof receiveRelease;
+  allocateNumbers: typeof allocateNumbers;
+  browserSites: typeof browserSites;
+  removeSiteData: typeof removeSiteData;
+  siteSignInsHere: typeof siteSignInsHere;
+  sweepWakeFolders: typeof sweepWakeFolders;
 };
 type Operation = keyof Operations;
 type Request = { [Key in Operation]: { id: number; operation: Key; args: Parameters<Operations[Key]> } }[Operation];
@@ -80,6 +90,12 @@ if (isDiskWorker) {
         case "restoreEngineDatabase": value = await (await import("../backup/session-files")).restoreEngineDatabase(...args); break;
         case "mergeInsightsDatabase": value = (await import("../backup/sqlite")).mergeInsightsDatabase(...args); break;
         case "prepareEngineBootstrap": value = (await import("../backup/sqlite")).prepareEngineBootstrap(...args); break;
+        case "browserSites": value = await (await import("../browser/sites")).browserSites(...args); break;
+        case "removeSiteData": value = await (await import("../browser/sites")).removeSiteData(...args); break;
+        case "siteSignInsHere": value = await (await import("../browser/sites")).siteSignInsHere(...args); break;
+        case "sweepWakeFolders": value = (await import("../fence/state")).sweepWakeFolders(...args); break;
+        case "allocateNumbers": value = (await import("../work-queue/numbers")).allocateNumbers(...args); break;
+        case "receiveRelease": value = (await import("../updates/update")).receiveRelease(...args); break;
         case "readPermissionSettings": value = (await import("../permissions")).readPermissionSettings(...args); break;
       }
       port.postMessage({ id, value } satisfies Reply);
@@ -137,3 +153,7 @@ export const permissionDisk = new DiskWorker();
 export const removalDisk = new DiskWorker();
 export const folderDisk = new DiskWorker();
 export const settingsDisk = new DiskWorker();
+export const releaseDisk = new DiskWorker();
+export const numberDisk = new DiskWorker();
+export const browserDisk = new DiskWorker();
+export const wakeDisk = new DiskWorker();
