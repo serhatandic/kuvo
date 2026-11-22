@@ -17,7 +17,8 @@ import type { Target } from "../../shared/records";
 import type { SessionAutopilot } from "../../shared/routes/autopilot";
 import { call } from "../engine/client";
 import type { EngineSession } from "../engine/sessions";
-import { isRefused, placeOfSessionPatiently } from "../letters/letter";
+import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
+import { messageReached } from "../engine/queue";
 import { targetsOf } from "../letters/tools";
 import { answering, BUSY, collected, sentOnce } from "../server/sent-once";
 import { askGoal } from "../work/goals";
@@ -329,12 +330,27 @@ export async function* draftRoute(context: RouteContext, match: RegExpMatchArray
       throw error;
     }
   }, admit, uncertain, scoped && { setup, session, id: scoped.submission, origin: scoped.origin,
-    submittedThrough: from ?? own!, submitter, draft: given }, scoped ? draftKey(setup, session, given.id) : undefined)
+    submittedThrough: from ?? own!, submitter, draft: given }, scoped ? draftKey(setup, session, given.id) : undefined,
+    undefined, scoped ? undefined : () => orphanedDraft(context, session, given))
     .catch(() => ({ ...uncertain(), notAdmitted: undefined }));
   const acceptedAt = "acceptedAt" in outcome && typeof outcome.acceptedAt === "number" ? outcome.acceptedAt : undefined;
   const value = isObject(outcome.value) && typeof outcome.value.message === "string" && outcome.status === 200 && acceptedAt
     ? { ...outcome.value, acceptedAt } : outcome.value;
   return yield* (queuedRefusal(outcome.notAdmitted ? outcome : null, json) ?? json(outcome.status, value));
+}
+
+/** A plain message whose send an earlier link left unanswered (it stopped partway: an update, a
+ * restart), asked again under its id: sent, where it reached its conversation (its answer as
+ * then); sent now, where nothing of it did (the agent takes one id once). What was typed for the
+ * box ("/", "!") isn't looked for: it stays for you to check. */
+async function orphanedDraft(context: RouteContext, session: string, given: Record<string, unknown>): Promise<{ status: number; value: unknown } | "again" | null> {
+  const text = given.text as string;
+  if (/^\s*[/!]/.test(text)) return null;
+  const place = await placeOfSession(session, targetsOf(context)).catch(() => null);
+  if (!place) return null;
+  return await messageReached(place.target, session, given.id as string)
+    ? { status: 200, value: { answer: { send: { text } }, message: given.id } }
+    : "again";
 }
 
 async function finishDraft(context: RouteContext, session: string, place: { target: Target; data: Partial<EngineSession> }, onAgents: boolean,
