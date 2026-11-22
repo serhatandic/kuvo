@@ -11,6 +11,7 @@ import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { changeShared, sharedValue, type Receipt } from "../setup/shared";
 import { followedSetup, usesAcceptedSaves } from "../setup/record";
 import { readLink, type LinkState } from "../state";
+import { primaryOf } from "./numbers";
 import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
 
@@ -44,12 +45,8 @@ const removedIds = (given: unknown): string[] => Array.isArray(given)
   ? given.filter((id): id is string => typeof id === "string" && LABEL_ID.test(id)) : [];
 const labelSetup = (): string | null => followedSetup(readLink())?.id ?? null;
 
-// Whether this box numbers from another computer now (its primary): told by what knows (across.ts),
-// as this file is loaded before it. While it does, that computer's labels are changed there.
-let follows: () => boolean = () => true;
-export function followsBy(says: () => boolean): void {
-  follows = says;
-}
+// This computer follows another primary's labels while it numbers from that primary.
+const follows = () => !("self" in primaryOf());
 
 function readKept(setup = labelSetup()): Kept {
   try {

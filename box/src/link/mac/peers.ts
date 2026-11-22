@@ -99,7 +99,7 @@ export function runMacPeers(): void {
       noteSetupNow();
       // The Work Queue's ask for more numbers, to the primary (when that isn't this Mac's box); and
       // its queue told to your other computers as it changes, with what it's handing to theirs.
-      try { pushNumbers(host); } catch {}
+      void pushNumbers(host).catch(() => {});
       if (host?.welcomed) pushQueues(host, readLink(), peerTargets()).catch(() => {});
       else try { handUpkeepSoon(readLink()); } catch {}
       // (Once: what was being worked on when the Work Queue's items moved over to statuses.)

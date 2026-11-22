@@ -1,3 +1,4 @@
+import { backlogDisk } from "../server/disk-worker";
 import { mayActivate } from "../ownership/resolve";
 import { submitterAuthority } from "../ownership/authority";
 import { forwardGrant } from "../work-queue/forward-grant";
@@ -25,7 +26,7 @@ import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
 import { previewLabelRestore } from "../work-queue/label-preview";
 import { frozen } from "../moves/records";
-import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
+import { importItems, importWords } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
 import { carriedFiles, Refusal, refuseMoving, TooBig } from "../work-queue/ops";
@@ -329,10 +330,10 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     } catch (error) {
       return yield* json(409, { message: (error as Error).message });
     }
-    const read = readBacklogFiles(given.files);
+    const read = await backlogDisk.run("readBacklogFiles", given.files);
     if ("refused" in read) return yield* json(400, { message: read.refused });
-    const { items, skipped } = parseBacklog(read.texts);
-    let outcome: ReturnType<typeof importItems>;
+    const { items, skipped } = read;
+    let outcome: Awaited<ReturnType<typeof importItems>>;
     try {
       outcome = await changeQueuesLater(book => importItems(book, owner, items, YOU, primaryOf()));
     } catch (error) {

@@ -347,17 +347,6 @@ export async function callQueueTool(name: unknown, args: Record<string, unknown>
   }
 }
 
-// A change to the queues, then what waits for a number numbered (once nothing can refuse it, so
-// a refused change takes none).
-const change = <T>(work: (book: Book) => T): Promise<T> => {
-  const primary = primaryOf();
-  return changeQueuesLater(async book => {
-    const done = work(book);
-    await numberWaitingLater(book, primary, null);
-    return done;
-  });
-};
-
 /** Compare editable fields without storing a copy of large bodies or attachments in each event. */
 function editFields(item: Item): Record<string, string | undefined> {
   const { title, body, priority, labels, assignee, due, progress, source, files, links, sessions } = item;
@@ -527,7 +516,8 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = await change(book => {
+      const outcome = await changeQueuesLater(book => {
+        refuseMoving([caller.owner]);
         refuseQueueOwner(caller.owner);
         return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
       });

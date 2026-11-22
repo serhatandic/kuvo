@@ -660,7 +660,7 @@ async function run(owner?: ClientOwner): Promise<void> {
       lastSetup = stamp;
       report("setup position", position);
     }
-    try { pushNumbers(current); } catch {}
+    void pushNumbers(current).catch(() => {});
     if (current?.welcomed) pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else try { handUpkeepSoon(readLink()); } catch {}
     // (Once: what was being worked on when the Work Queue's items moved over to statuses.)

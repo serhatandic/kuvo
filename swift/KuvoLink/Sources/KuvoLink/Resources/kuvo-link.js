@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 b1b2358cf956
+// Kuvo folder layout 23 30b1c33d0a54
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1839,7 +1839,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b1b2358cf956";
+var BRIDGE_VERSION = "30b1c33d0a54";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -15745,6 +15745,18 @@ var init_view2 = __esm(() => {
 });
 
 // box/src/link/browser/history.ts
+var exports_history = {};
+__export(exports_history, {
+  BROWSER_FOLDER: () => BROWSER_FOLDER,
+  foldHistory: () => foldHistory,
+  forgetHistory: () => forgetHistory,
+  iconOf: () => iconOf,
+  isIconName: () => isIconName,
+  keepIcon: () => keepIcon2,
+  limited: () => limited,
+  mergeHistory: () => mergeHistory,
+  readHistory: () => readHistory
+});
 import fs57 from "node:fs";
 import path56 from "node:path";
 function siteKey(address) {
@@ -16344,11 +16356,11 @@ async function* browserDataRoute(context, match) {
     return yield* json(400, { message: "Name the site as its address has it." });
   if (list === "history") {
     if (method === "GET" && which === null)
-      return yield* json(200, readHistory());
+      return yield* json(200());
     if (method !== "DELETE")
       return yield* json(405, {});
-    forgetHistory(which);
-    return yield* json(200, readHistory());
+    await browserDisk.run("forgetHistory", which);
+    return yield* json(200());
   }
   if (method === "GET" && which === null)
     return yield* json(200, await browserDisk.run("browserSites"));
@@ -33382,9 +33394,6 @@ function labelOf(given) {
   const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
   return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
 }
-function followsBy(says) {
-  follows2 = says;
-}
 function readKept5(setup = labelSetup()) {
   try {
     const value = JSON.parse(textOf(LABELS_FILE2) ?? "null");
@@ -33658,7 +33667,7 @@ function takePrimaryLabels(given, used, strip, { key, at, previousAt, complete }
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
-var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, removedIds = (given) => Array.isArray(given) ? given.filter((id) => typeof id === "string" && LABEL_ID.test(id)) : [], labelSetup = () => followedSetup(readLink())?.id ?? null, follows2 = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept5().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change2 = (work) => {
+var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, removedIds = (given) => Array.isArray(given) ? given.filter((id) => typeof id === "string" && LABEL_ID.test(id)) : [], labelSetup = () => followedSetup(readLink())?.id ?? null, follows2 = () => !("self" in primaryOf()), labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept5().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change2 = (work) => {
   try {
     migratedToChange();
   } catch (error) {
@@ -33693,6 +33702,7 @@ var init_labels = __esm(() => {
   init_shared();
   init_record();
   init_state();
+  init_numbers();
   init_migrate();
   init_store2();
   LABELS_FILE2 = path85.join(WORK_QUEUE2, "labels.json");
@@ -41058,6 +41068,20 @@ var init_ops = __esm(() => {
 });
 
 // box/src/link/work-queue/moves.ts
+var exports_moves = {};
+__export(exports_moves, {
+  carryWorkQueue: () => carryWorkQueue,
+  checkMoveQueueFiles: () => checkMoveQueueFiles,
+  clearQueuePlacement: () => clearQueuePlacement,
+  filesSize: () => filesSize,
+  forgetWorkQueues: () => forgetWorkQueues,
+  packQueuesForMove: () => packQueuesForMove,
+  packWorkQueues: () => packWorkQueues,
+  placeMoveWorkQueues: () => placeMoveWorkQueues,
+  placeWorkQueues: () => placeWorkQueues,
+  stageFiles: () => stageFiles2,
+  verifyQueuePayloads: () => verifyQueuePayloads
+});
 import fs109 from "node:fs";
 import path108 from "node:path";
 function clearQueuePlacement(payloads, move, rolledBack) {
@@ -41087,6 +41111,18 @@ function packWorkQueues(owners) {
   fs109.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
   migratedToChange();
   return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
+}
+function packQueuesForMove(owners) {
+  try {
+    return { queues: packWorkQueues(owners) };
+  } catch (error) {
+    if (error instanceof Refusal)
+      return { refused: error.message };
+    throw error;
+  }
+}
+function checkMoveQueueFiles(owners) {
+  return unavailableQueuePayloads(packWorkQueues(owners));
 }
 function collectWorkQueues(owners) {
   const wanted = new Set(owners);
@@ -41235,6 +41271,20 @@ function placeWorkQueues(carried, owners, opened, requireProof = false, journal)
   }, undefined, { durable: true });
   return payloads;
 }
+function placeMoveWorkQueues(id, carried, owners, opened, requireProof, sessions) {
+  if (carried === undefined)
+    return;
+  placeWorkQueues(carried, owners, opened, requireProof, {
+    id,
+    beforePlacement: (queue, placement) => {
+      if (!changeMove(id, (each) => {
+        each.payloads = { sessions, queue };
+        each.queuePlacement = placement;
+      }))
+        throw new Error("The move journal is unavailable.");
+    }
+  });
+}
 function forgetWorkQueues(owners) {
   const gone = new Set(owners);
   changeQueues((book) => {
@@ -41277,6 +41327,7 @@ function carryWorkQueue(from, to) {
 var QUEUE_MOVE_MARKER = ".kuvo-move-import", filesSize = (carried) => (carried?.items ?? []).reduce((sum, item) => sum + item.files.reduce((bytes, file) => bytes + file.size, 0), 0);
 var init_moves = __esm(() => {
   init_files();
+  init_records2();
   init_payload();
   init_work_queue_file();
   init_store();
@@ -48578,9 +48629,11 @@ async function carryOn(id) {
         throw new Refused(`${record.name}’s conversation couldn’t be read. Restart Kuvo on this computer and try again.`);
       throw error;
     });
-    const workQueue = packWorkQueues([record.thing]);
-    if (workQueue)
-      contents.workQueue = workQueue;
+    const packed = await queueMoveDisk.run("packQueuesForMove", [record.thing]);
+    if (packed.refused !== undefined)
+      throw new Refusal(packed.refused);
+    if (packed.queues)
+      contents.workQueue = packed.queues;
     const members = isObject(contents.group?.group) && Array.isArray(contents.group.group.members) ? contents.group.group.members : [];
     record.members = members.filter((member) => typeof member === "string");
   } else {
@@ -48646,9 +48699,11 @@ async function carryOn(id) {
     contents.sessionNotes = await packSessionNotes(record.sessions);
     if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
       throw new Refused("Update the destination computer before moving these ordinary session notes.");
-    const workQueue = packWorkQueues(record.sessions);
-    if (workQueue)
-      contents.workQueue = workQueue;
+    const packed = await queueMoveDisk.run("packQueuesForMove", record.sessions);
+    if (packed.refused !== undefined)
+      throw new Refusal(packed.refused);
+    if (packed.queues)
+      contents.workQueue = packed.queues;
     if (record.folder)
       contents.folder = path135.basename(record.folder);
     if (record.kind === "bot") {
@@ -48815,7 +48870,7 @@ async function arrived(record, placed) {
   if (payloads) {
     try {
       verifySourceSessionPayloads(payloads.sessions);
-      verifyQueuePayloads(payloads.queue);
+      await queueMoveDisk.run("verifyQueuePayloads", payloads.queue);
     } catch (error) {
       throw new Refused(error instanceof Error ? error.message : "The source files changed during the move.");
     }
@@ -48864,7 +48919,8 @@ async function finish(id, verifiedPayloads = false) {
     noteMovedAway([...new Set([record.thing, ...record.sessions])], record.to);
     if (record.kind === "group") {
       await groupAction(readBridgeFile(), record.thing, "release");
-      forgetWorkQueues([record.thing]);
+      await queueMoveDisk.run("forgetWorkQueues", [record.thing]);
+      noteQueuesChanged();
     } else {
       const engine = record.lane ? readBridgeFile() : readEngineFile();
       const place = record.folder ?? path135.join(K, `moved-${record.thing}`);
@@ -48886,7 +48942,8 @@ async function finish(id, verifiedPayloads = false) {
       }
       for (const session of record.sessions)
         forgetQueue(session);
-      forgetWorkQueues(record.sessions);
+      await queueMoveDisk.run("forgetWorkQueues", record.sessions);
+      noteQueuesChanged();
       await forgetSessionNotes(record.sessions);
       const trash = await toTrash(place);
       noteLeft2({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {} });
@@ -49233,13 +49290,10 @@ async function bringIn(record, signal) {
     changeMove(record.id, (each) => {
       each.payloads = { sessions: [], queue: [] };
     });
-    placeWorkQueues(contents.workQueue, [record.thing], opened, record.verifyPayloads, {
-      id: record.id,
-      beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
-        each.payloads = { sessions: [], queue };
-        each.queuePlacement = placement;
-      })
-    });
+    if (contents.workQueue !== undefined) {
+      await queueMoveDisk.run("placeMoveWorkQueues", record.id, contents.workQueue, [record.thing], opened, record.verifyPayloads, []);
+      noteQueuesChanged();
+    }
     if (evidence)
       placeForwardEvidence(evidence);
     return [];
@@ -49357,13 +49411,10 @@ async function bringIn(record, signal) {
     }
   }
   keepDecided(contents.decided, sessions);
-  placeWorkQueues(contents.workQueue, sessions, opened, record.verifyPayloads, {
-    id: record.id,
-    beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
-      each.payloads = { sessions: payloads, queue };
-      each.queuePlacement = placement;
-    })
-  });
+  if (contents.workQueue !== undefined) {
+    await queueMoveDisk.run("placeMoveWorkQueues", record.id, contents.workQueue, sessions, opened, record.verifyPayloads, payloads);
+    noteQueuesChanged();
+  }
   for (const info of infos) {
     if (isAutopilot(info))
       await tellAutopilot(engine, info.id, true, signal).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
@@ -49519,7 +49570,7 @@ async function completeActivation(id) {
       throw new Error("The move’s file inventory is unavailable.");
     if (record.payloads) {
       verifySessionPayloads(record.payloads.sessions);
-      verifyQueuePayloads(record.payloads.queue);
+      await queueMoveDisk.run("verifyQueuePayloads", record.payloads.queue);
     }
     const pending = changeMove(id, (each) => {
       each.sentAt = Date.now();
@@ -49535,7 +49586,7 @@ async function completeActivation(id) {
     noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record), record.verifyPayloads ? record.payloads : undefined);
   }
   if (record.payloads)
-    clearQueuePlacement(record.payloads.queue, id);
+    await queueMoveDisk.run("clearQueuePlacement", record.payloads.queue, id);
   forgetMove(id);
   if (record.kind === "bot")
     noteBotsChanged();
@@ -49579,8 +49630,10 @@ async function clearCopy(record) {
   incoming.delete(record.id);
   if (record.payloads) {
     removeSessionPayloads(record.payloads.sessions);
-    if (record.queuePlacement)
-      clearQueuePlacement(record.payloads.queue, record.id, record.queuePlacement);
+    if (record.queuePlacement) {
+      await queueMoveDisk.run("clearQueuePlacement", record.payloads.queue, record.id, record.queuePlacement);
+      noteQueuesChanged();
+    }
   }
   if (record.kind === "group") {
     if (record.importingGroup) {
@@ -49590,8 +49643,10 @@ async function clearCopy(record) {
       if (existing.status !== 404)
         throw new Error("The group copy has no import ownership receipt");
     }
-    if (record.placed && !record.payloads)
-      forgetWorkQueues([record.thing]);
+    if (record.placed && !record.payloads) {
+      await queueMoveDisk.run("forgetWorkQueues", [record.thing]);
+      noteQueuesChanged();
+    }
   } else {
     const created = new Set(record.createdSessions);
     if (record.lane) {
@@ -49619,8 +49674,10 @@ async function clearCopy(record) {
       forgetQueue(session);
     }
     await forgetSessionNotes(record.sessions, importReceipt(record));
-    if (created.size && !record.payloads)
-      forgetWorkQueues([...created]);
+    if (created.size && !record.payloads) {
+      await queueMoveDisk.run("forgetWorkQueues", [...created]);
+      noteQueuesChanged();
+    }
     const place = folderOf3(record.kind, record.thing);
     if (place && record.placed && moveHold(pausedText(place)) === record.id)
       await toTrash(place);
@@ -49737,7 +49794,7 @@ async function moveMail(sender, given, id) {
         try {
           if (mine.payloads) {
             verifySessionPayloads(mine.payloads.sessions);
-            verifyQueuePayloads(mine.payloads.queue);
+            await queueMoveDisk.run("verifyQueuePayloads", mine.payloads.queue);
           }
         } catch {
           return void failed();
@@ -50210,9 +50267,9 @@ var init_move = __esm(() => {
   init_autopilot2();
   init_chats();
   init_bundle();
+  init_disk_worker();
   init_store2();
   init_session_files();
-  init_moves();
   init_carry();
   init_elsewhere2();
   init_own_keys();
@@ -50419,7 +50476,7 @@ async function removalPlan(projects, moveTo, scopedDestination, verifiedSessions
       }
     }
     try {
-      const unavailable = unavailableQueuePayloads(packWorkQueues(item.kind === "group" ? [item.id] : family));
+      const unavailable = await queueMoveDisk.run("checkMoveQueueFiles", item.kind === "group" ? [item.id] : family);
       if (unavailable.length) {
         files.push(...unavailable.map((name) => ({ item: item.id, name, status: "unavailable" })));
         unresolved.push(item.id);
@@ -50487,6 +50544,7 @@ async function removalPlan(projects, moveTo, scopedDestination, verifiedSessions
 }
 var stays;
 var init_removal_plan = __esm(() => {
+  init_disk_worker();
   init_groups();
   init_engine2();
   init_projects3();
@@ -50507,7 +50565,6 @@ var init_removal_plan = __esm(() => {
   init_resolve();
   init_known();
   init_state();
-  init_moves();
   init_tree();
   init_store2();
   stays = ["unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault"];
@@ -56484,9 +56541,7 @@ function runMacPeers() {
         } catch {}
       }
       noteSetupNow();
-      try {
-        pushNumbers(host);
-      } catch {}
+      pushNumbers(host).catch(() => {});
       if (host?.welcomed)
         pushQueues(host, readLink(), peerTargets()).catch(() => {});
       else
@@ -59014,6 +59069,14 @@ var init_told = __esm(() => {
 });
 
 // box/src/link/work-queue/import.ts
+var exports_import = {};
+__export(exports_import, {
+  givenItems: () => givenItems,
+  importItems: () => importItems,
+  importWords: () => importWords,
+  parseBacklog: () => parseBacklog,
+  readBacklogFiles: () => readBacklogFiles
+});
 import fs156 from "node:fs";
 function titleOf(text) {
   const plain = plainName(text.replace(/\*\*/g, "").replace(/`/g, ""));
@@ -59124,7 +59187,7 @@ function readBacklogFiles(files) {
       return { refused: `${file} can't be read.` };
     }
   }
-  return { texts };
+  return parseBacklog(texts);
 }
 function givenItems(given) {
   if (!Array.isArray(given) || !given.length)
@@ -59157,7 +59220,7 @@ function givenItems(given) {
   }
   return { items, skipped };
 }
-function importItems(book, owner, items, who, primary, now = Date.now()) {
+async function importItems(book, owner, items, who, primary, now = Date.now()) {
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   const holders = new Map;
   const hold = (n, item) => holders.set(n, [...holders.get(n) ?? [], item]);
@@ -59231,8 +59294,8 @@ function importItems(book, owner, items, who, primary, now = Date.now()) {
   }
   const restores = back.map(({ item }) => item.wanted);
   const claimed = [...made.map((item) => item.wanted), ...restores];
-  const { granted } = claimNumbers(primary, claimed, { restores });
-  numberWaiting(book, primary, granted ? { granted, claimed: rangesOf2(claimed) } : null, { now });
+  const { granted } = await numberDisk.run("claimNumbers", primary, claimed, { restores });
+  await numberWaitingLater(book, primary, granted ? { granted, claimed: rangesOf2(claimed) } : null, { now });
   outcome.waiting = made.filter((item) => item.number === undefined).length;
   const refused = made.filter((item) => item.importedAs !== undefined).map((item) => ({ from: item.importedAs, item }));
   outcome.renumbered = [...fresh, ...refused].sort((a, b) => a.from - b.from).map(({ from, item }) => item.number !== undefined ? `#${from} is #${item.number}` : `#${from} waits for a new number`);
@@ -59274,6 +59337,7 @@ var init_import = __esm(() => {
   init_text();
   init_labels();
   init_statuses();
+  init_disk_worker();
   init_numbers();
   init_told();
   init_store2();
@@ -59605,7 +59669,8 @@ async function run4(name, args, caller, targets, signal, operation) {
       if ("refused" in given)
         return refused6(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = await change4((book) => {
+      const outcome = await changeQueuesLater((book) => {
+        refuseMoving([caller.owner]);
         refuseQueueOwner(caller.owner);
         return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
       });
@@ -59849,14 +59914,7 @@ var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
-  const primary = primaryOf();
-  return changeQueuesLater(async (book) => {
-    const done = work(book);
-    await numberWaitingLater(book, primary, null);
-    return done;
-  });
-}, seenWords = (state) => ({ open: "open", draft: "a draft", completed: "closed", not_planned: "closed as not planned", merged: "merged", closed: "closed without merging" })[state] ?? state, peerName = (session) => Object.values(readPeerAgents()).flatMap((told) => told.list ?? []).find((agent) => agent.session === session)?.name ?? null, shownOf = (item) => withSeen({ title: item.title, status: item.status, ...item.source ? { source: item.source } : {}, ...item.doneAt !== undefined ? { doneAt: item.doneAt } : {} }), tagsOf = (item, names) => [
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, seenWords = (state) => ({ open: "open", draft: "a draft", completed: "closed", not_planned: "closed as not planned", merged: "merged", closed: "closed without merging" })[state] ?? state, peerName = (session) => Object.values(readPeerAgents()).flatMap((told) => told.list ?? []).find((agent) => agent.session === session)?.name ?? null, shownOf = (item) => withSeen({ title: item.title, status: item.status, ...item.source ? { source: item.source } : {}, ...item.doneAt !== undefined ? { doneAt: item.doneAt } : {} }), tagsOf = (item, names) => [
   item.priority && item.priority !== "normal" ? priorityName(item.priority) : "",
   ...item.labels.map((each) => names.get(each) ?? "").filter(Boolean).map((each) => `[${each}]`),
   item.assignee ? `for ${item.assignee.name ?? assigneeNamed(item.assignee).name}` : "",
@@ -74760,10 +74818,10 @@ async function* workQueueRoute(context, match) {
     } catch (error) {
       return yield* json(409, { message: error.message });
     }
-    const read = readBacklogFiles(given.files);
+    const read = await backlogDisk.run("readBacklogFiles", given.files);
     if ("refused" in read)
       return yield* json(400, { message: read.refused });
-    const { items, skipped } = parseBacklog(read.texts);
+    const { items, skipped } = read;
     let outcome;
     try {
       outcome = await changeQueuesLater((book) => importItems(book, owner, items, YOU2, primaryOf()));
@@ -74997,6 +75055,7 @@ var WORK_QUEUE_ROUTE, labelRestoreClient = ({ request }) => request.fromHolder =
   ...item.removed ? { removed: true } : {}
 }), answered3 = (answer, json) => json(answer.status, answer.value);
 var init_work_queue2 = __esm(() => {
+  init_disk_worker();
   init_resolve();
   init_authority();
   init_forward_grant();
@@ -83450,7 +83509,7 @@ function tellQueuesAgain(key) {
 function forgetPushed() {
   pushed.clear();
 }
-function takeTold(sender, given, reply) {
+async function takeTold(sender, given, reply) {
   const told = toldOf(given);
   if (!told)
     return;
@@ -83466,7 +83525,7 @@ function takeTold(sender, given, reply) {
     noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
   if ("self" in primary)
-    movePast(Math.max(told.top ?? 0, ...told.items.map((item) => item.number ?? 0)));
+    await numberDisk.run("movePast", Math.max(told.top ?? 0, ...told.items.map((item) => item.number ?? 0)));
   else if (!usesAcceptedSaves(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     let counts = null;
     takePrimaryLabels(told.labels, (id) => {
@@ -83512,9 +83571,9 @@ async function takeWorkQueueMail(sender, given, host, places) {
       } catch {}
   };
   if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote))
-    takeNumbersMail(sender, whole, host);
+    await takeNumbersMail(sender, whole, host);
   if (isObject(whole.told))
-    takeTold(sender, whole.told, reply);
+    await takeTold(sender, whole.told, reply);
   if (isObject(whole.setupCopy))
     await takeSetupCopy(sender.key, whole.setupCopy);
   if (typeof whole.had === "string") {
@@ -83735,6 +83794,7 @@ var QUEUES_FEATURE = "work-queue.elsewhere", takesQueues = (key) => (readPeerAge
   }
 }).join(" "), titles, titlesAt = 0, labelRevision = "", deletedThereFormat, DELETED_THERE, DELETED_LOCK, DELETED_FOR = 86400000, asAway = (item, away) => away === null || !item.sessions.some((each) => each.working) ? item : { ...item, sessions: item.sessions.map((each) => ({ ...each, working: false })) }, newer2 = (a, aAt, b, bAt) => a.updated.at > b.updated.at || a.updated.at === b.updated.at && aAt > bAt;
 var init_across = __esm(() => {
+  init_disk_worker();
   init_format_version();
   init_edits();
   init_messages2();
@@ -83767,7 +83827,6 @@ var init_across = __esm(() => {
   init_files2();
   init_view3();
   init_elsewhere();
-  followsBy(() => !("self" in primaryOf()));
   pushed = new Map;
   titles = new Map;
   deletedThereFormat = additiveObjectFormat("Work Queue remote undo receipts");
@@ -94763,7 +94822,7 @@ class DiskWorker {
     return worker;
   }
 }
-var role = "kuvo-disk-worker", isDiskWorker, backupDisk, permissionDisk, removalDisk, folderDisk, settingsDisk, releaseDisk, numberDisk, browserDisk, wakeDisk;
+var role = "kuvo-disk-worker", isDiskWorker, backupDisk, permissionDisk, removalDisk, folderDisk, settingsDisk, releaseDisk, numberDisk, browserDisk, wakeDisk, backlogDisk, queueMoveDisk, numberUpkeepDisk;
 var init_disk_worker = __esm(() => {
   isDiskWorker = !isMainThread2 && workerData2 === role;
   if (isDiskWorker) {
@@ -94840,6 +94899,12 @@ var init_disk_worker = __esm(() => {
           case "prepareEngineBootstrap":
             value = (await Promise.resolve().then(() => (init_sqlite(), exports_sqlite))).prepareEngineBootstrap(...args);
             break;
+          case "readHistory":
+            value = (await Promise.resolve().then(() => (init_history(), exports_history))).readHistory(...args);
+            break;
+          case "forgetHistory":
+            value = (await Promise.resolve().then(() => (init_history(), exports_history))).forgetHistory(...args);
+            break;
           case "browserSites":
             value = await (await Promise.resolve().then(() => (init_sites(), exports_sites))).browserSites(...args);
             break;
@@ -94851,6 +94916,39 @@ var init_disk_worker = __esm(() => {
             break;
           case "sweepWakeFolders":
             value = (await Promise.resolve().then(() => (init_state3(), exports_state))).sweepWakeFolders(...args);
+            break;
+          case "readBacklogFiles":
+            value = (await Promise.resolve().then(() => (init_import(), exports_import))).readBacklogFiles(...args);
+            break;
+          case "claimNumbers":
+            value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).claimNumbers(...args);
+            break;
+          case "checkMoveQueueFiles":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).checkMoveQueueFiles(...args);
+            break;
+          case "clearQueuePlacement":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).clearQueuePlacement(...args);
+            break;
+          case "forgetWorkQueues":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).forgetWorkQueues(...args);
+            break;
+          case "placeMoveWorkQueues":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).placeMoveWorkQueues(...args);
+            break;
+          case "packQueuesForMove":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).packQueuesForMove(...args);
+            break;
+          case "verifyQueuePayloads":
+            value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).verifyQueuePayloads(...args);
+            break;
+          case "movePast":
+            value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).movePast(...args);
+            break;
+          case "numbersToSend":
+            value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).numbersToSend(...args);
+            break;
+          case "receiveNumbers":
+            value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).receiveNumbers(...args);
             break;
           case "allocateNumbers":
             value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).allocateNumbers(...args);
@@ -94877,6 +94975,9 @@ var init_disk_worker = __esm(() => {
   numberDisk = new DiskWorker;
   browserDisk = new DiskWorker;
   wakeDisk = new DiskWorker;
+  backlogDisk = new DiskWorker;
+  queueMoveDisk = new DiskWorker;
+  numberUpkeepDisk = new DiskWorker;
 });
 
 // box/src/link/fence/state.ts
@@ -97573,14 +97674,15 @@ __export(exports_numbers, {
   legacyNumberHigh: () => legacyNumberHigh,
   movePast: () => movePast,
   notePrimaryNow: () => notePrimaryNow,
-  numberWaiting: () => numberWaiting,
   numberWaitingLater: () => numberWaitingLater,
+  numbersToSend: () => numbersToSend,
   ownSince: () => ownSince,
   primaryOf: () => primaryOf,
   pushNumbers: () => pushNumbers,
   rangesOf: () => rangesOf2,
   rankedPrimary: () => rankedPrimary,
   readNumbers: () => readNumbers,
+  receiveNumbers: () => receiveNumbers,
   reclaimWaiting: () => reclaimWaiting,
   reserveMergeNumbers: () => reserveMergeNumbers,
   takeBlock: () => takeBlock,
@@ -98163,14 +98265,15 @@ function reclaimWaiting(primary = primaryOf(), options = {}) {
     changeQueues((book) => numberWaiting(book, primary, null, options), undefined, { onItsOwn: true });
   return true;
 }
-function pushNumbers(host, link = readLink()) {
+function numbersToSend(link, welcomed) {
+  let changed = false;
   if (Date.now() - lookedForWaiting > 60000) {
     lookedForWaiting = Date.now();
     try {
       notePrimaryNow(link);
     } catch {}
     try {
-      reclaimWaiting(primaryOf(link));
+      changed = reclaimWaiting(primaryOf(link));
     } catch {}
   }
   const primary = primaryOf(link);
@@ -98179,42 +98282,52 @@ function pushNumbers(host, link = readLink()) {
     if (link?.setup && kept.asking) {
       const block = giveBlock(link.setup.primary, { ...kept.asking, own: true });
       if (block)
-        blockArrived(block, primary);
+        changed = blockArrived(block, primary) || changed;
     }
-    return;
+    return { changed };
   }
-  if (!host?.welcomed || !link || !kept.asking)
-    return;
-  if (!("peer" in primary))
-    return;
+  if (!welcomed || !link || !kept.asking || !("peer" in primary))
+    return { changed };
   const ask = askToSend({ retry: 2000 });
-  if (!ask)
-    return;
-  const bytes = mailFor(primary.peer, { workQueue: { ask }, at: Date.now() }, link);
-  if (bytes)
-    try {
-      host.send(bytes);
-    } catch {}
+  return { changed, ...ask ? { peer: primary.peer, ask } : {} };
 }
-function takeNumbersMail(sender, given, host) {
-  if (!isObject(given))
+async function pushNumbers(host, link = readLink()) {
+  if (pushingNumbers)
     return;
-  const link = readLink();
-  const primary = primaryOf(link);
-  const send = (to, payload) => {
-    const bytes = link && "address" in to && to.address ? mailFor(to, { workQueue: payload, at: Date.now() }, link) : null;
+  pushingNumbers = true;
+  try {
+    const { changed, peer, ask } = await numberUpkeepDisk.run("numbersToSend", link, Boolean(host?.welcomed));
+    if (changed)
+      noteQueuesChanged();
+    if (!host?.welcomed || !link || !peer || !ask)
+      return;
+    const bytes = mailFor(peer, { workQueue: { ask }, at: Date.now() }, link);
     if (bytes)
       try {
-        host?.send(bytes);
+        host.send(bytes);
       } catch {}
-  };
-  if (isObject(given.ask) && "self" in primary && given.to === undefined && given.for === undefined) {
-    const block = giveBlock(sender.key, given.ask);
-    if (block)
-      send(sender, { give: block, quorumGrant: true });
-  } else if (isObject(given.give) && given.for === undefined && "peer" in primary && primary.peer.key === sender.key) {
-    blockArrived(given.give, primary);
+  } finally {
+    pushingNumbers = false;
   }
+}
+function receiveNumbers(key, given) {
+  const link = readLink();
+  const primary = primaryOf(link);
+  if (isObject(given.ask) && "self" in primary && given.to === undefined && given.for === undefined)
+    return { link, block: giveBlock(key, given.ask) };
+  if (isObject(given.give) && given.for === undefined && "peer" in primary && primary.peer.key === key)
+    return { changed: blockArrived(given.give, primary) };
+  return {};
+}
+async function takeNumbersMail(sender, given, host) {
+  const { changed, block, link } = await numberUpkeepDisk.run("receiveNumbers", sender.key, given);
+  if (changed)
+    noteQueuesChanged();
+  const bytes = block && link && "address" in sender && sender.address ? mailFor(sender, { workQueue: { give: block, quorumGrant: true }, at: Date.now() }, link) : null;
+  if (bytes)
+    try {
+      host?.send(bytes);
+    } catch {}
 }
 function blockArrived(give, primary, options = {}) {
   const answer = takeBlock(give, options);
@@ -98237,7 +98350,7 @@ var NUMBERS_FILE, BLOCK2 = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MO
 }, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf6 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto79.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold2(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
-}, lookedForWaiting = 0;
+}, lookedForWaiting = 0, pushingNumbers = false;
 var init_numbers = __esm(() => {
   init_home();
   init_format_version();
@@ -128616,9 +128729,7 @@ async function run9(owner) {
       lastSetup = stamp;
       report("setup position", position);
     }
-    try {
-      pushNumbers(current);
-    } catch {}
+    pushNumbers(current).catch(() => {});
     if (current?.welcomed)
       pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else

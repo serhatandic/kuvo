@@ -4,7 +4,7 @@
 import { parsed } from "../../shared/json";
 import { IS_MAC } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
-import { forgetHistory, iconOf, readHistory } from "./history";
+import { iconOf } from "./history";
 import { changeBrowserSettings, changeNeverSite, readBrowserSettings } from "./settings";
 import { siteOf } from "./sites";
 import { browserDisk } from "../server/disk-worker";
@@ -47,10 +47,10 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
   const which = one === undefined ? null : part(one);
   if (one !== undefined && !which) return yield* json(400, { message: "Name the site as its address has it." });
   if (list === "history") {
-    if (method === "GET" && which === null) return yield* json(200, readHistory());
+    if (method === "GET" && which === null) return yield* json(200());
     if (method !== "DELETE") return yield* json(405, {});
-    forgetHistory(which);
-    return yield* json(200, readHistory());
+    await browserDisk.run("forgetHistory", which);
+    return yield* json(200());
   }
   if (method === "GET" && which === null) return yield* json(200, await browserDisk.run("browserSites"));
   if (method !== "DELETE") return yield* json(405, {});

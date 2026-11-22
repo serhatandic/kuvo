@@ -1,3 +1,4 @@
+import { numberDisk } from "../server/disk-worker";
 import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import type { Act } from "./forward";
 import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
@@ -22,7 +23,7 @@ import { awaySince, readReach } from "../peers/reach";
 import { usesAcceptedSaves } from "../setup/record";
 import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
-import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
+import { labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
@@ -34,7 +35,7 @@ import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
 import { mailsFor, sendMemoryMail, takePart } from "./parts";
 import { takeSetupCopy } from "../setup/seed";
-import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
+import { ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
 import { allItems, changeQueuesLater, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
@@ -93,7 +94,6 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
 };
 
 // (A box that numbers from another takes that one's labels, and changes none of them itself.)
-followsBy(() => !("self" in primaryOf()));
 
 /** What this box tells of its Work Queue now: its items (not deleted ones; the latest Done ones
  * only), the owners they name, its labels, and how it numbers. */
@@ -240,7 +240,7 @@ export function forgetPushed(): void {
 /** What a computer told of its Work Queue, kept (unless what's kept is newer) and said to be had;
  * the primary moves its counter past the numbers it uses; a box takes the labels of the
  * primary it numbers from (from the peer it reaches it through, one that numbers from it too). */
-function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void): void {
+async function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void): Promise<void> {
   const told = toldOf(given);
   if (!told) return;
   const link = readLink();
@@ -254,7 +254,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   // How it numbers changed: look at this box's setup now.
   if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
-  if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
+  if ("self" in primary) await numberDisk.run("movePast", Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
   else if (!usesAcceptedSaves(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
@@ -296,8 +296,8 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       else for (const bytes of mails) host.send(bytes);
     } catch {}
   };
-  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote)) takeNumbersMail(sender, whole, host);
-  if (isObject(whole.told)) takeTold(sender, whole.told, reply);
+  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote)) await takeNumbersMail(sender, whole, host);
+  if (isObject(whole.told)) await takeTold(sender, whole.told, reply);
   if (isObject(whole.setupCopy)) await takeSetupCopy(sender.key, whole.setupCopy);
   if (typeof whole.had === "string") {
     const before = pushed.get(sender.key);

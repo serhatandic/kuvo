@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { locked, syncDurableFile, writeDurablePrivate } from "../../shared/files";
+import { changeMove, type MoveRecord } from "../moves/records";
 import { measurePayload, payloadPath, verifyPayload, type FileProof } from "../moves/payload";
 import { validQueueFileList } from "../../shared/work-queue-file";
 import { offlineEditsReady, recordKey, removeRecord } from "../ownership/store";
@@ -57,6 +58,18 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
   return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
+}
+
+export function packQueuesForMove(owners: readonly string[]) {
+  try { return { queues: packWorkQueues(owners) }; }
+  catch (error) {
+    if (error instanceof Refusal) return { refused: error.message };
+    throw error;
+  }
+}
+
+export function checkMoveQueueFiles(owners: readonly string[]): string[] {
+  return unavailableQueuePayloads(packWorkQueues(owners));
 }
 
 function collectWorkQueues(owners: readonly string[]): CarriedQueues | null {
@@ -199,6 +212,19 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
     for (const deletion of deletions) keepDeletion(deletion);
   }, undefined, { durable: true });
   return payloads;
+}
+
+/** Record the attachment inventory before placing any of the move's Work Queue files. */
+export function placeMoveWorkQueues(id: string, carried: unknown, owners: readonly string[], opened: string | null, requireProof: boolean | undefined,
+  sessions: NonNullable<MoveRecord["payloads"]>["sessions"]): void {
+  if (carried === undefined) return;
+  placeWorkQueues(carried, owners, opened, requireProof, {
+    id,
+    beforePlacement: (queue, placement) => {
+      if (!changeMove(id, each => { each.payloads = { sessions, queue }; each.queuePlacement = placement; }))
+        throw new Error("The move journal is unavailable.");
+    },
+  });
 }
 
 /** The queues of `owners` gone from here (their files too): the move took them (nothing changes

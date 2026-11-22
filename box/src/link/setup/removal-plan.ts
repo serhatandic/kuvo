@@ -1,3 +1,4 @@
+import { queueMoveDisk } from "../server/disk-worker";
 import fs from "node:fs";
 import path from "node:path";
 import type { MoveKind, MovePlace } from "../../shared/routes/moves";
@@ -21,7 +22,6 @@ import { placesFor } from "../moves/move";
 import { moveReference, acceptedOwner, mayActivate } from "../ownership/resolve";
 import { ownKey } from "../peers/known";
 import { readLink } from "../state";
-import { packWorkQueues, unavailableQueuePayloads } from "../work-queue/moves";
 import { startedByOf, worksFor } from "../work/tree";
 
 import { allItems, queueDeletions } from "../work-queue/store";
@@ -130,7 +130,7 @@ export async function removalPlan(projects?: unknown, moveTo?: string, scopedDes
       } catch { unresolved.push(item.id); continue; }
     }
     try {
-      const unavailable = unavailableQueuePayloads(packWorkQueues(item.kind === "group" ? [item.id] : family));
+      const unavailable = await queueMoveDisk.run("checkMoveQueueFiles", item.kind === "group" ? [item.id] : family);
       if (unavailable.length) {
         files.push(...unavailable.map(name => ({ item: item.id, name, status: "unavailable" as const })));
         unresolved.push(item.id);

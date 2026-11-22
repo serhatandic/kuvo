@@ -1,6 +1,9 @@
 import "./safety"
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
+import path from "node:path";
+import { ask as askRoute } from "./route-answer";
+import { createBoxDispatcher } from "../src/link/server/router";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, signingKeyOf } from "../src/link/documents/format";
 import { LINK_FILE } from "../src/link/home";
@@ -9,7 +12,7 @@ import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { writeLink, type LinkState } from "../src/link/state";
 import { changeNumbers, giveBlock, NUMBERS_FILE, readNumbers, takeNumber } from "../src/link/work-queue/numbers";
 
-import { changeQueues, changeQueuesLater } from "../src/link/work-queue/store";
+import { changeQueues, changeQueuesLater, WORK_QUEUE } from "../src/link/work-queue/store";
 import { addItem } from "../src/link/work-queue/ops";
 import { actHere } from "../src/link/work-queue/acts";
 
@@ -122,4 +125,27 @@ test("offline creation spends the final local lease and leaves the next item usa
   expect(await actHere({ method: "GET", ref: { id: waiting.id }, targets: [] }))
     .toMatchObject({ status: 200, value: { item: { id: waiting.id, title: "Edited while offline", numberPending: true } } });
   changeQueues(book => { book.queue(owner).items = []; });
+});
+
+test("a Markdown backlog import claims its numbers and replays without duplicates", async () => {
+  setupLedger();
+  const owner = "ses_BacklogNumberTest";
+  fs.mkdirSync(WORK_QUEUE, { recursive: true });
+  const folder = fs.mkdtempSync(path.join(WORK_QUEUE, "backlog-"));
+  const file = path.join(folder, "backlog.md");
+  const handler = createBoxDispatcher({
+    readEngine: () => { throw new Error("No engine in this fixture"); },
+    readBridge: () => { throw new Error("No bridge in this fixture"); },
+  }).entry();
+  try {
+    fs.writeFileSync(file, "- #41 Write the release notes\n");
+    const submit = () => askRoute(handler, "POST", "kuvo/work-queue/import", { owner, files: [file] });
+    expect(await submit()).toMatchObject({ status: 200, json: { added: 1, waiting: 0 } });
+    expect(await submit()).toMatchObject({ status: 200, json: { added: 0 } });
+    expect(await actHere({ method: "GET", ref: { number: 41 }, targets: [] }))
+      .toMatchObject({ status: 200, value: { item: { title: "Write the release notes" } } });
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+    changeQueues(book => { book.queue(owner).items = []; });
+  }
 });
