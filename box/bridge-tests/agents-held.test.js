@@ -322,7 +322,8 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
   if (cursor) Object.assign(env, { CURSOR_API_KEY: "fixture-only", STAND_IN_FOLDER: fake });
   const direct = 'echo $$ >"$5"; exec "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1';
   const loop = 'while kill -0 "$1" 2>/dev/null; do "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null & echo $! >"$5"; wait $!; sleep 1; done';
-  const launch = spawn("sh", ["-c", liveTransfer || single ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
+  const start = () => spawn("sh", ["-c", liveTransfer || single ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
+  let launch = start();
   const shutdown = () => new Promise(resolve => {
     if (launch.exitCode !== null || launch.signalCode !== null) return resolve();
     launch.on("exit", () => resolve());
@@ -360,7 +361,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     atEnd(() => { if (recovered.exitCode === null) recovered.kill(); });
     return recovered;
   };
-  return { root, home, api, up, log, held, holders, recover, shutdown, engine };
+  return { root, home, api, up, log, held, holders, recover, shutdown, engine, restart: () => { launch = start(); } };
 }
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
@@ -377,8 +378,8 @@ function changeBridge(box) {
  * the bridge killed while it asks, the next bridge asking once more, your answer, the turn's end,
  * and the box stopped.
  */
-async function continueWhileAsking({ provider, model, log, liveTransfer = false }) {
-  const box = await machine({ liveTransfer });
+async function continueWhileAsking({ provider, model, log, liveTransfer = false, releaseSwitch = false }) {
+  const box = await machine({ liveTransfer, single: releaseSwitch });
   const first = await box.up();
   const made = await box.api("POST", "api/session", { title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
   assert.equal(made.status, 200, JSON.stringify(made.json));
@@ -395,10 +396,34 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
 
   const beforeCut = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
   const notices = page => page.filter(each => each.type === "synthetic" && each.text.endsWith("switched to its review mode.")).map(each => each.id);
-  if (liveTransfer) changeBridge(box);
+  if (releaseSwitch) {
+    const extra = await box.api("POST", "api/session", { title: "Another session", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
+    assert.equal(extra.status, 200);
+    const extraID = extra.json.data.id;
+    assert.equal((await box.api("POST", `api/session/${extraID}/prompt`, { id: "msg_heldslow000000001", delivery: "steer", text: "run it" })).status, 200);
+    const slow = await until(() => box.held().find(each => each.meta.session === extraID && each.meta.version && Object.keys(each.meta.turns).length), "another held session");
+    // Hold one peer's acknowledgement back so the outgoing bridge has time to observe the
+    // first socket closing while it's still alive. This is the multi-holder release path.
+    process.kill(slow.pid, "SIGSTOP");
+    try {
+      changeBridge(box);
+      process.kill(first, "SIGUSR2");
+      await until(() => !alive(first), "the outgoing bridge to exit");
+    } finally {
+      process.kill(slow.pid, "SIGCONT");
+    }
+    box.restart();
+  } else if (liveTransfer) changeBridge(box);
   else process.kill(first, "SIGKILL");
   const second = await box.up(first);
   assert.notEqual(second, first);
+  if (releaseSwitch) {
+    const page = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
+    assert.deepEqual(page.filter(each => each.type === "idle").map(each => each.outcome), [], "detaching the old bridge leaves the running turn open");
+    const adopted = box.held().find(each => each.id === holder.id);
+    assert.equal(adopted?.child, asked.pid, "the replacement bridge takes up the same agent process");
+    assert.equal(adopted.generation, holder.generation + 1);
+  }
   assert.ok(alive(asked.pid), "the original agent process lived through the bridge change");
   const asks = await until(async () => {
     const data = (await box.api("GET", `api/session/${session}/permission`)).json?.data;
@@ -406,7 +431,8 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   }, "the approval to show again");
   assert.equal(asks.length, 1, "asked once");
   if (liveTransfer) assert.equal(asks[0].id, priorAsk.id, "the pending approval kept its identity");
-  assert.equal((await box.api("POST", `api/session/${session}/permission/${asks[0].id}/reply`, { decision: "once" })).status, 200);
+  // The release fixture has no engine permission settings to authorize an approval.
+  assert.equal((await box.api("POST", `api/session/${session}/permission/${asks[0].id}/reply`, { decision: releaseSwitch ? "reject" : "once" })).status, 200);
   const messages = await until(async () => {
     const page = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
     return page.at(-1)?.type === "idle" ? page : null;
@@ -427,6 +453,7 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   assert.equal(box.log(log).filter(each => "answered" in each).length, 1, "answered once");
   assert.deepEqual((await box.api("GET", `api/session/${session}/permission`)).json?.data, [], "and nothing is left to ask, with the turn over");
   assert.equal(box.log(log).filter(each => "asked" in each).length, 1, "asked about once: the turn wasn't started again");
+  if (releaseSwitch) return;
 
   // Stopping the box (Stop, and uninstall's `off`): the held agent stops too, its holder with it.
   const stopped = spawnSync("sh", [keeper, "stop"], { env: { PATH: "/usr/bin:/bin", HOME: box.root }, encoding: "utf8", timeout: 60_000 });
@@ -438,6 +465,12 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
 
 test("Codex: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "codex-cli", model: "gpt-test", log: "log" }));
+
+for (const [provider, model, log] of [
+  ["codex-cli", "gpt-test", "log"],
+  ["antigravity", "antigravity-test", "antigravity.log"],
+]) test(`release switch keeps the running ${provider} turn open`, { skip: bun ? false : NO_BUN }, () =>
+  continueWhileAsking({ provider, model, log, releaseSwitch: true }));
 
 test("Claude Code: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "claude-code", model: "default", log: "claude.log" }));

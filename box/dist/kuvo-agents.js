@@ -8158,7 +8158,11 @@ class RPC {
     this.filter = options.filter;
     const ended = (code, signal) => {
       this.closed = true;
-      this.agentExited = signal !== "fenced" && signal !== "detached";
+      if (this.held?.relinquished) {
+        this.pending.clear();
+        return code;
+      }
+      this.agentExited = true;
       for (const { reject } of this.pending.values())
         reject(new RPCClosed(this.stderr.trim().split(`
 `).slice(-3).join(`
@@ -8243,7 +8247,7 @@ class RPC {
     }
   }
   receive(line) {
-    if (this.closed)
+    if (this.closed || this.held?.relinquished)
       return;
     let message;
     try {
@@ -32889,4 +32893,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents dd6ec5ca32949ee6bf23d0420fb09afdcdd74d4731151fc82b7afd416c315f3e
+// Built from Packages/Box/src/agents 4b82f5699be862c308e56d1f299005b1fbc700cc27e6928813dea42bd1c44e8c

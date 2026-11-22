@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 5bf6c80a0922
+// Kuvo folder layout 23 5d8adb82c0e1
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5bf6c80a0922";
+var BRIDGE_VERSION = "5d8adb82c0e1";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -112236,7 +112236,11 @@ class RPC {
     this.filter = options.filter;
     const ended = (code, signal) => {
       this.closed = true;
-      this.agentExited = signal !== "fenced" && signal !== "detached";
+      if (this.held?.relinquished) {
+        this.pending.clear();
+        return code;
+      }
+      this.agentExited = true;
       for (const { reject } of this.pending.values())
         reject(new RPCClosed(this.stderr.trim().split(`
 `).slice(-3).join(`
@@ -112321,7 +112325,7 @@ class RPC {
     }
   }
   receive(line) {
-    if (this.closed)
+    if (this.closed || this.held?.relinquished)
       return;
     let message;
     try {

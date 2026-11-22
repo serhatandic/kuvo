@@ -3668,7 +3668,9 @@ allows Try Again if it finds a turn still running. After a restart, the keeper u
 `run/previous` to restore the previous target if the selected release can't start and answer within
 two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of every holder, at
 work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in
-their sessions, and an agent between turns takes its session's next message. Antigravity's turn goes on from its
+their sessions, and an agent between turns takes its session's next message. During handover,
+the outgoing bridge leaves each held turn open, even after its holder connection closes.
+Antigravity's turn goes on from its
 place in its transcript, which the bridge writes to the holder's record as it makes way. Only an
 agent it can't take up is stopped, and its turn ends as interrupted: one from another Agent SDK or
 an older Claude Code, or an Antigravity turn whose place couldn't be written (a subagent at work,
