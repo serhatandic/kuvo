@@ -57,6 +57,8 @@ pub struct SideChatView {
     _picking: Vec<Task<()>>,
     on_screen: bool,
     scroll: ScrollHandle,
+    /// The height of the composer floating over the transcript's bottom, as last laid out.
+    inset: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
     _field: Subscription,
     _follow: Option<Follow<Followed<SideThreads>>>,
     _task: Option<Task<()>>,
@@ -78,7 +80,7 @@ impl SideChatView {
         SideChatView {
             client, live, session, thread, threads: Load::Loading, field, asking: false, failed: None,
             attached: Vec::new(), offered: None, own: None, picked: None, model_menu: PopoverMenuHandle::default(), _picking: Vec::new(),
-            on_screen: false, scroll: ScrollHandle::new(), _field: watch, _follow: None, _task: None,
+            on_screen: false, scroll: ScrollHandle::new(), inset: Default::default(), _field: watch, _follow: None, _task: None,
         }
     }
 
@@ -293,13 +295,14 @@ impl SideChatView {
     fn transcript(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let glass = glass(cx);
+        let inset = self.inset.get();
         let Some(thread) = self.thread() else {
             let (title, detail) = match (&self.threads, &self.thread) {
                 (Load::Failed(why), _) => ("Couldn’t Read This Side Chat".to_owned(), why.clone()),
-                (Load::Loading, Some(_)) => return kuvo_ui::small::LoadingLabel::new("side-chat-loading", "Reading…").fill().into_any_element(),
+                (Load::Loading, Some(_)) => return div().flex_1().min_h_0().flex().flex_col().pb(inset).child(kuvo_ui::small::LoadingLabel::new("side-chat-loading", "Reading…").fill()).into_any_element(),
                 _ => ("Ask on the Side".to_owned(), "Ask about this conversation without interrupting it. The answer stays here, out of the conversation.".to_owned()),
             };
-            return super::changes::empty(title, detail, None, cx);
+            return div().flex_1().min_h_0().flex().flex_col().pb(inset).child(super::changes::empty(title, detail, None, cx)).into_any_element();
         };
         div()
             .id("side-chat-transcript")
@@ -348,6 +351,8 @@ impl SideChatView {
                     })
                     .child(answer)
             }))
+            // (Room for the composer floating over its end.)
+            .child(div().flex_none().h((inset - space::S4).max(px(0.))).debug_selector(|| "side-chat-end".into()))
             .into_any_element()
     }
 
@@ -399,13 +404,16 @@ impl Focusable for SideChatView {
 
 impl Render for SideChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The transcript fills the height and scrolls under the composer, which floats over its
+        // bottom; the transcript's end is padded by the composer's height, as it's measured.
         div()
             .id("side-chat")
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx)))
             .child(self.transcript(cx))
-            .child(self.composer(cx))
+            .child(div().absolute().left_0().right_0().bottom_0().child(kuvo_ui::chat_list::measured_height(self.inset.clone())).child(self.composer(cx)))
     }
 }

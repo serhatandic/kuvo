@@ -2111,6 +2111,8 @@ impl Render for ConversationView {
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
+        // (Words in the list's place sit centred above the composer.)
+        let (listed, inset) = (self.read && !self.entries.is_empty(), self.list.bottom_inset());
         // Its Activity pinned: floating at the top right, the column kept clear of it where it fits.
         let (pinned, reserve) = self.bars.read(cx).pinned_layer().map_or((None, px(0.)), |(layer, reserve)| (Some(layer), reserve));
         div()
@@ -2127,14 +2129,21 @@ impl Render for ConversationView {
             .flex()
             .flex_col()
             .pr(reserve)
-            .child(div().relative().flex_1().min_h_0().child(body))
-            .child(
+            // The transcript fills the height and scrolls under the composer, which floats over
+            // its bottom; the list's end is padded by the composer's height, as it's measured.
+            .child(div().relative().flex_1().min_h_0().child(div().size_full().when(!listed, |d| d.pb(inset)).child(body)).child(
                 div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
                     .flex()
                     .flex_col()
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
+                    .child(self.list.floating())
+                    .child(div().id("conversation-composer-stack").block_mouse_except_scroll().w_full().max_w(px(COLUMN)).flex().flex_col().items_center()
                     // What's wrong with it, said once over the composer as the one notice; it goes as
                     // soon as it's read again.
                     .children(banner.map(|(why, tone)| {
@@ -2163,8 +2172,8 @@ impl Render for ConversationView {
                             } else {
                                 self.composer.clone().into_any_element()
                             }))
-                    }),
-            )
+                    })),
+            ))
             .children(self.selection_card(cx))
             .children(pinned)
     }
