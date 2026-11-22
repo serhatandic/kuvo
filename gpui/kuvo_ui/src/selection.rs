@@ -820,13 +820,15 @@ impl Element for SelectableText {
                 window.paint_quad(quad(rect, px(4.), *color, px(0.), gpui::transparent_black(), Default::default()));
             }
         }
+        // The text's I-beam first: the cursor asked for last wins where hitboxes overlap, so an
+        // item drawn over the text (a Work Queue chip) keeps its pointing hand.
+        if let (Some(_), Some(hitbox)) = (&self.unit, hitbox.as_ref()) {
+            window.set_cursor_style(CursorStyle::IBeam, hitbox);
+        }
         for overlay in &mut self.overlays {
             overlay.paint(window, cx);
         }
         if let Some((state, unit)) = &self.unit {
-            if let Some(hitbox) = hitbox {
-                window.set_cursor_style(CursorStyle::IBeam, hitbox);
-            }
             let (range, emphasized) = {
                 let inner = state.0.borrow();
                 let range = inner.selection.as_ref().and_then(|selection| {
