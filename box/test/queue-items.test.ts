@@ -606,3 +606,14 @@ test("waiting queues read legacy data and refuse future indexes and payloads bef
     fs.writeFileSync(QUEUES_FILE, indexed)
   }
 })
+
+test("the coding agents' bridge stopping with a run (an update, a restart) doesn't hold or pause its queue as a Stop does: what waits goes on (#809)", () => {
+  const looked: (() => void)[] = []
+  const watch = queueWatcher(target, { schedule: ((then: () => void) => (looked.push(then), 0)) as any, cancel: () => {} })
+  watch({ type: "session.execution.interrupted", data: { sessionID: "ses_q", reason: "restart" } })
+  expect(looked).toHaveLength(0)
+  expect(queueOf("ses_q").paused).toBe(false)
+  // A Stop's end is looked at, to hold and pause what waits.
+  watch({ type: "session.execution.interrupted", data: { sessionID: "ses_q" } })
+  expect(looked).toHaveLength(1)
+})

@@ -269,6 +269,29 @@ describe("what's waiting", () => {
     expect(a.runs.map((run) => run.text)).toEqual(["now", "working", "held", "behind"])
   })
 
+  test("what waits in line as the bridge stops (an update, a restart) goes once, in order, as the next starts: its stopping isn't a Stop", async () => {
+    a.script = works
+    const id = create()
+    send(id, "working")
+    await until(() => a.runs.length === 1)
+    send(id, "first after", "queue")
+    send(id, "second after", "queue")
+    sessions.closeAll()
+    // The run it cut short says why, for the box not to hold the queue as a Stop does.
+    expect(idles(id).at(-1)).toMatchObject({ outcome: "interrupted", reason: "restart" })
+    expect(events.find((event) => event.type === "session.execution.interrupted")).toMatchObject({ data: { reason: "restart" } })
+
+    // The next bridge, on the same sessions, as it starts.
+    a.script = replies
+    make()
+    sessions.wakeHeld()
+    await settled(id, 3)
+    // (The next bridge's agent is a new one, given what came before first.)
+    expect(a.runs.map((run) => run.text.split("User message:\n").pop())).toEqual(["working", "first after", "second after"])
+    expect(a.runs[1].text).toContain("Kuvo Code restarted, and it stopped with it.")
+    expect(sessions.inbox(id)).toEqual([])
+  })
+
   test("an expired program drain releases queued work and leaves the admitted turn running", async () => {
     a.script = works
     const active = create()

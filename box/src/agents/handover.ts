@@ -61,7 +61,7 @@ function items(messages: Message[], names: (message: AssistantMessage) => string
       }
       case "idle":
         if (summary) summary = false
-        else if (message.outcome !== "succeeded") out.push({ role: "Stopped", text: message.error?.message ?? (message.outcome === "interrupted" ? "You stopped it." : "It stopped with an error.") })
+        else if (message.outcome !== "succeeded") out.push({ role: "Stopped", text: message.error?.message ?? (message.outcome === "interrupted" ? (message.reason === "restart" ? "Kuvo Code restarted, and it stopped with it." : "You stopped it.") : "It stopped with an error.") })
         break
     }
   }
