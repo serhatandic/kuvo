@@ -39,6 +39,23 @@ machine's sign-ins in `~/.kuvo-code/agents`. So on a Linux box the first account
 renewed by the agent. **Recommended: keep it so.** Sharing `~/.codex` with Terminal on Linux
 needs the user's word on the footprint rule and a sandbox that holds settings read-only first.
 
+## Where Kuvo differs from T3 Code and OpenBot
+
+1. **The sandbox stays.** T3 runs agents as plain processes. Kuvo runs them whole in the box's
+   sandbox, and gives each agent only its own sign-in: on a Mac, the Keychain item its folder
+   names; on Linux, the folder's files (see Sandbox access below).
+2. **Kuvo's own sign-in screen stays.** It works from another computer too, but it only drives the
+   agent's *native* login (browser, device code or code paste-back). It never makes a token.
+3. **One sign-in path per agent.** Codex gets no "Connect with ChatGPT" managed-renewal path beside
+   `codex login`.
+4. **Antigravity**, like T3, uses a private `GEMINI_HOME` from the first account, because `agy`
+   shares one keyring entry across folders.
+5. **Removing an account** first signs out through the agent (`claude auth logout`, `codex logout`,
+   `grok logout` with its folder), as OpenBot does. The Keychain or keyring entry tied to that
+   folder goes with it, so nothing is left behind.
+6. **Hosted sandboxes and machines** have only their own accounts. There is no Terminal sign-in to
+   share there.
+
 ## Sign-in on local, remote and headless boxes
 
 Sign-in always runs on the box that owns the account, through `commandSignIn` or the agent's own
