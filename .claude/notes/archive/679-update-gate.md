@@ -1,3 +1,5 @@
+> Historical, superseded by [One client process](../../../docs/architecture/one-client-process.md), kept for its findings.
+
 # #679 The update gate
 
 Goal: someone coming from 0.5 to 0.7 or a beta keeps their data and work, and no client runs old

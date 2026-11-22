@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens queue](../../gpui/notes/screens-queue.md), kept for its findings.
+
 # The Work Queue: handover
 
 ## Done (#674: statuses, priorities and labels in place of categories)

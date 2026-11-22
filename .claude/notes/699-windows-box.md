@@ -6,13 +6,13 @@ reading our code and from what's publicly documented; each one that needs a tria
 **(trial)** and collected in §7. Two things were checked over the network from the Mac and are
 marked **(checked)**.
 
-Revised after one reviewer pass (§10).
-
-Read with `713-desktop-app-runs-the-box.md` (who installs and keeps a box; its §2 says "A Windows
-desktop app has no box of its own", which this note replaces), `693-own-box-browser.md`, and
-`protocol/PROTOCOL.md` ("Peers" :417, "Updates" :2504, "The browser on a machine" :2790, "Sandbox"
-:8784). Swift paths are the retired app's, read only. `E/` is
-`swift/OpenCodeKit/Sources/OpenCodeKit/Engine/`.
+Mac and Linux baseline refreshed at `eadb26c49` on 2026-11-22.
+Start with [How Kuvo works](../../docs/architecture/how-kuvo-works.md),
+[resident launch](../../docs/architecture/one-client-process.md), and the
+[protocol](../../protocol/PROTOCOL.md). The Windows designs, estimates and
+trials below remain proposals. The original platform inventory includes
+paths at the pinned November 15 revision: `E/` was
+`swift/OpenCodeKit/Sources/OpenCodeKit/Engine/` in the retired app.
 
 ## 0. In short
 
@@ -30,9 +30,9 @@ desktop app has no box of its own", which this note replaces), `693-own-box-brow
 - **Recommended order: WSL first, native second,** sharing one groundwork piece (a three-way
   platform layer) that is built and tested on Mac and Linux before any machine exists.
 - **The native port wants one change that's good for every system:** the keeper, launch, wake-ups
-  and the update's restore become the box's own code (`kuvo-link.js keep`, …) instead of shell
-  held in Swift strings. #715 is already moving them into `box/`; moving them as TypeScript, not as
-  shell files, is what makes a native Windows box possible without a second copy in PowerShell.
+  and the update's restore become the box's own code (`kuvo-link.js keep`, …) instead of the
+  shell files now in `box/src/keeper/`. One portable supervisor would avoid a
+  separate PowerShell implementation.
   That's a decision for the user (§8, D2).
 - **Equal boxes.** A WSL box offers everything a Linux box does (the sandbox subject to a kernel
   check and to keeping Windows' own programs out of reach, §3.4). A native box, first, can't sandbox commands, can't keep the computer awake, and has no
@@ -40,7 +40,7 @@ desktop app has no box of its own", which this note replaces), `693-own-box-brow
   (`kuvo/sandbox`'s `able: false` with a reason).
 - **Thin clients.** Nothing below adds logic to a client. A Windows desktop app needs two small
   transports (`wsl.exe` in place of `ssh` for a WSL box on its own computer; no shared SSH
-  connections on Windows), and runs the box's installer, as on a Mac (713 §3).
+  connections on Windows), and runs the box's installer, as GPUI does on a Mac.
 - **No fallback for older boxes.** New manifest keys (`windows`), new facts (`system`, `wsl`) and
   the wire rule for paths (§2.9) are simply required of a box that lists the feature.
 
@@ -48,18 +48,16 @@ desktop app has no box of its own", which this note replaces), `693-own-box-brow
 
 | Part | What it is | Where |
 | --- | --- | --- |
-| The engine | `opencode` 2.2.6, one binary per system; also **our Bun** (`BUN_BE_BUN=1 opencode kuvo-link.js …`); nothing else is downloaded as a runtime | `E/EngineInstaller.swift:26-66`, `E/RemoteEngine.swift:1229`, `box/src/link/home.ts:244` |
-| The link | `kuvo-link.js` (`box/src/link`, 69k lines): routes, relay, peers, updates, sandbox, vault | `scripts/build-box.sh` |
-| The agents' bridge | `kuvo-agents.js` (`box/src/agents`, 43k lines) | `scripts/build-agents.sh` |
-| The browser's keeper | `kuvo-browser.js` and Chrome for Testing | `box/src/browser`, `box/src/link/browser/install.ts` |
-| The keeper | `bin/kuvo-start`, `kuvo-launch`, `kuvo-setsid`: POSIX shell, **held in Swift strings** | `E/RemoteEngine.swift:1051-1337`, `:1369-1484`, `:542-548` |
-| Wake-ups | `bin/kuvo-wake`, shell, run by the keeper every minute | `E/Wakes.swift:345-`, `E/RemoteEngine.swift:1240-1252` |
-| Integrations' launcher | `kuvo-npx`, `runtime/node`: shell | `E/Launcher.swift:20-143` |
-| The sandbox | `bin/kuvo-fence` (the shell the engine runs each command with), Seatbelt on a Mac, Landlock and a namespace on Linux | `box/src/link/fence/files.ts:68`, `seatbelt.ts`, `landlock.ts` |
-| Starting at login | a tagged `@reboot` crontab line; on a Mac also a LaunchAgent | `E/RemoteEngine.swift:933`, `:1507-1550` |
-| Install | the Mac app, over SSH, sends shell and the engine's tarball on standard input | `swift/KuvoCode/Stores/Machines.swift:570-712` |
+| The engine | Pinned opencode, also the installed Bun runtime | `box/src/shared/engine-pin.json`, `box/src/keeper/kuvo-start` |
+| The link | `serve --resident` answers local HTTP, paired relay and both SSH verbs through shared dispatch | `box/src/link/server/{resident,ssh-pipe,router}.ts` |
+| The agents' bridge | Separate worker supervising agents and holders | `box/src/agents/`, `scripts/build-agents.sh` |
+| The browser's keeper | Chrome for Testing and the browser tools | `box/src/browser/`, `box/src/link/browser/install.ts` |
+| The keeper and wake-ups | `kuvo-start`, `kuvo-launch`, `kuvo-setsid`, `kuvo-wake`, `kuvo-npx` and `runtime/node` are shipped shell files | `box/src/keeper/` |
+| The sandbox | Seatbelt on Mac, Landlock and namespaces on Linux | `box/src/link/fence/` |
+| Startup | Tagged `@reboot` on Linux, native Kuvo Helper and launchd on Mac | `box/src/link/add/scripts.ts`, `mac/helper/` |
+| Install and updates | Box-owned SSH add or installer code. GPUI invokes the bundled local installer. Staged releases select a versioned `bin` link, with legacy split startup retained for rollback. | `box/src/link/add/flow.ts`, `box/src/install/kuvo-install`, `gpui/kuvo/src/launch.rs` |
 
-Two facts that shape everything:
+Two constraints from the original port inventory:
 
 - **There is no `win32` anywhere in `box/src`** except one spawn option
   (`box/src/link/run-command.ts:103`). About 70 lines test `process.platform`, and nearly all are
@@ -162,7 +160,7 @@ Linux" means nothing to do.
 | `box/src/link/vault/ssh.ts:184`, `box/src/link/vault/ssh-agent.ts:262`, `box/src/link/home.ts:79-86`, `box/src/link/fence/files.ts:247` | a per-conversation SSH agent on a Unix socket, handed to commands as `SSH_AUTH_SOCK`; path length limits (104/108 bytes) | same | Windows' own `ssh` talks to a named pipe; Git for Windows' `ssh` talks to an MSYS socket file. Which one a conversation's `git` uses decides the shape **(trial)**. First: not offered, said plainly |
 | `box/src/link/main.ts:739,797` | the box's server and the kept server on `127.0.0.1:0` (TCP) | same; **WSL2 forwards `localhost` to Windows**, so a Windows app can reach it (§3.2) | same code |
 | `E/RemoteEngine.swift:125-137`, `gpui/kuvo_box/src/ssh.rs:75,252-262` | the *client's* shared SSH connections: `ControlPath=/tmp/kuvo-ssh-<uid>/%C` | n/a (client) | a Windows desktop app: Windows' OpenSSH has no `ControlMaster`; `ssh.rs:258` already answers "none" (every request a new connection: slow, so the kept server's tunnel matters more there) |
-| `gpui/notes/kuvo-box-machines.md` (planned `-L <socket>:…`) | forwarding to a Unix socket | n/a | a Windows client forwards to a TCP port instead |
+| [kuvo-box-machines.md](../../docs/archive/kuvo-box-machines.md) (planned `-L <socket>:…`) | forwarding to a Unix socket | n/a | a Windows client forwards to a TCP port instead |
 
 ### 2.7 The sandbox
 
@@ -299,7 +297,7 @@ no sandbox, slow files); the box can tell from `/proc/version` and `WSL_DISTRO_N
 ### 3.1 Install
 
 - **From a Windows desktop app:** it runs the box's installer inside the distro, as the Mac app
-  runs it from its bundle (713 §4.1): `wsl.exe -d <distro> --exec sh` with the bootstrap on
+  runs it from its bundle: `wsl.exe -d <distro> --exec sh` with the bootstrap on
   standard input. The app only picks the distro (a list from `wsl.exe -l -q`) and draws the
   installer's lines.
 - **From another computer (a Mac adding it as a machine):** over SSH, as any Linux machine, once
@@ -316,15 +314,15 @@ no sandbox, slow files); the box can tell from `/proc/version` and `WSL_DISTRO_N
 - **From the Windows desktop app on the same PC:**
   - `box route`: `wsl.exe -d <distro> --exec …` in place of `ssh <host> …`. One more transport
     beside `SshBox` in `gpui/kuvo_box` (the stand-in in tests is the same shape).
-  - The kept server (`run/serve.json`, 127.0.0.1): WSL2 forwards `localhost` to Windows by default,
+  - The resident server (`run/serve.json`, 127.0.0.1): WSL2 forwards `localhost` to Windows by default,
     and in "mirrored" networking shares it outright, so the app connects to `127.0.0.1:<port>`
     directly **(trial: both modes, and with a VPN on)**. It reads `serve.json` through
     `\\wsl.localhost\<distro>\home\<user>\.kuvo-code\run\serve.json` or with `box route`.
   - It attaches as Kuvo Code on the box's own computer (`x-kuvo-from: mac`, PROTOCOL.md's
-    "The app attached…"), as a Linux desktop app would (713 §2). The header's name is historical.
+    "The app attached…"), as a local desktop client would. The header's name is historical.
 - **From the user's other boxes:** peers through the relay, end to end. The box dials out; nothing
   about WSL matters. This is the way that needs no setup at all.
-- **From a Mac or phone as a machine over SSH:** three ways, all **(trial)**:
+- **From another desktop over SSH:** three ways, all **(trial)**:
   1. Windows' OpenSSH server with the account's default shell set to WSL (`DefaultShell` in the
      registry, an administrator's one line): then our `exec sh -c '…'` lands in the distro as is.
      It changes what every SSH login to that PC gets, so it's the user's choice, documented, never
@@ -335,13 +333,14 @@ no sandbox, slow files); the box can tell from `/proc/version` and `WSL_DISTRO_N
   3. An SSH server inside the distro on its own port, with the port opened on Windows (mirrored
      networking, or a `netsh` proxy). Most setup; cleanest once done.
   **(2) puts knowledge of the PC's shell, the distro and `cmd`'s quoting into each client** (the
-  Mac app, the desktop app, the phone's host), on top of `gpui/kuvo_box/src/ssh.rs:85-92`, which
-  already chooses the engine in shell. That's logic in a client: only with the user's agreement
+  desktop app included). The supported SSH path delegates engine selection to the keeper
+  (`gpui/kuvo_box/src/ssh.rs`), which forwards to resident. The extra client logic in option 2 needs the user's agreement
   (D9). Recommended: support (1) and (3), where the client's command is unchanged because it lands
   in the distro's `sh`, documented as the user's setup; and say in the app that a box in WSL is
   best reached as a peer through the relay, which needs nothing.
-- **Sign-in callbacks and the engine's tunnel** (`-L <port>:127.0.0.1:<port>`): the same forwards,
-  ending in Windows; they reach the distro through the same `localhost` forwarding **(trial)**.
+- **Sign-in callbacks:** test whether a browser callback on Windows can reach
+  the WSL loopback listener in both networking modes **(trial)**. Box routes
+  follow the paired relay or addressed SSH contract above.
 
 ### 3.3 Starting at sign-in, and staying up
 
@@ -587,8 +586,8 @@ PC. **G** pieces serve both paths, **W** is WSL, **N** is native.
 | W4 | **Sandbox and interop on WSL** (§3.4): keep Windows' programs and drives from sandboxed commands; D6. Security: a separate review | 4–6 | most | the policy change, on Linux |
 | W5 | **Docs and footprint**: machines, install, uninstall, privacy, troubleshooting in kuvo-web; `docs/footprint.md`; CHANGELOG | 3–4 | screenshots | all |
 | | **WSL box** | **22–29** | | |
-| C1 | **The clients**: D5's choice between the two boxes in the desktop app (drafts first); the phone and `KuvoClient` taking drive-letter paths and the new facts (`system`, `wsl`), with shared vectors; the phone session told | 6–8 | a look at the real thing | drafts, vectors, `KuvoClient` and `gpui/kuvo_box/paths.rs` |
-| N1 | **The keeper as the box's code** (D2, with #715): `keep`, launch, start, stop, the lock, back-off; wake-ups; `kuvo-npx`; the update's restore as a plan; the shell `kuvo-start` and `restore.sh` kept for the one update that crosses over (`COMPAT`) | 20–27 | 2–3, for stops and restarts | nearly all, on Mac and Linux, against the keeper's existing scenario tests (`KuvoStartServeTests`, `RebootTests`, `WakesTests` are the spec); the crossing update tried on devbox |
+| C1 | **The clients**: D5's choice between the two boxes in the desktop app (drafts first); GPUI support for drive-letter paths and the new facts (`system`, `wsl`), with shared vectors | 6–8 | a look at the real thing | drafts, vectors, and `gpui/kuvo_box` |
+| N1 | **The keeper as the box's code** (D2, using the existing keeper files): `keep`, launch, start, stop, the lock, back-off; wake-ups; `kuvo-npx`; the update's restore as a plan; the shell `kuvo-start` and `restore.sh` kept for the one update that crosses over (`COMPAT`) | 20–27 | 2–3, for stops and restarts | nearly all, on Mac and Linux, against the keeper's existing scenario tests (`KuvoStartServeTests`, `RebootTests`, `WakesTests` are the spec); the crossing update tried on devbox |
 | N2 | **Processes on Windows**: one `spawn` of our own (hidden, tree-kill by Job Object), the stop channel, start-time instead of command lines | 10–12 | 4–5: Job Objects and windows can't be faked | the callers' move to the one `spawn`; the stop channel; start-time records |
 | N3 | **Private files and sockets**: the ACL check by SID, pipes named from `K` with the socket key, the retrying rename and remove | 7–9 | 3 | the naming and the single definitions; pipe and sharing behaviour only there |
 | N4 | **Install, update, uninstall, start at sign-in**: bootstrap for PowerShell, `windows` in the manifest and `box.json`, `opencode.exe`, the `Run` value, removal, never started as an SSH session's child | 10–13 | 5 | manifest, selection and the plan; stand-in `reg.exe` |
@@ -628,7 +627,7 @@ WSL:
 4. Does the distro stay up with only the keeper running, systemd on and off? After the terminal closes? After sleep?
 5. `@reboot` with systemd on, off; cron present or not on a fresh Ubuntu.
 6. `reg.exe`/`schtasks.exe` from inside; the entry starting the keeper at sign-in with no window.
-7. The kept server reached from Windows on 127.0.0.1: NAT and mirrored networking; with a VPN.
+7. The resident server reached from Windows on 127.0.0.1: NAT and mirrored networking; with a VPN.
 8. SSH from the Mac: Windows' server wrapping `wsl.exe --exec sh -c` (quoting, binary stdin for the engine's tarball), and `DefaultShell` set to WSL.
 9. The browser: install and a page, without WSLg; on ARM if the PC is.
 10. Each agent installed and signed in; Windows' `node`/`claude` on PATH as the trap.
@@ -657,7 +656,7 @@ Native:
 | # | Decision | Recommended | Why |
 | --- | --- | --- | --- |
 | D1 | Where a native box lives (§4.3) | `%USERPROFILE%\.kuvo-code`, refusing a roaming profile; or `%LOCALAPPDATA%\kuvo-code` | one name everywhere and private by default, but it roams on domain PCs with roaming profiles; `%LOCALAPPDATA%` never does |
-| D2 | The keeper, launch, wake-ups and restore: stay shell (moved into `box/` as files by #715) or become the box's code | **the box's code, on every system**, #715 doing the move once | a native box can't run shell; two keepers (shell and PowerShell) would be the same logic twice; the shell held in strings is already the hardest part of the box to test. Cost: the most proven code in the box is rewritten; its scenario tests are the safety net. **Needs settling before #715 goes further.** The way there for boxes already out: the old link checks the new pack with `sh -n kuvo-start`, stops and starts with `sh kuvo-start stop\|start` (`box/src/link/updates/update.ts:476,494,514`), and the old keeper, still running, only knows `restore.sh` (`:527`, `E/RemoteEngine.swift:1206-1214`). So the first release with a code keeper still ships a shell `kuvo-start` answering `stop`, `start`, `keep`, `box` and `off` by exec'ing the box's code, and still writes `restore.sh` beside the plan: marked `COMPAT` with its removal date, as the code's other 0.7 leftovers are. That's what an update needs to cross, not a fallback for older boxes: nothing new works with an old box. Windows has no boxes out, so none of it ships there |
+| D2 | The keeper, launch, wake-ups and restore: stay shell (moved into `box/` as files in `box/src/keeper/`) or become the box's code | **the box's code, on every system**, #715 doing the move once | a native box can't run shell; two keepers (shell and PowerShell) would be the same logic twice; the existing shell keeper has platform-specific tools. Cost: the most proven code in the box is rewritten; its scenario tests are the safety net. **Needs settling before starting the native port.** The way there for boxes already out: the old link checks the new pack with `sh -n kuvo-start`, stops and starts with `sh kuvo-start stop\|start` (`box/src/link/updates/update.ts:476,494,514`), and the old keeper, still running, only knows `restore.sh` (`:527`, `E/RemoteEngine.swift:1206-1214`). So the first release with a code keeper still ships a shell `kuvo-start` answering `stop`, `start`, `keep`, `box` and `off` by exec'ing the box's code, and still writes `restore.sh` beside the plan: marked `COMPAT` with its removal date, as the code's other 0.7 leftovers are. That's what an update needs to cross, not a fallback for older boxes: nothing new works with an old box. Windows has no boxes out, so none of it ships there |
 | D3 | The shell for commands on a native box | require **Git for Windows** (the user installs it; the box finds it and says "Install Git for Windows" when it's missing) | git is needed anyway; Claude Code is documented to require the same (trial); POSIX commands keep the reviewer and every prompt working. Alternative: bring a portable Git inside `.kuvo-code` (about 300 MB, no system install, ours to update) |
 | D4 | The first process on a native box | try `conhost --headless` in G0; a tiny signed starter if it isn't clean | a starter means a Windows build, a code-signing certificate and SmartScreen reputation: a cost, and a brand surface (its name and icon in Task Manager and Startup apps: **a brand decision**) |
 | D5 | How the app presents the two boxes on a Windows PC | drafts first (two or three, light and dark): "WSL (recommended: sandboxed)" beside "Windows (no sandbox yet)" | it's a new visible choice; the box states the facts, the app draws them |
@@ -688,7 +687,7 @@ A short list to send:
 - **Whether Defender stays on** (it should: it's what users have).
 - Later, only if D4 picks a starter: **a Windows code-signing certificate**.
 
-## 10. The reviewer's pass
+## 10. Historical design review
 
 One `reviewer` pass on the note (2026-11-15), asked for missed Unix assumptions. Fixed from it:
 

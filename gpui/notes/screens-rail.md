@@ -2,7 +2,7 @@
 
 The app's window since #707: the title bar across the top, the rail at the left, and beside it one
 raised panel holding the open area's sidebar and its main view (option A of
-`notes/sidebar-drafts.md`, with B's "Needs you"). Code: `kuvo/src/rail.rs`, `areas.rs`,
+[the archived drafts](../../docs/archive/sidebar-drafts.md), with B's "Needs you"). Code: `kuvo/src/rail.rs`, `areas.rs`,
 `title_bar.rs`, `area.rs`, the Sessions sidebar in `sidebar.rs`, the layout in `workspace.rs`.
 Scenarios: `kuvo/tests/areas.rs`. Shots: `shots/screens-area-*-{light,dark}.png`.
 
@@ -39,8 +39,8 @@ Read (GPL-3.0, behaviour only): `crates/workspace/src/dock.rs` (`Dock`, `PanelBu
   title bar's switcher draw: what waits on you (`kuvo/waiting`) and your computers
   (`kuvo/computers`, handed to the Computers area), followed where the box streams. The rings are a view of their own, read on their own clock, so a reading redraws
   them, not the window.
-- The rail's buttons: tooltip with the area's name and key (⌃1 to ⌃5), the open one filled, a count
-  on the icon, clicking the open one folds its sidebar away; ids carry whether it's open.
+- The rail's buttons: tooltip with the area's name and key (Bots ⌃1, Sessions ⌃2, Work Queue ⌃3, Computers ⌃4, Settings ⌃5, Insights ⌃6 and Library ⌃7), the open one filled, a count
+  on the icon where relevant. Library appears when the box supports it. Clicking the open one folds its sidebar away; ids carry whether it's open.
 - Spinners (which redraw every frame) only where something is at work: In Progress spins only when
   the box counts items in it.
 - **Where we differ:** a narrow window (under 820 px) folds the area's sidebar away, as the user

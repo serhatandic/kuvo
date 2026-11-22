@@ -1,6 +1,6 @@
 # #693 piece 0: the unattended spikes, results
 
-Status: measured 2026-11-14, against `693-own-box-browser.md` (§7's piece 0 row, and each "piece 0
+Status: measured 2026-11-14, against [693-own-box-browser.md](archive/693-own-box-browser.md) (§7's piece 0 row, and each "piece 0
 checks"). These are the four spikes that needed no macOS prompt, sign-in or outside service. What's
 left for when the user is at the Mac is at the end (§7). Nothing here is product code.
 

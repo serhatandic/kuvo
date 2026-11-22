@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens queue](../../../gpui/notes/screens-queue.md), kept for its findings.
+
 # #674 progress (stopped at a safe point, 2026-11-15, for the usage window)
 
 Everything is committed; nothing is running. Branches: kuvo-ai `kuvo/674-work-queue-statuses-priority-labels`

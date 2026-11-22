@@ -1,3 +1,5 @@
+> Historical, superseded by [One client process](../../../docs/architecture/one-client-process.md), kept for its findings.
+
 # #742 The desktop app reaches every box: design
 
 Written 2026-11-15, from reading the code. Nothing here is built, and nothing was run. Where I

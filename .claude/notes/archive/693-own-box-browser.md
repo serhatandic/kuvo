@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens side panel](../../../gpui/notes/screens-side-panel.md), kept for its findings.
+
 # #693 This Mac's box runs its own browser: design
 
 Status: design only, written 2026-11-14 against main at `708019fcf`, revised after one reviewer pass

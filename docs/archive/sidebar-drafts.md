@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens sidebar](../../gpui/notes/screens-sidebar.md), kept for its findings.
+
 # Sidebar drafts: a rail and each area's own sidebar (OpenBot's layout)
 
 Drafts only, for the user to pick from: `gallery/src/drafts/`, fixed sample data, nothing in the app
@@ -104,4 +106,4 @@ Settings › Usage, or of the Sessions tab, with the same colours.
 
 Option A's layout, with B's "Needs you"; ⌃1 to ⌃5 for the areas; large rail icons; the services'
 real marks in the rings; bot faces still. Built into the app in #707: `notes/screens-rail.md`,
-`notes/sidebar-handover.md`.
+[sidebar-handover.md](sidebar-handover.md).

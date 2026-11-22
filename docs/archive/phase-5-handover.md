@@ -1,3 +1,5 @@
+> Historical, superseded by [Readme](../../gpui/README.md), kept for its findings.
+
 # Phase 5 handover: Settings, Accounts and signing in
 
 ## Done

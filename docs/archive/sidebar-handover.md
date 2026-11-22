@@ -1,8 +1,10 @@
+> Historical, superseded by [Screens sidebar](../../gpui/notes/screens-sidebar.md), kept for its findings.
+
 # The new sidebar (#707): handover
 
 ## Done
 
-The user's pick from `notes/sidebar-drafts.md`, built into the app (`gpui/kuvo`), replacing phase
+The user's pick from [sidebar-drafts.md](sidebar-drafts.md), built into the app (`gpui/kuvo`), replacing phase
 2's sidebar. Notes: `notes/screens-rail.md` (with the Zed study). Scenarios: `kuvo/tests/areas.rs`
 (11). Shots: `shots/screens-area-*-{light,dark}.png`, and every earlier `screens-*` shot rendered
 again in the new layout.
@@ -109,7 +111,7 @@ One reviewer pass. Fixed, each with a test that fails without it where one can:
 - No VoiceOver labels (GPUI has no accessibility here yet); larger text not tried.
 - The ring's hover card has no shot (it needs the pointer to rest); `account_card` is drawn from
   the same data as the rings.
-- The phone: a rail doesn't fit; `notes/sidebar-drafts.md` ("The phone") suggests the tab bar. Not
+- The phone: a rail doesn't fit; [sidebar-drafts.md](sidebar-drafts.md) ("The phone") suggests the tab bar. Not
   sent to a phone session: the GPUI app isn't shipped and the phone's look is the Swift one's.
 - Docs and CHANGELOG: none needed (the desktop client isn't shipped; the Mac and the phone don't
   change).
