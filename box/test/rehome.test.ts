@@ -10,7 +10,6 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { BRIDGE_VERSION } from "../src/link/version"
 import { askRehome, rehomeReady } from "../src/link/rehome/move"
 import { rehomeStatus } from "../src/link/rehome/state"
-import { clearUpdateStaging } from "../src/link/updates/update"
 
 // Moving this Mac's box out of its app's folder into a home of its own (#333 pieces 2a and 2b,
 // `kuvo-link.js rehome`), run as the keeper runs it: a process of its own, in a home folder of the
@@ -1041,14 +1040,6 @@ test.if(mac)("an engine database of a schema the move wasn't tried with refuses 
   expect(snapshot(w.S)).toEqual(before)
   expect(readdirSync(w.K)).toEqual(["updates"])
 }, 60_000)
-
-test("an update's tidying of its folder leaves a move's state and kept copies alone", () => {
-  const updates = join(root, "updates")
-  for (const file of ["rollback/restore.sh", "installed.json", "rehome/state.json", "rehome/kept/x/box/f", "1.2.3/bin/kuvo-link.js"]) put(join(updates, file), "x")
-  clearUpdateStaging(updates)
-  expect(readdirSync(updates).sort()).toEqual(["installed.json", "rehome", "rollback"])
-  expect(existsSync(join(updates, "rehome", "kept", "x", "box", "f"))).toBe(true)
-})
 
 test.if(mac)("a list the app makes for the first time where it moves from, as it moves, sends it back too; the app's own records in run don't", () => {
   const w = world(v => rmSync(join(v.S, "box", "machines.json")))

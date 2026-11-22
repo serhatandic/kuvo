@@ -34,7 +34,7 @@ const bridge = serve(sessions)
 afterAll(() => { engine.stop(true); bridge.stop(true) })
 
 // The routes as the box answers them, with the bridge running (its process checked by the dispatcher).
-const target = (server: { port: number }) => ({ port: server.port, password: "pw" }) as any
+const target = (server: { port?: number }) => ({ port: server.port, password: "pw" }) as any
 async function ask(method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
   let status = 0
   let text = ""
