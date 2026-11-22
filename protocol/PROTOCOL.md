@@ -3089,8 +3089,13 @@ client shows it from the same routes.
     `tasks`: anything else its agent keeps going. A client shows a session at work when its own turn
     runs or it's listed here. Kept in `run/work/background.json`, per place (engine, bridge).
   - **`GET kuvo/work/background/<session>`** (`work.background.items`) → `{commands: [{id, command,
-    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}]}`: each one,
+    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}], activity?:
+    {working, asking, sessions: [{session, title, state, computer?, subagent?}]}}`: each one,
     for the bars over a client's composer, the oldest first; both empty for a session with nothing.
+    `activity`: what's at work for the conversation besides its own turn (the sessions and
+    subagents under it, on any of your computers, and a bot's sessions in its conversation), never
+    the conversation itself; `subagent` marks a subagent's row, which a client draws with its
+    subagents rather than as a session of its own.
     Every command it left running however long it has run (`agents`: a coding agent's, whose output is
     `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
     with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
@@ -10231,19 +10236,25 @@ a machine, `box/artifacts` in this Mac's app folder), and the box passes `kuvo/a
 the bridge as it answers (`503 {"message"}` while it isn't running).
 
 - **What fills it**: the tool calls of every conversation on the engine and the bridge (their
-  `metadata.files`, a write's path, the pictures a tool that makes them made), Kuvo Code's own
-  tools (`show_file` and `show_in_panel` mark it shown; `mark_final` pins it), and as each turn
-  ends, files it changed that no tool call named (a command's): in a git repository as `git
-  status` lists them, elsewhere by a walk of the folder; a bot's folder is also watched, so your
-  own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from its folder, its
-  `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from its `kuvo.seat`;
-  a chat's part, given to a bot's own conversation, is the chat's too (`trigger: "group"`); a
-  wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn. The engine's
+  `metadata.files`, a write's path, the pictures a tool that makes them made, and a picture a read
+  brought back, which shows in the conversation, `via: ["read"]`: a screenshot the agent took and
+  then looked at, Claude Code's `Read` of a picture; never anything else it only read), Kuvo
+  Code's own tools (`show_file`, of any file, and `show_in_panel` mark it shown; `mark_final` pins
+  it), and as each turn ends, files it changed that no tool call named (a command's): in a git
+  repository as `git status` lists them, elsewhere by a walk of the folder; a bot's folder is also
+  watched, so your own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from
+  its folder, its `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from
+  its `kuvo.seat`; a chat's part, given to a bot's own conversation, is the chat's too (`trigger:
+  "group"`); a wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn.
+  The engine's
   conversations run for the bridge's (`kuvo.engineFor`) aren't recorded twice. What the agent's
   browser downloads is that conversation's too (`kind: "download"`, `via: ["download"]`): the box's
   own browser, or this Mac's app for the browser in its panel, tells the bridge (`POST
   /api/kuvo/artifacts/noted {path, session, via: "download"}`, with the bridge's password; not a
   client's route). A download in a page you'd taken over is yours, and isn't recorded.
+- **One file, one artifact**: a file is named by its path as the conversation's folder (or the
+  bots' folder) spells it, however a tool reached it (through a link to that folder, like a
+  worktree opened at `/tmp/…`), so its versions are one artifact's.
 - **Versions**: one per turn (more edits in that turn make it `edits` more); changes with no turn
   running, within 5 minutes of each other, are one version. A file the record first sees changed
   has a version 0 (`before: true`), what it was, worked out from the change when it fits the file
@@ -10282,17 +10293,20 @@ An artifact:
 folder or the project it was made in), so a client offers Restore only then.
 
 A version: `{n, at, by: {kind: "agent|you|outside", session?, bot?, agent?}, turn?: {session,
-message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "show_file",
-"restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size, hash, kept,
-reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
+message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "read",
+"show_file", "restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size,
+hash, kept, reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
 restored?: <n>}`. `turn.message` is the message that started the turn; `handoff`, another bot in
 the same chat made the version before; `restored`, it put back version `n`.
 
 - `GET kuvo/artifacts?<scope>[&kind=][&pinned=1][&limit=][&before=]`: `{artifacts: [summary],
   next}`, the scope's pinned ones first, then the latest changed; a summary has `versions` (how
   many) and `latest` (the newest version) in place of the list. The scope is exactly one of
-  `session=`, `bot=`, `group=` or `project=` (400 otherwise). `next`, an opaque cursor: pass it as
-  `before` for the next page; null when there are none.
+  `session=`, `bot=`, `group=` or `project=` (400 otherwise). Each file is listed once: artifacts
+  that are one file by two paths (recorded before it was named one way) list as one, the pinned one
+  or else the latest changed. Two files of the same name in different folders are two (a client
+  tells them apart by `path`). `next`, an opaque cursor: pass it as `before` for the next page;
+  null when there are none.
 - `GET kuvo/artifacts/events?<scope>`: `application/x-ndjson`, the list now (the latest 200), then
   again each time it changes.
 - `GET kuvo/artifacts/timeline?<scope>[&by=<bot>][&limit=][&before=]`: `{entries: [{artifact, version}],

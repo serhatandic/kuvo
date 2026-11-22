@@ -642,3 +642,35 @@ fn insights_on_a_computer_without_usage_insights_shows_the_update_state(cx: &mut
     assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
     assert!(!shown(cx, "blocked-held"));
 }
+
+/// #948: with more than one computer, a picture opened in the computer shown opens in its own
+/// viewer, on screen: each computer's workspace has one, and the last one made used to take every
+/// window's pictures (so after a switch away and back, a click opened nothing you could see).
+#[gpui::test]
+fn a_picture_opens_on_screen_after_switching_computers_and_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    let here = home.read_with(cx, |home, _| home.boxes().nearest_key()).expect("this computer's key");
+    home.update_in(cx, |home, window, cx| { home.switch_to(&here, window, cx); });
+    cx.run_until_parked();
+    assert_ne!(name(&home, cx), "devbox");
+
+    let png = {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(12, 12).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("shown.png");
+    std::fs::write(&path, &png).unwrap();
+    let shown_now = workspace(&home, cx);
+    shown_now.update_in(cx, |workspace, _, cx| {
+        workspace.landing().clone().update(cx, |composer, cx| composer.attach([path.clone()], cx));
+    });
+    cx.run_until_parked();
+    click(cx, "attached-picture-0");
+    assert!(shown(cx, "picture-viewer"), "the viewer of the computer shown opens, on screen");
+}

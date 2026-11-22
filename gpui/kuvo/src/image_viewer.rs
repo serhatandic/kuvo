@@ -77,27 +77,35 @@ pub struct OpenRequest {
     pub on_change: Option<OnChange>,
 }
 
-/// Global map from window id to that window's mounted [`ImageViewer`] entity.
+/// Global map from window id to that window's mounted [`ImageViewer`] entities: one for each
+/// computer's workspace in it, only the shown one's drawn.
 #[derive(Default)]
 struct ViewerRegistry {
-    by_window: HashMap<WindowId, WeakEntity<ImageViewer>>,
+    by_window: HashMap<WindowId, Vec<WeakEntity<ImageViewer>>>,
 }
 
 impl Global for ViewerRegistry {}
 
-/// Registers `viewer` as the active unified viewer for `window`. Called once by `Workspace::new`.
+/// Registers `viewer` as one of `window`'s unified viewers. Called once by `Workspace::new`.
 pub(crate) fn register(window: &Window, viewer: &Entity<ImageViewer>, cx: &mut App) {
     let id = window.window_handle().window_id();
     let registry = cx.default_global::<ViewerRegistry>();
-    registry.by_window.retain(|_, weak| weak.upgrade().is_some());
-    registry.by_window.insert(id, viewer.downgrade());
+    for viewers in registry.by_window.values_mut() {
+        viewers.retain(|weak| weak.upgrade().is_some());
+    }
+    registry.by_window.retain(|_, viewers| !viewers.is_empty());
+    registry.by_window.entry(id).or_default().push(viewer.downgrade());
 }
 
+/// The viewer of the workspace shown in `window` (the window holds one workspace per computer; a
+/// picture opened in a hidden one's viewer would open nowhere you could see, #948).
 fn viewer_for(window: &Window, cx: &App) -> Option<Entity<ImageViewer>> {
     let id = window.window_handle().window_id();
-    cx.try_global::<ViewerRegistry>()
+    let viewers: Vec<Entity<ImageViewer>> = cx.try_global::<ViewerRegistry>()
         .and_then(|registry| registry.by_window.get(&id))
-        .and_then(WeakEntity::upgrade)
+        .map(|viewers| viewers.iter().filter_map(WeakEntity::upgrade).collect())
+        .unwrap_or_default();
+    viewers.iter().rev().find(|viewer| viewer.read(cx).shown).or(viewers.last()).cloned()
 }
 
 /// Opens the unified Stage image viewer for `window`. Returns `true` if a viewer was registered.
@@ -147,6 +155,8 @@ struct Session {
 /// Root-mounted Stage image viewer entity owned by [`crate::Workspace`].
 pub struct ImageViewer {
     live: bool,
+    /// Its workspace is the one shown in the window (one per computer there).
+    shown: bool,
     focus: FocusHandle,
     generation: u64,
     session: Option<Session>,
@@ -156,10 +166,17 @@ impl ImageViewer {
     pub fn new(live: bool, cx: &mut Context<Self>) -> Self {
         Self {
             live,
+            shown: true,
             focus: cx.focus_handle(),
             generation: 0,
             session: None,
         }
+    }
+
+    /// Its workspace shown in the window or not: pictures open in the shown one's.
+    pub(crate) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.shown = shown;
+        cx.notify();
     }
 
     pub fn is_open(&self) -> bool {
@@ -492,20 +509,20 @@ impl Render for ImageViewer {
             _ => None,
         };
 
-        // Top floating identity & action pills, starting past the window's own buttons at its top
-        // left, as the title bar does (in full screen there are none).
+        // Top floating pills: the picture's name centred over it, as Preview and Photos title it,
+        // and its actions at the right. The side columns grow alike, so the name stays centred;
+        // the left one never narrower than the window's own buttons (in full screen there are none).
         let lights = if window.is_fullscreen() { space::S5 } else { px(crate::title_bar::LIGHTS) };
         let top_bar = div()
             .flex_none()
             .w_full()
-            .pl(lights)
-            .pr(space::S5)
+            .px(space::S5)
             .pt(space::S5)
             .flex()
             .items_center()
-            .justify_between()
             .gap(space::S3)
-            // Left floating identity pill
+            .child(div().flex_1().flex_basis(px(0.)).min_w((lights - space::S5 - space::S3).max(px(0.))))
+            // The centred identity pill
             .child(
                 div()
                     .id("picture-identity-pill")
@@ -556,9 +573,11 @@ impl Render for ImageViewer {
             // Right floating action pill + prominent Close pill
             .child(
                 div()
-                    .flex_none()
+                    .flex_1()
+                    .flex_basis(px(0.))
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap(space::S2)
                     .when(has_image, |d| {
                         let copied = session.copied;

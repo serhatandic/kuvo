@@ -5,7 +5,10 @@
 // - A call's name comes with `session.tool.input.started`, its input with `session.tool.called`,
 //   and what it did with `session.tool.success`: its `metadata.files` (edits and patches, from the
 //   engine and the coding agents alike), a write's path, the pictures a tool that makes them
-//   made, and Kuvo Code's own tools (show_file, show_in_panel, mark_final).
+//   made, a picture a read brought into the conversation (a screenshot it then looked at), and
+//   Kuvo Code's own tools (show_file, show_in_panel, mark_final).
+// - A file is named as the conversation's folder (or the bots') spells it, however a tool reached
+//   it (through a link to that folder), so one file is one record.
 // - A turn runs from `session.execution.started` to its end; the message that started it is the
 //   first `session.inbox.delivered`, a wake-up's when `session.inbox.enqueued` says so.
 // - Who: the conversation's bot (its folder, its `kuvo.bot` metadata, or the bots' folders), a
@@ -17,6 +20,8 @@ import { readdirSync, readFileSync } from "node:fs"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unapplyExactly } from "./changes"
+import { kindOf } from "./kinds"
+import { spelledIn } from "./paths"
 import type { ArtifactStore, Made, Trigger } from "./store"
 import type { Handover } from "../library/store"
 import { attachmentNote } from "../../shared/attachment-paths"
@@ -63,6 +68,8 @@ export interface Source {
 const writes = new Set(["write", "Write", "create", "write_file"])
 /** Tools whose output files are what they made (a picture), not what they read. */
 const makers = new Set(["generate_image", "browser_screenshot"])
+/** Tools that read a file by its path: a picture one brings back shows in the conversation. */
+const reads = new Set(["read", "Read", "read_file", "view_image"])
 /** How a wake-up's note starts, as it arrives in its conversation. */
 const wakeMarker = "[Wake-up] "
 /** Most of each kept by the message it's for: conversations' details, chats' parts, wake-ups. */
@@ -261,7 +268,7 @@ export class Recorder {
     const context = await this.context(source, id, live, directory)
     if (!context) return
     const { made, folder } = context
-    const absolute = (path: string) => (isAbsolute(path) ? path : resolve(folder ?? "/", path))
+    const absolute = (path: string) => spelledIn(isAbsolute(path) ? path : resolve(folder ?? "/", path), [folder, this.options.bots])
     const name = toolName(call.name ?? "")
     const input = call.input ?? {}
 
@@ -282,7 +289,7 @@ export class Recorder {
         if (part?.type !== "file" || typeof part.uri !== "string" || !part.uri.startsWith("file:")) continue
         let path: string
         try {
-          path = fileURLToPath(part.uri)
+          path = absolute(fileURLToPath(part.uri))
         } catch {
           continue
         }
@@ -290,6 +297,9 @@ export class Recorder {
         if (name === "generate_image") this.handed(made(name), path, "generated", at)
       }
     }
+    // A picture a read brought back, which shows in the conversation (a screenshot it took, then
+    // looked at): one of the conversation's. Not what else it read.
+    if (reads.has(name)) for (const path of pictures(content, input, absolute)) await this.store.change(path, made("read"))
     // Kuvo Code's own tools.
     if ((name === "show_file" || name === "show_in_panel") && typeof input.path === "string") await this.store.shown(absolute(input.path), made(name))
     // What's shown in the conversation itself is handed over; what's opened in the panel isn't.
@@ -428,6 +438,28 @@ function remember<Value>(map: Map<string, Value>, key: string, value: Value) {
     if (map.size <= remembered) break
     map.delete(old)
   }
+}
+
+/**
+ * The picture files a read brought back: by their `file:` address, or (carried as data, as Claude
+ * Code's are) the file it read, when that's a picture.
+ */
+function pictures(content: unknown, input: Record<string, any>, absolute: (path: string) => string): string[] {
+  const found = new Set<string>()
+  const read = [input.path, input.filePath, input.file_path, input.absolute_path].find((each) => typeof each === "string" && each)
+  for (const part of Array.isArray(content) ? content : []) {
+    if (part?.type !== "file" || typeof part.uri !== "string") continue
+    const mime = typeof part.mime === "string" ? part.mime : /^data:([^;,]+)/.exec(part.uri)?.[1] ?? ""
+    if (!mime.startsWith("image/")) continue
+    let path: string | undefined
+    if (part.uri.startsWith("file:")) {
+      try {
+        path = fileURLToPath(part.uri)
+      } catch {}
+    } else if (part.uri.startsWith("data:") && read) path = read
+    if (path && kindOf(path) === "image") found.add(absolute(path))
+  }
+  return [...found]
 }
 
 /** A tool's own name, without its server's (`kuvo-browser_show_file` is `show_file`). */

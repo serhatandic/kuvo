@@ -57,6 +57,9 @@ pub struct ActivitySession {
     pub title: String,
     pub state: WorkState,
     pub computer: Option<String>,
+    /// A subagent's row, drawn with the conversation's subagents rather than as a session.
+    #[serde(default)]
+    pub subagent: bool,
 }
 
 /// What runs for one conversation besides its turn, the oldest first.

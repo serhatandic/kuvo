@@ -510,6 +510,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "outputs-popover-bot", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
     // A long schedule in the same popover: a few of each, then Show All (it scrolls as one).
     Screen { slug: "outputs-popover-bot-long", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
+    // The Outputs popover (#932): every section, some folded, loading, and the side chats.
+    Screen { slug: "outputs-popover-full", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "outputs-popover-collapsed", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_folded) },
+    Screen { slug: "outputs-popover-loading", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_loading) },
     Screen { slug: "stage-viewer-single", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_single_picture) },
 ];
 
@@ -629,6 +633,20 @@ fn show_more_once(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Wo
 fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.open_activity(window, cx));
+}
+
+fn conversation_activity_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.fold_section("outputs", cx);
+        activity.fold_section("processes", cx);
+        activity.open_activity(window, cx);
+    });
+}
+
+fn conversation_activity_loading(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_activity_loading(window, cx));
 }
 
 fn conversation_activity_images(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2676,6 +2694,43 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "session-menu-held" {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
+            }
+            if matches!(screen.slug, "outputs-popover-full" | "outputs-popover-collapsed" | "outputs-popover-loading") {
+                use serde_json::json;
+                stand_in.set_background("ses_signup", json!({
+                    "commands": [{ "id": "sh_dev", "command": "npm run dev", "started": NOW - 12. * 60_000. }],
+                    "subagents": [
+                        { "session": "ses_sub0", "title": "Check the signup forms", "since": NOW - 60_000., "model": "GPT-5.4" },
+                        { "session": "ses_sub1", "title": "Run the browser tests", "since": NOW - 30_000., "model": "Claude Sonnet 4.6" },
+                    ],
+                }), &[]);
+                stand_in.set_subagents_done("ses_signup", ["Claude Opus 4.6", "GPT-5.4", "Gemini 3 Pro", "Claude Sonnet 4.6", "GPT-5.4", "Claude Sonnet 4.6"].iter().enumerate().map(|(ix, model)| json!({
+                    "session": format!("ses_done{ix}"), "title": format!("Finished check {ix}"), "started": NOW - 3_600_000., "ended": NOW - 600_000., "state": "finished", "model": model,
+                })).collect());
+                let mini = |r: u8, g: u8, b: u8| {
+                    let img = image::RgbImage::from_fn(240, 150, |x, y| if y < 18 { image::Rgb([r / 2, g / 2, b / 2]) } else if x > 20 && x < 220 && y > 40 && y < 110 { image::Rgb([r, g, b]) } else { image::Rgb([236, 238, 242]) });
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut out, image::ImageFormat::Png).expect("png");
+                    out.into_inner()
+                };
+                for (ix, (name, colour)) in [("insights-overview-light.png", (64u8, 132u8, 240u8)), ("insights-overview-dark.png", (40, 44, 60)), ("signup-narrow.png", (236, 120, 80))].iter().enumerate() {
+                    stand_in.add_output("ses_signup", json!({
+                        "id": format!("art_img_{ix:021}"), "path": format!("/Users/sam/Projects/website/shots/{name}"), "name": name,
+                        "kind": "image", "type": "image/png", "latest": { "n": 1 }
+                    }), &mini(colour.0, colour.1, colour.2));
+                }
+                for (ix, path) in ["/Users/sam/Projects/website/src/fleet.rs", "/Users/sam/Projects/website/tests/fleet.rs", "/Users/sam/Projects/website/notes/signup-review.md"].iter().enumerate() {
+                    let name = path.rsplit('/').next().unwrap();
+                    stand_in.add_output("ses_signup", json!({
+                        "id": format!("art_doc_{ix:021}"), "path": path, "name": name,
+                        "kind": if name.ends_with(".md") { "document" } else { "code" }, "type": "text/plain", "latest": { "n": 1 }
+                    }), b"// fleet");
+                }
+                let client = BoxClient::new(stand_in.clone());
+                stand_in.answer_side_questions(&["Yes, it's atomic.", "Three of them."]);
+                let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None);
+                let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None);
+                stand_in.set_queue("ses_signup", vec![]);
             }
             if matches!(screen.slug, "conversation-activity-popover" | "conversation-header-running") {
                 use serde_json::json;

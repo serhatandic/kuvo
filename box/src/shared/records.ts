@@ -81,6 +81,8 @@ export interface ActivityFact {
   state: "working" | "asking";
   line: string[];
   bot?: string;
+  /** A subagent's (the engine's or a coding agent's), not a session of its own. */
+  subagent?: true;
 }
 
 /** What one peer told this box of its agents (`run/peer-agents.json`, by its key): when it said

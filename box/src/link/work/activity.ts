@@ -25,7 +25,7 @@ export function localActivity(list: Kept | null = keptList()): ActivityFact[] {
       parents.push(above?.parent, ...(above?.line ?? []));
     }
     return [{
-      session, line: [...line], ...(bot ? { bot } : {}),
+      session, line: [...line], ...(bot ? { bot } : {}), ...(facts.kind === "subagent" ? { subagent: true } : {}),
       title: facts.title ?? (facts.kind === "subagent" ? "Subagent" : "New Session"),
       state: asking ? "asking" as const : "working" as const,
     }];
@@ -52,13 +52,16 @@ export function activityFacts(list: Kept | null = keptList()): (ActivityFact & {
   return [...rows.values()];
 }
 
-export function activityOf(rows: ReturnType<typeof activityFacts>, root?: string, bot?: string): Activity {
+/** The sessions at work under `root` (its own included) and the bot's; `besides`: what works for
+ * `root` besides its own turn, so it's left out (a conversation's activity never lists itself). */
+export function activityOf(rows: ReturnType<typeof activityFacts>, root?: string, bot?: string, besides = false): Activity {
   const sessions: Activity["sessions"][number][] = [];
   const counts = { working: 0, asking: 0 };
-  for (const { session, title, state, line, bot: owner, computer } of rows) {
+  for (const { session, title, state, line, bot: owner, computer, subagent } of rows) {
+    if (besides && session === root) continue;
     if (!(root && (session === root || line.includes(root))) && !(bot && owner === bot)) continue;
     counts[state]++;
-    sessions.push({ session, title, state, ...(computer ? { computer } : {}) });
+    sessions.push({ session, title, state, ...(computer ? { computer } : {}), ...(subagent ? { subagent } : {}) });
   }
   sessions.sort((a, b) => a.session.localeCompare(b.session));
   return { ...counts, sessions };

@@ -48,8 +48,15 @@ pub struct WorkBars {
     work_pending: bool,
     stopping_all: bool,
     legacy_activity: Activity,
+    /// What its box said of it at least once (or couldn't): the popover draws once all have.
+    background_heard: bool,
+    work_heard: bool,
+    /// Sessions at work for it (its subagents are counted apart, in `subagent_rows`).
     active_rows: Rc<[SessionRow]>,
+    subagent_rows: Rc<[SessionRow]>,
     recent_rows: Rc<[SessionRow]>,
+    /// The popover's sections folded shut, kept while the conversation's open.
+    collapsed: HashSet<&'static str>,
     work: Option<Work>,
     handle: PopoverMenuHandle,
     trigger_focus: FocusHandle,
@@ -89,8 +96,12 @@ impl WorkBars {
             work_pending: false,
             stopping_all: false,
             legacy_activity: Activity::default(),
+            background_heard: false,
+            work_heard: false,
             active_rows: Rc::from([]),
+            subagent_rows: Rc::from([]),
             recent_rows: Rc::from([]),
+            collapsed: HashSet::new(),
             work: None,
             handle: Default::default(),
             trigger_focus: cx.focus_handle(),
@@ -185,6 +196,7 @@ impl WorkBars {
         self.work_fresh = false;
         self.work_target = None;
         self.work_pending = false;
+        self.work_heard = false;
         self.rebuild_sessions();
         self.work_reads += 1;
         self._work_follow = None;
@@ -231,6 +243,7 @@ impl WorkBars {
     }
 
     fn work_disconnected(&mut self, cx: &mut Context<Self>) {
+        self.work_heard = true;
         self.work_reads += 1;
         self.work_pending = false;
         self.work_connected = false;
@@ -266,6 +279,7 @@ impl WorkBars {
                 this.work_seen = at;
                 this.take_work(work);
             } else {
+                this.work_heard = true;
                 this.work_stale();
                 // An unchanged feed may produce no more events after this failed detail read.
                 this.tasks.push(cx.spawn(async move |this, cx| {
@@ -285,6 +299,7 @@ impl WorkBars {
         match update {
             Followed::Now(background) => self.take_background(background, cx),
             Followed::Failed(_) => {
+                self.background_heard = true;
                 self.background_reads += 1;
                 if std::mem::replace(&mut self.background_fresh, false) {
                     self.rebuild_sessions();
@@ -299,6 +314,7 @@ impl WorkBars {
         let sessions_changed = !self.background_fresh || self.background.activity != background.activity
             || (background.activity.is_none() && self.background.subagents != background.subagents);
         self.background_fresh = true;
+        self.background_heard = true;
         self.background = background;
         if sessions_changed {
             self.rebuild_sessions();
@@ -325,6 +341,23 @@ impl WorkBars {
 
     pub fn background(&self) -> &Background {
         &self.background
+    }
+
+    /// Its box has said what runs for it (and its bot's work, for a bot's conversation), or that it
+    /// couldn't: before then the popover shows it loading rather than drawing part of it.
+    fn heard(&self) -> bool {
+        !self.live || (self.background_heard && (self.bot.is_none() || self.work_heard))
+    }
+
+    fn is_collapsed(&self, section: &str) -> bool {
+        self.collapsed.contains(section)
+    }
+
+    fn fold(&mut self, section: &'static str, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(section) {
+            self.collapsed.insert(section);
+        }
+        cx.notify();
     }
 
     fn activity(&self) -> &Activity {
@@ -355,6 +388,7 @@ impl WorkBars {
     }
 
     fn take_work(&mut self, work: Work) {
+        self.work_heard = true;
         let changed = !self.work_fresh || self.work.as_ref() != Some(&work);
         self.work_fresh = true;
         self.work = Some(work);
@@ -375,26 +409,27 @@ impl WorkBars {
             let mut ids = HashSet::new();
             for session in sessions.iter().filter(|row| row.session != self.session && row.is_at_work()) {
                 ids.insert(session.session.as_str());
-                activity.sessions.push(ActivitySession { session: session.session.clone(), title: session.title.clone().unwrap_or_else(|| "Session".into()), state: session.state, computer: None });
+                activity.sessions.push(ActivitySession { session: session.session.clone(), title: session.title.clone().unwrap_or_else(|| "Session".into()), state: session.state, computer: None, subagent: false });
             }
             for subagent in self.background.subagents.iter().filter(|row| row.session != self.session && ids.insert(&row.session)) {
                 let state = if subagent.asking { WorkState::Asking } else { WorkState::Working };
-                activity.sessions.push(ActivitySession { session: subagent.session.clone(), title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()), state, computer: None });
+                activity.sessions.push(ActivitySession { session: subagent.session.clone(), title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()), state, computer: None, subagent: true });
             }
             activity.asking = activity.sessions.iter().filter(|row| row.state == WorkState::Asking).count();
             activity.working = activity.sessions.len() - activity.asking;
             self.legacy_activity = activity;
         }
-        let active = self.activity().sessions.iter().map(|row| {
+        let (subagents, active): (Vec<_>, Vec<_>) = self.activity().sessions.iter().map(|row| {
             let provider = sessions.iter().find(|session| session.session == row.session)
                 .and_then(work_session_provider);
-            SessionRow { id: row.session.clone(), title: row.title.clone(), state: row.state, provider, computer: row.computer.clone() }
-        }).collect::<Vec<_>>();
+            SessionRow { id: row.session.clone(), title: row.title.clone(), state: row.state, provider, computer: row.computer.clone(), subagent: row.subagent }
+        }).partition(|row| row.subagent);
         let recent = sessions.iter().filter(|session| session.session != self.session
             && matches!(session.state, WorkState::Finished | WorkState::Failed | WorkState::Stopped)
-            && !active.iter().any(|row| row.id == session.session))
+            && !active.iter().chain(&subagents).any(|row| row.id == session.session))
             .map(SessionRow::from_work).collect::<Vec<_>>();
         self.active_rows = active.into();
+        self.subagent_rows = subagents.into();
         self.recent_rows = recent.into();
     }
 
@@ -474,6 +509,7 @@ struct SessionRow {
     state: WorkState,
     provider: Option<String>,
     computer: Option<String>,
+    subagent: bool,
 }
 
 impl SessionRow {
@@ -484,6 +520,7 @@ impl SessionRow {
             state: session.state,
             provider: work_session_provider(session),
             computer: None,
+            subagent: false,
         }
     }
 }
@@ -748,6 +785,24 @@ impl WorkBars {
         card.update(cx, |card, cx| card.show_outputs_kind_with(kind, client, live, window, cx));
     }
 
+    /// Its popover opened still loading, as it shows until every section has been read (shots).
+    #[cfg(feature = "stand-in")]
+    pub fn open_activity_loading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_activity_with_wakes(false, window, cx);
+        let Some(card) = self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()) else { return };
+        card.update(cx, |card, cx| {
+            card.held_loading = true;
+            cx.notify();
+        });
+    }
+
+    /// A section of its popover folded, as if its heading was clicked (shots).
+    #[cfg(feature = "stand-in")]
+    pub fn fold_section(&mut self, section: &'static str, cx: &mut Context<Self>) {
+        self.collapsed.insert(section);
+        cx.notify();
+    }
+
     #[cfg(feature = "stand-in")]
     pub fn open_activity_finished_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_activity_with_wakes(false, window, cx);
@@ -770,6 +825,8 @@ impl WorkBars {
 }
 
 const STRIP_IMAGES: usize = 3;
+/// The most subagent marks in the Subagents row, each once.
+const SUBAGENT_MARKS: usize = 4;
 const GRID_THUMB_LIMIT: usize = 24;
 const RECENT_FILES: usize = 3;
 const INLINE_ACTIVE_SESSIONS: usize = 5;
@@ -805,12 +862,23 @@ struct ActivityCard {
     more: Option<Task<()>>,
     loaded_pages: usize,
     wake_schedule: Option<Entity<WakeSchedule>>,
+    /// Draws again as its schedule is read (it waits for it before drawing).
+    _wake_read: Option<Subscription>,
     force_wakes: bool,
     _activity_subscription: Subscription,
     _outputs: Option<(Follow<Followed<Outputs>>, Task<()>)>,
     /// The conversation's side chats, followed while the popover's open.
     side: Option<kuvo_box::side_chats::SideThreads>,
+    /// Its side chats were read, or couldn't be, or its box keeps none.
+    side_heard: bool,
     _side: Option<(Follow<Followed<kuvo_box::side_chats::SideThreads>>, Task<()>)>,
+    /// Its subagents at work and done, as its box lists them (none: a box from before).
+    subagents: Option<kuvo_box::subagents::Subagents>,
+    subagents_heard: bool,
+    _subagents: Option<(Follow<Followed<kuvo_box::subagents::Subagents>>, Task<()>)>,
+    /// Held loading, to show how it looks (shots).
+    #[cfg(feature = "stand-in")]
+    held_loading: bool,
 }
 
 impl Focusable for ActivityCard {
@@ -868,6 +936,7 @@ impl ActivityCard {
             reading: None,
             more: None,
             loaded_pages: 1,
+            _wake_read: schedule.as_ref().map(|schedule| cx.observe(schedule, |_, _, cx| cx.notify())),
             wake_schedule: schedule,
             force_wakes,
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
@@ -875,14 +944,22 @@ impl ActivityCard {
                 let (client, live, sessions, recent) = (bars.client.clone(), bars.live, bars.active_rows.clone(), bars.recent_rows.clone());
                 let wake_source = (this.wake_schedule.is_none() && bars.wake_label().is_some()).then(|| bars.wake_source());
                 if let Some(source) = wake_source {
-                    this.wake_schedule = Some(cx.new(|cx| WakeSchedule::embedded(source, cx)));
+                    let schedule = cx.new(|cx| WakeSchedule::embedded(source, cx));
+                    this._wake_read = Some(cx.observe(&schedule, |_, _, cx| cx.notify()));
+                    this.wake_schedule = Some(schedule);
                 }
                 this.read_providers(client, live, &sessions, &recent, cx);
                 cx.notify();
             }),
             _outputs: None,
             side: None,
+            side_heard: false,
             _side: None,
+            subagents: None,
+            subagents_heard: false,
+            _subagents: None,
+            #[cfg(feature = "stand-in")]
+            held_loading: false,
         };
         card.read_providers(client.clone(), live, sessions, recent, cx);
         if live {
@@ -908,10 +985,11 @@ impl ActivityCard {
                 let task = cx.spawn(async move |this, cx| {
                     while let Ok(update) = updates.recv().await {
                         let taken = this.update(cx, |this, cx| {
+                            this.side_heard = true;
                             if let Followed::Now(threads) = update {
                                 this.side = Some(threads);
-                                cx.notify();
                             }
+                            cx.notify();
                         });
                         if taken.is_err() {
                             break;
@@ -921,39 +999,150 @@ impl ActivityCard {
                 card._side = Some((follow, task));
             } else {
                 card.side = client.side_threads(&session).ok();
+                card.side_heard = true;
             }
+        } else {
+            card.side_heard = true;
+        }
+        // Its subagents, at work and done, for the compact row that opens the side panel's tab.
+        if client.gate().has(kuvo_box::subagents::SUBAGENTS) {
+            if live {
+                let follow = client.follow_subagents(&session, Timing::default());
+                let updates = follow.updates().clone();
+                let task = cx.spawn(async move |this, cx| {
+                    while let Ok(update) = updates.recv().await {
+                        let taken = this.update(cx, |this, cx| {
+                            this.subagents_heard = true;
+                            if let Followed::Now(list) = update {
+                                this.subagents = Some(list);
+                            }
+                            cx.notify();
+                        });
+                        if taken.is_err() {
+                            break;
+                        }
+                    }
+                });
+                card._subagents = Some((follow, task));
+            } else {
+                card.subagents = client.subagents(&session).ok();
+                card.subagents_heard = true;
+            }
+        } else {
+            card.subagents_heard = true;
         }
         card
     }
 
-    /// The conversation's side chats, each opening its tab in the side panel.
+    /// Every section has what its box said (or that it couldn't say): until then the popover
+    /// shows it loading, so nothing moves as each arrives.
+    fn loaded(&self, bars: &WorkBars, cx: &App) -> bool {
+        #[cfg(feature = "stand-in")]
+        if self.held_loading {
+            return false;
+        }
+        bars.heard()
+            && (self.outputs.is_some() || self.outputs_failed)
+            && self.side_heard
+            && self.subagents_heard
+            && self.wake_schedule.as_ref().is_none_or(|schedule| schedule.read(cx).is_read())
+    }
+
+    /// The conversation's side chats, the latest first as its box lists them, each opening its tab
+    /// in the side panel (as Codex's: a chat bubble and its title; "Answering…" while it is).
     fn side_chats(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
         let threads = self.side.as_ref().filter(|side| !side.threads.is_empty())?;
         let c = cx.theme().colors.clone();
-        let now = bars.now.unwrap_or_else(crate::time::now_ms);
-        Some(
-            div()
-                .debug_selector(|| "activity-side-chats".into())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(px(2.))
-                .child(div().px(space::S2).pb(px(2.)).text_ui(TypeSize::Small).medium().text_color(c.text).child("Side chats"))
-                .children(threads.threads.iter().map(|thread| {
-                    let id = thread.id.clone();
-                    let row = TextRow::truncated(format!("activity-side-chat-{id}"), thread.title.clone())
-                        .debug_selector(format!("activity-side-chat-{id}"))
-                        .leading(Icon::new(IconName::Message).size(IconSize::Nav).color(c.icon))
-                        .trailing(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if thread.answering { "Answering…".to_owned() } else { crate::time::ago(thread.latest, now) }));
-                    popover_row(row, cx).on_click(cx.listener(move |this, _, window, cx| {
-                        this.dismiss(cx);
-                        this.open_in_panel(crate::panel::Arrival::SideChat(id.clone()), window, cx);
-                    }))
-                }))
-                .into_any_element(),
-        )
+        let rows = threads.threads.iter().map(|thread| {
+            let id = thread.id.clone();
+            let mut row = TextRow::truncated(format!("activity-side-chat-{id}"), thread.title.clone())
+                .debug_selector(format!("activity-side-chat-{id}"))
+                .leading(Icon::new(IconName::Message).size(IconSize::Nav).color(c.icon));
+            if thread.answering {
+                row = row.trailing(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Answering…"));
+            }
+            popover_row(row, cx).on_click(cx.listener(move |this, _, window, cx| {
+                this.dismiss(cx);
+                this.open_in_panel(crate::panel::Arrival::SideChat(id.clone()), window, cx);
+            })).into_any_element()
+        }).collect();
+        Some(self.section(bars, "side-chats", "Side chats", None, None, rows, cx))
+    }
+
+    /// Its subagents in one row, as Codex's: their marks and how many work, wait on you and are
+    /// done ("2 working · 6 done"), opening the side panel's Subagents tab. As its box lists them;
+    /// a box from before lists only those at work.
+    fn subagents(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
+        let c = cx.theme().colors.clone();
+        let mut marks: Vec<Option<String>> = Vec::new();
+        let (working, asking, done) = if let Some(list) = &self.subagents {
+            for model in list.active.iter().map(|row| row.model.as_deref()).chain(list.done.iter().map(|row| row.model.as_deref())) {
+                marks.push(model.and_then(infer_provider_from_model_id).map(str::to_owned));
+            }
+            let asking = list.active.iter().filter(|row| row.asking).count();
+            (list.active.len() - asking, asking, list.done.len())
+        } else {
+            let rows = &bars.subagent_rows;
+            for row in rows.iter() {
+                marks.push(row.provider.clone().or_else(|| self.providers.get(&row.id).cloned()));
+            }
+            let asking = rows.iter().filter(|row| row.state == WorkState::Asking).count();
+            (rows.len() - asking, asking, 0)
+        };
+        if working + asking + done == 0 {
+            return None;
+        }
+        // Each mark once, in the order they're listed (the newest at work first).
+        let mut seen = HashSet::new();
+        let marks: Vec<Option<String>> = marks.into_iter().filter(|mark| seen.insert(mark.clone())).take(SUBAGENT_MARKS).collect();
+        let mut words = Vec::new();
+        if working > 0 { words.push(format!("{working} working")); }
+        let attention = (asking > 0).then(|| {
+            let start = words.iter().map(|word: &String| word.len() + 3).sum::<usize>();
+            let word = format!("{asking} waiting for you");
+            let range = start..start + word.len();
+            words.push(word);
+            range
+        });
+        if done > 0 { words.push(format!("{done} done")); }
+        let label = words.join(" · ");
+        let icons = div().flex().flex_none().items_center().gap(px(6.)).children(marks.into_iter().map(|mark| {
+            let (selector, face) = match mark.as_deref().and_then(session_mark) {
+                Some((service, path, color)) => (format!("activity-subagents-mark-{service}"), Mark::new(path).size(px(14.)).color(color.unwrap_or(c.text)).into_any_element()),
+                None => ("activity-subagents-mark-unknown".to_owned(), Icon::new(IconName::Bot).size(IconSize::Nav).color(c.icon).into_any_element()),
+            };
+            div().debug_selector(move || selector).flex().flex_none().items_center().justify_center().size(px(16.)).child(face)
+        }));
+        let hover = c.hover;
+        let row = div()
+            .id("activity-subagents-row")
+            .debug_selector(|| "activity-subagents-row".into())
+            .w_full()
+            .min_w_0()
+            .h(px(28.))
+            .px(space::S2)
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .rounded(radius::NAV)
+            .tab_index(0)
+            .cursor_pointer()
+            .hover(move |d| d.bg(hover))
+            .focus_visible(|d| d.bg(hover).border_1().border_color(c.accent))
+            .tooltip(|_, cx| Tooltip::new("Open Subagents in the side panel").build(cx))
+            .child(icons)
+            .child({
+                let selector = format!("activity-subagents-label-{label}");
+                div().debug_selector(move || selector).flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted)
+                    .child(kuvo_ui::small::status_words(label, attention, cx))
+            })
+            .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.dismiss(cx);
+                this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
+            }))
+            .into_any_element();
+        Some(self.section(bars, "subagents", "Subagents", None, None, vec![row], cx))
     }
 
     fn show_outputs_kind(&mut self, kind: OutputKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -1261,30 +1450,20 @@ impl ActivityCard {
         cx.emit(DismissEvent);
     }
 
-    fn outputs(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    fn outputs(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
         let c = cx.theme().colors.clone();
         let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
 
         if self.outputs_failed && artifacts.is_empty() {
-            return Some(
-                div()
-                    .debug_selector(|| "activity-outputs".into())
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .child(
-                        div()
-                            .px(space::S2)
-                            .py(space::S1_5)
-                            .text_ui(TypeSize::Caption)
-                            .text_color(c.text_muted)
-                            .child("Couldn’t read outputs."),
-                    )
-                    .into_any_element(),
-            );
+            let note = div()
+                .px(space::S2)
+                .py(space::S1)
+                .text_ui(TypeSize::Caption)
+                .text_color(c.text_muted)
+                .child("Couldn’t read outputs. They show again once its computer answers.")
+                .into_any_element();
+            return Some(self.section(bars, "outputs", "Outputs", None, None, vec![note], cx));
         }
 
         // Never render an "Outputs" heading over an empty body.
@@ -1302,21 +1481,8 @@ impl ActivityCard {
         let has_hidden_files = hidden_docs + hidden_data + hidden_code > 0;
         let can_see_all = more_images > 0 || has_hidden_files || has_next || (!images.is_empty() && !files.is_empty());
 
-        let header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px(space::S2)
-            .pb(px(2.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S1_5)
-                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Outputs"))
-                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())),
-            )
-            .children(can_see_all.then(|| {
+        let count = div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string()).into_any_element();
+        let see_all = can_see_all.then(|| {
                 let hover = c.hover;
                 div()
                     .id("activity-see-all-outputs")
@@ -1336,7 +1502,8 @@ impl ActivityCard {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.show_outputs_kind(OutputKind::All, window, cx);
                     }))
-            }));
+                    .into_any_element()
+            });
 
         let visible_images: Vec<&Artifact> = images.iter().take(STRIP_IMAGES).copied().collect();
         let captions = strip_captions(&visible_images.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
@@ -1465,21 +1632,13 @@ impl ActivityCard {
             kind_pills.push(self.kind_more_pill("activity-more-files", "More files…".into(), IconName::File, OutputKind::All, cx));
         }
 
+        let folders = telling_folders(artifacts);
         let files_block = (!files.is_empty()).then(|| {
             div()
                 .flex()
                 .flex_col()
                 .children(files.iter().take(RECENT_FILES).map(|artifact| {
-                    let selector = format!("activity-output-{}", artifact.id);
-                    let clicked = (*artifact).clone();
-                    popover_row(
-                        TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
-                            .debug_selector(selector)
-                            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                    self.file_row(artifact, &folders, cx)
                 }))
                 .when(!kind_pills.is_empty(), |d| {
                     d.child(
@@ -1496,20 +1655,98 @@ impl ActivityCard {
                 })
         });
 
-        Some(
-            div()
-                .debug_selector(|| "activity-outputs".into())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(space::S1)
-                .child(header)
-                .children(media_strip)
-                .children(files_block)
-                .into_any_element(),
-        )
+        let body = media_strip.map(IntoElement::into_any_element).into_iter()
+            .chain(files_block.map(IntoElement::into_any_element))
+            .collect();
+        Some(self.section(bars, "outputs", "Outputs", Some(count), see_all, body, cx))
+    }
+
+    /// One of the popover's sections: its heading folds it away and back (a chevron beside it, as
+    /// Codex's does), with `meta` after the chevron and `trailing` at its end; folded, only the
+    /// heading stays, its counts still saying what's under it. Remembered while the conversation's
+    /// open.
+    #[allow(clippy::too_many_arguments)]
+    fn section(
+        &self,
+        bars: &WorkBars,
+        key: &'static str,
+        title: &'static str,
+        meta: Option<AnyElement>,
+        trailing: Option<AnyElement>,
+        body: Vec<AnyElement>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let collapsed = bars.is_collapsed(key);
+        let hover = c.hover;
+        let fold_id = format!("activity-fold-{key}");
+        let fold_selector = fold_id.clone();
+        let header_selector = format!("activity-{key}-header");
+        let selector = format!("activity-{key}");
+        let toggle = div()
+            .id(SharedString::from(fold_id))
+            .debug_selector(move || fold_selector)
+            .flex_1()
+            .min_w_0()
+            .h(px(24.))
+            .flex()
+            .items_center()
+            .gap(space::S1)
+            .px(space::S2)
+            .rounded(radius::NAV)
+            .tab_index(0)
+            .cursor_pointer()
+            .hover(move |d| d.bg(hover))
+            .focus_visible(|d| d.bg(hover).border_1().border_color(c.accent))
+            .tooltip(move |_, cx| Tooltip::new(if collapsed { format!("Show {title}") } else { format!("Hide {title}") }).build(cx))
+            .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(title))
+            .child(
+                Icon::new(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown })
+                    .size(IconSize::XSmall)
+                    .color(c.text_faint),
+            )
+            .children(meta.map(|meta| div().ml(px(2.)).min_w_0().truncate().child(meta)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.activity.update(cx, |bars, cx| bars.fold(key, cx)).ok();
+                cx.notify();
+            }));
+        div()
+            .debug_selector(move || selector)
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(2.))
+            .child(
+                div()
+                    .debug_selector(move || header_selector)
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(space::S1)
+                    .child(toggle)
+                    .children(trailing.map(|trailing| div().flex_none().child(trailing))),
+            )
+            .when(!collapsed, |d| d.children(body))
+            .into_any_element()
+    }
+
+    /// A file it made, opening its preview: its name, and its folder beside it where another
+    /// listed has the same name (two `fleet.rs`, one in `src`, one in `tests`).
+    fn file_row(&self, artifact: &Artifact, folders: &HashMap<String, String>, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let c = cx.theme().colors.clone();
+        let selector = format!("activity-output-{}", artifact.id);
+        let clicked = artifact.clone();
+        let mut row = TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
+            .debug_selector(selector)
+            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)));
+        if let Some(folder) = folders.get(&artifact.id) {
+            row = row.secondary(folder.clone(), false, Some(c.text_faint)).secondary_size(TypeSize::Caption);
+        }
+        popover_row(row, cx).on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
     }
 
     fn kind_more_pill(
@@ -1549,6 +1786,7 @@ impl ActivityCard {
     fn all_outputs_view(&self, active_kind: OutputKind, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
+        let folders = telling_folders(artifacts);
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
         let count_of = |k: OutputKind| -> usize {
             match k {
@@ -1714,16 +1952,7 @@ impl ActivityCard {
                     d.child(div().px(space::S2).py(space::S3).text_ui(TypeSize::Caption).text_color(c.text_muted).child("No files of this kind."))
                 })
                 .children(filtered.into_iter().map(|artifact| {
-                    let selector = format!("activity-output-{}", artifact.id);
-                    let clicked = artifact.clone();
-                    popover_row(
-                        TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
-                            .debug_selector(selector)
-                            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                    self.file_row(artifact, &folders, cx)
                 }))
                 .children(has_next.then(|| {
                     div().pt(space::S1).child(
@@ -1927,23 +2156,19 @@ impl ActivityCard {
         let (label, face) = if let Some((id, look)) = bot {
             (format!("bot-{id}"), crate::bot_face::still_avatar(&id, &look, kuvo_ui::bot::State::Idle, inner))
         } else if let Some((service, path, color)) = provider.and_then(session_mark) {
-            (service.to_owned(), Mark::new(path).size(px(11.)).color(color.unwrap_or(c.text)).into_any_element())
+            (service.to_owned(), Mark::new(path).size(px(14.)).color(color.unwrap_or(c.text)).into_any_element())
         } else {
-            ("unknown".into(), Icon::new(IconName::Bot).size(IconSize::XSmall).color(c.icon).into_any_element())
+            ("unknown".into(), Icon::new(IconName::Bot).size(IconSize::Nav).color(c.icon).into_any_element())
         };
         let selector = format!("activity-{location}-avatar-{}-{label}", session.id);
+        // (The mark alone, as the usage rings draw it: no disc behind it.)
         div().debug_selector(move || selector)
             .flex().flex_none().items_center().justify_center().size(size)
-            .rounded(radius::PILL).border_1().border_color(c.border).bg(c.sunken)
             .child(face).into_any_element()
     }
 
+    /// A session's row, opening its conversation (on its computer).
     fn session_row(&self, bars: &WorkBars, session: &SessionRow, active: bool, cx: &Context<Self>) -> AnyElement {
-        self.session_row_in(bars, session, active, false, cx)
-    }
-
-    /// A session's row; `in_panel`: a subagent, opening in the side panel's Subagents tab.
-    fn session_row_in(&self, bars: &WorkBars, session: &SessionRow, active: bool, in_panel: bool, cx: &Context<Self>) -> AnyElement {
         let c = &cx.theme().colors;
         let avatar = self.avatar(bars, session, "row", cx);
         let id = session.id.clone();
@@ -1971,11 +2196,7 @@ impl ActivityCard {
                 .flex_1()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dismiss(cx);
-                    if in_panel {
-                        this.open_in_panel(crate::panel::Arrival::Subagents(Some(id.clone())), window, cx);
-                    } else {
-                        this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
-                    }
+                    this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
                 })),
             )
             .children((active && local).then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
@@ -1994,47 +2215,32 @@ impl ActivityCard {
         }
     }
 
+    /// The sessions at work for it (those it started, a bot's), each opening its conversation, and
+    /// a bot's finished ones behind a row of their own. Its subagents are counted apart.
     fn sessions(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
         let sessions = &bars.active_rows;
         let recent = &bars.recent_rows;
         if sessions.is_empty() && recent.is_empty() { return None; }
         let c = cx.theme().colors.clone();
-        let (working, asking) = (bars.activity().working, bars.activity().asking);
-        let heading = if bars.bot.is_some() || sessions.iter().any(|row| row.id == bars.session || row.computer.is_some()) {
-            "Sessions"
-        } else {
-            "Subagents"
-        };
-        let can_stop = bars.bot.is_some() && bars.work_fresh && (working > 0 || asking > 0);
-        // A conversation's own subagents open in its side panel's Subagents tab.
-        let in_panel = heading == "Subagents" && bars.panel.is_some();
+        let asking = sessions.iter().filter(|row| row.state == WorkState::Asking).count();
+        let working = sessions.len() - asking;
+        let can_stop = bars.bot.is_some() && bars.work_fresh && !sessions.is_empty();
 
-        let mut header_row = TextRow::truncated("activity-sessions-header", heading)
-            .debug_selector("activity-sessions-header")
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(c.text)
-            .gap(space::S1_5);
-        if !sessions.is_empty() {
-            header_row = header_row
-                .secondary(
-                    sessions_label(working, asking),
-                    false,
-                    Some(if asking > 0 { c.attention } else { c.text_faint }),
-                )
-                .secondary_size(TypeSize::Caption);
-        }
-        if can_stop {
-            header_row = header_row.trailing(
-                Button::new("activity-stop-all", "Stop All")
-                    .ghost()
-                    .quiet()
-                    .size(ButtonSize::Small)
-                    .loading(bars.stopping_all)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.activity.update(cx, |bars, cx| bars.stop_all(cx)).ok();
-                    })),
-            );
-        }
+        let meta = (!sessions.is_empty()).then(|| {
+            div().text_ui(TypeSize::Caption).text_color(if asking > 0 { c.attention } else { c.text_faint })
+                .child(sessions_label(working, asking)).into_any_element()
+        });
+        let stop_all = can_stop.then(|| {
+            Button::new("activity-stop-all", "Stop All")
+                .ghost()
+                .quiet()
+                .size(ButtonSize::Small)
+                .loading(bars.stopping_all)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.activity.update(cx, |bars, cx| bars.stop_all(cx)).ok();
+                }))
+                .into_any_element()
+        });
 
         let visible_active = if self.all_active { sessions.len() } else { sessions.len().min(INLINE_ACTIVE_SESSIONS) };
         let hidden_active = sessions.len().saturating_sub(visible_active);
@@ -2047,13 +2253,13 @@ impl ActivityCard {
             div()
                 .id("activity-finished-sessions")
                 .debug_selector(|| "activity-finished-sessions".into())
-                .mt(px(2.))
                 .h(px(28.))
                 .px(space::S2)
                 .rounded(radius::NAV)
-                .bg(c.sunken)
+                .tab_index(0)
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
+                .focus_visible(|d| d.bg(hover).border_1().border_color(c.accent))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -2063,16 +2269,18 @@ impl ActivityCard {
                         .min_w_0()
                         .flex()
                         .items_center()
-                        .gap(space::S1_5)
+                        .gap(space::S2)
                         .child(
                             div()
                                 .debug_selector(|| "activity-finished-icon-check".into())
                                 .flex()
                                 .flex_none()
                                 .items_center()
+                                .justify_center()
+                                .size(px(20.))
                                 .child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.text_faint)),
                         )
-                        .child(div().truncate().text_ui(TypeSize::Caption).text_color(c.text_muted).child(label)),
+                        .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(label)),
                 )
                 .child(
                     div()
@@ -2085,77 +2293,44 @@ impl ActivityCard {
                         })
                         .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint)),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if in_panel {
-                        this.dismiss(cx);
-                        this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
-                    } else {
-                        this.show_finished_sessions(window, cx);
-                    }
-                }))
+                .on_click(cx.listener(move |this, _, window, cx| this.show_finished_sessions(window, cx)))
+                .into_any_element()
         });
 
-        Some(
-            div()
-                .debug_selector(|| "activity-sessions".into())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(px(2.))
-                .child(if in_panel {
-                    let hover = c.hover;
-                    header_row
-                        .trailing(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint))
-                        .into_div(cx)
-                        .pl(space::S2)
-                        .pr(space::S2)
-                        .py(px(2.))
-                        .rounded(radius::NAV)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.dismiss(cx);
-                            this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
-                        }))
-                        .into_any_element()
-                } else {
-                    header_row.into_div(cx).pl(space::S2).pr(if can_stop { px(0.) } else { space::S2 }).pb(px(2.)).into_any_element()
-                })
-                .children(sessions.iter().take(visible_active).map(|session| self.session_row_in(bars, session, true, in_panel, cx)))
-                .when(hidden_active > 0 || (self.all_active && sessions.len() > INLINE_ACTIVE_SESSIONS), |d| {
-                    let toggle_label = if self.all_active {
-                        "Show fewer".to_owned()
-                    } else {
-                        format!("+{hidden_active} more active")
-                    };
-                    let hover = c.hover;
-                    d.child(
-                        div()
-                            .id("activity-toggle-sessions")
-                            .debug_selector(|| "activity-toggle-sessions".into())
-                            .h(px(26.))
-                            .px(space::S2)
-                            .rounded(radius::NAV)
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .text_ui(TypeSize::Caption)
-                            .text_color(c.accent)
-                            .child(toggle_label)
-                            .child(Icon::new(if self.all_active { IconName::ChevronUp } else { IconName::ChevronDown }).size(IconSize::XSmall).color(c.accent))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.all_active = !this.all_active;
-                                cx.notify();
-                            })),
-                    )
-                })
-                .children(finished_disclosure)
-                .into_any_element(),
-        )
+        let mut body: Vec<AnyElement> = sessions.iter().take(visible_active).map(|session| self.session_row(bars, session, true, cx)).collect();
+        if hidden_active > 0 || (self.all_active && sessions.len() > INLINE_ACTIVE_SESSIONS) {
+            let toggle_label = if self.all_active {
+                "Show fewer".to_owned()
+            } else {
+                format!("+{hidden_active} more at work")
+            };
+            let hover = c.hover;
+            body.push(
+                div()
+                    .id("activity-toggle-sessions")
+                    .debug_selector(|| "activity-toggle-sessions".into())
+                    .h(px(26.))
+                    .px(space::S2)
+                    .rounded(radius::NAV)
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_ui(TypeSize::Caption)
+                    .text_color(c.accent)
+                    .child(toggle_label)
+                    .child(Icon::new(if self.all_active { IconName::ChevronUp } else { IconName::ChevronDown }).size(IconSize::XSmall).color(c.accent))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.all_active = !this.all_active;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        body.extend(finished_disclosure);
+        Some(self.section(bars, "sessions", "Sessions", meta, stop_all, body, cx))
     }
 
     fn processes(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
@@ -2163,26 +2338,8 @@ impl ActivityCard {
         let c = cx.theme().colors.clone();
         let now = bars.now.unwrap_or_else(crate::time::now_ms);
         let running_count = bars.background.commands.len();
-        Some(
-            div()
-                .debug_selector(|| "activity-processes".into())
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(space::S2)
-                        .pb(px(2.))
-                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Background processes"))
-                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{running_count} running"))),
-                )
-                .children(bars.background.commands.iter().map(|command| {
+        let meta = div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{running_count} running")).into_any_element();
+        let rows = bars.background.commands.iter().map(|command| {
                     let id = command.id.clone();
                     let uptime = format_uptime(command.started, now);
                     let mut row = TextRow::truncated(
@@ -2202,10 +2359,9 @@ impl ActivityCard {
                         this.dismiss(cx);
                         let arrival = crate::panel::Arrival::Process { session: session.clone(), command: opened.clone() };
                         this.open_in_panel(arrival, window, cx);
-                    }))
-                }))
-                .into_any_element(),
-        )
+                    })).into_any_element()
+                }).collect();
+        Some(self.section(bars, "processes", "Background processes", Some(meta), None, rows, cx))
     }
 
     fn preview(&self, name: &str, preview: &Preview, cx: &Context<Self>) -> AnyElement {
@@ -2251,6 +2407,16 @@ impl Render for ActivityCard {
                 Drilldown::Outputs(kind) => self.all_outputs_view(kind, cx),
                 Drilldown::FinishedSessions => self.finished_sessions_view(bars, cx),
             }
+        } else if !self.loaded(bars, cx) {
+            // Nothing drawn until every section has what its box said, so none jumps as it arrives.
+            div()
+                .debug_selector(|| "activity-loading".into())
+                .h(px(72.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(kuvo_ui::small::LoadingLabel::new("activity-loading-label", "Loading…"))
+                .into_any_element()
         } else {
             let wake_label = bars.wake_label();
             let show_wake = wake_label.is_some() || self.force_wakes;
@@ -2262,59 +2428,51 @@ impl Render for ActivityCard {
                     .cloned()
                     .or(counts)
                     .or(wake_label.clone());
-                div()
-                    .debug_selector(|| "activity-wakes".into())
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px(space::S2)
-                            .pb(px(2.))
-                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Wake-ups & Watches"))
-                            .children(header_right.map(|right| {
-                                let is_status = wake_label.is_some();
-                                div()
-                                    .when(is_status, |d| d.debug_selector(|| "activity-wake-status".into()))
-                                    .text_ui(TypeSize::Caption)
-                                    .text_color(c.text_faint)
-                                    .child(right)
-                            })),
-                    )
-                    .child(schedule)
-                    .into_any_element()
+                let meta = header_right.map(|right| {
+                    let is_status = wake_label.is_some();
+                    div()
+                        .when(is_status, |d| d.debug_selector(|| "activity-wake-status".into()))
+                        .text_ui(TypeSize::Caption)
+                        .text_color(c.text_faint)
+                        .child(right)
+                        .into_any_element()
+                });
+                self.section(bars, "wakes", "Wake-ups & Watches", meta, None, vec![schedule.into_any_element()], cx)
             });
 
+            // As Codex orders its: what's scheduled, what it made, who works for it, then the rest.
             let sections: Vec<AnyElement> = [
-                self.outputs(cx),
-                self.sessions(bars, cx),
-                self.processes(bars, cx),
-                self.side_chats(bars, cx),
                 wake,
+                self.outputs(bars, cx),
+                self.sessions(bars, cx),
+                self.subagents(bars, cx),
+                self.side_chats(bars, cx),
+                self.processes(bars, cx),
             ]
             .into_iter()
             .flatten()
             .collect();
 
+            // One calm note when there's nothing at all, never headings over nothing.
             let empty_note = sections.is_empty().then(|| {
-                let text = if self.outputs.is_none() && !self.outputs_failed {
-                    "Loading activity…"
-                } else {
-                    "No outputs yet"
-                };
                 div()
-                    .debug_selector(move || text.into())
+                    .debug_selector(|| "activity-empty".into())
                     .px(space::S2)
-                    .py(space::S2)
-                    .text_ui(TypeSize::Small)
-                    .text_color(c.text_muted)
-                    .child(text)
+                    .py(space::S3)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(space::S1)
+                    .child(Icon::new(IconName::Activity).size(IconSize::Large).color(c.text_faint))
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Nothing here yet"))
+                    .child(
+                        div()
+                            .max_w(px(280.))
+                            .text_center()
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.text_muted)
+                            .child("Files it makes, the sessions and subagents it starts, side chats and wake-ups show here."),
+                    )
             });
 
             let mut list = div().flex().flex_col()
@@ -2327,7 +2485,7 @@ impl Render for ActivityCard {
 
             for (index, section) in sections.into_iter().enumerate() {
                 if index > 0 {
-                    list = list.child(div().my(space::S2).h(px(1.)).w_full().bg(c.border));
+                    list = list.child(div().my(space::S1_5).h(px(1.)).w_full().bg(c.border));
                 }
                 list = list.child(section);
             }
@@ -2436,6 +2594,35 @@ fn output_icon(artifact: &Artifact) -> IconName {
             }
         }
     }
+}
+
+/// For each listed file whose name another listed file has too, the end of its folder that tells
+/// them apart (`src`, `tests`; `kuvo/src` where the last folders match too).
+fn telling_folders(artifacts: &[Artifact]) -> HashMap<String, String> {
+    let mut by_name: HashMap<&str, Vec<&Artifact>> = HashMap::new();
+    for artifact in artifacts {
+        by_name.entry(artifact.name.as_str()).or_default().push(artifact);
+    }
+    let mut told = HashMap::new();
+    for same in by_name.into_values().filter(|same| same.len() > 1) {
+        let folders: Vec<Vec<&str>> = same.iter()
+            .map(|artifact| artifact.path.rsplit('/').skip(1).filter(|part| !part.is_empty()).collect())
+            .collect();
+        let deepest = folders.iter().map(Vec::len).max().unwrap_or(0);
+        // The fewest folders from the end that make each one's differ (all of them, at most).
+        let depth = (1..=deepest.max(1)).find(|depth| {
+            let ends: HashSet<Vec<&str>> = folders.iter().map(|parts| parts.iter().take(*depth).copied().collect()).collect();
+            ends.len() == folders.len()
+        }).unwrap_or(deepest.max(1));
+        for (artifact, parts) in same.iter().zip(&folders) {
+            let mut end: Vec<&str> = parts.iter().take(depth).copied().collect();
+            end.reverse();
+            if !end.is_empty() {
+                told.insert(artifact.id.clone(), end.join("/"));
+            }
+        }
+    }
+    told
 }
 
 fn ext_tag(name: &str) -> String {
@@ -2826,6 +3013,25 @@ mod tests {
         });
     }
 
+    /// A live popover draws nothing until its box has said what runs for the conversation (and,
+    /// a bot's, its work), or that it couldn't: until then it shows it loading.
+    #[gpui::test]
+    fn the_popover_waits_until_what_runs_and_a_bots_work_are_heard(cx: &mut gpui::TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, 1000.);
+        cx.update(|cx| {
+            let bars = cx.new(|cx| WorkBars::new(BoxClient::new(stand_in.clone()), "ses_mira".into(), true, cx));
+            bars.update(cx, |bars, cx| {
+                assert!(!bars.heard(), "nothing said yet");
+                bars.take_background_update(Followed::Failed(kuvo_box::Error::Unreachable("offline".into())), cx);
+                assert!(bars.heard(), "a box that couldn't say is heard too: no endless loading");
+                bars.set_bot(Some("bot_mira".into()), cx);
+                assert!(!bars.heard(), "a bot's conversation waits for its work too");
+                bars.take_work(Work::default());
+                assert!(bars.heard());
+            });
+        });
+    }
+
     #[test]
     fn a_live_update_refreshes_the_loaded_range_using_new_cursors() {
         fn page(ids: &[&str], next: Option<&str>) -> Outputs {
@@ -2844,6 +3050,22 @@ mod tests {
         }).unwrap();
         assert_eq!(updated.artifacts.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["new", "a", "b", "c", "d", "e"]);
         assert_eq!(updated.next.as_deref(), Some("after-e"));
+    }
+
+    #[test]
+    fn files_with_one_name_are_told_apart_by_their_folders() {
+        let listed: Vec<Artifact> = serde_json::from_value(json!([
+            { "id": "a", "path": "/w/gpui/kuvo/src/fleet.rs", "name": "fleet.rs", "kind": "code", "type": "text/plain", "latest": { "n": 1 } },
+            { "id": "b", "path": "/w/gpui/kuvo/tests/fleet.rs", "name": "fleet.rs", "kind": "code", "type": "text/plain", "latest": { "n": 1 } },
+            { "id": "c", "path": "/w/gpui/kuvo/src/lib.rs", "name": "lib.rs", "kind": "code", "type": "text/plain", "latest": { "n": 1 } },
+            { "id": "d", "path": "/w/one/src/mod.rs", "name": "mod.rs", "kind": "code", "type": "text/plain", "latest": { "n": 1 } },
+            { "id": "e", "path": "/w/two/src/mod.rs", "name": "mod.rs", "kind": "code", "type": "text/plain", "latest": { "n": 1 } },
+        ])).unwrap();
+        let told = telling_folders(&listed);
+        assert_eq!(told.get("a").map(String::as_str), Some("src"));
+        assert_eq!(told.get("b").map(String::as_str), Some("tests"));
+        assert_eq!(told.get("c"), None, "a name only one has needs no folder");
+        assert_eq!((told.get("d").map(String::as_str), told.get("e").map(String::as_str)), (Some("one/src"), Some("two/src")));
     }
 
     #[test]
