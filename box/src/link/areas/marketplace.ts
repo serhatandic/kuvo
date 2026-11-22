@@ -111,7 +111,7 @@ async function catalogView(context: RouteContext, state: Installations, query: U
   const installed = new Map(state.skills.map(skill => [skill.name, skill]));
   const skills = catalog().skills.map(({ files, ...skill }) => ({
     ...skill, origin: "catalog", installed: installed.has(skill.id),
-    ...(installed.has(skill.id) ? { installedVersion: installed.get(skill.id)!.version } : {}),
+    ...(installed.has(skill.id) ? { installedVersion: installed.get(skill.id)!.version } : { actions: [{ id: "add", title: "Install" }] }),
   }));
   const managed = state.skills.filter(skill => skill.origin !== "catalog" || !catalogNames.has(skill.name)).map(skill => {
     const shown = cardSkill(skill);
@@ -135,7 +135,7 @@ async function catalogView(context: RouteContext, state: Installations, query: U
         const botCount = addedBots.get(agent.id)?.length ?? 0;
         const needs = agent.apps.map(id => catalog().apps.find(app => app.id === id)?.title ?? id);
         const detail = [...needs, plural(agent.skills.length, "skill"), ...(botCount ? [`${plural(botCount, "bot")} added`] : [])].join(" · ");
-        return { ...agent, botCount, detail };
+        return { ...agent, botCount, detail, actions: [{ id: "add", title: "Add" }] };
       }), query),
       { ...area("skills", "Skills", withHere([...skills, ...managed, ...local.filter(skill => !installed.has(skill.id)),
         ...(here.problem !== undefined ? [] : here.found.filter(skill => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some(each => each.id === skill.id))

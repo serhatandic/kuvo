@@ -13038,7 +13038,8 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.
   An added app's card carries `status: {words, tone}` (`good` or `warning`: "Connected", "Added",
   "Vault locked") for a client to show in place of its first action's button. An agent's card
-  carries `detail`, the words under it (its apps, skills and bots added).
+  carries `detail`, the words under it (its apps, skills and bots added). Agents and skills not yet
+  installed carry `actions` with the words of their button ("Add", "Install").
 - **Apps.** `POST apps/<id>/add` or `POST apps/custom` with `{title,url,id?,summary?,auth?}` under
   `kuvo/marketplace/` enables a Streamable HTTP server across the setup. Custom endpoints use HTTPS
   without inline credentials or query parameters. `auth` is `open`, `token`, or `oauth`. The box

@@ -261,7 +261,7 @@ test("an agent's routine turned on in Add runs from the start, and the sheet's w
   expect(options.missing).toEqual([{ id: "linear", title: "Linear", connect: true, words: "Not connected" }]);
   expect(options.blocked).toBe("1 app still to connect");
   const listed = (await route("GET")).json.areas[1].items.find((agent: any) => agent.id === "coding-reviewer");
-  expect(listed.detail).toBe("1 skill");
+  expect(listed).toMatchObject({ detail: "1 skill", actions: [{ id: "add", title: "Add" }] });
   const body = { computer: "here", version: "1.0.0", request: "stable-marketplace-routine", routines: ["weekly"], model: { providerID: "test-account", id: "test-model" } };
   const made = await route("POST", "/agents/coding-reviewer/add", body);
   expect(made.status).toBe(201);
