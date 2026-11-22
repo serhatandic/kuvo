@@ -211,6 +211,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "landing-sky-dawn", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dawn) },
+    Screen { slug: "landing-sky-day", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_day) },
+    Screen { slug: "landing-sky-dusk", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dusk) },
+    Screen { slug: "landing-sky-night", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_night) },
     Screen { slug: "asking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // What the box asks itself: a command outside the sandbox, an item from the vault.
     Screen { slug: "asking-sandbox", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -709,6 +713,23 @@ fn full_access_question(workspace: &mut Workspace, _window: &mut Window, cx: &mu
     }
 }
 /// A new session in the website project, set to start in a worktree of its own.
+/// The landing's sky at a fixed hour, so each time of day can be seen (every other screen shows noon).
+fn sky_dawn(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(6.5, cx);
+}
+
+fn sky_day(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(12., cx);
+}
+
+fn sky_dusk(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(19., cx);
+}
+
+fn sky_night(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(23., cx);
+}
+
 fn landing_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.new_session(None, window, cx);
     workspace.pick_place(kuvo_box::models::StartIn::Project("/Users/sam/Projects/website".into()), cx);
@@ -2372,6 +2393,7 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
                 let workspace = root.downcast::<Workspace>().expect("the workspace");
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_now(NOW, cx);
+                    workspace.set_sky_hour(12., cx);
                     if matches!(screen.slug, "first-run-starting" | "first-run-unreachable") {
                         workspace.await_box(cx);
                         if screen.slug == "first-run-unreachable" {
@@ -3061,6 +3083,7 @@ fn main() -> anyhow::Result<()> {
                 let workspace = root.downcast::<Workspace>().expect("the workspace");
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_now(NOW, cx);
+                    workspace.set_sky_hour(12., cx);
                     workspace.read_at_once(cx);
                     if let Some(session) = screen.session {
                         workspace.open_read_at_once(session, window, cx);
