@@ -2,6 +2,8 @@
 // it asks is answered as the session's rules and modes say; Stop stops it; what it costs is counted.
 
 import "../safety"
+import { compactionFile } from "../../src/shared/context"
+import { writePrivate } from "../../src/shared/files"
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { execFileSync } from "node:child_process"
@@ -94,7 +96,7 @@ function fakeAcp(updates: [string, any][], later: [string, any][] = [], request?
     `const { appendFileSync, readFileSync } = require("node:fs")
 // (Signing in, the sandbox keeps it out of the test's folder, where it writes this down.)
 const log = (entry) => { try { appendFileSync(${JSON.stringify(log)}, JSON.stringify(entry) + "\\n") } catch {} }
-log({ argv: process.argv.slice(2), pid: process.pid })
+log({ argv: process.argv.slice(2), pid: process.pid, compactionPercent: process.env.GROK_AUTO_COMPACT_THRESHOLD_PERCENT })
 // (Stopped as an agent's process is, said with when.)
 const exit = () => { log({ exited: Date.now() }); process.exit(0) }
 process.on("SIGTERM", exit)
@@ -417,6 +419,7 @@ describe("ACP agents, nothing dropped", () => {
       ),
     )
     expect(said).toEqual([["one", 372_000]])
+    expect(sessions.get(id).context).toEqual({ used: 52_000, window: 372_000 })
     const last = sessions.messages(id).filter((message: any) => message.type === "assistant").at(-1) as any
     expect(last.tokens.input + last.tokens.output + last.tokens.cache.read + last.tokens.cache.write).toBe(52_000)
   })
@@ -1583,6 +1586,24 @@ describe("summarizing when you ask (/compact)", () => {
     expect(sessions.messages(id).find((message) => message.type === "compaction")).toMatchObject({ status: "completed", reason: "manual" })
   })
 
+  test("Grok gets the selected threshold as a share of its reported window", async () => {
+    const usage: [string, any] = ["s1", { sessionUpdate: "usage_update", used: 38_000, size: 1_000_000 }]
+    const agent = new TestGrok(program(fakeAcp([usage], [], undefined, { next: [usage] }), join(root, "grok")), root)
+    const file = compactionFile(process.env.KUVO_HOME!)
+    const id = await run(agent)
+    try {
+      send(id)
+      await settled(id, 2)
+      expect(received().filter(entry => entry.argv).at(-1)?.compactionPercent).toBe("40")
+      writePrivate(file, '"200000"')
+      send(id)
+      await settled(id, 3)
+      expect(received().filter(entry => entry.argv).map(entry => entry.compactionPercent).slice(-2)).toEqual(["40", "20"])
+    } finally {
+      rmSync(file, { force: true })
+    }
+  })
+
   // What Grok 1.0.77 names its own (read from its program, not seen from a real one): begun with
   // how full the context was, then how it went.
   test("one Grok makes by itself shows while it runs, last, and ends as one finished row", async () => {
@@ -1605,6 +1626,7 @@ describe("summarizing when you ask (/compact)", () => {
     expect(sessions.messages(id).filter((message) => message.type === "compaction")).toMatchObject([{ status: "completed", reason: "auto" }])
     expect(notices(id)).toEqual([])
     expect(words(id)).toBe("Done.")
+    expect(sessions.get(id).context).toEqual({ used: 20_000, window: 200_000 })
   })
 
   test("Antigravity can't be asked: it says so, and nothing is sent", async () => {

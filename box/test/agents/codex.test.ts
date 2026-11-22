@@ -1,6 +1,8 @@
 // Codex's thread against a fake `codex app-server`: what Codex 0.16x sends, shown, not lost.
 
 import "../safety"
+import { compactionFile } from "../../src/shared/context"
+import { writePrivate } from "../../src/shared/files"
 import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test"
 import { chmodSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -2335,6 +2337,22 @@ describe("Writing to an agent Codex spawned", () => {
 })
 
 describe("Codex's context", () => {
+  test("changing the automatic summary setting reloads the same Codex thread with the new limit", async () => {
+    const file = compactionFile(process.env.KUVO_HOME!)
+    const id = await run([])
+    expect(sent().find(call => call.method === "thread/start")?.params.config.model_auto_compact_token_limit).toBe(400_000)
+    try {
+      writePrivate(file, '"200000"')
+      sessions.prompt(id, { id: "msg_codex_auto_compact_next", text: "go on", files: [], delivery: "steer" })
+      await until(() => sessions.messages(id).filter(message => message.type === "idle").length === 2)
+      expect(sent().find(call => call.method === "thread/resume")?.params).toMatchObject({
+        threadId: "t1", config: { model_auto_compact_token_limit: 200_000 },
+      })
+    } finally {
+      rmSync(file, { force: true })
+    }
+  })
+
   test("how full it is, as its last request was, against the window Codex says its model has", async () => {
     const id = await run([
       ["item/started", { item: { type: "agentMessage", id: "m1", text: "" } }],
@@ -2344,6 +2362,7 @@ describe("Codex's context", () => {
     ])
     const last = sessions.messages(id).filter((message: any) => message.type === "assistant").at(-1) as any
     expect(last.tokens).toMatchObject({ input: 4_000, output: 600, reasoning: 300, cache: { read: 48_000 } })
+    expect(sessions.get(id).context).toEqual({ used: 52_900, window: 258_400 })
     const models = await codex!.models()
     expect(models.find((model) => model.id === "gpt-test")?.limit.context).toBe(258_400)
   })
@@ -2380,6 +2399,7 @@ describe("Codex's context", () => {
     expect(sessions.get(id).tokens).toEqual({ input: 4_000, output: 600, reasoning: 150, cache: { read: 29_000, write: 0 } })
     // How full it is: as the last call left it.
     expect(steps(id).at(-1).tokens).toMatchObject({ input: 1_000, output: 300, cache: { read: 11_000 } })
+    expect(sessions.get(id).context).toEqual({ used: 12_350, window: 258_400 })
   })
 })
 

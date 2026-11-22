@@ -1,3 +1,5 @@
+import { writePrivate } from "../files";
+import { compactionChoice, compactionChoices, compactionFile, isCompactionChoice } from "../../shared/context";
 import { queuedRefusal } from "../server/context";
 // `kuvo/settings`: this box's settings as it describes them (PROTOCOL.md, "A box's settings"), so
 // every client draws each of them by its kind, with the box's words: its sections, each section's
@@ -84,6 +86,11 @@ const SECTIONS: SettingsSection[] = [
     id: "clock", title: "Clock", group: "General", icon: "clock",
     line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
     keywords: ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
+  },
+  {
+    id: "conversations", title: "Conversations", group: "Agents & Tools", icon: "message",
+    line: "When supported agents summarize long conversations on this computer.",
+    keywords: ["context", "tokens", "compact", "summarize"],
   },
   {
     id: "permissions", title: "Permissions", group: "Agents & Tools", icon: "shield",
@@ -814,6 +821,26 @@ async function computerAct(context: RouteContext, at: SettingItem, action: Setti
 
 const PAGES: Record<string, Section> = {
   clock: { read: clockPage, change: clockChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
+  conversations: {
+    read: async () => ({
+      id: "conversations", title: "Conversations",
+      groups: [{
+        id: "context", title: "Context", rows: [row({
+          id: "compaction", title: "Summarize long conversations at", kind: "choice",
+          line: "Smaller model windows summarize sooner. Never disables automatic summaries on large Claude Code models. Other agents may still summarize at their own limits.",
+          value: compactionChoice(K), can: true,
+          choices: compactionChoices.map(id => ({ id, title: id === "never" ? "Never (large windows)" : `${Number(id) / 1000}k tokens` })),
+        })],
+      }],
+    }),
+    change: async (_context, _at, value) => {
+      if (!isCompactionChoice(value)) return { status: 400, message: "Choose one of the listed thresholds." };
+      if (value !== compactionChoice(K)) writePrivate(compactionFile(K), JSON.stringify(value));
+      return null;
+    },
+    act: noActions,
+    look: () => compactionChoice(K),
+  },
   permissions: {
     read: permissionsPage, change: permissionsChange, act: permissionsAct,
     look: () => {

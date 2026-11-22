@@ -3,6 +3,7 @@
 // per turn, and what it does told in `session/update`s. Each agent says how it starts, signs in,
 // picks a model, and anything of its own.
 
+import { tokenCount } from "../shared/context"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { LostWork, OwnTurn, RunInput, RunResult, Thread, TurnHooks, SubagentRun, SubagentTask } from "./agent"
@@ -32,6 +33,8 @@ export interface AcpFlavor {
   /** Its process runs under a holder on a box, and a bridge started after a crash takes its turn up (hold/adopt.ts): as which agent. None: as it always has. */
   held?: { kind: AgentKind; provider: string; version?: string }
   /** The command that starts the agent, for this session's approval mode (and its skills and subagents folders, from `skills` and `subagents`; `whole`: run whole in the box's sandbox). */
+  /** Process environment for the chosen model, read again before each prompt. */
+  launchOptions?(model: string): Record<string, string> | undefined
   command(options: { approvesAll: boolean; plan: boolean; skills?: string; subagents?: string; whole?: boolean }): Promise<{
     argv: string[]
     env?: Record<string, string | undefined>
@@ -183,6 +186,7 @@ interface Active {
   answered?: boolean
   /** How much of its context the conversation fills, as the agent last said (usage_update). */
   used?: number
+  contextWindow?: number
   /** What follows the agent's own record of the turn, when it keeps one. */
   follower?: TurnFollower
   /** A turn the agent began on its own, taken here: it ends when it says, or goes quiet. */
@@ -266,7 +270,8 @@ export class AcpThread implements Thread {
     // And the computer's MCP servers, another set of them (one you added, or took away).
     const computer = await computerServers(this.session.location.directory)
     const servers = await serversKey(this.session.id, computer)
-    const key = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers })
+    const launchOptions = this.flavor.launchOptions?.(input.model.id)
+    const key = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers })
     this.computer = computer
     // (What each reaches, a key you changed, a sign-in renewed, for the same agent going on too.)
     if (this.rpc && !this.rpc.isClosed) relayedServers(this.session.id, this, this.session.location.directory, computer, { brief: true })
@@ -276,8 +281,9 @@ export class AcpThread implements Thread {
     if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
     this.drop()
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
-    const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
+    const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
     const launch = await this.flavor.command(mode)
+    if (launchOptions) launch.env = { ...launch.env, ...launchOptions }
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents])
     this.fenced = Boolean(whole)
     const ended = whole?.ended
@@ -434,6 +440,7 @@ export class AcpThread implements Thread {
         if (previous && previous !== this.sessionID) {
           // In place of one it had: the instructions go again, and what came before is handed over.
           this.startedOver = true
+          delete this.session.context
           delete this.state.acpInstructions
           delete this.state.acpInstructed
         }
@@ -903,8 +910,14 @@ export class AcpThread implements Thread {
       case "tool_call_update":
         return this.tool(active, update)
       case "usage_update":
-        if (typeof update.used === "number") active.used = update.used
-        if (typeof update.size === "number") this.flavor.noteContext?.(turn.currentModel.id, update.size)
+        if (tokenCount(update.size) && update.size > 0) {
+          active.contextWindow = update.size
+          this.flavor.noteContext?.(turn.currentModel.id, update.size)
+        }
+        if (tokenCount(update.used)) {
+          active.used = update.used
+          turn.context(update.used, active.contextWindow)
+        }
         // What it cost, when it says (in dollars).
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") this.cost(turn, update.cost.amount)
         return
@@ -922,17 +935,29 @@ export class AcpThread implements Thread {
       case "compaction_summary_chunk":
         // Summarized, told only once it's done. (One you asked for shows as that, and one under
         // way says how it went itself.)
-        if (!active.compacted && !turn.isCompacting) turn.compacted(true)
+        if (!active.compacted && !turn.isCompacting) {
+          turn.clearContext()
+          turn.compacted(true)
+        }
         active.compacted = true
         return
       // Grok summarizing by itself, from when it begins to how it went. (Not one you asked for.)
       case "auto_compact_started":
+        if (tokenCount(update.context_window) && update.context_window > 0) {
+          active.contextWindow = update.context_window
+          this.flavor.noteContext?.(turn.currentModel.id, update.context_window)
+        }
+        turn.context(update.tokens_used, active.contextWindow)
         if (!active.input?.compact) turn.compacting()
         return
       case "auto_compact_completed":
+        if (tokenCount(update.tokens_after)) turn.context(update.tokens_after, active.contextWindow)
+        else turn.clearContext()
+        if (!active.input?.compact) turn.compacted(true)
+        return
       case "auto_compact_failed":
       case "auto_compact_cancelled":
-        if (!active.input?.compact) turn.compacted(update.sessionUpdate === "auto_compact_completed")
+        if (!active.input?.compact) turn.compacted(false)
         return
       case "user_message_chunk":
       case "available_commands_update":

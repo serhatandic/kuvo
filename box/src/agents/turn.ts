@@ -2,6 +2,7 @@
 // words, thinking and tool calls, as events the app's transcript applies, and as messages kept for
 // a later read. Agents report what happens in plain calls; this keeps both in step.
 
+import { tokenCount, type ContextSize } from "../shared/context"
 import { emit } from "./events"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
@@ -75,6 +76,23 @@ export class Turn {
 
   setModel(model: ModelRef) {
     this.model = model
+  }
+
+  /** The latest occupancy measured on this conversation, separate from billing totals. */
+  context(used: unknown, window: unknown) {
+    if (!tokenCount(used)) return
+    this.saveContext({ used, ...(tokenCount(window) && window > 0 ? { window } : {}) })
+  }
+
+  clearContext() {
+    this.saveContext(undefined)
+  }
+
+  private saveContext(context: ContextSize | undefined) {
+    const session = this.store.get(this.sessionID)?.session
+    if (!session || this.ended || (session.context?.used === context?.used && session.context?.window === context?.window)) return
+    session.context = context
+    this.save()
   }
 
   /** The model it runs on now. */

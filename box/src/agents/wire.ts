@@ -1,5 +1,6 @@
 // The engine's wire format, the parts Kuvo Code reads (OpenCodeKit's Session, Message, events…).
 // The bridge answers in it, so the app shows these sessions as it does the engine's.
+import type { ContextSize } from "../shared/context"
 import type { WorkOrder } from "../shared/work-order"
 
 export type Millis = number
@@ -41,6 +42,7 @@ export interface Session {
   model?: ModelRef
   cost: number
   tokens: TokenUsage
+  context?: ContextSize
   outcome?: "succeeded" | "failed" | "interrupted"
   time: { created: Millis; updated: Millis; idle?: Millis; viewed?: Millis; archived?: Millis }
   title?: string

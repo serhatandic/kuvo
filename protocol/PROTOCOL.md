@@ -2014,6 +2014,15 @@ the branch, the model, effort and account, and the pull request with its checks 
 - What a client draws from it (which mark, which lines on the card) is the clients' to decide
   alike; a box without `sessions.glance` gives no marks beyond the worktree's branch, as before.
 
+### Session context
+
+`GET api/session/<id>` and `GET kuvo/agents/api/session/<id>` can include
+`data.context: {used, window?}`, in tokens. `used` is the last occupancy reported by the agent
+or measured from its latest model request, with cached input included. `window` is the model's
+reported context capacity when known. The field can be absent before a measurement or after a
+summary without a new measurement. Cursor supplies aggregate billing usage and has no measurement
+for this field. Session `tokens` still describes usage across the conversation.
+
 ### Session lists
 
 What each session is, and where every client's lists show it (`sessions.list`): the box decides it
@@ -10515,8 +10524,14 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
+- `kuvo/settings/conversations` serves the `compaction` choice row, saved by the usual
+  revision-checked PATCH. Choice IDs are `200000`, `400000` (default), `600000` and `never`.
+  The choice lives on the box running the conversation. Claude Code and Codex keep their native
+  margin on smaller windows, and Grok takes a percentage once it reports the model's window.
+  `never` disables automatic compaction for Claude Code models with a reported window of at least 900,000 tokens and lets
+  Codex and Grok use their native limits. Antigravity, Cursor and the engine keep their defaults.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be

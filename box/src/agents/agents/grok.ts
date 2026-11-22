@@ -1,3 +1,4 @@
+import { compactionChoice } from "../../shared/context"
 import { grokCredential, grokHome } from "../../shared/agent-credentials"
 // Grok's CLI, as T3 Code runs it: your own `grok`, signed in with `grok login` (SuperGrok, or an
 // xAI key in XAI_API_KEY), each session one `grok agent stdio` speaking ACP.
@@ -274,7 +275,16 @@ export class GrokAgent implements Agent {
     const agent = this
     return new AcpThread(
       {
+        launchOptions(model) {
+          const choice = compactionChoice()
+          const saved = state.grokContextWindow as { model: string; size: number } | undefined
+          const window = agent.windows.get(model) ?? (saved?.model === model ? saved.size : undefined)
+          if (!window || choice === "never") return
+          const percent = Math.min(85, Math.max(1, Math.floor(Number(choice) * 100 / window)))
+          return { GROK_AUTO_COMPACT_THRESHOLD_PERCENT: String(percent) }
+        },
         noteContext(model, size) {
+          state.grokContextWindow = { model, size }
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
         // Run under a holder on a box, its turns taken up by a bridge started after a crash (spike
