@@ -166,3 +166,13 @@ fn where_it_has_one_view_offers_the_library(cx: &mut TestAppContext) {
     let (_stand_in, _workspace, cx) = open(cx, false);
     assert!(view_items(cx).contains(&"Library".to_owned()));
 }
+
+#[gpui::test]
+fn a_document_opens_in_the_side_panel_beside_its_conversation(cx: &mut TestAppContext) {
+    let (_stand_in, workspace, cx) = open(cx, false);
+    // The term sheet, a PDF on this Mac: in its own tab, with Open for its app here.
+    right_click(cx, "library-item-lib_06");
+    click(cx, "menu-item-Open");
+    let showing = workspace.read_with(cx, |workspace, cx| (workspace.area(), workspace.is_panel_open(), workspace.panel().read(cx).active().map(|tab| tab.kind.clone())));
+    assert_eq!(showing, (kuvo::area::Area::Sessions, true, Some(kuvo::panel::Kind::File("/Users/sample/Library Items/Series A Term Sheet.pdf".into()))));
+}

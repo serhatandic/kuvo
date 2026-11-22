@@ -102,6 +102,16 @@ pub struct ShowAt {
 
 impl EventEmitter<ShowAt> for LibraryView {}
 
+/// A document or page to open in the side panel, in a tab of its own, beside the conversation it
+/// was handed over in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenInPanel {
+    pub path: String,
+    pub session: Option<String>,
+}
+
+impl EventEmitter<OpenInPanel> for LibraryView {}
+
 /// A tile's picture: being read, read, or none to be had (its kind is drawn).
 #[derive(Clone)]
 enum Thumb {
@@ -432,6 +442,12 @@ impl LibraryView {
                 })
                 .collect();
             crate::image_viewer::open(crate::image_viewer::OpenRequest { items, active, return_focus: None, on_change: None }, window, cx);
+            return;
+        }
+        // A document or page on the window's computer: in the side panel, where its text shows, or
+        // Open hands it to its app on this Mac.
+        if matches!(item.kind, LibraryKind::Document | LibraryKind::Page) && item.is_here() && (self.client.here() || item.media_type.starts_with("text/")) {
+            cx.emit(OpenInPanel { path: item.path.clone(), session: item.session.clone() });
             return;
         }
         let client = self.client.clone();

@@ -209,7 +209,10 @@ impl FileView {
                     ),
                 )
                 .into_any_element(),
-            Load::Ready(Shown::Unshown(why)) => super::changes::empty("Nothing to Show Here", why.clone(), None, cx),
+            Load::Ready(Shown::Unshown(why)) => {
+                let open = self.open_in().map(|button| div().debug_selector(|| "file-open-unshown".into()).child(button.size(ButtonSize::Small)).into_any_element());
+                super::changes::empty("Nothing to Show Here", why.clone(), open, cx)
+            }
             Load::Ready(Shown::Text { text, lines }) => {
                 let cut = text.split_inclusive('\n').take(LINES_MOST).collect::<String>();
                 let language = name.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();

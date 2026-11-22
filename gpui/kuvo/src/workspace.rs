@@ -420,6 +420,13 @@ impl Workspace {
                 None => this.open_session_at(&at.session, at.message.as_deref(), window, cx),
             }
         }).detach();
+        cx.subscribe_in(&library, window, |this: &mut Self, _, open: &crate::library::OpenInPanel, window, cx| {
+            this.show_area(Area::Sessions, window, cx);
+            if let Some(session) = &open.session {
+                this.open_session_at(session, None, window, cx);
+            }
+            this.preview_file(&open.path, window, cx);
+        }).detach();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
