@@ -18156,6 +18156,13 @@ class CursorAgent {
     if (!this.instance.home && process.env.CURSOR_API_KEY?.trim())
       throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
   }
+  async removeAccount() {
+    if (!this.instance.home)
+      return;
+    rmSync15(this.authFile, { force: true });
+    this.known.reset();
+    this.modelList = undefined;
+  }
   async models(options = {}) {
     const sdk = await this.sdk();
     const apiKey = await this.apiKey(sdk);
@@ -32742,4 +32749,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents d377fca540ff5b7e80fa10168fe941fbcf47f9852407fd38a7e15e15952d498e
+// Built from Packages/Box/src/agents 5a4e8702b80b71d79e44bcac1534686ee943e427add67d6a13d79013a111d45b
