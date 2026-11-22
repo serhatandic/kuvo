@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A new Library (the books icon in the rail, ⌃7) keeps what was handed over to you on all your computers: files an agent showed you, pictures it made, and files you attached. Browse it by bot or by your own sessions, by kind (Images, Documents, Pages, Other), as a grid or a list, and search it. Pictures open in the image viewer, other files in their app. **Show in conversation** jumps to where it was handed over, and **Remove from Library** takes it out of the Library without deleting the file. A computer whose Kuvo is older just doesn't show its part until it updates.
 - Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
 - You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.
 - Antigravity's limits no longer show as all left while Antigravity is running. If Google reports a pool as unused but its models ran on this computer since, Kuvo shows that pool's limits as unknown and says why, and shows Google's numbers again once Google counts the use.

@@ -9,7 +9,7 @@
 use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
 use kuvo_ui::text_field::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
-use crate::area::{Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings};
+use crate::area::{Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowQueue, ShowSessions, ShowSettings};
 use crate::{CheckForUpdates, NewSession, Quit, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar};
 
 actions!(app_menu, [About, Hide, HideOthers, ShowAll, Minimize, Zoom, BringAllToFront]);
@@ -95,6 +95,7 @@ pub fn menus_with(updates: bool) -> Vec<Menu> {
             MenuItem::action("Bots", ShowBots),
             MenuItem::action("Sessions", ShowSessions),
             MenuItem::action("Work Queue", ShowQueue),
+            MenuItem::action("Library", ShowLibrary),
             MenuItem::action("Computers", ShowComputers),
             MenuItem::separator(),
             MenuItem::action("Back", Back),

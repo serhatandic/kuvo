@@ -155,7 +155,7 @@ fn the_menu_bar_has_kuvo_file_edit_view_window_and_help_and_names_its_window_men
     assert!(os_actions.iter().all(|(_, system)| *system), "each Edit item is the system's: {os_actions:?}");
     assert_eq!(
         names(&menus, "View"),
-        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
+        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Library", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
     );
     assert_eq!(names(&menus, "Help"), ["Kuvo Help"]);
 }

@@ -100,6 +100,8 @@ pub struct ConversationView {
     /// conversation's model again as it goes up.
     models_changed: Option<u64>,
     entries: Vec<Entry>,
+    /// The message "Show in conversation" brings into view as soon as its row is here (the Library).
+    reveal: Option<String>,
     chat_references: crate::queue::chat_references::ChatReferences,
     /// Each row's revision: a row is drawn again only once it's changed.
     revisions: Vec<u64>,
@@ -203,6 +205,7 @@ impl ConversationView {
             // (From the box's first word: a change heard before the first update counts too.)
             models_changed: Some(0),
             entries: Vec::new(),
+            reveal: None,
             chat_references: Default::default(),
             revisions: Vec::new(),
             list: ChatListState::new(0, cx),
@@ -957,6 +960,33 @@ impl ConversationView {
     /// go above where they are, rows that changed are measured again, and new ones added at the
     /// end, which the list follows while the reader's at the bottom.
     fn show(&mut self, new: Vec<Entry>, revisions: Vec<u64>) {
+        self.show_rows(new, revisions);
+        self.reveal_now();
+    }
+
+    /// Message `message` brought into view: the row of yours, or of the agent's words or steps, it's
+    /// in; once it's loaded, if it isn't yet (a conversation still opening). One that never comes
+    /// (older than what's read) leaves the conversation where it opens.
+    pub fn reveal_message(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.reveal = Some(message.to_owned());
+        self.reveal_now();
+        cx.notify();
+    }
+
+    fn reveal_now(&mut self) {
+        let Some(message) = self.reveal.as_deref() else { return };
+        let Some(ix) = self.entries.iter().position(|entry| match entry {
+            Entry::Words { step, .. } | Entry::Sent { step, .. } => step.id == message,
+            Entry::Steps { items, .. } => items.iter().any(|(step, _)| step.id == message),
+            entry => entry.key() == message,
+        }) else { return };
+        self.reveal = None;
+        let list = self.list.list_state();
+        list.pause_following_tail();
+        list.scroll_to(gpui::ListOffset { item_ix: ix, offset_in_item: px(0.) });
+    }
+
+    fn show_rows(&mut self, new: Vec<Entry>, revisions: Vec<u64>) {
         let old = std::mem::replace(&mut self.entries, new);
         let old_revisions = std::mem::replace(&mut self.revisions, revisions);
         self.selection.set_rows(self.entries.iter().map(Entry::key));

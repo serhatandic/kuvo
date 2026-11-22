@@ -27,7 +27,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
+use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
 use crate::areas::{AreaView, Go, Picked, Reachability, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
@@ -228,6 +228,8 @@ pub enum Switch {
     To(String),
     /// Open a session on another connected computer.
     Session { computer: String, session: String },
+    /// Open a session on another connected computer at a message (the Library's "Show in conversation").
+    SessionAt { computer: String, session: String, message: Option<String> },
     /// This app was removed from your devices: pair it again.
     PairAgain,
     /// Something was asked of the box that lists your computers (Update Now): read the list again
@@ -250,6 +252,7 @@ pub struct Workspace {
     moves: Entity<crate::moves::MovesView>,
     image_viewer: Entity<crate::image_viewer::ImageViewer>,
     insights: Entity<crate::insights::InsightsView>,
+    library: Entity<crate::library::LibraryView>,
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
     switching: Option<crate::home::Switching>,
@@ -417,6 +420,14 @@ impl Workspace {
             }
         }).detach();
         cx.observe(&insights, |_, _, cx| cx.notify()).detach();
+        let library = cx.new(|cx| crate::library::LibraryView::new(client.clone(), live, window, cx));
+        cx.subscribe_in(&library, window, |this: &mut Self, _, at: &crate::library::ShowAt, window, cx| {
+            match &at.computer {
+                Some(computer) => cx.emit(Switch::SessionAt { computer: computer.clone(), session: at.session.clone(), message: at.message.clone() }),
+                None => this.open_session_at(&at.session, at.message.as_deref(), window, cx),
+            }
+        }).detach();
+        cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
         area_subscriptions.push(cx.subscribe(&moves, |_: &mut Self, _, moved: &crate::moves::OpenMoved, cx| {
@@ -543,6 +554,7 @@ impl Workspace {
             area: Area::Sessions,
             areas,
             insights,
+            library,
             rings,
             bot_chat: None,
             in_bot_chat: false,
@@ -747,6 +759,7 @@ impl Workspace {
                     }
                     Area::Computers => self.read_computers(cx),
                     Area::Insights => self.insights.update(cx, |view, cx| view.read_again(cx)),
+                    Area::Library => self.library.update(cx, |view, cx| view.read_again(cx)),
                     _ => {}
                 }
             }
@@ -1372,6 +1385,7 @@ impl Workspace {
                 .map_or(Reachability::Unanswered, |view| view.read(cx).reachability()),
             Area::Computers => self.computers_reachability,
             Area::Insights => self.insights.read(cx).reachability(),
+            Area::Library => self.library.read(cx).reachability(),
             _ => Reachability::Unanswered,
         };
         reachability == Reachability::Reached
@@ -1407,13 +1421,13 @@ impl Workspace {
             let away = self.shown_row().and_then(|row| row.computer.notice.clone());
             let (title, detail) = away.map(|notice| (notice.title, notice.detail)).unwrap_or_else(|| unreached_words(&name));
             ("unreached", title, detail, false, true, Some(("Try Again".to_owned(), BlockedDo::TryAgain)))
-        } else if self.area == Area::Insights
+        } else if let Some((feature, page, shows)) = self.area_feature()
             && self.info.as_ref().is_some_and(|info| info.compatibility == kuvo_box::info::Compatibility::Behind)
-            && !self.client.gate().has("usage.insights")
+            && !self.client.gate().has(feature)
         {
             let computer = if name == "This Mac" { "this Mac" } else { name.as_str() };
-            let title = format!("Kuvo on {computer} needs to update to show Insights");
-            let fallback_detail = format!("Update Kuvo on {computer} to see usage and cost insights here.");
+            let title = format!("Kuvo on {computer} needs to update to show {page}");
+            let fallback_detail = format!("Update Kuvo on {computer} to see {shows} here.");
             let (detail, busy, attention, action) = if let Some(update) = self.older_update() {
                 let action = update.action.as_ref().filter(|action| action.why.is_none() && update.does.is_some()).map(|action| (action.label.clone(), BlockedDo::Update));
                 let gates_words = update.detail == held_words(None, true).1 || update.detail.ends_with(HELD_ELSEWHERE) || update.detail.is_empty();
@@ -1430,22 +1444,39 @@ impl Workspace {
             return None;
         };
         // Another of yours that works now: this Mac's own first, then the first answering.
-        let needs_insights = self.area == Area::Insights
-            && !self.client.gate().is_held()
-            && !self.client.gate().has("usage.insights");
+        let needs = self.area_feature().map(|(feature, _, _)| feature).filter(|feature| !self.client.gate().is_held() && !self.client.gate().has(feature));
         let shown = self.switching.as_ref().and_then(|switching| switching.shown.clone());
         let switch_to = self.switching.as_ref().and_then(|switching| {
             let works = |row: &&kuvo_box::boxes::Row| {
                 Some(row.key()) != shown.as_deref()
                     && !row.computer.is_older()
                     && matches!(row.reach, kuvo_box::boxes::Reach::Nearest | kuvo_box::boxes::Reach::Connected)
-                    && (!needs_insights
-                        || row.computer.features.as_deref().is_none_or(|features| features.iter().any(|feature| feature == "usage.insights")))
+                    && needs.is_none_or(|needed| row.computer.features.as_deref().is_none_or(|features| features.iter().any(|feature| feature == needed)))
             };
             let rows = &switching.rows;
             rows.iter().find(|row| works(row) && matches!(row.reach, kuvo_box::boxes::Reach::Nearest)).or_else(|| rows.iter().find(works)).map(|row| (row.key().to_owned(), row.computer.name.clone()))
         });
         Some(Blocked { kind, title, detail, busy, attention, action, switch_to, error })
+    }
+
+    /// The bots the Library's sidebar lists: this computer's and your others', as the Bots list has them.
+    fn library_bots(&self, cx: &App) -> Vec<crate::library::LibraryBot> {
+        let Some(view) = self.area_view(Area::Bots) else { return Vec::new() };
+        let Reading::Ready(bots) = view.read(cx).bots() else { return Vec::new() };
+        let here = bots.bots.iter().map(|bot| crate::library::LibraryBot { id: bot.id.clone(), name: bot.name.clone(), look: bot.look.clone() });
+        let elsewhere = bots.elsewhere.iter().filter_map(|bot| {
+            Some(crate::library::LibraryBot { id: bot.id.clone(), name: bot.name.clone()?, look: bot.look.clone().unwrap_or_else(crate::areas::unknown_bot_look) })
+        });
+        here.chain(elsewhere).collect()
+    }
+
+    /// The feature an area's page needs of a box, its name and what it shows (for "needs to update").
+    fn area_feature(&self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self.area {
+            Area::Insights => Some(("usage.insights", "Insights", "usage and cost insights")),
+            Area::Library => Some(("library", "the Library", "what was handed over to you")),
+            _ => None,
+        }
     }
 
     /// The computer this window shows, as your computers' list has it.
@@ -2392,6 +2423,26 @@ impl Workspace {
         self.show_area(Area::Insights, window, cx);
     }
 
+    /// The Library's "Show in conversation": the conversation, brought to the message once it's there.
+    pub fn open_session_at(&mut self, session: &str, message: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_session(session, window, cx);
+        if let Some(message) = message
+            && let Some(view) = self.conversation().cloned()
+        {
+            view.update(cx, |view, cx| view.reveal_message(message, cx));
+        }
+    }
+
+    pub fn library(&self) -> &Entity<crate::library::LibraryView> {
+        &self.library
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn library_sample(&mut self, slug: &str, now: f64, window: &mut Window, cx: &mut Context<Self>) {
+        self.library.update(cx, |view, cx| view.sample(slug, now, window, cx));
+        self.show_area(Area::Library, window, cx);
+    }
+
     #[cfg(feature = "stand-in")]
     pub fn insights_sample(&mut self, slug: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.insights.update(cx, |view, cx| view.sample(slug, cx));
@@ -2403,8 +2454,15 @@ impl Workspace {
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.bring_out_sidebar(window);
-        if area == Area::Insights {
+        if area == Area::Insights || area == Area::Library {
             self.record(Nav::Area(area, None), cx);
+        }
+        // The Library's sidebar lists every bot, as the Bots list has them: read it, if it isn't yet.
+        if area == Area::Library
+            && let Some(bots) = self.area_view(Area::Bots).cloned()
+            && !matches!(bots.read(cx).bots(), Reading::Ready(_))
+        {
+            bots.update(cx, |view, cx| view.read_list(cx));
         }
         match area {
             Area::Sessions => {
@@ -2977,6 +3035,10 @@ impl Workspace {
     /// title and its project, or the page an area shows.
     pub fn title(&self, cx: &App) -> (Option<SharedString>, Option<SharedString>) {
         if self.area == Area::Insights { return (Some(self.area.name().into()), None); }
+        if self.area == Area::Library {
+            let (title, beside) = self.library.read(cx).title();
+            return (Some(title), beside);
+        }
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
             let title = view.read(cx).title(cx);
@@ -3755,6 +3817,14 @@ impl Render for Workspace {
         let show_insights = in_insights && self.client.gate().has("usage.insights");
         let insights = self.insights.clone();
         insights.update(cx, |view, cx| view.shown(show_insights, cx));
+        let in_library = self.area == Area::Library;
+        let library = self.library.clone();
+        let show_library = in_library && self.client.gate().has("library");
+        library.update(cx, |view, cx| view.shown(show_library, cx));
+        if in_library {
+            let bots = self.library_bots(cx);
+            library.update(cx, |view, cx| view.set_bots(bots, cx));
+        }
         let sessions = self.area == Area::Sessions;
         // A computer that can't be used shows why, and what moves it on, in every area but
         // Settings, never areas that open empty.
@@ -3763,6 +3833,8 @@ impl Render for Workspace {
             div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
         } else if in_insights {
             insights.into_any_element()
+        } else if in_library {
+            library.clone().into_any_element()
         } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
@@ -3777,7 +3849,7 @@ impl Render for Workspace {
             _ => landing::render(self, window, cx),
         } };
         let width = self.visible_sidebar_width(viewport, cx);
-        let sidebar_area = if compact { Area::Bots } else { self.area };
+        let sidebar_area = if compact && !in_library { Area::Bots } else { self.area };
         let area_view = self.area_view(sidebar_area).cloned();
         if let Some(view) = &area_view {
             let mode = match (compact, sessions) {
@@ -3791,6 +3863,7 @@ impl Render for Workspace {
         }
         let sidebar = width.map(|width| {
             let content = match area_view {
+                _ if in_library => library.update(cx, |view, cx| view.sidebar(cx)),
                 Some(view) => view.into_any_element(),
                 None => sidebar::render(self, window, cx),
             };
@@ -3842,6 +3915,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
             .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_area(Area::Insights, window, cx)))
+            .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| this.show_area(Area::Library, window, cx)))
             .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| this.open_insights(Some(filter.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))

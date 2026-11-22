@@ -957,7 +957,7 @@ impl Render for AreaView {
             Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
-            Area::Settings | Area::Insights => Vec::new(),
+            Area::Settings | Area::Insights | Area::Library => Vec::new(),
             Area::Sessions => Vec::new(),
         };
         // A sheet open on the area's page: the sidebar waits under the same dimming.
@@ -1542,7 +1542,7 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
 const BOT_FACE: f32 = 40.;
 const COMPACT_FACE: Pixels = px(36.);
 
-fn unknown_bot_look() -> Look {
+pub(crate) fn unknown_bot_look() -> Look {
     Look { color: "graphite".into(), shape: "round".into(), face: "calm".into() }
 }
 

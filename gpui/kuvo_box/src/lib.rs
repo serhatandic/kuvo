@@ -27,6 +27,7 @@ pub mod gate;
 pub mod git;
 pub mod groups;
 pub mod ids;
+pub mod library;
 pub mod image_names;
 pub mod info;
 pub mod install;
