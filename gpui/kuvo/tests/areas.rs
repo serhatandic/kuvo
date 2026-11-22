@@ -327,16 +327,6 @@ fn computers_keeps_this_one_while_the_list_cant_be_read(cx: &mut TestAppContext)
     assert!(bounds(cx, "computer-dot-this").is_none());
 }
 
-/// The title bar's switcher names your other computers as the box lists them; this window's first.
-#[gpui::test]
-fn the_switcher_lists_your_other_computers_as_the_box_does(cx: &mut TestAppContext) {
-    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    click(cx, "computer-switcher");
-    let devbox = bounds(cx, "menu-item-devbox").expect("devbox");
-    let studio = bounds(cx, "menu-item-studio-mini").expect("one that's away");
-    assert!(devbox.top() < studio.top());
-    assert!(bounds(cx, "menu-item-Show Computers").is_some());
-}
 
 #[gpui::test]
 fn a_box_alone_lists_itself(cx: &mut TestAppContext) {
@@ -728,9 +718,7 @@ fn opening_the_gate_refreshes_the_area_already_on_screen(cx: &mut TestAppContext
 fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut TestAppContext) {
     let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     assert!(bounds(cx, "area-sidebar").is_some());
-    let toggle = bounds(cx, "toggle-sidebar").unwrap();
-    let picker = bounds(cx, "computer-switcher").unwrap();
-    assert!(toggle.right() <= picker.left(), "the toggle precedes the computer picker");
+    assert!(bounds(cx, "computer-switcher").is_none(), "the title bar has no computer picker");
     click(cx, "toggle-sidebar");
     assert!(bounds(cx, "area-sidebar").is_none());
     cx.simulate_keystrokes("cmd-b");
@@ -746,7 +734,7 @@ fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut T
     assert!(bounds(cx, "area-sidebar").is_some());
 }
 
-/// The sidebar toggle, the computer picker, back and forward are one group over the sidebar side;
+/// The sidebar toggle, back and forward are one group over the sidebar side;
 /// a thin divider ends it where the sidebar column ends, and the title starts after it. There is no
 /// + in the bar (New Session is ⌘N and File › New Session), and with the sidebar hidden the group
 /// and the divider stay together, then the title.
@@ -756,13 +744,13 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
     click(cx, "rail-queue");
     assert!(bounds(cx, "new-session").is_none(), "the title bar has no + of its own");
     let order = |cx: &mut gpui::VisualTestContext| {
-        ["toggle-sidebar", "computer-switcher", "back", "forward", "title-bar-divider", "window-title"].map(|name| bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn")))
+        ["toggle-sidebar", "back", "forward", "title-bar-divider", "window-title"].map(|name| bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn")))
     };
     let shown = order(cx);
     for pair in shown.windows(2) {
         assert!(pair[0].right() <= pair[1].left(), "left to right: {pair:?}");
     }
-    let divider = shown[4];
+    let divider = shown[3];
     assert!(divider.size.width <= gpui::px(2.) && divider.size.height < gpui::px(kuvo::title_bar::HEIGHT) / 2., "thin and short: {divider:?}");
     let sidebar = bounds(cx, "area-sidebar").unwrap();
     assert!((divider.right() - sidebar.right()).abs() <= gpui::px(2.), "the divider sits where the sidebar column ends: {divider:?} / {sidebar:?}");
@@ -771,7 +759,7 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
     for pair in hidden.windows(2) {
         assert!(pair[0].right() <= pair[1].left(), "left to right, sidebar hidden: {pair:?}");
     }
-    assert!(hidden[4].left() - hidden[3].right() <= gpui::px(16.), "the divider stays with the group");
+    assert!(hidden[3].left() - hidden[2].right() <= gpui::px(16.), "the divider stays with the group");
 }
 
 fn drag_sidebar(cx: &mut VisualTestContext, delta: f32) {
@@ -789,7 +777,7 @@ fn resizable_sidebar_width(cx: &mut VisualTestContext) -> Pixels {
     let divider = bounds(cx, "title-bar-divider").unwrap();
     assert_eq!(divider.right(), sidebar.right(), "the border and divider share the same edge");
     assert!(bounds(cx, "toggle-sidebar").unwrap().right() <= divider.left());
-    for name in ["computer-switcher", "back", "forward"] {
+    for name in ["back", "forward"] {
         let button = bounds(cx, name).unwrap();
         if sidebar.size.width == px(64.) {
             assert!(button.left() >= divider.right(), "{name} sits beside the title in compact mode");
@@ -811,10 +799,8 @@ fn resizable_sidebar_keeps_a_long_computer_name_inside_the_header(cx: &mut TestA
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.box_name().to_string()), name);
     click(cx, "rail-queue");
     assert_eq!(resizable_sidebar_width(cx), px(272.));
-    let picker = bounds(cx, "computer-switcher").unwrap().size.width;
     drag_sidebar(cx, 160.);
     assert_eq!(resizable_sidebar_width(cx), px(432.));
-    assert!(bounds(cx, "computer-switcher").unwrap().size.width > picker);
 }
 
 #[gpui::test]
@@ -975,12 +961,6 @@ fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppC
     cx.run_until_parked();
     assert!(bounds(cx, "area-sidebar").is_none());
     assert!(bounds(cx, "held-area").is_some());
-    click(cx, "computer-switcher");
-    assert!(bounds(cx, "menu-item-Only Box").is_some());
-    assert!(bounds(cx, "menu-item-Show Computers").is_none(), "there are no other computers");
-    cx.simulate_keystrokes("escape ctrl-4");
-    cx.run_until_parked();
-    assert_eq!(area(&workspace, cx), Area::Computers);
 }
 
 #[gpui::test]

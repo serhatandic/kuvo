@@ -489,8 +489,14 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
             let collapsed = workspace.is_collapsed(directory);
             // The project's sums are the box's (`projects[<dir>].{asking, working}`): how many of
             // its sessions wait on you, and how many are at work.
-            let (asking, working) = listing.projects().get(directory).map_or((0, 0), |project| (project.asking, project.working));
+            let (asking, working) = listing.project(directory).map_or((0, 0), |project| (project.asking, project.working));
             let name = group.name.clone();
+            // (Named with its computer only where another project has the same name.)
+            let label = match &group.computer {
+                Some(computer) => format!("{} · {computer}", group.name),
+                None => group.name.clone(),
+            };
+            let elsewhere = group.elsewhere;
             let trailing: Option<AnyElement> = if asking > 0 {
                 Some(div().debug_selector(move || format!("project-asking-{name}")).child(count_badge(asking, cx)).into_any_element())
             } else if collapsed && working > 0 {
@@ -504,10 +510,11 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
                 None
             };
             let (toggle, start_in) = (directory.clone(), directory.clone());
-            let mut header = NavRow::new(SharedString::from(format!("project-{directory}")), group.name.clone())
+            let header = NavRow::new(SharedString::from(format!("project-{directory}")), label)
                 .icon(project_icon(collapsed))
-                .cursor(cursor)
-                .hover_trailing(
+                .cursor(cursor);
+            // (Another computer's project: a new session there starts from Runs on.)
+            let mut header = if elsewhere { header } else { header.hover_trailing(
                     Button::icon_only(
                         SharedString::from(format!("new-in-{directory}")),
                         IconName::Plus,
@@ -519,7 +526,7 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
                         cx.stop_propagation();
                         this.new_session(Some(start_in.clone()), window, cx);
                     })),
-                )
+                ) }
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_project(&toggle, cx)));
             if let Some(trailing) = trailing {
                 header = header.trailing(trailing);
@@ -733,7 +740,10 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     let popover = active_row_popover(workspace, &row_key);
     let is_hovered = workspace.session_menu().hovered_row.as_deref() == Some(row_key.as_str());
     let gate_held = workspace.client().gate().is_held();
-    let hover_buttons = (!gate_held)
+    // Another computer's session: its menu is that computer's (not drawn here yet), and while that
+    // computer is away, the row says since when, or that it's updating.
+    let on = facts.as_ref().and_then(|facts| facts.on.clone());
+    let hover_buttons = (!gate_held && on.is_none())
         .then(|| workspace.session_menu().cached_actions(id))
         .flatten()
         .map(hover_action_specs)
@@ -751,7 +761,14 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     } else {
         div().into_any_element()
     };
-    let when = facts.as_ref().map(|facts| time::ago(facts.updated, workspace.now())).unwrap_or_default();
+    let when = match &on {
+        Some(on) if on.updating => "Updating…".to_owned(),
+        Some(on) if on.away => on.last_seen.map(|seen| format!("seen {}", time::ago(seen, workspace.now()))).unwrap_or_default(),
+        // (In Chats, where nothing else says which computer it's on.)
+        Some(on) if section == "chat" => format!("{} · {}", on.name, facts.as_ref().map(|facts| time::ago(facts.updated, workspace.now())).unwrap_or_default()),
+        _ => facts.as_ref().map(|facts| time::ago(facts.updated, workspace.now())).unwrap_or_default(),
+    };
+    let opens = on.as_ref().is_none_or(|on| on.opens());
     let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Chat, id);
     let move_status = workspace.moves().read(cx).row_status(&target, cx);
     let end: AnyElement = if let Some(status) = move_status {
@@ -760,8 +777,11 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
         row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
         let when_selector = format!("session-when-{section}-{id}");
+        // (What it says, for tests: "Updating…", "seen 2h".)
+        let said_selector = format!("session-said-{id}-{when}");
         div()
             .debug_selector(move || when_selector)
+            .child(div().debug_selector(move || said_selector))
             .flex_none()
             .text_role(TextRole::Meta)
             .text_color(c.text_faint)
@@ -803,11 +823,15 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
                 this.set_hovered_row(None, cx);
             }
         }))
-        .on_click(cx.listener(move |this, _, window, cx| this.open_session(&open, window, cx)))
+        .when(opens, |r| r.on_click(cx.listener(move |this, _, window, cx| this.open_session(&open, window, cx))))
+        .when(!opens, |r| r.cursor_default())
         .child(div().flex().flex_none().justify_center().min_w(IconSize::Nav.pixels()).child(leading))
         .child(div().flex_1().min_w_0().truncate().child(title))
         .child(end);
 
+    if on.is_some() {
+        return div().relative().debug_selector(move || row_key_id).child(row).into_any_element();
+    }
     let with_menu = ContextMenuArea::new(SharedString::from(format!("ctx-{row_key}")), row, move |window, cx| {
         workspace_handle.update(cx, |workspace, cx| workspace.open_row_menu(&menu_session, &menu_key, window, cx))
     })

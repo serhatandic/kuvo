@@ -103,7 +103,38 @@ pub struct Facts {
     pub retrying: Option<bool>,
     /// It ended a turn you haven't read: when (ms, its `time.idle`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unread: Option<f64>,
+    pub unread: Option<f64>,    /// Another of your computers' session, as the setup's list says (none: this computer's own).
+    #[serde(skip)]
+    pub on: Option<OnComputer>,
+}
+
+/// Where a session or project from the setup's list runs, when it isn't this computer, and how
+/// that computer stands, as the nearest box says (PROTOCOL.md, "Setup-wide list topics").
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OnComputer {
+    /// Its public key, to address its routes.
+    pub id: String,
+    pub name: String,
+    /// Not answering now: its rows are its last copy.
+    pub away: bool,
+    /// When its last copy came (ms), while it's away.
+    pub last_seen: Option<f64>,
+    /// Away only to switch to a new release.
+    pub updating: bool,
+    /// What can be done with the row now (`open`, `manage`): none while it's away.
+    pub actions: Vec<String>,
+}
+
+impl OnComputer {
+    /// Whether the row can be opened now.
+    pub fn opens(&self) -> bool {
+        self.actions.iter().any(|action| action == "open")
+    }
+
+    /// Whether its menu's actions can be used now.
+    pub fn manages(&self) -> bool {
+        self.actions.iter().any(|action| action == "manage")
+    }
 }
 
 /// How a subagent takes your messages: `direct`, through its `parent` (which passes them on), or
@@ -159,7 +190,9 @@ pub struct Project {
     pub total: Option<u64>,
     /// What "Show more" adds next; none once all show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub more: Option<ShowMore>,
+    pub more: Option<ShowMore>,    /// Another of your computers' project, as the setup's list says (none: this computer's own).
+    #[serde(skip)]
+    pub on: Option<OnComputer>,
 }
 
 /// What "Show more" under a project's list adds next: `count` more, asked for with `cursor`.
@@ -254,6 +287,12 @@ pub struct Line {
 
 pub const LIST_START: &str = "sessions.list.start";
 
+/// Whether a box serves the setup-wide lists on its line.
+pub const SETUP_LISTS: &str = "line.setup-lists";
+
+/// The setup's sessions and projects, across your computers.
+pub const SETUP_SESSIONS_ROUTE: &str = "kuvo/setup/sessions/events";
+
 fn start_project<'de, D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(decoder).map(Some)
 }
@@ -281,6 +320,72 @@ pub struct Listing {
     /// client still holds as it goes.
     former: HashMap<String, Facts>,
     pending: Vec<String>,
+    /// Your other computers' sessions and projects, as the setup's list says them (PROTOCOL.md,
+    /// "Setup-wide list topics"), each with its computer; a project by its computer's key and
+    /// folder ([`elsewhere_project`]).
+    elsewhere: HashMap<String, Facts>,
+    elsewhere_projects: HashMap<String, Project>,
+    /// The setup's list has been said.
+    setup_read: bool,
+}
+
+/// The setup's session list, as the nearest box says it (`kuvo/setup/sessions/events`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SetupSessions {
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub sessions: Vec<SetupSession>,
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub projects: Vec<SetupProject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RowComputer {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SetupSession {
+    pub id: String,
+    pub facts: Facts,
+    #[serde(default)]
+    pub actions: Vec<String>,
+    pub computer: RowComputer,
+    #[serde(default)]
+    pub away: bool,
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    #[serde(default)]
+    pub updating: bool,
+    #[serde(default)]
+    pub here: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SetupProject {
+    pub directory: String,
+    pub facts: Project,
+    pub computer: RowComputer,
+    #[serde(default)]
+    pub away: bool,
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    #[serde(default)]
+    pub updating: bool,
+    #[serde(default)]
+    pub here: bool,
+}
+
+/// The lists' key for another computer's project: its computer's key and its folder there (two
+/// computers can have a project in the same folder). Its last part is the folder's.
+pub fn elsewhere_project(computer: &str, directory: &str) -> String {
+    format!("{computer}:{directory}")
+}
+
+/// The computer and folder of a project keyed by [`elsewhere_project`].
+pub fn project_elsewhere(key: &str) -> Option<(&str, &str)> {
+    let (computer, directory) = key.split_once(':')?;
+    (directory.starts_with('/') && !computer.is_empty() && !computer.contains('/')).then_some((computer, directory))
 }
 
 impl Listing {
@@ -327,7 +432,54 @@ impl Listing {
 
     /// What its box says of session `id`: as it's listed, else as it was before it was let go.
     pub fn facts(&self, id: &str) -> Option<&Facts> {
-        self.sessions.get(id).or_else(|| self.former.get(id))
+        self.sessions.get(id).or_else(|| self.elsewhere.get(id)).or_else(|| self.former.get(id))
+    }
+
+    /// Project `key` as the lists say it: this computer's own, or another's ([`elsewhere_project`]).
+    pub fn project(&self, key: &str) -> Option<&Project> {
+        self.projects.get(key).or_else(|| self.elsewhere_projects.get(key))
+    }
+
+    /// The computer session `id` is on, where it's another of yours.
+    pub fn computer_of(&self, id: &str) -> Option<&OnComputer> {
+        self.facts(id)?.on.as_ref()
+    }
+
+    /// Whether the setup's list has been said (your other computers' rows are in).
+    pub fn setup_read(&self) -> bool {
+        self.setup_read
+    }
+
+    /// The setup's list taken in: your other computers' rows in place of what they were (this
+    /// computer's own come in its own list, with all it says of them). Whether anything changed.
+    pub fn take_setup(&mut self, setup: SetupSessions) -> bool {
+        let on = |computer: &RowComputer, away: bool, last_seen: Option<f64>, updating: bool, actions: Vec<String>| OnComputer { id: computer.id.clone(), name: computer.name.clone(), away, last_seen: last_seen.filter(|_| away), updating, actions };
+        let mut projects = HashMap::new();
+        for row in setup.projects.into_iter().filter(|row| !row.here) {
+            let mut facts = row.facts;
+            if facts.name.is_none() {
+                facts.name = Some(project_name(&row.directory, &HashMap::new()));
+            }
+            facts.on = Some(on(&row.computer, row.away, row.last_seen, row.updating, Vec::new()));
+            projects.insert(elsewhere_project(&row.computer.id, &row.directory), facts);
+        }
+        let mut sessions = HashMap::new();
+        for row in setup.sessions.into_iter().filter(|row| !row.here && !self.sessions.contains_key(&row.id)) {
+            let mut facts = row.facts;
+            if facts.kind.is_project() {
+                let directory = facts.project.clone().unwrap_or_else(|| facts.directory.clone());
+                let key = elsewhere_project(&row.computer.id, &directory);
+                projects.entry(key.clone()).or_insert_with(|| Project { name: Some(project_name(&directory, &HashMap::new())), on: Some(on(&row.computer, row.away, row.last_seen, row.updating, Vec::new())), ..Project::default() });
+                facts.project = Some(key);
+            }
+            facts.on = Some(on(&row.computer, row.away, row.last_seen, row.updating, row.actions));
+            sessions.insert(row.id, facts);
+        }
+        let changed = !self.setup_read || sessions != self.elsewhere || projects != self.elsewhere_projects;
+        self.elsewhere = sessions;
+        self.elsewhere_projects = projects;
+        self.setup_read = true;
+        changed
     }
 
     /// `line` taken in: a whole one in place of what was, else what changed. Whether anything did.
@@ -372,7 +524,16 @@ impl Listing {
 
     /// The sidebar a client draws from it ([`sidebar`]).
     pub fn sidebar(&self) -> Sidebar {
-        sidebar_with_order(&self.sessions, &self.projects, self.project_order.as_deref())
+        if self.elsewhere.is_empty() && self.elsewhere_projects.is_empty() {
+            return sidebar_with_order(&self.sessions, &self.projects, self.project_order.as_deref());
+        }
+        let mut sessions = self.sessions.clone();
+        for (id, facts) in &self.elsewhere {
+            sessions.entry(id.clone()).or_insert_with(|| facts.clone());
+        }
+        let mut projects = self.projects.clone();
+        projects.extend(self.elsewhere_projects.iter().map(|(key, project)| (key.clone(), project.clone())));
+        sidebar_with_order(&sessions, &projects, self.project_order.as_deref())
     }
 }
 
@@ -414,6 +575,10 @@ pub struct ProjectGroup {
     pub directory: String,
     pub name: String,
     pub sessions: Vec<String>,
+    /// The computer it's on, where that tells it from another group of the same name.
+    pub computer: Option<String>,
+    /// Another computer's project (`directory` is the list's key for it, not a folder here).
+    pub elsewhere: bool,
 }
 
 /// The sidebar for `sessions` and `projects` as a box lists them.
@@ -444,18 +609,31 @@ fn sidebar_with_order(sessions: &HashMap<String, Facts>, projects: &HashMap<Stri
         .map(|(directory, rows)| {
             let top = rows.iter().map(|(_, facts)| facts.updated).fold(None, |most: Option<f64>, updated| Some(most.map_or(updated, |most| most.max(updated))));
             let name = project_name(&directory, projects);
-            (top.unwrap_or(0.0), ProjectGroup { name, sessions: newest(rows), directory })
+            let on = projects.get(&directory).and_then(|project| project.on.as_ref()).or_else(|| rows.first().and_then(|(_, facts)| facts.on.as_ref())).cloned();
+            (top.unwrap_or(0.0), ProjectGroup { name, sessions: newest(rows), elsewhere: on.is_some(), computer: on.map(|on| on.name), directory })
         })
         .collect();
     if let Some(order) = order {
+        // (Another computer's projects aren't in this one's order: after it, newest first.)
         let ranks: HashMap<&str, usize> = order.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
-        groups.sort_by_key(|(_, group)| ranks.get(group.directory.as_str()).copied().unwrap_or(usize::MAX));
+        groups.sort_by(|(left, a), (right, b)| {
+            let rank = |group: &ProjectGroup| ranks.get(group.directory.as_str()).copied().unwrap_or(usize::MAX);
+            rank(a).cmp(&rank(b)).then_with(|| right.partial_cmp(left).unwrap_or(Ordering::Equal)).then_with(|| finder_order(&a.name, &b.name))
+        });
     } else {
         groups.sort_by(|(left, a), (right, b)| {
             right.partial_cmp(left).unwrap_or(Ordering::Equal).then_with(|| finder_order(&a.name, &b.name)).then_with(|| a.directory.cmp(&b.directory))
         });
     }
-    Sidebar { pinned, chats, projects: groups.into_iter().map(|(_, group)| group).collect() }
+    let mut projects: Vec<ProjectGroup> = groups.into_iter().map(|(_, group)| group).collect();
+    // A group names its computer only where another group has the same name.
+    let names: Vec<String> = projects.iter().map(|group| group.name.clone()).collect();
+    for group in &mut projects {
+        if names.iter().filter(|name| **name == group.name).count() < 2 {
+            group.computer = None;
+        }
+    }
+    Sidebar { pinned, chats, projects }
 }
 
 /// A project's name: as its box's list names it, else its folder's.

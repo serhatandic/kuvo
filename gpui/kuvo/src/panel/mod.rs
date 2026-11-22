@@ -170,6 +170,9 @@ struct Conversation {
     /// Its panel has shown, or been asked for something.
     started: bool,
     place: Option<Place>,
+    /// The box of the computer its session is on, where that's another of yours (none: the
+    /// window's): its files, terminals, browser and Changes are that computer's.
+    client: Option<BoxClient>,
     /// The folder's files, shared by its Files and file tabs.
     files: Option<Entity<FilesView>>,
     views: HashMap<u64, View>,
@@ -231,7 +234,7 @@ impl SidePanel {
     fn conversation(&mut self, _cx: &mut Context<Self>) -> &mut Conversation {
         if !self.conversations.contains_key(&self.key) {
             let strip = Strip::new(&mut self.next);
-            self.conversations.insert(self.key.clone(), Conversation { strip, started: false, place: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
+            self.conversations.insert(self.key.clone(), Conversation { strip, started: false, place: None, client: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
         }
         self.conversations.get_mut(&self.key).expect("made above")
     }
@@ -244,7 +247,7 @@ impl SidePanel {
         }
         let start = crate::yours::now(cx).panel.starts_with;
         let next = &mut self.next;
-        let conversation = self.conversations.entry(self.key.clone()).or_insert_with(|| Conversation { strip: Strip::new(next), started: false, place: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
+        let conversation = self.conversations.entry(self.key.clone()).or_insert_with(|| Conversation { strip: Strip::new(next), started: false, place: None, client: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
         if std::mem::replace(&mut conversation.started, true) || !conversation.strip.is_fresh() {
             return;
         }
@@ -326,10 +329,30 @@ impl SidePanel {
 
     /// The conversation in view, and its folder (none: a session with no folder, or none open).
     pub fn set_conversation(&mut self, key: Option<String>, place: Option<Place>, cx: &mut Context<Self>) {
-        if self.key == key && self.place() == place.as_ref() {
+        self.set_conversation_on(key, place, None, cx);
+    }
+
+    /// The same, for a session on another of your computers: its tabs use `client`, that
+    /// computer's box.
+    pub fn set_conversation_on(&mut self, key: Option<String>, place: Option<Place>, client: Option<BoxClient>, cx: &mut Context<Self>) {
+        let same_client = |conversation: Option<&Conversation>| match (conversation.and_then(|conversation| conversation.client.as_ref()), client.as_ref()) {
+            (None, None) => true,
+            (Some(was), Some(now)) => was.same_connection(now),
+            _ => false,
+        };
+        if self.key == key && self.place() == place.as_ref() && same_client(self.current()) {
             return;
         }
+        if !same_client(self.conversations.get(&key)) {
+            // (Its computer changed: its tabs' views were the other box's, made again.)
+            if let Some(conversation) = self.conversations.get_mut(&key) {
+                conversation.views.clear();
+                conversation.files = None;
+                conversation.subscriptions.clear();
+            }
+        }
         self.key = key;
+        self.conversation(cx).client = client;
         // (Pages open once the browser's live view is in the panel: until then, files only.)
         let words = "Search files";
         self.conversation(cx).place = place;
@@ -492,7 +515,8 @@ impl SidePanel {
 
     /// Makes the showing tab's view, where it has none yet.
     fn ensure_view(&mut self, cx: &mut Context<Self>) {
-        let (client, live) = (self.client.clone(), self.live);
+        let client = self.current().and_then(|conversation| conversation.client.clone()).unwrap_or_else(|| self.client.clone());
+        let live = self.live;
         let commands = self.commands.clone();
         let (key, now) = (self.key.clone(), self.now);
         let Some(conversation) = self.conversations.get_mut(&self.key) else { return };
@@ -641,11 +665,11 @@ impl SidePanel {
             cx.notify();
             return;
         };
-        if !self.client.gate().has(kuvo_box::find::FILES_FIND) {
+        let client = self.current().and_then(|conversation| conversation.client.clone()).unwrap_or_else(|| self.client.clone());
+        if !client.gate().has(kuvo_box::find::FILES_FIND) {
             return;
         }
         self.found = Some((query.clone(), Load::Loading));
-        let client = self.client.clone();
         let asked = query.clone();
         run(self, self.live, cx, move || client.find_files(&place.directory, &asked), move |this, found, cx| {
             if this.found.as_ref().map(|(at, _)| at) != Some(&query) {

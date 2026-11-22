@@ -197,6 +197,11 @@ impl Focusable for ConversationView {
 }
 
 impl ConversationView {
+    /// The box this conversation is read from and sent to: its computer's.
+    pub fn client(&self) -> &BoxClient {
+        &self.client
+    }
+
     /// A conversation of `client`'s box. `live`: follow it there (the app); else it shows what
     /// it's handed ([`ConversationView::take`]), for tests and shots.
     pub fn new(client: BoxClient, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {

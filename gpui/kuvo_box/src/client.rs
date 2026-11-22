@@ -255,6 +255,21 @@ impl BoxClient {
         Some(BoxClient { transport, gate: Arc::default() })
     }
 
+    /// The box of another of your computers, by its key, as this client reaches it (none where it
+    /// doesn't yet).
+    pub fn peer(&self, key: &str) -> Option<BoxClient> {
+        let transport = self.transport.peer(key)?;
+        Some(BoxClient { transport, gate: Arc::default() })
+    }
+
+    /// The setup's sessions, read once (a stand-in's: its events route answers its state and ends).
+    #[cfg(feature = "stand-in")]
+    pub fn setup_sessions_at_once(&self) -> Result<crate::sessions::SetupSessions> {
+        let response = self.transport.send(&Request::get(crate::sessions::SETUP_SESSIONS_ROUTE))?;
+        let text = String::from_utf8_lossy(&response.body);
+        serde_json::from_str(text.lines().next().unwrap_or("{}")).map_err(|error| Error::BadAnswer(error.to_string()))
+    }
+
     /// Whether a followed route would use the same connection as before.
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.transport, &other.transport)
