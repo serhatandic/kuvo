@@ -1138,9 +1138,10 @@ function sandboxGeneration(on) {
     return "";
   }
 }
-var commandLines, COMMAND_LINE_KEPT = 2000, LOGIN_PATH_MARKERS, WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0', savedPathFile = (home) => path3.join(home, "run", "login-path");
+var commandLines, COMMAND_LINE_KEPT = 2000, lookingUp, LOGIN_PATH_MARKERS, WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0', savedPathFile = (home) => path3.join(home, "run", "login-path");
 var init_platform = __esm(() => {
   commandLines = new Map;
+  lookingUp = new Set;
   LOGIN_PATH_MARKERS = ["__KUVO_PATH__", "__KUVO_END__"];
 });
 
@@ -3195,18 +3196,23 @@ function hold(lock, stale, wait, owner) {
   const deadline = owner ? performance.now() + wait : Infinity;
   for (let i = 0;i < wait / 10 && performance.now() < deadline; i++) {
     if (owner) {
-      try {
-        fs4.renameSync(owner, lock);
+      if (takeOwned(lock, owner))
         return true;
-      } catch (error) {
-        if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
-          throw error;
-      }
-      reapDeadOwner(lock);
     } else if (take(lock, stale))
       return true;
     Atomics.wait(nap, 0, 0, 10);
   }
+  return false;
+}
+function takeOwned(lock, owner) {
+  try {
+    fs4.renameSync(owner, lock);
+    return true;
+  } catch (error) {
+    if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
+      throw error;
+  }
+  reapDeadOwner(lock);
   return false;
 }
 function reapDeadOwner(lock) {
@@ -3226,13 +3232,14 @@ function reapDeadOwner(lock) {
     fs4.rmdirSync(lock);
   } catch {}
 }
-async function holdAwaiting(lock, stale, wait) {
+async function holdAwaiting(lock, stale, wait, owner) {
   fs4.mkdirSync(path4.dirname(lock), { recursive: true, mode: 448 });
-  for (let i = 0;i < wait / 10; i++) {
-    if (take(lock, stale))
+  const deadline = performance.now() + wait;
+  do {
+    if (owner ? takeOwned(lock, owner) : take(lock, stale))
       return true;
     await sleep(10);
-  }
+  } while (performance.now() < deadline);
   return false;
 }
 function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false, required = false } = {}) {
@@ -3262,7 +3269,7 @@ function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false, requi
       } catch {}
   }
 }
-async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
+async function lockedWhile(lock, work, { stale = 1e4, wait = 3000, required = false } = {}) {
   const before = turns.get(lock) ?? Promise.resolve();
   let done = () => {};
   const mine = before.then(() => new Promise((resolve) => {
@@ -3272,6 +3279,8 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
   await before;
   try {
     const held = await holdAwaiting(lock, stale, wait);
+    if (required && !held)
+      throw new Error("Could not lock the file for writing");
     try {
       return await work();
     } finally {
@@ -32108,4 +32117,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 9a4877a7949785649c75d303e98eb7ccd37fc9f8a9d54e94dac6f4686525a911
+// Built from Packages/Box/src/agents a68709a1880dbcd8fce0a7467d7323d2c8b6b4d9808090d8d8910c15262d3225
