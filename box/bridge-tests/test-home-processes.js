@@ -1,91 +1,124 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { fork, spawnSync } from "node:child_process";
-import { once } from "node:events";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const file = fileURLToPath(import.meta.url);
-export const PROCESS_SCOPE = "KUVO_TEST_HOME_PROCESS_SCOPE";
-
-/** Own the processes and the directory even when the test worker is killed before its hooks run. */
-export async function watchTestHome(root) {
-  const { dev, ino } = fs.statSync(root);
-  const scope = randomUUID();
-  const watcher = fork(file, [root, String(dev), String(ino)], {
-    env: { ...process.env, [PROCESS_SCOPE]: scope },
-    detached: true, execArgv: [], stdio: ["ignore", "ignore", "inherit", "ipc"],
-  });
-  const done = once(watcher, "exit");
-  done.catch(() => {});
-  const ready = await Promise.race([once(watcher, "message"), done]);
-  if (ready[0] !== "ready") throw new Error("Could not watch processes in " + root);
-  watcher.unref();
-  watcher.channel.unref();
-  const stop = async () => {
-    // Keep the calling hook alive without adding the watcher to at-end's child kill list.
-    const lease = setInterval(() => {}, 60_000);
-    try {
-      if (watcher.connected) watcher.disconnect();
-      const [code, signal] = await done;
-      if (code !== 0) throw new Error(`Test home process cleanup failed for ${root} (watcher: ${signal ?? code})`);
-    } finally {
-      clearInterval(lease);
-    }
-  };
-  return { scope, stop };
-}
-
+const PROCESS_SCOPE = "KUVO_TEST_HOME_PROCESS_SCOPE";
 const uid = process.getuid();
-function output(command, args, emptyStatus) {
-  const { [PROCESS_SCOPE]: _, ...env } = process.env;
-  env.LC_ALL = "C";
-  const result = spawnSync(command, args, { env, encoding: "utf8", timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
-  if (result.error) throw result.error;
-  if (result.status !== 0 && result.status !== emptyStatus) throw new Error(`${command}: ${result.stderr.trim() || result.signal || result.status}`);
-  return result.stdout;
+const darwin = process.platform === "darwin";
+// Keep these outside test-safety's filesystem and process hooks.
+const { appendFileSync, copyFileSync, mkdtempSync, rmSync } = fs;
+const startNode = spawn;
+const startBun = globalThis.Bun?.spawn.bind(globalThis.Bun);
+
+function startMonitor(args, cwd) {
+  const env = { PATH: "/usr/bin:/bin", LC_ALL: "C", BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
+  if (startBun) {
+    const monitor = startBun([process.execPath, "--no-env-file", ...args], {
+      cwd, env, detached: true, stdin: "pipe", stdout: "ignore", stderr: "inherit",
+    });
+    monitor.unref();
+    return { done: monitor.exited, stop: () => { monitor.ref(); monitor.stdin.end(); } };
+  }
+  const monitor = startNode(process.execPath, args, { cwd, env, detached: true, stdio: ["pipe", "ignore", "inherit"] });
+  const done = new Promise((resolve, reject) => {
+    monitor.once("error", reject);
+    monitor.once("exit", (code, signal) => resolve(signal ?? code));
+  });
+  monitor.stdin.on("error", () => {}); // The monitor may already have closed its end.
+  if (!monitor.pid) {
+    done.catch(() => {});
+    throw new Error("Could not start test process monitor");
+  }
+  monitor.stdin.unref();
+  monitor.unref();
+  return { done, stop: () => { monitor.ref(); monitor.stdin.end(); } };
 }
 
-const columns = ["-ww", "-o", "uid=,pid=,ppid=,pgid=,stat=,lstart=,command="];
+/** The pipe is owned solely by the runner. Its EOF works even after SIGKILL. */
+export function watchTestProcesses(parents = []) {
+  const scope = randomUUID();
+  // Keep the journal outside fixture roots, which the test or an outer script may remove first.
+  const journal = mkdtempSync("/tmp/kuvo-test-processes-");
+  let monitor;
+  try {
+    // A remote wrapper may delete its scratch checkout as soon as its runner dies.
+    const script = path.join(journal, "monitor.mjs");
+    copyFileSync(file, script);
+    monitor = startMonitor([script, journal, scope, String(process.pid), ...parents.map(String)], journal);
+  } catch (error) {
+    rmSync(journal, { recursive: true, force: true });
+    throw error;
+  }
+  const done = monitor.done.then(result => {
+    if (result !== 0) throw new Error(`Test process cleanup failed (${result})`);
+  });
+  done.catch(error => console.error(error.message));
+  let stopping = false;
+
+  return {
+    env: env => ({ ...env, [PROCESS_SCOPE]: scope }),
+    addRoot(root, remove = false) {
+      const stat = fs.lstatSync(root);
+      if (!path.isAbsolute(root) || fs.realpathSync(root) !== root ||
+          stat.uid !== uid || !stat.isDirectory() || (stat.mode & 0o077) !== 0 ||
+          /\/(?:\.kuvo-code|run\.kuvo\.code[^/]*)\//i.test(root + "/")) return;
+      appendFileSync(path.join(journal, "roots"), JSON.stringify({ root, dev: stat.dev, ino: stat.ino, remove }) + "\n", { mode: 0o600 });
+    },
+    stop() {
+      if (!stopping) {
+        stopping = true;
+        monitor.stop();
+      }
+      return done;
+    },
+  };
+}
+
 function processes(args) {
+  const result = spawnSync("/bin/ps", [
+    ...(darwin ? ["-E"] : []), "-ww", "-o", "uid=,pid=,ppid=,pgid=,stat=,lstart=,command=", ...args,
+  ], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  if (![0, 1].includes(result.status)) throw new Error(result.stderr.trim() || "ps failed");
   const rows = new Map();
-  const environment = process.platform === "darwin" ? ["-E"] : [];
-  for (const line of output("/bin/ps", [...environment, ...columns, ...args], 1).split("\n")) {
+  for (const line of result.stdout.split("\n")) {
     const row = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/);
-    if (!row || Number(row[1]) !== uid || row[5].startsWith("Z")) continue;
-    rows.set(Number(row[2]), { parent: Number(row[3]), group: Number(row[4]), leader: row[5].includes("s"), started: row[6], command: row[7] });
+    if (row && Number(row[1]) === uid && !row[5].startsWith("Z")) {
+      rows.set(Number(row[2]), { parent: Number(row[3]), group: Number(row[4]), leader: row[5].includes("s"), started: row[6], command: row[7] });
+    }
   }
   return rows;
 }
 
 const sameProcess = (known, current) => current?.started === known.started && current.command === known.command;
 
-function scopedProcesses(root, owner, groups) {
-  const rows = processes(["-ax"]);
-  rows.delete(process.pid);
-  rows.delete(owner);
-  const aliases = [root, root.replace(/^\/private\/tmp\//, "/tmp/")];
-  const scope = process.env[PROCESS_SCOPE];
-  const marker = `${PROCESS_SCOPE}=${scope}`;
+function hasScope(pid, command, marker) {
+  if (darwin) return command.includes(` ${marker} `) || command.endsWith(` ${marker}`);
+  try {
+    return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(marker);
+  } catch (error) {
+    if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) throw error;
+    return false;
+  }
+}
+
+function scopedProcesses(rows, roots, owner, marker, groups) {
+  for (const [pid, row] of rows) {
+    if (pid === process.pid || / \/tmp\/kuvo-test-processes-[A-Za-z0-9]{6}\/monitor\.mjs /.test(row.command)) rows.delete(pid);
+  }
   const scoped = new Set();
   for (const [pid, row] of rows) {
-    // Darwin does not show the environment of protected tools such as /bin/sh. Those workers
-    // put the fixture's executable or script first. A mention in a later argument is insufficient.
+    if (pid === owner) continue;
+    // Protected tools on macOS hide their environment, and some keepers clear it. The executable
+    // (or interpreter's script) may still be in the test's registered home.
     const executable = row.command.replace(/^(?:\S+\/)?(?:sh|bash|node|bun)(?: --[^ ]+)* /, "");
-    if (aliases.some(alias => executable.startsWith(`${alias}/`))) {
-      scoped.add(pid);
-    } else if (process.platform === "darwin") {
-      if (row.command.includes(` ${marker} `) || row.command.endsWith(` ${marker}`)) scoped.add(pid);
-    } else {
-      try {
-        if (fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(marker)) scoped.add(pid);
-      } catch (error) {
-        if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) throw error;
-      }
-    }
+    if (roots.some(root => executable.startsWith(root + "/")) || hasScope(pid, row.command, marker)) scoped.add(pid);
   }
-  // A detached session can outlive its leader. Keep an isolated group only while a previously
-  // observed member pins its identity, so a recycled group number never authorizes any signals.
+  // Keep an isolated group only as long as a known member still pins its identity.
   for (const [group, members] of groups) {
     if (![...members].some(([pid, previous]) => rows.get(pid)?.group === group && sameProcess(previous, rows.get(pid)))) {
       groups.delete(group);
@@ -104,27 +137,56 @@ function scopedProcesses(root, owner, groups) {
   }
   for (;;) {
     const size = scoped.size;
-    for (const [pid, row] of rows) if (scoped.has(row.parent)) scoped.add(pid);
+    for (const [pid, row] of rows) {
+      if (scoped.has(row.parent)) scoped.add(pid);
+    }
     if (size === scoped.size) return new Map([...scoped].map(pid => [pid, rows.get(pid)]));
   }
 }
 
-async function clean(root, owner) {
-  // Close the fake registration endpoint before any of its existing workers are stopped.
-  fs.writeFileSync(`${root}/.closing`, "", { flag: "wx" });
+function rootsIn(journal) {
+  let stored;
+  try { stored = fs.readFileSync(path.join(journal, "roots"), "utf8"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; return []; }
+  // An incomplete last write is possible if the runner was killed during registration, before it
+  // could launch anything in that root.
+  return stored.split("\n").slice(0, -1).map(line => JSON.parse(line));
+}
+
+function sameRoot({ root, dev, ino }) {
+  try {
+    const now = fs.lstatSync(root);
+    return now.dev === dev && now.ino === ino && now.isDirectory();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+async function clean(journal, owner, scope) {
+  const roots = rootsIn(journal);
+  const managed = roots.filter(entry => entry.remove);
+  for (const entry of managed) {
+    if (!sameRoot(entry)) continue;
+    try { fs.writeFileSync(path.join(entry.root, ".closing"), "", { flag: "wx" }); }
+    catch (error) { if (error.code !== "EEXIST" && error.code !== "ENOENT") throw error; }
+  }
+  const aliases = roots.flatMap(({ root }) => [root, root.replace(/^\/private\//, "/")]);
   const groups = new Map();
   let quiet = 0;
   let live;
-  for (let round = 0; round < 12; round++) {
-    live = scopedProcesses(root, owner, groups);
+  for (let round = 0; round < 20; round++) {
+    live = scopedProcesses(processes(["-ax"]), aliases, owner, `${PROCESS_SCOPE}=${scope}`, groups);
     if (!live.size) {
-      if (++quiet === 2) return;
+      if (++quiet === 2) {
+        for (const entry of managed) if (sameRoot(entry)) rmSync(entry.root, { recursive: true, force: true });
+        return;
+      }
     } else {
       quiet = 0;
       const current = processes(["-p", [...live.keys()].join(",")]);
       for (const [pid, row] of live) {
-        const now = current.get(pid);
-        if (!sameProcess(row, now)) continue;
+        if (!sameProcess(row, current.get(pid))) continue;
         try { process.kill(pid, round < 2 ? "SIGTERM" : "SIGKILL"); } catch (error) {
           if (error.code !== "ESRCH") throw error;
         }
@@ -132,25 +194,40 @@ async function clean(root, owner) {
     }
     await setTimeout(100);
   }
-  throw new Error(`Test home still has live processes in ${root}: ${[...live.keys()].join(", ")}`);
+  throw new Error(`Test processes still running: ${[...live.keys()].join(", ")}`);
 }
 
-if (process.argv[1] === file && process.send) {
-  const [root, device, inode] = process.argv.slice(2);
-  const owner = process.ppid;
-  const checkRoot = () => {
-    const stat = fs.lstatSync(root);
-    if (!/^\/(?:private\/)?tmp\/k[A-Za-z0-9]{6}$/.test(root) || fs.realpathSync(root) !== root ||
-        !stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0 ||
-        String(stat.dev) !== device || String(stat.ino) !== inode) throw new Error(`Invalid test home: ${root}`);
-  };
-  checkRoot();
-  if (!/^[0-9a-f-]{36}$/.test(process.env[PROCESS_SCOPE] ?? "")) throw new Error("Missing test process scope");
-  const disconnected = process.connected ? once(process, "disconnect") : Promise.resolve();
-  if (process.connected) process.send("ready", () => {});
-  await disconnected;
-  checkRoot();
-  await clean(root, owner);
-  checkRoot();
-  fs.rmSync(root, { recursive: true });
+if (path.basename(file) === "monitor.mjs" && fs.realpathSync(process.argv[1]) === fs.realpathSync(file)) {
+  const [journal, scope, ownerArg, ...parents] = process.argv.slice(2);
+  const owner = Number(ownerArg);
+  if (!/^\/tmp\/kuvo-test-processes-[A-Za-z0-9]{6}$/.test(journal ?? "") ||
+      !/^[0-9a-f-]{36}$/.test(scope ?? "") || !Number.isSafeInteger(owner) || owner <= 1) {
+    throw new Error("Invalid test process monitor arguments");
+  }
+  // node --test uses a separate worker. If the CLI or the test shell is killed, freeze the worker
+  // before cleaning up so it can't start more boxes. Only signal this monitor's own parent.
+  const parentCheck = parents.length ? setInterval(() => {
+    if (process.ppid !== owner) return;
+    for (const parent of parents) {
+      try {
+        if (Number(parent) <= 1) throw new Error("runner already gone");
+        process.kill(Number(parent), 0);
+      } catch (error) {
+        if (error.code && error.code !== "ESRCH") continue;
+        if (process.ppid === owner) {
+          try { process.kill(owner, "SIGKILL"); }
+          catch (error) { if (error.code !== "ESRCH") throw error; }
+        }
+        break;
+      }
+    }
+  }, 250) : undefined;
+  try {
+    for await (const _ of process.stdin) { /* Wait for the runner's pipe to close. */ }
+    clearInterval(parentCheck);
+    await clean(journal, owner, scope);
+  } finally {
+    clearInterval(parentCheck);
+    rmSync(journal, { recursive: true, force: true });
+  }
 }

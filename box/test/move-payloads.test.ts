@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import crypto from "node:crypto";
 import fs from "node:fs";

@@ -20,6 +20,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { watchTestProcesses } from "../box/bridge-tests/test-home-processes.js";
 
 const checkout = fileURLToPath(new URL("..", import.meta.url));
 const out = process.argv[2];
@@ -30,13 +31,9 @@ const kind = { x64: "x86_64", arm64: "aarch64" }[os.arch()];
 const link = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const agents = path.join(checkout, "box/dist/kuvo-agents.js");
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-engine-check-"));
-const started = new Set();
-const end = code => {
-  for (const pid of started) try { process.kill(pid, "SIGKILL"); } catch {}
-  fs.rmSync(work, { recursive: true, force: true });
-  process.exit(code);
-};
-const fail = message => { console.error(message); end(1); };
+const lifetime = watchTestProcesses();
+lifetime.addRoot(fs.realpathSync(work), true);
+const fail = message => { throw new Error(message); };
 
 async function engine(pinned) {
   const build = pinned?.[system]?.[kind];
@@ -56,7 +53,7 @@ async function engine(pinned) {
 function selftest(program, script, version, required = true) {
   const home = path.join(work, "home-selftest");
   fs.mkdirSync(home, { recursive: true });
-  const ran = spawnSync(program, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env: { PATH: process.env.PATH, HOME: home, KUVO_HOME: path.join(home, ".kuvo-code"), BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }, encoding: "utf8", timeout: 120_000 });
+  const ran = spawnSync(program, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env: lifetime.env({ PATH: process.env.PATH, HOME: home, KUVO_HOME: path.join(home, ".kuvo-code"), BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }), encoding: "utf8", timeout: 120_000 });
   const ok = ran.status === 0 && /\bok\b/.test(`${ran.stdout}`);
   if (!ok && required) fail(`${path.basename(script)} doesn't answer selftest on engine ${version}:\n${ran.stdout}${ran.stderr}`);
   if (!ok) console.error(`${path.basename(script)} doesn't answer selftest on engine ${version}: boxes running it take this release with its engine, once nothing's at work.`);
@@ -73,8 +70,7 @@ async function serving(program, home, use) {
   const port = await freePort();
   const password = crypto.randomBytes(16).toString("hex");
   const env = { PATH: process.env.PATH, HOME: home, XDG_DATA_HOME: path.join(home, "data"), XDG_CONFIG_HOME: path.join(home, "config"), XDG_STATE_HOME: path.join(home, "state"), XDG_CACHE_HOME: path.join(home, "cache"), OPENCODE_PASSWORD: password };
-  const child = spawn(program, ["serve", "--port", String(port), "--hostname", "127.0.0.1"], { env, cwd: home, stdio: "ignore" });
-  started.add(child.pid);
+  const child = spawn(program, ["serve", "--port", String(port), "--hostname", "127.0.0.1"], { env: lifetime.env(env), cwd: home, stdio: "ignore" });
   const call = async (method, route, body) => {
     const response = await fetch(`http://127.0.0.1:${port}/${route}`, { method, headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
     const text = await response.text();
@@ -95,7 +91,6 @@ async function serving(program, home, use) {
     const killer = setTimeout(() => child.kill("SIGKILL"), 30_000);
     await new Promise(resolve => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once("exit", resolve)));
     clearTimeout(killer);
-    started.delete(child.pid);
   }
 }
 
@@ -138,7 +133,9 @@ try {
   const found = withBefore ? { engines: [fresh.version, before.version], downgradeSafe: await downgradeSafe(before, fresh) } : { engines: [fresh.version] };
   fs.writeFileSync(out, JSON.stringify(found) + "\n");
   console.log(JSON.stringify(found));
-  end(0);
 } catch (error) {
-  fail(error instanceof Error ? error.message : String(error));
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+} finally {
+  await lifetime.stop();
 }

@@ -10,7 +10,7 @@
 // bridge as built, and the swapper they start for a home left by a legacy updater. Stand-ins only for the engines (HTTP servers that note each prompt with their version,
 // and whose own turn runs while the test says) and for `codex app-server`. In a home of the test's
 // own; the same on macOS and Linux. Run with `node --test box/bridge-tests/engine-swap.test.js`.
-import "./test-safety.js";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -29,6 +29,7 @@ const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-engine-swap-")));
 const home = path.join(base, ".kuvo-code");
 const scratch = path.join(base, "scratch");
+removeTestHomeAtExit(base);
 removeAtEnd(base);
 Object.assign(process.env, { HOME: base, KUVO_HOME: home, TMPDIR: `${base}/` });
 const link = await import(builtLink);

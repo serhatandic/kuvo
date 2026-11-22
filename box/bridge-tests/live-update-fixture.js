@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { bunRunsAs, testBun } from "./bun-for-tests.js";
 import { CODEX_STAND_IN } from "./codex-stand-in.js";
@@ -32,6 +33,7 @@ export function liveUpdateFixture({ preResident = false, sandbox = false, identi
   const base = fs.realpathSync(fs.mkdtempSync(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "k774-")));
   const home = path.join(base, ".kuvo-code");
   const scratch = path.join(base, "scratch");
+  removeTestHomeAtExit(base);
   removeAtEnd(base);
   const env = { ...process.env, HOME: base, KUVO_HOME: home, TMPDIR: base + "/", BUN_BE_BUN: "1" };
   const RUN = path.join(home, "run");

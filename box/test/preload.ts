@@ -4,11 +4,14 @@
 
 import "./safety"
 import { afterAll } from "bun:test"
-import { reachedRealAgents } from "../bridge-tests/test-safety.js"
+import { reachedRealAgents, stopTestProcesses } from "../bridge-tests/test-safety.js"
 
 // (Once, when the last test file is done: a preload's hook is the whole run's. Bun's runner ends
 // without telling anything else.)
-afterAll(() => void process.emit("kuvo-test-folders-removed" as any))
+afterAll(async () => {
+  await stopTestProcesses()
+  process.emit("kuvo-test-folders-removed" as any)
+})
 
 // A run that reached your real coding agents (test-safety.js refused it) fails, however its tests
 // took the refusal.

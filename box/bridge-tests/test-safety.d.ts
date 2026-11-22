@@ -1,6 +1,9 @@
 /** A path a test makes under a name of its own outside a temporary folder: it may delete it too. */
 export declare function ownPath<T extends string>(given: T): T;
 export declare function testsFolder(prefix: string): string;
+/** Remove an owned fixture home after its workers have stopped. */
+export declare function removeTestHomeAtExit(folder: string): void;
+export declare function stopTestProcesses(): Promise<void> | undefined;
 /** This account's own home folder as the system has it, whatever HOME says. */
 export declare const accountHome: string | undefined;
 /** The coding agents' own folders in a home, which no test reads, writes or starts a program from. */

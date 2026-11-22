@@ -15,8 +15,11 @@ if [ ! -d "$box/node_modules" ] || [ "$box/bun.lock" -nt "$box/node_modules" ]; 
     (cd "$box" && "$bun" install --frozen-lockfile) || { echo 'Dependency installation failed; suites not run.' >&2; exit 1; }
 fi
 logs=$(mktemp -d /tmp/kuvo-test-box.XXXXXXXX) || exit 1
-export TMPDIR="$logs"
+export TMPDIR="$logs" KUVO_TEST_WRAPPER_PID=$$
 trap 'rm -rf "$logs"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 box_status=skip bridge_status=skip
 if [ "$mode" != bridge ]; then
     echo 'Running box suite...'
