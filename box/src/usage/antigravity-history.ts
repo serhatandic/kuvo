@@ -188,6 +188,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
         db = open(path)
         db.exec("PRAGMA busy_timeout=2000")
         db.exec("BEGIN")
+        if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'").get()) continue
         const steps = db.query("SELECT 1 FROM pragma_table_info('steps') WHERE name='metadata'").values().length > 0
         const step = steps ? ", (SELECT CASE WHEN length(metadata) <= 1048576 THEN metadata ELSE NULL END FROM steps WHERE idx = g.idx) AS step, (SELECT length(metadata) FROM steps WHERE idx = g.idx) AS stepLength" : ", NULL AS step, NULL AS stepLength"
         const query = db.query("SELECT idx, CASE WHEN length(data) <= 1048576 THEN data ELSE NULL END AS data" + step + " FROM gen_metadata g WHERE idx > ? AND data IS NOT NULL ORDER BY idx LIMIT 8")
@@ -266,7 +267,7 @@ export class AntigravityHistory {
         failing.delete(path)
         parts.push(events)
       } catch (error) {
-        // As Swift's scanner: one database that can't be read (no gen_metadata, corrupt, gone) is
+        // As Swift's scanner: one database that can't be read (corrupt or gone) is
         // logged and left out, and the others still count. One read before keeps its last whole
         // answer and old stamp, so it is retried next round.
         fail(path, error instanceof Error ? error.message : String(error))

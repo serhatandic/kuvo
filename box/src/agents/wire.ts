@@ -1,5 +1,6 @@
 // The engine's wire format, the parts Kuvo Code reads (OpenCodeKit's Session, Message, events…).
 // The bridge answers in it, so the app shows these sessions as it does the engine's.
+import type { ContextSize } from "../shared/context"
 import type { WorkOrder } from "../shared/work-order"
 
 export type Millis = number
@@ -41,6 +42,7 @@ export interface Session {
   model?: ModelRef
   cost: number
   tokens: TokenUsage
+  context?: ContextSize
   outcome?: "succeeded" | "failed" | "interrupted"
   time: { created: Millis; updated: Millis; idle?: Millis; viewed?: Millis; archived?: Millis }
   title?: string
@@ -120,15 +122,16 @@ export interface NoticeMessage {
   metadata?: Record<string, unknown>
 }
 
+export type InterruptionReason = "restart" | "agent-exit"
+
 export interface IdleMessage {
   type: "idle"
   id: string
   time: MessageTime
   outcome: "succeeded" | "failed" | "interrupted"
   error?: StructuredError
-  /** Why it was interrupted, when it wasn't a Stop: `restart`, the bridge stopped with it (an
-   * update, a restart, a quit). What waited in line goes on when it's back. */
-  reason?: "restart"
+  /** The process or its bridge stopped. The queue can continue. */
+  reason?: InterruptionReason
 }
 
 export interface ModelSwitchMessage {

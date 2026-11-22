@@ -162,9 +162,9 @@ export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteCon
 const NOT_CONVERSATIONS = new Set(["subagent", "seat", "hidden"]);
 
 /** A deleted session's own wake-ups and watches: gone with it (a bot's are its bot's). */
-function forgetWakes(session: string): void {
+async function forgetWakes(session: string): Promise<void> {
   if (!/^ses_[A-Za-z0-9]+$/.test(session)) return;
-  try { fs.rmSync(path.join(SESSION_WAKES, session), { recursive: true, force: true }); } catch {}
+  try { await fs.promises.rm(path.join(SESSION_WAKES, session), { recursive: true, force: true }); } catch {}
 }
 
 export async function* sessionActionRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
@@ -241,7 +241,7 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
       if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String((error as Error | null)?.message ?? error)}` });
     }
-    forgetWakes(id);
+    await forgetWakes(id);
     return yield* json(200, { session: id });
   }
 

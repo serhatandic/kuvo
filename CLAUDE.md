@@ -2,11 +2,14 @@
 
 A native macOS harness for coding agents that works with any model. It runs the opencode engine (`@opencode/cli`), unmodified, as a private server, and is the interface around it: sessions, reviewing changes, a side panel with files, terminals and a browser the agent can use, and a usage tracker in the menu bar.
 
-Strict rules are marked (strict): never bend them. Contributor docs are in `CONTRIBUTING.md`; longer notes for sessions are in `docs/`.
+Strict rules are marked (strict): never bend them. Contributor docs are in `CONTRIBUTING.md`; longer notes for sessions are in `docs/`. `AGENTS.md` and `GEMINI.md` are links to this file, so Claude Code, Codex and Gemini sessions all read the same rules.
 
 Kuvo Code 1.0 is the desktop app in `gpui/`. The box keeps its compatibility paths for installed 0.7.x clients.
 
 ## The architecture: equal boxes, and clients (strict)
+
+Start with [How Kuvo works](docs/architecture/how-kuvo-works.md). Every setup has
+one main computer for setup-wide saves. Each box owns and runs its own work.
 
 Kuvo Code is a small distributed system. Build every feature for that system, never for the Mac alone.
 
@@ -42,6 +45,8 @@ What people see and touch matters most. Never trade its quality away or let the 
 
 ## Tests: what users rely on (strict)
 
+With no AI reviews, tests are the only automated guard. **Read `docs/testing.md` before writing a test**: what to test, how to prove a test bites, and what to avoid.
+
 - **Test scenarios, not the code's insides**: assert what the app shows, keeps or does, so a refactor that breaks it for users fails.
 - **Use the real components.** Stub only what's outside or unpredictable (the engine's HTTP API, SSH, the network). Never test that a stub returns what it was given.
 - **A bug fix starts with a test that fails on the old code** for the right reason. Fix the cause, never loosen a test.
@@ -67,7 +72,7 @@ On 2026-11-07 one `pkill` took down two other sessions, the box's link, Kuvo Cod
 
 Kuvo Code never spreads files across the user's Mac or machines: everything is packaged, kept in its own folders, organized inside them, and gone when they're deleted.
 
-- **On the Mac**, only its own places (`~/Library/Application Support/run.kuvo.code`, its Caches, Logs, WebKit and HTTPStorages folders, preferences, keychain items); temporary files in the app's temporary folder. **On a machine**, only `~/.kuvo-code`: no system packages, `sudo`, dotfiles, `/tmp` leftovers, crontabs or services, beyond the listed exceptions. Tests and demo copies use folders of their own and clean up.
+- **On the Mac**, the active box lives in `~/.kuvo-code`. The app uses its own Application Support, Caches, Logs, WebKit and HTTPStorages folders, preferences and Keychain items. The old `~/Library/Application Support/run.kuvo.code` box paths are retained for 0.7 import and compatibility. Keep temporary files in the app's temporary folder. **On a machine**, only `~/.kuvo-code`: no system packages, `sudo`, dotfiles, `/tmp` leftovers, crontabs or services, beyond the listed exceptions. Tests and demo copies use folders of their own and clean up.
 - Anything new keeps `uninstall.md` and `privacy.md` (kuvo-web) complete. After a change, list what's new in the machine's home folder and `/tmp`.
 - The exceptions (SSH sockets, the `@reboot` line and login agent, the coding agents' own installers) and the details: `docs/footprint.md`.
 
@@ -98,8 +103,8 @@ The engine, integrations' servers, copied code and packages are kept up to date:
 
 - **Report to the lead** (Kuvo Foreman) or the user. Never wait on a question box: it holds the whole session.
 - **When the user isn't around:** keep a list of every decision that needs them (design, brand, wording, kuvo-web pushes, anything needing a prompt or the user at the Mac), with what you recommend and why. Build what doesn't depend on the answers, so their choices come last. Never build the "recommended side" of a waiting decision when it costs the user anything (an ask, a refusal, an extra step, a limit, a change to what they already use): build around it and say it isn't built. Hand the whole list over at once, with paths to the mocks.
-- **Subagents: two at a time** per session, workers and reviewers and their own subagents counted. Start another only when one finishes.
-- **Reviews, by risk.** Small fixes (no new client logic, nothing touching security, data or another computer): no reviewer. Normal changes: one pass with the `reviewer` subagent at each checkpoint (correctness, then UI and UX against this file, then what could be simpler). High risk (security, data, cross-computer): that, plus a separate review the lead arranges. Every review checks client changes against "Logic goes in the box": logic in the wrong place is a bug that blocks the merge. Fix what users would hit first, then the minor ones (skip only edge cases no one would hit), add a test where you can, and say what ran and what you fixed.
+- **Subagents: two at a time** per session, workers and their own subagents counted. Start another only when one finishes.
+- **No AI reviews unless the user asks for one** (since 2026-11-21). Sessions build; the tests are the guard and the user tests by hand. Don't start `reviewer` subagents or review passes on your own. Check your own client changes against "Logic goes in the box" before committing: logic in the wrong place is a bug that blocks the merge.
 - **Small fixes land fast**, with the check that proves them (for a bug, the test that fails on the old code) and no ceremony beyond that; the strict rules still hold. Bigger work keeps the same care to the end: read before changing, test, look at the UI, check the docs and changelog. If you're skimming, guessing, or about to report what you haven't checked, stop and do it properly; if the context is too full, say so and suggest a fresh session. Never lower the bar.
 - **Fresh session at each phase:** write a handover note (done, open, decisions) and ask the lead or the user for a fresh session.
 - **Check against the user's goal, not only the spec** (for agents: working on their own while the user is away). Anything that gets in its way goes to the top of your report.
@@ -108,12 +113,12 @@ The engine, integrations' servers, copied code and packages are kept up to date:
 
 On 2026-10-28 GitHub's abuse checks hid the user's account, likely from many sessions' automated traffic.
 
-- **Sessions never push** (the user: "don't push unless I ask"). Commit finished, tested, reviewed work to your branch, merged with main locally, and tell the lead it's ready. Only the lead pushes, when the user asks, once per repo, and checks CI once after.
+- **Sessions never push** (the user: "don't push unless I ask"). Commit finished, tested work to your branch, merged with main locally, and tell the lead it's ready. Only the lead pushes, when the user asks, once per repo, and checks CI once after.
 - **No polling** `gh run`, `gh api`, `gh pr` or `git fetch`. **No GitHub writes** beyond the task (issues, labels, releases, tags, settings). **One account**: never another account or token.
 
 ## Commits
 
 - Small, logical commits with plain messages. Never `Co-Authored-By` or any AI attribution.
 - This repo will be open source: check for personal paths, secrets and machine data before committing.
-- **Carry work to main in checkpoints:** a finished piece that passes its area's tests (what uses it included) on its final tip and its review is merged into local main, not left on a branch; the user takes merged work in batches with `scripts/try-desktop-update.sh`. Main needn't be release ready.
+- **Carry work to main in checkpoints:** a finished piece that passes its area's tests (what uses it included) on its final tip is merged into local main, not left on a branch; the user takes merged work in batches with `scripts/try-desktop-update.sh`. Main needn't be release ready.
 - **Delete a branch once it's merged**, and its worktree (`git branch -d`); on origin only with a push the user asked for. Never delete an unmerged branch or one someone is still on.

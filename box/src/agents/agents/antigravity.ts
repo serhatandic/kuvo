@@ -151,6 +151,8 @@ interface Step {
   step_index: number
   type?: string
   status?: string
+  created_at?: string
+  truncated_fields?: string[]
   content?: string
   tool_calls?: { name?: string; args?: Record<string, unknown> }[]
 }
@@ -182,6 +184,13 @@ export class AntigravityFollower {
   private turn?: Turn
   private hooks?: TurnHooks
   private usedSubagents = false
+  private prompt?: {
+    from: number
+    sentAt?: number
+    candidate?: number
+    answer: () => { tail: string; length: number } | undefined
+    finish: () => void
+  }
 
   constructor(
     private readonly brain: string,
@@ -211,7 +220,13 @@ export class AntigravityFollower {
     return [...this.seen]
   }
 
+  watchPrompt(answer: () => { tail: string; length: number } | undefined, finish: () => void, sentAt?: number) {
+    const from = sentAt === undefined ? this.steps(this.sessionId).reduce((last, step) => Math.max(last, step.step_index), -1) : -1
+    this.prompt = { from, sentAt, answer, finish }
+  }
+
   stop() {
+    this.prompt = undefined
     clearInterval(this.timer)
     this.timer = undefined
     this.read()
@@ -219,9 +234,9 @@ export class AntigravityFollower {
     for (const child of this.children.values()) if (!child.ended && this.isDone(child)) this.end(child)
   }
 
-  private steps(conversation: string): Step[] {
+  private steps(conversation: string, full = false): Step[] {
     try {
-      return readFileSync(join(this.brain, conversation, ".system_generated", "logs", "transcript.jsonl"), "utf8")
+      return readFileSync(join(this.brain, conversation, ".system_generated", "logs", full ? "transcript_full.jsonl" : "transcript.jsonl"), "utf8")
         .split("\n")
         .flatMap((line) => {
           try {
@@ -238,7 +253,8 @@ export class AntigravityFollower {
 
   read() {
     if (!this.turn || this.turn.isEnded) return
-    for (const step of this.steps(this.sessionId)) {
+    const steps = this.steps(this.sessionId)
+    for (const step of steps) {
       if (this.seen.has(step.step_index) || step.status === "RUNNING") continue
       this.seen.add(step.step_index)
       for (const call of step.tool_calls ?? []) if (call?.name === "invoke_subagent") {
@@ -251,6 +267,28 @@ export class AntigravityFollower {
       }
     }
     for (const child of this.children.values()) this.readChild(child)
+    this.readPromptEnd(steps)
+  }
+
+  private readPromptEnd(steps: Step[]) {
+    const prompt = this.prompt
+    const answer = prompt?.answer()
+    if (!prompt || !answer) return
+    const latest = steps.reduce<Step | undefined>((last, step) => !last || step.step_index > last.step_index ? step : last, undefined)
+    const input = steps.findLast(step => step.type === "USER_INPUT" && step.step_index > prompt.from)
+    const current = input && (prompt.sentAt === undefined || Date.parse(input.created_at ?? "") >= Math.floor(prompt.sentAt / 1000) * 1000)
+    // The durable transcript can finish even when the ACP prompt response never arrives.
+    // A tool-free, completed response to this prompt must also match the text ACP delivered.
+    let terminal = current && latest && latest.step_index > input.step_index && latest.type === "PLANNER_RESPONSE" &&
+      latest.status === "DONE" && !latest.tool_calls?.length ? latest : undefined
+    if (terminal?.truncated_fields?.includes("content")) {
+      const index = terminal.step_index
+      terminal = this.steps(this.sessionId, true).find(step => step.step_index === index)
+    }
+    const candidate = terminal?.content?.length === answer.length && terminal.content.endsWith(answer.tail) ? terminal.step_index : undefined
+    // Allow the normal ACP result (including usage and provider errors) to arrive first.
+    if (candidate !== undefined && candidate === prompt.candidate) prompt.finish()
+    else prompt.candidate = candidate
   }
 
   private start(id: string) {

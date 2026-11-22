@@ -27,7 +27,7 @@ import { signInRefusal } from "../bots/make";
 import { settleBot } from "../bots/tell";
 import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/client";
 import { CantCarry, forgetQueue, moveInbox, packQueues, readQueues, resumeQueue, unpackQueues, watchQueueLimit } from "../engine/queue";
-import { syncDurableFile, syncDurableTree, writeDurablePrivate, writePrivate } from "../files";
+import { syncDurableFile, syncDurableTreeLater, writeDurablePrivate, writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
 import { announce, refreshOwn } from "../peers/agents";
 import { peerIsAway, readReach } from "../peers/reach";
@@ -52,9 +52,9 @@ import { readBackground } from "../work/background";
 import { decidedOf, forgetDecided, isAutopilot, keepDecided, tellAutopilot } from "../work/autopilot";
 import { isChatsFolder } from "../engine/chats";
 import type { EngineSession } from "../engine/sessions";
-import { CHATS, engineWait, MOST_BUNDLE, NotTaken, TooBig, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, pack, toTrash, unpack } from "./bundle";
+import { CHATS, engineWait, MOST_BUNDLE, NotTaken, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, toTrash } from "./bundle";
 import type { Contents } from "./bundle";
-import { queueMoveDisk } from "../server/disk-worker";
+import { moveBundleDisk, queueMoveDisk } from "../server/disk-worker";
 import { noteQueuesChanged, Refusal as QueueRefusal } from "../work-queue/store";
 import { attachmentMappings, carriedSessionRecords, checkedSessionPayloads, requireAttachmentReferences, installSessionPayloads, removeSessionPayloads, verifySessionPayloads, verifySourceSessionPayloads } from "./session-files";
 import { AGENT_NAMES, CARRIED_AGENTS } from "../../shared/carry";
@@ -781,9 +781,11 @@ async function carryOn(id: string): Promise<void> {
   if (contents.forwardEvidence && !takesForwarded(record.peer, FORWARD_EVIDENCE_FEATURE))
     throw new Refused("Update the destination computer before moving these forwarded decisions.");
   if (takenBack()) return;
-  const bundle = await pack(id, contents).catch(error => {
-    throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
+  const prepared = await moveBundleDisk.run("packForTransfer", id, contents).catch(error => {
+    throw new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
   });
+  if (!prepared.bundle) throw new Refused(say.tooBig(record.name));
+  const bundle = prepared.bundle;
   if (bundle.size > MOST_BUNDLE) throw new Refused(say.tooBig(record.name));
   if (takenBack()) return;
   const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
@@ -1290,7 +1292,9 @@ function checkedForwardEvidence(record: MoveRecord, contents: Contents, sessions
 
 /** The bundle put in place here, held: its folder, its conversations, a group chat. */
 async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[]> {
-  const { contents, folder, carry: carried, opened } = await unpack(record.id);
+  const unpacked = await moveBundleDisk.run("unpackForTransfer", record.id);
+  if (!unpacked.openedBundle) throw new NotTaken(unpacked.refused);
+  const { contents, folder, carry: carried, opened } = unpacked.openedBundle;
   if (contents.sessionNotes !== undefined && (record.kind === "group" || !offlineEditsReady()))
     throw new NotTaken("The ordinary session notes cannot be placed here.");
   if (record.verifyPayloads && !Array.isArray(contents.sessionFiles)) throw new NotTaken("The move did not include its session attachment inventory.");
@@ -1409,8 +1413,8 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   // it was. Those servers go (it uses this box's integrations, and is told of one that isn't
   // connected here: bots/own-keys.ts); the keys it came with are never kept.
   if (record.kind === "bot" && place) dropOwnServers(place);
-  if (folder) syncDurableTree(place, path.dirname(path.dirname(place)));
-  fs.rmSync(path.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
+  if (folder) await syncDurableTreeLater(place, path.dirname(path.dirname(place)));
+  await fs.promises.rm(path.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
   // Keep the fences before reporting arrival. A rollback between arrival and
   // switch must retain them, even if the move is subsequently canceled.
   if (evidence) placeForwardEvidence(evidence);

@@ -5,6 +5,7 @@
 //
 // The app tells the bridge where the engine is (`PUT /api/kuvo/engine`) each time either starts.
 
+import { stepContext } from "../shared/context"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Agent, PermissionAsk, RunInput, RunResult, Thread, TurnHooks } from "./agent"
@@ -21,13 +22,17 @@ interface EngineEvent {
   data: Record<string, any>
 }
 
-type Listener = { event(event: EngineEvent): void; reconnected(): void }
+type Listener = { event(event: EngineEvent): void; reconnected(): void; exited?(ready: Promise<void>): void }
 
 /** The engine's address and its live feed, shared by every run here. */
 export class EngineLink {
   private url?: string
   private authorization?: string
   private generation = 0
+  private pid?: number
+  private replacement?: PromiseWithResolvers<void>
+  private stream?: AbortController
+
   private listeners = new Map<string, Set<Listener>>()
   /** Told of every event, whoever's session it's for (the record of what agents made). */
   private watchers = new Set<(event: EngineEvent) => void>()
@@ -49,18 +54,30 @@ export class EngineLink {
     return new Promise((resolve) => this.waiting.push(resolve))
   }
 
+  private processEnded() {
+    this.replacement ??= Promise.withResolvers<void>()
+    for (const set of this.listeners.values()) for (const listener of set) listener.exited?.(this.replacement.promise)
+  }
+
   /** Where the engine is now; a new one (it restarted) starts a new feed. */
-  configure(url: string | undefined, password: string | undefined) {
+  configure(url: string | undefined, password: string | undefined, pid?: number) {
     const authorization = password ? "Basic " + Buffer.from(`opencode:${password}`).toString("base64") : undefined
-    if (url === this.url && authorization === this.authorization) return
-    this.url = url?.replace(/\/$/, "")
+    const address = url?.replace(/\/$/, "")
+    const processID = pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+    if (address === this.url && authorization === this.authorization && processID === this.pid) return
+    const replaced = this.url !== undefined && (this.pid !== undefined && processID !== undefined ? this.pid !== processID : this.url !== address)
+    this.pid = processID
+    this.url = address
     this.authorization = authorization
     this.names.clear()
     this.catalog = undefined
     this.reads.clear()
     const generation = ++this.generation
-    if (this.url) void this.feed(generation)
-    for (const set of this.listeners.values()) for (const listener of set) listener.reconnected()
+    this.stream?.abort()
+    this.stream = new AbortController()
+    if (this.url) void this.feed(generation, this.stream.signal)
+    if (replaced) this.processEnded()
+    else for (const set of this.listeners.values()) for (const listener of set) listener.reconnected()
     if (this.url) for (const resolve of this.waiting.splice(0)) resolve()
   }
 
@@ -328,12 +345,18 @@ export class EngineLink {
   }
 
   /** The engine's events, read for as long as it's the engine here; read again after a drop. */
-  private async feed(generation: number) {
+  private async feed(generation: number, signal: AbortSignal) {
     let first = true
     while (generation === this.generation && this.url) {
       try {
-        const response = await fetch(this.url + "/api/event", { headers: { Authorization: this.authorization ?? "", Accept: "text/event-stream" } })
+        const response = await fetch(this.url + "/api/event", { headers: { Authorization: this.authorization ?? "", Accept: "text/event-stream" }, signal })
         if (!response.ok || !response.body) throw new Error(`feed ${response.status}`)
+        if (generation !== this.generation) {
+          await response.body.cancel().catch(() => {})
+          return
+        }
+        this.replacement?.resolve()
+        this.replacement = undefined
         if (!first) for (const set of this.listeners.values()) for (const listener of set) listener.reconnected()
         first = false
         const reader = response.body.getReader()
@@ -342,7 +365,7 @@ export class EngineLink {
         while (generation === this.generation) {
           // Quiet for longer than its heartbeat: gone.
           const read = await Promise.race([reader.read(), new Promise<"quiet">((done) => setTimeout(() => done("quiet"), 45_000))])
-          if (read === "quiet" || read.done) break
+          if (signal.aborted || read === "quiet" || read.done) break
           buffer += decoder.decode(read.value, { stream: true })
           let end: number
           while ((end = buffer.indexOf("\n\n")) >= 0) {
@@ -360,8 +383,20 @@ export class EngineLink {
           }
         }
         await reader.cancel().catch(() => {})
-      } catch {}
+      } catch (error) {
+        // The Mac's engine address can come from the app without a PID.
+        const failure = error as { code?: string; cause?: { code?: string } }
+        const refused = (code?: string) => code === "ECONNREFUSED" || code === "ConnectionRefused"
+        if (!signal.aborted && this.pid === undefined && (refused(failure?.code) || refused(failure?.cause?.code))) this.processEnded()
+      }
       if (generation !== this.generation) return
+      if (this.pid !== undefined) {
+        try { process.kill(this.pid, 0) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            this.processEnded()
+          }
+        }
+      }
       first = false
       await Bun.sleep(1000)
     }
@@ -625,7 +660,9 @@ class EngineThread implements Thread {
       shells.set(tool, setInterval(read, 1000))
     }
 
+    const model = (await this.link.offered(input.model.providerID).catch(() => undefined))?.models.find(each => each.id === input.model.id)
     const onEvent = (event: EngineEvent) => {
+      if (done) return
       const data = event.data
       const ownSession = data.sessionID === id
       switch (event.type) {
@@ -638,8 +675,9 @@ class EngineThread implements Thread {
       }
       // A subagent's own steps show in its own conversation, not in this one.
       if (!ownSession) return
+      if (event.type === "session.compaction.ended") turn.clearContext()
       // A summary you asked for: how it ends, and none of its words.
-      if (input.compact && !event.type.startsWith("session.execution.")) return
+      if (input.compact && !event.type.startsWith("session.execution.") && event.type !== "session.idle") return
       switch (event.type) {
         case "session.inbox.delivered":
           if (data.inboxID === inputID) delivered = true
@@ -699,6 +737,7 @@ class EngineThread implements Thread {
         case "session.step.failed":
           if (data.assistantMessageID !== step) return
           step = undefined
+          if (event.type === "session.step.ended") turn.context(stepContext(data.tokens), model?.limit.context)
           turn.endStep({ tokens: data.tokens as TokenUsage | undefined, cost: data.cost, finish: data.finish, error: data.error })
           return
         case "session.retry.scheduled": {
@@ -710,8 +749,12 @@ class EngineThread implements Thread {
           }
           return
         }
+        case "session.idle":
+          void onReconnected()
+          return
         case "session.execution.succeeded":
           if (delivered) finish({ outcome: "succeeded" })
+          else void onReconnected()
           return
         case "session.execution.interrupted":
           if (delivered || limit) finish(limit ? { outcome: "failed", error: { type: "limit", message: "A usage limit was reached." }, limit, taken: delivered } : { outcome: "interrupted" })
@@ -728,31 +771,41 @@ class EngineThread implements Thread {
     const onReconnected = async () => {
       if (done) return
       const active = await this.link.request("GET", "/api/session/active").catch(() => undefined)
-      if (active?.data?.[id]) return
+      if (!active || (Array.isArray(active.data) ? active.data.includes(id) : active.data?.[id])) return
       const session = await this.link.request("GET", path).catch(() => undefined)
-      const outcome = session?.data?.outcome as RunResult["outcome"] | undefined
+      if (!session?.data) return
+      const outcome = session.data.outcome as RunResult["outcome"] | undefined
       // Its outcome is this message's only if it went idle after the message was sent.
       const idle = Number(session?.data?.time?.idle ?? 0)
-      finish(outcome === "succeeded" && idle >= sentAt ? { outcome } : { outcome: "failed", error: { type: "engine", message: "The engine restarted during this message." } })
+      if (idle < sentAt) return
+      if (outcome === "succeeded" || outcome === "interrupted") finish({ outcome })
+      else if (outcome === "failed") finish({ outcome, error: { type: "engine", message: "The engine stopped with an error." } })
     }
 
-    const unlisten = this.link.listen(id, { event: onEvent, reconnected: () => void onReconnected() })
+    const unlisten = this.link.listen(id, {
+      event: onEvent,
+      reconnected: () => void onReconnected(),
+      exited: (resumeQueue) => finish({ outcome: "interrupted", agentExited: true, taken: delivered, resumeQueue }),
+    })
     const abort = () => void interrupt()
     hooks.signal.addEventListener("abort", abort)
     try {
-      if (input.compact) {
-        delivered = true
-        await this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" })
-      } else await this.link.request("POST", `${path}/prompt`, {
-        id: inputID,
-        text: input.text,
-        files: input.files.length ? input.files.map((file) => ({ uri: file.uri, name: file.name })) : undefined,
-        delivery: "steer",
-      })
-      if (hooks.signal.aborted) void interrupt()
-      return await settled
+      if (input.compact) delivered = true
+      const submitted = input.compact
+        ? this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" })
+        : this.link.request("POST", `${path}/prompt`, {
+          id: inputID,
+          text: input.text,
+          files: input.files.length ? input.files.map((file) => ({ uri: file.uri, name: file.name })) : undefined,
+          delivery: "steer",
+        })
+      return await Promise.race([settled, submitted.then(() => {
+        if (hooks.signal.aborted) void interrupt()
+        else if (!delivered && !done) void onReconnected()
+        return settled
+      })])
     } catch (error) {
-      return { outcome: "failed", error: failure(error, "engine") }
+      return done ? await settled : { outcome: "failed", error: failure(error, "engine") }
     } finally {
       hooks.signal.removeEventListener("abort", abort)
       unlisten()

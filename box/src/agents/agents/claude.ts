@@ -1,3 +1,4 @@
+import { compactionChoice, stepContext, tokenCount } from "../../shared/context"
 import { fingerprint, type LimitsSource } from "../../usage/limits"
 import { claudeToken } from "../../shared/agent-credentials"
 // Claude Code, with the Claude Agent SDK, as T3 Code runs it: your own `claude`, signed in with
@@ -425,7 +426,8 @@ export class ClaudeAgent implements Agent {
     every: 15 * 60_000,
     signIn: () => fingerprint(this.limitsSignIn()?.token),
     identity: () => {
-      if (!this.byToken) return this.instance.home ? claudeIdentity(this.instance.home) : undefined
+      // (Claude Code keeps who you are in `.claude.json`: in its folder when it's given one, else in your home.)
+      if (!this.byToken) return claudeIdentity(this.instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? homedir())
       const token = this.token()
       return token ? claudeIdentity(this.configHome, token) : undefined
     },
@@ -433,14 +435,14 @@ export class ClaudeAgent implements Agent {
 
   /**
    * The sign-in its limits are read with: on a Mac Kuvo Code's own token; on Linux Claude Code's own
-   * file in Kuvo Code's folder for it (`instance.home`), never one in your home.
+   * file in the account's folder (the first account's is Claude Code's own, `~/.claude`).
    */
   limitsSignIn(): ClaudeSignIn | undefined {
     if (this.byToken) {
       const token = this.token()
       return token ? { token } : undefined
     }
-    return this.instance.home ? credentialsIn(this.instance.home) : undefined
+    return credentialsIn(this.configHome)
   }
 
   /** Kuvo Code's own token, on a Mac, while it has one. */
@@ -741,6 +743,22 @@ export class ClaudeAgent implements Agent {
   /** How much each model holds, as Claude Code said: by its value. */
   private windows = new ContextWindows()
 
+  contextWindow(id: string): number | undefined {
+    return this.windows.get(id) ?? this.windows.get(this.modelList?.models.find(each => each.aliases?.includes(id))?.id ?? id)
+  }
+
+  compaction(model: string): string {
+    const choice = compactionChoice()
+    if (choice !== "never") return choice
+    const window = this.contextWindow(model)
+      ?? this.modelList?.models.find(each => each.id === model || each.aliases?.includes(model))?.limit.context
+    return window && window >= 900_000 ? "never" : "400000"
+  }
+
+  heardWindow(model: string, window: unknown) {
+    if (this.windows.note(model, window)) emit("model.updated", {})
+  }
+
   private listModels(list: ClaudeModelInfo[]) {
     // Claude Code's `default` is whichever model it recommends now, listed beside that model under
     // its own name: to a person a second row of the same model. It isn't offered; the model it
@@ -921,6 +939,8 @@ interface Lane {
   /** Each tool call's Claude name and input, for its result. */
   calls: Map<string, { name: string; input: Record<string, any> }>
   usage?: TokenUsage
+  contextModel?: string
+  contextUsed?: number
   stopReason?: string
 }
 
@@ -1001,7 +1021,7 @@ class ClaudeThread implements Thread {
   private commands = new Map<string, string>()
   /** The last of its tasks to end: what began a turn it starts on its own. */
   private lastEnded?: { type: string; description: string; command?: string; status: string; summary?: string }
-  private opened?: { model: string; effort?: string; plan: boolean; append: string; program: number; tools?: string; skills?: string; fence: string; subagents: string }
+  private opened?: { compaction?: string; model: string; effort?: string; plan: boolean; append: string; program: number; tools?: string; skills?: string; fence: string; subagents: string }
   /** Your subagents as it was last given them (their rules hold for their tools). */
   private subagents?: Subagents
   /** What a subagent of yours may do, for each of its tools it's asked about: by the tool's call. */
@@ -1086,6 +1106,7 @@ class ClaudeThread implements Thread {
     // Stopped while its SDK was coming.
     if (hooks.signal.aborted) return { outcome: "interrupted" }
     const modelID = input.model.id
+    const compaction = this.agent.compaction(modelID)
     const effort = input.model.variant
     const append = hooks.instructions()
     // What the app adds to its instructions changed (a worktree, the project's folders), or Claude
@@ -1105,7 +1126,7 @@ class ClaudeThread implements Thread {
     // (What it left going in the background ends with it: this message says so.)
     // (One taken up from the bridge before is told its instructions and tools instead, on its first
     // turn here: those it started with weren't all kept.)
-    if (this.query && (signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
+    if (this.query && (this.opened?.compaction !== compaction || signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork)
       this.close()
     }
@@ -1123,7 +1144,7 @@ class ClaudeThread implements Thread {
       if (this.opened?.model !== modelID) await this.query.setModel(modelID === "default" ? undefined : modelID).catch(() => {})
       if (this.opened?.effort !== effort) await this.query.applyFlagSettings({ effortLevel: effort ?? null }).catch(() => {})
       if (this.opened?.plan !== input.plan) await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {})
-      this.opened = { model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
+      this.opened = { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
       // (What it was taken up with is told it now: from here, as one started here.)
       this.adopted = false
     }
@@ -1521,15 +1542,19 @@ class ClaudeThread implements Thread {
       this.held = undefined
       this.holding = undefined
     }
+    const compaction = taken ? (taken.meta.opened as ClaudeThread["opened"])?.compaction : this.agent.compaction(modelID)
     const spawning = taken ? () => this.heldSpawn(taken.held) : this.holdSpawn(whole)
     const named = botMemory(this.session)
     const ownMemory = named && existsSync(named) ? named : undefined
     this.input = new Queue()
     const tools = agentToolsFor(this.session.id, this, fenceOn())
-    this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
+    this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
     this.adopted = Boolean(taken)
-    this.query = sdk.query({
+    let query: any
+    let agentExited = false
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
+    query = this.query = sdk.query({
       prompt: this.input,
       options: {
         pathToClaudeCodeExecutable: this.agent.executable(),
@@ -1557,15 +1582,33 @@ class ClaudeThread implements Thread {
         ...(ownMemory ? { settings: { autoMemoryDirectory: ownMemory } as any } : {}),
         // Its commands know their conversation, as the engine's do (kuvo-wake schedules for it).
         // And the model its subagents use when theirs doesn't say (Settings › Agents), one it runs.
-        env: { ...this.agent.env(), OPENCODE_SESSION_ID: this.session.id, ...(subagents.model ? { CLAUDE_CODE_SUBAGENT_MODEL: subagents.model } : {}), ...whole?.env },
+        env: { ...this.agent.env(),
+          // The CLI clamps to the model and reserves 13k plus up to 20k for output.
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: compaction === "never" ? undefined : String(Number(compaction ?? 400_000) + 33_000),
+          DISABLE_AUTO_COMPACT: compaction === "never" ? "1" : "0",
+          OPENCODE_SESSION_ID: this.session.id, ...(subagents.model ? { CLAUDE_CODE_SUBAGENT_MODEL: subagents.model } : {}), ...whole?.env },
         // Its own sandbox off while the box's is on (yours, or a project's settings, may turn it
         // on): one sandbox can't run inside another on a Mac, and every command would fail.
         ...(whole ? { sandbox: { enabled: false } } : {}),
-        ...(spawning ? { spawnClaudeCodeProcess: spawning } : {}),
+        ...(spawning ? { spawnClaudeCodeProcess: (options: SpawnOptions) => {
+          const child = spawning(options)
+          child.once("exit", () => {
+            agentExited = !(taken?.held ?? this.held)?.relinquished
+            // The SDK can still have a result buffered. A descendant holding a pipe open
+            // shouldn't leave the turn waiting for the iterator forever.
+            exitTimer = setTimeout(() => {
+              if (this.query !== query) return
+              void this.queryEnded(query, undefined, agentExited)
+              try { query.close?.() } catch {}
+            }, 500)
+            exitTimer.unref?.()
+          })
+          return child
+        } } : {}),
         stderr: () => {},
       },
     })
-    void this.read(this.query, taken)
+    void this.read(query, taken, () => { clearTimeout(exitTimer); return agentExited })
   }
 
   /**
@@ -1735,17 +1778,22 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any, taken?: TakenUp) {
+  private async read(query: any, taken: TakenUp | undefined, processExited: () => boolean) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
       for await (const message of query) {
         if (taken?.gate?.preparing) await taken.gate.activated
+        if (this.query !== query) break
         this.handle(message, usage)
       }
     } catch (error) {
       ended = error
     }
+    await this.queryEnded(query, ended, processExited())
+  }
+
+  private async queryEnded(query: any, ended: unknown, agentExited: boolean) {
     if (this.query === query) {
       // Ended by itself between turns (killed, or crashed) with work going that would have woken
       // it as it ended: that went with it, and nothing will (no turn here to fail and say so).
@@ -1771,7 +1819,7 @@ class ClaudeThread implements Thread {
     else {
       if (!active.problem) await this.heard(ended, active.hooks.signal)
       if (active.hooks.signal.aborted) return active.resolve({ outcome: "interrupted" })
-      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")) })
+      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited })
     }
   }
 
@@ -1875,6 +1923,16 @@ class ClaudeThread implements Thread {
         // A subagent's model is its agent's pick (its own definition's, or Haiku for Explore): the
         // one it says it ran on.
         const model = message.message?.model
+        if (!error && typeof model === "string" && !model.startsWith("<")) lane.contextModel = model
+        if (!error && lane.contextModel && !lane.streamed.has(id) && message.message?.usage) {
+          const usage = message.message.usage
+          lane.contextUsed = stepContext({
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+            cache: { read: usage.cache_read_input_tokens, write: usage.cache_creation_input_tokens },
+          })
+          turn.context(lane.contextUsed, this.agent.contextWindow(lane.contextModel))
+        }
         if (lane !== active && typeof model === "string" && model && !model.startsWith("<")) turn.ranOn(model)
         if (error === "authentication_failed") {
           this.agent.turnAway()
@@ -1950,6 +2008,8 @@ class ClaudeThread implements Thread {
         }
         return this.systemFrame(active, lane, message)
       case "conversation_reset":
+        lane.contextUsed = undefined
+        turn.clearContext()
         delete this.state.claudeCost
         this.promptRendered()
         this.lastHooks?.saveState()
@@ -1975,7 +2035,11 @@ class ClaudeThread implements Thread {
         // A subagent's or command's progress, on its row.
         if (typeof message.tool_use_id === "string" && (message.summary || message.description)) turn.toolProgress(message.tool_use_id, { summary: message.summary ?? message.description, lastTool: message.last_tool_name })
         return
-      case "compact_boundary":
+      case "compact_boundary": {
+        const used = message.compact_metadata?.post_tokens
+        lane.contextUsed = tokenCount(used) ? used : undefined
+        if (tokenCount(used)) turn.context(used, this.agent.contextWindow(lane.contextModel ?? turn.currentModel.id))
+        else turn.clearContext()
         // Summarized: its instructions are as it was started with again. (One you asked for shows
         // as that, whichever way it ends.)
         if (!message.parent_tool_use_id) {
@@ -1984,6 +2048,7 @@ class ClaudeThread implements Thread {
         }
         if (!active?.compacting) turn.compacted(true)
         return
+      }
       case "status": {
         // One it makes by itself: `compacting` as it begins (and again while it waits), then a
         // `null` status with how it went. A bare `null` one says no more than that it isn't
@@ -2146,6 +2211,7 @@ class ClaudeThread implements Thread {
       case "message_start": {
         lane.streamed.add(event.message?.id)
         lane.blockTools.clear()
+        lane.contextModel = event.message?.model
         const usage = event.message?.usage ?? {}
         lane.usage = {
           input: usage.input_tokens ?? 0,
@@ -2184,6 +2250,8 @@ class ClaudeThread implements Thread {
         lane.stopReason = event.delta?.stop_reason ?? lane.stopReason
         return
       case "message_stop":
+        lane.contextUsed = stepContext(lane.usage)
+        turn.context(lane.contextUsed, this.agent.contextWindow(lane.contextModel ?? turn.currentModel.id))
         turn.endStep({ tokens: lane.usage, finish: lane.stopReason === "tool_use" ? "tool-calls" : lane.stopReason ?? "stop" })
         return
     }
@@ -2238,6 +2306,13 @@ class ClaudeThread implements Thread {
 
   private finish(active: Active, result: any) {
     this.addCost(active, result)
+    const model = active.contextModel ?? active.turn.currentModel.id
+    const window = result.modelUsage?.[model]?.contextWindow
+    if (tokenCount(window) && window > 0) {
+      this.agent.heardWindow(model, window)
+      this.agent.heardWindow(active.turn.currentModel.id, window)
+      active.turn.context(active.contextUsed, window)
+    }
     // Which messages it took this turn (Claude Code says, from 2.1.2xx on).
     const says = Array.isArray(result.user_message_uuids)
     for (const uuid of says ? result.user_message_uuids : []) active.steered.delete(uuid)

@@ -24,6 +24,7 @@ import { usageReader } from "../../src/usage/service"
 import { servicesFile, servicesRecordFormat } from "../../src/shared/box-services"
 import { bridgeRecordFormat } from "../../src/shared/records"
 import { Queue } from "../../src/agents/queue"
+import { engineHandler } from "../../src/link/server/router"
 import type { Roster } from "../../src/agents/roster"
 import { Sessions } from "../../src/agents/sessions"
 import { shellOutput, shells } from "../../src/agents/shells"
@@ -1163,6 +1164,77 @@ describe("Writing to a Claude Code subagent", () => {
     expect(fake.sent).toHaveLength(1)
     fake.result([first])
   })
+})
+
+test("Claude Code gets the chosen window and summarizes a long conversation at its native threshold", async () => {
+  const id = sessions.create({ title: "Long conversation", model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  sessions.prompt(id, { id: "msg_claude_long_01", text: "go on", files: [], delivery: "steer" })
+  await until(() => fake.sent.length === 1)
+  const first = fake.sent[0].uuid
+  const nativeWindow = Number(fake.options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+  // The stand-in applies the pinned CLI's native preflight rule for a 1M model.
+  for (const used of [399_500, 401_500]) {
+    fake.streams([first], [{ type: "text", text: "Working." }], { input: 2, read: used - 502, write: 400, output: 100 })
+    if (used >= Math.min(1_000_000, nativeWindow) - 33_000) {
+      fake.out.push({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: used, post_tokens: 18_000 } })
+    }
+  }
+  fake.result([first], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } })
+  await until(() => idles(id).length === 1)
+  expect(sessions.messages(id).filter(message => message.type === "compaction")).toMatchObject([{ reason: "auto", status: "completed" }])
+  expect(fake.sent).toHaveLength(1)
+})
+
+test("changing the box's summary setting applies to the next message in the same Claude conversation", async () => {
+  const noEngine = () => { throw new Error("No engine in this test") }
+  const box = engineHandler(noEngine, {} as RouteContext["info"], noEngine)
+  const route = "kuvo/settings/conversations"
+  const pick = async (value: string) => {
+    const page = (await ask(box, "GET", route)).json
+    const row = page.groups[0].rows[0]
+    expect((await ask(box, "PATCH", route, { row: row.id, value, was: row.revision })).status).toBe(200)
+  }
+  const id = sessions.create({ title: "Long conversation", model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  try {
+    sessions.prompt(id, { id: "msg_claude_setting_01", text: "go on", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 1)
+    expect(fake.options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("433000")
+    const nativeID = fake.options.sessionId
+    fake.out.push({ type: "system", subtype: "init", session_id: nativeID })
+    fake.result([fake.sent[0].uuid])
+    await until(() => idles(id).length === 1)
+    await pick("600000")
+    fake.out = new Queue<any>()
+    sessions.prompt(id, { id: "msg_claude_setting_02", text: "continue", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+    expect(fake.options.resume).toBe(nativeID)
+    expect(fake.options.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("633000")
+    fake.result([fake.sent[1].uuid], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } })
+    await until(() => idles(id).length === 2)
+    await pick("never")
+    fake.out = new Queue<any>()
+    sessions.prompt(id, { id: "msg_claude_setting_03", text: "continue", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 3)
+    expect(fake.options.resume).toBe(nativeID)
+    expect(fake.options.env.DISABLE_AUTO_COMPACT).toBe("1")
+    fake.result([fake.sent[2].uuid])
+    await until(() => idles(id).length === 3)
+  } finally {
+    await pick("400000")
+  }
+})
+
+test("Claude's session state uses the last request and includes its cached context", async () => {
+  const id = sessions.create({ title: "Long conversation", model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  sessions.prompt(id, { id: "msg_claude_context_01", text: "go on", files: [], delivery: "steer" })
+  await until(() => fake.sent.length === 1)
+  const first = fake.sent[0].uuid
+  fake.streams([first], [{ type: "text", text: "Working." }], { input: 2, read: 238_000, write: 1100, output: 400 })
+  fake.streams([first], [{ type: "text", text: "Done." }], { input: 4, read: 240_000, write: 900, output: 300 })
+  fake.result([first], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } })
+  await until(() => idles(id).length === 1)
+  expect(sessions.get(id).context).toEqual({ used: 241_204, window: 1_000_000 })
+  expect(new Store(join(root, "sessions")).get(id)?.session.context).toEqual({ used: 241_204, window: 1_000_000 })
 })
 
 describe("Claude Code, nothing dropped", () => {
@@ -2685,7 +2757,7 @@ describe("the plan's limits a turn hears", () => {
     mkdirSync(run)
     writeFileSync(join(run, "bridge.json"), JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: 1, password: "fixture" })))
     const source = { every: claude.limits.every, signIn: claude.limits.signIn }
-    const reader = usageReader({ box: root, run, home, bots: join(root, "bots"), managedDefaults: true }, {
+    const reader = usageReader({ box: root, run, home, bots: join(root, "bots") }, {
       accounts: () => [{ providerID: provider, instance: claude.instance, limits: source }],
       engineCredentials: async () => [],
     })

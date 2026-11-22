@@ -47,6 +47,17 @@ fn paint_dots(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     }
 }
 
+/// How many dots the backdrop paints over `width` by `height`, on every frame (the sky's tests
+/// hold it to fewer).
+#[cfg(test)]
+pub(crate) fn dots_painted(width: f32, height: f32) -> usize {
+    let (columns, rows) = ((width / PITCH) as i32 + 1, (height / PITCH) as i32 + 1);
+    (0..rows)
+        .flat_map(|row| (0..columns).map(move |column| (column as f32 * PITCH, row as f32 * PITCH)))
+        .filter(|&(x, y)| density(x / width, y / height, x, y) >= 0.06)
+        .count()
+}
+
 /// How strong the dots are at a point: a soft glow rising from the bottom and the far corner,
 /// broken up by slow noise so it never looks like a gradient.
 fn density(u: f32, v: f32, x: f32, y: f32) -> f32 {

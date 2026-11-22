@@ -1,17 +1,20 @@
 # One client process per computer
 
-Work Queue #924 · Reconciled with main at `73d327e5d`
+Work Queue #924 · current at `36db4ec2e`
 
-Each enabled computer should run one Kuvo box server for its desktop app, SSH clients and paired relay clients. The keeper or Kuvo Helper starts it. A server-only release replaces that process while the engine, agents bridge and agent holders keep their own lifetimes.
-
-## Current paths
+Each enabled computer has one resident box server for local HTTP, SSH and paired
+relay clients. The keeper or Kuvo Helper starts it. The engine, agents bridge,
+agent holders and browser keeper have their own lifetimes.
 
 | Entry | Current owner and contract |
 | --- | --- |
-| Local HTTP | The machine keeper starts `serve --kept` on `run/serve.needed`. An own-home Mac's Helper starts `serve` with secrets on stdin, and its shell keeper supervises workers. Both publish `run/serve.json` for password-protected loopback HTTP. A machine-kind Mac uses the keeper's machine launch path. See `box/src/keeper/kuvo-start`, `box/src/link/server/serve.ts` and `mac/helper/Sources/KuvoHelperKit/BoxHelper.swift`. |
-| Relay | The keeper starts machine `run` on `run/link.needed`, and pairing/enrollment can start it too. Own-home Mac `serve` already hosts its relay. These owners also handle peer mail, setup, fleet updates, vault and upkeep. The relay service is in this repo's `relay/`. Peer mail and client requests have separate protocols. See `box/src/link/main.ts`, `mac/relay.ts` and `relay/host.ts` under the link sources. |
-| SSH | `box route-to` starts per request, authenticates the addressed box and the current pairing with Noise, and can stream raw response bytes. `box route` uses OS-account authority with its existing header allowlist and one-answer framing, including the first NDJSON line. See `box/src/link/server/ssh-route.ts` and `box/src/link/main.ts`. |
-| Worker and private interfaces | The engine, agents bridge, session holders and browser keeper keep their private interfaces. The current relay owner holds the vault socket. The Helper host interface handles Mac secrets and permissions. The updater and health judge can outlive a request. |
+| Local HTTP | `serve --resident` publishes the password-protected loopback address in `run/serve.json` after HTTP and SSH are ready. |
+| Relay | Resident owns paired client sessions and peer mail, the lease, setup saves and following, fleet progress, vault and upkeep. The relay service is in `relay/`. Peer mail and paired sessions use distinct protocols. |
+| SSH | Both keeper verbs pass requests to resident over an owner-only socket. `route-to` authenticates the addressed box and pairing with Noise and streams response bytes. `route` keeps OS-account authority, the header allowlist and one-answer framing. |
+| Private workers | The engine, bridge, session holders and browser keeper keep independent interfaces. Kuvo Helper serves Mac secrets and permissions. |
+
+See `box/src/link/server/{resident,serve,ssh-pipe,ssh-route}.ts`,
+`box/src/keeper/kuvo-start` and `mac/helper/Sources/KuvoHelperKit/BoxHelper.swift`.
 
 `box/src/link/server/router.ts` is the route inventory by registration and predicate across HTTP, relay and SSH. It covers box lifecycle and backups, setup and computers, devices and notices, browser and vault, settings and providers, sessions and queues, and work and data. Include its early branches for offline edits, session notes, owner admission and forwarding, local add and setup save, plus the allowlisted engine and agent fallbacks. Setup's supported authority actions include handover, merge and recovery. The relay lease in `box/src/link/setup/lease*` selects the main, the main commits setup saves alone, and members follow verified state. Moves need only source and destination.
 
@@ -29,20 +32,29 @@ Preserve these entry differences when sharing dispatch:
 4. The first release must preserve active work and accepted operations. Allow a short measured reconnect, using existing feeds and receipts to recover.
 5. Keep old CLI, records, routes and feature contracts through the rollback window. Remove split ownership once supported readers and rollback no longer need it.
 
-## Build plan
+## Launch and rollback
 
-Start with the current launch paths. Roll out one installation at a time. Estimates are focused wall-clock engineering time including verification.
+The release selected by `bin` determines the launch. The keeper and Helper
+start resident for a release that advertises it. Resident locks its home, writes
+a generation to `serve.json` and projects its PID in `link.pid` for older
+readers. The readiness judge checks live `kuvo/info` against the selected build
+and generation. The private SSH selection persists across restart, preventing an
+interrupted request from falling through to one-shot dispatch.
 
-The release selected by `bin` determines the launch path. The machine keeper and own-home Mac Helper use resident `serve` for a release that advertises it. The resident owns the per-home lock, publishes its generation in `serve.json` once HTTP and SSH are ready, and projects its PID into `link.pid` for older readers. The update guard checks live `kuvo/info` against that generation and the selected build. A rollback to a split release restores its launch paths. The private SSH selection survives a restart so a dropped request never falls back to one-shot dispatch.
+A rollback to an older release restores split `run` and `serve --kept` on
+machines (including machine-kind Macs) or legacy Helper `serve` on an own-home
+Mac. The older demand markers and both SSH wire contracts remain readable.
+A launcher without keeper support can still take GPUI's older SSH fallback.
 
-| Step | Scope and exit check | Estimate |
-| --- | --- | --- |
-| 1. Freeze contracts | Add parity fixtures for local, relay and SSH. Cover version and role refusals, request and response bytes, NDJSON, held requests, cancellation and upgrade differences. Use the existing one-file route benches. | 3–4 h |
-| 2. Share dispatch | Use one request entry and one process context around the dispatcher. Keep transport authentication and Mac compatibility selection at their boundaries. Prove parity with current launch paths and live pairing changes. | 4–5 h |
-| 3. Unify background ownership | Bring relay, peer mail, lease and main-only saves/following, vault, notices and periodic work under opt-in resident `serve`. Keep durable setup and receipts and give each job one owner. Test zero pairings, relay loss/recovery, pairing rotation and restart during setup or fleet progress. | 5–7 h |
-| 4. Pipe SSH | Carry both stdio contracts over an owner-only socket, including cold bootstrap behavior. Verify target and pairing in the resident process and test revocation, cancellation, streamed bytes and safe reconnect. | 4–6 h |
-| 5. Switch supervisors and trial | Use one owner lock and generation-checked readiness and cleanup. Wire keeper and Helper plus pause, stop, rehome and uninstall. Preserve the main's signed prepare-and-follow releases and the atomic `bin` link switch. The independent judge probes live `kuvo/info` in the new generation and keeps worker checks. Prove SSH and relay reachability, failed trial and restoration of the old launch paths after rollback. | 6–8 h |
-| 6. Pilot mixed releases with live work | Test old/new main and members in both directions, including lease changes, accepted receipts and direct two-computer moves. Measure reconnect with existing clients. On Mac and Linux record engine, bridge, holder and provider PIDs across update and rollback, and prove active and new turns work. Include shared Codex holders with sandbox enabled and a separate bridge handover run. | 6–9 h |
-| 7. Retire split launch | After the pilot and rollback window, audit marker readers and remove obsolete launch paths and demand markers. Repeat mixed-version, repair, downgrade and worker-continuity checks against the supported contracts. | 2–4 h |
+## Remaining
 
-No UI change is planned. Keep transport and discovery changes in the box where existing clients can use them. Record any client reconnect gaps found in the pilot.
+Steps 1–5 landed: parity fixtures, shared dispatch, background ownership,
+both SSH pipes, and the keeper and Helper cutover.
+
+6. Finish mixed-release pilot checks in both directions on Mac and Linux:
+   reconnect, lease changes, accepted receipts and two-computer moves, trial
+   rollback, and engine, bridge and holder continuity across active and new turns.
+   Include a shared sandboxed Codex holder and a separate bridge handover.
+7. After the pilot and rollback window, audit marker readers and retire split
+   supervision and demand markers. Repeat repair, downgrade and continuity checks
+   against supported releases.

@@ -1,9 +1,11 @@
 # Kuvo Link relay
 
-Passes encrypted messages between Kuvo Code on a phone and the Macs and machines it's
-paired with, and sends their push notifications. It can't read either: everything is
-encrypted end to end, and it keeps no content, only where to send each phone's pushes
-and from whom. See the [Kuvo Link protocol](../protocol/PROTOCOL.md).
+Forwards encrypted traffic between box peers and between paired clients and
+boxes. The relay cannot read the traffic. It also serves signed setup lease
+requests at `POST /setup-lease`, keeping the main-computer lease, authorized
+roster and Work Queue number floor in `DATA_DIR/setup-leases`.
+APNs and push registrations remain for installed-phone compatibility.
+See the [Kuvo Link protocol](../protocol/PROTOCOL.md).
 
 ## Run it
 
@@ -19,12 +21,12 @@ Settings come from the environment:
 | Variable | |
 | --- | --- |
 | `PORT`, `HOST` | Where to listen (`8790`, `0.0.0.0`) |
-| `DATA_DIR` | Where phones' push registrations are kept (`./data`) |
+| `DATA_DIR` | Private data root for setup leases and optional APNs registrations (`./data`) |
 | `TRUST_PROXY` | `1` behind a proxy on the same host, so limits per address use `X-Forwarded-For` |
 | `APNS_KEY_ID`, `APNS_TEAM_ID` | The APNs key's ID and the Apple Developer team |
 | `APNS_KEY` or `APNS_KEY_FILE` | The key (a `.p8` file's contents) or its path |
 
-Without an APNs key it relays as usual and answers pushes with "no phone".
+APNs is optional. Without a key the service still relays and handles leases and answers pushes with "no phone".
 
 ## Logs
 
@@ -38,17 +40,17 @@ host, which the relay then keeps for it, and logs that it did.
 ## Deploy
 
 `docker compose up -d --build` runs it on `127.0.0.1:8790`, for a proxy in front that ends
-TLS, passes WebSocket upgrades through and sets `X-Forwarded-For`, so devices connect to
+TLS, passes WebSocket upgrades and `/setup-lease` through, and sets `X-Forwarded-For`, so devices connect to
 `wss://<your host>/`. Put the APNs key in `apns.p8` beside `docker-compose.yml`, readable by
 the container's user (uid 1000), and its ID and team in `.env` (see `.env.example`). An empty
 `apns.p8` runs it without pushes.
 
-On the porigam VPS it runs at `wss://kuvolink.porigam.com.tr/`, behind
+The deployment configuration points to `wss://kuvolink.porigam.com.tr/`, behind
 `/root/projects/edge-proxy` with no published port: `.env` adds
 `COMPOSE_FILE=docker-compose.yml:docker-compose.vps.yml`, and nginx reaches it on the
 `edge-kuvolink` network as `kuvolink-http:8790`.
 
-The running checkout on Hetzner is `/root/projects/kuvo-link/relay`. Run this from that folder to redeploy the relay service.
+The recorded deployment checkout is `/root/projects/kuvo-link/relay`. Run this from that folder to redeploy the relay service.
 
 ```sh
 docker compose build relay && docker compose up -d --no-deps --force-recreate --wait relay

@@ -12,8 +12,8 @@ import { join } from "node:path"
 import { ClaudeAgent } from "../../src/agents/agents/claude"
 import { claudeUsage } from "../../src/usage/claude-limits"
 import { UsageAccounts } from "../../src/usage/accounts"
-import { EngineAccounts, engineEndpoints } from "../../src/usage/engine-limits"
-import { codexResetEndpoints } from "../../src/usage/codex-resets"
+import { EngineAccounts } from "../../src/usage/engine-limits"
+import { agentPrograms } from "./support/agent-programs"
 import { subscribe } from "../../src/agents/events"
 import { agentAccounts, Limits, limitsRoutes, type AccountLimits } from "../../src/usage/limits"
 
@@ -442,69 +442,63 @@ describe("Claude on Linux", () => {
     expect(anthropic.reads).toHaveLength(0)
   })
 
-  test("never reads a sign-in outside Kuvo Code's folders (yours in ~/.claude)", async () => {
+  test("the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses", async () => {
     credentials(join(process.env.HOME!, ".claude"), { accessToken: "token-yours", scopes: ["user:profile"] })
     anthropic.answers.set("token-yours", usage(1, 1))
-    const limits = new Limits(() => agentAccounts([new TestClaude(home)]), undefined, clock.now)
-    const { accounts, services } = await refreshed(limits)
-    expect(accounts).toEqual([])
-    expect(services).toEqual(["claude"])
-    expect(anthropic.reads).toHaveLength(0)
+    try {
+      const limits = new Limits(() => agentAccounts([new TestClaude(home)]), undefined, clock.now)
+      const { accounts } = await refreshed(limits)
+      expect(accounts.map(each => each.provider)).toEqual(["claude-code"])
+      expect(anthropic.reads).toHaveLength(1)
+    } finally {
+      rmSync(join(process.env.HOME!, ".claude"), { recursive: true, force: true })
+    }
   })
 })
 
-const wham = (used: number, minutes = 300) => ({
-  used_percent: used, limit_window_seconds: minutes * 60, reset_at: 1_794_200_000,
-})
-const codexFolder = () => join(home, "codex", "home")
+// Codex's plan is asked of Codex itself (native-usage.ts): a stand-in `codex` first on the PATH
+// answers `account/rateLimits/read` from the folder it's given (support/agent-programs.ts).
+const window = (used: number, minutes = 300) => ({ usedPercent: used, windowDurationMins: minutes, resetsAt: 1_794_200_000 })
+const codexFolder = () => join(home, "codex-own")
 function codexAuth(access = "fixture", account?: string) {
   mkdirSync(codexFolder(), { recursive: true })
-  writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ tokens: { access_token: access, account_id: account } }))
+  writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ tokens: { access_token: access, account_id: account ?? "acct-fixture" } }))
 }
 function codexLimits() {
-  const agents = new UsageAccounts(home, true)
+  const agents = new UsageAccounts(home, { codexKeychain: async () => undefined })
   return new Limits(() => agentAccounts(agents.all().filter(agent => agent.providerID === "codex-cli" && agent.limits?.signIn?.())), undefined, clock.now)
 }
 
 async function withChatGPT(run: (fixture: {
   usage: (body: unknown) => void
-  resets: (body: unknown, status?: number) => void
-  answers: { path: string; account: string | null }[]
+  asked: () => { account?: string }[]
 }) => Promise<void>) {
-  let usage: unknown = { plan_type: "plus", rate_limit: { primary_window: wham(12) } }
-  let resets: unknown = {}
-  let resetStatus = 200
-  const answers: { path: string; account: string | null }[] = []
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    const path = new URL(request.url).pathname
-    answers.push({ path, account: request.headers.get("chatgpt-account-id") })
-    return path === "/usage" ? Response.json(usage) : Response.json(resets, { status: resetStatus })
-  } })
-  const endpoints = { usage: engineEndpoints.chatgpt, resets: codexResetEndpoints.list }
-  const environmentPath = process.env.PATH
-  const starts = join(home, "starts.txt")
-  mkdirSync(join(home, "bin"), { recursive: true })
-  const launcher = join(home, "bin", "codex")
-  writeFileSync(launcher, `#!/bin/sh\necho started >> "${starts}"\nexit 1\n`, { mode: 0o700 })
-  engineEndpoints.chatgpt = `http://127.0.0.1:${server.port}/usage`
-  codexResetEndpoints.list = `http://127.0.0.1:${server.port}/list`
-  process.env.PATH = join(home, "bin") + ":" + environmentPath
+  const programs = agentPrograms(join(home, "bin"))
+  const environment = { PATH: process.env.PATH, CODEX_HOME: process.env.CODEX_HOME }
+  process.env.PATH = join(home, "bin") + ":" + environment.PATH
+  process.env.CODEX_HOME = codexFolder()
+  const usage = (body: unknown) => {
+    mkdirSync(codexFolder(), { recursive: true })
+    writeFileSync(join(codexFolder(), "usage.json"), JSON.stringify({ "*": body }))
+  }
+  usage({ rateLimitsByLimitId: { codex: { planType: "plus", primary: window(12) } } })
   try {
-    await run({ usage: body => { usage = body }, resets: (body, status = 200) => { resets = body; resetStatus = status }, answers })
-    expect(existsSync(starts)).toBe(false)
+    await run({ usage, asked: () => programs.asked().filter(each => each.method === "account/rateLimits/read") })
   } finally {
-    process.env.PATH = environmentPath
-    engineEndpoints.chatgpt = endpoints.usage
-    codexResetEndpoints.list = endpoints.resets
-    server.stop(true)
+    process.env.PATH = environment.PATH
+    if (environment.CODEX_HOME === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = environment.CODEX_HOME
+    rmSync(codexFolder(), { recursive: true, force: true })
   }
 }
 
 describe("Codex", () => {
-  test("its plan's windows and a model's own are read with its ChatGPT sign-in", async () => withChatGPT(async ({ usage }) => {
+  test("its plan's windows and a model's own are what Codex says for its sign-in", async () => withChatGPT(async ({ usage }) => {
     codexAuth()
-    usage({ plan_type: "pro", rate_limit: { primary_window: wham(12), secondary_window: wham(40, 10080) },
-      additional_rate_limits: [{ metered_feature: "codex_spark", limit_name: "GPT-5.3-Codex-Spark", rate_limit: { primary_window: wham(3) } }] })
+    usage({ rateLimitsByLimitId: {
+      codex: { planType: "pro", primary: window(12), secondary: window(40, 10080) },
+      codex_spark: { limitName: "GPT-5.3-Codex-Spark", primary: window(3) },
+    } })
     const { accounts } = await refreshed(codexLimits())
     expect(accounts).toHaveLength(1)
     expect(accounts[0]!.plan).toBe("Pro")
@@ -515,54 +509,33 @@ describe("Codex", () => {
     ])
   }))
 
-  test("its credits and resets are read without Codex and kept when a reset read fails", async () => withChatGPT(async ({ usage, resets, answers }) => {
-    codexAuth(token({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-9" } }), "acct-9")
-    usage({ plan_type: "plus", rate_limit: { primary_window: wham(12) }, credits: { has_credits: true, unlimited: false, balance: "50.7" } })
-    resets({ available_count: 1, credits: [{ id: "c-1", status: "available", expires_at: "2026-11-20T00:00:00Z" }, { id: "c-0", status: "redeemed", expires_at: "2026-11-19T00:00:00Z" }] })
-    const limits = codexLimits()
-    await limits.tick()
-    const extras = () => (limits.list()[0]?.extras ?? []).map(extra => [extra.id, extra.kind, extra.amount ?? extra.count, extra.expiries ?? null])
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 1, [Date.parse("2026-11-20T00:00:00Z")]]])
-    expect(answers.filter(request => request.path === "/list").map(request => request.account)).toEqual(["acct-9"])
-    resets({ available_count: 0, credits: [] })
-    clock.pass(10 * 60_000)
-    await limits.tick()
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 0, null]])
-    expect(limits.list()[0]!.windows.map(each => each.used)).toEqual([0.12])
-    resets({}, 502)
-    clock.pass(10 * 60_000)
-    await limits.tick()
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 0, null]])
-  }))
-
-  test("Codex limits refresh on schedule without starting an app-server", async () => withChatGPT(async ({ answers }) => {
+  test("Codex limits are read again on schedule, each time from Codex", async () => withChatGPT(async ({ asked }) => {
     codexAuth()
     const limits = codexLimits()
-    const reads = () => answers.filter(request => request.path === "/usage").length
     await limits.tick()
-    expect(reads()).toBe(1)
+    expect(asked()).toHaveLength(1)
     clock.pass(10 * 60_000)
     await limits.tick()
-    expect(reads()).toBe(2)
+    expect(asked()).toHaveLength(2)
     expect((await route(limits)).accounts[0]!.windows.map(each => each.used)).toEqual([0.12])
   }))
 
-  test("a configured API key never starts Codex or reads ChatGPT plan limits", async () => withChatGPT(async ({ answers }) => {
+  test("a configured API key never starts Codex or reads ChatGPT plan limits", async () => withChatGPT(async ({ asked }) => {
     codexAuth()
     writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "key", tokens: { access_token: "old-oauth" } }))
     const limits = codexLimits()
     await limits.tick()
     clock.pass(31 * 60_000)
     await limits.tick()
-    expect(answers).toHaveLength(0)
+    expect(asked()).toHaveLength(0)
     expect((await route(limits)).accounts).toEqual([])
   }))
 
-  test("an API key has no plan limits: not listed", async () => withChatGPT(async ({ answers }) => {
+  test("an API key has no plan limits: not listed", async () => withChatGPT(async ({ asked }) => {
     mkdirSync(codexFolder(), { recursive: true })
     writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ OPENAI_API_KEY: "key" }))
     expect((await refreshed(codexLimits())).accounts).toEqual([])
-    expect(answers).toHaveLength(0)
+    expect(asked()).toHaveLength(0)
   }))
 })
 
@@ -792,10 +765,10 @@ describe("who each account is, the same from every computer", () => {
     expect(JSON.stringify(agent)).not.toContain("acct-77")
   }))
 
-  test("a switched Codex account is read with its own sign-in", async () => withChatGPT(async ({ usage, answers }) => {
+  test("a switched Codex account is read with its own sign-in", async () => withChatGPT(async ({ usage, asked }) => {
     const access = (user: string) => token({ "https://api.openai.com/auth": { chatgpt_account_id: `acct-${user}`, chatgpt_user_id: user } })
     codexAuth(access("ada"), "acct-ada")
-    usage({ plan_type: "plus", rate_limit: { primary_window: wham(70) } })
+    usage({ rateLimitsByLimitId: { codex: { planType: "plus", primary: window(70) } } })
     const limits = codexLimits()
     const first = (await refreshed(limits)).accounts[0]!
     expect(first.windows.map(each => each.used)).toEqual([0.7])
@@ -806,7 +779,7 @@ describe("who each account is, the same from every computer", () => {
     expect(switched.identity).not.toBe(first.identity!)
     expect(switched.windows.map(each => each.used)).toEqual([0.7])
     expect(switched.problem).toBeUndefined()
-    expect(answers.filter(request => request.path === "/usage").map(request => request.account)).toEqual(["acct-ada", "acct-bob"])
+    expect(asked().map(request => request.account)).toEqual(["acct-ada", "acct-bob"])
   }))
 
 })

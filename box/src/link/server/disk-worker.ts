@@ -1,7 +1,10 @@
+import type { verifyHeldPack } from "../updates/fleet";
+import type { packForTransfer, unpackForTransfer } from "../moves/bundle";
 import type { checkMoveQueueFiles, clearQueuePlacement, forgetWorkQueues, packQueuesForMove, placeMoveWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
 // These filesystem operations have synchronous transactions and can take a long time.
 // Each domain has its own worker so an archive never holds up permission reads.
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+import type { setStarred } from "../areas/models-starred";
 import type { applySettings } from "../areas/apply";
 import type { applyResult, confirmConfig, previewConfig, readConfigPlan, saveChangeSet } from "../areas/apply-from";
 import type { installConfigCatalog, patchConfig } from "../areas/settings";
@@ -30,6 +33,7 @@ type Operations = {
   saveChangeSet: typeof saveChangeSet;
   installConfigCatalog: typeof installConfigCatalog;
   patchConfig: typeof patchConfig;
+  setStarred: typeof setStarred;
   listFolders: typeof listFolders;
   makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
@@ -45,6 +49,7 @@ type Operations = {
   mergeInsightsDatabase: typeof mergeInsightsDatabase;
   prepareEngineBootstrap: typeof prepareEngineBootstrap;
   receiveRelease: typeof receiveRelease;
+  verifyHeldPack: typeof verifyHeldPack;
   allocateNumbers: typeof allocateNumbers;
   claimNumbers: typeof claimNumbers;
   movePast: typeof movePast;
@@ -54,6 +59,8 @@ type Operations = {
   checkMoveQueueFiles: typeof checkMoveQueueFiles;
   clearQueuePlacement: typeof clearQueuePlacement;
   forgetWorkQueues: typeof forgetWorkQueues;
+  packForTransfer: typeof packForTransfer;
+  unpackForTransfer: typeof unpackForTransfer;
   packQueuesForMove: typeof packQueuesForMove;
   placeMoveWorkQueues: typeof placeMoveWorkQueues;
   verifyQueuePayloads: typeof verifyQueuePayloads;
@@ -84,6 +91,7 @@ if (isDiskWorker) {
         case "readConfigPlan": value = (await import("../areas/apply-from")).readConfigPlan(...args); break;
         case "saveChangeSet": value = (await import("../areas/apply-from")).saveChangeSet(...args); break;
         case "installConfigCatalog": value = (await import("../areas/settings")).installConfigCatalog(...args); break;
+        case "setStarred": value = (await import("../areas/models-starred")).setStarred(...args); break;
         case "patchConfig": value = (await import("../areas/settings")).patchConfig(...args); break;
         case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
         case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;
@@ -118,12 +126,15 @@ if (isDiskWorker) {
         case "clearQueuePlacement": value = (await import("../work-queue/moves")).clearQueuePlacement(...args); break;
         case "forgetWorkQueues": value = (await import("../work-queue/moves")).forgetWorkQueues(...args); break;
         case "placeMoveWorkQueues": value = (await import("../work-queue/moves")).placeMoveWorkQueues(...args); break;
+        case "packForTransfer": value = await (await import("../moves/bundle")).packForTransfer(...args); break;
+        case "unpackForTransfer": value = await (await import("../moves/bundle")).unpackForTransfer(...args); break;
         case "packQueuesForMove": value = (await import("../work-queue/moves")).packQueuesForMove(...args); break;
         case "verifyQueuePayloads": value = (await import("../work-queue/moves")).verifyQueuePayloads(...args); break;
         case "movePast": value = (await import("../work-queue/numbers")).movePast(...args); break;
         case "numbersToSend": value = (await import("../work-queue/numbers")).numbersToSend(...args); break;
         case "receiveNumbers": value = (await import("../work-queue/numbers")).receiveNumbers(...args); break;
         case "allocateNumbers": value = (await import("../work-queue/numbers")).allocateNumbers(...args); break;
+        case "verifyHeldPack": value = await (await import("../updates/fleet")).verifyHeldPack(...args); break;
         case "receiveRelease": value = (await import("../updates/update")).receiveRelease(...args); break;
         case "readPermissionSettings": value = (await import("../permissions")).readPermissionSettings(...args); break;
       }
@@ -189,3 +200,4 @@ export const wakeDisk = new DiskWorker();
 export const backlogDisk = new DiskWorker();
 export const queueMoveDisk = new DiskWorker();
 export const numberUpkeepDisk = new DiskWorker();
+export const moveBundleDisk = new DiskWorker();

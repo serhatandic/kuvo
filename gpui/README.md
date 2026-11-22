@@ -1,9 +1,7 @@
 # Kuvo's GPUI client
 
-The desktop client Kuvo will ship on GPUI (Mac first, then Linux and Windows). Phase 0 made the
-building blocks every screen is made from, with a gallery showing each in light and dark; phase 1,
-`kuvo_box`, the client of a box; phase 2, the app, `kuvo`, with its first screens. The box holds
-the logic; the app reads its facts, changes them through its routes, and draws.
+Kuvo Code's current macOS desktop app. The box owns behavior. GPUI reads its
+facts and sends actions through its routes. See [How Kuvo works](../docs/architecture/how-kuvo-works.md).
 
 - `kuvo/`: the app (binary `kuvo`, named Kuvo): the sidebar, a conversation, the composer and the
   landing view ("The app", below), and `shots`, its screens rendered offscreen.
@@ -45,89 +43,40 @@ cd gpui
 ./target/debug/kuvo              # this Mac's own box
 ```
 
-- **As it opens** (`notes/screens-launch.md`): the app in its bundle asks the installer it carries
-  what this computer holds (`sh …/Contents/Resources/box-release/kuvo-install status`) and runs
-  what the box names: a new Mac is set up (`new`), an earlier Kuvo Code's sessions moved (`move`),
-  each said on this Mac's row in the first run's own card, a move with the box's words for its
-  step and a thin bar; what the box refuses is said in its words, with Try Again (Return). Then
-  it attaches, and offers the box the release it carries. A build that isn't the app in its
-  bundle (`cargo run -p kuvo`) installs nothing: it only attaches to a Kuvo that's there. A copy
-  of the app (another bundle ID) installs only into a root of its own
-  (`KUVO_DEMO_MACHINE_ROOT=<a folder's name in your home folder>`).
-- **As a bundle**: `scripts/build-desktop-app.sh` (from the checkout's top) builds `build/Kuvo.app`,
-  signed ad hoc: this program, `kuvo-keys` beside it, Kuvo Code's icon, and the box's release with
-  Kuvo Helper in it (`Contents/Resources/box-release`). Its bundle ID is Kuvo Code's own unless
-  `APP_ID` names another, so opening it sets up the real `~/.kuvo-code`: never on a Mac in use.
-  `scripts/check-desktop-app.sh --run build/Kuvo.app` checks it and dry-runs a copy with another
-  ID in a home of its own. `kuvo --install-status` prints what the bundle's installer says this
-  computer holds and quits: no window, and nothing set up, moved or started, though like opening
-  the app it first stages the release and the engine in the box's home (`updates/install`; for
-  Kuvo Code's own ID that's the real `~/.kuvo-code`). A release's signing, notarization, update
-  feed and disk image aren't built yet (`.claude/notes/713-p6a-bundle.md`).
-- **What macOS allows** (`notes/screens-launch.md`): where the box on this computer says a
-  permission isn't allowed for the program agents run under (`kuvo/box/permissions`), a heads-up
-  over the main view: Open System Settings opens the list the box names, with a small window
-  beside it holding that program's icon to drag in, which goes once the box says it's allowed;
-  Not Now is kept by the box.
-- **The first run** (`notes/screens-first-run.md`): until the box says you've had it (`welcomed`
-  in `kuvo/setup`), the window is one card at a time: a welcome; the coding agents and plans, each
-  as the box lists it, signing in or installing in place; and where to work, a folder the box
-  suggests (or one chosen from its folders, or no project). Where the box says a model runs and
-  nothing needs you, the welcome goes straight to where to work. It ends on the landing view, set
-  to start where you picked, and tells the box. Try it: `cargo run -p kuvo --features stand-in --
-  --stand-in --first-run nothing` (or `crowded`, `running`).
-- **The rail** (`notes/screens-rail.md`) switches between the areas, Sessions, Bots, Work Queue,
-  Computers and Settings (⌃1 to ⌃5), each with its own sidebar beside it in one raised panel with
-  the main view; what waits on you shows on an area's icon, and clicking the open area folds its
-  sidebar away. At its foot, a usage ring per account (its service's mark; resting on one shows
-  its windows), then Help and Settings. In a window under 820 px the area's sidebar folds away and
-  its button brings it out. Computers' pages, and a group chat's, aren't in the app yet: a row
-  picked there shows a page saying so.
-- **Bots** (⌃1, `notes/screens-bots.md`): a bot's page (its face, name and job, what it's doing
-  now, its recent sessions, each opening where sessions are) with Chat, its own conversation in
-  the page's place; its settings in Settings' row style (Name, Look, Job, Personality, Model), each
-  change sent to the box (`PATCH kuvo/bots/<id>`) and drawn as it answers, an edit the box holds
-  for another computer saying "Waiting for <computer>"; New Bot (the + beside Bots) from what the
-  box offers (`kuvo/bots/templates`); Delete, asked first.
-- **The Work Queue** (⌃3, `notes/screens-queue.md`): the queue across your computers as the box
-  lists it (`kuvo/work-queue?owner=all&counts=1`), its items under the box's statuses (Needs you,
-  In review, In progress, Waiting, Todo, Backlog; Done and Canceled folded) with the box's counts,
-  each row with its priority, labels, who it's for and when it's due; scope tabs and a sidebar of
-  statuses and labels, a search and filters the box answers (`q`, `computers`, `sources`, `owners`, `labels`), the filters as chips to take off; an item's page
-  (description as Markdown, progress, notes, files, links, the sessions working on it) whose chips
-  change its status, priority, assignee, due day and labels; New Item, written like a message with
-  a menu under each chip (a number picks a row) and Create more; Mark Done, Mark Canceled, Delete
-  and Restore; and making, renaming, recolouring and removing labels. Each change goes through the
-  box's routes, and only what the box says may be done to an item (`can`) is offered.
-- **Settings** (⌃5, `notes/screens-settings.md`): "Search settings…" over its sections; General
-  (the theme), Accounts (every coding agent and provider the box lists, signed in or not, and
-  signing in each way the box offers: in the browser, a device code, a code pasted back, a key,
-  credentials on the computer; installing an agent; signing out and Disconnect), Usage (each
-  account's limits, as the rings), Models (this computer's default models), Permissions (approval,
-  the sandbox, folders also allowed), Notifications (the usage notices) and Browser (#693). The
-  Mac's other sections show a page saying where they are. Each page reads the box as it opens, and
-  each change goes through the box's routes.
-- **The title bar**: the computer switcher (this Mac's box; switching isn't in the app yet), back
-  and forward (⌘[ and ⌘]), New Session (⌘N), then the conversation's title and project and the
-  side panel's button.
-- **The Sessions sidebar** lists what's waiting on you across projects first ("Needs you", with
-  what each asks), then the box's sessions as its list says them: pinned, each project with its
-  sessions nested under it, chats; a spinner on one at work, a dot on one waiting on you, a count
-  on its project. ⌘N (or a project's "+") opens the landing view.
-- **A conversation** follows the box live: your messages by their parts, the agent's words as
-  Markdown with code, thinking and tool steps as quiet rows, how long each turn worked. Scrolling
-  back reads earlier pages.
-- **The composer** sends through `kuvo_box`'s typed send: "/" and "!" go to the box first, which
-  says what they mean; "/" lists what the box offers. Model and effort chips are menus of what the
-  box offers. Stop (or Esc) with nothing written while it works.
-- **The landing view**: the composer in the middle with a project chip above it; Send starts the
-  session on the box there and opens it.
-- **The side panel** (⌥⌘0, or the button at the title bar's right) beside the
-  conversation, resized by its edge: the session's folder's **Changes** as the box groups them
-  (conflicts, staged, unstaged, new), followed live, each opening to its diff, with stage, unstage,
-  discard (asked first) and commit; its **Files**, a folder at a time, one the box can't read saying
-  why, each opening read-only; its **Branches**, switching and a new one, and a worktree's Merge
-  into… and Create Pull Request. ⌥⌘I and ⌥⌘F open it on Changes and Files.
+- **Launch and packaging.** The bundled desktop runs the included box
+  installer, which reports setup, import or repair actions, then attaches to
+  the box. An unbundled binary only attaches. From the repository root,
+  `scripts/build-desktop-app.sh` builds an ad hoc `build/Kuvo.app` with the
+  signed box release and Kuvo Helper. The default bundle ID uses the real
+  `~/.kuvo-code`. Use `scripts/check-desktop-app.sh --run build/Kuvo.app` for
+  a dry run with a separate bundle ID and box home. See [release verification](../docs/releases.md)
+  for signed and notarized builds.
+- **First run.** Welcome is remembered on this desktop device, with a
+  compatibility read from the initial box. Get Started goes through Welcome,
+  Agents and plans, and Where to work. A ready box can skip the sign-in step.
+  When macOS permissions need attention, the desktop draws the box's request
+  and offers to open System Settings. See [launch](notes/screens-launch.md)
+  and [first run](notes/screens-first-run.md).
+- **Areas.** Bots (⌃1) includes conversations and group chats. Sessions (⌃2)
+  shows projects and chats. Work Queue (⌃3) has filters, labels and item actions.
+  Computers (⌃4) lists each box's reach, work and update state with the actions
+  that box offers. Settings (⌃5) has separate device and computer pages.
+  Insights (⌃6) shows usage and cost. Library (⌃7) gathers received files and
+  images across your setup when the box supports it. The rail also shows
+  usage rings and waiting counts. See [the rail](notes/screens-rail.md).
+- **Computer picker.** The title bar switches the workspace to another
+  computer. Settings has its own picker for a computer's settings. Computers
+  supports adding, renaming, changing the main and removing computers.
+- **Conversations.** The sidebar shows pinned sessions, projects, chats and
+  work waiting on you. New Session (⌘N) opens the landing composer. The
+  composer draws model, account and effort choices from the box, supports
+  attachments and mentions, and still asks the box what slash and shell
+  commands mean. Sends show immediately and retry with the same ID.
+- **Side panel.** ⌥⌘0 toggles it. ⌥⌘I and ⌥⌘F open Changes and Files. Each
+  conversation keeps its tabs, including file tabs, terminals, browser, side
+  chats and other outputs where supported. Changes shows changed lines
+  under their files. In a narrow window the panel overlays the conversation.
+  See [the side panel](notes/screens-side-panel.md).
 - ⌘⇧L switches light and dark.
 
 `kuvo::stand_in` (the `stand-in` feature, left out of the app as shipped) is the made-up box: a Mac's box with sessions in a few projects and chats, one at
@@ -164,124 +113,50 @@ screen-recording permission is needed. Output goes to `gpui/shots/`.
 
 ## Tests
 
+From `gpui/`, run focused scenarios through the shared Rust lane:
+
 ```sh
-cargo test
+../scripts/cargo-locked.sh test -p kuvo --features stand-in --test screens <filter>
+../scripts/cargo-locked.sh test -p kuvo_box --test vectors <filter>
 ```
 
-The app's scenarios (`kuvo/tests/screens.rs`) run its screens in a window against the stand-in
-box, with real clicks and keystrokes: the sidebar opening a session and folding a project, sending
-a message and a typed keyword, "/"'s list, a model that can't run, a new session from the landing
-view, a run streaming in and paging back. The rail and its areas' are `kuvo/tests/areas.rs` (switching areas by the rail and ⌃1 to ⌃5,
-folding the sidebar by its button and in a narrow window, "Needs you", back and forward, the
-rings), against the stand-in's sample bots, queue, computers and accounts. Bots' are `kuvo/tests/bots.rs` (a bot's page and its sessions, its conversation, each change
-and what the box answers, an edit held for another computer, New Bot, Delete), against the
-stand-in's made-up bots. The Work Queue's are `kuvo/tests/queue.rs` (the queue under its statuses, the tabs, the box's search and
-the filters, an item's page and each of its chips, New Item with each chip's menu and Create more, closing, deleting and
-restoring, what the box says may be done, labels, an item on a computer that's away), against the stand-in's made-up queue. Settings' are `kuvo/tests/settings.rs` (each section, the search, each way of signing in, failing,
-cancelling, installing, signing out, Disconnect), against the stand-in's made-up accounts and
-settings (no key is real). The side panel's are `kuvo/tests/panel.rs`, against the
-stand-in's made-up repositories (no git runs). The follows' threads are left off: what they'd hand the
-screens is read from the stand-in at once and handed over the same way.
-
-The blocks' scenario tests drive them through a window with real keystrokes, clicks and scrolling:
-the text field (`kuvo_ui/tests/text_field.rs`), the chat list (`tests/chat_list.rs`) and menus
-(`tests/menu.rs`), plus unit tests for markdown parsing, highlighting, icons and the theme's
-contrast.
-
-`kuvo_box`'s tests (`cargo test -p kuvo_box`) hold it to the shared vectors in
-`protocol/vectors` (`tests/vectors.rs`), and run its scenarios against a stand-in box on
-127.0.0.1 (`tests/stand_in.rs`) and a stand-in `ssh` with a machine's home in a test folder
-(`tests/ssh.rs`). None reaches a real box, and none reads a `KUVO_*` variable.
+The app scenarios use test windows and a stand-in box. Use the matching
+target for areas, composer, settings, queue, bots or the panel. `kuvo_box`
+tests wire vectors, a loopback stand-in and SSH with a test home.
+See [the testing guide](../docs/testing.md).
 
 ## Talking to a box
 
-`kuvo_box` is how a Rust client reaches a Kuvo box (`protocol/PROTOCOL.md`): it finds
-the box, holds one that's older than it needs, and reads and changes the box's state through its
-routes. It decides nothing the box decides: it orders the sidebar as every client does, from the
-box's facts.
+`kuvo_box` discovers the local resident through `run/serve.json`. Remote
+computers can use paired Noise over the relay or addressed SSH, with the
+keeper launching `route-to`. Auto can choose between those transports.
+Addressed SSH streams supported responses. Legacy `route` can poll and carries
+OS-account authority. Browser and terminal sockets use local HTTP or paired
+relay where supported. See [the protocol](../protocol/PROTOCOL.md) and
+[resident launch and rollback](../docs/architecture/one-client-process.md).
+
+The client draws the box's compatibility status from `kuvo/info`. A box
+that's behind can still do ordinary work. If a request cannot be supported
+or authorized, the box supplies the refusal.
 
 ```rust
-use kuvo_box::{BoxClient, Draft, SshBox, Timing, follow::ListUpdate, parts::File};
+use kuvo_box::{BoxClient, Draft, Timing};
 
-// This Mac's own box: found by its server's record (`run/serve.json`), whose process is checked
-// to be the box's server before its password is sent. A machine's: over SSH, through
-// `kuvo-link.js box route` there.
-let client = BoxClient::this_mac(&home)?; // or BoxClient::machine(SshBox::new("me@devbox"))
-let info = client.connect()?;             // kuvo/info, and the update gate
-// A box lacking a name in `kuvo_box::gate::REQUIRED` is held: everything but what keeps work
-// going there fails with `Error::NeedsUpdating { missing }`, without reaching it.
-
-// The session lists, live: the list now, then each change.
-let lists = client.follow_sessions(Timing::default());
-while let Some(update) = lists.next_blocking() {       // a GPUI view awaits lists.updates() instead
-    if let ListUpdate::Listing(listing) = update {
-        let sidebar = listing.sidebar();                // pinned, projects in order, chats
-    }
-}
-
-// One conversation, live: its messages, the words it streams as they come, and whether it runs.
-let conversation = client.follow_conversation("ses_…", Timing::default());
-conversation.load_earlier();                            // the page before, as you scroll up
-// Each message is drawn by its parts (what was written, its keyword, comments, files, agents named):
-// `user.parts()` on a `Message::User` of the conversation an update brings, as the box kept them or
-// read them; no client parses the text.
-
-// What the composer sends: its text and what goes with it, as fields; the box writes what the agent
-// reads. "/…" and "!…" go to the box first, which says what they mean.
-let mut draft = Draft::new(BoxClient::new_id(), "/plan sketch it");
-draft.files = vec![File { uri: "file:///Users/me/shot.png".into(), name: None }];
-client.send_draft("ses_…", &draft, None)?;              // `None`: it replies to nothing
+let client = BoxClient::this_mac(&home)?;
+let info = client.connect()?;
+let sessions = client.follow_sessions(Timing::default());
+let draft = Draft::new(BoxClient::new_id(), "/plan sketch it");
+client.send_draft("ses_…", &draft, None)?;
 ```
 
-What it uses of the box: `kuvo/info`; `kuvo/sessions/list` and `…/events` (with `since`);
-`api/session/<id>`, `…/message` and `api/event` on the engine, and the same under
-`kuvo/agents/` for a coding agent's conversation; `kuvo/sessions/<id>/typed` (`GET` and `POST`);
-`api/session/active` (whether a run is under way); `kuvo/sessions/<id>/send` (a message's fields,
-#668 item 3) and `kuvo/messages/parts` (the parts of messages from before); and
-`kuvo/work-queue?owner=all&glance=1` and `kuvo/asks` for the counts; for the rail's areas
-(`kuvo_box::areas`), `kuvo/bots` (with `now`), `kuvo/groups`, `kuvo/work-queue?owner=all&counts=1&glance=1`,
-`kuvo/computers` and `kuvo/waiting` (each with its `…/events` where the box streams) and
-`kuvo/agents/api/kuvo/limits`' rows (with `rings`); "Needs you" and each project's sums come in
-the session list itself. A message's parts and fields
-are held to `protocol/vectors/message-parts.json`.
+The current composer sends slash commands through the typed route. The box
+also describes stored message parts. The desktop retains a send's ID while
+retrying. Its session lists, conversations, queues and areas still use
+separate follows. The shared event line and merged session lists are pending.
+See [message delivery](../docs/architecture/message-delivery.md).
 
-Over a box's own server, what's followed streams. Its record is read again for each request, so
-a server that started again (a new port and password each time) is found, its `kuvo/info` read
-again, and a port a stopped server left is never sent anything. A machine over SSH answers each
-request once, so its lists are read again every half minute and an open conversation every few
-seconds, over an SSH connection reused from `~/.kuvo-ssh-ctl` when the socket path fits. A follow
-hands on only the latest of what it sees, so a view that reads late gets the state now.
-
-Bots (`kuvo_box::bots`): `kuvo/bots` with `held` and `refused`, `kuvo/bots/templates`, `POST
-kuvo/bots` (with a `request` id, so a retry makes it once), `PATCH` and `DELETE kuvo/bots/<id>` (a
-`202` is an edit held for another computer) and `kuvo/work?bot=`.
-
-Also: a conversation's model and the models offered, a model's efforts, picking one, starting a
-session and stopping one (`kuvo_box::models`); a folder's git as the box runs it, its changed files
-grouped and followed, a file's diff, staging, committing, branches, Merge into… and pull requests
-(`kuvo_box::git`); a folder as a Files panel lists it, and a file's bytes (`kuvo_box::folders`);
-accounts and signing in (`kuvo_box::accounts`: `…/api/integration` on the engine and the agents'
-bridge for each account's name, `kuvo/sign-in/accounts` for its state, line and actions, `…/methods`,
-`…/status`, the engine's and bridge's connect routes, install and `kuvo/accounts/…/forget`; never
-`api/credential`, which carries secrets); and
-this computer's settings (`kuvo_box::settings`: `kuvo/config`, `kuvo/approval`, `kuvo/sandbox`,
-`kuvo/sandbox/allowed`, `kuvo/browser/settings`, the usage settings' notices).
-
-Not done yet:
-- Following a machine as it streams. The plan is in `notes/kuvo-box-machines.md`; the app shows
-  this Mac's box only.
-- One event stream shared by every conversation followed on a box.
-- Which messages ran a command, so they show as typed. The box keeps no parts on a command's
-  message (its `send` route gives a command `metadata: {}`, and the engine's command route takes
-  none), and the Mac app's `CommandMessages` guesses by time in the client. So the app shows such a
-  message as the engine wrote it, and guesses nothing; it shows as typed once the box keeps
-  `{words, keyword}` on it, which is the box's to add.
-- A machine's box attached in place on this Mac (`x-kuvo-from: mac`).
-
-To see it list sessions without touching a real box:
+To list sessions against the stand-in:
 
 ```sh
-cargo run -p kuvo_box --example list_sessions -- --stand-in
-cargo run -p kuvo_box --example list_sessions                 # this Mac's own box
-cargo run -p kuvo_box --example list_sessions -- --ssh me@devbox
+../scripts/cargo-locked.sh run -p kuvo_box --example list_sessions -- --stand-in
 ```

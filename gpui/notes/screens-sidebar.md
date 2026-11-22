@@ -28,16 +28,14 @@ Read: `crates/sidebar/src/sidebar.rs`, `crates/ui/src/components/ai/thread_item.
 ## What Kuvo takes
 
 - The box decides what shows where: `kuvo_box`'s `Listing::sidebar()` (pinned, projects by their
-  newest session, chats; subagents nowhere), held to `protocol/vectors/session-lists.json`. The sidebar
+  newest session, chats; visible subagents nested under their session), held to `protocol/vectors/session-lists.json`. The sidebar
   draws it as it is.
-- Projects with their sessions nested under a thin line (Capy's nested threads), newest first; a
-  project with none says "No sessions yet". Six show, then "Show N more".
+- Projects with their sessions nested under a thin line (Capy's nested threads), with working and asking sessions first, then the most recent. **Show more** fetches a page from the box. Older boxes without paging keep the six-row fallback.
 - One status slot before the title: a spinner while the session works, an accent dot while it
   waits on you (`asked`), and its time in the accent too. A project counts its sessions waiting
   on you in a badge; folded, it shows a spinner while one works.
 - A project's row folds it; its "+" (under the pointer) starts a session there.
-- New Session (⌘N) at the top; under it all, the box it's on, with a dot for how it's reached
-  (connecting, connected, updating, can't be reached) and the appearance switch.
+- New Session (⌘N) opens the landing composer. The title bar has the current computer and its picker.
 - Loading, the box waiting on its engine, a box held for its update, and a list that can't be read
   each say so in the sidebar's place.
 

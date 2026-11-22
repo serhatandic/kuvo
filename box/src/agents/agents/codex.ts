@@ -3,6 +3,7 @@
 // serves every Codex session, each one of its threads; while the box's sandbox is on, each session
 // has one of its own, run whole in it.
 
+import { compactionChoice, tokenCount } from "../../shared/context"
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -19,9 +20,10 @@ import { computerServers } from "../servers"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { elicitationField } from "../forms"
 import { newID } from "../ids"
-import { onMachine, ownFoldersConfig, yourHomes } from "../machine"
+import { onMachine, ownFoldersConfig } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { which } from "../proc"
+import { codexProgram } from "../../shared/agent-programs"
+import { run } from "../proc"
 import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } from "../../usage/limits"
 import { CodexCredentials } from "../../usage/codex-credentials"
 import { RPC, RPCError } from "../rpc"
@@ -35,7 +37,6 @@ import type { Turn } from "../turn"
 import type { FileDiff, FormField, Model, ModelRef, OAuthStatus, Session } from "../wire"
 import { BACKGROUND_WORK_LIMIT, workOrder, type WorkOrder } from "../../shared/work-order"
 
-const places = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local/bin"), join(homedir(), ".codex/bin")]
 const outputLimit = 30_000
 /**
  * While the box's sandbox is on, Codex runs whole in it, with its commands and all it starts (its
@@ -202,7 +203,15 @@ export class CodexAgent implements Agent {
   }
 
   executable(): string | undefined {
-    return which("codex", places)
+    return codexProgram()
+  }
+
+  /** An added account signs out as it goes: Codex forgets the sign-in tied to its folder, the
+   * Keychain's or keyring's item too where it keeps it there, before the folder goes. */
+  async removeAccount() {
+    const executable = this.executable()
+    this.shutdown("account removed")
+    if (executable && this.instance.home) await run(executable, ["logout"], { timeout: 20_000, env: { ...process.env, CODEX_HOME: this.instance.home } }).catch(() => {})
   }
 
   /** Its own installer puts it in `~/.codex`: `codex update`. */
@@ -313,6 +322,7 @@ export class CodexAgent implements Agent {
     ]
   }
 
+  private compaction = compactionChoice()
   private idleCheck?: ReturnType<typeof setInterval>
   private shutdowns = 0
 
@@ -337,6 +347,14 @@ export class CodexAgent implements Agent {
     const forgotten = thread && this.threads.get(thread.session.id) !== thread
     if (this.shutdowns !== shutdowns || forgotten || this.slots.get(pendingKey) !== pendingSlot) throw new Error("Codex stopped.")
     if (thread && !starting && thread.server && !thread.server.isClosed) return thread.server
+    const compaction = compactionChoice()
+    if (compaction !== this.compaction) {
+      this.compaction = compaction
+      for (const slot of this.slots.values()) {
+        slot.outdated = slot.server
+        void slot.starting?.then(server => { slot.outdated ??= server }, () => {})
+      }
+    }
     const key = serverKey()
     const slot = this.slot(key)
     slot.lastUse = Date.now()
@@ -378,7 +396,7 @@ export class CodexAgent implements Agent {
     // And the files of your subagents' instructions (only read).
     const subagents = subagentsRoot()
     if (subagents) mkdirSync(subagents, { recursive: true, mode: 0o700 })
-    const homes = [this.home, ...(this.instance.home && yourHomes ? [this.yourCodex] : [])]
+    const homes = [this.home, ...(this.instance.home ? [this.yourCodex] : [])]
     // The files you attach in the session, copied where only the box writes (`fenceCopy`).
     const attached = sessionID ? fenceAttachments(directory) : undefined
     return fenceAgent(this.executable()!, directory, {
@@ -397,7 +415,7 @@ export class CodexAgent implements Agent {
     if (!executable) throw new Error(`Install Codex first: ${this.install}`)
     // An added account's own CODEX_HOME, with your Codex settings in it: only its sign-in is its
     // own. (On a machine, nothing of the machine's own Codex; a Mac's box in a home of its own is yours.)
-    if (this.instance.home && yourHomes) shadowHome(this.instance.home, this.yourCodex)
+    if (this.instance.home) shadowHome(this.instance.home, this.yourCodex)
     // While the box's sandbox is on, Codex runs whole in it: a session's in its folder, your
     // account's in its home.
     const directory = key === ACCOUNT ? this.accountFolder() : (thread?.session.location.directory ?? this.home)
@@ -416,7 +434,7 @@ export class CodexAgent implements Agent {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), compaction: this.compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
             console.error("Codex's holder didn't start:", error?.message ?? error)
             return undefined
           })
@@ -473,8 +491,7 @@ export class CodexAgent implements Agent {
       // A title or commit text it was writing won't come.
       for (const oneOff of this.oneOffs.values()) if (oneOff.rpc === rpc) oneOff.fail(new Error("Codex stopped."))
       // Stopped on purpose: the threads were told then (they may be on a newer one by now).
-      if (slot.server !== rpc) return
-      slot.server = undefined
+      if (slot.server === rpc) slot.server = undefined
       for (const each of this.threads.values()) each.serverStopped(rpc)
     }
   }
@@ -497,7 +514,10 @@ export class CodexAgent implements Agent {
     const slot = this.slot(String(meta.key ?? SHARED))
     slot.fence = String(meta.fence ?? "")
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held))
-    if (!slot.server || slot.server.isClosed) slot.server = rpc
+    if (!slot.server || slot.server.isClosed) {
+      slot.server = rpc
+      if (meta.compaction !== this.compaction) slot.outdated = rpc
+    }
     slot.lastUse = Date.now()
     // Turns let go of (their session couldn't take them up) are stopped: now, or once the turn
     // says its id as its lines come again.
@@ -1205,7 +1225,9 @@ class CodexThread implements Thread {
     const active = this.active
     if (!active) return
     this.active = undefined
-    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : { outcome: "failed", error: failure(active.problem ?? "Codex stopped.") })
+    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : {
+      outcome: "failed", error: failure(active.problem ?? "Codex stopped."), agentExited: server.agentExited,
+    })
   }
 
   private policy(hooks: TurnHooks, plan: boolean, rpc: RPC) {
@@ -1281,7 +1303,10 @@ class CodexThread implements Thread {
     // (On a machine, the machine's own folders too: Codex keeps its own in Kuvo Code's folder.)
     // In the box's sandbox, the launcher kept Kuvo Code's passwords out of Codex, and gave it the
     // conversation's wake-up folder.
+    const compaction = compactionChoice()
     const config = {
+      // Codex caps this setting at 90% of the model window. Without it, Codex chooses its limit.
+      ...(compaction === "never" ? {} : { model_auto_compact_token_limit: Number(compaction) }),
       "shell_environment_policy.set.OPENCODE_SESSION_ID": this.session.id,
       ...(onMachine ? ownFoldersConfig() : {}),
       ...(tools && server ? { [`mcp_servers.${tools.name}`]: server } : {}),
@@ -1930,7 +1955,6 @@ class CodexThread implements Thread {
         return
       case "thread/tokenUsage/updated": {
         // How much its model holds, as Codex says: the models list it.
-        this.agent.noteContext(active.model, params.tokenUsage?.modelContextWindow)
         this.laneNotification(active, method, params)
         return
       }
@@ -2048,7 +2072,12 @@ class CodexThread implements Thread {
         // Told as a model call ends (after the commands it ran): its step ends with what it used,
         // and what comes next is the next call's step, as the engine's steps are. (One with
         // nothing read or written, Codex's estimate after it compacted, isn't a call.)
+        const window = params.tokenUsage?.modelContextWindow
+        this.agent.noteContext(turn.currentModel.id, window)
         const last = params.tokenUsage?.last
+        const used = tokenCount(last?.totalTokens) ? last.totalTokens
+          : tokenCount(last?.inputTokens) && tokenCount(last?.outputTokens) ? last.inputTokens + last.outputTokens : undefined
+        turn.context(used, window)
         if (!last?.inputTokens && !last?.outputTokens) return
         lane.toolsSinceText = false
         turn.endStep({

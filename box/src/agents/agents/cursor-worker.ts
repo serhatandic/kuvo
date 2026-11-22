@@ -5,7 +5,7 @@
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { RPC, RPCError } from "../rpc"
+import { RPCClosed, RPC, RPCError } from "../rpc"
 import type { Held } from "../hold/client"
 import { noteTurn, type HeldTurn } from "../hold/adopt"
 
@@ -150,7 +150,7 @@ export class CursorWorker {
       const error = this.rpc.stderr.trim().split("\n").slice(-3).join("\n") || "Cursor stopped."
       for (const [id, run] of this.runs) {
         this.runs.delete(id)
-        run.ended({ error: { message: error } })
+        run.ended({ error: this.rpc.agentExited ? new RPCClosed(error) : { message: error } })
       }
       options.ended?.()
     }
@@ -167,7 +167,7 @@ export class CursorWorker {
         delta: update => (told = told.then(() => onDelta({ update })).catch(() => {})),
         ended: params => {
           if (this.rpc.holder) noteTurn(this.rpc.holder, agentId, undefined)
-          void told.then(() => (params.error ? reject(revived(params.error)) : resolve(params.result)))
+          void told.then(() => (params.error ? reject(params.error instanceof RPCClosed ? params.error : revived(params.error)) : resolve(params.result)))
         },
       }),
     )
@@ -203,7 +203,7 @@ export class CursorWorker {
   }
 
   private async agent(options: any, resume?: string) {
-    const { agentId } = await this.rpc.request<{ agentId: string | null }>("create", { options, resume }).catch((error) => Promise.reject(revived(error)))
+    const { agentId } = await this.rpc.request<{ agentId: string | null }>("create", { options, resume }).catch((error) => Promise.reject(error instanceof RPCClosed && this.rpc.agentExited ? error : revived(error)))
     if (!agentId) return undefined
     return this.attached(agentId)
   }
@@ -228,7 +228,7 @@ export class CursorWorker {
         } catch (error) {
           worker.runs.delete(run)
           if (held) noteTurn(held, agentId, undefined)
-          throw revived(error)
+          throw error instanceof RPCClosed && rpc.agentExited ? error : revived(error)
         }
         return active
       },

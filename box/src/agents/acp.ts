@@ -3,6 +3,7 @@
 // per turn, and what it does told in `session/update`s. Each agent says how it starts, signs in,
 // picks a model, and anything of its own.
 
+import { tokenCount } from "../shared/context"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { LostWork, OwnTurn, RunInput, RunResult, Thread, TurnHooks, SubagentRun, SubagentTask } from "./agent"
@@ -10,7 +11,7 @@ import { failure, lostWorkNote } from "./agent"
 import { resetsIn, resetTime, type Limit } from "./auto"
 import { fileDiff } from "./diff"
 import { emit } from "./events"
-import { RPC, RPCError } from "./rpc"
+import { RPC, RPCClosed, RPCError } from "./rpc"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "./fence"
 import { isKuvoTool, kuvoToolName, kuvoTools, loadKuvoTools, toolServerName } from "./kuvotools"
 import { computerServers, type ComputerServers } from "./servers"
@@ -32,6 +33,8 @@ export interface AcpFlavor {
   /** Its process runs under a holder on a box, and a bridge started after a crash takes its turn up (hold/adopt.ts): as which agent. None: as it always has. */
   held?: { kind: AgentKind; provider: string; version?: string }
   /** The command that starts the agent, for this session's approval mode (and its skills and subagents folders, from `skills` and `subagents`; `whole`: run whole in the box's sandbox). */
+  /** Process environment for the chosen model, read again before each prompt. */
+  launchOptions?(model: string): Record<string, string> | undefined
   command(options: { approvesAll: boolean; plan: boolean; skills?: string; subagents?: string; whole?: boolean }): Promise<{
     argv: string[]
     env?: Record<string, string | undefined>
@@ -152,6 +155,7 @@ export interface BackgroundTask {
 interface TurnFollower {
   stop(): void
   transferState?(): unknown
+  watchPrompt?(answer: () => { tail: string; length: number } | undefined, finish: () => void, sentAt?: number): void
 }
 
 interface Active {
@@ -172,6 +176,7 @@ interface Active {
   heard?: boolean
   /** What it said since its last tool: how its answer ends. */
   said?: string
+  saidLength?: number
   /** What the turn runs with, to start the agent again partway (its sign-in renewed). */
   input?: RunInput
   renewed?: boolean
@@ -181,6 +186,7 @@ interface Active {
   answered?: boolean
   /** How much of its context the conversation fills, as the agent last said (usage_update). */
   used?: number
+  contextWindow?: number
   /** What follows the agent's own record of the turn, when it keeps one. */
   follower?: TurnFollower
   /** A turn the agent began on its own, taken here: it ends when it says, or goes quiet. */
@@ -264,7 +270,8 @@ export class AcpThread implements Thread {
     // And the computer's MCP servers, another set of them (one you added, or took away).
     const computer = await computerServers(this.session.location.directory)
     const servers = await serversKey(this.session.id, computer)
-    const key = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers })
+    const launchOptions = this.flavor.launchOptions?.(input.model.id)
+    const key = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers })
     this.computer = computer
     // (What each reaches, a key you changed, a sign-in renewed, for the same agent going on too.)
     if (this.rpc && !this.rpc.isClosed) relayedServers(this.session.id, this, this.session.location.directory, computer, { brief: true })
@@ -274,8 +281,9 @@ export class AcpThread implements Thread {
     if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
     this.drop()
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
-    const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
+    const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
     const launch = await this.flavor.command(mode)
+    if (launchOptions) launch.env = { ...launch.env, ...launchOptions }
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents])
     this.fenced = Boolean(whole)
     const ended = whole?.ended
@@ -313,6 +321,7 @@ export class AcpThread implements Thread {
       // (From here, as `this.rpc`, in the same breath.)
       if (holdIn && !whole) this.startingOutside--
     }
+    let fatalError = false
     const rpc: RPC = new RPC(held ?? argv, {
       cwd,
       env,
@@ -330,6 +339,7 @@ export class AcpThread implements Thread {
         }
         const fatal = flavor.fatalLine?.(line)
         if (fatal) {
+          fatalError = true
           // What's waiting on it fails with this, rather than what it last wrote.
           setTimeout(() => {
             rpc.stderr = fatal
@@ -366,7 +376,7 @@ export class AcpThread implements Thread {
         void this.renew(active, active.input)
         return
       }
-      this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+      this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`, undefined, rpc.agentExited && !asksSignIn && !fatalError)
     }
     this.rpc = rpc
     this.spawnedWith = startedWith
@@ -430,6 +440,7 @@ export class AcpThread implements Thread {
         if (previous && previous !== this.sessionID) {
           // In place of one it had: the instructions go again, and what came before is handed over.
           this.startedOver = true
+          delete this.session.context
           delete this.state.acpInstructions
           delete this.state.acpInstructed
         }
@@ -568,6 +579,7 @@ export class AcpThread implements Thread {
       this.active = active
       turn.startStep()
       active.follower = flavor.follow?.(taken.thread, turn, hooks, taken.state)
+      if (taken.note.sentAt !== undefined) this.watchPrompt(active, taken.note.sentAt)
       taken.gate.onOpen(() => rpc.start())
       taken.gate.ready(taken.thread)
     })
@@ -593,7 +605,7 @@ export class AcpThread implements Thread {
       }
       if (lost.length) this.onWorkLost?.(lost)
       const active = this.active
-      if (active && !active.ended && active.rpc === rpc) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+      if (active && !active.ended && active.rpc === rpc) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`, undefined, rpc.agentExited)
     }
     this.rpc = rpc
     this.fenced = meta.fenced === true
@@ -688,6 +700,10 @@ export class AcpThread implements Thread {
   /** Sends a prompt of the turn's; its answer ends the turn, unless a newer one went meanwhile. */
   private prompt(active: Active, sessionId: string, prompt: any[]) {
     const number = ++active.prompt
+    const sentAt = Date.now()
+    active.said = undefined
+    active.saidLength = 0
+    this.watchPrompt(active)
     const meta = this.flavor.promptMeta?.()
     active.promptID = typeof meta?.promptId === "string" ? meta.promptId : undefined
     const sentOn = active.rpc
@@ -696,7 +712,7 @@ export class AcpThread implements Thread {
     const held = sentOn.holder
     if (held && !active.input?.compact) {
       const noted = (held.meta.turns as Record<string, { from: number }> | undefined)?.[sessionId]
-      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID })
+      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID, sentAt })
     }
     active.rpc.request("session/prompt", { sessionId, prompt, ...(meta ? { _meta: meta } : {}) }).then(
       (result: any) => {
@@ -708,9 +724,21 @@ export class AcpThread implements Thread {
       (error) => {
         if (number !== active.prompt || active.replaced === sentOn) return
         const limited = (error instanceof RPCError && error.code === -32003) || limitWords.test(errorText(error))
-        this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined)
+        this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined, error instanceof RPCClosed && sentOn.agentExited)
       },
     )
+  }
+
+  private watchPrompt(active: Active, sentAt?: number) {
+    const rpc = active.rpc
+    const prompt = active.prompt
+    active.follower?.watchPrompt?.(() => active.said && active.saidLength ? { tail: active.said, length: active.saidLength } : undefined, () => {
+      if (this.active !== active || active.rpc !== rpc || active.prompt !== prompt || active.hooks.signal.aborted) return
+      // This prompt never replied over ACP. Reload the conversation before its next prompt.
+      this.stale = rpc
+      active.answered = true
+      this.end(active, "succeeded")
+    }, sentAt)
   }
 
   /**
@@ -732,7 +760,7 @@ export class AcpThread implements Thread {
     return { scope: this.flavor.limitScope ?? "provider", message, ...(resetsAt ? { resetsAt } : {}) }
   }
 
-  private end(active: Active, outcome: RunResult["outcome"], message?: string, limit?: Limit) {
+  private end(active: Active, outcome: RunResult["outcome"], message?: string, limit?: Limit, agentExited = false) {
     if (active.ended) return
     // Done, having run nothing, with an answer that only says its plan is at its limit: that limit.
     if (outcome === "succeeded" && !active.own && !active.tools.size && active.said && this.flavor.limitReply?.(active.said)) {
@@ -778,7 +806,7 @@ export class AcpThread implements Thread {
         limit, taken: active.heard || active.answered,
       })
     }
-    else active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered } : { outcome })
+    else active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered, agentExited } : { outcome })
   }
 
   private context(): AcpContext {
@@ -866,11 +894,14 @@ export class AcpThread implements Thread {
     active.heard = true
     const turn = active.turn
     switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(contentText(update.content)).slice(-2_000)
+      case "agent_message_chunk": {
+        const text = contentText(update.content)
+        active.saidLength = (active.toolsSinceText ? 0 : (active.saidLength ?? 0)) + text.length
+        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(text).slice(-2_000)
         this.words(active)
         this.content(active, turn, update.content, "text")
         return
+      }
       case "agent_thought_chunk":
         this.words(active)
         this.content(active, turn, update.content, "reasoning")
@@ -879,8 +910,14 @@ export class AcpThread implements Thread {
       case "tool_call_update":
         return this.tool(active, update)
       case "usage_update":
-        if (typeof update.used === "number") active.used = update.used
-        if (typeof update.size === "number") this.flavor.noteContext?.(turn.currentModel.id, update.size)
+        if (tokenCount(update.size) && update.size > 0) {
+          active.contextWindow = update.size
+          this.flavor.noteContext?.(turn.currentModel.id, update.size)
+        }
+        if (tokenCount(update.used)) {
+          active.used = update.used
+          turn.context(update.used, active.contextWindow)
+        }
         // What it cost, when it says (in dollars).
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") this.cost(turn, update.cost.amount)
         return
@@ -898,17 +935,29 @@ export class AcpThread implements Thread {
       case "compaction_summary_chunk":
         // Summarized, told only once it's done. (One you asked for shows as that, and one under
         // way says how it went itself.)
-        if (!active.compacted && !turn.isCompacting) turn.compacted(true)
+        if (!active.compacted && !turn.isCompacting) {
+          turn.clearContext()
+          turn.compacted(true)
+        }
         active.compacted = true
         return
       // Grok summarizing by itself, from when it begins to how it went. (Not one you asked for.)
       case "auto_compact_started":
+        if (tokenCount(update.context_window) && update.context_window > 0) {
+          active.contextWindow = update.context_window
+          this.flavor.noteContext?.(turn.currentModel.id, update.context_window)
+        }
+        turn.context(update.tokens_used, active.contextWindow)
         if (!active.input?.compact) turn.compacting()
         return
       case "auto_compact_completed":
+        if (tokenCount(update.tokens_after)) turn.context(update.tokens_after, active.contextWindow)
+        else turn.clearContext()
+        if (!active.input?.compact) turn.compacted(true)
+        return
       case "auto_compact_failed":
       case "auto_compact_cancelled":
-        if (!active.input?.compact) turn.compacted(update.sessionUpdate === "auto_compact_completed")
+        if (!active.input?.compact) turn.compacted(false)
         return
       case "user_message_chunk":
       case "available_commands_update":

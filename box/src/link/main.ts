@@ -1100,7 +1100,7 @@ async function runBoxServices(): Promise<void> {
     return serveBoxServices({
       home, run: RUN, box: APP_FOLDER ?? K, bots: path.join(APP_FOLDER ?? K, "bots"), artifacts: path.join(K, "artifacts"),
       engineData: APP_FOLDER ? path.join(APP_FOLDER, "opencode", "data", "opencode") : path.join(K, "data", "opencode"),
-      managedDefaults: !IS_MAC, bundle: script,
+      bundle: script,
     });
   }, { exclusive: true });
   if (!leave) return;

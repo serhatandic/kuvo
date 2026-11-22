@@ -9,7 +9,7 @@ import { UsageAccounts } from "../../src/usage/accounts"
 import { CodexCredentials } from "../../src/usage/codex-credentials"
 import { claudeUsage } from "../../src/usage/claude-limits"
 import { engineEndpoints } from "../../src/usage/engine-limits"
-import { codexResetEndpoints } from "../../src/usage/codex-resets"
+import { agentPrograms } from "./support/agent-programs"
 import type { LimitRow } from "../../src/usage/limits-rows"
 import { usageReader } from "../../src/usage/service"
 import { handler, type Context } from "../../src/agents/server"
@@ -46,15 +46,23 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Pr
 test("the limits route reads and renders all six plans from their fixture credentials and APIs", async () => {
   const box = mkdtempSync(join(tmpdir(), "kuvo-usage-rings-"))
   const run = join(box, "run"), home = join(box, "agents")
+  // The first accounts are each agent's own folder, in a home of this test's own.
+  const yours = process.env.HOME, own = join(box, "you")
+  process.env.HOME = own
   mkdirSync(run)
   publishBridge(run)
   const at = new Date(), soon = new Date(+at + 60 * 60_000)
   const week = new Date(+at + 7 * 86400_000), month = new Date(+at + 30 * 86400_000)
-  const codexFile = join(home, "codex", "home", "auth.json")
+  const codexFile = join(own, ".codex", "auth.json")
   const codexAuth = (id: string) => keep(codexFile, { tokens: { access_token: jwt(id), account_id: id } })
   codexAuth("codex-first")
-  keep(join(home, "claude", "home", ".credentials.json"), { claudeAiOauth: { accessToken: "fixture-claude", scopes: ["user:profile"] } })
-  keep(join(home, "grok", "home", "auth.json"), { grok: { key: "fixture-grok", expires_at: week } })
+  // Codex and Grok answer for themselves, from their folders (support/agent-programs.ts).
+  const codexWindows = (fiveHour: number) => ({ rateLimitsByLimitId: { codex: { limitId: "codex", planType: "pro", primary: { usedPercent: fiveHour, windowDurationMins: 300 }, secondary: { usedPercent: 40, windowDurationMins: 10080 } } } })
+  keep(join(own, ".codex", "usage.json"), { "codex-first": codexWindows(12), "codex-second": codexWindows(67) })
+  keep(join(own, ".grok", "billing.json"), { config: { currentPeriod: { start: at, end: week }, creditUsagePercent: 62 } })
+  const programs = agentPrograms(join(box, "programs"))
+  keep(join(own, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "fixture-claude", scopes: ["user:profile"] } })
+  keep(join(own, ".grok", "auth.json"), { grok: { key: "fixture-grok", expires_at: week } })
   keep(join(home, "cursor", "auth.json"), { version: 1, backendUrl: "https://api2.cursor.sh", apiKey: "fixture-cursor" })
   keep(join(home, "antigravity", "profile", "antigravity-acp", "acp_token.json"), { access_token: "fixture-antigravity", expiry: week })
   const cursor = new CursorStandIn()
@@ -70,18 +78,6 @@ test("the limits route reads and renders all six plans from their fixture creden
       case "/claude":
         expect(using).toBe("Bearer fixture-claude")
         return Response.json({ five_hour: { utilization: 32, resets_at: soon }, seven_day: { utilization: 45, resets_at: week } })
-      case "/chatgpt": {
-        const account = request.headers.get("chatgpt-account-id")!
-        expect(using).toBe("Bearer " + jwt(account))
-        return Response.json({ plan_type: "pro", rate_limit: {
-          primary_window: { used_percent: account === "codex-second" ? 67 : 12, limit_window_seconds: 18000 },
-          secondary_window: { used_percent: 40, limit_window_seconds: 604800 },
-        } })
-      }
-      case "/resets": return Response.json({ available_count: 0 })
-      case "/grok":
-        expect(using).toBe("Bearer fixture-grok")
-        return Response.json({ config: { currentPeriod: { start: at, end: week }, creditUsagePercent: 62 } })
       case "/go":
         expect(using).toBe("Bearer fixture-go")
         return Response.json({ usage: { rolling: { percent: 17 }, weekly: { percent: 33 }, monthly: { percent: 79 } } })
@@ -96,12 +92,11 @@ test("the limits route reads and renders all six plans from their fixture creden
     }
   } })
   const base = `http://127.0.0.1:${fixture.port}`
-  const endpoints = { ...engineEndpoints }, claude = claudeUsage.url, resets = codexResetEndpoints.list
-  Object.assign(engineEndpoints, { opencodeGo: base + "/go", chatgpt: base + "/chatgpt", grok: base + "/grok" })
+  const endpoints = { ...engineEndpoints }, claude = claudeUsage.url
+  Object.assign(engineEndpoints, { opencodeGo: base + "/go" })
   claudeUsage.url = base + "/claude"
-  codexResetEndpoints.list = base + "/resets"
-  const accounts = new UsageAccounts(home, true, { claudeByToken: false, antigravity: { bases: [base] } })
-  const reader = usageReader({ box, run, home, bots: join(box, "bots"), managedDefaults: true }, {
+  const accounts = new UsageAccounts(home, { claudeByToken: false, antigravity: { bases: [base] }, programs, codexKeychain: async () => undefined })
+  const reader = usageReader({ box, run, home, bots: join(box, "bots") }, {
     accounts: () => accounts.all(),
     engineCredentials: async () => [{ integrationID: "opencode-go", active: true, value: { type: "api", key: "fixture-go" } }],
   })
@@ -143,45 +138,40 @@ test("the limits route reads and renders all six plans from their fixture creden
     await reader.closeInsights()
     Object.assign(engineEndpoints, endpoints)
     claudeUsage.url = claude
-    codexResetEndpoints.list = resets
     fixture.stop(true)
     cursor.stop()
+    process.env.HOME = yours
     rmSync(box, { recursive: true, force: true })
   }
 }, 20_000)
 
 test("an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind", async () => {
   const box = mkdtempSync(join(tmpdir(), "kuvo-usage-account-"))
-  const run = join(box, "run"), home = join(box, "agents"), agentHome = join(home, "grok", "home")
+  const run = join(box, "run"), home = join(box, "agents")
+  const yours = process.env.HOME
+  process.env.HOME = join(box, "you")
+  const agentHome = join(box, "you", ".grok")
   const auth = join(agentHome, "auth.json"), executable = join(box, "grok")
   const remember = (name: string) => {
     const key = `header.${Buffer.from(JSON.stringify({ sub: name })).toString("base64url")}.signature`
     keep(auth, { login: { key } })
+    // What Grok says of this sign-in's week (its ACP `_x.ai/billing`, support/agent-programs.ts).
+    keep(join(agentHome, "billing.json"), { config: { currentPeriod: { start: new Date(), end: new Date(Date.now() + 604800_000) }, creditUsagePercent: name === "first" ? 20 : 70 } })
   }
+  const programs = agentPrograms(join(box, "programs"))
   remember("first")
   writeFileSync(executable, '#!/bin/sh\nprintf "you are logged in\\n- grok-test (default)\\n"\n', { mode: 0o700 })
   class FixtureGrok extends GrokAgent {
     override executable() { return existsSync(executable) ? executable : undefined }
     override async maintenance() { return {} }
   }
-  const agent = new FixtureGrok({ home, temporary: box } as ConstructorParameters<typeof GrokAgent>[0], { id: "default", home: agentHome })
-  const accounts = new UsageAccounts(home, true)
-  const reader = usageReader({ box, run, home, bots: join(box, "bots"), managedDefaults: true }, {
+  const agent = new FixtureGrok({ home, temporary: box } as ConstructorParameters<typeof GrokAgent>[0], { id: "default" })
+  const accounts = new UsageAccounts(home, { programs })
+  const reader = usageReader({ box, run, home, bots: join(box, "bots") }, {
     accounts: () => accounts.all().filter(source => source.providerID === agent.providerID),
     engineCredentials: async () => [],
   })
-  const seen: string[] = []
-  const service = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    if (new URL(request.url).pathname === "/grok") {
-      const token = request.headers.get("authorization")!.split(" ")[1]!
-      const { sub } = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString())
-      seen.push(sub)
-      return Response.json({ config: { currentPeriod: { start: new Date(), end: new Date(Date.now() + 604800_000) }, creditUsagePercent: sub === "first" ? 20 : 70 } })
-    }
-    return reader.handle(request)
-  } })
-  const url = engineEndpoints.grok
-  engineEndpoints.grok = `http://127.0.0.1:${service.port}/grok`
+  const service = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => reader.handle(request) })
   keep(servicesFile(run), servicesRecordFormat.write({ pid: process.pid, port: service.port, password: "a".repeat(48) }))
   publishBridge(run)
   const client = new BoxServicesClient(run)
@@ -226,13 +216,13 @@ test("an open bridge feed learns of an external sign-in switch and a removed CLI
     await until(rows, result => result.length === 0)
     expect(existsSync(auth)).toBe(true)
     expect((await rows()).some(row => row.service === "grok")).toBe(false)
-    expect(seen).toContain("second")
+    expect(programs.asked().filter(each => each.method === "_x.ai/billing").every(each => each.home === agentHome)).toBe(true)
   } finally {
     abort.abort()
     await feed.return(undefined)
     service.stop(true)
-    engineEndpoints.grok = url
     await reader.closeInsights()
+    process.env.HOME = yours
     rmSync(box, { recursive: true, force: true })
   }
 }, 20_000)
@@ -333,37 +323,26 @@ test("Codex auto storage joins pending keyring lookups and prefers the keyring c
   }
 })
 
-test("a Codex reset checks the live keyring account and spends with the exact credential it checked", async () => {
-  const home = mkdtempSync(join(tmpdir(), "kuvo-codex-reset-keyring-"))
-  const calls: string[] = []
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    calls.push(request.headers.get("authorization") ?? "")
-    return Response.json({ code: "reset" })
-  } })
-  const consume = codexResetEndpoints.consume
-  codexResetEndpoints.consume = `http://127.0.0.1:${server.port}/consume`
+test("a Codex reset goes only while Codex says it's signed in to the row's account, and through Codex itself", async () => {
+  const box = mkdtempSync(join(tmpdir(), "kuvo-codex-reset-keyring-"))
+  const home = join(box, "home")
+  const programs = agentPrograms(join(box, "programs"))
   try {
+    mkdirSync(home, { recursive: true })
     writeFileSync(join(home, "config.toml"), 'cli_auth_credentials_store = "keyring"\n')
-    const saved = (account: string, token: string) => JSON.stringify({ tokens: { access_token: token, account_id: account } })
-    let value = saved("first", "first-token")
-    const accounts = new UsageAccounts(home, true, { codexKeychain: async () => value })
+    // The row is for the account the Keychain held when read; Codex, asked now, is signed in to another.
+    const saved = (account: string) => JSON.stringify({ tokens: { access_token: "token-" + account, account_id: account } })
+    const accounts = new UsageAccounts(box, { programs, codexKeychain: async () => saved("first") })
     const agent = accounts.source("codex", "codex-cli", { id: "default", home })
     await agent.prepare!()
-    value = saved("second", "second-token")
     const source = agent.limits!
+    keep(join(home, "auth.json"), JSON.parse(saved("second")))
     expect((await source.spender!())?.same).toBe(false)
-    expect(await source.reset!({ request: "unchecked", target: "fixture-credit", keep: () => {} }, Date.now())).toEqual({ outcome: "no-reset" })
-    expect(calls).toEqual([])
-    value = saved("second", "renewed-token")
-    const checked = await source.spender!()
-    expect(checked?.same).toBe(true)
-    value = saved("third", "third-token")
-    expect((await source.spender!())?.same).toBe(false)
-    expect(await source.reset!({ request: "fixture", target: "fixture-credit", keep: () => {}, signIn: checked?.signIn }, Date.now())).toEqual({ outcome: "reset" })
-    expect(calls).toEqual(["Bearer renewed-token"])
+    keep(join(home, "auth.json"), JSON.parse(saved("first")))
+    expect((await source.spender!())?.same).toBe(true)
+    expect(await source.reset!({ request: "fixture", target: "fixture-credit", keep: () => {} }, Date.now())).toEqual({ outcome: "reset" })
+    expect(programs.asked().filter(each => each.method === "account/rateLimitResetCredit/consume").map(each => [each.home, each.params])).toEqual([[home, { idempotencyKey: "fixture", creditId: "fixture-credit" }]])
   } finally {
-    codexResetEndpoints.consume = consume
-    server.stop(true)
-    rmSync(home, { recursive: true, force: true })
+    rmSync(box, { recursive: true, force: true })
   }
 })

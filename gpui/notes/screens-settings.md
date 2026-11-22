@@ -4,22 +4,23 @@ The Settings area (⌃5), in two parts with a sidebar each (the user's pick of t
 2026-11-15; the note and drafts are on `kuvo/727-settings-split-design-and-drafts`,
 `gpui/notes/settings-split.md`):
 
-- **Your settings**: this app's own, on this device. Appearance (the theme) is the one built; the
-  rest are under one row, "Not in the desktop app yet", which opens their short list; each is a page
-  saying "Coming to the desktop app."
-- **A computer's settings**: kept on that computer by its box. The sidebar's title is the
-  **picker** (your computers as the window's box lists them, one that isn't reached quieter, Add a
-  Machine…), which changes only Settings, never the window. Its sections are the box's
-  (`kuvo/settings`), under the box's headings; Accounts, Models and Usage are still this app's own
-  pages (`rows.rs`, BOX-NEEDED, #741); the rest are under the same one row.
+- **Your settings** keeps device controls for General, Appearance, Notifications,
+  Keyboard Shortcuts, Side Panel, Privacy and Updates. Updates shows Sparkle
+  controls and a separate check for releases for your computers. Voice has a
+  placeholder page.
+- **A computer's settings** belong to its box. The Settings picker changes
+  only which computer's settings are shown. Connected boxes supply described
+  pages from `kuvo/settings`. Accounts, Models and Usage still draw from
+  their dedicated box routes. The approved delivery design proposes moving
+  per-computer settings under Computers.
 - The **foot row** goes to the other side ("Computer settings · This Mac ›" / "Your settings ›"),
   at the section last open there. The **search** finds on its own side, and lists what it finds on
   the other under "Computer · This Mac" / "Your settings", with an arrow; picking one goes there
   and leaves the search behind.
 - Each page says once, under its title, whose it is. The open section is under the theme's selected
   wash, not the raised card the other sidebars use (#723).
-- A computer that's away, connecting, known only through another, on an older Kuvo, or not
-  reachable from the desktop app yet: its name and why, in place of its page, and no sections.
+- A computer that is connecting, away, or unable to serve a page shows its
+  reach or compatibility state. Reachable computers open their available pages.
 
 Places have keys (`yours/<id>`, `box/<computer key>/<id>`; a section's name alone is the computer
 shown's), which is what back and forward keep.

@@ -1,12 +1,12 @@
-//! The landing view, for a new conversation: the composer in the middle, on the dotted backdrop,
+//! The landing view, for a new conversation: the composer in the middle, on a sky that follows the time of day,
 //! with where it starts above it: the project (or no project, a chat) and the box it's on.
 
 use gpui::{AnyElement, AppContext as _, Context, IntoElement, ParentElement, Styled, Window, div, px};
 use kuvo_box::models::StartIn;
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
-    backdrop::backdrop,
     menu::{Menu, MenuEntry, PopoverMenu},
+    sky::sky,
     small::status_dot,
     theme::space,
 };
@@ -70,7 +70,7 @@ pub fn render(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Work
     div()
         .relative()
         .size_full()
-        .child(backdrop())
+        .child(sky(workspace.sky_hour(), cx))
         .child(
             div()
                 .absolute()

@@ -29,44 +29,32 @@ phase 3, `crates/agent_ui/src/mention_set.rs`, `completion_provider.rs` (`comple
 
 - The text field block, bare in a card, growing to ten lines; Return sends, Shift-Return adds a
   line.
-- What's written goes through `kuvo_box`'s typed send (#668): a plain message straight to the box
-  as fields (`kuvo/sessions/<id>/send`); "/" and "!" to the box first (`…/typed`), which says
-  what they mean and what's sent. What the box puts back goes back in the field, with its reason
-  under it; what it did shows as a line under the composer ("Switched to Plan.", a side question
-  asked, a handoff being written). What's this client's to do that it can't yet (Autopilot,
-  goals, side threads) says so plainly, and what was written stays in the field.
+- Plain messages go to the box's send route. Slash and shell text go through
+  the typed route, which returns what happened or what needs correction.
+  Side questions and follow-ups open in side chats. Handoff can continue the
+  conversation in another agent's session. The shared event line and any
+  composer removals are follow-ups to [message delivery](../../docs/architecture/message-delivery.md).
 - "/" lists what the box offers there (`GET …/typed`), names starting with what's typed first,
   then those containing it, each by name (as KuvoClient's `SlashCommands.matches`), scrolling
   past eight: ↑↓
   move, Tab or Return takes it ("/review "), Esc puts the list away. A keyword the text starts
   with shows as a chip above the field ("/plan"), as the sent message shows it.
-- The model chip names the conversation's model as the box says (`kuvo/sessions/models`), "Choose
-  a Model" when it's gone or there's none (as KuvoClient's `SessionModelState.namesModel`), and
-  "Model" while the box hasn't said, so one can still be picked. Its menu lists what the box
-  offers (`kuvo/models/offered`, without retiring or hidden ones) on the conversation's own side,
-  as the box says each one's `side`: only those are picked in place (`api/session/<id>/model`).
-  Another side's models carry a conversation to a new session (`kuvo/sessions/<id>/agents`), which
-  this app doesn't do yet: the menu says so. The effort chip lists the model's `efforts`, as the box
-  offers them, titled as every client titles them; a model is matched by its id or one it's known
-  by (the box's `aliases`: Claude Code's `default`). A side the box couldn't say keeps what it said
-  before, and is asked again in a while, longer each time, while that composer is on screen; a
-  model whose state couldn't be read keeps what was said of it. A box from before it said each
-  model's side says to update it there, rather than offer nothing. The model is read again as the conversation opens, and as its box
-  says its accounts, models, settings or Custom Auto's lists changed (or this conversation's model
-  did), from the conversation's own events. A model that can't run keeps the message in the field,
-  saying why and pointing to Kuvo Code on your Mac or iPhone (worded as KuvoClient's
-  `SessionModelState`).
-- Each conversation keeps its own composer while you're in another: its draft, and a send still
-  on its way, whose failure puts the text back with why.
+- The model and effort menus draw the box's choices, with search and
+  account selection for agents that have multiple sign-ins. A model on
+  the same side is picked in place. Switching sides hands the conversation
+  over to a new session. A refusal gives the box's reason.
+- Each conversation keeps its draft and its own composer state. A send
+  appears immediately in the conversation or queue, keyed by its ID.
+  Reconnects retry that ID. A failed send stays visible with recovery
+  actions where available.
 - Send is an accent arrow; with nothing written while the session works, it's Stop (Esc too), which
   asks the box to stop (`kuvo/sessions/<id>/stop`).
 - Sending while it runs steers, as the box's `send` does by default.
 
-- **Attachments** (phase 3): the paperclip opens the system's file picker, and files dropped on the
-  composer are attached. Pictures show as thumbnails, other files as chips, each with ×; folders
-  aren't attached. They go with the message as files on this Mac's box (`file://`), and the box
-  decides what the model reads of them (the rest goes as paths in its note). Files alone can be
-  sent; a send that fails puts them back with what was written.
+- **Attachments:** pick, drop or paste files. Pictures show as thumbnails
+  and other files as chips. Local files can use a `file://` URI. Attachments
+  to another computer and temporary pasted pictures go with their bytes.
+  A file that cannot be read or sent is reported instead of being dropped.
 - **"@" and "&"** (phase 3): a mention being typed at the end of what's written ("@" a word with no
   spaces; "&" a name, which runs to the line's end), each starting a word, opens the list over the
   field with what the box suggests for it (`kuvo/sessions/<id>/mentions`: the folder's files,
@@ -79,13 +67,9 @@ phase 3, `crates/agent_ui/src/mention_set.rs`, `completion_provider.rs` (`comple
   its name), its keyword and files. Under the pointer: Edit (yours: taken out of the queue, its
   words and files back in the composer) and Remove.
 
-## Where we differ, and why
+## Queue actions
 
-- Mentions stay as plain text in the field (as on the Mac and the phone), not creases: the box
-  reads them as written.
-- No Steer or Send Now on a queued message yet, nor Undo after Remove, nor Resume for a paused
-  queue: the box has the routes; the app doesn't use them yet.
-- No pasting a picture from the clipboard yet.
-- The model menu isn't searchable yet (Zed's is): the box offers a short list today.
-- Picking another model while a run is under way takes effect from its next step. The Mac app also
-  stops the step and adds a note; that's logic the box should own, so it isn't copied here.
+When the agent works, Return steers and ⌘Return queues a message for after
+the run. The send menu also offers Send Now. Waiting messages show the
+actions the box supports, including edit, remove and steering. A paused
+queue offers Resume. Mentions remain plain text for the box to interpret.

@@ -16,7 +16,7 @@ import { boxZoneIs } from "../shared/zone"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { format } from "node:util"
-import { Accounts, parseProvider } from "./accounts"
+import { Accounts, adoptOwnFolders, parseProvider } from "./accounts"
 import { Auto } from "./auto"
 import { Deps } from "./deps"
 import { EngineAgent, EngineLink } from "./engine"
@@ -135,7 +135,7 @@ const hasOriginal = original && buildOf(original.toString("utf8")) === build
 
 // On a box: its engine, where its record says now (or where a launch from before said), and Kuvo
 // Code's tools as the engine has them.
-const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
+const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { pid: Number(process.env.KUVO_ENGINE_PID) || undefined, url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
 const port = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0
 if (onMachine) {
   setToolProgram(process.env.OPENCODE_CONFIG_CONTENT)
@@ -206,18 +206,21 @@ if (onMachine) {
 // What an earlier bridge left of its downloads (it kept them on this Mac): nothing installs yet.
 rmSync(join(home, "cache", "install"), { recursive: true, force: true })
 const context = { home, temporary, deps }
-const roster = new Roster(new Accounts(home), context)
+// Each agent's first account is its own folder now, on Linux too: an earlier bridge's moved there.
+const accounts = new Accounts(home)
+adoptOwnFolders(home, accounts)
+const roster = new Roster(accounts, context)
 const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
-if (machineEngine) link.configure(machineEngine.url, machineEngine.password)
+if (machineEngine) link.configure(machineEngine.url, machineEngine.password, machineEngine.pid)
 // Its engine started again (a crash, a hang ended, an update's new engine): followed where its
 // record says now, every two seconds, its turns going on meanwhile (`EngineLink` reconnects).
 if (onMachine) {
   setInterval(() => {
     const now = recordedEngine()
-    if (now) link.configure(now.url, now.password)
+    if (now) link.configure(now.url, now.password, now.pid)
   }, 2_000).unref?.()
 }
 // The skills Settings › Skills lists, for the agents too (the engine lists them).

@@ -1,3 +1,4 @@
+import { compactionChoice } from "../../shared/context"
 import { grokCredential, grokHome } from "../../shared/agent-credentials"
 // Grok's CLI, as T3 Code runs it: your own `grok`, signed in with `grok login` (SuperGrok, or an
 // xAI key in XAI_API_KEY), each session one `grok agent stdio` speaking ACP.
@@ -13,13 +14,13 @@ import { fingerprint, xaiIdentity, type LimitsSource } from "../../usage/limits"
 import { AcpThread, questionFields } from "../acp"
 import { withOwnFolders } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { plain, run, which } from "../proc"
+import { plain, run } from "../proc"
+import { grokProgram } from "../../shared/agent-programs"
 import { commandSignIn } from "../signin"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { grokSubagents, subagentsFor } from "../subagents"
 import type { Model, Session } from "../wire"
 
-const places = [join(homedir(), ".grok/bin"), join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
 
 /**
  * Run whole in the box's sandbox (acp.ts `whole`), Grok writes of its home (GROK_HOME) only its
@@ -110,7 +111,13 @@ export class GrokAgent implements Agent {
   }
 
   executable(): string | undefined {
-    return which("grok", places)
+    return grokProgram()
+  }
+
+  /** An added account signs out as it goes: Grok forgets the sign-in in its folder, before the folder goes. */
+  async removeAccount() {
+    const executable = this.executable()
+    if (executable && this.instance.home) await run(executable, ["logout"], { timeout: 20_000, env: this.env(), cwd: this.context.temporary }).catch(() => {})
   }
 
   /** Its own installer puts it in `~/.grok`: `grok update`. */
@@ -274,7 +281,16 @@ export class GrokAgent implements Agent {
     const agent = this
     return new AcpThread(
       {
+        launchOptions(model) {
+          const choice = compactionChoice()
+          const saved = state.grokContextWindow as { model: string; size: number } | undefined
+          const window = agent.windows.get(model) ?? (saved?.model === model ? saved.size : undefined)
+          if (!window || choice === "never") return
+          const percent = Math.min(85, Math.max(1, Math.floor(Number(choice) * 100 / window)))
+          return { GROK_AUTO_COMPACT_THRESHOLD_PERCENT: String(percent) }
+        },
         noteContext(model, size) {
+          state.grokContextWindow = { model, size }
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
         // Run under a holder on a box, its turns taken up by a bridge started after a crash (spike

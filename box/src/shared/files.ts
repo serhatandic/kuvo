@@ -87,10 +87,28 @@ export async function writePrivateLater(file: string, text: string | Uint8Array,
 export const writeDurablePrivateLater = (file: string, text: string | Uint8Array, through = path.dirname(file)): Promise<void> =>
   writePrivateLater(file, text, through);
 
+async function syncPathLater(file: string): Promise<void> {
+  const handle = await fs.promises.open(file, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+/** Seal an imported tree asynchronously from the leaves up. */
+export async function syncDurableTreeLater(folder: string, through = path.dirname(folder)): Promise<void> {
+  async function syncEntry(entry: string): Promise<void> {
+    const stat = await fs.promises.lstat(entry);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      for (const child of await fs.promises.readdir(entry)) await syncEntry(path.join(entry, child));
+    } else if (!stat.isFile()) throw new Error("An imported entry is not a file or folder");
+    await syncPathLater(entry);
+  }
+  await syncEntry(folder);
+  await syncDurableFileLater(path.dirname(folder), through);
+}
+
 export async function syncDurableFileLater(file: string, through = path.dirname(file)): Promise<void> {
   for (let entry = file; ; entry = path.dirname(entry)) {
-    const handle = await fs.promises.open(entry, "r");
-    try { await handle.sync(); } finally { await handle.close(); }
+    await syncPathLater(entry);
     if (entry === through) return;
     if (path.dirname(entry) === entry) throw new Error("The sync must stop at a parent of the file");
   }

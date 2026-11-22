@@ -104,6 +104,32 @@ fn model_picker_provider(workspace: &mut Workspace, window: &mut Window, cx: &mu
     }
 }
 
+/// Your accounts with Claude Code (#833): its tab with one account, with two (the switch), with ten
+/// (the switch's list open), and a search across them.
+/// (From a new conversation's composer, which offers the coding agents' models.)
+fn landing_model_picker(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> Option<gpui::Entity<kuvo::model_picker::ModelPicker>> {
+    let composer = workspace.landing().clone();
+    composer.update(cx, |composer, cx| composer.open_model_picker(window, cx))
+}
+fn model_picker_accounts(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = landing_model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| picker.show_rail("claude", cx));
+    }
+}
+fn model_picker_accounts_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = landing_model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| {
+            picker.show_rail("claude", cx);
+            picker.open_accounts(window, cx);
+        });
+    }
+}
+fn model_picker_accounts_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = landing_model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| picker.type_search("opus 5.5", cx));
+    }
+}
+
 fn bot_wake_list(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bot_chat(workspace, window, cx);
     let chat = workspace.bot_chat().unwrap().1.clone();
@@ -123,6 +149,10 @@ const SCREENS: &[Screen] = &[
     // and the composer's row with a message written (the paperclip, the picks and Send on one line).
     Screen { slug: "model-picker", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_open) },
     Screen { slug: "model-picker-search", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_search) },
+    Screen { slug: "model-picker-accounts-one", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts) },
+    Screen { slug: "model-picker-accounts-two", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts) },
+    Screen { slug: "model-picker-accounts-ten-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_open) },
+    Screen { slug: "model-picker-accounts-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_search) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -181,6 +211,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "landing-sky-dawn", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dawn) },
+    Screen { slug: "landing-sky-day", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_day) },
+    Screen { slug: "landing-sky-dusk", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dusk) },
+    Screen { slug: "landing-sky-night", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_night) },
     Screen { slug: "asking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // What the box asks itself: a command outside the sandbox, an item from the vault.
     Screen { slug: "asking-sandbox", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -679,6 +713,23 @@ fn full_access_question(workspace: &mut Workspace, _window: &mut Window, cx: &mu
     }
 }
 /// A new session in the website project, set to start in a worktree of its own.
+/// The landing's sky at a fixed hour, so each time of day can be seen (every other screen shows noon).
+fn sky_dawn(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(6.5, cx);
+}
+
+fn sky_day(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(12., cx);
+}
+
+fn sky_dusk(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(19., cx);
+}
+
+fn sky_night(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.set_sky_hour(23., cx);
+}
+
 fn landing_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.new_session(None, window, cx);
     workspace.pick_place(kuvo_box::models::StartIn::Project("/Users/sam/Projects/website".into()), cx);
@@ -2342,6 +2393,7 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
                 let workspace = root.downcast::<Workspace>().expect("the workspace");
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_now(NOW, cx);
+                    workspace.set_sky_hour(12., cx);
                     if matches!(screen.slug, "first-run-starting" | "first-run-unreachable") {
                         workspace.await_box(cx);
                         if screen.slug == "first-run-unreachable" {
@@ -2501,6 +2553,15 @@ fn main() -> anyhow::Result<()> {
                 // A star, and more providers' models, as a box with several accounts has.
                 stand_in.set_starred(vec![("openai", "gpt-6")]);
                 stand_in.more_models(24);
+            }
+            match screen.slug {
+                "model-picker-accounts-one" => stand_in.claude_accounts(&[("sam@example.com", Some("Max"))]),
+                "model-picker-accounts-two" | "model-picker-accounts-search" => stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]),
+                "model-picker-accounts-ten-open" => stand_in.claude_accounts(&[
+                    ("sam@example.com", Some("Max")), ("Work", Some("Team")), ("Personal", Some("Pro")), ("Client A", Some("Team")), ("Client B", Some("Pro")),
+                    ("design@example.com", Some("Max")), ("ops@example.com", Some("Pro")), ("Research", Some("Max")), ("Side project", Some("Pro")), ("qa@example.com", Some("Pro")),
+                ]),
+                _ => {}
             }
             if screen.slug.starts_with("settings-mcp") {
                 stand_in.show_mcp();
@@ -3022,6 +3083,7 @@ fn main() -> anyhow::Result<()> {
                 let workspace = root.downcast::<Workspace>().expect("the workspace");
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_now(NOW, cx);
+                    workspace.set_sky_hour(12., cx);
                     workspace.read_at_once(cx);
                     if let Some(session) = screen.session {
                         workspace.open_read_at_once(session, window, cx);

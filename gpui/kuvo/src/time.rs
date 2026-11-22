@@ -225,6 +225,12 @@ pub fn clock(ms: f64) -> String {
     format!("{:02}:{:02}", of_day / 3600, of_day % 3600 / 60)
 }
 
+/// The hour of day `ms` (since 1970) was on this computer's clock, with its minutes: 14.5 for 14:30.
+pub fn hour_of_day(ms: f64) -> f32 {
+    let seconds = (ms / 1000.) as i64;
+    (seconds + crate::pasted::utc_offset(seconds)).rem_euclid(86_400) as f32 / 3600.
+}
+
 /// When `ms` was, as a message's card says it at `now`: the time of day on the same day, with its
 /// day before ("14 Nov, 12:24"), and its year in another year.
 pub fn when(ms: f64, now: f64) -> String {

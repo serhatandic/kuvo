@@ -5,6 +5,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Accounts, providerID } from "../../src/agents/accounts"
 import { handler } from "../../src/agents/server"
+import { Roster } from "../../src/agents/roster"
+import { agentPrograms } from "../usage/support/agent-programs"
 
 test("POST accounts with provider creates an isolated account and leaves the first folder untouched", async () => {
   const root = mkdtempSync(join(tmpdir(), "kuvo-add-account-"))
@@ -78,6 +80,33 @@ test("the account index accepts legacy arrays and guards account changes against
     expect(() => accounts.remove("codex-cli@saved")).toThrow("Managed accounts format version 2 is unsupported")
     expect(readFileSync(file, "utf8")).toBe(future)
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.each(["codex", "grok"] as const)("removing an added %s account signs it out through the agent, in that account's own folder, and its folder goes", async kind => {
+  const root = mkdtempSync(join(tmpdir(), "kuvo-remove-account-"))
+  const programs = agentPrograms(join(root, "programs"))
+  const path = process.env.PATH
+  // The agent's own program, as the bridge finds it: first on the PATH.
+  process.env.PATH = `${join(root, "programs")}:${path}`
+  try {
+    const accounts = new Accounts(join(root, "agents"))
+    const record = accounts.add(kind, "Work")
+    const folder = accounts.home(record)!
+    writeFileSync(join(folder, "auth.json"), "{}")
+    const roster = new Roster(accounts, { home: join(root, "agents"), temporary: join(root, "temporary") } as any)
+    mkdirSync(join(root, "temporary"), { recursive: true })
+    const answer = handler({ roster, password: "pw", sessions: { forgetProvider() {} } } as any)
+    const response = await answer(new Request(`http://agent/api/kuvo/accounts/${providerID(kind, record.id)}`, { method: "DELETE", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
+    expect(response.status).toBe(200)
+    // Its sign-out, by the agent itself, with that account's folder (where a Keychain or keyring item is tied to it).
+    expect(programs.asked()).toEqual([{ program: kind, home: folder, args: ["logout"] }])
+    expect(existsSync(folder)).toBe(false)
+    expect(accounts.all().some(each => each.id === record.id)).toBe(false)
+    roster.all().forEach(agent => agent.shutdown?.())
+  } finally {
+    process.env.PATH = path
     rmSync(root, { recursive: true, force: true })
   }
 })

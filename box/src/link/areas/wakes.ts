@@ -460,7 +460,7 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     }
     const watch = typeof given.watch === "string" ? watches.find(each => each.letters === given.watch) : undefined;
     if (watch && LETTERS.test(watch.letters)) {
-      fs.rmSync(path.join(folder, "watches", watch.letters), { recursive: true, force: true });
+      await fs.promises.rm(path.join(folder, "watches", watch.letters), { recursive: true, force: true });
       return yield* changed(200, {});
     }
     return yield* json(404, {});

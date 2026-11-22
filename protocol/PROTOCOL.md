@@ -1,18 +1,17 @@
 # Kuvo Link
 
-How Kuvo Code on a phone reaches the agents on a Mac or a machine, from anywhere,
-through a relay that can't read what passes through it.
+The GPUI desktop reaches its local box over loopback HTTP and other boxes over
+paired relay or SSH. Boxes also exchange end-to-end encrypted peer mail. The
+relay forwards ciphertext and keeps setup leases. See [How Kuvo works](../docs/architecture/how-kuvo-works.md).
 
-- **Hosts** serve an engine: the Mac app, and a bridge on each machine (`kuvo-link.js`,
-  run by the engine's own runtime). A host connects out to the relay; it never listens.
-- **The phone** connects out to the relay too, and opens an encrypted session with each
-  host it's paired with.
-- **The relay** matches connections by address and passes bytes along. It keeps no
-  content. It also sends Apple push notifications, whose content it can't read either.
+The box host is TypeScript in `box/src`. `scripts/build-box.sh` writes the
+link to `swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js`. The generated
+asset's path has historical naming. The desktop client is in `gpui/kuvo_box`.
+Shared wire fixtures are under `vectors/`.
 
-The box implements the host in TypeScript (`box/src`), built by `scripts/build-box.sh`
-to `swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js`. The GPUI desktop
-implements the client in `gpui/kuvo_box`. Both use the shared tests under `vectors/`.
+The Swift desktop and iPhone apps are retired. Installed-client compatibility
+keeps their wire fields, signed device records, legacy Mac callbacks and APNs
+support. The names `phone`, `phones` and `host` below also occur on that wire.
 
 ## Keys and addresses
 
@@ -22,8 +21,7 @@ Each device (a phone, a Mac, a machine) has:
 - a **relay secret**, 32 random bytes, which it shows only to the relay.
 
 Its **address** is the first 16 bytes of `SHA-256("kuvo-link address v1" || secret)`. The
-relay checks a connection's secret against the address it claims, so it needs no accounts
-or storage, and only the device itself can receive what's sent to its address.
+relay checks a connection's secret against the address it claims, so address verification needs no account database. Only the device itself can receive what's sent to its address.
 
 In text (links, JSON) keys, secrets, addresses and tokens are base64url without padding.
 
@@ -70,7 +68,7 @@ Computers in an updating fleet continue to exchange messages using their wire ve
 
 ## The relay
 
-One WebSocket per device, binary messages, first byte the kind:
+One WebSocket per device, binary messages, first byte the kind. Opcodes `0x04`–`0x06` are retained APNs compatibility.
 
 | Kind | From | Bytes | Meaning |
 | --- | --- | --- | --- |
@@ -114,8 +112,7 @@ phone unreachable or gone). A host's sessions end with its relay connection, whi
 the phones about. Phones count on this, and don't check a quiet session before sending on it: a frame
 that comes on a session the host doesn't have is answered with a close all the same.
 
-**Deploy order.** The relay that sends `gone` goes out first, before any phone build with this
-KuvoLink ships. Behind a relay from before it, such a phone still works but isn't told: a stream that
+**Historical deployment.** The relay that sends `gone` preceded phone builds that understood it. Behind a relay from before it, such a phone still works but isn't told: a stream that
 only listens doesn't end when its host starts again, and the first request after a host restart fails
 once with "closed" (the host closes the session it doesn't know), the next one opening a new session.
 Older phones keep checking quiet sessions, and skip `gone`.
@@ -139,7 +136,7 @@ seconds whatever it's sending.
 
 The relay counts a device as there while it answers its pings or sends anything: a phone sending a
 picture on a slow connection has its pong behind it, later than the relay's next ping (#144).
-**Deploy order:** that relay goes out with or before the phone build that sends messages again.
+**Historical deployment:** that relay went out with or before the phone build that sends messages again.
 Behind a relay from before it, a big picture on a slow connection is still cut off there, and goes
 again from the start each time, until its two minutes are up.
 
@@ -156,13 +153,13 @@ What one device sends another, inside the relay's `payload`:
 kind(1) session(4) body
 ```
 
-`session` is a random number the phone picks for each session, so frames from an older one
+`session` is a random number the client picks for each session, so frames from an older one
 can't be confused with a newer one.
 
 | Kind | Body |
 | --- | --- |
-| `0x01` | Handshake message 1, phone to host |
-| `0x02` | Handshake message 2, host to phone |
+| `0x01` | Handshake message 1, client to host |
+| `0x02` | Handshake message 2, host to client |
 | `0x03` | A transport message: one encrypted message (below) |
 | `0x04` | Close: no body. Either side stops the session. |
 | `0x05` | Mail: one message, encrypted for a device that may not be connected (`session` is 0) |
@@ -170,13 +167,12 @@ can't be confused with a newer one.
 ## Sessions
 
 Sessions use **Noise_IK_25519_AESGCM_SHA256** ([the Noise protocol](https://noiseprotocol.org/noise.html)),
-with the prologue `kuvo-link v1`. The phone starts, knowing the host's static key from
-pairing; the host learns the phone's from the first message and checks it.
+with the prologue `kuvo-link v1`. The paired client starts with the box's static key. The box checks the client's key in the first message.
 
 The first message's payload is JSON:
 
 ```json
-{"v": 1, "name": "My iPhone", "app": "0.1.0", "pair": "<token>", "client": "desktop"}
+{"v": 1, "name": "My Desktop", "app": "<version>", "client": "desktop"}
 ```
 
 `pair` is there only while pairing. `client` (`clients.kind`) says what the client is: `desktop`
@@ -185,7 +181,7 @@ own ("Paired phones", `kuvo/devices/pair`); left out, or anything else, it's a p
 client is a remote client like a phone for everything it may do (never the app on the box's own
 computer); the one difference is that what it sends a conversation isn't marked as a phone's (no
 `<from-phone>` block, "A message's parts"), so a phone that says `desktop` only loses that note.
-Paired by token, what it said is kept with its pairing. The host answers if the phone's key is one
+Paired by token, what it said is kept with its pairing. The host answers if the client's key is one
 it has paired, or if `pair` is the token it's showing; otherwise it sends a close. Its answer's
 payload:
 
@@ -196,7 +192,7 @@ payload:
 `kind` is `mac` or `machine`. Each side checks `v` and closes the session on a version it
 doesn't know.
 
-If pairing by token is waiting for a standby save, the authenticated second message includes
+For legacy setups, if pairing by token is waiting for a standby-backed save, the authenticated second message includes
 `waiting` and `save`. The box opens no session. The client retries with `save` in the first
 message, using the same static key and addressing the setup's current primary. The signed proof
 binds the operation to the device key and the pairing it created. A committed save opens a
@@ -206,9 +202,9 @@ receipt; a pending, interrupted or no-longer-valid pairing carries `waiting` and
 Transport messages then go both ways, in order (the relay keeps the order of one
 connection). Any message that doesn't decrypt ends the session.
 
-**When a client says a computer isn't connected** (#443, `Reach` in KuvoClient). With the line
-(below, "The line"), its silence alone says so: 30 s without a line or a beat. What follows is for
-a computer with nothing followed on it. A computer under
+**Historical reach behavior** (#443, `Reach` in the retired KuvoClient). With the line (below,
+"The line"), its silence alone says a computer isn't connected: 30 s without a line or a beat.
+What follows is for a computer with nothing followed on it. A computer under
 a heavy load answers late and drops its link now and then, and is still there. Its event feed
 down, a client says nothing for 10 s (at most that what's on screen is being read again); then it
 checks (`kuvo/info`, or the engine's `api/info` through a tunnel) and only a check with no answer
@@ -247,7 +243,7 @@ their agents and letters ("Peers").
 
 ### Documents
 
-What your computers share is four kinds of document: which computers a primary enrolled (`peers`), the phones
+The signed document exchange includes four original document kinds: which computers a primary enrolled (`peers`), the phones
 each box pairs and removes (`phones`), each box's view of your personalities
 (`personalities`), and changes to setup authority (`leadership`). Each origin signs its own; any box passes a copy on; no clock decides anything.
 
@@ -279,7 +275,7 @@ each box pairs and removes (`phones`), each box's view of your personalities
   leads ("Your setup"). Each box leaves itself out when it builds its list of peers. `left` names
   the computers the primary removed. A box that finds itself there and no longer among `boxes`
   drops that enroller, as `leave` does. The primary mails the document to the member it removes.
-- **This Mac's box** keeps the Mac's side (bridge 0.9.62): it signs the Mac's documents with the
+- **Legacy Mac front** keeps the app-owned Mac’s side (bridge 0.9.62): it signs the Mac's documents with the
   Mac's signing key (from the app, in memory only), takes its machines' and passes them on, and
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
@@ -365,93 +361,26 @@ once both computers are connected. On the wire, `primary` means the main compute
   The primary returns `202 {primary, epoch}` after committing the change. Delivery may still be in
   progress. A request for the primary already in effect returns `200` with that key and epoch.
   A conflicting epoch returns `409 {message}`. Clients follow `kuvo/setup/events`.
-- **Leadership record.** The outgoing primary signs a `leadership` document with `n` equal to
-  the next setup epoch. The body names `setup: {id, epoch, primary}` and `previous`, and carries
-  `boxes`, `moved`, `left`, `devices` (grants and removals), and `numbers`
-  (the allocation counter and grant receipts). It saves the certificate and its demotion in a
-  single durable `run/link.json` replacement before sending anything. The destination installs
-  its primary role from that certificate and signs subsequent membership and device lists with
-  its own key. After the transfer, only the primary publishes setup device grants and removals.
-  A receiver takes only the next epoch of its setup. The preceding primary signs when the
-  epoch has no standby. With a standby, planned transitions normally use its signing key.
-  Ranked takeovers and replacing an unreachable standby use the rules below. For a planned transition the primary durably fences itself and saves its signed
-  proposal in `leadershipPending` before sending. The standby signs the same body with the
-  primary's detached signature in `approval`. It commits once before it replies. An interrupted
-  primary resends the proposal and installs the same certificate when it hears it. The
-  certificate names the next standby with `standby` (a static key in `boxes`) when one is
-  appointed. The new primary's peers document repeats that key and `numberCeiling` for new
-  SSH enrollments. A member that already follows the setup changes authority only through
-  the certificate chain.
-  At that epoch, only the certified primary's membership document counts. Members keep the
-  verified certificates by epoch and trade them in the regular document exchange, oldest first,
-  so a member can cross multiple epochs even with the old primary offline. Folder layout 2
-  reserves this state while adopting existing link state in place.
-- **Standby selection** (`setup.takeover`). Once every enrolled member has advertised support,
-  the primary chooses one reachable member. A member advertises its preference based on whether
-  it runs Linux, which is treated as more likely to be always on. Set `alwaysOn` to true or false
-  in the box's `setup-takeover.json` to override the platform default. Equal preferences sort by
-  static key during bootstrap. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box.
-  In a ranked setup this pins the chosen computer first in signed membership, until the user
-  changes the choice or removes the computer. On a first assignment, the choice is stored
-  with the signed assignment and the pin is saved after the standby accepts and grants a
-  lease. Automatic replacement and retirement preserve any pin for a remaining computer.
-  The primary checks the target answers at this
-  epoch. A reachable standby normally approves replacement, even
-  when membership removal initiated the change. A setup with no reachable eligible member
-  waits to appoint a standby. A missing standby can still hold its delegation and cannot be
-  replaced by the primary alone.
-- **Successor rank.** Layout 14 records `successorOrder` in signed, accepted setup
-  membership. The list contains each enrolled computer's static key once. Linux and
-  configured always-on computers are preferred at bootstrap, followed by other computers
-  enrolled as machines. A longer recent stretch of observed availability moves a computer
-  up among unpinned computers. Tied observations keep the accepted order. Rank refreshes
-  are ordinary standby-acknowledged membership revisions and keep the epoch. The first
-  available computer in the accepted order becomes standby through a signed handover. A
-  fallback standby leaves the pin in place. A signed epoch enables the successor
-  chain once all current computers advertise `setup.successor-chain`. Older setups
-  keep their existing standby delegation until they can make that transition.
-- **Primary lease and saves.** The current standby sends an authenticated challenge every
-  ten seconds. The primary answers with a fresh nonce and the standby returns a lease
-  response for that exchange. The primary measures sixty seconds from its answer, using
-  wall time and uptime. The lease in `run/setup-lease.json` is bound to the setup, epoch,
-  standby and, in a ranked chain, the active certificate. An expired lease, or an outstanding leadership proposal, fences shared setup
-  changes. Everyday local work continues using the grants it already holds. A shared save
-  is acknowledged by the current standby. If it stays unreachable, the primary can
-  propose the first available successor as replacement. That successor durably accepts
-  the checkpoint and new epoch before the primary can renew its lease and save through it.
-  When the approver of a pending leadership proposal remains unreachable, the primary can
-  supersede that proposal with a standby assignment in the same proposed epoch, including
-  when the ranked chain has yet to be accepted. A returning candidate adopts a newer
-  first assignment signed by the same primary for the same epoch and predecessor.
-  The primary stays
-  fenced until the replacement accepts and grants a lease. A promoted primary in a
-  delegated setup waits for a standby lease before handing leadership to another computer.
-- **Takeover.** A ranked successor probes the primary and every higher-ranked successor
-  in the signed order, including any that outrank the assigned standby. After missing
-  the primary for about three minutes
-  (the sixty-second lease plus a two-minute margin), the highest-ranked reachable
-  successor signs the next epoch using its accepted checkpoint. Lower ranks give earlier
-  ranks time to answer before taking over. Restarting or losing the relay resets the
-  observation period. Concurrent probes share one response window, independent of rank depth.
-  Retained `delayMinutes` settings are ignored. There is no approval prompt.
-- **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
-  On reconnect the higher verified epoch wins. At equal epochs, the rank in the last common
-  epoch checkpoint decides between different primaries, with stable computer keys settling any
-  remaining ties. For the same primary at the same epoch, only a newer signed first-standby
-  assignment can replace the accepted certificate.
-  The loser installs the winning checkpoint and steps down. Shared setup edits that only
-  existed on the losing branch are discarded. Computer and device removals and credential
-  revocations from either verified branch are carried forward as a union. Local work and
-  its files stay with their owners. A successor may also be missing a save that only the
-  failed primary and standby ever stored.
-- **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
-  Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
-  through the standby before issuing it. Takeover retains those grants and skips the outgoing
-  epoch's remaining reservation. Existing local items and leased blocks remain usable.
-- **Reachability during leadership changes.** A restarted or reconnected member catches up
-  with certificates in order. A pending proposal can finish after the initiating request
-  times out. The existing primary may not be unlinked. The removal route and link CLI answer
-  “Choose another main computer first.”
+- **Lease authority.** New setups start with a signed epoch-1 certificate and checkpoint.
+  The main renews a 60-second relay lease every 10 seconds. Upon expiry, an enrolled
+  always-on computer can claim immediately (other computers wait one more minute,
+  and the relay observes its restart grace). The new holder signs the next epoch's
+  certificate and starts with the accepted setup snapshot. The former main must
+  have a fresh lease for setup-wide writes. A sole computer can save while offline.
+- **Relay contract.** `POST /setup-lease` accepts `{data, signature}`, base64url.
+  The Ed25519 signature covers `"kuvo-link setup lease v1\0"` and the JSON bytes.
+  The request includes `{action, setup, computer, sign, at}`. The write actions
+  `claim`, `renew` and `transfer` carry `term` and the number high-water mark
+  `high`. Bootstrap and holder writes carry a roster of computer keys to
+  signing keys. A transfer names `target`. The relay checks the signature and
+  enrolled key, and returns `{lease, remaining, startsIn, takeoverIn, relayHost}`
+  when it has a record. The lease names `holder`, `sign`, `term`, `expires`
+  and `high`. A transfer starts at the previous lease's expiry to fence the
+  old holder's cached grant. See `relay/src/leases.ts` and
+  `box/src/link/setup/{relay-lease,lease,takeover}.ts`.
+- **Unlinking the main.** With other members, the removal path arranges a handover
+  to an eligible replacement before it unlinks. If no replacement can accept,
+  the box reports the refusal. See “Computers” and `setup/removal*.ts`.
 - **Release choice after handover.** Members take newer fleet releases from the certified
   primary. Same-version repair can still use copies held by peers. File permissions and OS
   approvals are enforced where the files and processes live.
@@ -465,7 +394,7 @@ once both computers are connected. On the wire, `primary` means the main compute
   `startsFromOthers`, `on` or `off`), or null, and `default`, what it is then: off on the main
   computer (and on a Mac in no setup), on everywhere else, so it follows the role. `heldBy` is an empty list.
   `welcomed` (`setup.welcomed`, #733): whether you've had Kuvo Code's first run with this box (each
-  box its own: a client asks the box it opens with, its own computer's), kept on it
+  box its own: the desktop uses its own welcome flag first and can read this for compatibility), kept on it
   (`run/welcomed.json`), so every client of it agrees and one installed again doesn't
   welcome you again. **`POST kuvo/setup/welcomed {"welcomed": true | false}`** sets it (`false`:
   the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
@@ -555,11 +484,16 @@ once both computers are connected. On the wire, `primary` means the main compute
   for the client's own SSH access. Each client keeps Auto, SSH or Relay per computer key and
   can also keep its own SSH alias for that key. Auto checks SSH and otherwise uses the relay.
   An explicit route stays on that route. A local box is reached directly. Primary and member
-  roles have no bearing on this choice. A lost SSH reply to a write is reported back to the
-  caller so the client does not send the same write again over the relay.
+  roles have no bearing on this choice. A lost SSH reply to a write returns to the caller. Retryable operations reuse their original identity.
 
   A client over SSH runs `~/.kuvo-code/bin/kuvo-start route-to` (or `route`), its request on
-  standard input: the keeper runs it on the engine it runs itself, never one the client picks.
+  standard input. The keeper selects its own engine. GPUI retains an engine-picking
+  fallback for older installs without the keeper launcher. A resident release passes
+  both verbs over an owner-only socket to its shared dispatcher (`server/resident.ts`,
+  `server/ssh-pipe.ts`). The selection survives a restart so a missing socket cannot
+  fall back to one-shot dispatch. `route` keeps OS-account authority and its allowlist.
+  `route-to` proves the addressed box and paired device in the resident process.
+  Addressed SSH streams response bytes. It has no terminal socket upgrade.
 
   On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
   input. `computer` is the expected box public key and `hello` is the first Noise IK message
@@ -592,13 +526,12 @@ once both computers are connected. On the wire, `primary` means the main compute
   Retry with the same code, or send the pending operation as `resume` when requesting a new code
   from the same retained setup.
 
-  Before sending the signed export, the joining primary fences its setup and saves its
-  departure with its standby when it has one. The export names its roster, device grants and
+  Before sending the signed export, the joining primary fences its setup and records its departure. Legacy layouts can carry a pending predecessor receipt. The export names its roster, device grants and
   revocations, portable preferences and the Work Queue high-water mark. The destination saves
   membership, the companion values and the number reservation in one accepted operation.
   The signed acceptance travels to the joining members when they are online. It gives them the
   retained setup's trust root. They stop accepting mail from former enrollers outside that
-  setup. The retained setup ranks its new computers by the usual rule.
+  setup.
 
   The retained setup keeps its Work Queue numbers. The joining items take a newly reserved
   block from its primary and keep IDs and setup-labelled number aliases. The box rewrites
@@ -698,6 +631,113 @@ once both computers are connected. On the wire, `primary` means the main compute
     start so, to try again, rather than waiting on it.
 
 ### Saving setup-wide changes
+
+The lease-holding main commits setup membership, device grants, settings,
+personalities and labels. It signs and publishes a snapshot of the accepted
+values. Members verify that snapshot and retain it for the next main. A member
+forwards setup-wide changes to the main. An unavailable or stale authority
+can keep an operation waiting or refuse it without applying an unverified
+change. The sole-computer exception is described under “Your setup”.
+See `box/src/link/setup/shared.ts` and `box/src/shared/data-declarations.ts`.
+
+A deferred request keeps its operation ID and original authority. Retrying a
+receipt reads or settles that operation and always checks current access.
+Revocation fences further action by the old pairing. See “Authority carried
+with deferred work” and “Paired phones”.
+
+#### Legacy setup authority and receipts
+
+The following contracts describe unconverted layouts and retained proof
+readers. Current setups use the relay lease, main-only saves and the relay's
+number floor.
+
+- **Leadership record.** The outgoing primary signs a `leadership` document with `n` equal to
+  the next setup epoch. The body names `setup: {id, epoch, primary}` and `previous`, and carries
+  `boxes`, `moved`, `left`, `devices` (grants and removals), and `numbers`
+  (the allocation counter and grant receipts). It saves the certificate and its demotion in a
+  single durable `run/link.json` replacement before sending anything. The destination installs
+  its primary role from that certificate and signs subsequent membership and device lists with
+  its own key. After the transfer, only the primary publishes setup device grants and removals.
+  A receiver takes only the next epoch of its setup. The preceding primary signs when the
+  epoch has no standby. With a standby, planned transitions normally use its signing key.
+  Ranked takeovers and replacing an unreachable standby use the rules below. For a planned transition the primary durably fences itself and saves its signed
+  proposal in `leadershipPending` before sending. The standby signs the same body with the
+  primary's detached signature in `approval`. It commits once before it replies. An interrupted
+  primary resends the proposal and installs the same certificate when it hears it. The
+  certificate names the next standby with `standby` (a static key in `boxes`) when one is
+  appointed. The new primary's peers document repeats that key and `numberCeiling` for new
+  SSH enrollments. A member that already follows the setup changes authority only through
+  the certificate chain.
+  At that epoch, only the certified primary's membership document counts. Members keep the
+  verified certificates by epoch and trade them in the regular document exchange, oldest first,
+  so a member can cross multiple epochs even with the old primary offline. Folder layout 2
+  reserves this state while adopting existing link state in place.
+- **Standby selection** (`setup.takeover`). Once every enrolled member has advertised support,
+  the primary chooses one reachable member. A member advertises its preference based on whether
+  it runs Linux, which is treated as more likely to be always on. Set `alwaysOn` to true or false
+  in the box's `setup-takeover.json` to override the platform default. Equal preferences sort by
+  static key during bootstrap. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box.
+  In a ranked setup this pins the chosen computer first in signed membership, until the user
+  changes the choice or removes the computer. On a first assignment, the choice is stored
+  with the signed assignment and the pin is saved after the standby accepts and grants a
+  lease. Automatic replacement and retirement preserve any pin for a remaining computer.
+  The primary checks the target answers at this
+  epoch. A reachable standby normally approves replacement, even
+  when membership removal initiated the change. A setup with no reachable eligible member
+  waits to appoint a standby. A missing standby can still hold its delegation and cannot be
+  replaced by the primary alone.
+- **Successor rank.** Layout 14 records `successorOrder` in signed, accepted setup
+  membership. The list contains each enrolled computer's static key once. Linux and
+  configured always-on computers are preferred at bootstrap, followed by other computers
+  enrolled as machines. A longer recent stretch of observed availability moves a computer
+  up among unpinned computers. Tied observations keep the accepted order. Rank refreshes
+  are ordinary standby-acknowledged membership revisions and keep the epoch. The first
+  available computer in the accepted order becomes standby through a signed handover. A
+  fallback standby leaves the pin in place. A signed epoch enables the successor
+  chain once all current computers advertise `setup.successor-chain`. Older setups
+  keep their existing standby delegation until they can make that transition.
+- **Primary lease and saves.** The current standby sends an authenticated challenge every
+  ten seconds. The primary answers with a fresh nonce and the standby returns a lease
+  response for that exchange. The primary measures sixty seconds from its answer, using
+  wall time and uptime. The lease in `run/setup-lease.json` is bound to the setup, epoch,
+  standby and, in a ranked chain, the active certificate. An expired lease, or an outstanding leadership proposal, fences shared setup
+  changes. Everyday local work continues using the grants it already holds. A shared save
+  is acknowledged by the current standby. If it stays unreachable, the primary can
+  propose the first available successor as replacement. That successor durably accepts
+  the checkpoint and new epoch before the primary can renew its lease and save through it.
+  When the approver of a pending leadership proposal remains unreachable, the primary can
+  supersede that proposal with a standby assignment in the same proposed epoch, including
+  when the ranked chain has yet to be accepted. A returning candidate adopts a newer
+  first assignment signed by the same primary for the same epoch and predecessor.
+  The primary stays
+  fenced until the replacement accepts and grants a lease. A promoted primary in a
+  delegated setup waits for a standby lease before handing leadership to another computer.
+- **Takeover.** A ranked successor probes the primary and every higher-ranked successor
+  in the signed order, including any that outrank the assigned standby. After missing
+  the primary for about three minutes
+  (the sixty-second lease plus a two-minute margin), the highest-ranked reachable
+  successor signs the next epoch using its accepted checkpoint. Lower ranks give earlier
+  ranks time to answer before taking over. Restarting or losing the relay resets the
+  observation period. Concurrent probes share one response window, independent of rank depth.
+  Retained `delayMinutes` settings are ignored. There is no approval prompt.
+- **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
+  On reconnect the higher verified epoch wins. At equal epochs, the rank in the last common
+  epoch checkpoint decides between different primaries, with stable computer keys settling any
+  remaining ties. For the same primary at the same epoch, only a newer signed first-standby
+  assignment can replace the accepted certificate.
+  The loser installs the winning checkpoint and steps down. Shared setup edits that only
+  existed on the losing branch are discarded. Computer and device removals and credential
+  revocations from either verified branch are carried forward as a union. Local work and
+  its files stay with their owners. A successor may also be missing a save that only the
+  failed primary and standby ever stored.
+- **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
+  Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
+  through the standby before issuing it. Takeover retains those grants and skips the outgoing
+  epoch's remaining reservation. Existing local items and leased blocks remain usable.
+- **Legacy reachability during leadership changes.** A restarted or reconnected member catches up
+  with certificates in order. A pending proposal can finish after the initiating request
+  times out. The existing primary may not be unlinked. The removal route and link CLI answer
+  “Choose another main computer first.”
 
 A setup that delegates to a standby advertises `setup.shared-saves`. Its primary
 stages edits for primary-owned data kinds from the Box data declarations. It keeps
@@ -848,7 +888,7 @@ these envelopes even if their previous capabilities are cached. The owner verifi
 computer, the current owner and the submitting grant before new work, including after grant
 refresh on a member's relay reconnect. A durable owner outcome can still be replayed after
 revocation. An unaccepted operation cannot run under a revoked grant. Accepted setup proposals
-still follow the standby acknowledgement and epoch rules. Grant visibility follows the setup's
+follow the accepted setup epoch and authority. Pending predecessor receipts retain their original proof rules. Grant visibility follows the setup's
 existing partition and authority rules.
 
 Unattributed old message and edit envelopes can recover an existing outcome but cannot authorize a
@@ -1597,8 +1637,7 @@ browser's tools (`browser_…`), which work in a client's own browser, aren't th
     takes that away again, branch and all, should the session not be made (also where the client
     goes away meanwhile). Asked for `autopilot` but its agent couldn't be told how to work on it,
     the session goes again: 502, so it never starts asking you instead. With `wait`, or from a conversation, a
-    task is still needed (400). A box from before is held by the update gate, which requires
-    `sessions.start.empty` ("The update gate"): no client starts a session there itself.
+    task is still needed (400). Clients use this form when the box advertises `sessions.start.empty`.
   - Either way its project's other folders (those of the project whose folder it's in, or a
     worktree of; none in one of those other folders) are allowed to it and named in its instructions, one in
     a worktree is told so, one filed under another folder than its own (a worktree, a project's
@@ -1791,7 +1830,7 @@ the same for every client and with none connected, and keeps them in `run/queues
   through when it stopped is settled then, not left unknown: answered as sent where it reached its
   conversation (its inbox, its messages, or what waits on the box), else sent now; what was typed
   for the box (`/`, `!`) stays unknown, for you to check.
-- A box without `queue` in its features is older than the update gate lets through: held until
+- A legacy box without `queue` cannot serve this route. Older clients held it until
   it's up to date, never carried by a client.
 
 ### A conversation's asks
@@ -2032,14 +2071,21 @@ the branch, the model, effort and account, and the pull request with its checks 
 - What a client draws from it (which mark, which lines on the card) is the clients' to decide
   alike; a box without `sessions.glance` gives no marks beyond the worktree's branch, as before.
 
+### Session context
+
+`GET api/session/<id>` and `GET kuvo/agents/api/session/<id>` can include
+`data.context: {used, window?}`, in tokens. `used` is the last occupancy reported by the agent
+or measured from its latest model request, with cached input included. `window` is the model's
+reported context capacity when known. The field can be absent before a measurement or after a
+summary without a new measurement. Cursor supplies aggregate billing usage and has no measurement
+for this field. Session `tokens` still describes usage across the conversation.
+
 ### Session lists
 
 What each session is, and where every client's lists show it (`sessions.list`): the box decides it
 from its engine's and coding agents' sessions, so a client draws its sidebar from facts and works
-nothing out. A client needs a box with `sessions.list`: the app brings a box up to date before it
-uses it ("The update gate"), so no client keeps an older way; a box that hasn't the feature is held
-by the gate ("Updating…"), and one that answers `503` leaves a client's lists waiting ("Loading
-sessions").
+nothing out. The route requires `sessions.list`. A box that reports `held` shows
+its update view. A temporary `503` leaves the list waiting.
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
   projects: {<folder>: {name?, updated?, asking, working, shown?, total?, more?}}, projectOrder?, startProject?, needsYou: [{session, asks}],
@@ -2188,8 +2234,7 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
     (`agents.computer`, "Peers"); left out for one that hasn't said;
   - `features?` (`computers.facts`): what its box answers, as its `kuvo/info` says (this box's
-    own) or as it said with its agents: whole, so a client applies its update gate to it ("The
-    update gate") and calls it older where a name it needs is missing. Left out for one that hasn't
+    own) or as it said with its agents: as advertised. The box supplies the row’s compatibility projection ("The update gate"). Left out for one that hasn't
     said, and one whose list is longer than peers keep
     (300 names, "Peers"): it can't be said what's missing then, and a client doesn't call it older;
   - `via`: `here` for the box that answers, or `relay` for a peer;
@@ -2289,10 +2334,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     `POST kuvo/computers/<key>/unlink-and-wipe` also schedules their deletion with Kuvo Code.
     Both take an optional client-generated `operation` (16 random bytes in base64url) and return
     the accepted membership receipt plus `removal: {operation, state, accessRemoved}`. The
-    same operation or the original receipt in `save` returns the same current removal result. A standby-backed save can reply 202 while
-    waiting for acceptance. The primary commits the unlink without contacting the target and
-    publishes the updated roster and device grants. A primary with other computers must hand
-    over first. Unlinking the only computer wipes it, leaving no setup. On layout 21 and later,
+    same operation or the original receipt in `save` returns the same current removal result. A legacy standby-backed receipt can still be pending (202). The primary commits the unlink without contacting the target and
+    publishes the updated roster and device grants. If the target is the main and other members remain, the box arranges an eligible replacement before committing. Unlinking the only computer wipes it, leaving no setup. On layout 21 and later,
     an accepted removal of the last computer in a standalone layout can include
     `offer: "reinstall-local"` while the wipe is pending. The app-owned Mac layout offers
     reinstall through installer status once its last-computer wipe has completed. An ordinary
@@ -2853,8 +2896,7 @@ start on a model by the same rule.
   on one of its own side's in place (`api/session/<id>/model` there), and goes to another side's by
   `kuvo/sessions/<id>/agents`. `efforts`: its efforts (variants) as its side lists them, none for
   one that has none. `aliases`: other ids a conversation may name it by (Claude Code's `default`,
-  the model it stands for now). A box says these with `models.offered.sides`, which the update gate
-  requires. `free: true` (`models.offered.free`, #733): it needs no account, so a client can say
+  the model it stands for now). A box says these with `models.offered.sides`. `free: true` (`models.offered.free`, #733): it needs no account, so a client can say
   "free models" without knowing the engine's providers: OpenCode Zen's that cost nothing by its
   prices, which run signed out. Never a coding agent's, one that costs nothing only with its
   account (Copilot's included models), nor a provider of your own (one listing no prices reads as
@@ -2863,6 +2905,14 @@ start on a model by the same rule.
   come, named as its side names its account (`label`: the account's own, a coding agent's second
   sign-in, "Work"); Custom Auto's lists as "Custom Auto"; one its side doesn't name, by its id. A
   picker names where each model is from by them, and draws the providers' marks by `id`.
+  A coding agent's says which of your accounts with it it is (`account`, `models.offered.accounts`):
+  `{agent, id, agentName, name, plan?}`: its agent (`claude`, `codex`, `cursor`, `grok`,
+  `antigravity`), the account's id with it (`default` for the agent's own sign-in, else the one you
+  added's, as in its provider's `<agent's provider>@<id>`), its agent's name ("Claude Code"), the
+  account's name to show (what you called it, else who's signed in, else its agent's), and its plan
+  as the box's usage reader last read it ("Max"; left out where it hasn't, or doesn't answer at
+  once). A picker shows an agent with two or more accounts as one, with a switch between them by
+  `name` and `plan`; a model picked under one runs on that account (its provider's).
 - `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
   (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
   are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET
@@ -2905,11 +2955,9 @@ start on a model by the same rule.
   Custom Auto lists, as "A session's model" says), and for another model named; after an ask that
   failed, or an answer with a side not known, again in a moment, waiting longer each time. Until it
   has answered, a client offers none of a side not said yet, and a new conversation is on the model
-  named, as it is. Clients draw it from ClientSessions' `OfferedModels`, and start a new conversation
-  on `starting` (the Mac for the model picked last there; the phone, which keeps none, for none
-  named: the default, else the first that runs, a coding agent's too, which its box starts there). A box without `models.offered` is held
-  by the update gate, which requires it ("The update gate"): no client decides which models run
-  itself, and until its box has said, a client offers none and starts on the model named, as above.
+  named, as it is. Clients draw what the box offers. A new conversation uses the selected
+  model, or the box's starting model when the client supplies none. If the
+  box cannot report a side, the client leaves its choices unavailable.
 - An engine provider counts as ready when the engine lists it so (`api/provider`), as it does for a
   key of its own in its settings or environment (`OPENAI_API_KEY` in the computer's environment): its models are
   offered though Accounts shows no sign-in, as they run. Without one, a provider whose plan goes
@@ -3638,7 +3686,7 @@ as it starts, each hour, once `run/attached` is newer than that note, after its 
 bridge didn't start, and before Try Again (`kuvo-start bridge-again`). Its Mac bundles aren't
 repaired: what keeps them running does.
 
-A box's files say which Kuvo Code put them there: `~/.kuvo-code/bin/box-version`. It holds that
+Legacy installers used the following setup and upgrade rules. The running release is still identified by `~/.kuvo-code/bin/box-version`. It holds that
 app's version, written by a Mac after it sets the box up, or by the box when it updates itself.
 - **Older or unmarked box**: a Mac installs its own engine, bridge, helpers, agents bridge and
   keeper, then writes its version. (An older Mac also kept copies of the box's tools in `bin/.own`,
@@ -3688,13 +3736,12 @@ did: the box keeps working as itself ("For released Macs").
   (Kuvo Helper, signed and notarized already, `scripts/build-helper.sh`). The same files pack to
   the same bytes on one system: entries in name order, one fixed time, no owners, gzip without a
   name or time.
-- **From a folder here** (`box.update`): Kuvo Code carries its version's release
+- **From a folder here** (`box.update`, with legacy offer handling below): Kuvo Code carries its version's release
   (`Contents/Resources/box-release`: `boxes.json` and `box-<version>.tar.gz`, as
   `scripts/box-release.sh` made them), for it to offer the box on its computer
-  as it updates. The app offers it to a box on this Mac it's attached to in place that's older than
-  it needs ("The update gate"), and to this Mac's own box in a home of its own each time it opens
-  (with `movesOwnBox`, "The app attached to this Mac's own box"); a Mac's box in the app's folder is
-  refused, as it doesn't update itself (its keeper takes the new app's).
+  as it opens. The local installer can also offer a release. The box uses its
+  update and fleet rules to decide what to prepare. A legacy app-folder box
+  is updated with its own app.
   - `POST kuvo/box/update {from: "<folder>"}`, from Kuvo Code only (this Mac's app, or a Mac's
     `box route`; a phone gets 403): `from` is a full path to a folder with `boxes.json` and the pack
     its `pack.url` ends in, beside it. The box checks it as it would a download: a pinned key's
@@ -3707,7 +3754,7 @@ did: the box keeps working as itself ("For released Macs").
     isn't known, it's updating already, or the release is older than the box, its own version
     with the same files ("with these same files"), or older than what's offered already; 422 when it can't be read, isn't a release, isn't signed with a pinned key, or
     its pack isn't what it says. Other methods answer 405.
-  - It's taken the update way, in a process of its own (`kuvo-link.js update --offered`, as Update
+  - **Legacy in-place installs** take it the old update way, in a process of its own (`kuvo-link.js update --offered`, as Update
     Now's), at the next look (every 20 seconds while one waits, and at each ten-minute round),
     whatever is at work, its age and the hour (the Kuvo Code it came with is there already); one with
     another engine than the one running waits until nothing runs. It waits, untouched, while the box
@@ -3719,7 +3766,7 @@ did: the box keeps working as itself ("For released Macs").
     then a day after each next failure (`offerFailed.tries`); offered again meanwhile, it's there
     already (202).
   - Its engine, when the box doesn't have it yet, still comes from the manifest's URL.
-- **When**: as soon as a newer release reaches it, whichever way: Kuvo Code on this Mac offers the
+- **Legacy check and timing** (in-place `bin`): as soon as a newer release reaches it, whichever way: Kuvo Code on this Mac offers the
   one it carries (above), another of your computers holds it (below), or its own release check
   finds it (`boxes.json` from GitHub, a minute after its link starts and once in every six hours
   after, at any hour, each box at its own point in them, offset by its computer's name and folder
@@ -3732,45 +3779,21 @@ did: the box keeps working as itself ("For released Macs").
   engine's work to finish. The box's Update Now route also waits in that case. It checks for a
   signed release immediately and can retry one that failed before. It returns 409 when an update
   or trial is under way or the box has been stopped.
-- **Fleet versions** (#848 J): the main computer selects the release through the accepted
-  setup save, `setupSecurityAndReleaseChoice`. A selection binds the version to the signed
-  manifest and its pack hash. A standby acknowledges it when the setup requires a standby.
-  Once accepted, members pull that exact signed release from the main computer or standby over
-  the existing peer connection. A member cannot take a different release from its desktop app or
-  select a release from the feed. Older setups that have yet to adopt accepted saves use the
-  compatibility release announcements. Signed builds meant for a single computer cannot be
-  selected for a setup.
-  - **Layout**: the main computer checks the packed link’s layout before publishing a choice.
-    The installer repeats the check before swapping files or calling the folder migration steps,
-    even in setups using compatibility announcements. Every member must be able to read the layout.
-    A new member must support both the accepted release and any release awaiting a standby receipt. Computers advertise
-    their reader ceiling in `computer.layout`. SSH and installer enrollment carry the reader's
-    layout with the claim. A whole-setup merge carries each joining member's announced layout in
-    its signed export. The known beta.35 release supports layout 18.
-    A future higher layout needs a reader-capability rollout before it can become writable.
-    A beta.34 machine with the legacy visit hold needs a bootstrap before the primary moves to J.
-    Use **Set Up Again** from the beta.35 primary over its saved SSH connection when the machine
-    is quiet. On a Mac without that hold, the beta.35 desktop app can offer its local release.
-  - **Transfer attempts**: the relay owner records manifest request, pack download, offer and
-    installation, including interruptions and rejection reasons. Transfer retries back off from
-    30 seconds up to an hour per source. Install failures use the offered update’s one-hour or
-    one-day rest and may be retried early through the request API. A trial must pass the health
-    check before it is considered installed. Installation records the pack’s hash so a rebuild
-    of the same version stays unfinished until that exact pack passes its trial. The main computer
-    keeps checking the feed for a successor while the accepted pack rests. The existing live handover applies.
-  - **Admission**: the box’s own wake, browser and maintenance calls use the internal local
-    request path. A computer below its accepted target returns `503` with
-    `{reason: "computer-update-required", message, current, target}` for normal client work
-    until it catches up. The owner applies the same check to relayed prompts and forwarded Work
-    Queue mutations. A desktop uses the Computers snapshot to hold direct work on an older peer.
-    Update, Computers and active-turn approval routes remain available.
-    The desktop reports its release in the relay hello’s `app` or the local/SSH
-    `x-kuvo-client-version` header. A phone sends `setupProtocol` (currently 1) in its relay
-    hello because the phone has its own marketing version. A signed manifest with
-    `clientProtocol` activates the fleet version gates. An incompatible authenticated client
-    gets `reason: "client-update-required"`, `target`, `title` and the message in `waiting`
-    on the encrypted refusal hello, or HTTP `426` with `message` instead of `waiting`.
-    A pairing token remains available after a version refusal.
+- **Fleet versions** (`update.fleet`): the main holds the newest eligible signed
+  release from the feed, an update request or a member's offer. Members can stage
+  that candidate and report `staged` or `cannot` in peer facts. The main must
+  have its own verified staged release. It switches once all reachable computers
+  are ready or five minutes have passed since the first readiness. Away computers
+  are excluded. Members switch to the main's running release when ready, checking
+  its pack hash when known. A returning computer catches up. See
+  `box/src/link/updates/fleet.ts`.
+  - **Admission**: staging and being behind leave ordinary work available. The
+    box can still refuse an unauthorized request or a protocol or operation it
+    cannot safely handle. Clients display the answer. Older builds may send
+    the predecessor `computer-update-required` or `client-update-required`
+    reason fields, `503` or `426`, or an authenticated refusal hello with
+    `waiting`, `reason`, `title` and `target`. These shapes do not mean that
+    current staging fences normal work.
   - **Request API** (`update.fleet` feature): `GET kuvo/computers` and each NDJSON snapshot on
     `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
     `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
@@ -3781,7 +3804,7 @@ did: the box keeps working as itself ("For released Macs").
       where it can't update for a reason you can fix, `blocked` where it can't until the next
       release, `off`), and on `warning` the few words a narrow place shows (`short`). `canRetry`
       says Try Again is offered on the row. A client draws these and decides neither.
-      `requiresUpdate` is optional and tells clients when to hold new work. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
+      `requiresUpdate` is a predecessor compatibility field. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
       and `failed` (`reason, rolledBackTo, nextRetryAt, failedAt`). Times are Unix milliseconds.
       Today's boxes say `up-to-date`, `ready`, `getting-ready`, `updating` with `stage: "switching"`
@@ -3823,8 +3846,7 @@ did: the box keeps working as itself ("For released Macs").
     `pack.tgz`) from the moment it's checked there: Kuvo Code here offers it (`kuvo/box/update`,
     and the 409 "with these same files" too), the box fetches it (once the pack's SHA-256 is
     checked), or a peer hands it over. It hands it over at once, before or while it takes it itself,
-    and whatever came of that: every computer updates in parallel and judges a release by its own
-    health rule, going back by itself (code only). A newer held release is never replaced by an
+    and whatever came of that: computers can stage in parallel. Each judges activation by its own health rule and can roll back its code. A newer held release is never replaced by an
     older one. A machine set up over SSH holds none until it gets a signed one. Only a release whose
     manifest says `spreads: true` is held to hand over (`scripts/sign-box.mjs` with
     `KUVO_BOX_SPREADS=1`: the release workflow and the private feed): a build signed for trying an
@@ -3845,7 +3867,7 @@ did: the box keeps working as itself ("For released Macs").
     offered to the box itself from there (as above, checked again), and taken; an offer refused for
     an update under way here is offered again at the next look, any other refusal rests that peer
     an hour; the engine comes from the manifest's URL, as for any update. Only the
-    box with the relay connection pulls (its link, `run`); a box that starts again begins anew.
+    box with the relay connection pulls (resident, or legacy `run`); a box that starts again begins anew.
   - **Never** older, its own version, unsigned or signed by a key it doesn't pin, with an engine
     older than the one running (refused before any part is asked), or from outside its peer list.
     A refusal because an update started here is looked at again a minute later.
@@ -4026,6 +4048,9 @@ did: the box keeps working as itself ("For released Macs").
 
 #### A new version while it works
 
+The in-place updater and its worker handover contracts are retained for older installs.
+Current versioned installs switch the checked `bin` link as described above.
+
 A Mac that connects puts its own files on a machine (above) while the box works: its sessions may
 run day and night, so a piece waiting for "nothing runs" might never take them. Each piece takes a
 new version without cutting a turn:
@@ -4160,6 +4185,8 @@ new version without cutting a turn:
 
 #### A new engine
 
+This is the legacy engine-swap path for installs that still use in-place updates.
+
 The engine is unmodified, and its turns live in its process: a turn can't move to another engine,
 and two engines never run on one box's data. So a newer engine takes the old one's place between
 turns, what's sent meanwhile held on the box, never cut:
@@ -4237,78 +4264,30 @@ turns, what's sent meanwhile held on the box, never cut:
 
 ### The update gate
 
-A client never keeps an older box's way of doing something (#679): it brings a box up to date
-before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
-`features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-the names in [`gate-required.txt`](gate-required.txt), one a line in a file of its own so
-branches that each add one merge cleanly. They're KuvoClient's `BoxGate.required`, the same list
-in every client (gpui's `kuvo_box` too), so every client holds the same boxes; a box with
-`messages.send` has what came before it too, `sessions.move`, `projects.folders` and
-`sign-in.methods` among them, and names its chats folder in `kuvo/info`. A client adds a name
-there as it drops its fallback for a box without it, or its words that such a box needs a newer
-Kuvo Code.
+GPUI draws the box-authored `compatibility: {state, missing?}` from `kuvo/info`
+and Computers rows. The box uses [gate-required.txt](gate-required.txt) for the
+expected capabilities. `open` has them, `behind` can be used with available
+features and offers an update, and `held` shows the update in place of the
+areas. A response without a compatibility projection is used as it is.
+A box with no `kuvo/info` may have only an update view. Actual requests go to
+the box. A staged or newer fleet target by itself does not refuse work.
 
-- **The box says it** (the desktop app): every box states how it stands with clients in its
-  `kuvo/info` and on each `kuvo/computers` row, `compatibility: {state, missing?}`, worked out by
-  the box from this list; a client draws it and keeps no reading of its own. `open`: it has
-  everything. `behind` (with `missing`): it's used as it is, each feature drawn where it has it and
-  drawn without where `missing` names it (an older box simply shows no bot states), and its update
-  is offered (the title bar's chip). `held`: a client can't use it until it's updated (the box
-  lacks a name without which a request would mean something else there), and shows its update in
-  place of its areas; a box answering no `kuvo/info` is held too, and one that says no
-  `compatibility` is used as it is. A held box's view always carries what brings it up (Update
-  Now: for this Mac's own, by the release the app carries, else `kuvo/update {now}` on that box,
-  asked first only where its `kuvo/computers` row names what's at work).
-- **Every request goes to the box**: a client refuses nothing on a box's behalf, held or not. The
-  box answers each request, or refuses it in its own words; what a client draws of a held box is
-  only what's shown. One computer's version never hides or holds another (a box from before
-  `computers` lists nothing: the app keeps the list it last had).
-- Plan limits, usage history and usage settings are the coding agents' bridge's
-  (`kuvo/agents/api/kuvo/limits…`, `kuvo/agents/api/kuvo/usage…`; the Mac app asks the bridge
-  itself, at `api/kuvo/…`), so they're asked of a held box too, as all of its bridge is: what
-  they read, and what they change (a reset used, the usage panel's settings), is the bridge's own,
-  and none of it waits on the link's update. A bridge without one answers 404, and the client
-  shows nothing from it ("Plan limits", "Usage history").
-- **A Mac, its machines** (always over SSH): connecting puts this app's files on an older box
-  ("Updates"), so its link answers as this version at once. Since boxes add machines (#636), the box
-  that set a machine up does this itself, whatever is at work there ("Computers", Keeping them
-  up to date), and a client draws its `update` for that machine while the gate holds it (the
-  desktop app in a chip at its title bar's right, as Zed shows its own update), with Update Now where it's offered. The connection's last step reads
-  `kuvo/info`; a machine still older isn't used, and its connection fails, saying why ("Kuvo Code
-  on X couldn't be updated…"), not tried again by itself. Try Again connects again, which brings it
-  up to date. A machine found older later (its list said so) is held the same way.
-- **A Mac, its box attached in place**: offered the release the app carries (`kuvo/box/update
-  {from}`; "offered already" counts, and so does one refused while it updates already). Its
-  connection goes on, its engine used (a session waiting on you there can be answered: the box
-  takes the release at its first quiet moment), its box's routes held ("Updating…"). Every ten
-  seconds it's read again (`kuvo/info`, and `kuvo/update`: `blocked`, `offered`, `offerFailed`)
-  until it has it all: one that's blocked, whose engine is stopped on purpose, or whose take of the
-  release offered failed since it was offered (`offerFailed`, never the release check's `last`) says why in
-  its own words; an offer that's gone with no failure of its own (refused while its own update
-  ran, say) is made again. One that can't say what it has is held and asked again, never let through.
-  A box without `box.update`, a copy of the app without a release, or another refusal fails, saying
-  why.
-- **A Mac, its own box**: while another version's keeper runs it (an older app's, making way for
-  this one's once the work under way ends), whatever that keeper answered, it's held at once, and
-  read at once, again whenever its box answers somewhere new (`serve.json`), and every ten seconds
-  ("Kuvo Code on this Mac finishes updating once the work running now ends"), until it has it all.
-- **A phone** can't update a box: it holds one that's older than it (or answers `kuvo/info` 404 or
-  405), and says it waits for an update ("Waiting for an Update") and who brings it up to date: a
-  Mac's box updates with Kuvo Code on that Mac or from your other computers; a machine, when a Mac
-  with Kuvo Code connects to it, and by itself only where its `kuvo/info` lists `update` (a 0.7
-  machine's doesn't). It
-  reads `kuvo/info` again each time it connects.
-- **Releases**: a phone release must not ship before a Mac release whose box has every name the
-  phone's `BoxGate.required` lists, or every computer would wait for an update that isn't out yet.
-- A machine's `kuvo/machines` step while its box is brought up to date is `updating` ("Updating Kuvo
-  Code").
+The link reads plan limits, usage history and usage settings independently of
+agent process lifecycle. It preserves the bridge-shaped
+`kuvo/agents/api/kuvo/limits…` and `kuvo/agents/api/kuvo/usage…` routes.
+Older bridges can still own these stores during compatibility or rollback.
+See [bridge ownership](../box/docs/bridge-ownership.md).
+
+The old client-computed gate and associated SSH installer and phone release
+ordering applied to retired clients. Installed builds can still use the
+legacy routes described under “For released Macs”.
 
 ### The browser on a machine
 
 The browser agents use on a machine (`kuvo-browser.js`, its keeper and tools) is Chrome for
 Testing, run headless from `~/.kuvo-code/browser/current`. The box sets it up itself, with or
-without a Mac: no Mac sends it. On Linux and macOS, x86-64 and ARM64; a Mac's own box
-(`KUVO_BOX=mac`) has none (its agents browse in its app's panel).
+without a desktop. The current box uses this browser on Linux and macOS, x86-64
+and ARM64. The old app-owned Mac layout could use its Swift app browser.
 
 - **What**: the build this `kuvo-link.js` pins (`src/link/browser/linux.json` and `mac.json`,
   written by `scripts/browser-runtime.py`): Chrome for Testing's zip for the machine's system and
@@ -4619,10 +4598,20 @@ a browser's, itself).
   in front). Where a box says `telling: false` (a machine whose bridge isn't running),
   it has no news to show until its bridge runs again: no client words a box's news itself (the
   retired Mac app did, for a box from before `kuvo/notices` too; a box from before is held by the
-  update gate now). A phone is pushed each box's notices.
+  update gate now). APNs delivery remains for installed phone clients.
 - The box keeps them in `run/notices/told.json`: the news ten minutes, what agents sent a day.
 
 ## Messages in a session
+
+**Desktop delivery.** The desktop gives a send a stable ID and draws an
+optimistic message keyed by it. If delivery is interrupted, it retries the
+same ID. It keeps the optimistic row until the conversation has that ID.
+The box records the send claim and outcome. After a restart it reconciles a
+pending claim against the queue or transcript before deciding whether it needs
+to finish the send. The agents bridge keeps queued messages across restarts.
+Supported accepted session starts, Work Queue edits and approved commands
+also keep restart receipts. The current feeds remain separate. See
+[Message delivery](../docs/architecture/message-delivery.md) for pending work.
 
 Each transport message decrypts to:
 
@@ -4630,7 +4619,7 @@ Each transport message decrypts to:
 headLength(2) head(JSON) body
 ```
 
-and is at most 65,519 bytes, so longer bodies go in pieces. The phone asks, the host answers,
+and is at most 65,519 bytes, so longer bodies go in pieces. The paired client asks and the box answers,
 like HTTP:
 
 | Head | Meaning |
@@ -4645,7 +4634,7 @@ like HTTP:
 `POST api/session/<id>/prompt` and `kuvo/agents/api/…/prompt` carry it, and `…/queue/add` to a box
 with `queue.once`) is safe to send twice: when its session ends before the answer's head comes
 (closed, timed out, or the relay connection lost: on LTE, or as the app comes back from the
-background), the phone sends it again, whole, on a new session, for up to two minutes from when it
+background), the legacy phone client sends it again, whole, on a new session, for up to two minutes from when it
 first failed; past that it fails as it did at first. Meanwhile a client shows it waiting, not
 failed: with no network at all, that's two minutes before it says it couldn't send. Each computer's
 are in one line, in the order they were first sent: the first goes at once, then after 1, 2, 4 and
@@ -7584,9 +7573,7 @@ before (a linked item is its owner's to change). A client shows them first, as "
   `GET kuvo/work-queue/labels/restore` with the same body previews the merge. A box on another
   computer uses an ownership GET over the current relay connection. Its request and reply stay
   in memory. The main computer advertises `work-queue.labels.restore.preview` when it can answer.
-  Both routes report `{restored, alreadyPresent, conflicts, details, save?, provisional?}`, with a
-  standby receipt for a committed change. A save awaiting the standby returns 202. A preview
-  based on the main computer's local labels is provisional until the shared label library is accepted.
+  Both routes report `{restored, alreadyPresent, conflicts, details, save?, provisional?}`, with a receipt when supplied by the save path. Legacy standby-backed saves can return 202 and their previews can be provisional.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
 route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the vault takes it; anything
@@ -7807,9 +7794,19 @@ never written to: nothing here changes anything on GitHub.
   names its live item, here or on another computer, before a deleted one (`queue_add` says where the
   live one is, rather than offering the deleted one back).
 
-**Numbers**: one `#n` per item, unique across your computers, handed out by the primary: your
-setup's main computer ("Your setup"), the box itself when it's that; one a box can't write to yet
-(its document not here, or naming no address) is waited for, never passed over. A box that
+**Numbers**: each item gets one `#n` unique in its setup. The main grants
+blocks and durably advances the relay-backed high-water mark before issuing
+numbers beyond its reservation. A taking-over main skips the reserved floor
+so it cannot issue an existing block again. Members can use already-granted
+numbers while away and wait for the main when out of numbers. Current requests
+reuse the allocation ID and the main retains grant receipts. See
+`box/src/link/work-queue/numbers.ts` and `setup/relay-lease.ts`.
+
+**Legacy numbering and block wire format.** The older fallback below applies
+to boxes outside the current setup model. The block `ask` and `give` shapes
+remain in use.
+
+A box that
 follows no setup (Macs that share a machine, and the machines numbering with them, or a box beside
 an older one; kept until every box knows setups and those Macs are joined in one) takes the first
 computer you set up. Each box works it out the same way from what it knows: of itself, its peers and
@@ -8134,6 +8131,12 @@ for one with no folder.
 
 ### What a typed message means
 
+The GPUI composer still offers slash commands and uses the box's typed routes.
+Typed draft submissions and receipt lookups also serve retained readers. A
+retry uses the same submission identity and rechecks author access. Stored
+parts, command metadata and older typed receipts remain readable. Composer
+removal and the shared event line are follow-up work.
+
 What a conversation's composer sends is its box's to read: `kuvo/sessions/<session>/typed` on the
 box the conversation lives on. A client needs a box whose `features` has `typed`, and has no other
 way: with one from before, it keeps what was written and says that computer needs a newer Kuvo
@@ -8209,6 +8212,8 @@ client does with the rest; a client keeps the draft, puts back what it's told to
   it), the side thread's tag following what runs as typed, and whether Send needs a model.
 
 ### A message's parts
+
+See “Messages in a session” for same-ID send and restart settlement.
 
 A client sends what was written and what goes with it as fields, and the conversation's box writes
 the text the agent reads (feature `messages.send`, which the update gate requires); every message
@@ -8304,8 +8309,7 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
 
 `kuvo/info`'s `features` names the routes the box has, so a client checks a name, never a version
 (`app`, `bridge`), before it shows what needs a route. A route it names can still refuse for now,
-with a message to show: `503` while the engine or the coding agents' bridge is down (or, on this
-Mac, its app for its keys), and on a
+with a message to show: `503` while the engine or the coding agents' bridge is down (or, on a legacy Mac install, its app for its keys), and on a
 machine `409` for `config`, `config.apply`, `keys`, `mcp.catalog` and `integrations` until a Mac has made its
 settings its own. A name comes with what it names and never changes meaning; one the client
 doesn't know, it ignores. Both boxes are held to their lists by
@@ -8313,22 +8317,15 @@ the route scenario `vectors/routes/features.json`, which `scripts/route-shapes.s
 box's lists (`FEATURES` in `box/src/shared/features.ts`, `MAC_FEATURES` and
 `MACHINE_FEATURES` in `shared/routes/mac.ts`). A Mac's list is its box's (`macFeatures`, from #191
 step 2; the app gave it before): every box's but a machine's own, and the Mac's own, the same
-with its app closed, when what needs the app answers `503 {"message"}`.
+with its app closed. An app-only compatibility callback can answer `503 {"message"}`.
 A note of when a name came in names the bridge's version up to 0.9.211; after that, the bridge's
 version is a hash, and a name is its own mark.
 
-A client reads a box's features in one place (KuvoClient's `BoxFeatures`), once a box, and keeps
-them until the box connects again or the update gate lets it go, when it reads them again. The rule
-is the gate's ("The update gate"): an answer with `features` says them; one without `features`, or
-a `404` or `405` (no `kuvo/info`), says none, so the box is held; any other answer, or none, can't
-tell: nothing is assumed, old or new, and the next ask reads it again. Each saying goes to the gate.
-A client checks only names newer than the gate's (`BoxGate.required` and what came before them,
-which a box that isn't held has) and a kind's own (`update`, `engine.start`).
-
-Each client-facing Box route registration and route contract names an advertised feature. Use
-the feature that introduced the route. The required list still names the capabilities clients
-need for the update gate. It can be smaller than the set of advertised features. Keep checking
-`kuvo/info` before depending on any advertised name.
+A client checks the advertised capability or box-authored compatibility before
+drawing a feature that depends on it. Each route registration names its
+feature. The expected capability list can be smaller than the set of features
+the box advertises. A request still obeys the box's authorization and format
+checks.
 
 One row a name, in order, so branches that each add one merge cleanly.
 
@@ -8533,8 +8530,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.handover` | a member can ask the primary to transfer the setup to another enrolled computer at the next epoch |
-| `setup.successor-chain` | ranked takeover and deterministic convergence of signed setup epochs |
-| `setup.takeover` | a signed standby can advance the setup epoch, and clients can choose another standby |
+| `setup.successor-chain` | Legacy ranked takeover and signed epoch convergence. See “Legacy setup authority and receipts”. |
+| `setup.takeover` | Legacy signed standby authority, retained for compatibility. |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -8571,7 +8568,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work-queue.forward.agent` | Work Queue mutations forwarded from another of the user's boxes use `area: "queue-agent"` and carry `agent: {tool, session, owner, name}` with the permanent item ID. The sending box verifies the active tool call. The keeping box records the agent as actor and returns the tool result. |
 | `work-queue.forward.memory` | A forwarded GET can carry `memory: true` on the Work Queue mail envelope. The same flag marks the reply and each part. Both boxes keep transport state in memory and skip peer reach updates from that exchange. The caller chooses a read-only handler when the operation itself must leave files untouched. |
-| `work-queue.labels.restore` | `box labels restore` restores saved label definitions with their original IDs through the main computer and its standby |
+| `work-queue.labels.restore` | `box labels restore` restores saved label definitions with their original IDs through the main computer |
 | `work-queue.labels.restore.preview` | The main computer answers the restore preview as an ownership GET |
 | `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
 | `work.background.output` | `GET kuvo/work/background/<session>/commands/<id>/output` and `…/events`: the end of what a command it left running printed, cut on the box, now and as it grows (#796) |
@@ -8647,7 +8644,16 @@ used the machine (`run/link.seen`).
 
 ### This Mac's box
 
-A Mac runs the same box a machine does: its keeper ("The keeper", below) starts `kuvo-link.js serve` (bridge 0.9.33 and
+The active Mac box lives in `~/.kuvo-code`. Kuvo Helper supervises it
+independently of GPUI, and provides native Keychain and permission services.
+The keeper and Helper start `serve --resident` on supported releases. The
+GPUI client reads `run/serve.json` and connects to the private loopback
+server. See [resident launch and rollback](../docs/architecture/one-client-process.md).
+
+The following app-folder launch and keeper contracts apply to installed
+0.7 clients and their import or rollback paths.
+
+A legacy Mac runs the same box a machine does: its keeper ("The keeper", below) starts `kuvo-link.js serve` (bridge 0.9.33 and
 later) beside its engine, with the engine's Bun and `KUVO_HOME` in the app's own folder
 (`~/Library/Application Support/run.kuvo.code/box`), never `~/.kuvo-code`, and
 `KUVO_ENGINE_CONFIG`, the app's engine's settings folder (its `XDG_CONFIG_HOME`), where it keeps
@@ -8666,7 +8672,7 @@ writes (only you can read them) as they start and removes as they stop.
 
 #### The keeper
 
-This Mac's box keeps running whether or not the app is open, as a machine's does with its Mac
+For the legacy app-folder install, this Mac's box keeps running whether or not the app is open, as a machine's does with its Mac
 closed: its keeper is Kuvo Code's own executable run with `--box`, which launchd starts from the
 launch agent in the app (`Contents/Library/LaunchAgents/<bundle id>.box.plist`, registered with
 `SMAppService` the first time the app opens; never once this Mac's box lives in its home of its
@@ -9478,6 +9484,10 @@ holds the move's lock). `status.dropped` says what wasn't carried.
 
 #### This Mac's app
 
+GPUI registers its desktop and version with `kuvo/box/app` through local HTTP.
+The browser belongs to the box on either platform. The app-owned browser tools
+and callback contracts below describe the installed Swift client.
+
 `box.app` (#333 piece 3). A Mac's box in a home of its own (`box/kind` says `mac`; not the app's box
 in its folder, whose keeper does this) is where its app registers, and its agents browse in the
 app's panel through it, with no Chromium of its own. A machine's box answers `409` to both routes
@@ -9545,7 +9555,7 @@ app's panel through it, with no Chromium of its own. A machine's box answers `40
 
 #### The app attached to this Mac's own box
 
-#333 piece 6b, behind the app's `movesOwnBox` (off). Once this Mac's box has moved into a home of its
+Historical 0.7 attachment contract (#333 piece 6b). Once this Mac's box has moved into a home of its
 own, the app attaches to it in place, as to any box already on this Mac (`here` answers `attach`,
 its `box.kind` `mac`), and does for it, through its routes, what it did for its box in its folder:
 
@@ -9572,7 +9582,7 @@ CLI.
 
 #### This Mac's box: its keys, for its app
 
-`box.appKeys` (#333 piece 6a), behind the app's `movesOwnBox` (off). Once this Mac's box has moved
+`box.appKeys` is the retained native identity contract (#333 piece 6a). Once this Mac's box has moved
 into a home of its own, its keys are its helper's copies in your Keychain ("This Mac's box: its
 helper"), which the app can't read, and must never make anew: a key made by the app would be
 another Mac to every phone, machine and peer. So the app reads none of them, and asks the box for
@@ -9996,6 +10006,11 @@ box's facts alone:
 
 #### The relay, on this Mac's box
 
+The current Mac box's resident process owns paired sessions and peer mail.
+It gets its link identity from Kuvo Helper, with no desktop dependency.
+See [the resident process](../docs/architecture/one-client-process.md).
+The older Mac front below describes compatibility with app-owned installs.
+
 Since bridge 0.9.61 this Mac's box holds its relay connection, as a machine's bridge does (`run`),
 in `serve`'s process: your phones pair with it and open their sessions there. Its keys (link key,
 relay secret, signing key) stay in the Mac's Keychain: the box asks the app for them
@@ -10184,14 +10199,14 @@ while a box is away goes there when it's back.
   last. Only for a project the box lists with folders a client set: a session of one it doesn't
   list (its Mac keeps them, or hasn't handed them over yet), or of one it added itself
   (`addedByBox`), keeps the rules and instruction it has; one moved into one it added gets none. Not a subagent's, nor a hidden run's (a group chat's seat, an engine run, a review's part).
-  A box from before is held by the update gate: no client gives a session its folders itself.
+  This operation requires the box route.
 - `POST kuvo/sessions/<id>/move` `{directory}` (`sessions.move`, #341) moves a conversation into the
   project at `directory` here, as a chat that turns into work is: the engine moves it (one at work at
   its next step), and it gets that project's other folders as above. `200 {session, directory,
   info?}` (`info`, the session as its engine lists it now); 400 for a folder that isn't here; 404
   for no such conversation; 409 for a coding agent's session (their sessions keep the folder they
   started in), one moving to another computer, and a subagent's or hidden run's; 502 where the engine didn't take it; 503 with no
-  engine. A box from before is held by the update gate: no client moves one itself.
+  engine. This operation requires the box route.
 - `DELETE kuvo/projects?directory=<folder>` is Remove Project: every session of it, its worktrees' and
   other folders' too, and those filed under it from elsewhere (`kuvo.filed`) (removed worktrees included, and the folders an optional body `{folders}` names: those a client
   shows under it that the box doesn't know, worktrees removed before it kept them), archived on
@@ -10525,8 +10540,15 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
+- `kuvo/settings/conversations` serves the `compaction` choice row, saved by the usual
+  revision-checked PATCH. Choice IDs are `200000`, `400000` (default), `600000` and `never`.
+  The choice lives on the box running the conversation. Claude Code and Codex keep their native
+  margin on smaller windows, and Grok takes a percentage once it reports the model's window.
+  `never` disables automatic compaction in a Claude Code process when its main model reports
+  at least 900,000 tokens of context. Codex and Grok use their native limits with that choice.
+  Antigravity, Cursor and the engine keep their defaults.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -12256,7 +12278,11 @@ repository written by anything.
 
 ### Paired phones
 
-The primary keeps the setup's device grants. A phone and a desktop app use the same grants.
+The section title and `kuvo/phones` routes retain their wire names. The shared
+device grants are current for paired desktops. Phone invitations and APNs
+behavior are installed-client compatibility.
+
+The main keeps the setup's device grants. Paired desktops and installed phone clients use the same grant shape.
 Each grant identifies the device's public key and pairing ID. Layout 11 removes the old voucher
 fields from local device records while preserving keys, pairing IDs and removals. Signed
 records from earlier versions remain readable. A standalone or legacy box can still read
@@ -12348,7 +12374,7 @@ how many bots, wake-ups and watches, phones paired, and your other computers it 
 Mac's box in its app's folder refuses both (exit 1, `{result: "refused", message}`): the app's own
 keeper runs it, and removing Kuvo Code removes that.
 
-On a member, a standby-backed device revocation adds `save` to the result. While the revocation
+On a member using the legacy save path, a standby-backed device revocation adds `save` to the result. While the revocation
 is pending the command exits 1 with `{result: "pending", message, save}` and keeps the local
 identity and box running. The member stores the receipt and checks the same operation with the
 current primary on retry. A confirmed interruption exits 1 with the interrupted receipt; the
@@ -12386,7 +12412,7 @@ for phones: the phone link has never been on in a release, so no phone needs an 
 anything.
 
 **What 0.8 keeps of this.** Kuvo Code 0.8 takes the place of every one of those Macs' apps, straight
-from 0.7 (or the beta), and its apps bring each box up to date before using it ("The update gate"),
+from 0.7 (or the beta), and draws the compatibility each box reports ("The update gate"),
 so nothing is kept for a client meeting an older box. The other way round still happens, on a
 machine:
 - A machine set up by 0.5 to 0.7.2 has no bridge and can't update itself; it gets this box when the
@@ -12679,10 +12705,10 @@ exist. <!-- compat: layout.4 setup -->
 
 ## The browser's live view
 
-Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's
-agents browse in Kuvo Code's panel on that Mac, so a Mac's box doesn't list the feature). Its keeper
-owns its Chrome and page state. No client needs CDP to draw it. Released Swift Mac clients use their original raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
-`404 {message}` saying why, and opens nothing.
+Feature `browser.view`. The resident box's keeper owns Chrome and the page
+state on macOS and Linux. GPUI uses the local or paired-relay browser socket.
+Released Swift Mac clients retain their raw-CDP stream. An older box without the
+view can refuse the route.
 
 Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its
 `Authorization: Basic <base64(opencode:password)>` header; through the relay, a WebSocket

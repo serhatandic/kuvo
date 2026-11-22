@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- In the desktop app, Computers now shows who leads your setup (its main computer and standby) and lets you hand over the main computer or choose a standby. Rename a computer right on its page, and remove one from your setup by unlinking it or unlinking and wiping it (an offline one is wiped once it's back). Removing your last computer wipes it, and the app then offers to reinstall Kuvo on it. Actions a computer's Kuvo can't do yet aren't shown for it.
+- Computers shows the main computer and **Change…**, with rename and removal actions from the box. Unlink retains local work. Unlink + wipe verifies any required backups and transfers. The last computer offers **Wipe This Computer** and can offer reinstall afterward.
 
-- In the desktop app, while your computers update to a new Kuvo release, the title bar says how far it's got ("Updating to beta.38 · 2 of 4 computers done", and how many failed). Click it to see each computer, update a stuck one now, open Computers, or dismiss it; it stays hidden until the next release, unless a computer fails. It replaces the plain "Needs an update" pill. Computers shows each one's update too: up to date, available, updating (and what it waits for), or failed (with the version it went back to and when it tries again), with **Update now** where a computer is behind and not getting anywhere.
+- The title-bar update notice shows preparation or a failure you can act on. Computers shows each box’s status and **Try Again** where available. Your computers keep working while a release stages and follow the main once it switches.
 
 - Accounts uses the sign-in route the computer supports and shows whether it is sending a pasted code, checking the sign-in, or still waiting for confirmation.
 
@@ -25,16 +25,14 @@
 
 - In the desktop app, the sidebars and title bar read more calmly. Every icon in the rail, title bar, toolbars and rows has the same line weight, and the open area's icon no longer looks bolder than the rest. Bots', computers' and waiting sessions' names are set a step stronger than the line under them, which is smaller. Only "waiting on you" is coloured, in a softer blue; "1 at work" stays grey. A selected row's background is lighter. In the title bar, the window's title is the strongest text, the computer's name is quieter, and the sidebar button no longer shows a filled tile.
 
-- In the desktop app, the bar over a bot's composer no longer shows how many tokens the day has used ("4 sessions at work · answered 1 ask"); that will live in Insights.
+- In the desktop app, the bar over a bot's composer no longer shows how many tokens the day has used ("4 sessions at work · answered 1 ask"); Insights shows usage by bot.
 - Quotes work as in 0.7: each part you add to the chat has its own answer under it (click a quote to answer it), so you can comment on each one, and your own words go after them.
 
 - While the agent works, Return adds your message to its task (it reads it at its next step) and ⌘Return queues it for when it's done, as in 0.7; the menu beside Send has both, and Send Now, which stops its current step and gives it your message. Each waiting message has Steer, Send or Send Now, and a right-click menu; a stopped queue says so, with Resume. Every device shows the same queue.
 
-- A message to another computer over a slow or patchy connection keeps going until it gets there. The connection no longer drops while screenshots are still going out, and a message whose connection dropped (Wi-Fi coming and going, or its answer lost on the way) is sent again for up to two minutes, under its own id so it arrives once, showing "Sending…" meanwhile; Stop takes back one that hasn't gone yet. "Not sent" now means it really couldn't go. A connection that drops for a moment comes back quietly, without "Couldn't connect" lines in the conversation. The app notes each dropped connection and why in `link.log` in its folder, to send with a report.
+- Messages appear immediately in the conversation or queue. A dropped connection or box restart can retry the same send without creating a second message. Connection diagnostics are recorded in `link.log`.
 
-- Big pictures (a Retina screenshot, say) go to your other computers the way the iPhone app sends them: a picture over 4 MB goes as a JPEG at most 2048 px wide, so a message with screenshots goes in seconds. A smaller picture goes as it is.
-
-- A message on its way keeps its shape: "Sending…" sits on its own line under it, not over its last line.
+- Big pictures (a Retina screenshot, say) go to your other computers: a picture over 4 MB goes as a JPEG at most 2048 px wide, so a message with screenshots goes in seconds. A smaller picture goes as it is.
 
 - Loading now shows one quiet message in the middle of what's loading, only if it takes a moment; Work Queue headers no longer change height; double-clicking a title-bar button no longer zooms the window.
 

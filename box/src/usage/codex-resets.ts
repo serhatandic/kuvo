@@ -1,6 +1,6 @@
-// Codex's reset credits and credits (limits.ts, `extras`), read and spent with a ChatGPT sign-in
-// Kuvo Code runs: the Codex agent's own (its home's `auth.json`), or the engine's `openai` one.
-// ChatGPT's endpoints, as the Codex CLI uses them: the list of reset credits (`GET`, safe), and
+// Codex's reset credits and credits (limits.ts, `extras`). The engine's `openai` sign-in reads and
+// spends them here, with ChatGPT's endpoints; the Codex agent's accounts ask Codex itself
+// (native-usage.ts). ChatGPT's endpoints, as the Codex CLI uses them: the list of reset credits (`GET`, safe), and
 // spending one (`POST …/consume`, by the credit's id, with the request id the box's journal keeps,
 // so a retry is the same request and ChatGPT answers `already_redeemed` rather than spending
 // another). Never renewed here: Codex and the engine renew their own sign-ins as they run.
