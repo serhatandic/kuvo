@@ -350,6 +350,10 @@ fn the_coding_agents_down_are_said_over_the_composer_and_restarting_isnt(cx: &mu
     view.update(cx, |view, cx| view.take(ConversationUpdate::Failed(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(503, down))), cx));
     cx.run_until_parked();
     assert!(bounds(cx, "conversation-problem").is_some() && bounds(cx, "conversation-problem-action").is_some());
+    // The one notice over the composer (#339), its glyph and its Try Again in it.
+    let notice = bounds(cx, "conversation-problem").unwrap();
+    assert!(bounds(cx, "conversation-problem-icon").is_some_and(|icon| notice.contains(&icon.center())));
+    assert!(bounds(cx, "conversation-problem-action").is_some_and(|action| notice.contains(&action.center())));
     let restarting = br#"{"message":"The coding agents are restarting. This takes a few seconds.","reason":"agentsRestarting"}"#;
     view.update(cx, |view, cx| view.take(ConversationUpdate::Failed(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(503, restarting))), cx));
     cx.run_until_parked();
@@ -1584,6 +1588,13 @@ fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAp
     let composer = view.read_with(cx, |view, _| view.composer().clone());
     assert_eq!(typed(&composer, cx), (String::new(), None));
     let failed = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap();
+    // Said as the one notice under its message (#339): its glyph, under the bubble, Retry in it.
+    let notice = bounds(cx, "not-sent").unwrap();
+    let last = rows(cx).len() - 1;
+    let unsent = bounds(cx, &format!("bubble-{last}")).expect("its bubble");
+    assert!(notice.top() >= unsent.bottom(), "under its message");
+    assert!(bounds(cx, "not-sent-icon").is_some_and(|icon| notice.contains(&icon.center())), "the notice's glyph");
+    assert!(bounds(cx, &format!("retry-{}", failed["id"].as_str().unwrap())).is_some_and(|retry| notice.contains(&retry.center())), "Retry in the notice");
 
     // Retry sends it again, under the same id, and it's on its way again.
     stand_in.sends_go();

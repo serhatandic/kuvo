@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Kuvo uses less memory while idle. The session engine starts when needed, and the engine and the machine’s browser close after ten minutes without work.
 
+- Warnings and errors look the same everywhere: one quiet row with a small colored icon, what happened, why, and at most one action, placed where it applies. A message that couldn’t be sent says so under it with Retry, a sign-in that ended says so inside its account row, a turn that stopped says why under it, and a computer that can’t be reached says so beside its name. Moves that failed or finished now wait under the bell in the title bar instead of a card over the window. Each notice goes away by itself once it’s resolved.
 - What you send appears immediately in the conversation or queue and stays visible until the box has it. If the connection drops or the box restarts, Kuvo retries the same send. Steered messages leave the queue as soon as you steer them.
 - Long Claude Code, Codex and Grok conversations summarize earlier by default, so ongoing chats and bots spend fewer tokens replaying old context.
 

@@ -76,6 +76,10 @@ fn bot_move_confirms_and_the_row_follows_the_receipt(cx: &mut TestAppContext) {
         sent[0].body,
         Some(json!({"kind":"bot","id":"bot_mira","to":"key_studio","receipt":true}))
     );
+    // It's said in the title bar's notifications (#339): a dot on the bell, the row inside.
+    assert!(cx.debug_bounds("move-done").is_none(), "no card over the window");
+    assert!(cx.debug_bounds("notifications-dot").is_some());
+    click(cx, "notifications");
     assert!(cx.debug_bounds("move-done").is_some());
     assert!(cx.debug_bounds("bot-bot_mira").is_none());
     assert!(cx.debug_bounds("elsewhere-bot_mira").is_some());
@@ -94,6 +98,7 @@ fn bot_move_failure_can_retry_with_a_fresh_confirmation(cx: &mut TestAppContext)
     right_click(cx, "bot-bot_mira");
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
+    click(cx, "notifications");
     assert!(cx.debug_bounds("move-failed").is_some());
     assert!(cx.debug_bounds("bot-bot_mira").is_some());
     click(cx, "move-again");
@@ -193,6 +198,7 @@ fn bot_move_from_other_computers_uses_the_bots_source(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("menu-item-devbox").is_some());
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
+    click(cx, "notifications");
     assert!(cx.debug_bounds("move-failed").is_some());
     click(cx, "move-again");
     assert!(cx.debug_bounds("move-confirm").is_some());
@@ -235,6 +241,7 @@ fn bot_move_revoked_receipt_can_be_dismissed_without_a_failed_move(cx: &mut Test
     right_click(cx, "bot-bot_mira");
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
+    click(cx, "notifications");
     assert!(cx.debug_bounds("move-tracking").is_some());
     assert!(cx.debug_bounds("move-failed").is_none());
     assert!(cx.debug_bounds("move-again").is_none());
@@ -243,4 +250,41 @@ fn bot_move_revoked_receipt_can_be_dismissed_without_a_failed_move(cx: &mut Test
     assert!(cx.debug_bounds("move-progress").is_none());
     assert!(cx.debug_bounds("bot-bot_mira").is_some());
     assert_eq!(stand_in.seen_at("GET", "kuvo/moves/receipt").len(), 1);
+}
+
+/// The title bar's notifications (#339): a move that went through is news, and goes once it's been
+/// seen; one that failed waits there, with its one action, until it's tried again.
+#[gpui::test]
+fn a_moves_news_goes_once_seen_and_a_failure_waits_in_the_notifications(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
+    let (_, cx) = open(cx, &stand_in, Scenario::Ready);
+    assert!(cx.debug_bounds("notifications-dot").is_none(), "nothing waits yet");
+    right_click(cx, "bot-bot_mira");
+    click(cx, "menu-item-Studio");
+    click(cx, "move-go");
+    assert!(cx.debug_bounds("notifications-dot").is_some());
+    click(cx, "notifications");
+    assert!(cx.debug_bounds("move-done-icon").is_some() && cx.debug_bounds("move-open").is_some());
+    // Seen: closing them takes the news away, and the dot with it.
+    click(cx, "notifications");
+    assert!(cx.debug_bounds("notifications-dot").is_none());
+    click(cx, "notifications");
+    assert!(cx.debug_bounds("move-done").is_none());
+    assert!(cx.debug_bounds("notifications-card").is_some(), "the notifications, empty");
+}
+
+#[gpui::test]
+fn a_failed_move_stays_in_the_notifications_after_theyre_seen(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
+    let (_, cx) = open(cx, &stand_in, Scenario::Failed);
+    right_click(cx, "bot-bot_mira");
+    click(cx, "menu-item-Studio");
+    click(cx, "move-go");
+    click(cx, "notifications");
+    click(cx, "notifications");
+    assert!(cx.debug_bounds("notifications-dot").is_some(), "it still needs you");
+    click(cx, "notifications");
+    let row = cx.debug_bounds("move-failed").expect("still there");
+    assert!(cx.debug_bounds("move-failed-icon").is_some_and(|icon| row.contains(&icon.center())));
+    assert!(cx.debug_bounds("move-again").is_some_and(|again| row.contains(&again.center())));
 }
