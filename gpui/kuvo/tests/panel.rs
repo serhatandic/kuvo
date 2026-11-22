@@ -524,6 +524,35 @@ fn each_conversation_keeps_its_own_tabs_and_the_panel_follows_the_one_in_view(cx
 }
 
 #[gpui::test]
+fn tabs_keep_their_names_while_the_strip_has_room(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    for kind in [Kind::Changes, Kind::Files, Kind::Subagents, Kind::SideChat(None)] {
+        workspace.update(cx, |workspace, cx| workspace.show_panel(kind, cx));
+    }
+    cx.run_until_parked();
+    let panel = bounds(cx, "side-panel").expect("the panel");
+    let tabs: Vec<u64> = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().iter().map(|tab| tab.id).collect());
+    assert_eq!(tabs.len(), 4);
+    let widths: Vec<Pixels> = tabs.iter().map(|id| bounds(cx, &format!("panel-tab-{id}")).expect("each tab").size.width).collect();
+    // Four short names fit a panel this wide: none is squeezed to an icon's width.
+    assert!(widths.iter().sum::<Pixels>() < panel.size.width, "they fit: {widths:?} in {:?}", panel.size.width);
+    // Each as wide as its name: Subagents' tab wider than Files', none pinned to one width.
+    assert!(widths[2] > widths[1] + px(15.), "each as wide as its name: {widths:?}");
+    assert!(widths.iter().all(|width| *width > px(72.)), "none squeezed: {widths:?}");
+
+    // More than fit: the strip scrolls, the one showing in view with its name.
+    for file in ["src/lib/validate.ts", "src/components/SignupForm.tsx"] {
+        workspace.update_in(cx, |workspace, window, cx| workspace.preview_file(&format!("{}/{file}", website()), window, cx));
+        cx.run_until_parked();
+    }
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().unwrap().id);
+    let tab = bounds(cx, &format!("panel-tab-{showing}")).expect("the file's tab");
+    let strip = bounds(cx, "panel-strip").unwrap();
+    assert!(tab.left() >= strip.left() && tab.right() <= strip.right(), "the tab showing is in view: {tab:?} in {strip:?}");
+}
+
+#[gpui::test]
 fn plus_opens_the_new_tab_page_a_tile_takes_its_place_and_closing_the_last_tab_leaves_it(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
@@ -706,6 +735,43 @@ fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outp
     click(cx, "conversation-activity-button");
     click(cx, "activity-side-chat-btw_1");
     assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+}
+
+#[gpui::test]
+fn a_bots_conversation_opens_the_panel_from_the_title_bar_and_its_side_chats_open_there(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.answer_side_questions(&["It reads the queue first."]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    // A side chat asked in the bot's conversation before.
+    BoxClient::new(stand_in.clone()).ask_aside("ses_mira", "What do you check first?", None).unwrap();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.show_area(kuvo::area::Area::Bots, window, cx);
+        workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(bounds(cx, "bot-chat-title").is_some());
+    assert!(bounds(cx, "side-panel").is_none(), "closed until it's asked for");
+
+    // The title bar's button opens it beside the bot's conversation, and closes it again.
+    click(cx, "toggle-panel");
+    assert!(bounds(cx, "side-panel").is_some(), "the panel beside the bot's conversation");
+    assert!(bounds(cx, "new-tab").is_some());
+    click(cx, "toggle-panel");
+    assert!(bounds(cx, "side-panel").is_none());
+
+    // Its Outputs list the side chat; a click opens it in the panel, the bot's conversation still there.
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-side-chat-btw_1");
+    assert!(bounds(cx, "side-panel").is_some(), "the side chat opens the panel");
+    assert!(bounds(cx, "bot-chat-title").is_some(), "still in the bot's conversation");
+    assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
+    assert!(bounds(cx, "side-question-btw_1").is_some());
+
+    // Back in Sessions, the session's own tabs, not the bot's.
+    workspace.update_in(cx, |workspace, window, cx| workspace.show_area(kuvo::area::Area::Sessions, window, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "side-panel").is_some());
+    assert_ne!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
 }
 
 #[gpui::test]

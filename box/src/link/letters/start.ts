@@ -1,3 +1,4 @@
+import { ToolCallPending } from "../server/tool-call";
 // A new session started with a task (PROTOCOL.md, "Agents' tools": `POST kuvo/sessions`, and the
 // start_session tool on every box)
 // From a conversation: an agent of its own, in that one's folder (or the one given), on its model,
@@ -207,6 +208,7 @@ export interface StartPlace {
   queueItem?: unknown;
   /** The worktree a start cut short made already: it goes on in that one, not a second. */
   tree?: MadeTree;
+  operation?: string;
 }
 
 /** What a session a bot starts for its goal is told: no one may be there to answer. */
@@ -607,7 +609,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   // line crosses computers), and where the bot isn't, the limits it goes by.
   const line = remote ? remote.line : by?.place ? [...lineOf(by.place.data), by.session].slice(-20) : null;
   // (Only where it says more than who started it: one above is `startedBy` itself.)
-  const marksOfLine = { ...(line && line.length > 1 ? { line } : {}), ...(bot && limits ? { limits } : {}),
+  const marksOfLine = { ...(place.operation ? { call: place.operation } : {}), ...(line && line.length > 1 ? { line } : {}), ...(bot && limits ? { limits } : {}),
     ...(remote ? { call: remote.call, lead: { box: remote.computer, key: remote.key, name: by!.name }, ...(brought.length ? { held: brought } : {}) } : {}) };
   // (Kept with it as it's made, so the box never takes it for one a client made without saying.)
   const starter = Boolean(by?.place || remote);
@@ -646,6 +648,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
     if (!by && requested) rememberApproval(requested);
   } catch (error) {
     giveBack();
+    if (place.operation) throw new ToolCallPending("Waiting for the engine to confirm the session was created.");
     await removeTree();
     return no(502, `Couldn't start a session in ${folder}: ${String((error as Error | null)?.message ?? error)}`);
   }
@@ -675,6 +678,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
     await promptMade(making, target, session);
   } catch (error) {
     went(session, true);
+    if (place.operation) throw new ToolCallPending("Waiting for the new session to confirm its task.");
     return no(502, `Started a session (address ${session}), but the task didn't reach it: ${String((error as Error | null)?.message ?? error)}`, session);
   }
   place.steps?.prompted?.();

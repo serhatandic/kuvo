@@ -45,6 +45,8 @@ pub const WIDEST: Pixels = px(900.);
 pub const CONVERSATION_NARROWEST: Pixels = px(360.);
 /// The tab strip's height.
 pub const STRIP_HEIGHT: Pixels = px(40.);
+/// The widest a tab goes, its name in full up to it.
+const TAB_WIDEST: f32 = 200.;
 
 /// The folder the panel shows: the session's own (a worktree's, for a session in one), and the
 /// session in view.
@@ -703,7 +705,6 @@ impl SidePanel {
         let c = cx.theme().colors.clone();
         let glass = glass(cx);
         let fresh = strip.is_fresh();
-        let dense = strip.tabs().len() >= 4;
         let active = strip.active().id;
         let tabs = strip.tabs().iter().map(|tab| {
             let selected = tab.id == active;
@@ -724,9 +725,10 @@ impl SidePanel {
                 .rounded(radius::NAV)
                 .border_1()
                 .border_color(gpui::transparent_black())
-                .when(dense && selected, |d| d.flex_none().min_w(px(108.)).max_w(px(140.)))
-                .when(dense && !selected, |d| d.flex_none().w(px(64.)))
-                .when(!dense, |d| d.min_w(px(96.)).max_w(px(176.)).flex_shrink_1())
+                // (As wide as its name needs, up to a limit, as Zed's tabs are: never squeezed to
+                // an icon; where they don't all fit, the strip scrolls, the one showing in view.)
+                .flex_none()
+                .max_w(px(TAB_WIDEST))
                 .when(selected, |d| d.bg(glass.pill).border_color(glass.pill_edge))
                 .when(!selected, |d| d.hover(|s| s.bg(c.hover)))
                 .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
@@ -738,13 +740,12 @@ impl SidePanel {
                 .children(match conversation.views.get(&tab.id) {
                     // A process still running: a calm dot in its icon's place.
                     Some(View::Process(view)) if view.read(cx).running() => Some(div().w(px(12.)).flex_none().flex().items_center().justify_center().child(kuvo_ui::small::status_dot(c.success)).into_any_element()),
-                    // (Many tabs: the others keep their names rather than their icons.)
-                    _ if dense && !selected => None,
                     _ => Some(Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }).into_any_element()),
                 })
                 .child(
+                    // (Its name's own width while there's room: it truncates only as the tab narrows.)
                     div()
-                        .flex_1()
+                        .flex_shrink_1()
                         .min_w_0()
                         .truncate()
                         .text_ui(TypeSize::Caption)

@@ -43,8 +43,7 @@ export interface LeftLetter {
 }
 
 /** `letter` in the outbox, sent at once on this Mac (the next round on a machine): its id. */
-export function leaveLetter(letter: LeftLetter, now = Date.now()): string {
-  const id = "ltr_" + crypto.randomBytes(16).toString("base64url");
+export function leaveLetter(letter: LeftLetter, now = Date.now(), id = "ltr_" + crypto.randomBytes(16).toString("base64url")): string {
   fs.mkdirSync(SENDING, { recursive: true, mode: 0o700 });
   writePrivate(path.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
   if (IS_MAC) macSendOutbox();

@@ -25,7 +25,7 @@ import { writeSecret } from "../../shared/files"
 import { commandSignIn } from "../signin"
 import { newID } from "../ids"
 import { kuvoTools } from "../kuvotools"
-import { dropRelayed, relayedServers, relayedTools, relayPort, serversKey } from "../toolrelay"
+import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { claudeSubagents, subagentRules, subagentsFor, type Subagents } from "../subagents"
@@ -1092,7 +1092,7 @@ class ClaudeThread implements Thread {
     // What the app adds to its instructions changed (a worktree, the project's folders), or Claude
     // Code was updated: it starts again, going on with the same conversation. (Run whole in the
     // box's sandbox, through the relay, the one way out of it to them.)
-    const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
     // Settings › Skills' skills, as a plugin of its own (but those it reads itself).
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)))
     // So does it when the box's sandbox was turned on or off, or its rules changed.
@@ -1133,7 +1133,7 @@ class ClaudeThread implements Thread {
     if (this.query && (opening || this.servers !== serversNow)) {
       const entries: Record<string, unknown> = {}
       // (Its key to them made again, if it started again: the old one went with it.)
-      const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
+      const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
       if (tools) entries[tools.name] = tools.kind === "http" ? { type: "http", url: tools.url, headers: tools.headers, timeout: tools.timeout } : { type: "stdio", command: tools.command, args: tools.args, env: tools.env, timeout: tools.timeout }
       for (const server of servers) entries[server.name] = { type: "http", url: server.url, headers: server.headers, timeout: server.timeout }
       this.servers = serversNow
@@ -1526,7 +1526,7 @@ class ClaudeThread implements Thread {
     const named = botMemory(this.session)
     const ownMemory = named && existsSync(named) ? named : undefined
     this.input = new Queue()
-    const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
     this.adopted = Boolean(taken)
@@ -1590,7 +1590,7 @@ class ClaudeThread implements Thread {
       homes: [settings],
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...(skills ? [skills] : []), ...(attached ? [attached] : []), ...(machineFolders ? [machineFolders] : [])],
+      read: [...(onMachine ? [process.execPath] : []), ...(skills ? [skills] : []), ...(attached ? [attached] : []), ...(machineFolders ? [machineFolders] : [])],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session),

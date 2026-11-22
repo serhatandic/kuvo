@@ -198,7 +198,7 @@ fn nothing_replays_on_a_later_copy_or_a_reconnect(cx: &mut TestAppContext) {
     assert!(celebrating(cx, 40.), "seen finishing in the sidebar: it celebrates");
     run_for(cx, 2.);
     click(cx, "bot-chat");
-    assert!(bounds(cx, "bot-chat-strip").is_some());
+    assert!(bounds(cx, "bot-chat-title").is_some());
     for _ in 0..30 {
         run_for(cx, 1. / 60.);
         assert!(!celebrating(cx, 22.), "the header's copy, drawn later, doesn't celebrate again");

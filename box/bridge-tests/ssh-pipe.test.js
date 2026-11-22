@@ -44,7 +44,7 @@ function output(stream) {
   };
 }
 
-test("the resident answers both SSH verbs and a disconnected request is never replayed", { timeout: 140_000 }, async t => {
+test("the resident answers both SSH verbs and settles a tool call across a restart", { timeout: 140_000 }, async t => {
   const account = fs.mkdtempSync(path.join(os.tmpdir(), "ku-pipe-"));
   removeAtEnd(account);
   const home = path.join(account, "box");
@@ -175,10 +175,30 @@ test("the resident answers both SSH verbs and a disconnected request is never re
     return { request, disconnect };
   };
   let writes = 0;
+  const received = new Map();
+  let prompts = 0;
+  const receiver = { id: "ses_receiver", title: "Receiver", location: { directory: home } };
   const engine = http.createServer(async (req, res) => {
-    if (!["/api/pipe-binary", "/api/pipe-wait", "/api/pipe-write"].includes(req.url)) return res.writeHead(404).end();
     const parts = [];
     for await (const part of req) parts.push(part);
+    const url = new URL(req.url, "http://localhost");
+    const reply = (data, status = 200) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
+    if (url.pathname === "/api/session") return reply([receiver]);
+    if (url.pathname === "/api/session/ses_receiver") return reply(receiver);
+    if (url.pathname === "/api/session/ses_receiver/inbox") return reply([]);
+    if (url.pathname.startsWith("/api/session/ses_receiver/message/")) {
+      const message = received.get(url.pathname.split("/").at(-1));
+      return reply(message ?? null, message ? 200 : 404);
+    }
+    if (url.pathname === "/api/session/ses_receiver/prompt" && req.method === "POST") {
+      const message = JSON.parse(Buffer.concat(parts));
+      prompts++;
+      received.set(message.id, message);
+      res.once("close", closed);
+      arrived();
+      return;
+    }
+    if (!["/api/pipe-binary", "/api/pipe-wait", "/api/pipe-write"].includes(url.pathname)) return reply(null, 404);
     if (req.url === "/api/pipe-binary") return res.writeHead(200, { "content-type": "application/octet-stream" }).end(Buffer.concat(parts));
     if (req.url === "/api/pipe-write") writes++;
     res.once("close", closed);
@@ -222,9 +242,26 @@ test("the resident answers both SSH verbs and a disconnected request is never re
   assert.deepEqual(await owner.stop("SIGKILL"), [null, "SIGKILL"]);
   assert.deepEqual(await changed.ended, [1, null]);
   assert.equal((await changed.reply.rest()).length, 0);
-  assert.equal((await one(legacy({ method: "POST", path: "api/pipe-write", body: { value: "saved" } }))).status, 503);
   assert.equal(writes, 1);
+
+  const request = { method: "POST", path: "kuvo/agent-tools", body: {
+    name: "send_message", arguments: { to: receiver.id, text: "Please check the build." }, operation: "test_send_once",
+  } };
+  const delivering = waiting();
+  const call = legacy(request, "--internal");
+  await sleep(750); // There is still no listening socket.
+  assert.equal(call.child.exitCode, null, "a call made during startup waits");
   owner = await resident();
+  await Promise.race([delivering.request, call.ended.then(async () => assert.fail((await call.reply.line()).body))]);
+  assert.deepEqual(await owner.stop("SIGKILL"), [null, "SIGKILL"]);
+  await delivering.disconnect;
+  owner = await resident();
+  const first = await one(call);
+  assert.equal(first.status, 200);
+  assert.match(JSON.parse(first.body).text, /^Sent to Receiver/);
+  assert.equal(prompts, 1, "recovery finds the committed prompt instead of posting it again");
+  assert.deepEqual(await one(legacy(request, "--internal")), first);
+  assert.equal(prompts, 1);
   assert.equal((await one(await open(attention, writer))).status, 200);
   assert.equal(writes, 1);
   assert.deepEqual(await owner.stop(), [0, null]);

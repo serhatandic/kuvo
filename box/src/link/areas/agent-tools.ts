@@ -9,6 +9,8 @@ import { isCalling } from "../vault/who";
 import { startItem } from "../work-queue/start";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
+import { answerToolCall } from "../server/tool-call";
+
 const ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
 
 // An agent's call to one of its tools (`{name, arguments, session, inView?}`): what the tool says
@@ -24,10 +26,15 @@ export async function* agentToolsRoute(context: RouteContext): AsyncGenerator<An
   const args = isObject(given.arguments) ? given.arguments : {};
   const session = typeof given.session === "string" && ADDRESS.test(given.session) ? given.session : null;
   const inView = typeof given.inView === "boolean" ? given.inView : undefined;
-  const item = given.name === "start_session" ? startItem(args) : undefined;
-  // Only a real tool call may grant the new session write access to the starter's item.
-  const queueItem = item !== undefined && session && await isCalling(session, ["start_session"], args, readEngine, readBridge) ? item : undefined;
-  return yield* json(200, await agentTool(given.name, args, session, { readEngine, bridge, signal: signal ?? undefined, inView, queueItem }));
+  const name = given.name;
+  const recovers = name === "send_message" || name === "start_session" && (args.computer == null || args.computer === "" || args.computer === "here");
+  const answer = await answerToolCall(request, given, async operation => {
+    const item = name === "start_session" ? startItem(args) : undefined;
+    // Only a real tool call may grant the new session write access to the starter's item.
+    const queueItem = item !== undefined && session && await isCalling(session, ["start_session"], args, readEngine, readBridge) ? item : undefined;
+    return agentTool(name, args, session, { readEngine, bridge, signal: operation && recovers ? undefined : signal ?? undefined, inView, queueItem, operation });
+  }, recovers);
+  return yield* json(answer.status, answer.value);
 }
 
 // A session started with a task (`{task, title?, folder?, startedBy?, beside?, wait?}`): by the

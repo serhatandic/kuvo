@@ -215,6 +215,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "panel-subagent-detail", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_subagent_detail) },
     Screen { slug: "panel-side-chat", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_side_chat) },
     Screen { slug: "panel-many-tabs", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_many_tabs) },
+    Screen { slug: "panel-bot-chat", width: 1340., height: 840., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_bot_chat) },
+    Screen { slug: "panel-bot-side-chat", width: 1340., height: 840., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_bot_side_chat) },
     // The rail's areas (`kuvo/src/rail.rs`, `areas.rs`): Sessions with what needs you on top, each
     // other area with a row picked, a narrow window folded and opened, and the first run.
     Screen { slug: "area-sessions", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1330,6 +1332,22 @@ fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<W
         field.update(cx, |field, cx| field.set_text(question, cx));
         view.update(cx, |view, cx| view.ask(cx));
     }
+}
+
+/// A bot's conversation with the side panel opened from the title bar: the New tab page beside it.
+fn panel_bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    workspace.toggle_panel(cx);
+}
+
+/// A side chat beside a bot's conversation, with its question answered.
+fn panel_bot_side_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    workspace.show_panel(Kind::SideChat(None), cx);
+    let Some(view) = workspace.panel().read(cx).side_chat() else { return };
+    let field = view.read(cx).field().clone();
+    field.update(cx, |field, cx| field.set_text("What do you check first each morning?", cx));
+    view.update(cx, |view, cx| view.ask(cx));
 }
 
 /// Many tabs: Changes, two files, a process, the subagents; a file showing.
@@ -2691,6 +2709,9 @@ fn main() -> anyhow::Result<()> {
                     "Postgres raises **23505** atomically on a unique violation, so two sign-ups with the same email can’t both pass a check made first.",
                     "Yes: counting 409s alongside 201s stops anyone probing whether an address already has an account.",
                 ]);
+            }
+            if screen.slug == "panel-bot-side-chat" {
+                stand_in.answer_side_questions(&["The queue: anything that's waiting on you, then what's due today, then what moved overnight."]);
             }
             if screen.slug == "session-menu-held" {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));

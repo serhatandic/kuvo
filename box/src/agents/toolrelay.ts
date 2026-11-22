@@ -18,7 +18,8 @@
 // engine is told to connect it again, to renew the sign-in or find it needs one (which Settings ›
 // Integrations then says). Once it's set right (you signed in again), its agent connects afresh.
 
-import { randomBytes } from "node:crypto"
+import { toolForwarder } from "./tool-forwarder"
+import { randomBytes, randomUUID } from "node:crypto"
 import { spawn, type ChildProcess } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
@@ -117,6 +118,16 @@ export function relayedTools(sessionID: string, holder: object): Extract<KuvoToo
   if (!tools) return undefined
   const key = hold(sessionID, holder)
   return { kind: "http", name: tools.name, key: tools.key, timeout: tools.timeout, url: `http://127.0.0.1:${relayPort()}/mcp`, headers: { Authorization: `Bearer ${key}` } }
+}
+
+/** The agent keeps this stdio connection while the machine's relay changes owners. */
+export function forwardedTools(sessionID: string, holder: object): KuvoTools | undefined {
+  const tools = relayedTools(sessionID, holder)
+  if (!tools || !onMachine) return tools
+  return { kind: "stdio", name: tools.name, key: "forward:" + tools.key, timeout: tools.timeout + 80_000,
+    command: process.execPath, args: ["--config=/dev/null", "--no-env-file", "-e", toolForwarder],
+    env: { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_TOOL_RELAY: tools.url,
+      KUVO_TOOL_RELAY_KEY: tools.headers.Authorization!, KUVO_TOOL_TIMEOUT: String(tools.timeout) } }
 }
 
 /**
@@ -345,7 +356,7 @@ async function answer(request: Request): Promise<Response> {
   let body: any
   if (request.method === "POST") {
     try {
-      body = ownSession(await request.json(), sessionID)
+      body = ownSession(await request.json(), sessionID, request.headers.get("x-kuvo-tool-forwarder") === "1")
     } catch {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 })
     }
@@ -798,10 +809,13 @@ function startServer(entry: Extract<ComputerServer, { kind: "local" }>, sessionI
 }
 
 /** A message with its calls named as the session's own, whatever they said. */
-function ownSession(body: any, sessionID: string): any {
+function ownSession(body: any, sessionID: string, forwarded: boolean): any {
   const each = (message: any) => {
     if (message?.method !== "tools/call" || typeof message.params !== "object" || !message.params) return message
-    return { ...message, params: { ...message.params, _meta: { ...(message.params._meta ?? {}), "ai.opencode/sessionID": sessionID } } }
+    const meta = message.params._meta
+    const operation = meta?.["kuvo.operation"]
+    const id = forwarded && typeof operation === "string" && /^[a-f0-9-]{36}$/.test(operation) ? operation : randomUUID()
+    return { ...message, params: { ...message.params, _meta: { ...meta, "ai.opencode/sessionID": sessionID, "kuvo.operation": id } } }
   }
   return Array.isArray(body) ? body.map(each) : each(body)
 }
@@ -866,7 +880,7 @@ class Program {
   /** Sends a connection's message; a request's answer comes back (undefined for a notification). */
   send(message: any, timeout: number, connection: string): Promise<unknown> {
     this.used = Date.now()
-    if (this.stopped) return Promise.resolve(message?.id === undefined ? undefined : failure(message.id, `${this.name} stopped.`))
+    if (this.stopped) return Promise.resolve(message?.id === undefined ? undefined : stopped(message.id, this.name))
     if (message?.id === undefined || message.id === null) {
       // A cancel names the request as the program knows it.
       const requestId = message?.params?.requestId
@@ -919,10 +933,12 @@ class Program {
     } catch {
       this.child.kill()
     }
-    for (const [, waiting] of this.waiting) waiting.done(failure(waiting.id, `${this.name} stopped.`))
+    for (const [, waiting] of this.waiting) waiting.done(stopped(waiting.id, this.name))
     this.waiting.clear()
     for (const then of this.stopping.splice(0)) then()
   }
 }
 
 const failure = (id: unknown, message: string) => ({ jsonrpc: "2.0", id, error: { code: -32603, message } })
+
+const stopped = (id: unknown, name: string) => ({ jsonrpc: "2.0", id, error: { code: -32603, message: `${name} stopped.`, data: { kuvoRelayRestart: true } } })

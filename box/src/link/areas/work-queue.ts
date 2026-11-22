@@ -7,6 +7,7 @@ import { forwardGrant } from "../work-queue/forward-grant";
 // bring back, keep the labels, and import an old backlog. Agents do the same through the tools
 // (`kuvo/work-queue/tools`).
 
+import { answerToolCall } from "../server/tool-call";
 import { mutationKey, mutationNonce } from "../ownership/mutation";
 import { followedSetup } from "../setup/record";
 import { setupSeedRefusal } from "../setup/seed";
@@ -222,7 +223,10 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (method === "GET") return yield* json(200, { tools: QUEUE_TOOLS, instructions: QUEUE_INSTRUCTIONS });
     if (method !== "POST") return yield* json(405, {});
     const args = isObject(given.arguments) ? given.arguments : {};
-    return yield* json(200, await callQueueTool(given.name, args, given.session, readEngine, readBridge, targets, signal ?? undefined));
+    const recovers = given.name === "queue_add" || given.name === "queue_update" || given.name === "queue_remove" || given.name === "queue_hand";
+    const answer = await answerToolCall(request, given, operation =>
+      callQueueTool(given.name, args, given.session, readEngine, readBridge, targets, operation && recovers ? undefined : signal ?? undefined, operation), recovers);
+    return yield* json(answer.status, answer.value);
   }
 
   if (part === "refs") {

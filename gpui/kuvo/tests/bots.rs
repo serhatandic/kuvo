@@ -58,7 +58,7 @@ fn bot(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, bot: &str) -> 
         click(cx, "rail-bots");
     }
     click(cx, &format!("bot-{bot}"));
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
     click(cx, "bot-chat-settings");
     page(workspace, cx)
 }
@@ -134,7 +134,7 @@ fn chat_opens_the_bots_conversation_in_bots_and_back_returns_to_its_page(cx: &mu
     bot(&workspace, cx, "bot_mira");
     click(cx, "bot-chat");
     // Its own conversation, in its page's place, its row still picked; the keyboard is in its composer.
-    assert!(shown(cx, "bot-chat-strip") && !shown(cx, "bot-head"));
+    assert!(shown(cx, "bot-chat-title") && !shown(cx, "bot-head"));
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.bot_chat().map(|(bot, _)| bot.to_owned()))), (Area::Bots, Some("bot_mira".into())));
     cx.simulate_input("How did it go?");
     let composer = workspace.read_with(cx, |workspace, cx| workspace.bot_chat().unwrap().1.read(cx).composer().clone());
@@ -144,18 +144,18 @@ fn chat_opens_the_bots_conversation_in_bots_and_back_returns_to_its_page(cx: &mu
 
     // The strip's arrow goes to its page; Back, to the conversation again, what was written still there.
     click(cx, "bot-chat-settings");
-    assert!(shown(cx, "bot-head") && !shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-head") && !shown(cx, "bot-chat-title"));
     cx.simulate_keystrokes("cmd-[");
     cx.run_until_parked();
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
     assert_eq!(composer.read_with(cx, |composer, cx| composer.field().read(cx).text().to_owned()), "How did it go?");
     // Another area and back: Bots shows the conversation it showed; its own row, its page.
     cx.simulate_keystrokes("ctrl-2");
     cx.simulate_keystrokes("ctrl-1");
     cx.run_until_parked();
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
     click(cx, "bot-bot_mira");
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
 }
 
 #[gpui::test]
@@ -1171,7 +1171,7 @@ fn wake_chip_drops_cached_activity_on_disconnect_until_a_fresh_bot_snapshot(cx: 
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
     cx.run_until_parked();
-    assert!(shown(cx, "bot-chat-strip"));
+    assert!(shown(cx, "bot-chat-title"));
     assert!(!shown(cx, "activity-wake-status"));
 
     stand_in.set_down(false);

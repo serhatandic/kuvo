@@ -2618,6 +2618,34 @@ impl Composer {
     }
 }
 
+/// A composer's card: the conversation's, and a side chat's in the side panel.
+pub fn card(cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    let c = &theme.colors;
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .gap(space::S2)
+        .p(space::S3)
+        .pl(space::S4)
+        .rounded(radius::CARD)
+        .bg(c.surface)
+        .border_1()
+        .border_color(c.border_strong)
+        .shadow(theme.card_shadow())
+}
+
+/// Where its field goes in the card.
+pub fn field_room(field: impl IntoElement) -> gpui::Div {
+    div().pt(space::S1).pr(space::S1).child(field)
+}
+
+/// The row of its controls under the field, Send at the end.
+pub fn controls() -> gpui::Div {
+    div().flex().items_center().gap(space::S1).ml(-space::S2)
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.item_editor {
@@ -2683,30 +2711,15 @@ impl Render for Composer {
         // The list's keys while it shows, and while a mention's suggestions are on their way.
         let waiting = self.mention_pending && !group && mention_query(&text).is_some();
         let context = if offers.is_empty() && !waiting { CONTEXT.to_owned() } else { format!("{CONTEXT} {SLASH}") };
-        let card = div()
-            .relative()
-            .flex()
-            .flex_col()
-            .gap(space::S2)
-            .p(space::S3)
-            .pl(space::S4)
-            .rounded(radius::CARD)
-            .bg(c.surface)
-            .border_1()
-            .border_color(c.border_strong)
-            .shadow(theme.card_shadow())
+        let card = card(cx)
             .when(!offers.is_empty(), |d| d.child(self.slash_list(&offers, cx)))
             .children(self.full_access_question(cx))
             .children(self.quote_cards(window, cx))
             .children(self.attachments(cx))
             .children(keyword.map(|chip| div().flex().child(chip)))
-            .child(div().pt(space::S1).pr(space::S1).child(self.field.clone()))
+            .child(field_room(self.field.clone()))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S1)
-                    .ml(-space::S2)
+                controls()
                     .when(!group, |d| d.child(Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
                     .when(group, |d| d.children(self.member_faces(cx)))
                     .children(self.mode_chip(cx))
