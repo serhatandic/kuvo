@@ -17,6 +17,7 @@ pub mod asks;
 pub mod artifacts;
 pub mod background;
 pub mod bots;
+pub mod browser_view;
 pub mod boxes;
 pub mod client;
 pub mod connections;

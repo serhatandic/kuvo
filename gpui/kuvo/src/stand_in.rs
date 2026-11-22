@@ -19,6 +19,7 @@ pub use crate::time::now_ms;
 
 pub mod areas;
 pub mod bots;
+pub mod browser;
 pub mod first_run;
 pub mod permissions;
 pub mod git;
@@ -184,6 +185,8 @@ struct State {
     starts: Vec<Value>,
     /// Its engine's terminals.
     terminals: terminals::Terminals,
+    /// Its browser, live (a machine's box's).
+    browser: browser::Browser,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -906,6 +909,63 @@ impl StandIn {
     /// Its engine won't make a terminal now (`Some`: why), or will again.
     pub fn terminals_refused(&self, why: Option<&str>) {
         self.state().terminals.refuses = why.map(str::to_owned);
+    }
+
+    /// The way it's reached can't carry a socket (`Some`: why, as that way says it), for a
+    /// terminal or the browser: or can again.
+    pub fn sockets_not_here(&self, why: Option<&str>) {
+        self.terminals_not_here(why);
+    }
+
+    /// Its browser's keeper runs (the live view's socket opens), or doesn't.
+    pub fn browser_running(&self, running: bool) {
+        self.state().browser.running = running;
+    }
+
+    /// Its browser's pages are now `pages` (`{active, pages}`, as `Kuvo.pages` says them): its open
+    /// socket says so.
+    pub fn browser_pages(&self, pages: Value) {
+        let mut state = self.state();
+        state.browser.pages = pages.clone();
+        state.browser.say(browser::fact("Kuvo.pages", &pages));
+    }
+
+    /// A page's size is now `viewport` (`{targetId, width, height, scale, by}`): its open socket says so.
+    pub fn browser_viewport(&self, viewport: Value) {
+        let mut state = self.state();
+        let target = viewport["targetId"].clone();
+        state.browser.viewports.retain(|each| each["targetId"] != target);
+        state.browser.viewports.push(viewport.clone());
+        state.browser.say(browser::fact("Kuvo.viewport", &viewport));
+    }
+
+    /// Its browser sends a picture (`params`: the frame header's `{targetId, frameId, width,
+    /// height, scrollX, scrollY}`) of `jpeg`.
+    pub fn browser_frame(&self, params: Value, jpeg: &[u8]) {
+        self.state().browser.say(browser::picture(&params, jpeg));
+    }
+
+    /// Each command the app sent its browser, in order, as JSON.
+    pub fn browser_sent(&self) -> Vec<Value> {
+        self.state().browser.sent.clone()
+    }
+
+    /// Those of them for `method`: their params.
+    pub fn browser_sent_of(&self, method: &str) -> Vec<Value> {
+        self.browser_sent().into_iter().filter(|command| command["method"] == method).map(|command| command["params"].clone()).collect()
+    }
+
+    /// How many times its browser's socket was opened, and whether the app closed it.
+    pub fn browser_opened(&self) -> (usize, bool) {
+        let state = self.state();
+        (state.browser.opened, state.browser.closed)
+    }
+
+    /// Its browser's socket ends (the keeper stopped, or the connection went): why, where said.
+    pub fn browser_end(&self, why: Option<&str>) {
+        if let Some(socket) = self.state().browser.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(why.map(str::to_owned)));
+        }
     }
 
     /// The terminals it has now (made and not removed), by id.
@@ -2148,6 +2208,8 @@ impl StandIn {
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push("computers.update.here"); }
                 if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
+                // (A machine's box shows its browser live; a Mac's has none of its own.)
+                if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
                 let missing = kuvo_box::gate::missing(&features);
@@ -2856,6 +2918,31 @@ impl SocketOut for Shell {
     }
 }
 
+/// Its browser's socket, as the app sends on it: each command kept for a test to read, and those with
+/// an id answered.
+struct Viewer {
+    stand_in: StandIn,
+}
+
+impl SocketOut for Viewer {
+    fn send_text(&self, text: &str) -> Result<()> {
+        let mut state = self.stand_in.state();
+        if state.browser.socket.is_none() {
+            return Err(kuvo_box::Error::Unreachable("The connection closed.".into()));
+        }
+        state.browser.heard(text);
+        Ok(())
+    }
+
+    fn close(&self) {
+        let mut state = self.stand_in.state();
+        state.browser.closed = true;
+        if let Some(socket) = state.browser.socket.take() {
+            let _ = socket.send_blocking(SocketMessage::Ended(None));
+        }
+    }
+}
+
 impl Transport for StandIn {
     fn send(&self, request: &Request) -> Result<Response> {
         if self.state().down {
@@ -2882,6 +2969,19 @@ impl Transport for StandIn {
         }
         if let Some(why) = state.terminals.not_here.clone() {
             return Err(kuvo_box::transport::sockets_not_here(why));
+        }
+        if request.route() == "kuvo/browser/view" {
+            // A Mac's box has no live view; a machine's opens it on its keeper, where that runs.
+            if !state.elsewhere {
+                let said = json!({ "message": browser::NO_VIEW_ON_MAC }).to_string();
+                return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, said.as_bytes())));
+            }
+            if !state.browser.running {
+                let said = json!({ "message": format!("connect ENOENT {HOME}/.kuvo-code/run/browser.sock") }).to_string();
+                return Err(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(502, said.as_bytes())));
+            }
+            let incoming = state.browser.open();
+            return Ok(Socket { incoming, outgoing: Arc::new(Viewer { stand_in: self.clone() }) });
         }
         let id = request.route().strip_prefix("api/pty/").and_then(|rest| rest.strip_suffix("/connect")).map(decoded).unwrap_or_default();
         let Some(pty) = state.terminals.get(&id).filter(|pty| pty.info["status"] == "running") else {
