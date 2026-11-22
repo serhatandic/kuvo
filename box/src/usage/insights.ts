@@ -7,7 +7,6 @@ import { insightKey, type InsightRecord } from "./insight-records"
 import { providerName } from "./insights-names"
 import type { KeptSummaries } from "./insights-kept"
 import type { InsightsScan } from "./insights-scan"
-import type { OriginScope } from "./insights-store"
 import { cacheRate, MOST, type Conversation, type Sums } from "./insights-summary"
 import type { Pricing, PricingStore } from "./pricing"
 
@@ -64,9 +63,7 @@ export class Insights {
 
   constructor(
     private index: InsightsDB,
-    private scanner: Pick<InsightsScan, "scan"> | {
-      index(pricing: Pricing, since: number, now: number, origins: OriginScope, db: InsightsDB): Promise<string[]>
-    },
+    private scanner: { scan(pricing: Pricing, since: number, db: InsightsDB): ReturnType<InsightsScan["scan"]> },
     private pricing: PricingStore,
     private directory: LinkDirectory,
     private post: PeerPost,
@@ -127,10 +124,13 @@ export class Insights {
     const now = this.now()
     const pricing = this.pricing.current()
     const since = Math.floor(now / DAY) * DAY - 365 * DAY
-    const origins = this.origins()
-    const issues = "index" in this.scanner
-      ? await this.scanner.index(pricing, since, now, origins, this.db)
-      : await this.indexScan(await this.scanner.scan(pricing, since), now, origins)
+    const { records, lineage, issues } = await this.scanner.scan(pricing, since, this.db)
+    // Bound each worker message so the bridge can handle other requests during a backfill.
+    for (let offset = 0; offset < records.length; offset += 800) {
+      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins())
+    }
+    await this.db.take([], this.pricing.current(), now)
+    await this.db.attribute(lineage)
     await this.db.write("failed", false)
     await this.db.write("local", { scanned: this.now(), issues })
     this.sync()
@@ -138,17 +138,6 @@ export class Insights {
       const served = await this.db.read<{ after: number; epoch?: string }>(`served/${peer.key}`)
       if (served) await this.sendPage(peer.key, served.after, served.epoch)
     }
-  }
-
-  /** A source scanner is used when there is no bundled service or a test supplies its accounts. */
-  private async indexScan(scan: Awaited<ReturnType<InsightsScan["scan"]>>, now: number, origins: OriginScope) {
-    const { records, lineage, issues } = scan
-    for (let offset = 0; offset < records.length; offset += 800) {
-      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, origins)
-    }
-    await this.db.take([], this.pricing.current(), now)
-    await this.db.attribute(lineage)
-    return issues
   }
 
   private ownEpoch() {

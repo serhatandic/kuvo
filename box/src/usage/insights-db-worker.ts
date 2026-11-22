@@ -34,18 +34,7 @@ export function serveInsightsDB() {
               bots: () => input.bots, computer: () => input.computer, engine: input.engine,
             })
           }
-          // The scan and the index share a worker. Keep the year's records there and
-          // let queued index reads answer between write transactions.
-          const index = db!
-          const { lineage, issues } = await scanner.scan(pricing!, args[1], records => {
-            const current = pricing!
-            index.price(current, args[2])
-            index.take(records, current, args[2], undefined, undefined, undefined, args[3])
-          })
-          index.price(pricing!, args[2])
-          index.take([], pricing!, args[2])
-          index.attribute(lineage)
-          result = issues
+          result = await scanner.scan(pricing!, args[1])
           break
         }
         case "cursor": result = db!.cursor(...args); break

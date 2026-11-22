@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 5a6639dc7bb3
+// Kuvo folder layout 23 0bebde59aa08
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5a6639dc7bb3";
+var BRIDGE_VERSION = "0bebde59aa08";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -114984,8 +114984,12 @@ class Insights {
     const now = this.now();
     const pricing = this.pricing.current();
     const since = Math.floor(now / DAY7) * DAY7 - 365 * DAY7;
-    const origins = this.origins();
-    const issues = "index" in this.scanner ? await this.scanner.index(pricing, since, now, origins, this.db) : await this.indexScan(await this.scanner.scan(pricing, since), now, origins);
+    const { records, lineage, issues } = await this.scanner.scan(pricing, since, this.db);
+    for (let offset = 0;offset < records.length; offset += 800) {
+      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins());
+    }
+    await this.db.take([], this.pricing.current(), now);
+    await this.db.attribute(lineage);
     await this.db.write("failed", false);
     await this.db.write("local", { scanned: this.now(), issues });
     this.sync();
@@ -114994,15 +114998,6 @@ class Insights {
       if (served)
         await this.sendPage(peer.key, served.after, served.epoch);
     }
-  }
-  async indexScan(scan, now, origins) {
-    const { records, lineage, issues } = scan;
-    for (let offset = 0;offset < records.length; offset += 800) {
-      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, origins);
-    }
-    await this.db.take([], this.pricing.current(), now);
-    await this.db.attribute(lineage);
-    return issues;
   }
   ownEpoch() {
     const db = this.db;
@@ -124305,8 +124300,8 @@ class InsightsDB {
   choices(computers) {
     return this.call(["choices", [computers]]);
   }
-  scan(input, pricing, since, now, origins) {
-    return this.call(["scan", [input, since, now, origins]], pricing);
+  scan(input, pricing, since) {
+    return this.call(["scan", [input, since]], pricing);
   }
   price(pricing, now) {
     return this.call(["price", [now]], pricing);
@@ -124326,7 +124321,6 @@ class InsightsDB {
 }
 
 // box/src/usage/insights-scan.ts
-import { setImmediate as nextTurn3 } from "node:timers/promises";
 function skillsNamed(tools) {
   const names = new Set;
   for (const [tool, value] of tools) {
@@ -124476,7 +124470,7 @@ class InsightsScan {
       antigravitySources(options.cache, ownComputer2, new AntigravityHistory, reader)
     ];
   }
-  async scan(pricing, since, save) {
+  async scan(pricing, since) {
     const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity");
     const sources = this.sources.flatMap((list) => list(agents));
     this.issues.clear();
@@ -124516,50 +124510,15 @@ class InsightsScan {
     for (const list of native.values())
       list.sort((a, b) => a.at - b.at);
     const store = this.options.store;
-    const recordsFromStore = typeof store === "function" ? [...store()] : store.all().flatMap((session) => store.get(session.id) ?? []);
-    for (const { session } of recordsFromStore)
-      nodes.set(session.id, lineNode(session, botOf, botNames));
-    let engineRecords = [];
-    if (this.options.engine) {
-      try {
-        const read = await this.engineRecords(this.options.engine, since);
-        engineRecords = read.records;
-        for (const [id, session] of read.sessions) {
-          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) });
-        }
-        if (read.partial)
-          issues.add("opencode");
-      } catch {
-        issues.add("opencode");
-      }
-    } else {
-      issues.add("opencode");
-    }
-    const lineOf = lineages(nodes);
-    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }) => {
-      const line = lineOf(record.session);
-      return {
-        ...record,
-        ...line.bot ? { bot: line.bot } : {},
-        ...line.botName ? { botName: line.botName } : {},
-        ...line.root !== record.session ? { root: line.root } : {},
-        ...line.own ? { botOwn: true } : {}
-      };
-    };
-    const saveBatch = () => {
-      save(records.splice(0, SCAN_BATCH).map(withLine));
-      return nextTurn3();
-    };
+    const recordsFromStore = typeof store === "function" ? store() : store.all().flatMap((session) => store.get(session.id) ?? []);
     for (const record of recordsFromStore) {
       const session = record.session;
+      nodes.set(session.id, lineNode(session, botOf, botNames));
       if (session.time.updated < since)
         continue;
-      await nextTurn3();
       const seat = seatBot(session.metadata);
       const base = { session: session.id, title: session.title };
       for (const message of record.messages) {
-        if (save && records.length >= SCAN_BATCH)
-          await saveBatch();
         if (message.type !== "assistant" && message.type !== "user")
           continue;
         const at = message.time.completed ?? message.time.created;
@@ -124607,8 +124566,6 @@ class InsightsScan {
             taken.add(nativeID);
             matched = true;
             records.push({ ...step, ...row, supersedes: key, session: session.id, nativeSession: row.session, key: nativeID });
-            if (save && records.length >= SCAN_BATCH)
-              await saveBatch();
           }
           if (matched)
             continue;
@@ -124616,18 +124573,37 @@ class InsightsScan {
         records.push({ ...step, tokens, ...!tokens ? { partial: true } : {} });
       }
     }
-    for (const record of engineRecords) {
-      records.push(record);
-      if (save && records.length >= SCAN_BATCH)
-        await saveBatch();
+    if (this.options.engine) {
+      try {
+        const read = await this.engineRecords(this.options.engine, since);
+        records.push(...read.records);
+        for (const [id, session] of read.sessions) {
+          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) });
+        }
+        if (read.partial)
+          issues.add("opencode");
+      } catch {
+        issues.add("opencode");
+      }
+    } else {
+      issues.add("opencode");
     }
-    if (save && records.length)
-      await saveBatch();
+    const lineOf = lineages(nodes);
+    const lined = records.map(({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }) => {
+      const line = lineOf(record.session);
+      return {
+        ...record,
+        ...line.bot ? { bot: line.bot } : {},
+        ...line.botName ? { botName: line.botName } : {},
+        ...line.root !== record.session ? { root: line.root } : {},
+        ...line.own ? { botOwn: true } : {}
+      };
+    });
     const lineage = [...nodes.keys()].flatMap((id) => {
       const line = lineOf(id);
       return line.bot || line.root !== id ? [[id, line]] : [];
     });
-    return { records: records.map(withLine), lineage, issues: [...issues] };
+    return { records: lined, lineage, issues: [...issues] };
   }
   async engineRecords(folder, since) {
     const stamp = databasesStamp(folder);
@@ -124696,7 +124672,7 @@ function lowerBound(rows, at) {
   }
   return lo;
 }
-var nativeKey, SCAN_BATCH = 800, count3 = (value) => {
+var nativeKey, count3 = (value) => {
   const n = numberOf2(value);
   return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : null;
 };
@@ -124789,7 +124765,7 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
       ...groups.allBots()
     ];
     const cache = join38(folder, "insights-logs");
-    const scanner = bundle && !fixtures ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since, now, origins) } : new InsightsScan({
+    const scanner = bundle && !fixtures ? { scan: (pricing, since, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since) } : new InsightsScan({
       root: home,
       cache,
       agents,
@@ -125653,16 +125629,7 @@ function serveInsightsDB() {
               engine: input.engine
             });
           }
-          const index = db;
-          const { lineage, issues } = await scanner.scan(pricing, args[1], (records) => {
-            const current = pricing;
-            index.price(current, args[2]);
-            index.take(records, current, args[2], undefined, undefined, undefined, args[3]);
-          });
-          index.price(pricing, args[2]);
-          index.take([], pricing, args[2]);
-          index.attribute(lineage);
-          result = issues;
+          result = await scanner.scan(pricing, args[1]);
           break;
         }
         case "cursor":
