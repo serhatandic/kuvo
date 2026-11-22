@@ -36,11 +36,14 @@ and its entry in the repo's `THIRD_PARTY_LICENSES.txt` (`scripts/third-party-lic
 | ring | Apache-2.0 AND ISC | The cryptography under that TLS | kuvo_box (through rustls) |
 | rustls-webpki | ISC | Checking the relay's certificate | kuvo_box (through rustls) |
 | webpki-roots | CDLA-Permissive-2.0 | The certificate authorities the relay's certificate is checked against (Mozilla's list, as data) | kuvo_box |
+| alacritty_terminal (with vte, and polling, rustix-openpty, signal-hook, home it builds with) | Apache-2.0 (vte, polling, signal-hook, home: MIT OR Apache-2.0; rustix-openpty: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) | The side panel's terminal: its screen, scrollback, selection and escape sequences (only its model of a terminal; the shell runs on the box) | kuvo |
 
 GPUI's `test-support` feature (Apache-2.0, same crate) is used only by the tests and the
 `shots` binary. `tempfile` (MIT OR Apache-2.0) gives `kuvo_box`'s tests and example folders of
 their own. Before the link, every crate `kuvo_box` used was already in the build (below); the link's are
-the first it adds. The app, `kuvo`, uses only crates already in the build and listed here.
+the first it adds. The app, `kuvo`, uses only crates already in the build and listed here, and
+`alacritty_terminal` (Apache-2.0) for its terminal, the first it adds. Zed's own terminal crates
+(GPL-3.0) are never used or copied.
 
 GPUI also brings in other crates from Zed's repository, all Apache-2.0: `gpui_apple`,
 `gpui_macos`, `gpui_macros`, `gpui_shared_string`, `gpui_util`, `collections`, `refineable`,
@@ -102,6 +105,7 @@ platform crates, to be checked when the client is built there).
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
+| alacritty_terminal | 0.26.0 | Apache-2.0 |
 | aligned | 0.4.3 | MIT OR Apache-2.0 |
 | aligned-vec | 0.6.4 | MIT |
 | alloca | 0.4.0 | MIT |
@@ -183,6 +187,7 @@ platform crates, to be checked when the client is built there).
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | ctor | 1.0.13 | Apache-2.0 OR MIT |
 | ctr | 0.9.2 | MIT OR Apache-2.0 |
+| cursor-icon | 1.2.0 | MIT OR Apache-2.0 OR Zlib |
 | curve25519-dalek | 4.1.3 | BSD-3-Clause |
 | data-encoding | 2.11.1 | MIT |
 | data-url | 0.3.2 | MIT OR Apache-2.0 |
@@ -257,6 +262,7 @@ platform crates, to be checked when the client is built there).
 | heck | 0.4.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | hmac | 0.12.1 | MIT OR Apache-2.0 |
+| home | 0.5.12 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
 | http_client | 0.1.0 | Apache-2.0 |
@@ -362,6 +368,7 @@ platform crates, to be checked when the client is built there).
 | plotters-svg | 0.3.7 | MIT |
 | png | 0.17.16 | MIT OR Apache-2.0 |
 | png | 0.18.1 | MIT OR Apache-2.0 |
+| polling | 3.11.0 | Apache-2.0 OR MIT |
 | pollster | 0.2.5 | Apache-2.0/MIT |
 | pollster | 0.4.0 | Apache-2.0/MIT |
 | polycool | 0.4.0 | MIT OR Apache-2.0 |
@@ -407,6 +414,7 @@ platform crates, to be checked when the client is built there).
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustix-openpty | 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.17 | ISC |
@@ -435,6 +443,8 @@ platform crates, to be checked when the client is built there).
 | sha1_smol | 1.0.1 | BSD-3-Clause |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
+| signal-hook | 0.4.6 | MIT OR Apache-2.0 |
+| signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
 | simd-adler32 | 0.3.10 | MIT |
 | simd_helpers | 0.1.0 | MIT |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT |
@@ -505,6 +515,7 @@ platform crates, to be checked when the client is built there).
 | unicode-script | 0.5.9 | MIT OR Apache-2.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | unicode-vo | 0.1.0 | MIT/Apache-2.0 |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | url | 2.5.8 | MIT OR Apache-2.0 |
@@ -514,6 +525,7 @@ platform crates, to be checked when the client is built there).
 | uuid | 1.29.2 | Apache-2.0 OR MIT |
 | v_frame | 0.3.9 | BSD-2-Clause |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
+| vte | 0.15.0 | Apache-2.0 OR MIT |
 | wait-timeout | 0.2.1 | MIT/Apache-2.0 |
 | waker-fn | 1.2.0 | Apache-2.0 OR MIT |
 | walkdir | 2.5.0 | Unlicense/MIT |
