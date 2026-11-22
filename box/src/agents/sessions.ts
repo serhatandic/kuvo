@@ -66,6 +66,8 @@ interface Input {
 interface Run {
   turn: Turn
   abort: AbortController
+  /** Whether this turn can run a model on the engine, including an Auto fallback. */
+  engineTurn?: boolean
   /** The agent at work in it now (Auto may go through several), for Stop and for what you send partway. */
   agent?: { provider: string; thread: Thread; abandon: () => void }
   /** The slot of the agent that ran last in it: it sees the turn's end too. */
@@ -966,6 +968,7 @@ export class Sessions {
     held: Map<string, HeldTurn> = new Map(),
     transfer?: Record<string, TransferSession>,
     private readonly programHome?: string,
+    private readonly releaseHolding?: () => boolean,
   ) {
     this.transferred = new Map()
     if (transfer && [...held].some(([id, turn]) => {
@@ -1416,6 +1419,11 @@ export class Sessions {
     const ids = [...this.live.keys()].filter((id) => this.atWork(id))
     for (const live of this.live.values()) for (const [child, turn] of live.subagents) if (!turn.isEnded) ids.push(child)
     return ids
+  }
+
+  /** Turns that need this bridge to finish following an engine model. */
+  engineTurns(): string[] {
+    return [...this.live].filter(([, live]) => runOf(live.doing)?.engineTurn).map(([id]) => id)
   }
 
   /**
@@ -2171,7 +2179,8 @@ export class Sessions {
     // chat's seat: a discussion under way goes on to its end, and the bridge waits for it.)
     const input = queue[index]!
     const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model)
-    if ((this.holding && !isSeat(record.session)) || this.programHeld(model?.providerID)) {
+    const waitsForRelease = model && !parseProvider(model.providerID) && this.releaseHolding?.()
+    if (waitsForRelease || (this.holding && !isSeat(record.session)) || this.programHeld(model?.providerID)) {
       input.held = true
       if (input.delivery !== "steer") {
         input.delivery = "steer"
@@ -2284,7 +2293,9 @@ export class Sessions {
     const record = this.store.get(id)
     if (!record || live.doing.kind !== "idle") return
     const session = record.session
-    const run: Run = { turn: new Turn(this.store, id, session.location.directory, session.model!, session.agent ?? "build"), abort: new AbortController(), steered: [] }
+    const model = input.adopt ?? (input.compact ? this.holdingModel(record) : session.model)
+    const run: Run = { turn: new Turn(this.store, id, session.location.directory, session.model!, session.agent ?? "build"),
+      abort: new AbortController(), steered: [], engineTurn: Boolean(model && !parseProvider(model.providerID)) }
     live.doing = { kind: "running", run }
     clearTimeout(live.idle)
     void this.runTurn(id, live, record, run, input)
@@ -3624,10 +3635,14 @@ export class Sessions {
   /** Messages held for this bridge by the one before it (renewal.ts), or by this one while it waited to
    * make way: they go now, each once. */
   wakeHeld() {
+    if (this.holding) return
     for (const session of this.store.all()) {
       const record = this.store.get(session.id)
       if (!record) continue
-      const held = this.queue(record).filter((input) => input.held)
+      const held = this.queue(record).filter((input) => {
+        const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model)
+        return input.held && !(model && !parseProvider(model.providerID) && this.releaseHolding?.())
+      })
       if (!held.length) continue
       for (const input of held) delete input.held
       this.store.save(session.id, true)

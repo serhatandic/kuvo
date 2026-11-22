@@ -40,7 +40,7 @@ import { writeSecret } from "../shared/files"
 import { leftSignIns } from "./signin"
 import { commandLineOf } from "../shared/platform"
 import { updateUnderWay } from "../shared/updating"
-import { swapUnderWay, untilSwapLets } from "../shared/engine-swap"
+import { releaseHold, swapUnderWay, untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
 import { buildOf, bundleBuild } from "../shared/bundle"
 import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalRecord } from "../shared/records"
@@ -260,6 +260,12 @@ if (onMachine && machineHome) {
   keepRelayKeys(heldSessions())
 }
 if (standby && Object.keys(standby.transfer.sessions).some(id => !heldTurns.has(id))) throw new Error("A session is missing from the handover.")
+let holdingRelease = false
+const releaseHolding = () => {
+  const holding = Boolean(bridgeRun && releaseHold(bridgeRun))
+  if (holding) holdingRelease = true
+  return holding
+}
 const sessions = new Sessions(
   store,
   roster,
@@ -272,6 +278,7 @@ const sessions = new Sessions(
   heldTurns,
   transfer?.sessions,
   home,
+  releaseHolding,
 )
 // Tells the box's link, as it changes, whether every agent's process here runs in its sandbox
 // (none started before it came on still runs): only then do agents use the vault.
@@ -317,7 +324,17 @@ const boxServices = new BoxServicesClient(runFolder)
 notesBeside(runFolder)
 // What would start a turn on the engine waits while the engine is being changed (PROTOCOL.md, "A
 // new engine"), bounded as that hold is: it goes to the new one.
-if (runFolder) link.beforeTurn = () => untilSwapLets(runFolder)
+if (runFolder) {
+  // A bridge turn admitted before the release hold must be free to finish, including its next
+  // Auto model. New bridge turns wait in Sessions, and other engine sends wait here.
+  link.beforeTurn = (alreadyAdmitted) => untilSwapLets(runFolder, 1000, !alreadyAdmitted)
+  setInterval(() => {
+    if (holdingRelease && !releaseHolding()) {
+      holdingRelease = false
+      sessions.wakeHeld()
+    }
+  }, 1000).unref()
+}
 // Nor do the agents get these.
 for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO_AGENTS_FILE", "KUVO_ARTIFACTS", "KUVO_RUN", ...(onMachine ? [] : ["KUVO_BOTS"])]) delete process.env[name]
 if (groupFolders) {

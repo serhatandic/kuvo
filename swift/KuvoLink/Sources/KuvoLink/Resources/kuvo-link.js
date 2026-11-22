@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 671e86f34897
+// Kuvo folder layout 23 6957b9077117
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -568,14 +568,24 @@ function machineRecovery(run, swap) {
     return false;
   return !!readMachineJob(run)?.version;
 }
-function swapUnderWay(run) {
+function releaseHold(run) {
   const install = readSwap(run, installHoldFile(run));
-  if (install && alive(install.pid)) {
+  if (!install)
+    return null;
+  if (fs4.existsSync(path3.join(run, "previous")))
+    return install;
+  if (alive(install.pid)) {
     try {
       if (Number(fs4.readFileSync(path3.join(run, ".updating", "pid"), "utf8")) === install.pid)
         return install;
     } catch {}
   }
+  return null;
+}
+function swapUnderWay(run, includeRelease = true) {
+  const install = includeRelease ? releaseHold(run) : null;
+  if (install)
+    return install;
   const swap = readSwap(run);
   if (!swap)
     return null;
@@ -585,8 +595,8 @@ function swapUnderWay(run) {
     return { ...swap, stage: "back" };
   return null;
 }
-function swapHolds(run, now = Date.now()) {
-  const swap = swapUnderWay(run);
+function swapHolds(run, now = Date.now(), includeRelease = true) {
+  const swap = swapUnderWay(run, includeRelease);
   if (!swap || swap.stage === "waiting")
     return false;
   return machineRecovery(run, swap) || typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
@@ -1640,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "671e86f34897";
+var BRIDGE_VERSION = "6957b9077117";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -77631,7 +77641,7 @@ function followRelease(options) {
     if (expected && sameRelease(readyFact(), expected)) {
       if (pull)
         endPull();
-      if (activationAllowed(expected, now))
+      if (!releaseDrainDeferred(expected.version, now) && activationAllowed(expected, now))
         start({ phase: "activate", expected, keys });
       return;
     }
@@ -102249,11 +102259,13 @@ async function active(target) {
   const sessions = await call(target, "GET", "/api/session/active", undefined, AbortSignal.timeout(3000));
   return Array.isArray(sessions) ? sessions.filter((id) => typeof id === "string") : isObject(sessions) ? Object.keys(sessions) : [];
 }
-async function rememberCutTurns(root) {
+async function rememberCutTurns(root, engine) {
   if (fs240.existsSync(record3(root)))
     await continueCutTurns(root);
   const turns = savedTurns(root);
   for (const lane of ["engine", "bridge"]) {
+    if (lane === "engine" && !engine)
+      continue;
     let target;
     try {
       target = readTarget[lane]();
@@ -102341,6 +102353,7 @@ __export(exports_update, {
   confirmUpdate: () => confirmUpdate,
   dataNow: () => dataNow,
   dropOldBackups: () => dropOldBackups,
+  finishReleaseHold: () => finishReleaseHold,
   hexSHA256: () => hexSHA256,
   installOrder: () => installOrder,
   installedPack: () => installedPack,
@@ -102355,6 +102368,7 @@ __export(exports_update, {
   packName: () => packName,
   packedBox: () => packedBox,
   receiveRelease: () => receiveRelease,
+  releaseDrainDeferred: () => releaseDrainDeferred,
   releaseRound: () => releaseRound,
   requestUpdateNow: () => requestUpdateNow,
   roomForData: () => roomForData,
@@ -102495,6 +102509,71 @@ async function agentsWorking(readEngine = readEngineFile, readBridge = readBridg
   }
   return unknown ? null : false;
 }
+function releaseDrainDeferred(version, now) {
+  const last = updateState().last;
+  return last?.result === "waiting" && last.version === version && last.message === ENGINE_TURNS_WAIT && now - last.at < RELEASE_DRAIN_RETRY;
+}
+async function bridgeEngineWorking(signal) {
+  let bridge;
+  try {
+    bridge = readBridgeFile();
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+  if (!processRuns(bridge.pid, "kuvo-agents"))
+    return false;
+  const reply = await asked(bridge, "GET", "api/session/active?release-switch", undefined, 3000);
+  if (!isObject(reply) || !isObject(reply.data))
+    return true;
+  if (Array.isArray(reply.engineTurns))
+    return reply.engineTurns.length !== 0;
+  const active = await Promise.all(Object.keys(reply.data).map((id) => call(bridge, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal)));
+  return active.some((session) => !isObject(session) || !isObject(session.model) || typeof session.model.providerID !== "string" || isEngineModel({ providerID: session.model.providerID }));
+}
+async function nativeEngineWorking(signal) {
+  let engine;
+  try {
+    engine = readEngineFile();
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+  if (!engineRuns(engine.pid, K))
+    return false;
+  const active = await call(engine, "GET", "/api/session/active", undefined, signal);
+  return Array.isArray(active) ? active.length !== 0 : !isObject(active) || Object.keys(active).length !== 0;
+}
+async function drainEngineTurns(keepEngine, deadline, clock) {
+  while (true) {
+    const signal = AbortSignal.timeout(3000);
+    const busy = await Promise.all([
+      bridgeEngineWorking(signal).catch(() => true),
+      keepEngine ? false : nativeEngineWorking(signal).catch(() => true)
+    ]);
+    if (!busy.some(Boolean))
+      return true;
+    const left = deadline - clock();
+    if (left <= 0)
+      return false;
+    await sleep(Math.min(1000, left));
+  }
+}
+async function finishReleaseHold() {
+  const hold = installHoldFile(RUN);
+  if (!fs241.existsSync(hold) || fs241.existsSync(previousBin(K)) || !takeUpdateLock())
+    return;
+  try {
+    if (fs241.existsSync(previousBin(K)))
+      return;
+    await releaseWaiting(readEngineFile());
+    fs241.rmSync(hold, { force: true });
+  } finally {
+    fs241.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
 function ran2(command, args, env = {}, timeout = 120000) {
   const result = spawnSync18(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
@@ -102589,6 +102668,7 @@ async function update({
   url = UPDATE_URL,
   blocked = updatesBlocked(),
   clock = Date.now,
+  drainClock = () => performance.now(),
   step = () => {}
 } = {}) {
   if (!keys.length)
@@ -102623,6 +102703,9 @@ async function update({
       if (path250.basename(K) !== ".kuvo-code" || path250.resolve(K) !== path250.resolve(home ?? path250.dirname(K), ".kuvo-code")) {
         throw new Error("This keeper doesn’t run from Kuvo’s home folder.");
       }
+      const selectedHome = home ?? path250.dirname(K);
+      const keepEngine = ran2("sh", [keeper, "switch-engine", target], { HOME: selectedHome }).output === "keep";
+      const deadline = drainClock() + RELEASE_DRAIN_MOST;
       const holding = Date.now();
       const to = /^V=(.+)$/m.exec(textOf(keeper) ?? "")?.[1] ?? "";
       const hold = { from: runningEngineVersion() ?? "", to, since: holding, stage: "holding", holding, pid: process.pid };
@@ -102630,14 +102713,20 @@ async function update({
       step("installing");
       writePrivate(installHoldFile(RUN), JSON.stringify(engineSwapFormat.write(hold)));
       await waitForPromptWrites();
-      if (!activationAllowed(expected, clock()))
-        return { result: "waiting" };
-      await rememberCutTurns(K);
+      if (!await drainEngineTurns(keepEngine, deadline, drainClock)) {
+        return { result: "waiting", version: expected.version, message: ENGINE_TURNS_WAIT };
+      }
+      if (!activationAllowed(expected, clock()) || ["stopped", "paused", "off"].some((mark) => fs241.existsSync(path250.join(RUN, mark)))) {
+        return { result: "waiting", version: expected.version };
+      }
+      await rememberCutTurns(K, !keepEngine);
       writeDurablePrivate(previousBin(K), previous + `
 `, K);
-      const changed = ran2("sh", [keeper, "stop", "--switch", target], { HOME: home ?? path250.dirname(K) });
-      if (activeBin(K) !== target)
+      const changed = ran2("sh", [keeper, "stop", "--switch", target, ...keepEngine ? ["keep"] : []], { HOME: selectedHome });
+      if (activeBin(K) !== target) {
+        fs241.rmSync(previousBin(K), { force: true });
         throw new Error(changed.output || "Kuvo couldn’t stop its workers for the release.");
+      }
       return { result: "updated", version: expected.version };
     }
     step("checking");
@@ -102826,11 +102915,10 @@ async function update({
     }
     return { result: "failed", message: reason, version: attempt?.version };
   } finally {
-    if (engineHold) {
+    if (engineHold && !fs241.existsSync(previousBin(K))) {
       fs241.rmSync(installHoldFile(RUN), { force: true });
       try {
-        if (!fs241.existsSync(previousBin(K)))
-          await releaseWaiting(readEngineFile());
+        await releaseWaiting(readEngineFile());
       } catch {}
     }
     try {
@@ -103147,7 +103235,7 @@ var UPDATE_KEYS, UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases
 }, UPDATE_LOCK, ROLLBACK, LAUNCHERS, ED25519_SPKI, RELEASE_AGE, MAC_MEMORY, BOX_FILE, BUNDLE, BUNDLE_PART, SWITCH_KEEPER = "# Kuvo release switch v1", RELEASE_VERSION, boxVersion = () => {
   const version = textOf(path250.join(K, "bin", "box-version"))?.trim();
   return versionOrder(version) ? version : null;
-}, updateStateFormat, hexSHA256 = (data) => crypto82.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), MAC_INSTALLING = 3600000, RELEASE_CHECK, ROUND_OFFSET, updateStarted = null;
+}, updateStateFormat, RELEASE_DRAIN_MOST, ENGINE_TURNS_WAIT = "The release is ready. Kuvo will try again after the engine has had time to finish.", RELEASE_DRAIN_RETRY = 60000, hexSHA256 = (data) => crypto82.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), MAC_INSTALLING = 3600000, RELEASE_CHECK, ROUND_OFFSET, updateStarted = null;
 var init_update = __esm(() => {
   init_disk_worker();
   init_format_version();
@@ -103170,6 +103258,7 @@ var init_update = __esm(() => {
   init_journal();
   init_versions();
   init_interrupted();
+  init_subagents();
   UPDATE_KEYS = ["iLSFoygG8wg+r2yj+/qnoMHpZIhPKRNLlf9vpEKmx0A="];
   UPDATE_STATE = path250.join(RUN, "update.json");
   UPDATE_TRIAL = path250.join(RUN, "update-trial");
@@ -103184,6 +103273,7 @@ var init_update = __esm(() => {
   BUNDLE_PART = /^(?:[A-Za-z0-9_][A-Za-z0-9._+ -]*\/)*[A-Za-z0-9_][A-Za-z0-9._+ -]*$/;
   RELEASE_VERSION = /^\d+\.\d+\.\d+(-beta\.\d+)?$/;
   updateStateFormat = additiveObjectFormat("Box update state");
+  RELEASE_DRAIN_MOST = 5 * 60000;
   BACKUPS = path250.join(UPDATES, "backups");
   BACKUP_DAYS = 30 * 86400000;
   OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
@@ -129309,9 +129399,10 @@ if (!isMainThread3 && process.argv.includes("--insights-db-worker")) {
         }
       }
     }
-  } else if (mode === "continue-update-turns")
+  } else if (mode === "continue-update-turns") {
+    await finishReleaseHold();
     await continueCutTurns(K);
-  else if (mode === "serve") {
+  } else if (mode === "serve") {
     try {
       await serve();
     } catch (error) {

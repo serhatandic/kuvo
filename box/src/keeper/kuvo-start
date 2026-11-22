@@ -70,7 +70,7 @@ folder_current() {
 }
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
-stop|engine-stop|engine-idle|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|route|route-to) ;;
+stop|engine-stop|engine-idle|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|switch-engine|route|route-to) ;;
 *)
   if [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; then :
   elif [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
@@ -441,24 +441,36 @@ stop_clients() {
     fi
   done
 }
-# A release that changes only the client process keeps the worker identities and their work.
-stop_for_switch() {
-  local target=$1 before after file
+# A bridge or service bundle can change while the engine keeps its port, data and turns.
+keep_engine_for_switch() {
+  local target=$1 before after running
   before=$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)
   after=$(sed -n 's/^V=//p' "$K/$target/kuvo-start" | head -n 1)
-  if [ -n "$before" ] && [ "$before" = "$after" ] &&
-     { resident_release || resident_release "$K/$target"; }; then
-    for file in kuvo-launch kuvo-agents.js kuvo-browser.js kuvo-wake; do
+  if up; then
+    running=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+    [ "$running" = "$after" ] || return 1
+  fi
+  [ -n "$before" ] && [ "$before" = "$after" ] &&
+    cmp -s "$K/bin/kuvo-launch" "$K/$target/kuvo-launch" &&
+    diff -qr -x kuvo-sandbox.js -x kuvo-defaults.js "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1
+}
+# A release that changes only the client process keeps the other workers too.
+stop_for_switch() {
+  local target=$1 engine_mode file
+  engine_mode=restart
+  if keep_engine_for_switch "$target"; then engine_mode=keep; fi
+  # The updater may have left native engine turns running based on this decision.
+  [ "${2:-}" != keep ] || [ "$engine_mode" = keep ] || return 1
+  if [ "$engine_mode" = keep ] && { resident_release || resident_release "$K/$target"; }; then
+    for file in kuvo-agents.js kuvo-browser.js kuvo-wake; do
       if [ -e "$K/bin/$file" ] || [ -e "$K/$target/$file" ]; then
-        cmp -s "$K/bin/$file" "$K/$target/$file" || { switch_workers; return $?; }
+        cmp -s "$K/bin/$file" "$K/$target/$file" || { switch_workers "$engine_mode"; return $?; }
       fi
     done
-    if diff -qr -x kuvo-sandbox.js -x kuvo-defaults.js "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1; then
-      stop_clients
-      return $?
-    fi
+    stop_clients
+    return $?
   fi
-  switch_workers
+  switch_workers "$engine_mode"
 }
 switch_workers() {
   disposition=TERM
@@ -481,6 +493,7 @@ switch_workers() {
   done
   stop_worker "$(cat "$R/browser.pid" 2>/dev/null)" "$K/bin/kuvo-browser.js" || return 1
   stop_worker "$(cat "$R/wake.pid" 2>/dev/null)" "$K/bin/kuvo-wake" || return 1
+  [ "$1" != keep ] || return 0
   p=$(engine)
   stop_worker "$p" "$K/engine/" || return 1
   [ -z "$p" ] || rm -f "$R/engines/$p"
@@ -600,7 +613,7 @@ keep)
       link_command version-layout </dev/null >>"$R/update-start.log" 2>&1
       [ -z "$(bin_target)" ] || exec sh "$K/bin/kuvo-start" keep
     fi
-    if up && bridge_runs && [ ! -f "$R/previous" ] && [ -f "$R/continue-after-update.json" ] && ! update_runs &&
+    if up && bridge_runs && [ ! -f "$R/previous" ] && { [ -f "$R/continue-after-update.json" ] || [ -f "$R/update-engine-hold.json" ]; } && ! update_runs &&
       ! is "${continuing-}" 'kuvo-link.js continue-update-turns'; then
       link_command continue-update-turns </dev/null >>"$R/update-start.log" 2>&1 &
       continuing=$!
@@ -975,12 +988,16 @@ stop)
     old=$(previous)
     target=${3:-}
     valid_bin "$old" && valid_bin "$target" && [ "$old" = "$(bin_target)" ] || exit 1
-    stop_for_switch "$target" && select_bin "$target" || exit 1
+    stop_for_switch "$target" "${4:-}" && select_bin "$target" || exit 1
     unlock
     exec sh "$K/bin/kuvo-start" start --switch
   fi
   touch "$R/stopped"
   halt
+  ;;
+switch-engine)
+  valid_bin "${2:-}" || exit 1
+  if keep_engine_for_switch "$2"; then echo keep; else echo restart; fi
   ;;
 engine-stop)
   # As `stop`, but the engine alone: an update that brings another engine stops only it, and starts
@@ -1097,7 +1114,7 @@ start-guard)
     mv -f "$R/update-cannot.new" "$R/update-cannot" &&
     select_bin "$old" || exit 1
   sync
-  rm -f "$R/previous"
+  rm -f "$R/previous" "$R/update-engine-hold.json"
   unlock
   # A keeper busy starting the failed release also sees the link change at its next round.
   exec sh "$K/bin/kuvo-start" start --switch

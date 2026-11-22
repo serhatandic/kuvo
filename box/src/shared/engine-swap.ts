@@ -60,14 +60,23 @@ function machineRecovery(run: string, swap: EngineSwap): boolean {
   return !!readMachineJob(run)?.version;
 }
 
-/** The swap under way, including a machine whose launch replacement still needs recovery. */
-export function swapUnderWay(run: string): EngineSwap | null {
+/** A fleet switch holds new work through the keeper's startup check, including rollback. */
+export function releaseHold(run: string): EngineSwap | null {
   const install = readSwap(run, installHoldFile(run));
-  if (install && alive(install.pid)) {
+  if (!install) return null;
+  if (fs.existsSync(path.join(run, "previous"))) return install;
+  if (alive(install.pid)) {
     try {
       if (Number(fs.readFileSync(path.join(run, ".updating", "pid"), "utf8")) === install.pid) return install;
     } catch {}
   }
+  return null;
+}
+
+/** The swap under way, including a machine whose launch replacement still needs recovery. */
+export function swapUnderWay(run: string, includeRelease = true): EngineSwap | null {
+  const install = includeRelease ? releaseHold(run) : null;
+  if (install) return install;
   const swap = readSwap(run);
   if (!swap) return null;
   if (processRuns(swap.pid, "kuvo-link")) return swap;
@@ -77,8 +86,8 @@ export function swapUnderWay(run: string): EngineSwap | null {
 
 /** Holds last until a machine's launch recovery restores service. Ordinary engine changes hold
  * for at most `HOLD_MOST` and `SWAP_MOST` from when they began holding. */
-export function swapHolds(run: string, now = Date.now()): boolean {
-  const swap = swapUnderWay(run);
+export function swapHolds(run: string, now = Date.now(), includeRelease = true): boolean {
+  const swap = swapUnderWay(run, includeRelease);
   if (!swap || swap.stage === "waiting") return false;
   return machineRecovery(run, swap) || (typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST);
 }
@@ -102,6 +111,6 @@ export function swapLine(swap: EngineSwap | null): string | null {
 
 /** Waits while the swap holds (a group chat's seat, before it sends to the engine): bounded as the
  * hold is. `every`: how often it looks. */
-export async function untilSwapLets(run: string, every = 1000): Promise<void> {
-  while (swapHolds(run)) await new Promise(resolve => setTimeout(resolve, every));
+export async function untilSwapLets(run: string, every = 1000, includeRelease = true): Promise<void> {
+  while (swapHolds(run, Date.now(), includeRelease)) await new Promise(resolve => setTimeout(resolve, every));
 }

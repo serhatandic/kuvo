@@ -1652,9 +1652,9 @@ class EngineLink {
         resolve();
   }
   beforeTurn;
-  async request(method, path, body, timeout = 30000, directory) {
+  async request(method, path, body, timeout = 30000, directory, alreadyAdmitted = false) {
     if (this.beforeTurn && method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command|shell|compact|summarize)$/.test(path))
-      await this.beforeTurn();
+      await this.beforeTurn(alreadyAdmitted);
     if (!this.url)
       throw new Error("The engine isn't running.");
     const response = await fetch(this.url + path, {
@@ -2058,7 +2058,7 @@ class EngineThread {
     if (active?.data?.[id])
       await this.link.request("POST", `${path}/interrupt`).catch(() => {});
     if (this.link.beforeTurn) {
-      await Promise.race([this.link.beforeTurn(), new Promise((resolve) => hooks.signal.aborted ? resolve() : hooks.signal.addEventListener("abort", () => resolve(), { once: true }))]);
+      await Promise.race([this.link.beforeTurn(true), new Promise((resolve) => hooks.signal.aborted ? resolve() : hooks.signal.addEventListener("abort", () => resolve(), { once: true }))]);
       if (hooks.signal.aborted)
         return { outcome: "interrupted" };
     }
@@ -2292,12 +2292,12 @@ class EngineThread {
     try {
       if (input.compact)
         delivered = true;
-      const submitted = input.compact ? this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" }) : this.link.request("POST", `${path}/prompt`, {
+      const submitted = input.compact ? this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" }, undefined, undefined, true) : this.link.request("POST", `${path}/prompt`, {
         id: inputID,
         text: input.text,
         files: input.files.length ? input.files.map((file) => ({ uri: file.uri, name: file.name })) : undefined,
         delivery: "steer"
-      });
+      }, undefined, undefined, true);
       return await Promise.race([settled, submitted.then(() => {
         if (hooks.signal.aborted)
           interrupt();
@@ -19539,14 +19539,24 @@ function machineRecovery(run, swap) {
     return false;
   return !!readMachineJob(run)?.version;
 }
-function swapUnderWay(run) {
+function releaseHold(run) {
   const install = readSwap(run, installHoldFile(run));
-  if (install && alive(install.pid)) {
+  if (!install)
+    return null;
+  if (fs9.existsSync(path7.join(run, "previous")))
+    return install;
+  if (alive(install.pid)) {
     try {
       if (Number(fs9.readFileSync(path7.join(run, ".updating", "pid"), "utf8")) === install.pid)
         return install;
     } catch {}
   }
+  return null;
+}
+function swapUnderWay(run, includeRelease = true) {
+  const install = includeRelease ? releaseHold(run) : null;
+  if (install)
+    return install;
   const swap = readSwap(run);
   if (!swap)
     return null;
@@ -19556,14 +19566,14 @@ function swapUnderWay(run) {
     return { ...swap, stage: "back" };
   return null;
 }
-function swapHolds(run, now = Date.now()) {
-  const swap = swapUnderWay(run);
+function swapHolds(run, now = Date.now(), includeRelease = true) {
+  const swap = swapUnderWay(run, includeRelease);
   if (!swap || swap.stage === "waiting")
     return false;
   return machineRecovery(run, swap) || typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
 }
-async function untilSwapLets(run, every = 1000) {
-  while (swapHolds(run))
+async function untilSwapLets(run, every = 1000, includeRelease = true) {
+  while (swapHolds(run, Date.now(), includeRelease))
     await new Promise((resolve) => setTimeout(resolve, every));
 }
 var HOLD_MOST, SWAP_MOST, swapFile = (run) => path7.join(run, "engine-swap.json"), installHoldFile = (run) => path7.join(run, "update-engine-hold.json"), engineSwapFormat;
@@ -20976,13 +20986,14 @@ class Sessions {
   snapshots;
   titleModel;
   programHome;
+  releaseHolding;
   live = new Map;
   steerChecks = new Map;
   cited = [];
   shells = new Map;
   stopping = new Map;
   pruning;
-  constructor(store, roster, auto, engine, policies, agentInfo, snapshots, titleModel, held = new Map, transfer, programHome) {
+  constructor(store, roster, auto, engine, policies, agentInfo, snapshots, titleModel, held = new Map, transfer, programHome, releaseHolding) {
     this.store = store;
     this.roster = roster;
     this.auto = auto;
@@ -20992,6 +21003,7 @@ class Sessions {
     this.snapshots = snapshots;
     this.titleModel = titleModel;
     this.programHome = programHome;
+    this.releaseHolding = releaseHolding;
     this.transferred = new Map;
     if (transfer && [...held].some(([id, turn]) => {
       const message = store.get(id)?.messages.findLast(turnInput);
@@ -21398,6 +21410,9 @@ class Sessions {
         if (!turn.isEnded)
           ids.push(child);
     return ids;
+  }
+  engineTurns() {
+    return [...this.live].filter(([, live]) => runOf(live.doing)?.engineTurn).map(([id]) => id);
   }
   background() {
     const all = {};
@@ -22137,7 +22152,8 @@ ${others.join(`
       return;
     const input = queue[index];
     const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model);
-    if (this.holding && !isSeat(record.session) || this.programHeld(model?.providerID)) {
+    const waitsForRelease = model && !parseProvider(model.providerID) && this.releaseHolding?.();
+    if (waitsForRelease || this.holding && !isSeat(record.session) || this.programHeld(model?.providerID)) {
       input.held = true;
       if (input.delivery !== "steer") {
         input.delivery = "steer";
@@ -22250,7 +22266,13 @@ ${text.slice(0, 4000)}
     if (!record || live.doing.kind !== "idle")
       return;
     const session = record.session;
-    const run = { turn: new Turn(this.store, id, session.location.directory, session.model, session.agent ?? "build"), abort: new AbortController, steered: [] };
+    const model = input.adopt ?? (input.compact ? this.holdingModel(record) : session.model);
+    const run = {
+      turn: new Turn(this.store, id, session.location.directory, session.model, session.agent ?? "build"),
+      abort: new AbortController,
+      steered: [],
+      engineTurn: Boolean(model && !parseProvider(model.providerID))
+    };
     live.doing = { kind: "running", run };
     clearTimeout(live.idle);
     this.runTurn(id, live, record, run, input);
@@ -23472,11 +23494,16 @@ ${live.agentPrompt}` : ""
     return this.threadOf(id, this.state(id), record, meta.provider)?.adoptIdle?.(held, meta) ?? false;
   }
   wakeHeld() {
+    if (this.holding)
+      return;
     for (const session of this.store.all()) {
       const record = this.store.get(session.id);
       if (!record)
         continue;
-      const held = this.queue(record).filter((input) => input.held);
+      const held = this.queue(record).filter((input) => {
+        const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model);
+        return input.held && !(model && !parseProvider(model.providerID) && this.releaseHolding?.());
+      });
       if (!held.length)
         continue;
       for (const input of held)
@@ -30572,7 +30599,10 @@ function handler(context, transferring) {
           return json9(page(ordered, url));
         }
         if (a === "active")
-          return json9({ data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])) });
+          return json9({
+            data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])),
+            ...url.searchParams.has("release-switch") ? { engineTurns: sessions.engineTurns() } : {}
+          });
         if (a === "background")
           return json9({ data: sessions.background() });
         if (a === "import" && method === "POST")
@@ -32062,7 +32092,12 @@ function startNext(run) {
     console.error("couldn't start the next bridge:", error);
   }
 }
-var version3 = "1", script, build, transferLayout, transferCapability, home3, password, kept3, ownRuntime, bridgeRun, watchingScript, standby, recovered, transfer, launchEnv, original, hasOriginal, machineEngine2, port, renewHoldAfter, renewSettle, renewUptime, temporary, heldRuns, deps, context, accounts, roster, store, auto, link4, engineAgents, otherBridge, heldTurns, adopted, sessions, restarting = false, noteInside = () => {
+var version3 = "1", script, build, transferLayout, transferCapability, home3, password, kept3, ownRuntime, bridgeRun, watchingScript, standby, recovered, transfer, launchEnv, original, hasOriginal, machineEngine2, port, renewHoldAfter, renewSettle, renewUptime, temporary, heldRuns, deps, context, accounts, roster, store, auto, link4, engineAgents, otherBridge, heldTurns, adopted, holdingRelease = false, releaseHolding = () => {
+  const holding = Boolean(bridgeRun && releaseHold(bridgeRun));
+  if (holding)
+    holdingRelease = true;
+  return holding;
+}, sessions, restarting = false, noteInside = () => {
   if (restarting)
     restarting = [sessions.restartOutside(), ...roster.all().map((agent) => agent.restartOutside?.() ?? false)].some(Boolean);
   noteAgentsInside(!sessions.outside() && !roster.all().some((agent) => agent.outside?.()));
@@ -32316,7 +32351,7 @@ var init_main = __esm(async () => {
   }
   if (standby && Object.keys(standby.transfer.sessions).some((id) => !heldTurns.has(id)))
     throw new Error("A session is missing from the handover.");
-  sessions = new Sessions(store, roster, auto, engineAgent, (directory, fresh) => link4.policies(directory, fresh), (name, directory) => link4.agent(name, directory), new Snapshots(join39(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3);
+  sessions = new Sessions(store, roster, auto, engineAgent, (directory, fresh) => link4.policies(directory, fresh), (name, directory) => link4.agent(name, directory), new Snapshots(join39(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3, releaseHolding);
   noteInside();
   setInterval(noteInside, 5000).unref?.();
   groupFolders = onMachine ? { root: join39(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join39(machineHome, "bots"), trash: join39(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
@@ -32329,8 +32364,15 @@ var init_main = __esm(async () => {
   setToolRelayRun(runFolder);
   boxServices = new BoxServicesClient(runFolder);
   notesBeside(runFolder);
-  if (runFolder)
-    link4.beforeTurn = () => untilSwapLets(runFolder);
+  if (runFolder) {
+    link4.beforeTurn = (alreadyAdmitted) => untilSwapLets(runFolder, 1000, !alreadyAdmitted);
+    setInterval(() => {
+      if (holdingRelease && !releaseHolding()) {
+        holdingRelease = false;
+        sessions.wakeHeld();
+      }
+    }, 1000).unref();
+  }
   for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO_AGENTS_FILE", "KUVO_ARTIFACTS", "KUVO_RUN", ...onMachine ? [] : ["KUVO_BOTS"]])
     delete process.env[name];
   if (groupFolders) {
@@ -32580,4 +32622,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 73ea45bf673f23a7a2e470c320f75038012812a31f209d3ad85d1a64d1136446
+// Built from Packages/Box/src/agents 4b2e50f0191acdc90bd3bb42ec222a32ac78f0ec517ba6a18f4f9a216258988f

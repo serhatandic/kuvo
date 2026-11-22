@@ -24,10 +24,11 @@ async function active(target: Target): Promise<string[]> {
     : isObject(sessions) ? Object.keys(sessions) : [];
 }
 
-export async function rememberCutTurns(root: string): Promise<void> {
+export async function rememberCutTurns(root: string, engine: boolean): Promise<void> {
   if (fs.existsSync(record(root))) await continueCutTurns(root);
   const turns = savedTurns(root);
   for (const lane of ["engine", "bridge"] as const) {
+    if (lane === "engine" && !engine) continue;
     let target;
     try { target = readTarget[lane](); } catch { continue; }
     if (!target?.pid) continue;

@@ -309,7 +309,7 @@ import { atWorkForSure, settleStarted } from "./work-queue/started";
 import { checkRepairFormat, repairWithFetch } from "./updates/repair";
 import { checkRepairRequest, repairReplyFormat } from "./updates/repair-record";
 import { readSwap, installHoldFile } from "../shared/engine-swap";
-import { checkRollbackRecords } from "./updates/update";
+import { checkRollbackRecords, finishReleaseHold } from "./updates/update";
 import { readHandOver } from "./compat/helper-handover";
 import { readMachineJob } from "../shared/machine-job";
 import { fleetWith } from "./updates/fleet";
@@ -1751,7 +1751,10 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       }
     }
   }
-  else if (mode === "continue-update-turns") await continueCutTurns(K);
+  else if (mode === "continue-update-turns") {
+    await finishReleaseHold();
+    await continueCutTurns(K);
+  }
   else if (mode === "serve") {
     try { await serve(); }
     catch (error) {

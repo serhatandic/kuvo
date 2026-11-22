@@ -44,7 +44,7 @@ export function liveUpdateFixture({ preResident = false, sandbox = false, identi
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     // (What the bridge said, for what didn't come.)
-    const logs = ["agents.log", "serve.log", "link.log", "update-start.log"].flatMap(name => {
+    const logs = ["agents.log", "serve.log", "link.log", "update-start.log", "engine.log"].flatMap(name => {
       try { return [name + ":\n" + fs.readFileSync(path.join(RUN, name), "utf8").slice(-1500)]; } catch { return []; }
     });
     assert.fail(`never: ${what}\n${logs.join("\n")}`);
@@ -54,17 +54,70 @@ export function liveUpdateFixture({ preResident = false, sandbox = false, identi
    * paired, its relay out of reach) and its server for clients wanted. Its bridge and link a build
    * before the one this checkout makes. */
   function box() {
-    // The engine: its own turn runs while `engine-busy` is there; its feed stays open.
+    // The engine keeps each turn in this process. The test decides when it can answer.
     const engine = path.join(scratch, "engine.mjs");
-    write(engine, `
+    write(engine, String.raw`
   import fs from "node:fs"; import http from "node:http";
   const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
-  const busy = ${JSON.stringify(path.join(scratch, "engine-busy"))};
-  http.createServer((request, response) => {
-    if (request.url.startsWith("/api/event") || request.url.startsWith("/event")) { fs.writeFileSync(${JSON.stringify(scratch)} + "/feed-" + port, ""); response.writeHead(200, { "content-type": "text/event-stream" }); response.write(": open\\n\\n"); return; }
-    response.writeHead(200, { "content-type": "application/json" });
-    if (request.url.startsWith("/api/session/active")) return response.end(JSON.stringify({ data: fs.existsSync(busy) ? { ses_engine: { type: "busy" } } : {} }));
-    response.end(JSON.stringify({ data: [] }));
+  const scratch = ${JSON.stringify(scratch)};
+  const sessions = new Map([["ses_engine", {}]]);
+  const feeds = new Set();
+  const say = (type, data) => {
+    for (const feed of feeds) feed.write("data: " + JSON.stringify({ type, data }) + "\n\n");
+  };
+  http.createServer(async (request, response) => {
+    const route = request.url.split("?")[0];
+    if (route === "/api/event" || route === "/event") {
+      fs.writeFileSync(scratch + "/feed-" + port, "");
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(": open\n\n");
+      feeds.add(response);
+      response.on("close", () => feeds.delete(response));
+      return;
+    }
+    const reply = data => response.end(JSON.stringify({ data }));
+    response.setHeader("content-type", "application/json");
+    if (route === "/api/session/active") {
+      const busy = [...sessions].filter(([, turn]) => turn.state === "busy").map(([id]) => [id, { type: "busy" }]);
+      if (fs.existsSync(scratch + "/engine-busy")) busy.push(["ses_engine", { type: "busy" }]);
+      return reply(Object.fromEntries(busy));
+    }
+    if (route === "/api/provider") return reply([{ id: "fixture", name: "Fixture" }]);
+    if (route === "/api/model") return reply([{ providerID: "fixture", id: "test", limit: {} }]);
+    if (route === "/api/session" && request.method === "POST") {
+      const id = "ses_hidden";
+      sessions.set(id, {});
+      return reply({ id });
+    }
+    const [, id, action] = /^\/api\/session\/([^/]+)(?:\/([^/]+))?$/.exec(route) ?? [];
+    const turn = sessions.get(id);
+    if (turn) {
+      if (!action) return reply({ id, time: { idle: turn.idle }, outcome: turn.state === "busy" ? undefined : turn.state });
+      if (action === "prompt" && request.method === "POST") {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        Object.assign(turn, { state: "busy", prompt: body.text, count: (turn.count ?? 0) + 1 });
+        say("session.inbox.delivered", { sessionID: id, inboxID: body.id });
+        return reply({});
+      }
+      if (action === "interrupt" || action === "fixture-finish") {
+        if (turn.state !== "busy") { response.statusCode = 409; return reply(turn.state); }
+        const outcome = action === "interrupt" ? "interrupted" : "succeeded";
+        if (outcome === "succeeded") {
+          const step = "msg_fixtureengineanswer";
+          say("session.step.started", { sessionID: id, assistantMessageID: step });
+          say("session.text.started", { sessionID: id, ordinal: 0 });
+          say("session.text.delta", { sessionID: id, ordinal: 0, delta: "Done: " + turn.prompt });
+          say("session.text.ended", { sessionID: id, ordinal: 0 });
+          say("session.step.ended", { sessionID: id, assistantMessageID: step, finish: "stop" });
+        }
+        Object.assign(turn, { state: outcome, idle: Date.now() });
+        say("session.execution." + outcome, { sessionID: id });
+        return reply({ outcome, count: turn.count });
+      }
+    }
+    reply([]);
   }).listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
   setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0); }, 300);
   `);
@@ -97,11 +150,11 @@ export function liveUpdateFixture({ preResident = false, sandbox = false, identi
     const checksum = crypto.createHash("sha256").update(agents).digest("hex").slice(0, 16);
     write(path.join(home, "bin", "kuvo-agents.js"), preResident ? `${agents}\n// kuvo-agents ${checksum}\n` :
       agents.replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${OLD_BUILD}`));
-    if (preResident) {
-      fs.copyFileSync(path.join(checkout, "box/dist/kuvo-browser.js"), path.join(home, "bin", "kuvo-browser.js"));
-      fs.mkdirSync(path.join(home, "config", "opencode", "plugins"), { recursive: true });
-      fs.copyFileSync(path.join(checkout, "box/src/plugins/kuvo-code.js"), path.join(home, "config", "opencode", "plugins", "kuvo-code.js"));
-    }
+    // The installed plugin also ships in the next release. Keep it in the real versioned layout.
+    const plugins = path.join(home, "config", "opencode", "plugins");
+    fs.mkdirSync(plugins, { recursive: true });
+    fs.copyFileSync(path.join(checkout, "box/src/plugins/kuvo-code.js"), path.join(plugins, "kuvo-code.js"));
+    if (preResident) fs.copyFileSync(path.join(checkout, "box/dist/kuvo-browser.js"), path.join(home, "bin", "kuvo-browser.js"));
     write(path.join(home, "bin", "box-version"), "0.9.0");
     write(path.join(home, "box", "kind"), "machine\n");
     // What only a Mac's keeper loop reaches for (keeping it awake, older Macs' leftovers): noted only.
@@ -145,6 +198,7 @@ let buffer =`) : asking);
     write(path.join(RUN, "link.json"), JSON.stringify(identity ?? { id: "lab", name: "lab", relay: "ws://127.0.0.1:9", secret: key(), key: key(), phones: [{ key: key(), name: "iPhone", added: Math.floor(Date.now() / 1000), from: "pair" }] }), 0o600);
     write(path.join(RUN, "link.needed"), "", 0o600);
     write(path.join(RUN, "serve.needed"), "", 0o600);
+    write(path.join(RUN, "engine.now"), "", 0o600);
     return { fake, project, signals };
   }
 

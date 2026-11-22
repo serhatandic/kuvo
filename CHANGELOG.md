@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.
+
 - Kuvo uses less memory while idle. The session engine starts when needed, and the engine and the machine’s browser close after ten minutes without work.
 
 - Warnings and errors look the same everywhere: one quiet row with a small colored icon, what happened, why, and at most one action, placed where it applies. A message that couldn’t be sent says so under it with Retry, a sign-in that ended says so inside its account row, a turn that stopped says why under it, and a computer that can’t be reached says so beside its name. Moves that failed or finished now wait under the bell in the title bar instead of a card over the window. Each notice goes away by itself once it’s resolved.

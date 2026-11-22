@@ -432,7 +432,10 @@ export function handler(context: Context, transferring?: () => boolean) {
           const ordered = (url.searchParams.get("cursor")?.startsWith("asc") || url.searchParams.get("order") === "asc") ? [...roots].reverse() : roots
           return json(page(ordered, url))
         }
-        if (a === "active") return json({ data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])) })
+        if (a === "active") return json({
+          data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])),
+          ...(url.searchParams.has("release-switch") ? { engineTurns: sessions.engineTurns() } : {}),
+        })
         if (a === "background") return json({ data: sessions.background() })
         // A conversation from the engine, carried on here.
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
