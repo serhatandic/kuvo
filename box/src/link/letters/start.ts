@@ -12,7 +12,7 @@ import { isObject } from "../../shared/json";
 import { isChatsFolder } from "../engine/chats";
 import { asked, call, engineGet } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
-import { keepWaiting, writtenByYou } from "../engine/queue";
+import { keepWaitingLater, writtenByYou } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { BOTS, CHATS, HERE, homeFolder, IS_MAC } from "../home";
 import { macLink, readLink } from "../state";
@@ -756,7 +756,7 @@ export async function markMade(making: Making, target: Target, session: string, 
 export async function promptMade(making: Making, target: Target, session: string): Promise<void> {
   const message = { id: making.prompt.id, text: making.prompt.text, delivery: "steer" as const, metadata: withParts(undefined, partsOf(making.prompt.text)) };
   // (Its engine being changed: it waits on the box, and goes once the new one runs.)
-  if (keepWaiting(session, message, {}, undefined, target)) return;
+  if (await keepWaitingLater(session, message, {}, undefined, target)) return;
   await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message);
 }
 

@@ -24,7 +24,7 @@ export const LETTERS_SEEN = path.join(RUN, "letters-seen.json");
 
 // A letter older than a day isn't delivered; one is remembered two days (no doubles, no replays).
 export const LETTER_LIFE = 86_400_000;
-export const LETTER_MEMORY = 2 * 86_400_000;
+export { LETTER_MEMORY } from "./lifetime";
 // A note, the box's own word, is sealed anew each time it's sent, and kept until its conversation
 // has it: this long at most, and its id remembered as long, so it's never delivered twice.
 export const NOTE_MEMORY = 30 * 86_400_000;

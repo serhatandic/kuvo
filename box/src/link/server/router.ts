@@ -368,7 +368,7 @@ export function createBoxDispatcher({
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
       if (!(desktop || paired)) return yield* json(403, { message: "Open this from Kuvo Code." });
       if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")
-        return yield* sendAddressedMessage(context);
+        return yield* await sendAddressedMessage(context);
       if (route === "kuvo/data/messages" || request.method.toUpperCase() !== "GET") return yield* json(405, {});
       return yield* (route === "kuvo/data/owner" ? await readOwned(context) : messageReceipt(context, route.slice("kuvo/data/messages/".length)));
     }
@@ -414,9 +414,9 @@ export function createBoxDispatcher({
         const owner = ownerOf(ref, { name: context.info.name });
         if (owner && !owner.local) {
           if ((desktop || paired) && method === "POST" && session && (SEND_ROUTE.test(route) || draft))
-            return yield* queueOwnerMessage(context, session, owner);
+            return yield* await queueOwnerMessage(context, session, owner);
           if ((desktop || paired) && method === "POST" && group && route === `kuvo/groups/${group}`)
-            return yield* queueOwnerMessage(context, group, owner);
+            return yield* await queueOwnerMessage(context, group, owner);
           if (session && owner.key && SESSION_ACTION_ROUTE.test(route))
             return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });

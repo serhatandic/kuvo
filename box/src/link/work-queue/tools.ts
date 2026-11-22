@@ -22,7 +22,7 @@ import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
 import { numberWaiting, primaryOf } from "./numbers";
 import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, stageClientFiles, stageFiles, startWork, stopWork, typeOf, TooBig, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
-import { allItems, byUser, changeQueues, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
+import { allItems, byUser, changeQueuesLater, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
 import { changedThere, itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
@@ -340,9 +340,9 @@ export async function callQueueTool(name: unknown, args: Record<string, unknown>
 
 // A change to the queues, then what waits for a number numbered (once nothing can refuse it, so
 // a refused change takes none).
-const change = <T>(work: (book: Book) => T): T => {
+const change = <T>(work: (book: Book) => T): Promise<T> => {
   const primary = primaryOf();
-  return changeQueues(book => {
+  return changeQueuesLater(book => {
     const done = work(book);
     numberWaiting(book, primary, null);
     return done;
@@ -380,7 +380,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
       const starting = args.working === true && !caller.seat && args.status === undefined;
       const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
-      const item = withFiles(args, caller, acting, () => change(book => {
+      const item = await withFiles(args, caller, acting, () => change(book => {
         refuseQueueOwner(caller.owner);
         if (issue) refuseTaken(book.items(), issue.at, caller, undefined, issue.read.id);
         const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
@@ -408,7 +408,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         issue = await issueFor(args.issue, caller, before.id);
       }
       const linkedFrom = { number: undefined as number | undefined };
-      const item = withFiles(args, caller, acting, () => change(book => {
+      const item = await withFiles(args, caller, acting, () => change(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
@@ -444,7 +444,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
     case "queue_hand": {
       const to = await handTarget(args.to, targets);
       if ("refused" in to) return refused(to.refused);
-      const item = change(book => {
+      const item = await change(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
@@ -462,7 +462,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
-      const item = change(book => {
+      const item = await change(book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         refuseMoving([item.owner]);
@@ -505,7 +505,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = change(book => {
+      const outcome = await change(book => {
         refuseQueueOwner(caller.owner);
         return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
       });
@@ -556,12 +556,12 @@ function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, except?: s
 
 // `work`, with the files the call names read first (outside the queue's lock), and what's left of
 // them cleared after.
-function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => T): T {
+async function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => Promise<T>): Promise<T> {
   if (args.files === undefined) return work();
   const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files);
   acting.staged = staged;
   try {
-    return work();
+    return await work();
   } finally {
     clear();
   }

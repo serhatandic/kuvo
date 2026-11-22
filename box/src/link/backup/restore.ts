@@ -23,13 +23,12 @@ import { forwardAct, type Act, type Acted } from "../work-queue/forward";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { syncDurableFile, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
-import { archiveContext, openArchive } from "./archive";
+import { archiveContext } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
-import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
+import { backupDisk } from "../server/disk-worker";
 import { outputPath, receiptReference, recordReferences, roots, stat, storageOf } from "./locations";
 import { attachmentRecovery, legacyEngineSession, restoreLegacyEngineParts } from "./session-files";
-import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
 import { recoversMutation } from "../ownership/admission";
@@ -143,7 +142,7 @@ function readManifest(value: unknown, source: string, id: string): Manifest {
   return value as unknown as Manifest;
 }
 
-function noWorkers() {
+export function noWorkers() {
   if (fs.existsSync(path.join(RUN, "update-trial")) || fs.existsSync(path.join(RUN, ".updating")) || swapUnderWay(RUN)) {
     throw new Error("Finish the update before restoring.");
   }
@@ -172,7 +171,7 @@ export const restoreStatus = (): unknown => {
   return value === undefined ? undefined : restoreFormat.read(value);
 };
 
-function sameFile(a: string, b: string) {
+export function sameFile(a: string, b: string) {
   const stamp = (file: string) => {
     const hash = crypto.createHash("sha256");
     const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
@@ -185,7 +184,11 @@ function sameFile(a: string, b: string) {
   return stat(a)?.isFile() && fs.statSync(a).size === fs.statSync(b).size && stamp(a) === stamp(b);
 }
 
-function place(file: string, target: string, replaceBootstrap = false) {
+export function placeRecovered(file: string, target: string, replaceBootstrap = false, receipt?: { family: string; key: string }) {
+  if (receipt) {
+    locked(MUTATION_LOCK, () => changeReceiptFile(receipt.family, receipt.key, json(file), () => placeRecovered(file, target, replaceBootstrap)), { required: true });
+    return;
+  }
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const partial = target + ".restore-" + crypto.randomBytes(8).toString("hex");
   try {
@@ -205,10 +208,10 @@ function place(file: string, target: string, replaceBootstrap = false) {
 export async function restore(dest: Destination, source: string, id: string, key: string, signal?: AbortSignal): Promise<Restored> {
   if (!POINT.test(id) || id.includes("-vault-")) throw new Error("Choose a dated computer backup.");
   return backupLock(async () => {
-    noWorkers();
+    await backupDisk.run("noWorkers");
     const scratch = scratchFolder();
     try {
-      const archived = openArchive(await destinationStore(dest, source).get(id, scratch), key, archiveContext(source, id), scratch);
+      const archived = await backupDisk.run("openArchive", await destinationStore(dest, source).get(id, scratch), key, archiveContext(source, id), scratch);
       const manifestFile = archived.find(entry => entry.name === "meta/manifest.json")?.file;
       const manifest = readManifest(manifestFile && json(manifestFile), source, id);
 
@@ -216,7 +219,7 @@ export async function restore(dest: Destination, source: string, id: string, key
 
       const journal = restoreStatus();
       const link = await checkTrust(manifest, signal);
-      noWorkers();
+      await backupDisk.run("noWorkers");
       if (isObject(journal) && (journal.id !== id || journal.source !== source)) throw new Error("This replacement already has a restore point.");
       if (isObject(journal) && journal.state === "restored") {
         fs.rmSync(RESTORING, { force: true });
@@ -261,10 +264,10 @@ export async function restore(dest: Destination, source: string, id: string, key
         const [root, ...parts] = name.split("/");
         const base = roots[root];
         let target = base && outputPath(base, parts);
-        if (!target || (stat(target) && !sameFile(target, file))) {
+        if (!target || (stat(target) && !await backupDisk.run("sameFile", target, file))) {
           const slot = `restore-${recordKey(id, name)}`;
           target = outputPath(roots.attachments!, [parts.length > 1 ? parts[0]! : slot, slot, parts.at(-1)!]);
-          if (stat(target) && !sameFile(target, file)) throw new Error("A recovered attachment location is occupied.");
+          if (stat(target) && !await backupDisk.run("sameFile", target, file)) throw new Error("A recovered attachment location is occupied.");
           if (base) result.unavailable.push({ entry: name, reason: "existing local attachment; recovered copy stored at a separate address" });
         }
         attachmentTargets.set(name, target);
@@ -390,8 +393,9 @@ export async function restore(dest: Destination, source: string, id: string, key
           writeDurablePrivate(file, JSON.stringify(bots));
         }
         if (storage?.snapshot === "engine database") {
-          scrubEngine(file, engineFences, true);
-          if (attachmentRoots) await restoreEngineAttachmentPaths(file, attachments.rewrite);
+          const unavailable = await backupDisk.run("restoreEngineDatabase", file, engineFences, attachmentRoots,
+            recovery, attachments.placed, result.unavailable);
+          result.unavailable.push(...unavailable.slice(result.unavailable.length));
         } else if (attachmentRoots && name.endsWith(".json") && (kind === "groupTranscript" ||
             (root === "agents" && parts[2] === "messages.json") || (root === "engine" && parts[1] === "message") ||
             (root === "home" && parts[0] === "run" && parts[1] === "waiting"))) {
@@ -422,7 +426,7 @@ export async function restore(dest: Destination, source: string, id: string, key
         : undefined;
       writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restoring", id, source, insightsAlias })), K);
       writeDurablePrivate(RESTORING, id, K);
-      noWorkers();
+      await backupDisk.run("noWorkers");
       const current = { ...authority, link: readLink() };
       if (ownershipBoundary(current.link, true) !== ownershipBoundary(link, true)
           || [...recoveryChecks.values()].some(({ ref, allowed }) => currentRecovery(ref, current) !== allowed)
@@ -431,15 +435,15 @@ export async function restore(dest: Destination, source: string, id: string, key
       }
       const acceptedOrigins = [...historicalInsightOrigins(link).map(({ key }) => key),
         ...acceptedMembership(link)?.boxes.map(({ key }) => key).filter(key => key !== own) ?? []];
-      for (const target of frozen) if (!stat(target)) place(paused, target);
+      for (const target of frozen) if (!stat(target)) await backupDisk.run("placeRecovered", paused, target);
       for (const [name, target] of attachmentTargets) {
-        place(byName.get(name)!, target);
+        await backupDisk.run("placeRecovered", byName.get(name)!, target);
         result.installed++;
       }
       for (const { file, target, name } of placements) {
         if (name.startsWith("home/run/work-queue/files/") && removedItems.has(name.split("/")[4])) {
           if (heldItems.has(name.split("/")[4])) {
-            place(file, outputPath(recovery, name.split("/")));
+            await backupDisk.run("placeRecovered", file, outputPath(recovery, name.split("/")));
             result.held.push(name);
           }
           continue;
@@ -447,42 +451,40 @@ export async function restore(dest: Destination, source: string, id: string, key
         let replaceBootstrap = false;
         if (name === "agents/usage/insights.sqlite" && manifest.paired) {
           const existing = stat(target);
-          if (!mergeInsightsDatabase(existing ? target : null, file, acceptedOrigins, own)) {
-            addConflict(name, file, "Insights index could not be reconciled; recovered copy held for review");
+          if (!await backupDisk.run("mergeInsightsDatabase", existing ? target : null, file, acceptedOrigins, own)) {
+            await addConflict(name, file, "Insights index could not be reconciled; recovered copy held for review");
             continue;
           }
-          if (!existing) place(file, target);
+          if (!existing) await backupDisk.run("placeRecovered", file, target);
           result.installed++;
           continue;
         }
         if (stat(target)) {
-          if (sameFile(target, file)) {
+          if (await backupDisk.run("sameFile", target, file)) {
             syncDurableFile(target);
             result.installed++;
             continue;
           }
-          replaceBootstrap = storageOf(name)?.snapshot === "engine database" && prepareEngineBootstrap(target);
+          replaceBootstrap = storageOf(name)?.snapshot === "engine database" && await backupDisk.run("prepareEngineBootstrap", target);
           if (!replaceBootstrap) {
-            addConflict(name, file);
+            await addConflict(name, file);
             continue;
           }
         }
         const receipt = /^(submissions|mutations)\/([A-Za-z0-9_-]{43})\.json$/.exec(path.relative(path.join(RUN, "owned-data"), target));
-        const install = () => place(file, target, replaceBootstrap);
-        if (receipt) {
-          locked(MUTATION_LOCK, () => changeReceiptFile(receipt[1]!, receipt[2]!, json(file), install), { required: true });
-        } else install();
+        await backupDisk.run("placeRecovered", file, target, replaceBootstrap,
+          receipt ? { family: receipt[1]!, key: receipt[2]! } : undefined);
         result.installed++;
       }
-      function addConflict(name: string, file: string, reason = "existing local record; recovered copy held for review") {
-        place(file, outputPath(recovery, name.split("/")));
+      async function addConflict(name: string, file: string, reason = "existing local record; recovered copy held for review") {
+        await backupDisk.run("placeRecovered", file, outputPath(recovery, name.split("/")));
         result.unavailable.push({ entry: name, reason });
       }
-      result.unavailable.push(...restoreProjects(byName, recovery));
+      result.unavailable.push(...await backupDisk.run("restoreProjects", byName, recovery));
       writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restored", id, source, insightsAlias, result })), K);
       fs.rmSync(RESTORING, { force: true });
       syncDurableFile(BACKUP, K);
       return result;
-    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(scratch, { recursive: true, force: true }); }
   });
 }

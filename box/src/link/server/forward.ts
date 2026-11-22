@@ -14,7 +14,7 @@ import { RUN } from "../home";
 import { oauthStartBody, workQueueAccount } from "../areas/sign-in";
 import { isObject, parsed } from "../../shared/json";
 import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
-import { keepWaiting, swapHoldsFor } from "../engine/queue";
+import { keepWaitingLater, swapHoldsFor } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { holdArchived } from "../areas/wakes";
 import { MOVING } from "../bots/here";
@@ -158,7 +158,7 @@ export function answerHeaders(response: Response, fromAgents = false): Record<st
   return out;
 }
 
-function heldEngineTurn(session: string, kind: string, payload: RequestInit["body"], target: Target | null) {
+async function heldEngineTurn(session: string, kind: string, payload: RequestInit["body"], target: Target | null) {
   if (!swapHoldsFor(target, session)) return;
   let body: unknown = null;
   try { body = JSON.parse(payload?.toString() ?? ""); } catch {}
@@ -173,7 +173,7 @@ function heldEngineTurn(session: string, kind: string, payload: RequestInit["bod
         ...(isObject(body.metadata) ? { metadata: body.metadata } : {}),
       };
       try {
-        if (keepWaiting(session, message, {}, undefined, target)) return { status: 200, body: { waits: true } };
+        if (await keepWaitingLater(session, message, {}, undefined, target)) return { status: 200, body: { waits: true } };
       } catch (error) {
         console.error("kuvo-link: could not add a waiting message", error);
         return { status: 500, body: { message: "This computer couldn’t save the message. Try sending it again." } };
@@ -230,7 +230,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
       return (await bridgeRequest(target, url, { method, headers, body, signal }, consent ? undefined : currentBridge, read, authorize)).response;
     }
     authorize?.();
-    const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
+    const held = heldSession && toEngine && await heldEngineTurn(heldSession, toEngine[2]!, body, target);
     if (held) return Response.json(held.body, { status: held.status });
     if (!target && toEngine && toEngine[2] !== "prompt") throw new Error(down());
     const live = target ?? returningEngine?.();

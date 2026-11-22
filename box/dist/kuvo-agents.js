@@ -25023,6 +25023,9 @@ function readQueues(files, strict = false) {
     if (strict && error.code !== "ENOENT")
       throw error;
   }
+  return decodedQueues(all, strict);
+}
+function decodedQueues(all, strict) {
   if (!isObject(all)) {
     if (strict)
       throw new Error("The queue index could not be read");
@@ -25036,41 +25039,46 @@ function readQueues(files, strict = false) {
     return [session, keptState(state)];
   }));
 }
+function indexQueue(all, session, before, next, reseal) {
+  const state = keptState(next);
+  state.held = [...new Set(state.held)];
+  if (state.cameHeld)
+    state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
+  if (!state.cameHeld?.length)
+    delete state.cameHeld;
+  const made = JSON.stringify(state) !== JSON.stringify(before);
+  if (!made && !reseal)
+    return { state, made, data: undefined };
+  all[session] = state;
+  for (const [id, each] of Object.entries(all)) {
+    if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
+      delete each.resumed;
+    if (each.arriving) {
+      for (const [message, until] of Object.entries(each.arriving))
+        if (until <= Date.now())
+          delete each.arriving[message];
+      if (!Object.keys(each.arriving).length)
+        delete each.arriving;
+    }
+    if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt)
+      delete all[id];
+  }
+  const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+  return { state, made, data: JSON.stringify(indexed) };
+}
 function changeQueue(files, session, change, changed, reseal = false) {
-  let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files, true);
-    const before = all[session] ?? { paused: false, held: [] };
-    const state = keptState(change(before));
-    state.held = [...new Set(state.held)];
-    if (state.cameHeld)
-      state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
-    if (!state.cameHeld?.length)
-      delete state.cameHeld;
-    made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !(typeof reseal === "function" ? reseal() : reseal))
-      return state;
-    all[session] = state;
-    for (const [id, each] of Object.entries(all)) {
-      if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
-        delete each.resumed;
-      if (each.arriving) {
-        for (const [message, until] of Object.entries(each.arriving))
-          if (until <= Date.now())
-            delete each.arriving[message];
-        if (!Object.keys(each.arriving).length)
-          delete each.arriving;
-      }
-      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt)
-        delete all[id];
-    }
-    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
-    writeDurablePrivate(files.file, JSON.stringify(indexed));
-    return state;
+    const before = all[session] ?? emptyQueue();
+    const next = change(before);
+    const result = indexQueue(all, session, before, next, typeof reseal === "function" ? reseal() : reseal);
+    if (result.data !== undefined)
+      writeDurablePrivate(files.file, result.data);
+    return result;
   }, { required: true });
-  if (made)
+  if (after.made)
     changed?.();
-  return after;
+  return after.state;
 }
 function readWaitingFile(file) {
   try {
@@ -25086,19 +25094,22 @@ function writeWaitingFile(file, message, root) {
   readWaitingFile(file);
   writeDurablePrivate(file, JSON.stringify(payloadFormat.write(message)), root);
 }
-function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2, holds = false) {
+function waitingEntry(message, { from, words }) {
+  const names = fileNames(message.files);
+  const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
+  const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
+  return { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
+}
+function keepWaiting(files, session, message, shown = {}, changed, place = last2, holds = false) {
   let kept = false;
   changeQueue(files, session, (state) => {
     if (!state.paused && !state.limitStop?.releasing && !holds)
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
-    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path9.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), shown.kept === undefined ? message : { ...message, text: shown.kept }, path9.dirname(files.file));
     kept = true;
-    const names = fileNames(message.files);
-    const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
-    const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
-    const waiting = { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
+    const waiting = waitingEntry(message, shown);
     return place({ ...state, waiting: (state.waiting ?? []).filter((each) => each.id !== message.id) }, waiting);
   }, changed, () => kept);
   return kept;
@@ -25144,7 +25155,7 @@ var queueFiles = (run) => ({
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
-}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, waitingFile = (files, id) => path9.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
+}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, emptyQueue = () => ({ paused: false, held: [] }), waitingFile = (files, id) => path9.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
   if (!isObject(file))
     return [];
   if (typeof file.name === "string" && file.name)
@@ -32117,4 +32128,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents a68709a1880dbcd8fce0a7467d7323d2c8b6b4d9808090d8d8910c15262d3225
+// Built from Packages/Box/src/agents 3eaccac0dd87b5f06df1e935919de47859bb1b2815fe9fe4c4830127dff2a784

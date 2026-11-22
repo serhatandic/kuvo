@@ -308,14 +308,14 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
     if (isObject(whole.evidenceHand) && !Object.hasOwn(whole, "hand"))
       await handArrived(sender, whole.evidenceHand, reply, places, undefined, true).catch(() => {});
   } else if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
-  if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
+  if (isObject(whole.offlineEditReceipt)) await takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
   if (Object.hasOwn(whole, "scopedOfflineEdit")) {
     if (isObject(whole.scopedOfflineEdit) && !Object.hasOwn(whole, "offlineEdit"))
       await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
   } else if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
-  if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
-  if (isObject(whole.ownerDraftReceipt)) takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
-  if (isObject(whole.submissionReceipt)) takeMessageReceipt(sender, whole.submissionReceipt, true, true);
+  if (isObject(whole.ownerMessageReceipt)) await takeMessageReceipt(sender, whole.ownerMessageReceipt);
+  if (isObject(whole.ownerDraftReceipt)) await takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.submissionReceipt)) await takeMessageReceipt(sender, whole.submissionReceipt, true, true);
   const messages = { scopedSubmission: "submission", scopedOwnerDraft: "draft", scopedOwnerMessage: "scoped", ownerMessage: "legacy" } as const;
   const lanes = (Object.keys(messages) as (keyof typeof messages)[]).filter(key => Object.hasOwn(whole, key));
   if (lanes.length === 1) {

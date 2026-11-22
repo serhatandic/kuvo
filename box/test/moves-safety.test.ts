@@ -718,33 +718,33 @@ test.each(["switch", "drop"] as const)("ordinary note history survives receiver 
   const previous = fs.existsSync(checkpoint) ? fs.readFileSync(checkpoint) : undefined
   upgradeKuvoFolder(K)
   const ref = { kind: "sessionNotes" as const, id: arrivingSession, note: "fixture" }
-  const initial = editSessionNote({ ref, operation: "a".repeat(43), create: true, baseRevision: null, fields: { text: "Original." } }, () => true, () => true)
+  const initial = await editSessionNote({ ref, operation: "a".repeat(43), create: true, baseRevision: null, fields: { text: "Original." } }, () => true, () => true)
   if (!initial) throw new Error("The source note was not created")
   for (const [operation, text] of [["b", "First."], ["c", "Alternative."]]) {
-    editSessionNote({ ref, operation: operation!.repeat(43), baseRevision: initial.revision, fields: { text } }, () => true, () => true)
+    await editSessionNote({ ref, operation: operation!.repeat(43), baseRevision: initial.revision, fields: { text } }, () => true, () => true)
   }
-  const source = sessionNoteView(ref)
+  const source = await sessionNoteView(ref)
   expect(source.choices[0]).toMatchObject({ accepted: "First.", proposed: "Alternative." })
-  const notes = packSessionNotes([arrivingSession])
-  forgetSessionNotes([arrivingSession])
+  const notes = await packSessionNotes([arrivingSession])
+  await forgetSessionNotes([arrivingSession])
   try {
     const incoming = await incomingBot(undefined, undefined, notes)
     await incoming.part()
     expect(mail.at(-1)).toMatchObject({ op: "arrived", hash: incoming.hash })
     expect(mayActivate(ref)).toBe(false)
-    expect(sessionNoteView(ref)).toEqual(source)
+    expect(await sessionNoteView(ref)).toEqual(source)
     if (action === "switch") {
       await incoming.activate()
       expect(mail.at(-1)).toMatchObject({ op: "switched", hash: incoming.hash })
       expect(mayActivate(ref)).toBe(true)
-      expect(sessionNoteView(ref)).toEqual(source)
+      expect(await sessionNoteView(ref)).toEqual(source)
     } else {
       await peerMail("drop", incoming)
       expect(mail.at(-1)).toMatchObject({ op: "dropped", hash: incoming.hash })
-      expect(packSessionNotes([arrivingSession])).toBeUndefined()
+      expect(await packSessionNotes([arrivingSession])).toBeUndefined()
     }
   } finally {
-    forgetSessionNotes([arrivingSession])
+    await forgetSessionNotes([arrivingSession])
     if (previous) fs.writeFileSync(checkpoint, previous)
     else fs.rmSync(checkpoint, { force: true })
   }

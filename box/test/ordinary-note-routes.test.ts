@@ -70,9 +70,9 @@ beforeAll(() => {
     sessions: { [session]: { seq: 1, facts: { kind: "project", directory: "/", created: 1, updated: 1 } } } }));
   assign();
 });
-afterAll(() => {
+afterAll(async () => {
   engine.stop(true);
-  forgetSessionNotes([session]);
+  await forgetSessionNotes([session]);
   forgetMovedAway([session]);
   fs.rmSync(LIST_FILE, { force: true });
   if (previousLink) writeLink(previousLink);
@@ -253,11 +253,11 @@ test.each([false, true])("2,293-character disjoint note edits merge across hando
   expect(acceptedSession.json.status).toBe("committed");
   expect(acceptedQueue.status).toBe("committed");
 
-  const packed = JSON.parse(JSON.stringify(packSessionNotes([session])));
+  const packed = JSON.parse(JSON.stringify(await packSessionNotes([session])));
   assign(remote.peer.key);
   try {
-    forgetSessionNotes([session]);
-    placeSessionNotes(packed, [session], `move-${note}`);
+    await forgetSessionNotes([session]);
+    await placeSessionNotes(packed, [session], `move-${note}`);
   } finally { assign(local.peer.key); }
   changeQueues(book => handItem(book, book.find({ id })!, session, { user: true }, Date.now()));
   handUpkeep(readLink());
@@ -353,7 +353,7 @@ test("session notes follow ownership, queue notes follow handoff, and a revoked 
   const field = Object.keys(queue.fields).find(key => key.startsWith("note:"))!;
   const sessionRef = { kind: "sessionNotes" as const, id: session, note };
   const queueRef = { kind: "queueItems" as const, id, queue: session };
-  const packed = JSON.parse(JSON.stringify(packSessionNotes([session])));
+  const packed = JSON.parse(JSON.stringify(await packSessionNotes([session])));
   assign(remote.peer.key);
   const rejected: unknown[] = [];
   const places = { targets: [{ port: engine.port!, password: "disposable-fixture" }], bridge: false };
@@ -365,8 +365,8 @@ test("session notes follow ownership, queue notes follow handoff, and a revoked 
   try {
     await deliver("held-note", draft);
     expect(rejected).toEqual([]);
-    forgetSessionNotes([session]);
-    placeSessionNotes(packed, [session], "fixture-move");
+    await forgetSessionNotes([session]);
+    await placeSessionNotes(packed, [session], "fixture-move");
     await deliver("held-note", draft);
     expect(rejected).toEqual([]);
   } finally { assign(local.peer.key); }
@@ -413,12 +413,12 @@ test("legacy and current listers replay the same queue-note edit across an upgra
     }, value => replies.push(value.offlineEditReceipt), places, null, true);
     if (oldOwner) {
       // A pre-upgrade receipt has only the legacy key on disk.
-      expect(editQueue({ ...edit, operation: legacy }, () => true)).toMatchObject({ status: "committed" });
+      expect(await editQueue({ ...edit, operation: legacy }, () => true)).toMatchObject({ status: "committed" });
     } else {
       await deliver(remote.peer, legacy);
       expect(replies.at(-1)).toMatchObject({ receipt: { operation: legacy, status: "committed" } });
       // An older owner can still replay its original operation after a queue-only handoff.
-      expect(editQueue({ ...edit, operation: legacy }, () => true, () => false)).toMatchObject({ operation: legacy, status: "committed" });
+      expect(await editQueue({ ...edit, operation: legacy }, () => true, () => false)).toMatchObject({ operation: legacy, status: "committed" });
     }
     await deliver(local.peer, current);
     expect(replies.at(-1)).toMatchObject({ receipt: { operation: current, status: "committed" } });
@@ -441,11 +441,12 @@ test("two historical sender-scoped receipts sharing a nonce still replay their o
       operation: recordKey(setup, peer.key, nonce), fields: { [field]: index ? "Start. Second." : "Start. First." },
     },
   }));
-  const decisions = old.map(({ edit }) => {
-    const decision = editQueue(edit, () => true);
+  const decisions = [];
+  for (const { edit } of old) {
+    const decision = await editQueue(edit, () => true);
     if (!decision) throw new Error("Failed to prepare a legacy receipt.");
-    return decision;
-  });
+    decisions.push(decision);
+  }
   const replies: any[] = [];
   const send = (who: typeof local.peer, edit: typeof old[number]["edit"]) => takeOfflineEdit(who, {
     setup, nonce, submitter: { kind: "computer" }, edit,

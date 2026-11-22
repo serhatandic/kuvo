@@ -64,6 +64,38 @@ export function writeDurablePrivate(file: string, text: string | Uint8Array, thr
   syncDurableFile(folder, through);
 }
 
+/** A private atomic write through an asynchronously written temporary file. */
+export async function writePrivateLater(file: string, text: string | Uint8Array, durableThrough?: string): Promise<void> {
+  const folder = path.dirname(file);
+  await fs.promises.mkdir(folder, { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  try {
+    const handle = await fs.promises.open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(text);
+      if (((await handle.stat()).mode & 0o777) !== 0o600) await handle.chmod(0o600);
+      if (durableThrough !== undefined) await handle.sync();
+    } finally { await handle.close(); }
+    await fs.promises.rename(temporary, file);
+  } catch (error) {
+    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+  if (durableThrough !== undefined) await syncDurableFileLater(folder, durableThrough);
+}
+
+export const writeDurablePrivateLater = (file: string, text: string | Uint8Array, through = path.dirname(file)): Promise<void> =>
+  writePrivateLater(file, text, through);
+
+export async function syncDurableFileLater(file: string, through = path.dirname(file)): Promise<void> {
+  for (let entry = file; ; entry = path.dirname(entry)) {
+    const handle = await fs.promises.open(entry, "r");
+    try { await handle.sync(); } finally { await handle.close(); }
+    if (entry === through) return;
+    if (path.dirname(entry) === entry) throw new Error("The sync must stop at a parent of the file");
+  }
+}
+
 /**
  * A key, token or sign-in in `file`: as `writePrivate`, and in a folder only you can open however
  * it was made (one others could read is closed to them first).
@@ -200,7 +232,7 @@ const turns = new Map<string, Promise<void>>();
 // The same for work that awaits: held until it's done. In this process, each waits its turn however
 // long the one before takes; the lock's folder keeps other processes out.
 /** Fail closed while a cross-process operation awaits I/O. */
-export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, options: { untilExit?: boolean; busy?: string } = {}): Promise<T> {
+export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, options: { untilExit?: boolean; busy?: string; wait?: number } = {}): Promise<T> {
   const marker = `owner-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   const pending = `${lock}.${marker}`;
   let held = false;
@@ -214,7 +246,7 @@ export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, op
   try {
     fs.mkdirSync(pending, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(pending, marker), "", { flag: "wx", mode: 0o600 });
-    held = await holdAwaiting(lock, 0, 100, pending);
+    held = await holdAwaiting(lock, 0, options.wait ?? 100, pending);
     if (!held) throw new Error(options.busy ?? "A backup or restore is already running.");
     if (options.untilExit) process.once("exit", release);
     return await work();

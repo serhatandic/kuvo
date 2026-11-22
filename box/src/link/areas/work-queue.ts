@@ -33,7 +33,7 @@ import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import type { QueueCounts } from "../../shared/routes/work-queue";
-import { itemNumberOf, allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
+import { itemNumberOf, allItems, changeQueuesLater, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, nameOf, overseenBy, ownersOf, refOf, summaryOf, visibleItem, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
@@ -312,7 +312,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     const nonce = mutationNonce(request, given);
     if (!nonce) return yield* json(400, { message: "Send a valid operation id." });
     const setup = followedSetup(readLink());
-    return yield* answered(addHere(given, fromLocalApp(request), mutationKey(setup?.id ?? "", nonce)), json);
+    return yield* answered(await addHere(given, fromLocalApp(request), mutationKey(setup?.id ?? "", nonce)), json);
   }
 
   if (part === "import") {
@@ -330,7 +330,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     const { items, skipped } = parseBacklog(read.texts);
     let outcome: ReturnType<typeof importItems>;
     try {
-      outcome = changeQueues(book => importItems(book, owner, items, YOU, primaryOf()));
+      outcome = await changeQueuesLater(book => importItems(book, owner, items, YOU, primaryOf()));
     } catch (error) {
       if (error instanceof Refusal) return yield* json(400, { message: error.message });
       throw error;

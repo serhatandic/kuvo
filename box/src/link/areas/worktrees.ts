@@ -2,6 +2,7 @@
 // branch of its own, kept by this box (`box/worktrees.json`): made, named after their session,
 // listed and removed here, from a Mac (through `box route`) or a phone, with the Mac closed too.
 
+import { keepsList, keptList, keptSessions } from "../lists/sessions";
 import { inTurn, lockedIn } from "../../shared/session-notes";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -233,30 +234,15 @@ export async function answerWorktrees(method: string, requestPath: string, body:
   const message = (text: string) => ({ message: text });
   const list = readWorktrees();
   if (route === "kuvo/worktrees" && method === "GET") {
-    // As a Mac reads them (as it connects, and as a session in one gets its title): without what
-    // git says, their branches named.
-    if (/(^|[?&])records=1(&|$)/.test(requestPath.split("?")[1] ?? "")) {
+    const records = /(^|[?&])records=1(&|$)/.test(requestPath.split("?")[1] ?? "");
+    if (keepsList()) return { status: 200, value: worktreeSnapshot(list, records, [engine, bridge]) };
+    if (records) {
       await nameDueWorktrees(engine, signal);
       return { status: 200, value: { worktrees: readWorktrees(), restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) } satisfies Worktrees };
     }
     const { sessions, active } = await sessionsHere(engine, signal, bridge) ?? { sessions: [], active: new Set<string>() };
     const worktrees: ListedWorktree[] = [];
-    for (const tree of list) {
-      const here = sessions.filter(session => inside(session.location?.directory ?? session.directory, tree.root));
-      const entry: ListedWorktree = { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path.basename(tree.project), branch: tree.branch, sessions: here.length, working: here.some(session => active.has(session.id)) };
-      if (tree.base) entry.base = tree.base;
-      if (fs.existsSync(tree.root)) {
-        const status = await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
-        if (status !== null) {
-          entry.uncommitted = status.length > 0;
-          const ahead = tree.base ? await gitLater(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
-          if (ahead !== null && /^\d+$/.test(ahead)) entry.ahead = Number(ahead);
-        }
-        const size = await sizeLater(tree.root);
-        if (size !== undefined) entry.size = size;
-      }
-      worktrees.push(entry);
-    }
+    for (const tree of list) worktrees.push({ ...listedTree(tree, sessions, active), ...await treeStatus(tree) });
     return { status: 200, value: { worktrees, restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) } satisfies Worktrees };
   }
   if (method !== "POST") return { status: route.startsWith("kuvo/worktrees") ? 405 : 404, value: {} };
@@ -364,6 +350,60 @@ async function snapshot(root: string, branch: string): Promise<string | null | u
   } finally {
     fs.rmSync(index, { force: true });
   }
+}
+
+function listedTree(tree: WorktreeRecord, sessions: EngineSession[], active: ReadonlySet<string>): ListedWorktree {
+  const here = sessions.filter(session => inside(folderOf(session), tree.root));
+  return { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path.basename(tree.project),
+    branch: tree.branch, base: tree.base, sessions: here.length, working: here.some(session => active.has(session.id)) };
+}
+
+async function treeStatus(tree: WorktreeRecord): Promise<Pick<ListedWorktree, "ahead" | "size" | "uncommitted">> {
+  if (!fs.existsSync(tree.root)) return {};
+  const status = await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
+  const ahead = status !== null && tree.base ? await gitLater(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
+  const size = await sizeLater(tree.root);
+  return { ...(status !== null ? { uncommitted: status.length > 0 } : {}),
+    ...(ahead !== null && /^\d+$/.test(ahead) ? { ahead: Number(ahead) } : {}), ...(size !== undefined ? { size } : {}) };
+}
+
+type Status = Awaited<ReturnType<typeof treeStatus>>;
+let details = new Map<string, Status>();
+let restorableFacts = new Map<string, ListedRestorable>();
+let refreshAt = 0;
+let refreshing = false;
+let checked = "";
+
+function worktreeSnapshot(list: WorktreeRecord[], records: boolean, targets: (Target | null)[]): Worktrees {
+  const removed = readRestorableWorktrees();
+  const key = JSON.stringify([list, removed]);
+  const treeKey = (tree: WorktreeRecord | RestorableWorktree) => JSON.stringify(tree);
+  if (!refreshing && (checked !== key || Date.now() >= refreshAt)) {
+    refreshing = true;
+    setImmediate(async () => {
+      try {
+        const next = new Map<string, Status>();
+        const restored = new Map<string, ListedRestorable>();
+        for (const entry of removed) restored.set(treeKey(entry), await listedRestorable(entry));
+        for (const entry of list) next.set(treeKey(entry), await treeStatus(entry));
+        const changed = JSON.stringify([...restored]) !== JSON.stringify([...restorableFacts]) ||
+          JSON.stringify([...next]) !== JSON.stringify([...details]);
+        details = next;
+        restorableFacts = restored;
+        checked = key;
+        refreshAt = Date.now() + 5_000;
+        if (changed) for (const tell of worktreeFollowers) tell();
+      } catch {
+        refreshAt = Date.now() + 5_000;
+      } finally { refreshing = false; }
+    }).unref();
+  }
+  const restorable = removed.map(tree => restorableFacts.get(treeKey(tree)) ?? { project: tree.project, root: tree.root,
+    folder: tree.folder ?? tree.root, branch: tree.branch, base: tree.base, saved: Boolean(tree.snapshot), restorable: Boolean(tree.snapshot) });
+  if (records) return { worktrees: list, restorable };
+  const sessions = targets.flatMap(target => target ? [...keptSessions(target)?.values() ?? []] : []);
+  const active = new Set(Object.entries(keptList()?.sessions ?? {}).filter(([, entry]) => entry.facts.running).map(([id]) => id));
+  return { worktrees: list.map(tree => ({ ...listedTree(tree, sessions, active), ...details.get(treeKey(tree)) })), restorable };
 }
 
 /** A removed one as the records list it. */
@@ -699,7 +739,7 @@ export async function* worktreeEventsRoute(context: RouteContext): AsyncGenerato
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followedLive(async () => ({ worktrees: readWorktrees(), restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) }), told => {
+  return yield* followedLive(async () => keepsList() ? worktreeSnapshot(readWorktrees(), true, []) : ({ worktrees: readWorktrees(), restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) }), told => {
     worktreeFollowers.add(told);
     return () => { worktreeFollowers.delete(told); };
   }, signal);
