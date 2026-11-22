@@ -42,8 +42,8 @@ export class RPC {
 
   /**
    * `command` started as the bridge's own child, or an agent's process under a holder (`Held`):
-   * the same lines either way. A held one that a newer bridge took over is gone for this one
-   * (its requests fail), though the agent goes on.
+   * the same lines either way. Once the bridge gives up a holder, the new controller owns its
+   * results, including the outcome of the turn for any requests still pending here.
    */
   constructor(
     command: string[] | Held,
@@ -54,7 +54,13 @@ export class RPC {
     this.filter = options.filter
     const ended = (code: number, signal: string | null) => {
       this.closed = true
-      this.agentExited = signal !== "fenced" && signal !== "detached"
+      // A handover can wait for other holders after this socket closes. Failing the old
+      // requests or calling onExit during that wait would write a false end to the saved turn.
+      if (this.held?.relinquished) {
+        this.pending.clear()
+        return code
+      }
+      this.agentExited = true
       for (const { reject } of this.pending.values()) reject(new RPCClosed(this.stderr.trim().split("\n").slice(-3).join("\n") || `The agent stopped (exit code ${code}).`))
       this.pending.clear()
       this.onExit(code, signal)
@@ -151,7 +157,7 @@ export class RPC {
   }
 
   private receive(line: string) {
-    if (this.closed) return
+    if (this.closed || this.held?.relinquished) return
     let message: any
     try {
       message = JSON.parse(line)

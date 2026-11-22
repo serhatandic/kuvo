@@ -20,7 +20,7 @@ import { failure, lostWorkNote } from "./agent"
 import { parseProvider } from "./accounts"
 import { citedIn, plainCitations } from "./agents/codex-citations"
 import { Auto, autoProvider, foldEntries, resetTime, type AutoEntry, type AutoList } from "./auto"
-import { emit } from "./events"
+import { emit, subscribe } from "./events"
 import { fenceOff } from "./fence"
 import { handover, withHandover } from "./handover"
 import { onMachine, ownEnvironment } from "./machine"
@@ -1314,7 +1314,7 @@ export class Sessions {
   /** Its agents' processes stopped, between turns (the next message starts them again, in the same conversation); whether any ran. */
   closeAgents(id: string): boolean {
     const live = this.live.get(id)
-    if (!live || isBusy(live.doing) || !live.threads.size) return false
+    if (!live || isBusy(live.doing) || this.hasBackgroundWork(id, live) || !live.threads.size) return false
     clearTimeout(live.idle)
     for (const thread of live.threads.values()) thread.close()
     live.threads.clear()
@@ -1953,6 +1953,7 @@ export class Sessions {
     if (!agent) return undefined
     const slot = (this.slots(record)[provider] ??= { state: {} })
     const thread = agent.thread(record.session, slot.state)
+    thread.canRestart = () => !this.hasBackgroundWork(id, live)
     thread.onOwnTurn = (note) => this.ownTurn(id, provider, note)
     thread.onWorkLost = (lost) => this.workLost(id, provider, lost, `${this.agentName(provider)} stopped between turns: its process was ended from outside Kuvo Code, or crashed.`)
     live.threads.set(provider, thread)
@@ -2540,13 +2541,18 @@ export class Sessions {
     this.free(id, live, !held && outcome !== "failed" ? outcome : undefined, agentExited && !held)
   }
 
-  /** A while after its last turn, a session's agents stop running: they go on where they left off next time. */
+  private hasBackgroundWork(id: string, live: Live): boolean {
+    return runningShells(id).length > 0 || [...live.subagents.values()].some(turn => !turn.isEnded) ||
+      [...live.threads.values()].some(thread => thread.keepsWorking || thread.backgroundTasks?.length)
+  }
+
+  /** A while after its last work, a session's agents stop and go on where they left off next time. */
   private closeWhenIdle(id: string, live: Live) {
     clearTimeout(live.idle)
     live.idle = setTimeout(() => {
       if (live.doing.kind !== "idle" || this.live.get(id) !== live) return
       // Commands it left running would end with it: later.
-      if ([...live.threads.values()].some((thread) => thread.keepsWorking)) return this.closeWhenIdle(id, live)
+      if (this.hasBackgroundWork(id, live)) return this.closeWhenIdle(id, live)
       for (const thread of live.threads.values()) thread.close()
       live.threads.clear()
     }, timing.idleClose)
@@ -3066,6 +3072,20 @@ export class Sessions {
     const record = this.record(id)
     return {
       signal,
+      waitToRestart: async () => {
+        if (signal.aborted || !this.hasBackgroundWork(id, live)) return
+        await new Promise<void>(resolve => {
+          const finish = () => {
+            off()
+            signal.removeEventListener("abort", finish)
+            resolve()
+          }
+          const off = subscribe(() => queueMicrotask(() => {
+            if (!this.hasBackgroundWork(id, live)) finish()
+          }))
+          signal.addEventListener("abort", finish, { once: true })
+        })
+      },
       state: slot.state,
       saveState: () => this.store.progress(id, undefined, true),
       instructions: (withAgent = true) =>
@@ -3392,17 +3412,16 @@ export class Sessions {
 
   /**
    * Restarts the agents' processes here that started before the box's sandbox was on (you said
-   * to): each closes once its session is between turns (what it left running stops with it), and
-   * starts again in the sandbox with its next turn, going on with its conversation. Whether one
-   * still waits for its turn to end.
+   * to): each closes once the session and its background work are idle, and starts again in
+   * the sandbox with its next turn, going on with its conversation. Whether one still waits.
    */
   restartOutside(): boolean {
     let waiting = false
-    for (const live of this.live.values()) {
+    for (const [id, live] of this.live) {
       for (const [providerID, thread] of live.threads) {
         if (!thread.outside) continue
         // (Its turn, and what it left going, commands or subagents, as when it closes idle.)
-        if (isBusy(live.doing) || thread.keepsWorking) {
+        if (isBusy(live.doing) || this.hasBackgroundWork(id, live)) {
           waiting = true
           continue
         }
@@ -3656,7 +3675,17 @@ export class Sessions {
   adoptIdle(held: Held, meta: HeldMeta): boolean {
     // (One that serves its agent's sessions, Codex's app-server: its agent's.)
     const agent = this.agent(meta.provider)
-    if (agent?.adoptIdle) return agent.adoptIdle(held, meta)
+    if (agent?.adoptIdle) {
+      if (!agent.adoptIdle(held, meta)) return false
+      // A pooled process can have background work in several conversations.
+      const tracked = meta.backgroundSessions && typeof meta.backgroundSessions === "object" ? Object.keys(meta.backgroundSessions) : []
+      if (typeof meta.session === "string") tracked.push(meta.session)
+      for (const id of new Set(tracked)) {
+        const record = this.store.get(id)
+        if (record) this.threadOf(id, this.state(id), record, meta.provider)?.adoptIdle?.(held, meta)
+      }
+      return true
+    }
     const id = typeof meta.session === "string" ? meta.session : undefined
     const record = id ? this.store.get(id) : undefined
     if (!id || !record || record.session.parentID) return false
@@ -3766,9 +3795,9 @@ export class Sessions {
       this.wakeHeld()
     }
     const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined
-    const work = () => this.programUses.has(program) || [...this.live.values()].some(live =>
+    const work = () => this.programUses.has(program) || [...this.live].some(([id, live]) =>
       this.agent(live.own?.adopt?.providerID ?? "")?.id === program ||
-      [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program),
+      (this.hasBackgroundWork(id, live) && [...live.threads.keys()].some(provider => this.agent(provider)?.id === program)),
     ) || (holders !== undefined && heldIn(holders).some(record =>
       !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0,
     ))

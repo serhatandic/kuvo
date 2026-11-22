@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 export const compactionChoices = ["200000", "400000", "600000", "never"] as const
 export type CompactionChoice = typeof compactionChoices[number]
+export const DEFAULT_COMPACTION = "400000"
 
 export const compactionFile = (home: string) => join(home, "box", "conversation-compaction.json")
 
@@ -16,7 +17,7 @@ export function compactionChoice(home = process.env.KUVO_HOME): CompactionChoice
     const value: unknown = home && JSON.parse(readFileSync(compactionFile(home), "utf8"))
     if (isCompactionChoice(value)) return value
   } catch {}
-  return "400000"
+  return DEFAULT_COMPACTION
 }
 
 export interface ContextSize {
