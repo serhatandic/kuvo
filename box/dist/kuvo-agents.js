@@ -809,7 +809,7 @@ function compactionChoice(home = process.env.KUVO_HOME) {
     if (isCompactionChoice(value))
       return value;
   } catch {}
-  return "400000";
+  return DEFAULT_COMPACTION;
 }
 function summarizeAt(kind, window, choice = compactionChoice()) {
   if (!kind || !choosing.has(kind))
@@ -829,7 +829,7 @@ function stepContext(usage) {
   const used = values.reduce((sum, value) => sum + value, 0);
   return used || undefined;
 }
-var compactionChoices, compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var compactionChoices, DEFAULT_COMPACTION = "400000", compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 var init_context = __esm(() => {
   compactionChoices = ["200000", "400000", "600000", "never"];
   choosing = new Set(["claude", "codex", "grok"]);
@@ -5269,6 +5269,18 @@ function allowedFolders(directory) {
     return [];
   }
 }
+function sameFenceKey(left, right) {
+  if (left === right)
+    return true;
+  if (!machineHome || !left || !right)
+    return false;
+  const releases = join12(machineHome, "versions") + "/";
+  const normalize = (key) => key.replace(/"readable":\[("(?:[^"\\]|\\.)*")/, (entry, quoted) => {
+    const path = JSON.parse(quoted);
+    return path.startsWith(releases) && /^[^/]+\/bin$/.test(path.slice(releases.length)) ? '"readable":[' + JSON.stringify(join12(machineHome, "bin")) : entry;
+  });
+  return normalize(left) === normalize(right);
+}
 function isRepository(git) {
   try {
     if (lstatSync3(git).isSymbolicLink() || !statSync3(join12(git, "HEAD")).isFile())
@@ -8159,7 +8171,11 @@ class RPC {
     this.filter = options.filter;
     const ended = (code, signal) => {
       this.closed = true;
-      this.agentExited = signal !== "fenced" && signal !== "detached";
+      if (this.held?.relinquished) {
+        this.pending.clear();
+        return code;
+      }
+      this.agentExited = true;
       for (const { reject } of this.pending.values())
         reject(new RPCClosed(this.stderr.trim().split(`
 `).slice(-3).join(`
@@ -8244,7 +8260,7 @@ class RPC {
     }
   }
   receive(line) {
-    if (this.closed)
+    if (this.closed || this.held?.relinquished)
       return;
     let message;
     try {
@@ -8447,10 +8463,13 @@ class AcpThread {
     this.computer = computer;
     if (this.rpc && !this.rpc.isClosed)
       relayedServers(this.session.id, this, this.session.location.directory, computer, { brief: true });
-    if (this.rpc && !this.rpc.isClosed && this.spawnedWith === key && this.rpc !== this.stale)
+    if (this.rpc && !this.rpc.isClosed && this.sameLaunch(key, fence) && this.rpc !== this.stale)
       return this.rpc;
-    if (this.rpc && !this.rpc.isClosed && this.tasks.size)
-      this.cut.push(...this.taskWork());
+    if (this.rpc && !this.rpc.isClosed) {
+      await hooks.waitToRestart?.();
+      if (cancelled())
+        return stopped();
+    }
     this.drop();
     const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
     if (cancelled())
@@ -8637,6 +8656,18 @@ class AcpThread {
     }
     return rpc;
   }
+  sameLaunch(key, fence) {
+    if (this.spawnedWith === key)
+      return true;
+    if (!this.spawnedWith)
+      return false;
+    try {
+      const old = JSON.parse(this.spawnedWith);
+      return sameFenceKey(old.fence, fence) && JSON.stringify({ ...old, fence }) === key;
+    } catch {
+      return false;
+    }
+  }
   wholeLaunch(argv, env, cleanEnv, given = []) {
     const whole = this.flavor.whole;
     if (!whole || !fenceRules())
@@ -8769,9 +8800,16 @@ class AcpThread {
     };
     this.rpc = rpc;
     this.fenced = meta.fenced === true;
-    this.spawnedWith = typeof meta.key === "string" ? meta.key : undefined;
+    this.spawnedWith = undefined;
+    if (typeof meta.key === "string") {
+      try {
+        this.spawnedWith = JSON.stringify({ ...JSON.parse(meta.key), program: flavor.program?.() ?? 0 });
+      } catch {}
+    }
     if (meta.setup && typeof meta.setup === "object")
       this.setup = { ...meta.setup };
+    if (Array.isArray(meta.backgroundTasks))
+      this.tasks = new Map(meta.backgroundTasks.map((task) => [task.id, task]));
     return rpc;
   }
   adoptIdle(held, meta) {
@@ -8848,11 +8886,6 @@ ${text}`;
 Attached files:
 ${others.map((path) => `- ${path}`).join(`
 `)}`;
-    if (this.cut.length)
-      text = `${lostWorkNote(`${this.name} started again before this message.`, this.cut)}
-
-${text}`;
-    this.cut = [];
     prompt.unshift({ type: "text", text });
     return new Promise((resolve) => {
       const active = { turn, hooks, resolve, rpc, tools: new Map, toolsSinceText: false, ended: false, instructed, children: new Map, served: new Map, started: Date.now(), prompt: 0, input };
@@ -8995,6 +9028,7 @@ ${text}`;
           const known = before.get(task.id);
           return [task.id, { ...task, started: known?.started ?? Date.now(), order: known ? known.order : workOrder() }];
         }));
+        this.rpc?.holder?.note({ backgroundTasks: [...this.tasks.values()] });
         if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started || before.get(task.id)?.order !== task.order))
           emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
       }
@@ -9476,7 +9510,6 @@ ${text}`;
       this.close();
   }
   tasks = new Map;
-  cut = [];
   onWorkLost;
   get keepsWorking() {
     return Boolean(this.rpc && !this.rpc.isClosed) && this.tasks.size > 0;
@@ -12497,9 +12530,10 @@ var paragraphs = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filte
 // box/src/agents/agents/claude.ts
 import { spawn as spawn6 } from "child_process";
 import { createHash as createHash8, randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync15, mkdirSync as mkdirSync14, readdirSync as readdirSync12, readFileSync as readFileSync23, rmdirSync as rmdirSync2, statSync as statSync8 } from "fs";
+import { createReadStream, existsSync as existsSync15, mkdirSync as mkdirSync14, readdirSync as readdirSync12, readFileSync as readFileSync23, rmdirSync as rmdirSync2, statSync as statSync8 } from "fs";
 import { homedir as homedir3 } from "os";
 import { basename as basename4, dirname as dirname11, join as join25, resolve as resolve6 } from "path";
+import { createInterface } from "readline";
 import { pathToFileURL as pathToFileURL3 } from "url";
 function botMemory(session) {
   const bot = session.metadata?.kuvo?.bot;
@@ -13088,6 +13122,7 @@ class ClaudeThread {
   agent;
   session;
   state;
+  canRestart;
   usageGeneration = null;
   query;
   input;
@@ -13185,9 +13220,19 @@ class ClaudeThread {
       return { outcome: "interrupted" };
     const usage = this.usageGeneration;
     const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.();
-    if (this.query && (this.opened?.compaction !== compaction || signInChanged || !this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
-      this.cut.push(...this.wakingWork);
-      this.close();
+    const fenceChanged = !sameFenceKey(this.opened?.fence, fence);
+    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || !this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || fenceChanged || this.opened?.subagents !== subagentsKey;
+    let deferred = false;
+    if (this.query && restart) {
+      deferred = this.canRestart?.() === false;
+      if (deferred && (fenceChanged || signInChanged)) {
+        await hooks.waitToRestart?.();
+        if (hooks.signal.aborted)
+          return { outcome: "interrupted" };
+        deferred = false;
+      }
+      if (!deferred)
+        this.close();
     }
     const computer = await computerServers(this.session.location.directory);
     const serversNow = await serversKey(this.session.id, computer);
@@ -13204,7 +13249,7 @@ class ClaudeThread {
         await this.query.applyFlagSettings({ effortLevel: effort ?? null }).catch(() => {});
       if (this.opened?.plan !== input.plan)
         await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {});
-      this.opened = { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey };
+      this.opened = deferred && this.opened ? { ...this.opened, model: modelID, effort, plan: input.plan } : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey };
       this.adopted = false;
     }
     if (this.query && (opening || this.servers !== serversNow)) {
@@ -13229,13 +13274,7 @@ class ClaudeThread {
       this.lastHooks = hooks;
       const command = input.compact || input.text.trimStart().startsWith("/");
       const note = command ? undefined : instructionsNote(toldOf(this.state, "claudeTold"), append);
-      const lostNote = this.cut.length && !command ? lostWorkNote("Claude Code started again before this message.", this.cut.splice(0)) : undefined;
-      if (this.cut.length && command)
-        this.onWorkLost?.(this.cut.splice(0));
-      const ahead = [lostNote, note].filter(Boolean).join(`
-
-`);
-      const message = userMessage(ahead ? { ...input, text: `${ahead}
+      const message = userMessage(note ? { ...input, text: `${note}
 
 ${input.text}` } : input, this.copies());
       let active;
@@ -13281,7 +13320,7 @@ ${input.text}` } : input, this.copies());
       throw error;
     }
     if (opened)
-      this.opened = opened;
+      this.opened = { ...opened, program: this.agent.program };
     return new Promise((resolve) => {
       this.lastHooks = hooks;
       this.active = this.turnFor(turn, hooks, (result) => {
@@ -13302,14 +13341,46 @@ ${input.text}` } : input, this.copies());
     this.held = held;
     this.holding = Promise.resolve(held);
     const opened = meta.opened;
-    this.adopting = this.agent.sdk().then((sdk) => {
+    this.adopting = this.agent.sdk().then(async (sdk) => {
+      const tasks = await this.heldBackground(held);
       if (this.query || !held.isOpen)
         return;
       this.open(sdk, opened?.model ?? "default", opened?.effort, opened?.plan ?? false, opened?.append ?? "", { saveState: () => {} }, opened?.skills, undefined, { held, meta });
       if (opened)
-        this.opened = opened;
+        this.opened = { ...opened, program: this.agent.program };
+      if (tasks.length)
+        this.noteTask({ subtype: "background_tasks_changed", tasks });
     }, () => held.stop());
     return true;
+  }
+  async heldBackground(held) {
+    const folder = agentHoldFolder("claude");
+    if (!folder)
+      return [];
+    const tasks = new Map;
+    try {
+      const lines = createInterface({ input: createReadStream(join25(folder, held.id + ".journal")), crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (!line.includes('"background_tasks_changed"') && !line.includes('"task_notification"'))
+          continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.type !== "system")
+          continue;
+        if (message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)) {
+          tasks.clear();
+          for (const task of message.tasks)
+            if (typeof task?.task_id === "string" && !task.ambient)
+              tasks.set(task.task_id, task);
+        } else if (message.subtype === "task_notification")
+          tasks.delete(message.task_id);
+      }
+    } catch {}
+    return [...tasks.values()];
   }
   promptRendered() {
     if (this.opened)
@@ -13428,6 +13499,8 @@ ${input.text}` } : input, this.copies());
         this.lastEnded = { type: task?.type ?? "", description: task?.description ?? String(message.summary ?? ""), command, status: String(message.status ?? "completed"), summary: message.summary };
         if (task?.shell)
           endShell(task.shell, message.status === "completed" ? 0 : undefined);
+        if (this.liveTasks.delete(message.task_id))
+          emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
         const callID = task?.type === "local_agent" && task.toolUseID ? task.toolUseID : typeof message.tool_use_id === "string" ? message.tool_use_id : task?.toolUseID;
         const lane = callID ? this.keptLane(callID) ?? this.active?.subagents.get(callID) : undefined;
         if (callID && lane?.background) {
@@ -13498,7 +13571,6 @@ ${input.text}` } : input, this.copies());
     return Boolean(this.query) && this.liveTasks.size > 0;
   }
   onWorkLost;
-  cut = [];
   get wakingWork() {
     if (!this.query)
       return [];
@@ -13555,7 +13627,8 @@ ${input.text}` } : input, this.copies());
     this.input = new Queue;
     const tools = agentToolsFor(this.session.id, this, fenceOn());
     this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
-    this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() };
+    const signIn = taken && taken.meta.opened?.compaction !== undefined ? typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined : this.agent.limits.signIn?.();
+    this.usageGeneration = { number: this.agent.limits.generation?.() ?? 0, signIn };
     this.adopted = Boolean(taken);
     let query;
     let agentExited = false;
@@ -15218,9 +15291,10 @@ class CodexAgent {
     this.modelList = undefined;
     this.known.stale();
     for (const [key, slot] of this.slots) {
-      slot.outdated = slot.server;
+      if (slot.server)
+        this.markOutdated(slot, slot.server, "program");
       slot.starting?.then((rpc) => {
-        slot.outdated ??= rpc;
+        this.markOutdated(slot, rpc, "program");
         this.restartIfQuiet(key);
       }, () => {});
       this.restartIfQuiet(key);
@@ -15229,7 +15303,15 @@ class CodexAgent {
   busy(key, server, starting) {
     if ((key === SHARED || key === ACCOUNT) && (this.logins.size || [...this.oneOffs.values()].some((oneOff) => oneOff.rpc === server)))
       return true;
-    return [...this.threads.values()].some((thread) => thread !== starting && thread.server === server && (thread.isRunning || thread.keepsWorking));
+    return [...this.threads.values()].some((thread) => thread.server === server && (thread !== starting && thread.isRunning || thread.keepsWorking || thread.canRestart?.() === false));
+  }
+  markOutdated(slot, server, field) {
+    if (slot.server !== server)
+      return;
+    if (slot.outdated !== server)
+      slot.changed = new Set;
+    slot.outdated = server;
+    slot.changed.add(field);
   }
   restartOutside() {
     let waiting = false;
@@ -15252,12 +15334,26 @@ class CodexAgent {
       return;
     if (server.isClosed || slot.server !== server) {
       slot.outdated = undefined;
+      slot.changed = undefined;
+      return;
+    }
+    if ((slot.compaction ?? DEFAULT_COMPACTION) === compactionChoice())
+      slot.changed?.delete("compaction");
+    if (this.signedInAs.get(server) === this.chatGPTAccount())
+      slot.changed?.delete("account");
+    const thread = this.threads.get(key);
+    if ((key === SHARED || key === ACCOUNT || thread) && sameFenceKey(slot.fence, this.launchFence(key, thread)))
+      slot.changed?.delete("sandbox");
+    if (!slot.changed?.size) {
+      slot.outdated = undefined;
       return;
     }
     if (this.busy(key, server, starting))
       return;
     slot.outdated = undefined;
-    this.stop(key, "account or sandbox changed");
+    const changed = slot.changed;
+    slot.changed = undefined;
+    this.stop(key, "launch settings changed", changed);
     if (key !== SHARED && key !== ACCOUNT)
       return;
     this.modelList = undefined;
@@ -15272,9 +15368,21 @@ class CodexAgent {
   compaction = compactionChoice();
   idleCheck;
   shutdowns = 0;
+  serverKey(thread) {
+    return !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT;
+  }
+  launchFence(key, thread) {
+    return key === SHARED ? "" : key === ACCOUNT ? fenceKey() : fenceKey() + JSON.stringify(allowedFolders(thread.session.location.directory)) + fullAccessMark(thread.session.id);
+  }
+  needsSecurityRestart(thread) {
+    const server = thread.server;
+    if (!server || server.isClosed)
+      return false;
+    const slot = [...this.slots.values()].find((each) => each.server === server);
+    return !sameFenceKey(slot?.fence, this.launchFence(this.serverKey(thread), thread)) || this.signedInAs.get(server) !== this.chatGPTAccount();
+  }
   async rpc(thread, starting = false) {
-    const serverKey = () => !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT;
-    const pendingKey = serverKey();
+    const pendingKey = this.serverKey(thread);
     const pendingSlot = this.slot(pendingKey);
     const shutdowns = this.shutdowns;
     pendingSlot.lastUse = Date.now();
@@ -15295,19 +15403,22 @@ class CodexAgent {
     if (compaction !== this.compaction) {
       this.compaction = compaction;
       for (const slot of this.slots.values()) {
-        slot.outdated = slot.server;
-        slot.starting?.then((server) => {
-          slot.outdated ??= server;
-        }, () => {});
+        if (slot.server)
+          this.markOutdated(slot, slot.server, "compaction");
+        slot.starting?.then((server) => this.markOutdated(slot, server, "compaction"), () => {});
       }
     }
-    const key = serverKey();
+    const key = this.serverKey(thread);
     const slot = this.slot(key);
     slot.lastUse = Date.now();
-    const fence = key === SHARED ? "" : key === ACCOUNT ? fenceKey() : fenceKey() + JSON.stringify(allowedFolders(thread.session.location.directory)) + fullAccessMark(thread.session.id);
-    if (slot.server && !slot.server.isClosed && (slot.fence !== fence || this.signedInAs.get(slot.server) !== this.chatGPTAccount()))
-      slot.outdated ??= slot.server;
-    if (thread && starting && thread.server && !thread.server.isClosed && thread.keepsWorking && (this.isFenced(thread.server) || !fenceRules()))
+    const fence = this.launchFence(key, thread);
+    if (slot.server && !slot.server.isClosed) {
+      if (!sameFenceKey(slot.fence, fence))
+        this.markOutdated(slot, slot.server, "sandbox");
+      if (this.signedInAs.get(slot.server) !== this.chatGPTAccount())
+        this.markOutdated(slot, slot.server, "account");
+    }
+    if (thread && starting && thread.server && !thread.server.isClosed && thread.keepsWorking && !this.needsSecurityRestart(thread))
       return thread.server;
     this.idleCheck ??= setInterval(() => {
       for (const [each, slot] of this.slots) {
@@ -15362,13 +15473,14 @@ class CodexAgent {
     const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...this.instance.home ? { CODEX_HOME: this.instance.home } : {}, ...thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}, ...fence?.env };
     const argv = fence ? [fence.command, ...args] : [executable, ...args];
     const cwd = fence ? directory : this.context.temporary;
+    const compaction = this.compaction;
     const stops = slot.stops;
     const holdIn = agentHoldFolder("codex");
     if (holdIn && !fence)
       this.startingOutside++;
     let held;
     try {
-      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...thread && key === thread.session.id ? { session: key } : {}, compaction: this.compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...thread && key === thread.session.id ? { session: key } : {}, compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
         console.error("Codex's holder didn't start:", error?.message ?? error);
         return;
       }) : undefined;
@@ -15384,6 +15496,7 @@ class CodexAgent {
     }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env });
     slot.fence = fenceNow;
+    slot.compaction = compaction;
     this.serve(rpc, slot, Boolean(fence), () => fence?.ended());
     slot.opening = rpc;
     rpc.start();
@@ -15427,6 +15540,9 @@ class CodexAgent {
     };
   }
   adopted = new Map;
+  adoptedServer(held) {
+    return this.adopted.get(held);
+  }
   adoptServer(taken) {
     const found = this.adopted.get(taken.held);
     if (found)
@@ -15439,8 +15555,9 @@ class CodexAgent {
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held));
     if (!slot.server || slot.server.isClosed) {
       slot.server = rpc;
-      if (meta.compaction !== this.compaction)
-        slot.outdated = rpc;
+      slot.compaction = meta.compaction;
+      if ((meta.compaction ?? DEFAULT_COMPACTION) !== this.compaction)
+        this.markOutdated(slot, rpc, "compaction");
     }
     slot.lastUse = Date.now();
     const stopping = new Map;
@@ -15475,17 +15592,20 @@ class CodexAgent {
     slot.fence = String(meta.fence ?? "");
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(held));
     slot.server = rpc;
+    slot.compaction = meta.compaction;
+    if ((meta.compaction ?? DEFAULT_COMPACTION) !== this.compaction)
+      this.markOutdated(slot, rpc, "compaction");
     slot.lastUse = Date.now();
     rpc.start();
     return true;
   }
-  stop(key, reason) {
+  stop(key, reason, changed) {
     const slot = this.slots.get(key);
     if (slot)
       slot.stops = (slot.stops ?? 0) + 1;
     const stopping = slot?.server ?? slot?.opening;
     if (stopping)
-      console.error("Stopping Codex app-server", { reason, child: stopping.pid, holder: stopping.holder?.holder });
+      console.error("Stopping Codex app-server", { reason, ...changed ? { fields: [...changed] } : {}, child: stopping.pid, holder: stopping.holder?.holder });
     slot?.opening?.kill();
     const server = slot?.server;
     if (!slot || !server)
@@ -15911,6 +16031,18 @@ class CodexThread {
   agent;
   session;
   state;
+  canRestart;
+  adoptIdle(held) {
+    const server = this.agent.adoptedServer(held);
+    const threadID = this.state.codexThread;
+    if (this.server || !server || typeof threadID !== "string")
+      return false;
+    this.server = server;
+    this.nativeID = threadID;
+    this.terminalsUnknown = { id: `unknown:${threadID}`, since: Date.now(), order: workOrder() };
+    this.readTerminals(true);
+    return true;
+  }
   steerCards = new Map;
   nativeID;
   loaded = false;
@@ -16170,6 +16302,7 @@ class CodexThread {
       if (before !== this.terminalsUnknown) {
         emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
       }
+      this.noteBackground(server);
       if (this.terminals.length || this.terminalsUnknown)
         again();
       return;
@@ -16189,8 +16322,24 @@ class CodexThread {
       this.commandStarts.delete(id);
     if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order))
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
+    this.noteBackground(server);
     if (this.terminals.length)
       again();
+  }
+  noteBackground(server) {
+    const held = server.holder;
+    if (!held)
+      return;
+    const sessions = held.meta.backgroundSessions ?? {};
+    const working = this.keepsWorking;
+    if (working === Boolean(sessions[this.session.id]))
+      return;
+    const next = { ...sessions };
+    if (working)
+      next[this.session.id] = true;
+    else
+      delete next[this.session.id];
+    held.note({ backgroundSessions: next });
   }
   async steer(input, keep) {
     const [first] = input.synthetic ? [] : this.waiting;
@@ -16296,6 +16445,10 @@ class CodexThread {
     };
   }
   async prepare(input, hooks) {
+    if (this.agent.needsSecurityRestart(this))
+      await hooks.waitToRestart?.();
+    if (hooks.signal.aborted)
+      return;
     this.inTurn = true;
     try {
       await this.ensureThread(input, hooks);
@@ -18154,6 +18307,7 @@ class CursorThread {
   owner;
   session;
   state;
+  canRestart;
   agent;
   startedApproving;
   startedSkills;
@@ -18230,8 +18384,13 @@ class CursorThread {
     const skills = options.local?.dirs?.[0];
     const tools = createHash10("sha256").update(JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])).digest("hex");
     const fence = fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : "";
-    if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || this.startedFence !== fence || this.worker?.isClosed)
+    if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || !sameFenceKey(this.startedFence, fence) || this.worker?.isClosed) {
+      if ((this.agent || this.worker) && !this.worker?.isClosed)
+        await hooks.waitToRestart?.();
+      if (hooks.signal.aborted)
+        return false;
       this.stop();
+    }
     if (this.agent)
       return true;
     const started = ++this.startup;
@@ -18418,7 +18577,10 @@ ${text}`;
         this.active = undefined;
       clearTimeout(this.idle);
       if (this.worker)
-        this.idle = setTimeout(() => this.active || this.stop(), workerIdle);
+        this.idle = setTimeout(() => {
+          if (!this.active && this.canRestart?.() !== false)
+            this.stop();
+        }, workerIdle);
     }
   }
   words(lane) {
@@ -21512,7 +21674,7 @@ class Sessions {
   }
   closeAgents(id) {
     const live = this.live.get(id);
-    if (!live || isBusy(live.doing) || !live.threads.size)
+    if (!live || isBusy(live.doing) || this.hasBackgroundWork(id, live) || !live.threads.size)
       return false;
     clearTimeout(live.idle);
     for (const thread of live.threads.values())
@@ -22114,6 +22276,7 @@ ${others.join(`
       return;
     const slot = this.slots(record)[provider] ??= { state: {} };
     const thread = agent.thread(record.session, slot.state);
+    thread.canRestart = () => !this.hasBackgroundWork(id, live);
     thread.onOwnTurn = (note) => this.ownTurn(id, provider, note);
     thread.onWorkLost = (lost) => this.workLost(id, provider, lost, `${this.agentName(provider)} stopped between turns: its process was ended from outside Kuvo Code, or crashed.`);
     live.threads.set(provider, thread);
@@ -22716,12 +22879,15 @@ ${text.slice(0, 4000)}
       this.waitToResumeQueue(id, live, result.resumeQueue);
     this.free(id, live, !held && outcome !== "failed" ? outcome : undefined, agentExited && !held);
   }
+  hasBackgroundWork(id, live) {
+    return runningShells(id).length > 0 || [...live.subagents.values()].some((turn) => !turn.isEnded) || [...live.threads.values()].some((thread) => thread.keepsWorking || thread.backgroundTasks?.length);
+  }
   closeWhenIdle(id, live) {
     clearTimeout(live.idle);
     live.idle = setTimeout(() => {
       if (live.doing.kind !== "idle" || this.live.get(id) !== live)
         return;
-      if ([...live.threads.values()].some((thread) => thread.keepsWorking))
+      if (this.hasBackgroundWork(id, live))
         return this.closeWhenIdle(id, live);
       for (const thread of live.threads.values())
         thread.close();
@@ -23177,6 +23343,22 @@ ${text.slice(0, 4000)}
     const record = this.record(id);
     return {
       signal,
+      waitToRestart: async () => {
+        if (signal.aborted || !this.hasBackgroundWork(id, live))
+          return;
+        await new Promise((resolve) => {
+          const finish = () => {
+            off();
+            signal.removeEventListener("abort", finish);
+            resolve();
+          };
+          const off = subscribe(() => queueMicrotask(() => {
+            if (!this.hasBackgroundWork(id, live))
+              finish();
+          }));
+          signal.addEventListener("abort", finish, { once: true });
+        });
+      },
       state: slot.state,
       saveState: () => this.store.progress(id, undefined, true),
       instructions: (withAgent = true) => [
@@ -23480,11 +23662,11 @@ ${live.agentPrompt}` : ""
   }
   restartOutside() {
     let waiting = false;
-    for (const live of this.live.values()) {
+    for (const [id, live] of this.live) {
       for (const [providerID, thread] of live.threads) {
         if (!thread.outside)
           continue;
-        if (isBusy(live.doing) || thread.keepsWorking) {
+        if (isBusy(live.doing) || this.hasBackgroundWork(id, live)) {
           waiting = true;
           continue;
         }
@@ -23713,8 +23895,19 @@ ${live.agentPrompt}` : ""
   }
   adoptIdle(held, meta) {
     const agent = this.agent(meta.provider);
-    if (agent?.adoptIdle)
-      return agent.adoptIdle(held, meta);
+    if (agent?.adoptIdle) {
+      if (!agent.adoptIdle(held, meta))
+        return false;
+      const tracked = meta.backgroundSessions && typeof meta.backgroundSessions === "object" ? Object.keys(meta.backgroundSessions) : [];
+      if (typeof meta.session === "string")
+        tracked.push(meta.session);
+      for (const id of new Set(tracked)) {
+        const record = this.store.get(id);
+        if (record)
+          this.threadOf(id, this.state(id), record, meta.provider)?.adoptIdle?.(held, meta);
+      }
+      return true;
+    }
     const id = typeof meta.session === "string" ? meta.session : undefined;
     const record = id ? this.store.get(id) : undefined;
     if (!id || !record || record.session.parentID)
@@ -23829,7 +24022,7 @@ ${live.agentPrompt}` : ""
       this.wakeHeld();
     };
     const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined;
-    const work = () => this.programUses.has(program) || [...this.live.values()].some((live) => this.agent(live.own?.adopt?.providerID ?? "")?.id === program || [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program)) || holders !== undefined && heldIn(holders).some((record) => !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0);
+    const work = () => this.programUses.has(program) || [...this.live].some(([id, live]) => this.agent(live.own?.adopt?.providerID ?? "")?.id === program || this.hasBackgroundWork(id, live) && [...live.threads.keys()].some((provider) => this.agent(provider)?.id === program)) || holders !== undefined && heldIn(holders).some((record) => !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0);
     try {
       while (Date.now() < deadline) {
         if (!this.installerRunning(program) && !work())
@@ -24886,12 +25079,12 @@ var init_store = __esm(() => {
 
 // box/src/agents/carry.ts
 import { createHash as createHash13 } from "crypto";
-import { createReadStream } from "fs";
+import { createReadStream as createReadStream2 } from "fs";
 import { copyFile, lstat as lstat2, mkdir, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "fs/promises";
 import { basename as basename7, dirname as dirname16, isAbsolute as isAbsolute3, join as join37, normalize, sep as sep4 } from "path";
 async function hashOf(file) {
   const hash = createHash13("sha256");
-  for await (const chunk of createReadStream(file))
+  for await (const chunk of createReadStream2(file))
     hash.update(chunk);
   return hash.digest("hex");
 }
@@ -33361,4 +33554,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents fb66dbd2044ce84504eb34b3dd8f727140d184d1c26c6bb09ce885e19a55fc27
+// Built from Packages/Box/src/agents 5e8cbf5dc08fbf993130ee2c08039119308b41d6bf52eef2a0f5a1661e95ded2
