@@ -10894,6 +10894,9 @@
             "literal": "btw"
            },
            {
+            "literal": "btw.choices"
+           },
+           {
             "literal": "btw.threads"
            },
            {
@@ -11857,6 +11860,9 @@
            },
            {
             "literal": "btw"
+           },
+           {
+            "literal": "btw.choices"
            },
            {
             "literal": "btw.threads"
@@ -28646,6 +28652,16 @@
             "session": "string",
             "thread?": "string",
             "question": "string",
+            "model?": {
+             "object": {
+              "providerID": "string",
+              "id": "string",
+              "variant?": "string"
+             }
+            },
+            "files?": {
+             "list": "string"
+            },
             "state": {
              "oneOf": [
               {
@@ -28704,6 +28720,16 @@
             "session": "string",
             "thread?": "string",
             "question": "string",
+            "model?": {
+             "object": {
+              "providerID": "string",
+              "id": "string",
+              "variant?": "string"
+             }
+            },
+            "files?": {
+             "list": "string"
+            },
             "state": {
              "oneOf": [
               {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 2527b8f47968
+// Kuvo folder layout 23 e6b2369768cc
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2527b8f47968";
+var BRIDGE_VERSION = "e6b2369768cc";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24384,6 +24384,8 @@ var init_sessions2 = __esm(() => {
     session: string,
     "thread?": string,
     question: string,
+    "model?": object({ providerID: string, id: string, "variant?": string }),
+    "files?": list(string),
     state: words("answering", "answered", "failed"),
     "answer?": string,
     "error?": string,
@@ -24804,6 +24806,7 @@ var init_features = __esm(() => {
     "browser.data.never",
     "browser.view",
     "btw",
+    "btw.choices",
     "btw.threads",
     "btw.threads.events",
     "claude-code",
