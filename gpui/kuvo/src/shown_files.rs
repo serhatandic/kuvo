@@ -262,7 +262,7 @@ fn single_picture(file: &ViewModel, actions: &Actions, cx: &App) -> AnyElement {
                 .border_color(c.border)
                 .cursor_pointer()
                 .on_click(move |_, window, cx| open(&id, window, cx))
-                .child(img(pic.thumb.clone()).size_full().object_fit(ObjectFit::Contain))
+                .child(img(pic.thumb.clone()).size_full().rounded(radius::CARD - px(1.)).object_fit(ObjectFit::Contain))
                 .into_any_element()
         }
         _ => div()
@@ -327,7 +327,7 @@ fn picture_strip(items: &[&ViewModel], actions: &Actions, cx: &App) -> AnyElemen
                             .border_color(c.border)
                             .cursor_pointer()
                             .on_click(move |_, window, cx| open(&id, window, cx))
-                            .child(img(pic.thumb.clone()).size_full().object_fit(ObjectFit::Contain))
+                            .child(img(pic.thumb.clone()).size_full().rounded(radius::POPOVER - px(1.)).object_fit(ObjectFit::Contain))
                             .into_any_element()
                     }
                     _ => div()

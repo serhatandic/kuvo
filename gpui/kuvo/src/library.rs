@@ -817,7 +817,8 @@ impl LibraryView {
         }
     }
 
-    fn picture(&mut self, item: &LibraryItem, cx: &mut Context<Self>) -> AnyElement {
+    /// Its picture, filling a frame whose corners are `corners` round, rounded inside its edge itself.
+    fn picture(&mut self, item: &LibraryItem, corners: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let dark = cx.theme().appearance.is_dark();
         let thumb = self.thumb(item, cx);
         let hue = hue_of(&item.id);
@@ -827,12 +828,13 @@ impl LibraryView {
                 let stage = stage_color(item.kind, hue, dark);
                 div()
                     .size_full()
+                    .rounded(corners)
                     .bg(stage)
                     .when(item.kind != LibraryKind::Image, |d| d.p(px(8.)))
-                    .child(img(image).size_full().object_fit(fit))
+                    .child(img(image).size_full().when(item.kind == LibraryKind::Image, |d| d.rounded(corners)).object_fit(fit))
                     .into_any_element()
             }
-            Thumb::Reading => div().size_full().bg(stage_color(item.kind, hue, dark)).into_any_element(),
+            Thumb::Reading => div().size_full().rounded(corners).bg(stage_color(item.kind, hue, dark)).into_any_element(),
             Thumb::None => {
                 let kind = item.kind;
                 canvas(|_, _, _| {}, move |bounds, (), window, _| paint_kind(bounds, kind, hue, dark, window)).size_full().into_any_element()
@@ -874,7 +876,7 @@ impl LibraryView {
             .border_1()
             .border_color(if open { c.accent } else if dark { hsla(0., 0., 1., 0.08) } else { hsla(0., 0., 0., 0.07) })
             .when(!item.there, |d| d.opacity(0.55))
-            .child(self.picture(item, cx))
+            .child(self.picture(item, px(9.), cx))
             .child(div().absolute().top(px(8.)).right(px(8.)).when(!open, |d| d.invisible().group_hover(group.clone(), |s| s.visible())).child(more));
         let item_for_click = item.clone();
         let body = div()
@@ -939,7 +941,7 @@ impl LibraryView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(if dark { hsla(0., 0., 1., 0.08) } else { hsla(0., 0., 0., 0.07) })
-                    .child(self.picture(item, cx)),
+                    .child(self.picture(item, px(5.), cx)),
             )
             .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(item.name.clone()))
             .child(

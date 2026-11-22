@@ -1923,6 +1923,7 @@ impl ActivityCard {
                     let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
                         Some(image) => gpui::img(image.clone())
                             .size_full()
+                            .rounded(radius::NAV - px(1.))
                             .object_fit(gpui::ObjectFit::Cover)
                             .into_any_element(),
                         None => div()
@@ -2262,6 +2263,7 @@ impl ActivityCard {
                             let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
                                 Some(image) => gpui::img(image.clone())
                                     .size_full()
+                                    .rounded(radius::NAV - px(1.))
                                     .object_fit(gpui::ObjectFit::Cover)
                                     .into_any_element(),
                                 None => div()
