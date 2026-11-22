@@ -33,6 +33,7 @@ bar) show what a box says and ask it to change things. Computers reach each othe
 - **Bots:** a bot lives on one computer, its home, and moves the way a conversation does (`bots/`).
 - **Wake-ups:** each box fires its own sessions' and bots' wake-ups, with no client connected (`box/src/keeper/kuvo-wake`).
 - **Work Queue:** each item belongs to its queue's owner. Numbers come in blocks from the main, and the relay lease keeps the highest one given out (`work-queue/`, `work-queue/numbers.ts`).
+- **Coding-agent accounts:** an account is one agent pointed at one folder on one box. The first is the agent's own sign-in, and the agent renews it and reports its usage itself (`agent-accounts.md`; `box/src/agents/accounts.ts`).
 - **Usage:** each box reads its own accounts and tells its peers, so every box lists them all. The menu bar shows the limits (`box/src/usage/`; `mac/helper/.../MenuBarItem.swift`).
 - **Insights:** each box keeps a SQLite index and swaps pages of usage metadata with its peers (`box/src/usage/insights*.ts`).
 - **Library:** each box keeps what was handed to you there, and the box you ask gathers the other computers' parts (`library/`).
