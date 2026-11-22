@@ -847,7 +847,7 @@ impl QueueView {
                 for filter in filters {
                     let on = self.filters.iter().position(|each| each.same(&filter));
                     let label = match &filter {
-                        super::Filter::Computer { name, .. } | super::Filter::Owner { name, .. } => name.clone(),
+                        super::Filter::Owner { name, .. } => name.clone(),
                         super::Filter::Source(kind) => source_name(kind),
                     };
                     entries.push(MenuItemSpec::Entry { label, icon: None, checked: on.is_some(), danger: false, act: on.map_or(Act::AddFilter(filter), Act::RemoveFilter) });
@@ -1198,7 +1198,9 @@ impl Render for QueueView {
                 .with_priority(1)
         });
         let listing = matches!(self.shown, Shown::List(_));
-        let head = listing.then(|| self.list_head(cx));
+        // (Its tabs, search, filters and menus act on the list: they come with it, never over a
+        // page still reading.)
+        let head = (listing && self.queue().is_some()).then(|| self.list_head(cx));
         let loading = match self.rows.as_slice() {
             [Row::Note { key, words, busy: true }, Row::End] => Some((key.clone(), words.clone())),
             _ => None,

@@ -861,8 +861,8 @@ fn queue_done(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 fn queue_filtered(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_all(workspace, window, cx);
     queue_page(workspace, cx).update(cx, |page, cx| {
-        page.act(QueueAct::AddFilter(Filter::Computer { key: "key_devbox".into(), name: "devbox".into() }), cx);
-        page.act(QueueAct::AddFilter(Filter::Computer { key: "key_studio".into(), name: "studio-mini".into() }), cx);
+        page.act(QueueAct::AddFilter(Filter::Owner { owner: "ses_wren".into(), name: "Wren".into() }), cx);
+        page.act(QueueAct::AddFilter(Filter::Owner { owner: "ses_scout".into(), name: "Scout".into() }), cx);
     });
 }
 fn queue_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

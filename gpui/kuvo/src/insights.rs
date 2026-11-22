@@ -539,9 +539,11 @@ impl InsightsView {
                 ago => format!("Updated {ago} ago"),
             }
         });
-        let refresh = Button::icon_only("insights-refresh", IconName::Refresh, "Refresh").ghost().quiet().size(ButtonSize::Small)
+        // (Refresh and the periods act on figures: they come with them, never over "Reading usage…".)
+        let figures = self.summary.as_ref().is_some_and(|summary| summary.state != "loading");
+        let refresh = figures.then(|| Button::icon_only("insights-refresh", IconName::Refresh, "Refresh").ghost().quiet().size(ButtonSize::Small)
             .icon_size(IconSize::XSmall).loading(refreshing)
-            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)));
+            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))));
         div().flex().items_center().justify_between().gap(space::S4)
             .child(div().flex_1().min_w_0().flex().child(place))
             .child(div().flex_none().flex().items_center().gap(space::S2)
@@ -552,8 +554,8 @@ impl InsightsView {
                 .when_some(counted, |d, words| d.child(div().debug_selector(|| "insights-counted".into())
                     .text_ui(TypeSize::Caption).text_color(c.text_muted).whitespace_nowrap()
                     .child(div().debug_selector({ let words = words.clone(); move || format!("insights-counted-{words}") }).child(words))))
-                .child(refresh)
-                .child(periods))
+                .children(refresh)
+                .children(figures.then_some(periods)))
             .into_any_element()
     }
 

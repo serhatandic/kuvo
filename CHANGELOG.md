@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - The desktop app shows all your computers in one window, and the computer picker is gone. Another computer's sessions are listed under their project and open on that computer; a project is named for its computer only where two share a name.
 - While a computer is away its rows stay, saying when it was last seen, or "Updating…" while it switches to a new release. Once it's back they're live again within seconds, its bots included, instead of saying "Can't be reached".
+- The Work Queue lists every computer's items together, and its filter no longer offers a computer. Before its first answer, the Work Queue and Insights show one quiet loading line, with their tabs, search, filters, periods and refresh coming in with the data.
 - Send is never greyed out and never spins: send as many messages as you like, while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
 
 - Show in conversation in the Library opens a bot's conversation in Bots with that bot selected, instead of in Sessions. Notifications, search and Activity open a bot's conversation there too.
