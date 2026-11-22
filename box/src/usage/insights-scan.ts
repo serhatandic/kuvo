@@ -1,6 +1,6 @@
 // Kuvo's persisted session metadata and isolated usage readers feed one observation per call.
 import { join } from "node:path"
-import { statSync } from "node:fs"
+import { fileStamp } from "../shared/files"
 import { setImmediate as nextTurn } from "node:timers/promises"
 import { transcriptDatabase } from "../agents/transcript"
 import type { Record_, Store } from "../agents/store"
@@ -14,7 +14,8 @@ import { insightKey, type InsightRecord, type NativeUsage, type TokenBuckets } f
 import type { Pricing } from "./pricing"
 import { numberOf } from "./numbers"
 
-const DECODE_BUDGET = 8 * 1024 * 1024
+const DECODE_BUDGET = 2 * 1024 * 1024
+const WORKER_BATCH_BYTES = 48 * 1024 * 1024
 const nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" } as const
 export type InsightBot = { id: string; name: string; sessionID: string }
 
@@ -160,16 +161,6 @@ export interface ScanIndex {
   attribute(lineage: [string, Lineage][]): void
 }
 
-export function fileStamp(file: string) {
-  try {
-    const stat = statSync(file, { bigint: true })
-    return { identity: `${stat.dev}/${stat.ino}/${stat.birthtimeNs}`, revision: `${stat.size}/${stat.mtimeNs}/${stat.ctimeNs}`, size: Number(stat.size) }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    return undefined
-  }
-}
-
 function conversationStamp(folder: string) {
   const sqlite = fileStamp(join(folder, transcriptDatabase))
   return sqlite ? [sqlite, fileStamp(join(folder, transcriptDatabase + "-wal"))]
@@ -218,7 +209,7 @@ export class InsightsScan {
     ]
   }
 
-  async scan(pricing: Pricing, since: number, index?: ScanIndex) {
+  async scan(pricing: Pricing, since: number, index?: ScanIndex, handled: ReadonlySet<string> = new Set()) {
     const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity")
     const sources = this.sources.flatMap((list) => list(agents))
     this.antigravity.checkpoints = index && {
@@ -259,8 +250,25 @@ export class InsightsScan {
     const store = this.options.store
     const conversations = typeof store === "function" ? [...store()] : store.all().flatMap(session => store.get(session.id) ?? [])
     for (const { session } of conversations) nodes.set(session.id, lineNode(session, botOf, botNames))
-    const engineCheckpoints: [string, EngineCheckpoint][] = []
-    let engineRecords: InsightRecord[] = []
+    const lineOf = lineages(nodes)
+    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }: InsightRecord): InsightRecord => {
+      const line = lineOf(record.session)
+      return {
+        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
+        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
+      }
+    }
+    const waiting: [string, { stamp: string; since: number }][] = []
+    let observations = 0
+    let transcripts = 0
+    const flush = async () => {
+      if (!index) return
+      observations += records.length
+      if (records.length) index.take(records.splice(0).map(withLine))
+      if (waiting.length) index.write(waiting.splice(0))
+      await nextTurn()
+    }
+
     if (this.options.engine) {
       try {
         const folder = this.options.engine
@@ -285,54 +293,30 @@ export class InsightsScan {
           }
         }
         if (!index || selected.size) {
-          const read = await this.engineRecords(folder, since, index ? after : undefined, index ? new Set(selected.keys()) : undefined)
-          engineRecords = read.records
+          let pages = 0
+          const read = await this.engineRecords(folder, since, index ? after : undefined, index ? new Set(selected.keys()) : undefined, add,
+            index ? async (page) => {
+              records.push(...page)
+              await flush()
+              if (++pages % 8 === 0) index.reclaim()
+            } : (page) => { records.push(...page) }, !!index)
           if (read.partial) issues.add("opencode")
-          for (const item of read.channels) {
-            add(item.sessions)
-            const saved = selected.get(item.path)
-            if (saved) engineCheckpoints.push([saved.key, { since, identity: saved.identity, revision: saved.revision, sessions: item.sessions, watermarks: item.watermarks }])
+          if (index) {
+            const checkpoints = read.channels.flatMap((item): [string, EngineCheckpoint][] => {
+              const saved = selected.get(item.path)
+              return saved ? [[saved.key, { since, identity: saved.identity, revision: saved.revision, sessions: item.sessions, watermarks: item.watermarks }]] : []
+            })
+            if (checkpoints.length) index.write(checkpoints)
+            index.reclaim()
           }
         }
       } catch { issues.add("opencode") }
     } else { issues.add("opencode") }
 
-    const lineOf = lineages(nodes)
-    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }: InsightRecord): InsightRecord => {
-      const line = lineOf(record.session)
-      return {
-        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
-        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
-      }
-    }
     const lineage = [...nodes.keys()].flatMap((id): [string, Lineage][] => {
       const line = lineOf(id)
       return line.bot || line.root !== id ? [[id, line]] : []
     })
-    const waiting: [string, { stamp: string; since: number }][] = []
-    let observations = 0
-    let transcripts = 0
-    const flush = async () => {
-      if (!index) return
-      observations += records.length
-      if (records.length) index.take(records.splice(0).map(withLine))
-      if (waiting.length) index.write(waiting.splice(0))
-      await nextTurn()
-    }
-
-    // Release engine data before the legacy transcript reader starts decoding large files.
-    if (index) {
-      const readEngine = engineRecords.length > 0
-      for (const record of engineRecords) {
-        records.push(record)
-        if (records.length >= 400) await flush()
-      }
-      engineRecords = []
-      await flush()
-      if (engineCheckpoints.length) index.write(engineCheckpoints)
-      if (readEngine) index.reclaim()
-    }
-
     const stamps = new Map<string, { stamp: string; size: number }>()
     const nativeStamps = new Map<string, string>()
     const threads = new Map<string, string[]>()
@@ -360,16 +344,36 @@ export class InsightsScan {
       const saved = index.read<{ stamp: string; since: number }>("scan/transcript-v1/" + session.id)
       if (stamp !== saved?.stamp || saved.since > since) dirty.add(session.id)
     }
-    // A native call can match only one saved conversation. Read all conversations that share a
-    // changed thread so whichever one previously claimed the call keeps that precedence.
-    for (const id of dirty) for (const key of byConversation.get(id) ?? []) {
-      for (const owner of threads.get(key) ?? []) dirty.add(owner)
+    // A native call can match only one saved conversation. Keep every connected group of sessions
+    // sharing native threads together, in their original scan order. Other groups can be committed
+    // and the backfill worker released before reading the next group.
+    const selected = new Set<string>()
+    let bytes = 0
+    let more = false
+    const visitedThreads = new Set<string>()
+    for (const id of dirty) {
+      if (handled.has(id) || selected.has(id)) continue
+      if (bytes >= WORKER_BATCH_BYTES) { more = true; break }
+      const group = [id]
+      selected.add(id)
+      for (const member of group) {
+        bytes += stamps.get(member)?.size ?? 0
+        for (const key of byConversation.get(member) ?? []) {
+          if (visitedThreads.has(key)) continue
+          visitedThreads.add(key)
+          for (const owner of threads.get(key) ?? []) {
+            if (handled.has(owner) || selected.has(owner)) continue
+            selected.add(owner)
+            group.push(owner)
+          }
+        }
+      }
     }
 
     let decoded = 0
     for (const record of conversations as Conversation[]) {
       const session = record.session
-      if (session.time.updated < since || (index && record.folder && !dirty.has(session.id))) continue
+      if (session.time.updated < since || (index && record.folder && !selected.has(session.id))) continue
       transcripts++
       const saved = stamps.get(session.id)
       if (index && decoded && decoded + (saved?.size ?? 0) >= DECODE_BUDGET) {
@@ -453,15 +457,19 @@ export class InsightsScan {
         index.attribute(lineage)
         index.write([["scan/lineage-v1", revision]])
       }
-    } else for (const record of engineRecords) records.push(record)
-    return { records: records.map(withLine), lineage, issues: [...issues], transcripts, observations }
+    }
+    return { records: records.map(withLine), lineage, issues: [...issues], transcripts, observations, more, selected: [...selected] }
   }
 
-  private async engineRecords(folder: string, since: number, after?: Record<string, EngineWatermarks>, selected?: ReadonlySet<string>) {
-    const records: InsightRecord[] = []
+  private async engineRecords(folder: string, since: number, after: Record<string, EngineWatermarks> | undefined, selected: ReadonlySet<string> | undefined,
+    addSessions: (sessions: EngineSessions) => void, take: (records: InsightRecord[]) => void | Promise<void>, insideWorker: boolean) {
     const channels: { path: string; sessions: EngineSessions; watermarks?: EngineWatermarks }[] = []
     const sessions = new Map<string, Map<string, { parentID?: string; metadata?: unknown }>>()
-    const answers = await engineUsageAnswers(folder, since, after, selected, answer => {
+    const answers = await engineUsageAnswers(folder, since, after, selected, async answer => {
+      if (answer.ready) {
+        for (const channel of channels) addSessions(channel.sessions)
+        return
+      }
       const channel = sessions.get(answer.path) ?? new Map<string, { parentID?: string; metadata?: unknown }>()
       if (answer.sessions) {
         for (const [id, parent, metadata] of answer.sessions) {
@@ -471,6 +479,7 @@ export class InsightsScan {
         channels.push({ path: answer.path, sessions: [...channel], watermarks: answer.watermarks })
       }
       if (!answer.json) return
+      const records: InsightRecord[] = []
       const rows: unknown[][] = JSON.parse(answer.json)
       for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, parts] of rows) {
         const at = completed ?? created
@@ -492,9 +501,10 @@ export class InsightsScan {
           ...(role === "user" ? { human: true as const } : !tokens ? { partial: true as const } : {}),
         })
       }
-    })
+      await take(records)
+    }, insideWorker)
     const failures = new Set(answers?.filter(answer => answer.failed !== undefined).map(answer => answer.path))
-    return { records, channels: channels.filter(channel => !failures.has(channel.path)), partial: failures.size > 0 }
+    return { channels: channels.filter(channel => !failures.has(channel.path)), partial: failures.size > 0 }
   }
 }
 

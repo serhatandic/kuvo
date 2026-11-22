@@ -7,6 +7,8 @@ import { InsightsStore } from "./insights-store"
 import { Catalog, Pricing } from "./pricing"
 import type { DBRequest, InsightScanInput } from "./insights-db"
 
+const sweep = typeof Bun === "undefined" ? undefined : (await import("bun:jsc")).gcAndSweep
+
 export function serveInsightsDB() {
   let db: InsightsStore | undefined
   let pricing: Pricing | undefined
@@ -39,21 +41,21 @@ export function serveInsightsDB() {
               bots: () => input.bots, computer: () => input.computer, engine: input.engine,
             })
           }
-          const [_, since, now, origins] = args
+          const [_, since, now, origins, handled] = args
           const index = db!
           index.price(pricing!, now)
-          const { issues, transcripts, observations } = await scanner.scan(pricing!, since, {
+          const { issues, transcripts, observations, more, selected } = await scanner.scan(pricing!, since, {
             read: key => index.read(key),
             write: entries => index.checkpoint(entries),
-            reclaim: () => { Bun.gc(true) },
+            reclaim: () => { sweep?.() },
             take: records => {
               index.price(pricing!, now)
               index.take(records, pricing!, now, undefined, undefined, undefined, origins)
             },
             attribute: lineage => index.attribute(lineage),
-          })
+          }, new Set(handled))
           index.take([], pricing!, now)
-          result = { issues, transcripts, observations }
+          result = { issues, transcripts, observations, more, ...(more ? { selected } : {}) }
           break
         }
         case "cursor": result = db!.cursor(...args); break

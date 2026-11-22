@@ -20,7 +20,7 @@ import { DATA_ID, ownerOf } from "./ownership/resolve"
 import { peersOf } from "./peers/known"
 import { readLink } from "./state"
 
-export function serveBoxServices(options: UsageOptions & { artifacts: string; shown?: NonNullable<Parameters<typeof artifactService>[3]>["shown"] }) {
+export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
   const { handle, started, closeInsights } = usageReader({
     ...options,
     conversationHome: (id, computer) => {
@@ -31,7 +31,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string; sh
       return undefined
     },
   })
-  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"), { library: join(dirname(options.artifacts), "library"), computer: ownComputerName, shown: options.shown })
+  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"), { library: join(dirname(options.artifacts), "library"), computer: ownComputerName })
   const api = (read: () => Target) => ({
     request<T>(...args: Parameters<ReturnType<typeof requests>["request"]>): Promise<T> {
       const { port, password } = read()
@@ -75,7 +75,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string; sh
     closeInsights()
   }
   new HangWatch({ name: "engine", run: options.run, record: join(options.run, "engine.json"), isIt: isEngine }).start()
-  started()
+  started(artifacts.ready)
   writeSecret(file, JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: server.port, password })))
   return leave
 }

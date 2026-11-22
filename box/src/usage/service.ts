@@ -128,7 +128,7 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
         store: () => readSavedSessions(join(home, "sessions"), "insight"),
         bots: readBots, computer: localKey, engine: engineData,
       })
-    index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
+    index = new InsightsDB(join(folder, "insights.sqlite"))
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots())
     usage.insights.kept = new KeptSummaries(join(folder, "insights-kept.json"))
   } catch (error) {
@@ -148,10 +148,11 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
     }
   }
 
-  const started = () => {
+  const started = (after?: Promise<unknown>) => {
     limits.start()
     usage.start()
-    usage.insights?.start()
+    if (after) void after.then(() => usage.insights?.start())
+    else usage.insights?.start()
     setInterval(() => settings.followShared(), 2_000).unref()
     setInterval(() => settingsPeers.tell(), 60_000).unref()
     setInterval(() => reflect(), 5_000).unref()

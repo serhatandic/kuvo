@@ -23,7 +23,12 @@ export function realOf(path: string): string | undefined {
 }
 
 /** Resolve a path from an older journal without holding up requests while the disk answers. */
-export async function realOfLater(path: string): Promise<string> {
+export async function realOfLater(path: string, parent?: (folder: string) => Promise<string>): Promise<string> {
+  if (parent) {
+    try { return await fs.realpath(path) } catch {}
+    const folder = dirname(path)
+    return folder === path ? path : join(await parent(folder), basename(path))
+  }
   let rest = ""
   for (let at = path; ; ) {
     try { return (await fs.realpath(at)) + rest } catch {}

@@ -43,8 +43,27 @@ built=$(mktemp "${TMPDIR:-/tmp}/kuvo-link.XXXXXX")
 trap 'rm -f "$raw" "$built"' EXIT
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 build() {
-  BUN_BE_BUN=1 "$BUN" build box/src/link/main.ts --target=node --external bun:sqlite --format=esm --outfile "$raw" \
-    --banner "$(printf '%s\n' '// Kuvo resident serve v1' '// Kuvo resident workers v1' '// Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.')" >/dev/null
+  BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file run - "$raw" <<'BUILD'
+const worker = await Bun.build({
+  entrypoints: ["box/src/usage/insights-db-worker.ts"],
+  target: "bun",
+  format: "esm",
+  minify: true,
+});
+const link = await Bun.build({
+  entrypoints: ["box/src/link/main.ts"],
+  target: "node",
+  external: ["bun:sqlite"],
+  format: "esm",
+  banner: [
+    "// Kuvo resident serve v1",
+    "// Kuvo resident workers v1",
+    "// Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.",
+  ].join("\n"),
+  define: { __KUVO_INSIGHTS_WORKER__: JSON.stringify(await worker.outputs[0].text()) },
+});
+await Bun.write(process.argv[2], link.outputs[0]);
+BUILD
   if ! grep -q "\"$SOURCE_VERSION\"" "$raw"; then
     echo "scripts/build-box.sh: the built link doesn't have \"$SOURCE_VERSION\" (box/src/link/version.ts) to write its version in." >&2
     exit 1

@@ -185,6 +185,7 @@ function recover() {
     FROM accounts WHERE event.key = accounts.key
   \`).run(seq, origins);
   seq += Number(enriched.changes);
+  if (result.changes) db.exec("DELETE FROM main.state WHERE key = 'prices-v1'");
   if (seq !== before) db.prepare(
     "INSERT INTO main.state VALUES ('sequence', ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body"
   ).run(JSON.stringify(seq));
