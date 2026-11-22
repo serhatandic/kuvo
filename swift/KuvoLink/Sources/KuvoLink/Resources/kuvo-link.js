@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 fc4d0acca2d9
+// Kuvo folder layout 23 66bfd230d9a5
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fc4d0acca2d9";
+var BRIDGE_VERSION = "66bfd230d9a5";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -4403,7 +4403,7 @@ var init_work = __esm(() => {
   ACTIVITY = object({
     working: number,
     asking: number,
-    sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string }))
+    sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string, "subagent?": bool }))
   });
   WORK = object({
     bot: string,
@@ -25163,7 +25163,8 @@ function rowOf(row) {
     state: row.state,
     title: plainName(row.title).slice(0, 200) || "New Session",
     line,
-    ...bot ? { bot } : {}
+    ...bot ? { bot } : {},
+    ...row.subagent === true ? { subagent: true } : {}
   };
 }
 function readActivity2(key) {
@@ -29480,6 +29481,7 @@ function localActivity(list = keptList()) {
       session,
       line: [...line],
       ...bot ? { bot } : {},
+      ...facts.kind === "subagent" ? { subagent: true } : {},
       title: facts.title ?? (facts.kind === "subagent" ? "Subagent" : "New Session"),
       state: asking ? "asking" : "working"
     }];
@@ -29506,14 +29508,16 @@ function activityFacts(list = keptList()) {
   }
   return [...rows.values()];
 }
-function activityOf(rows, root, bot) {
+function activityOf(rows, root, bot, besides = false) {
   const sessions = [];
   const counts = { working: 0, asking: 0 };
-  for (const { session, title, state, line, bot: owner, computer } of rows) {
+  for (const { session, title, state, line, bot: owner, computer, subagent } of rows) {
+    if (besides && session === root)
+      continue;
     if (!(root && (session === root || line.includes(root))) && !(bot && owner === bot))
       continue;
     counts[state]++;
-    sessions.push({ session, title, state, ...computer ? { computer } : {} });
+    sessions.push({ session, title, state, ...computer ? { computer } : {}, ...subagent ? { subagent } : {} });
   }
   sessions.sort((a, b) => a.session.localeCompare(b.session));
   return { ...counts, sessions };
@@ -69067,7 +69071,7 @@ async function* workRoute(context, match) {
       const { commands, subagents } = readSessionBackground(session);
       const list = keptList();
       const listed = list?.sessions ?? {};
-      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot);
+      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot, true);
       return {
         commands,
         activity,
@@ -111106,10 +111110,45 @@ var init_turnfiles = __esm(() => {
   scratch = new Set(["tmp", "temp", ".tmp"]);
 });
 
+// box/src/link/artifacts/paths.ts
+import { realpathSync as realpathSync6 } from "node:fs";
+import { basename as basename6, dirname as dirname12, join as join27, sep as sep6 } from "node:path";
+function realOf3(path) {
+  let rest = "";
+  for (let at = path;; ) {
+    try {
+      return realpathSync6(at) + rest;
+    } catch {}
+    const up = dirname12(at);
+    if (up === at)
+      return;
+    rest = sep6 + basename6(at) + rest;
+    at = up;
+  }
+}
+function spelledIn(path, folders) {
+  const real = realOf3(path);
+  if (!real)
+    return path;
+  for (const folder of folders) {
+    if (!folder)
+      continue;
+    const home = realOf3(folder);
+    if (!home)
+      continue;
+    if (real === home)
+      return folder;
+    if (real.startsWith(home + sep6))
+      return join27(folder, real.slice(home.length + 1));
+  }
+  return path;
+}
+var init_paths3 = () => {};
+
 // box/src/link/artifacts/store.ts
 import { createHash as createHash20, createHmac, randomBytes as randomBytes8 } from "node:crypto";
 import { appendFileSync, closeSync as closeSync2, existsSync as existsSync7, fchmodSync, mkdirSync as mkdirSync15, openSync as openSync2, readdirSync as readdirSync11, readFileSync as readFileSync22, renameSync as renameSync14, rmSync as rmSync8, statSync as statSync10, writeFileSync as writeFileSync15 } from "node:fs";
-import { basename as basename6, join as join27, sep as sep6 } from "node:path";
+import { basename as basename7, join as join28, sep as sep7 } from "node:path";
 
 class ArtifactStore {
   root;
@@ -111124,8 +111163,8 @@ class ArtifactStore {
   constructor(root, options = {}) {
     this.root = root;
     this.options = options;
-    mkdirSync15(join27(root, "log"), { recursive: true });
-    mkdirSync15(join27(root, "copies"), { recursive: true });
+    mkdirSync15(join28(root, "log"), { recursive: true });
+    mkdirSync15(join28(root, "copies"), { recursive: true });
     this.policy = new CopyPolicy(options.disk ?? (() => freeSpace(root)));
     const { budget } = this.readSettings();
     if (typeof budget === "number" && budget >= 0)
@@ -111141,7 +111180,7 @@ class ArtifactStore {
     return () => this.listeners.delete(listener);
   }
   static keyIn(root) {
-    const file = join27(root, "key");
+    const file = join28(root, "key");
     try {
       const key = readFileSync22(file);
       if (key.length === 32)
@@ -111300,7 +111339,7 @@ class ArtifactStore {
     }
     if (!artifact) {
       const kind = this.refine(kindOf5(path, { bots: this.options.bots, download: made.download }), read.bytes);
-      artifact = { id: ArtifactStore.idOf(path), path, name: basename6(path), kind, type: typeOf2(path, !!read.bytes && isBinary(read.bytes)), where: { bots: [], sessions: [], groups: [] }, pinned: null, gone: null, updated: stamp7(now), versions: [], ...this.policy.inGit(path) ? { git: true } : {} };
+      artifact = { id: ArtifactStore.idOf(path), path, name: basename7(path), kind, type: typeOf2(path, !!read.bytes && isBinary(read.bytes)), where: { bots: [], sessions: [], groups: [] }, pinned: null, gone: null, updated: stamp7(now), versions: [], ...this.policy.inGit(path) ? { git: true } : {} };
       this.artifacts.set(artifact.id, artifact);
     }
     const latest = artifact.versions.at(-1);
@@ -111356,7 +111395,7 @@ class ArtifactStore {
     const artifact = {
       id: ArtifactStore.idOf(path),
       path,
-      name: basename6(path),
+      name: basename7(path),
       kind,
       type: typeOf2(path, isBinary(bytes)),
       where: { bots: where.bot ? [where.bot] : [], sessions: [], groups: [] },
@@ -111393,8 +111432,8 @@ class ArtifactStore {
     return this.told(artifact);
   }
   canRestore(artifact) {
-    const inBots = Boolean(this.options.bots && artifact.path.startsWith(this.options.bots + sep6));
-    const inProject = Boolean(artifact.where.project && artifact.path.startsWith(artifact.where.project + sep6));
+    const inBots = Boolean(this.options.bots && artifact.path.startsWith(this.options.bots + sep7));
+    const inProject = Boolean(artifact.where.project && artifact.path.startsWith(artifact.where.project + sep7));
     return inBots || inProject;
   }
   restoreNow(id, n, at) {
@@ -111412,7 +111451,7 @@ class ArtifactStore {
     if (latest && latest.status !== "deleted" && !latest.kept)
       return "What's there now can't be kept, so putting this back couldn't be undone.";
     try {
-      mkdirSync15(join27(artifact.path, ".."), { recursive: true });
+      mkdirSync15(join28(artifact.path, ".."), { recursive: true });
       let mode;
       try {
         mode = statSync10(artifact.path).mode & 4095;
@@ -111473,14 +111512,32 @@ class ArtifactStore {
     return file?.hash === version.hash ? file.bytes : null;
   }
   list(scope, { limit = 200, before } = {}) {
-    const matching = [...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before));
     const key = (artifact) => [artifact.updated, artifact.id];
+    const matching = this.oneEach([...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before)), key);
     const pinned = before ? [] : matching.filter((artifact) => artifact.pinned).sort((a, b) => later(key(a), key(b)));
     const after = before?.split("|");
     const rest = matching.filter((artifact) => !artifact.pinned && (!after || later(key(artifact), after) > 0)).sort((a, b) => later(key(a), key(b)));
     const page = rest.slice(0, Math.max(0, limit - pinned.length));
     const next = rest.length > page.length && page.length ? key(page.at(-1)).join("|") : null;
     return { artifacts: [...pinned, ...page].map(summary), next };
+  }
+  oneEach(artifacts, key) {
+    const first = (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || later(key(a), key(b));
+    const best = new Map;
+    for (const artifact of artifacts) {
+      const file = this.fileOf(artifact);
+      const other = best.get(file);
+      if (!other || first(artifact, other) < 0)
+        best.set(file, artifact);
+    }
+    return best.size === artifacts.length ? artifacts : artifacts.filter((artifact) => best.get(this.fileOf(artifact)) === artifact);
+  }
+  files = new Map;
+  fileOf(artifact) {
+    let file = this.files.get(artifact.id);
+    if (file === undefined)
+      this.files.set(artifact.id, file = realOf3(artifact.path) ?? artifact.path);
+    return file;
   }
   timeline(scope, { limit = 200, before } = {}) {
     const entries = [];
@@ -111519,7 +111576,7 @@ class ArtifactStore {
   readSettings() {
     let saved;
     try {
-      saved = JSON.parse(readFileSync22(join27(this.root, "settings.json"), "utf8"));
+      saved = JSON.parse(readFileSync22(join28(this.root, "settings.json"), "utf8"));
     } catch {
       return {};
     }
@@ -111531,8 +111588,8 @@ class ArtifactStore {
       return budgetConfirmation(older).body;
     const settings = this.readSettings();
     const budget = Math.max(0, Math.floor(bytes));
-    writeFileSync15(join27(this.root, "settings.json.new"), JSON.stringify(artifactSettingsFormat.write({ ...settings, budget })));
-    renameSync14(join27(this.root, "settings.json.new"), join27(this.root, "settings.json"));
+    writeFileSync15(join28(this.root, "settings.json.new"), JSON.stringify(artifactSettingsFormat.write({ ...settings, budget })));
+    renameSync14(join28(this.root, "settings.json.new"), join28(this.root, "settings.json"));
     this.chosenBudget = budget;
     this.settle();
     return null;
@@ -111593,7 +111650,7 @@ class ArtifactStore {
       return false;
     if (scope.group && !artifact.where.groups.includes(scope.group))
       return false;
-    if (scope.project && artifact.where.project !== scope.project && !artifact.path.startsWith(scope.project + sep6))
+    if (scope.project && artifact.where.project !== scope.project && !artifact.path.startsWith(scope.project + sep7))
       return false;
     return true;
   }
@@ -111721,7 +111778,7 @@ class ArtifactStore {
       for (const version of [...versions].sort((a, b) => a.n - b.n))
         lines.push(JSON.stringify(artifactIndexFormat.write({ a: header, v: version })));
     }
-    const file = join27(this.root, "log", "0000-00.jsonl");
+    const file = join28(this.root, "log", "0000-00.jsonl");
     try {
       writeFileSync15(file + ".new", lines.join(`
 `) + `
@@ -111729,7 +111786,7 @@ class ArtifactStore {
       renameSync14(file + ".new", file);
       for (const month of months)
         if (month !== "0000-00.jsonl")
-          rmSync8(join27(this.root, "log", month), { force: true });
+          rmSync8(join28(this.root, "log", month), { force: true });
     } catch (error) {
       rmSync8(file + ".new", { force: true });
       console.error("artifacts: the log couldn't be compacted:", error?.message ?? error);
@@ -111737,13 +111794,13 @@ class ArtifactStore {
   }
   copyPath(hash) {
     const hex = hash.slice("sha256:".length);
-    return join27(this.root, "copies", hex.slice(0, 2), hex);
+    return join28(this.root, "copies", hex.slice(0, 2), hex);
   }
   keep(hash, bytes) {
     const file = this.copyPath(hash);
     if (existsSync7(file))
       return;
-    mkdirSync15(join27(file, ".."), { recursive: true });
+    mkdirSync15(join28(file, ".."), { recursive: true });
     writeFileSync15(file + ".new", bytes);
     renameSync14(file + ".new", file);
   }
@@ -111770,19 +111827,19 @@ class ArtifactStore {
   write(artifact, version) {
     const { versions: _, ...header } = artifact;
     const line = { a: header, ...version ? { v: version } : {} };
-    appendFileSync(join27(this.root, "log", stamp7(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + `
+    appendFileSync(join28(this.root, "log", stamp7(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + `
 `);
   }
   load() {
     let months = [];
     try {
-      months = readdirSync11(join27(this.root, "log")).filter((name) => name.endsWith(".jsonl")).sort();
+      months = readdirSync11(join28(this.root, "log")).filter((name) => name.endsWith(".jsonl")).sort();
     } catch {}
     let lines = 0;
     for (const month of months) {
       let text = "";
       try {
-        text = readFileSync22(join27(this.root, "log", month), "utf8");
+        text = readFileSync22(join28(this.root, "log", month), "utf8");
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -111888,6 +111945,7 @@ var init_store6 = __esm(() => {
   init_kinds();
   init_policy3();
   init_turnfiles();
+  init_paths3();
   init_artifact_format();
   init_files();
   copyLimit = 25 * 1024 * 1024;
@@ -111899,9 +111957,9 @@ var init_store6 = __esm(() => {
 
 // box/src/link/artifacts/folders.ts
 import { readdirSync as readdirSync12, readFileSync as readFileSync23, statSync as statSync11, watch } from "node:fs";
-import { join as join28, relative as relative5, sep as sep7 } from "node:path";
+import { join as join29, relative as relative5, sep as sep8 } from "node:path";
 function recordable(path) {
-  const parts = path.split(sep7);
+  const parts = path.split(sep8);
   if (!parts[0]?.startsWith("bot_") || parts.length < 2)
     return false;
   const inside = parts.slice(1);
@@ -111923,7 +111981,7 @@ function watchTree(folder, changed, failed, { limit = 4000, linux = process.plat
   if (!linux) {
     const watcher = watchFolder(folder, (_, name) => {
       if (name)
-        changed(join28(folder, name));
+        changed(join29(folder, name));
     }, { recursive: true, missed });
     watcher.on("error", (error) => {
       watcher.close();
@@ -111945,7 +112003,7 @@ function watchTree(folder, changed, failed, { limit = 4000, linux = process.plat
       watcher = watch(at, (_, name) => {
         if (!name)
           return;
-        const path = join28(at, name.toString());
+        const path = join29(at, name.toString());
         changed(path);
         try {
           if (statSync11(path).isDirectory() && wanted(relative5(folder, path)))
@@ -111971,7 +112029,7 @@ function watchTree(folder, changed, failed, { limit = 4000, linux = process.plat
       return;
     }
     for (const name of names) {
-      const path = join28(at, name);
+      const path = join29(at, name);
       try {
         if (statSync11(path).isDirectory() && wanted(relative5(folder, path)))
           visit(path);
@@ -111985,7 +112043,7 @@ function watchTree(folder, changed, failed, { limit = 4000, linux = process.plat
   } };
 }
 function wanted(path) {
-  const parts = path.split(sep7);
+  const parts = path.split(sep8);
   if (parts.some((part) => skipped.has(part)))
     return false;
   return parts.every((part, i) => !part.startsWith(".") || part === ".opencode" && (parts[i + 1] === undefined || parts[i + 1] === "skills"));
@@ -112041,7 +112099,7 @@ class BotFolders {
     const inside = relative5(this.bots, path);
     if (inside.startsWith(".."))
       return;
-    const bot = inside.split(sep7)[0];
+    const bot = inside.split(sep8)[0];
     if (inside === bot)
       return this.baseline(bot);
     if (!recordable(inside))
@@ -112051,8 +112109,8 @@ class BotFolders {
   }
   turnEnded(bot, since, made) {
     const settling = this.settling(bot);
-    const folder = join28(this.bots, bot);
-    const found = changedSince2(folder, since, (inside) => recordable(join28(bot, inside))).filter((path) => !settling.includes(path));
+    const folder = join29(this.bots, bot);
+    const found = changedSince2(folder, since, (inside) => recordable(join29(bot, inside))).filter((path) => !settling.includes(path));
     this.store.changeAll([...settling, ...this.watching ? found.filter((path) => !this.store.asSeen(path)) : found], made("shell"));
   }
   flush(bot) {
@@ -112060,7 +112118,7 @@ class BotFolders {
       this.record(path);
   }
   settling(bot) {
-    const paths = [...this.pending.keys()].filter((path) => !bot || relative5(this.bots, path).startsWith(bot + sep7));
+    const paths = [...this.pending.keys()].filter((path) => !bot || relative5(this.bots, path).startsWith(bot + sep8));
     for (const path of paths) {
       clearTimeout(this.pending.get(path));
       this.pending.delete(path);
@@ -112070,7 +112128,7 @@ class BotFolders {
   record(path) {
     clearTimeout(this.pending.get(path));
     this.pending.delete(path);
-    const bot = relative5(this.bots, path).split(sep7)[0];
+    const bot = relative5(this.bots, path).split(sep8)[0];
     const running = this.recorder.madeInFolder(bot);
     this.store.change(path, running ? running("shell") : { by: { kind: "outside" }, via: "outside", where: { bot } });
   }
@@ -112082,8 +112140,8 @@ class BotFolders {
     }
   }
   baseline(bot) {
-    const folder = join28(this.bots, bot);
-    const files = [join28(folder, "MEMORY.md"), join28(folder, "job.json"), ...walk3(join28(folder, "workspace", ".opencode", "skills"), 200)];
+    const folder = join29(this.bots, bot);
+    const files = [join29(folder, "MEMORY.md"), join29(folder, "job.json"), ...walk3(join29(folder, "workspace", ".opencode", "skills"), 200)];
     for (const file of files) {
       if (this.store.at(file))
         continue;
@@ -112108,7 +112166,7 @@ function walk3(folder, limit) {
     for (const name of names) {
       if (found.length >= limit || skipped.has(name))
         return;
-      const path = join28(at, name);
+      const path = join29(at, name);
       try {
         if (statSync11(path).isDirectory())
           visit(path);
@@ -112305,7 +112363,7 @@ var init_changes3 = () => {};
 
 // box/src/link/artifacts/recorder.ts
 import { readdirSync as readdirSync13, readFileSync as readFileSync24 } from "node:fs";
-import { isAbsolute as isAbsolute3, join as join29, relative as relative6, resolve as resolve2, sep as sep8 } from "node:path";
+import { isAbsolute as isAbsolute3, join as join30, relative as relative6, resolve as resolve2, sep as sep9 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 
 class Recorder {
@@ -112470,7 +112528,7 @@ class Recorder {
     if (!context)
       return;
     const { made, folder } = context;
-    const absolute = (path) => isAbsolute3(path) ? path : resolve2(folder ?? "/", path);
+    const absolute = (path) => spelledIn(isAbsolute3(path) ? path : resolve2(folder ?? "/", path), [folder, this.options.bots]);
     const name = toolName(call.name ?? "");
     const input = call.input ?? {};
     const files = Array.isArray(metadata?.files) ? metadata.files : [];
@@ -112491,7 +112549,7 @@ class Recorder {
           continue;
         let path;
         try {
-          path = fileURLToPath7(part.uri);
+          path = absolute(fileURLToPath7(part.uri));
         } catch {
           continue;
         }
@@ -112500,6 +112558,9 @@ class Recorder {
           this.handed(made(name), path, "generated", at);
       }
     }
+    if (reads2.has(name))
+      for (const path of pictures(content, input, absolute))
+        await this.store.change(path, made("read"));
     if ((name === "show_file" || name === "show_in_panel") && typeof input.path === "string")
       await this.store.shown(absolute(input.path), made(name));
     if (name === "show_file" && typeof input.path === "string")
@@ -112577,14 +112638,14 @@ class Recorder {
     return reading;
   }
   inBots(folder) {
-    return Boolean(this.options.bots && (folder + sep8).startsWith(this.options.bots + sep8));
+    return Boolean(this.options.bots && (folder + sep9).startsWith(this.options.bots + sep9));
   }
   botOf(id, directory) {
     const bots = this.options.bots;
     if (!bots)
       return;
     if (directory && this.inBots(directory)) {
-      const first = relative6(bots, directory).split(sep8)[0];
+      const first = relative6(bots, directory).split(sep9)[0];
       if (first.startsWith("bot_"))
         return first;
     }
@@ -112593,7 +112654,7 @@ class Recorder {
         if (!bot.startsWith("bot_"))
           continue;
         try {
-          if (readFileSync24(join29(bots, bot, "session"), "utf8").trim() === id)
+          if (readFileSync24(join30(bots, bot, "session"), "utf8").trim() === id)
             return bot;
         } catch {}
       }
@@ -112627,6 +112688,27 @@ function remember2(map, key, value) {
     map.delete(old);
   }
 }
+function pictures(content, input, absolute) {
+  const found = new Set;
+  const read = [input.path, input.filePath, input.file_path, input.absolute_path].find((each) => typeof each === "string" && each);
+  for (const part of Array.isArray(content) ? content : []) {
+    if (part?.type !== "file" || typeof part.uri !== "string")
+      continue;
+    const mime = typeof part.mime === "string" ? part.mime : /^data:([^;,]+)/.exec(part.uri)?.[1] ?? "";
+    if (!mime.startsWith("image/"))
+      continue;
+    let path;
+    if (part.uri.startsWith("file:")) {
+      try {
+        path = fileURLToPath7(part.uri);
+      } catch {}
+    } else if (part.uri.startsWith("data:") && read)
+      path = read;
+    if (path && kindOf5(path) === "image")
+      found.add(absolute(path));
+  }
+  return [...found];
+}
 function toolName(name) {
   const own = ["show_file", "show_in_panel", "mark_final", "generate_image", "browser_screenshot"];
   for (const each of own)
@@ -112634,12 +112716,15 @@ function toolName(name) {
       return each;
   return name;
 }
-var writes, makers, wakeMarker = "[Wake-up] ", remembered = 500, relevant;
+var writes, makers, reads2, wakeMarker = "[Wake-up] ", remembered = 500, relevant;
 var init_recorder = __esm(() => {
   init_changes3();
+  init_kinds();
+  init_paths3();
   init_attachment_paths();
   writes = new Set(["write", "Write", "create", "write_file"]);
   makers = new Set(["generate_image", "browser_screenshot"]);
+  reads2 = new Set(["read", "Read", "read_file", "view_image"]);
   relevant = new Set([
     "session.execution.started",
     "session.inbox.enqueued",
@@ -112655,7 +112740,7 @@ var init_recorder = __esm(() => {
 });
 
 // box/src/link/artifacts/record.ts
-import { sep as sep9 } from "node:path";
+import { sep as sep10 } from "node:path";
 function record3(store, { bots, watch = true, settle = 1000, handed } = {}) {
   let folders;
   const recorder = new Recorder(store, {
@@ -112664,7 +112749,7 @@ function record3(store, { bots, watch = true, settle = 1000, handed } = {}) {
     turnEnded: ({ bot, folder, since, made }) => {
       if (bot && folders)
         folders.turnEnded(bot, since, made);
-      if (folder && !(bots && (folder + sep9).startsWith(bots + sep9))) {
+      if (folder && !(bots && (folder + sep10).startsWith(bots + sep10))) {
         store.changeAll(changedSince2(folder, since), made("shell"));
       }
     }
@@ -113094,7 +113179,7 @@ var init_library_format = __esm(() => {
 // box/src/link/library/store.ts
 import { createHash as createHash21 } from "node:crypto";
 import { appendFileSync as appendFileSync2, closeSync as closeSync3, mkdirSync as mkdirSync16, openSync as openSync3, readFileSync as readFileSync25, readSync as readSync2, renameSync as renameSync15, rmSync as rmSync9, writeFileSync as writeFileSync16 } from "node:fs";
-import { basename as basename7, extname as extname2, join as join30, sep as sep10 } from "node:path";
+import { basename as basename8, extname as extname2, join as join31, sep as sep11 } from "node:path";
 function libraryKind(path) {
   const ext = extname2(path).slice(1).toLowerCase();
   if (images2.has(ext))
@@ -113106,17 +113191,17 @@ function libraryKind(path) {
   return "other";
 }
 function handedOver(path, bots) {
-  const name = basename7(path);
+  const name = basename8(path);
   if (!name || isSecret2(path) || never.has(extname2(name).slice(1).toLowerCase()) || name.endsWith("~"))
     return false;
-  if (bots && path.startsWith(bots + sep10)) {
-    const inside = path.slice(bots.length + 1).split(sep10);
+  if (bots && path.startsWith(bots + sep11)) {
+    const inside = path.slice(bots.length + 1).split(sep11);
     if (inside.length === 2 && (inside[1] === "MEMORY.md" || inside[1] === "job.json"))
       return false;
     if (inside[1] === "groups")
       return false;
   }
-  const parts = path.split(sep10);
+  const parts = path.split(sep11);
   const skills = parts.lastIndexOf("skills");
   if (skills > 0 && [".opencode", ".claude", "opencode"].includes(parts[skills - 1]))
     return false;
@@ -113174,7 +113259,7 @@ class LibraryStore {
     const known = this.items.get(id);
     if (known && known.at > at)
       return;
-    const name = (kind === "page" ? titleOf5(handover.path) : undefined) ?? basename7(handover.path);
+    const name = (kind === "page" ? titleOf5(handover.path) : undefined) ?? basename8(handover.path);
     const item = {
       id,
       path: handover.path,
@@ -113236,14 +113321,14 @@ class LibraryStore {
     return item;
   }
   write(item) {
-    appendFileSync2(join30(this.root, "log.jsonl"), JSON.stringify(libraryIndexFormat.write(item)) + `
+    appendFileSync2(join31(this.root, "log.jsonl"), JSON.stringify(libraryIndexFormat.write(item)) + `
 `);
     this.lines++;
     if (this.lines > 1000 && this.lines > this.items.size * 2)
       this.compact();
   }
   compact() {
-    const file = join30(this.root, "log.jsonl");
+    const file = join31(this.root, "log.jsonl");
     try {
       writeFileSync16(file + ".new", [...this.items.values()].map((item) => JSON.stringify(libraryIndexFormat.write(item)) + `
 `).join(""));
@@ -113257,7 +113342,7 @@ class LibraryStore {
   load() {
     let text = "";
     try {
-      text = readFileSync25(join30(this.root, "log.jsonl"), "utf8");
+      text = readFileSync25(join31(this.root, "log.jsonl"), "utf8");
     } catch (error) {
       if (error.code !== "ENOENT")
         throw error;
@@ -113297,7 +113382,7 @@ var init_store7 = __esm(() => {
 import { execFile as execFile14 } from "node:child_process";
 import { createHash as createHash22 } from "node:crypto";
 import { mkdirSync as mkdirSync17, mkdtempSync as mkdtempSync2, readdirSync as readdirSync14, readFileSync as readFileSync26, renameSync as renameSync16, rmSync as rmSync10, statSync as statSync12 } from "node:fs";
-import { basename as basename8, join as join31 } from "node:path";
+import { basename as basename9, join as join32 } from "node:path";
 
 class Thumbnails {
   folder;
@@ -113334,7 +113419,7 @@ class Thumbnails {
       }
     }
     const key = `${item.id}-${createHash22("sha256").update(`${stat.size}:${stat.mtimeMs}:${stat.ino}`).digest("hex").slice(0, 16)}`;
-    const file = join31(this.folder, key + ".png");
+    const file = join32(this.folder, key + ".png");
     try {
       return { bytes: readFileSync26(file), type: "image/png" };
     } catch {}
@@ -113359,20 +113444,20 @@ class Thumbnails {
   }
   async make(item, file) {
     mkdirSync17(this.folder, { recursive: true });
-    const scratch = mkdtempSync2(join31(this.folder, ".making-"));
+    const scratch = mkdtempSync2(join32(this.folder, ".making-"));
     try {
       let made;
       if (item.kind === "image") {
-        made = join31(scratch, "thumbnail.png");
+        made = join32(scratch, "thumbnail.png");
         await run8("/usr/bin/sips", ["-Z", String(thumbnailSide), "-s", "format", "png", item.path, "--out", made]);
       } else {
         await run8("/usr/bin/qlmanage", ["-t", "-s", String(thumbnailSide), "-o", scratch, item.path]);
-        made = join31(scratch, basename8(item.path) + ".png");
+        made = join32(scratch, basename9(item.path) + ".png");
       }
       const bytes = readFileSync26(made);
       for (const name of readdirSync14(this.folder))
         if (name.startsWith(item.id + "-"))
-          rmSync10(join31(this.folder, name), { force: true });
+          rmSync10(join32(this.folder, name), { force: true });
       renameSync16(made, file);
       return bytes;
     } catch {
@@ -113394,11 +113479,11 @@ var init_thumbnails = __esm(() => {
 
 // box/src/link/library/service.ts
 import { existsSync as existsSync8, readFileSync as readFileSync27, statSync as statSync13, writeFileSync as writeFileSync17 } from "node:fs";
-import { isAbsolute as isAbsolute4, join as join32, relative as relative7, resolve as resolve3, sep as sep11 } from "node:path";
+import { isAbsolute as isAbsolute4, join as join33, relative as relative7, resolve as resolve3, sep as sep12 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 function libraryService(root, options) {
   const store = new LibraryStore(root, { bots: options.bots });
-  const thumbnails = new Thumbnails(join32(root, "thumbnails"), options.platform);
+  const thumbnails = new Thumbnails(join33(root, "thumbnails"), options.platform);
   const described = new Map;
   const bot = (id) => {
     const known = described.get(id);
@@ -113407,7 +113492,7 @@ function libraryService(root, options) {
     let name;
     let look;
     try {
-      const said = JSON.parse(readFileSync27(join32(options.bots, id, "bot.json"), "utf8"));
+      const said = JSON.parse(readFileSync27(join33(options.bots, id, "bot.json"), "utf8"));
       if (typeof said?.name === "string")
         name = said.name;
       if (said?.look && typeof said.look === "object" && !Array.isArray(said.look)) {
@@ -113461,7 +113546,7 @@ function libraryService(root, options) {
   };
 }
 function backfill(store, root, options) {
-  const marker = join32(root, "backfill.json");
+  const marker = join33(root, "backfill.json");
   try {
     if (JSON.parse(readFileSync27(marker, "utf8"))?.done >= BACKFILL)
       return;
@@ -113472,9 +113557,9 @@ function backfill(store, root, options) {
       return metadata.kuvo.seat.bot;
     if (typeof metadata?.kuvo?.bot === "string")
       return metadata.kuvo.bot;
-    if (!directory || !(directory + sep11).startsWith(options.bots + sep11))
+    if (!directory || !(directory + sep12).startsWith(options.bots + sep12))
       return;
-    const first = relative7(options.bots, directory).split(sep11)[0];
+    const first = relative7(options.bots, directory).split(sep12)[0];
     return first.startsWith("bot_") ? first : undefined;
   };
   try {
@@ -113566,7 +113651,7 @@ var init_service2 = __esm(() => {
 
 // box/src/link/artifacts/service.ts
 import { readFileSync as readFileSync28 } from "node:fs";
-import { join as join33, resolve as resolve4 } from "node:path";
+import { join as join34, resolve as resolve4 } from "node:path";
 function artifactService(root, bots, sessions, { library, computer } = {}) {
   let store;
   try {
@@ -113615,7 +113700,7 @@ function artifactService(root, bots, sessions, { library, computer } = {}) {
       if (!/^ses_[A-Za-z0-9_-]+$/.test(id))
         return;
       try {
-        const session = readSession2(JSON.parse(readFileSync28(join33(sessions, id, "session.json"), "utf8")));
+        const session = readSession2(JSON.parse(readFileSync28(join34(sessions, id, "session.json"), "utf8")));
         return parseProvider(session.model?.providerID ?? "")?.kind ?? "engine";
       } catch {
         return;
@@ -113804,7 +113889,7 @@ var init_github_sign_in = __esm(() => {
 
 // box/src/link/services.ts
 import { existsSync as existsSync9, mkdirSync as mkdirSync18, rmSync as rmSync11 } from "node:fs";
-import { dirname as dirname12, join as join34 } from "node:path";
+import { dirname as dirname13, join as join35 } from "node:path";
 import { randomBytes as randomBytes9, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
   const { handle, started } = usageReader({
@@ -113813,14 +113898,14 @@ function serveBoxServices(options) {
       if (!DATA_ID.test(id))
         return;
       const link = readLink();
-      const localRecord = existsSync9(join34(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
+      const localRecord = existsSync9(join35(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
       const owner = ownerOf3({ kind: "conversations", id, computer }, { link, localRecord });
       if (owner?.key && (owner.local || peersOf(link).some((peer) => peer.key === owner.key)))
         return owner.key;
       return;
     }
   });
-  const artifacts = artifactService(options.artifacts, options.bots, join34(options.home, "sessions"), { library: join34(dirname12(options.artifacts), "library"), computer: ownComputerName });
+  const artifacts = artifactService(options.artifacts, options.bots, join35(options.home, "sessions"), { library: join35(dirname13(options.artifacts), "library"), computer: ownComputerName });
   const api = (read) => ({
     request(...args) {
       const { port, password } = read();
@@ -113830,12 +113915,12 @@ function serveBoxServices(options) {
   const voice = new VoiceWords({
     engine: { api: api(readEngineFile) },
     bridge: { api: api(readBridgeFile) },
-    isBridge: (id) => existsSync9(join34(options.home, "sessions", id, "session.json"))
+    isBridge: (id) => existsSync9(join35(options.home, "sessions", id, "session.json"))
   });
-  const temporary = join34(options.run, "github-sign-in");
+  const temporary = join35(options.run, "github-sign-in");
   mkdirSync18(temporary, { recursive: true, mode: 448 });
   leftSignIns(temporary);
-  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join34(options.box, "workspace")));
+  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join35(options.box, "workspace")));
   const password = randomBytes9(24).toString("hex");
   const expected = Buffer.from(servicesAuthorization(password));
   const server = Bun.serve({
@@ -113866,7 +113951,7 @@ function serveBoxServices(options) {
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
-  new HangWatch({ name: "engine", run: options.run, record: join34(options.run, "engine.json"), isIt: isEngine2 }).start();
+  new HangWatch({ name: "engine", run: options.run, record: join35(options.run, "engine.json"), isIt: isEngine2 }).start();
   started();
   writeSecret(file, JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: server.port, password })));
   return leave;
