@@ -12769,6 +12769,9 @@ ${input.text}` } : input, this.copies());
         const content = message.message?.content ?? [];
         const id = message.message?.id;
         const error = message.error ?? message.message?.error;
+        const model = message.message?.model;
+        if (lane !== active && typeof model === "string" && model && !model.startsWith("<"))
+          turn.ranOn(model);
         if (error === "authentication_failed") {
           this.agent.turnAway();
           if (active) {
@@ -19325,6 +19328,18 @@ class Turn {
   }
   get currentModel() {
     return this.model;
+  }
+  ranOn(model) {
+    const record = this.store.get(this.sessionID);
+    if (!record || !model.trim())
+      return;
+    const metadata = record.session.metadata ?? {};
+    const kuvo = metadata.kuvo ?? {};
+    if (kuvo.ranOn === model)
+      return;
+    record.session.metadata = { ...metadata, kuvo: { ...kuvo, ranOn: model } };
+    this.store.save(this.sessionID, true);
+    this.send("session.metadata.updated", {});
   }
   replayedSteps = [];
   replayedNotices = [];
@@ -31894,4 +31909,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 0b1e0459aaf265f0f1cc61400f0ffd46046fbe92e1b7fc6524d2b65c1895ee70
+// Built from Packages/Box/src/agents 6d8a0225ba29fc74e6cfddf071461f5eb30ccba5fbaf100d84b4dae9b0d3199e

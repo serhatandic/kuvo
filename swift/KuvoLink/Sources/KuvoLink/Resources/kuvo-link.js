@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 fc4d0acca2d9
+// Kuvo folder layout 23 5c4490ee1a71
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fc4d0acca2d9";
+var BRIDGE_VERSION = "5c4490ee1a71";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -4549,7 +4549,7 @@ var init_work = __esm(() => {
 });
 
 // box/src/shared/routes/sessions.ts
-var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED3, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED3, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, SHOW_MORE, LISTED_PROJECT, SESSION_PAGE, ASKS_WORDS, NEEDS_YOU, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
 var init_sessions = __esm(() => {
   init_shape();
   CARRIED = object({ session: string });
@@ -4668,6 +4668,7 @@ var init_sessions = __esm(() => {
     "name?": string,
     runs: bool,
     "missing?": words("model", "signIn", "key", "install", "gone"),
+    "fixed?": literal(true),
     "account?": object({ id: string, name: string, "label?": string }),
     "plan?": object({ name: string, agent: string, provider: string }),
     "connects?": bool,
@@ -4701,6 +4702,8 @@ var init_sessions = __esm(() => {
     created: number,
     updated: number,
     "parent?": string,
+    "subagents?": list(string),
+    "messages?": object({ via: words("direct", "parent", "none"), "note?": string }),
     "line?": list(string),
     "reviewPart?": literal(true),
     "childOnly?": literal(true),
@@ -4718,7 +4721,9 @@ var init_sessions = __esm(() => {
     "retrying?": literal(true),
     "unread?": number
   });
-  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+  SHOW_MORE = object({ cursor: string, count: number });
+  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number, "shown?": list(string), "total?": number, "more?": SHOW_MORE });
+  SESSION_PAGE = object({ project: string, sessions: list(string), total: number, more: nullable(SHOW_MORE) });
   ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
   NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
   BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"];
@@ -4778,6 +4783,7 @@ var init_sessions = __esm(() => {
     { route: "GET kuvo/sessions/glance/events", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED3, 503: REFUSED3 } },
     { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
     { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED3, 405: REFUSED3, 503: REFUSED3 } },
     { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
     { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
     { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED3, 503: REFUSED3 } },
@@ -5230,6 +5236,7 @@ var init_features = __esm(() => {
     "messages.compaction-words",
     "messages.send",
     "messages.session-news",
+    "messages.tool-failures",
     "messages.tool-titles",
     "messages.wake-cards",
     "models.offered",
@@ -5287,6 +5294,7 @@ var init_features = __esm(() => {
     "sessions.chat",
     "sessions.glance",
     "sessions.list",
+    "sessions.list.pages",
     "sessions.list.start",
     "sessions.mentions",
     "sessions.models",
@@ -7792,6 +7800,53 @@ function toolWords(name, input, known) {
   const title = `${shown} · ${humanized(tool)}`;
   return { title, doing: title };
 }
+function errorText(state) {
+  const error = state.error;
+  if (typeof error === "string" && error.trim())
+    return error;
+  if (isObject(error) && typeof error.message === "string" && error.message.trim())
+    return error.message;
+  if (Array.isArray(state.content)) {
+    return state.content.flatMap((block) => isObject(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []).join(`
+`);
+  }
+  return "";
+}
+function errorWords(raw) {
+  let text = raw.replace(/<\/?[a-z_]*error>/gi, "").trim();
+  for (;; ) {
+    const next = text.replace(/^(?:mcp error|tool error|error|failed|exception)\s*:\s*/i, "");
+    if (next === text || !next)
+      break;
+    text = next;
+  }
+  return text;
+}
+function failureReason(error, type) {
+  const said = error.toLowerCase();
+  if (/user doesn['’]t want to proceed|rejected|declined|(?:user|you) denied|denied by (?:the )?user/.test(said))
+    return "declined";
+  if (type === "aborted" || /^(?:\[request interrupted|interrupted|stopped|aborted|cancell?ed)\b/.test(said))
+    return "stopped";
+  if (/\bblocked\b|not allowed|not permitted|permission denied|\bdenied\b|sandbox/.test(said))
+    return "blocked";
+  if (/timed out|\btimeout\b/.test(said))
+    return "timed out";
+  if (/does not exist|doesn['’]t exist|no such file|\bnot found\b|enoent/.test(said))
+    return "not found";
+  const exit = /^exit code (\d+)/.exec(said);
+  if (exit)
+    return `exit code ${exit[1]}`;
+  return "failed";
+}
+function toolFailure(name, state, title) {
+  if (!isObject(state) || state.status !== "error" && state.status !== "failed")
+    return null;
+  const error = errorWords(errorText(state));
+  const reason = failureReason(error, isObject(state.error) ? state.error.type : undefined);
+  const did = title || DID_ONCE[name] || "Used 1 tool";
+  return { line: `${did} · ${reason}`, reason, error: error || "It failed without saying why." };
+}
 function sentence(words) {
   const trimmed = words.trim();
   const capital = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
@@ -7876,10 +7931,11 @@ function messageWords(message, known) {
       if (!isObject(part) || part.type !== "tool" || typeof part.name !== "string")
         return part;
       const words = toolWords(part.name, isObject(part.state) ? part.state.input : undefined, known);
-      if (!words)
+      const failure = toolFailure(part.name, part.state, words?.title);
+      if (!words && !failure)
         return part;
       changed = true;
-      return { ...part, title: words.title, doing: words.doing };
+      return { ...part, ...words ? { title: words.title, doing: words.doing } : {}, ...failure ? { failure } : {} };
     });
     return changed ? { ...message, content } : message;
   }
@@ -7909,7 +7965,7 @@ function messageWordsPage(value, known) {
 function titled(tools, words) {
   return tools.map(({ name, ...rest }) => ({ name, title: words[name].title, ...rest }));
 }
-var OWN_SERVER = "kuvo-browser", BUILT_IN_TOOLS, BRIDGE_WORDS, SESSION, engineServerName = (name) => name.replace(/[^a-zA-Z0-9_-]/g, "_"), HEADER, ENDED2 = "(It ended without a reply.)", WAKE_OPENING = "[Wake-up] ";
+var OWN_SERVER = "kuvo-browser", BUILT_IN_TOOLS, BRIDGE_WORDS, SESSION, engineServerName = (name) => name.replace(/[^a-zA-Z0-9_-]/g, "_"), DID_ONCE, HEADER, ENDED2 = "(It ended without a reply.)", WAKE_OPENING = "[Wake-up] ";
 var init_message_words = __esm(() => {
   init_queues();
   BUILT_IN_TOOLS = new Set([
@@ -7955,6 +8011,28 @@ var init_message_words = __esm(() => {
     tool: { title: "Use a tool", done: "Used a tool", doing: "Using a tool" }
   };
   SESSION = /^ses_[A-Za-z0-9]{1,60}$/;
+  DID_ONCE = {
+    shell: "Ran 1 command",
+    bash: "Ran 1 command",
+    execute: "Ran code",
+    read: "Read 1 file",
+    edit: "Edited 1 file",
+    multiedit: "Edited 1 file",
+    patch: "Edited 1 file",
+    apply_patch: "Edited 1 file",
+    write: "Edited 1 file",
+    grep: "Searched once",
+    glob: "Searched once",
+    list: "Searched once",
+    ls: "Searched once",
+    websearch: "Searched once",
+    codesearch: "Searched once",
+    webfetch: "Read 1 web page",
+    task: "Asked 1 subagent",
+    subagent: "Asked 1 subagent",
+    todowrite: "Updated its plan",
+    todoread: "Updated its plan"
+  };
   HEADER = /^\[Session ([a-z ]+)\] "(.*?)"[^"\n]*?\(address ([^)\s]+)\)/gm;
 });
 
@@ -28238,8 +28316,10 @@ function factsOf(session, place) {
     facts.project = projectOf2(session, place.filed);
   if (typeof session.title === "string" && session.title)
     facts.title = session.title;
-  if (kind === "subagent")
+  if (kind === "subagent") {
     facts.parent = session.parentID;
+    facts.messages = messagesOf(session);
+  }
   if (kuvoOf(session).reviewPart)
     facts.reviewPart = true;
   const line = kuvoOf(session).line;
@@ -28285,6 +28365,32 @@ function factsOf(session, place) {
   if (retry)
     facts.retrying = true;
   return facts;
+}
+function messagesOf(session) {
+  const said = kuvoOf(session).messages;
+  if (isObject(said) && (said.via === "direct" || said.via === "parent"))
+    return { via: said.via };
+  if (isObject(said) && said.via === "none")
+    return { via: "none", note: typeof said.note === "string" && said.note ? said.note : NO_MESSAGES };
+  return session.metadata?.kuvoSubagent === true ? { via: "none", note: NO_MESSAGES } : { via: "direct" };
+}
+function withSubagents(sessions) {
+  const children = new Map;
+  for (const [id, facts] of Object.entries(sessions)) {
+    if (facts.kind !== "subagent" || !facts.parent || !(facts.parent in sessions))
+      continue;
+    const list = children.get(facts.parent) ?? [];
+    list.push([id, facts]);
+    children.set(facts.parent, list);
+  }
+  if (!children.size)
+    return sessions;
+  const out = { ...sessions };
+  for (const [parent, list] of children) {
+    list.sort(([a, one], [b, other]) => Number(standing(other) !== null) - Number(standing(one) !== null) || other.created - one.created || a.localeCompare(b));
+    out[parent] = { ...sessions[parent], subagents: list.map(([id]) => id) };
+  }
+  return out;
 }
 function botOf2(session, kind, place) {
   if (kind === "subagent")
@@ -28358,6 +28464,28 @@ function botStateTurns(rest, at) {
   const turns = rest.wakes * 1000 - ASLEEP_AFTER;
   return turns > at ? turns : undefined;
 }
+function listOrder(rows) {
+  const rank = (facts) => facts.pinned ? 0 : !facts.away && standing(facts) ? 1 : 2;
+  return [...rows].sort(([a, one], [b, other]) => rank(one) - rank(other) || other.updated - one.updated || a.localeCompare(b));
+}
+function cursorOfShown(at) {
+  return `s${at.shown}.${at.step}`;
+}
+function shownOfCursor(cursor) {
+  const match = cursor?.match(/^s(\d{1,5})\.(\d{1,2})$/);
+  if (!match)
+    return null;
+  const shown = Number(match[1]), step = Number(match[2]);
+  return shown >= FIRST_SHOWN && shown <= MOST_SHOWN && step <= 20 ? { shown, step } : null;
+}
+function projectPage(sessions, project, at = { shown: FIRST_SHOWN, step: 0 }) {
+  const rows = listOrder(Object.entries(sessions).filter(([, facts]) => facts.kind === "project" && !facts.archived && facts.project === project));
+  const shown = rows.slice(0, at.shown).map(([id]) => id);
+  const left = rows.length - shown.length;
+  const count = Math.min(left, FIRST_MORE * 2 ** at.step, MOST_SHOWN - at.shown);
+  const more = count > 0 ? { cursor: cursorOfShown({ shown: at.shown + count, step: at.step + 1 }), count } : null;
+  return { sessions: shown, total: rows.length, more };
+}
 function listedProjects(sessions, place) {
   const names = new Map;
   for (const project of place.projects)
@@ -28365,9 +28493,13 @@ function listedProjects(sessions, place) {
       names.set(project.directory, project.name);
   const newest = new Map;
   const sums = new Map;
-  for (const facts of Object.values(sessions)) {
+  const rows = new Map;
+  for (const [id, facts] of Object.entries(sessions)) {
     if (facts.kind !== "project" || facts.archived || facts.project === undefined)
       continue;
+    const own = rows.get(facts.project) ?? {};
+    own[id] = facts;
+    rows.set(facts.project, own);
     newest.set(facts.project, Math.max(newest.get(facts.project) ?? 0, facts.updated));
     const stands = facts.away ? null : standing(facts);
     if (!stands)
@@ -28380,7 +28512,15 @@ function listedProjects(sessions, place) {
   for (const directory of [...new Set([...names.keys(), ...newest.keys()])].sort()) {
     const name = names.get(directory) ?? place.projects.find((each) => each.directory === directory)?.name;
     const updated = newest.get(directory);
-    projects[directory] = { ...name ? { name } : {}, ...updated !== undefined ? { updated } : {}, ...sums.get(directory) ?? { asking: 0, working: 0 } };
+    const page = projectPage(rows.get(directory) ?? {}, directory);
+    projects[directory] = {
+      ...name ? { name } : {},
+      ...updated !== undefined ? { updated } : {},
+      ...sums.get(directory) ?? { asking: 0, working: 0 },
+      shown: page.sessions,
+      total: page.total,
+      ...page.more ? { more: page.more } : {}
+    };
   }
   return projects;
 }
@@ -28401,7 +28541,7 @@ function projectOrder(projects) {
   const name = (folder) => projects[folder]?.name ?? (path94.basename(folder) || folder);
   return Object.keys(projects).sort((a, b) => (projects[b]?.updated ?? 0) - (projects[a]?.updated ?? 0) || compare(name(a), name(b)) || Buffer.compare(Buffer.from(a), Buffer.from(b)));
 }
-var folderOf2 = (session) => session.location?.directory ?? session.directory ?? "", kuvoOf = (session) => isObject(session.metadata?.kuvo) ? session.metadata.kuvo : {}, isArchived2 = (session) => Boolean(session.time?.archived) || session.metadata?.["kuvo.archived"] === true || kuvoOf(session).archived === true, isPinned = (session) => session.metadata?.["kuvo.pinned"] === true, inBotsFolder = (folder, botsFolder) => Boolean(botsFolder) && folder.startsWith(botsFolder.endsWith(path94.sep) ? botsFolder : botsFolder + path94.sep), standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null, ASLEEP_AFTER;
+var folderOf2 = (session) => session.location?.directory ?? session.directory ?? "", kuvoOf = (session) => isObject(session.metadata?.kuvo) ? session.metadata.kuvo : {}, isArchived2 = (session) => Boolean(session.time?.archived) || session.metadata?.["kuvo.archived"] === true || kuvoOf(session).archived === true, isPinned = (session) => session.metadata?.["kuvo.pinned"] === true, inBotsFolder = (folder, botsFolder) => Boolean(botsFolder) && folder.startsWith(botsFolder.endsWith(path94.sep) ? botsFolder : botsFolder + path94.sep), NO_MESSAGES = "This subagent works for the conversation that started it: write to it there.", standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null, ASLEEP_AFTER, FIRST_SHOWN = 6, FIRST_MORE = 10, MOST_SHOWN = 5000;
 var init_rule = __esm(() => {
   ASLEEP_AFTER = 12 * 3600000;
 });
@@ -29155,7 +29295,8 @@ function withPending(sessions, placeOf, running, pending, before, knows, stopped
       placeOf[id] = entry.place;
     }
   }
-  return { sessions: listed, projects: listedProjects(listed, box), needsYou: needsYou(listed, box.asks), placeOf, pending };
+  const nested = withSubagents(listed);
+  return { sessions: nested, projects: listedProjects(nested, box), needsYou: needsYou(nested, box.asks), placeOf, pending };
 }
 function workOut(now = Date.now()) {
   if (!keeping3)
@@ -29340,7 +29481,25 @@ async function* listRoute(context, match) {
     listFollowers.delete(told);
   }
 }
-var LIST_ROUTE, LIST_FILE2, GONE_KEPT = 2000, GONE_FOR, READ_EVERY, RELOADS, STARTS = "session.execution.started", DELIVERED = "session.inbox.delivered", ENDS2, LOST_GAP = 1e6, STARTED2, keeping3 = false, latest2 = null, places3, listFollowers, moments, cursorOf = (list) => `${list.epoch}.${list.seq}`, factsMade, projectsSaid = (projects, withUpdated) => JSON.stringify(withUpdated ? projects : Object.fromEntries(Object.entries(projects).map(([folder, { updated: _, ...rest }]) => [folder, rest]))), LIST_FILES, BOT_FILES, placeTargets, reading2, runningReads, wholeReads, asked5, deleted, eventCount = 0, wasStopped = (list) => Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => facts.blocked && !facts.retrying && facts.unread !== undefined ? [[id, { by: facts.blocked, idle: facts.unread }]] : []), workOutTimer, pendingPlaces = () => places3.has("bridge") || bridgeTarget() === null ? [] : ["bridge"], keepsList = () => keeping3, keptList = () => latest2 ?? readList(), known3 = null, watchesWhole = () => true, WRITE_EVERY = 1000, QUIET_WRITE_EVERY = 1e4, lastWrite = -Infinity, writeTimer, writeDue2 = Infinity;
+async function* pageRoute(context) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, { message: "Only GET." });
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const project = query.get("project");
+  if (!project)
+    return yield* json(400, { message: "Name the project: project=<its folder>." });
+  const cursor = query.get("cursor");
+  const at = cursor ? shownOfCursor(cursor) : undefined;
+  if (at === null)
+    return yield* json(400, { message: "That cursor isn't one this box gave. Read the list again." });
+  const list = await listNow(context, signal ?? undefined);
+  if (!list)
+    return yield* json(503, { message: "The engine isn’t running." });
+  const facts = Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts]));
+  return yield* json(200, { project, ...projectPage(facts, project, at) });
+}
+var LIST_ROUTE, PAGE_ROUTE, LIST_FILE2, GONE_KEPT = 2000, GONE_FOR, READ_EVERY, RELOADS, STARTS = "session.execution.started", DELIVERED = "session.inbox.delivered", ENDS2, LOST_GAP = 1e6, STARTED2, keeping3 = false, latest2 = null, places3, listFollowers, moments, cursorOf = (list) => `${list.epoch}.${list.seq}`, factsMade, projectsSaid = (projects, withUpdated) => JSON.stringify(withUpdated ? projects : Object.fromEntries(Object.entries(projects).map(([folder, { updated: _, ...rest }]) => [folder, rest]))), LIST_FILES, BOT_FILES, placeTargets, reading2, runningReads, wholeReads, asked5, deleted, eventCount = 0, wasStopped = (list) => Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => facts.blocked && !facts.retrying && facts.unread !== undefined ? [[id, { by: facts.blocked, idle: facts.unread }]] : []), workOutTimer, pendingPlaces = () => places3.has("bridge") || bridgeTarget() === null ? [] : ["bridge"], keepsList = () => keeping3, keptList = () => latest2 ?? readList(), known3 = null, watchesWhole = () => true, WRITE_EVERY = 1000, QUIET_WRITE_EVERY = 1e4, lastWrite = -Infinity, writeTimer, writeDue2 = Infinity;
 var init_sessions3 = __esm(() => {
   init_files2();
   init_home();
@@ -29359,6 +29518,7 @@ var init_sessions3 = __esm(() => {
   init_moments();
   init_background();
   LIST_ROUTE = /^kuvo\/sessions\/list(\/events)?$/;
+  PAGE_ROUTE = /^kuvo\/sessions\/page$/;
   LIST_FILE2 = path95.join(RUN, "lists", "sessions.json");
   GONE_FOR = 24 * 3600000;
   READ_EVERY = 5 * 60000;
@@ -41705,13 +41865,18 @@ async function* approvalRoute(context) {
     return yield* json(400, { message: `approval is one of ${APPROVALS.join(", ")}.` });
   if (!engine && !bridge())
     return yield* json(503, { message: "The engine isn't running." });
+  const at = await find(id, engine, bridge());
+  const parent = at?.agents && at.data.parentID ? await find(at.data.parentID, engine, bridge()) : null;
   if (method === "PUT") {
+    if (parent)
+      return yield* json(400, { message: "A subagent runs with the approval of the conversation that started it: change it there." });
     const set = await setApproval(id, given.approval, engine, bridge(), signal);
     return yield* json(set.status, set.value);
   }
-  const at = await find(id, engine, bridge());
   if (!at)
     return yield* json(404, { message: "That conversation isn't here." });
+  if (parent)
+    return yield* json(200, { ...shown(parent), parent: parent.data.id });
   return yield* json(200, shown(at));
 }
 var SESSION_APPROVAL_ROUTE, SESSION_DECISIONS_ROUTE, found2 = (target, data, agents) => ({ target, data, agents, bot: Boolean(botOfConversation(data.id) || worksFor(data)) }), MOST_PAGES = 2500, settingsMade = null, following = null, ownEngine2 = () => {
@@ -62184,6 +62349,81 @@ var init_model_words = __esm(() => {
   };
 });
 
+// box/src/usage/insights-names.ts
+function providerName(id) {
+  const base = id.split("@")[0];
+  return Object.hasOwn(PROVIDERS, base) ? PROVIDERS[base] : base.split(/[-_]/).filter(Boolean).map(capital).join(" ") || "Unknown";
+}
+function words5(parts) {
+  const out = [];
+  for (let i = 0;i < parts.length; i++) {
+    if (version(parts[i])) {
+      let run = parts[i];
+      while (i + 1 < parts.length && version(parts[i + 1]))
+        run += "." + parts[++i];
+      out.push(run);
+    } else if (/^o\d/.test(parts[i]))
+      out.push(parts[i]);
+    else
+      out.push(UPPER.has(parts[i]) ? parts[i].toUpperCase() : capital(parts[i]));
+  }
+  return out;
+}
+function modelName(id) {
+  let text = (id ?? "").trim().toLowerCase();
+  text = text.slice(text.lastIndexOf("/") + 1).replace(/\[[^\]]*\]$/, "").replace(/@.*$/, "");
+  const parts = text.replace(/[\s_.:]+/g, "-").split("-").filter(Boolean);
+  while (parts.length > 1 && (/^\d{6,8}$/.test(parts.at(-1)) || parts.at(-1) === "latest"))
+    parts.pop();
+  if (parts.length > 3 && /^\d{4}$/.test(parts.at(-3)) && /^\d{2}$/.test(parts.at(-2)) && /^\d{2}$/.test(parts.at(-1)))
+    parts.splice(-3);
+  if (!parts.length)
+    return { key: "unknown", name: "Unknown model" };
+  let name;
+  const family = parts.find((part) => CLAUDE.has(part));
+  if (family) {
+    const numbers = parts.filter(version);
+    const rest = parts.filter((part) => part !== "claude" && part !== family && !version(part));
+    name = [capital(family), numbers.join("."), ...words5(rest)].filter(Boolean).join(" ");
+  } else if (parts[0] === "gpt") {
+    const [, ...after] = parts;
+    const numbers = [];
+    while (after.length && (version(after[0]) || !numbers.length && /^\d+[a-z]$/.test(after[0])))
+      numbers.push(after.shift());
+    name = [numbers.length ? `GPT-${numbers.join(".")}` : "GPT", ...words5(after)].join(" ");
+  } else {
+    name = words5(parts).join(" ");
+  }
+  return { key: name.toLowerCase().replace(/[^a-z0-9.]+/g, "-"), name };
+}
+var PROVIDERS, capital = (word) => word.charAt(0).toUpperCase() + word.slice(1), CLAUDE, UPPER, version = (part) => /^\d{1,2}$/.test(part);
+var init_insights_names = __esm(() => {
+  PROVIDERS = {
+    claude: "Claude Code",
+    codex: "Codex",
+    cursor: "Cursor",
+    grok: "Grok",
+    antigravity: "Antigravity",
+    opencode: "OpenCode",
+    "opencode-go": "OpenCode Go",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google",
+    openrouter: "OpenRouter",
+    "github-copilot": "GitHub Copilot",
+    copilot: "GitHub Copilot",
+    xai: "xAI",
+    zai: "Z.ai",
+    "zai-coding-plan": "Z.ai",
+    ollama: "Ollama",
+    mistral: "Mistral",
+    deepseek: "DeepSeek",
+    engine: "Kuvo"
+  };
+  CLAUDE = new Set(["opus", "sonnet", "haiku", "fable"]);
+  UPPER = new Set(["gpt", "glm", "oss"]);
+});
+
 // box/src/shared/account-names.ts
 function workAccountTitle(provider, name, label) {
   const base = provider.split("@")[0];
@@ -63850,8 +64090,17 @@ async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)
   const folder = data.location?.directory ?? data.directory;
   const own = isObject(data.model) && typeof data.model.providerID === "string" && typeof data.model.id === "string" ? data.model : null;
   const onBridge = bridge !== null && target.port === bridge.port;
-  if (onBridge && data.parentID)
-    return;
+  if (onBridge && data.parentID) {
+    const kuvo = isObject(data.metadata?.kuvo) ? data.metadata.kuvo : {};
+    const ran = typeof kuvo.ranOn === "string" && kuvo.ranOn.trim() ? kuvo.ranOn.trim() : null;
+    if (ran)
+      return { model: { providerID: own?.providerID ?? "", id: ran }, name: modelName(ran).name, runs: true, fixed: true };
+    if (!own)
+      return;
+    const state = stateOf(own, { engine: null, bridge: await reads.bridge() });
+    const name = state?.name ?? lastName2(own) ?? modelName(own.id).name;
+    return { model: { providerID: own.providerID, id: own.id }, name, runs: true, fixed: true };
+  }
   const fallback = own || onBridge ? null : (await reads.engine(folder))?.fallback;
   if (!own && !onBridge && fallback === undefined)
     return;
@@ -63894,6 +64143,7 @@ var init_session_models = __esm(() => {
   init_tools2();
   init_model_rule();
   init_model_words();
+  init_insights_names();
   init_glance();
 });
 
@@ -100678,81 +100928,6 @@ import { createHash as createHash12 } from "node:crypto";
 var insightKey = (...parts) => createHash12("sha256").update(JSON.stringify(parts)).digest("hex");
 var init_insight_records = () => {};
 
-// box/src/usage/insights-names.ts
-function providerName(id) {
-  const base = id.split("@")[0];
-  return Object.hasOwn(PROVIDERS, base) ? PROVIDERS[base] : base.split(/[-_]/).filter(Boolean).map(capital).join(" ") || "Unknown";
-}
-function words5(parts) {
-  const out = [];
-  for (let i = 0;i < parts.length; i++) {
-    if (version(parts[i])) {
-      let run = parts[i];
-      while (i + 1 < parts.length && version(parts[i + 1]))
-        run += "." + parts[++i];
-      out.push(run);
-    } else if (/^o\d/.test(parts[i]))
-      out.push(parts[i]);
-    else
-      out.push(UPPER.has(parts[i]) ? parts[i].toUpperCase() : capital(parts[i]));
-  }
-  return out;
-}
-function modelName(id) {
-  let text = (id ?? "").trim().toLowerCase();
-  text = text.slice(text.lastIndexOf("/") + 1).replace(/\[[^\]]*\]$/, "").replace(/@.*$/, "");
-  const parts = text.replace(/[\s_.:]+/g, "-").split("-").filter(Boolean);
-  while (parts.length > 1 && (/^\d{6,8}$/.test(parts.at(-1)) || parts.at(-1) === "latest"))
-    parts.pop();
-  if (parts.length > 3 && /^\d{4}$/.test(parts.at(-3)) && /^\d{2}$/.test(parts.at(-2)) && /^\d{2}$/.test(parts.at(-1)))
-    parts.splice(-3);
-  if (!parts.length)
-    return { key: "unknown", name: "Unknown model" };
-  let name;
-  const family = parts.find((part) => CLAUDE.has(part));
-  if (family) {
-    const numbers = parts.filter(version);
-    const rest = parts.filter((part) => part !== "claude" && part !== family && !version(part));
-    name = [capital(family), numbers.join("."), ...words5(rest)].filter(Boolean).join(" ");
-  } else if (parts[0] === "gpt") {
-    const [, ...after] = parts;
-    const numbers = [];
-    while (after.length && (version(after[0]) || !numbers.length && /^\d+[a-z]$/.test(after[0])))
-      numbers.push(after.shift());
-    name = [numbers.length ? `GPT-${numbers.join(".")}` : "GPT", ...words5(after)].join(" ");
-  } else {
-    name = words5(parts).join(" ");
-  }
-  return { key: name.toLowerCase().replace(/[^a-z0-9.]+/g, "-"), name };
-}
-var PROVIDERS, capital = (word) => word.charAt(0).toUpperCase() + word.slice(1), CLAUDE, UPPER, version = (part) => /^\d{1,2}$/.test(part);
-var init_insights_names = __esm(() => {
-  PROVIDERS = {
-    claude: "Claude Code",
-    codex: "Codex",
-    cursor: "Cursor",
-    grok: "Grok",
-    antigravity: "Antigravity",
-    opencode: "OpenCode",
-    "opencode-go": "OpenCode Go",
-    openai: "OpenAI",
-    anthropic: "Anthropic",
-    google: "Google",
-    openrouter: "OpenRouter",
-    "github-copilot": "GitHub Copilot",
-    copilot: "GitHub Copilot",
-    xai: "xAI",
-    zai: "Z.ai",
-    "zai-coding-plan": "Z.ai",
-    ollama: "Ollama",
-    mistral: "Mistral",
-    deepseek: "DeepSeek",
-    engine: "Kuvo"
-  };
-  CLAUDE = new Set(["opus", "sonnet", "haiku", "fable"]);
-  UPPER = new Set(["gpt", "glm", "oss"]);
-});
-
 // box/src/usage/insights-summary.ts
 function conversations2(rows, titles) {
   const tops = new Map;
@@ -123627,6 +123802,7 @@ var ROUTES = [
   { feature: "groups.mentions", when: (route) => route.match(GROUP_MENTIONS_ROUTE), answer: groupMentionsRoute },
   { feature: "sessions.glance", when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { feature: "sessions.list", when: (route) => route.match(LIST_ROUTE), answer: listRoute },
+  { feature: "sessions.list.pages", when: (route) => route.match(PAGE_ROUTE), answer: pageRoute },
   { feature: "waiting", when: (route) => route.match(WAITING_ROUTE), answer: waitingRoute },
   { feature: "computers.add.credentials", when: (route) => route === "kuvo/computers/add/credentials" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add.from-any-client", when: (route) => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
