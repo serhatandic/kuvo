@@ -23,7 +23,7 @@ import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
 import { numberWaiting, primaryOf } from "./numbers";
 import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, stageClientFiles, stageFiles, startWork, stopWork, typeOf, TooBig, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
-import { allItems, byUser, changeQueues, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
+import { allItems, byUser, changeQueuesLater, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
 import { changedThere, itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
@@ -349,9 +349,9 @@ export async function callQueueTool(name: unknown, args: Record<string, unknown>
 
 // A change to the queues, then what waits for a number numbered (once nothing can refuse it, so
 // a refused change takes none).
-const change = <T>(work: (book: Book) => T): T => {
+const change = <T>(work: (book: Book) => T): Promise<T> => {
   const primary = primaryOf();
-  return changeQueues(book => {
+  return changeQueuesLater(book => {
     const done = work(book);
     numberWaiting(book, primary, null);
     return done;
@@ -378,9 +378,9 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
   // it was taken.)
   if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   // Commit the first answer with the item itself, after numbering it and before the queue file is published.
-  const edit = (work: (book: Book) => Item, answer: (item: Item) => ToolAnswer): ToolAnswer => {
+  const edit = (work: (book: Book) => Item, answer: (item: Item) => ToolAnswer): Promise<ToolAnswer> => {
     const primary = primaryOf();
-    return changeQueues(book => {
+    return changeQueuesLater(book => {
       const item = work(book);
       numberWaiting(book, primary, null);
       const reply = answer(item);
@@ -527,7 +527,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = change(book => {
+      const outcome = await change(book => {
         refuseQueueOwner(caller.owner);
         return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
       });
@@ -578,12 +578,12 @@ function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, except?: s
 
 // `work`, with the files the call names read first (outside the queue's lock), and what's left of
 // them cleared after.
-function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => T): T {
+async function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => Promise<T>): Promise<T> {
   if (args.files === undefined) return work();
   const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files);
   acting.staged = staged;
   try {
-    return work();
+    return await work();
   } finally {
     clear();
   }

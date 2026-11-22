@@ -7,14 +7,14 @@ import { tellQueuesAgain } from "./across";
 import { numberWaiting, primaryOf } from "./numbers";
 import { addItem, applyFileOps, changeItem, handItem, labelsFor, priorityFor, refuseClosedThere, refuseMoving, removeItem, stageClientFiles, statusFor, type Acting, type Fields } from "./ops";
 import { queueField, queuePassage, observeQueueItem } from "./offline-fields";
-import { changeQueues, dayOf, deletionFor, departureFor, MOST_BODY, MOST_NOTE, MOST_NOTES, MOST_TITLE, Refusal, YOURS } from "./store";
+import { changeQueuesLater, dayOf, deletionFor, departureFor, MOST_BODY, MOST_NOTE, MOST_NOTES, MOST_TITLE, Refusal, YOURS } from "./store";
 
 const YOU = { user: true } as const;
 const empty = (ref: EditTarget, deleted: boolean) => observe(undefined, ref.id!, {}, deleted);
 const absent = (ref: EditTarget) => editView(empty(ref, Boolean(deletionFor(ref.id!))));
 
 export function queueEditView(ref: EditTarget, owns: (ref: EditTarget) => boolean) {
-  return changeQueues(book => {
+  return changeQueuesLater(book => {
     const item = book.find({ id: ref.id! });
     if (!item) return owns({ ...ref, queue: deletionFor(ref.id!)?.queue ?? ref.queue }) ? absent(ref) : null;
     return owns({ ...ref, queue: item.owner }) ? editView(observeQueueItem(item)) : null;
@@ -60,14 +60,14 @@ function normalizedFields(edit: OfflineEdit): Values {
   return fields;
 }
 
-export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true,
+export async function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true,
   identity?: { operation: string; legacy: string[] }) {
   const edit = identity ? { ...given, operation: identity.operation } : given;
   const { ref, operation } = edit;
   const digest = fingerprint(edit);
   const now = Date.now();
   const primary = primaryOf();
-  const result = changeQueues(book => {
+  const result = await changeQueuesLater(book => {
     let item = book.find({ id: ref.id! });
     const target = { ...ref, queue: item?.owner ?? deletionFor(ref.id!)?.queue ?? ref.queue };
     if (!owns(target) || item?.handing) return;

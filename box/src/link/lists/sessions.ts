@@ -10,6 +10,7 @@
 // a machine reached over SSH) reads the places itself.
 
 import fs from "node:fs";
+import { keepsList, setKeepsList } from "../server/resident-state";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { listOf, locked, writePrivate } from "../files";
@@ -96,8 +97,6 @@ interface Listed {
   pending?: string[];
 }
 
-// Whether this process is the box's long-running one, which keeps its places as their events come.
-let keeping = false;
 /** The list as this process last worked it out. */
 let latest: Kept | null = null;
 const places = new Map<string, Place>();
@@ -398,7 +397,7 @@ const BOT_FILES = new Set(["bot.json", "session"]);
  * projects, worktrees, bots, moves or asks change, here or in another process (as the system says
  * their files changed). How to stop. */
 export function keepList(): () => void {
-  keeping = true;
+  setKeepsList(true);
   latest = null;
   places.clear();
   known = null;
@@ -449,7 +448,7 @@ export function keepList(): () => void {
     workOutTimer = undefined;
     // (What's not written yet, written now: a box started again goes on from it.)
     if (writeTimer) writeNow();
-    keeping = false;
+    setKeepsList(false);
     latest = null;
     known = null;
     watchesWhole = () => true;
@@ -476,7 +475,7 @@ const wholeReads = new Map<string, { done: Promise<void>; again: boolean; target
 /** A place heard (it started, or its events came back after they couldn't be): read whole now, as
  * what it did meanwhile went by unheard. */
 export function listPlaceHeard(name: string, target: Target): Promise<void> {
-  if (!keeping) return Promise.resolve();
+  if (!keepsList()) return Promise.resolve();
   placeTargets.set(name, target);
   return readPlace(name, target);
 }
@@ -496,7 +495,7 @@ function readPlace(name: string, target: Target): Promise<void> {
       do {
         read.again = false;
         await readOnce(name, read.target);
-      } while (read.again && keeping);
+      } while (read.again && keepsList());
     } finally {
       if (wholeReads.get(name) === read) wholeReads.delete(name);
     }
@@ -536,7 +535,7 @@ async function readOnce(name: string, target: Target): Promise<void> {
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
-  if (!keeping || !sessions || placeTargets.get(name) !== target) return;
+  if (!keepsList() || !sessions || placeTargets.get(name) !== target) return;
   // (Only a whole read makes a place: until then its events have nothing to change.)
   const place = places.get(name) ?? { target, sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
@@ -554,7 +553,7 @@ async function readOnce(name: string, target: Target): Promise<void> {
   if (touched.size) {
     await Promise.all([...touched].map(id => readOne(name, target, id)));
     const refreshed = await readRunningSnapshot(name, target);
-    if (!keeping || places.get(name) !== place) return;
+    if (!keepsList() || places.get(name) !== place) return;
     applyRunning(place, refreshed);
   }
   for (const id of new Set([...place.wakeReads.keys(), ...place.wakeRetries.keys(), ...place.waking])) if (!place.running.has(id)) clearWakeTurn(place, id);
@@ -580,7 +579,7 @@ async function readWakeTurn(place: Place, target: Target, id: string): Promise<v
   if (place.wakeReads.get(id) !== read || !place.running.has(id)) return;
   place.wakeReads.delete(id);
   if (waking === null) {
-    if (!keeping || ![...places.values()].includes(place)) return;
+    if (!keepsList() || ![...places.values()].includes(place)) return;
     const retry = setTimeout(() => void readWakeTurn(place, target, id), 250);
     retry.unref?.();
     place.wakeRetries.set(id, retry);
@@ -623,7 +622,7 @@ async function readOne(name: string, target: Target, id: string): Promise<boolea
  * nothing (its whole read reads it again). Settled once what it read is in (a test waits on it);
  * worked out a moment after, so a few events at once are one. */
 export async function noteListEvent(name: string, target: Target, event: { type?: string; data?: { sessionID?: unknown; info?: { id?: unknown }; error?: unknown; idle?: unknown } }): Promise<void> {
-  if (!keeping || typeof event?.type !== "string") return;
+  if (!keepsList() || typeof event?.type !== "string") return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
   if (typeof id !== "string" || !id.startsWith("ses")) return;
   if (event.type === "session.viewed") {
@@ -684,7 +683,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
  * no longer blocks it: `factsOf`). */
 export function noteViewed(name: string, id: string, idle: number): void {
   const session = places.get(name)?.sessions.get(id);
-  if (!keeping || !session || !Number.isFinite(idle) || idle <= (Number(session.time?.viewed) || 0)) return;
+  if (!keepsList() || !session || !Number.isFinite(idle) || idle <= (Number(session.time?.viewed) || 0)) return;
   places.get(name)!.sessions.set(id, { ...session, time: { ...session.time, viewed: idle } });
   scheduleWorkOut();
 }
@@ -693,7 +692,7 @@ export function noteViewed(name: string, id: string, idle: number): void {
  * as the box hasn't said whether it's news to you (READ_RULE). The long-running process's; none
  * elsewhere. */
 export function judgedTurns(bot: string): number[] {
-  if (!keeping || !latest) return [];
+  if (!keepsList() || !latest) return [];
   const ends: number[] = [];
   for (const place of places.values()) {
     for (const session of place.sessions.values()) {
@@ -733,7 +732,7 @@ function letGoOfStops(): void {
 let workOutTimer: ReturnType<typeof setTimeout> | undefined;
 /** Worked out again in a moment: a few changes at once are one. */
 function scheduleWorkOut(): void {
-  if (!keeping || workOutTimer) return;
+  if (!keepsList() || workOutTimer) return;
   workOutTimer = setTimeout(() => { workOutTimer = undefined; workOut(); }, 50);
   workOutTimer.unref?.();
 }
@@ -768,7 +767,7 @@ function withPending(sessions: EngineSession[], placeOf: Record<string, string>,
 /** Every session's facts worked out again from what's kept of its places, once the engine's has
  * been read whole, and kept; followers told of a change. */
 export function workOut(now = Date.now()): void {
-  if (!keeping) return;
+  if (!keepsList()) return;
   clearTimeout(workOutTimer);
   workOutTimer = undefined;
   if (!places.has("engine")) return;
@@ -805,8 +804,7 @@ export function workOut(now = Date.now()): void {
 // What's not written yet, written as the process ends (it's stopped: the keeper, an update).
 process.once("exit", () => { if (writeTimer) writeNow(); });
 
-/** Whether this process keeps the list (the box's long-running one). */
-export const keepsList = (): boolean => keeping;
+export { keepsList };
 
 function sameTarget(before: Target | undefined, after: Target): boolean {
   return before?.port === after.port && before.password === after.password;
@@ -870,7 +868,7 @@ async function readPlaces(context: Pick<RouteContext, "readEngine" | "bridge">):
  * long-running process keeps it, while it runs; else read from the places now (the bridge's
  * sessions as last read where it doesn't answer), and kept. */
 export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<Kept | null> {
-  if (keeping) {
+  if (keepsList()) {
     if (!latest) await readPlaces(context);
     if (workOutTimer) workOut();
     return latest;
@@ -912,7 +910,7 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
   if (!match[1]) return yield* json(200, answerFrom(list, since));
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // (Streamed only where it's kept: elsewhere its first line, as `box route` answers.)
-  if (!keeping) return yield { body: Buffer.from(JSON.stringify(answerFrom(list, since)) + "\n") };
+  if (!keepsList()) return yield { body: Buffer.from(JSON.stringify(answerFrom(list, since)) + "\n") };
   let wake: (() => void) | null = null;
   let dirty = false;
   const told = () => { dirty = true; wake?.(); };
@@ -924,7 +922,7 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
     while (!signal?.aborted) {
       dirty = false;
       const now = latest;
-      if (!keeping || !now) return;
+      if (!keepsList() || !now) return;
       const answer = answerFrom(now, at);
       // (Nothing changed since: no line, but the first.)
       if (first || answer.full || at !== answer.at) yield { body: Buffer.from(JSON.stringify(answer) + "\n") };

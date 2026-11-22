@@ -8,6 +8,7 @@ import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { promptedFolders } from "../../shared/platform";
 import type { AnswerPiece, JSONAnswer, RouteContext } from "../server/context";
+import { folderDisk } from "../server/disk-worker";
 import { homeFolder } from "../home";
 
 /** One of this box's folders, as `kuvo/folders` lists it: its path, the home folder, the one it's
@@ -199,6 +200,7 @@ export async function* foldersRoute(context: RouteContext): AsyncGenerator<Answe
   const { request, json } = context;
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "POST") return yield* json(405, {});
-  const { status, value } = method === "GET" ? listFolders(request.path) : makeFolder(parsed(request.body) as Body<"path">);
+  const { status, value } = method === "GET" ? await folderDisk.run("listFolders", request.path)
+    : await folderDisk.run("makeFolder", parsed(request.body) as Body<"path">);
   return yield* json(status, value);
 }

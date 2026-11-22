@@ -3,7 +3,7 @@
 // engine first, and is held with the rest; what a client names as still on its way
 // (`POST kuvo/sessions/<id>/stop {items}`) is held as it comes, rather than set going.
 
-import { changeQueue, queueOf } from "../engine/queue";
+import { changeQueueLater, queueOf } from "../engine/queue";
 
 /** How long a message Stop named as on its way is held when it comes (ms): longer, and it's a send
  * of its own. */
@@ -41,22 +41,22 @@ export async function sendsSettled(session: string, within = stopWaits.within): 
 }
 
 /** Messages `items` of `session` held as they come, for `ARRIVING_FOR` from `now`. */
-export function holdArriving(session: string, items: readonly string[], now = Date.now()): void {
+export async function holdArriving(session: string, items: readonly string[], now = Date.now()): Promise<void> {
   if (!items.length) return;
-  changeQueue(session, state => ({ ...state, arriving: { ...state.arriving, ...Object.fromEntries(items.map(id => [id, now + ARRIVING_FOR])) } }));
+  await changeQueueLater(session, state => ({ ...state, arriving: { ...state.arriving, ...Object.fromEntries(items.map(id => [id, now + ARRIVING_FOR])) } }));
 }
 
 /** What Stop named for `session` forgotten: it went on since (Resume, Send Now), so what comes
  * now goes as it was sent. */
-export function forgetArriving(session: string): void {
-  if (queueOf(session).arriving) changeQueue(session, ({ arriving: _, ...state }) => state);
+export async function forgetArriving(session: string): Promise<void> {
+  if (queueOf(session).arriving) await changeQueueLater(session, ({ arriving: _, ...state }) => state);
 }
 
 /** Whether message `id` to `session`, coming now, is one Stop named: it's held then, once. */
-export function heldAsItComes(session: string, id: string | undefined, now = Date.now()): boolean {
+export async function heldAsItComes(session: string, id: string | undefined, now = Date.now()): Promise<boolean> {
   if (!id || queueOf(session).arriving?.[id] === undefined) return false;
   let until = 0;
-  changeQueue(session, state => {
+  await changeQueueLater(session, state => {
     const { [id]: named, ...rest } = state.arriving ?? {};
     until = named ?? 0;
     const { arriving: _, ...without } = state;

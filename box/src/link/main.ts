@@ -115,6 +115,7 @@ import { clearStaging } from "./work-queue/ops";
 import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
+import { isDiskWorker } from "./server/disk-worker";
 import { isReceiptWorker, refreshReceipts } from "./ownership/receipt-worker";
 import { macCompatibilityFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
@@ -1662,7 +1663,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
   // The worker only publishes its own receipt and must outlive the installed bundle it began with.
   await box("tool-command-worker", process.argv.slice(4), false);
-} else if (main && !isReceiptWorker) {
+} else if (main && !isReceiptWorker && !isDiskWorker) {
   const [mode, argument, ...commandArgs] = process.argv.slice(2);
   const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";
   const useSshPipe = mode === "box" && (argument === "route" || argument === "route-to") && !updateProbe && sshPipeSelected();

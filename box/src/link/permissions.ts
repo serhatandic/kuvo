@@ -12,6 +12,7 @@ import { textOf, writePrivate } from "./files";
 import { HELPER_NAME, helperBundle, machineHelperAvailable, machineKeeperIdentity, machineMark, machinePermissionWatcher } from "./helper";
 import { APP_FOLDER, K, recordedKind } from "./home";
 import { appHost, askHost } from "./host-interface";
+import { permissionDisk } from "./server/disk-worker";
 import type { AnswerPiece, RouteContext } from "./server/context";
 
 /** Whether a process of yours with that number runs now. (The helper is yours: one this can't
@@ -157,7 +158,7 @@ export async function freshBoxPermissions(): Promise<BoxPermissions> {
     ]);
     clearTimeout(waited);
   }
-  return boxPermissions();
+  return (await permissionDisk.run("readPermissionSettings")).value as BoxPermissions;
 }
 
 /** `GET`: the facts, as the helper sees them now. `POST {later: "<id>"}`: that one put off ("Not
@@ -170,13 +171,22 @@ export async function* permissionsRoute({ request, json }: RouteContext): AsyncG
   try { asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8")); } catch { asked = null; }
   const id = isObject(asked) ? asked.later : null;
   if (typeof id !== "string" || !PERMISSIONS.some(each => each.id === id)) return yield* json(400, { message: "Say which permission to ask about later." });
+  const { status, value } = await permissionDisk.run("readPermissionSettings", id);
+  return yield* json(status, value);
+}
+
+/** Read or update the helper's permission facts outside the resident loop. */
+export function readPermissionSettings(later?: string): { status: number; value: BoxPermissions | { message: string } };
+export function readPermissionSettings(later?: string) {
   const now = boxPermissions();
-  if (!now.applies) return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
-  if (!now.list.some(each => each.id === id)) return yield* json(409, { message: "This permission doesn’t apply to Kuvo on this computer." });
+  if (later === undefined) return { status: 200, value: now };
+  const id = later;
+  if (!now.applies) return { status: 409, value: { message: "Nothing on this computer needs macOS's permission." } };
+  if (!now.list.some(each => each.id === id)) return { status: 409, value: { message: "This permission doesn’t apply to Kuvo on this computer." } };
   try {
     keepPutOff(new Set([...putOff(), id]));
   } catch {
-    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+    return { status: 500, value: { message: "Kuvo couldn't keep that on this Mac. Try again." } };
   }
-  return yield* json(200, boxPermissions());
+  return { status: 200, value: boxPermissions() };
 }

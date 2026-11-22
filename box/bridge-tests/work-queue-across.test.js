@@ -107,6 +107,13 @@ const receive = (from, payload) => link.receiveMail(mailFrom(from, payload), hos
 // Mail a computer's link takes as it comes, waited on until it's done with (a hand-off looks up
 // its conversation first).
 const takeFrom = (from, workQueue) => link.takeWorkQueueMail(from.peer, workQueue, host, places);
+const receiveHanded = (from, handed) => {
+  let handled;
+  link.receiveMail(mailFrom(from, { workQueue: { handed } }), host, (sender, given) => {
+    handled = link.takeWorkQueueMail(sender, given.workQueue, host, places);
+  });
+  return handled;
+};
 const mailTo = to => {
   const theirs = sent.filter(bytes => k(bytes.subarray(1, 17)) === to.address);
   for (const bytes of theirs) sent.splice(sent.indexOf(bytes), 1);
@@ -522,9 +529,9 @@ test("an item handed to a session on another computer moves once: unchanged here
   await link.pushQueues(host, link.readLink(), targets, now + 61_000);
   assert.equal(mailTo(lab).filter(each => each.workQueue.hand).length, 1);
   // Only lab's word counts; then it's gone from here.
-  receive(mac, { workQueue: { handed: { id: hand.id, ok: true } } });
+  await receiveHanded(mac, { id: hand.id, ok: true });
   assert.equal((await view("ses_lead")).items.some(item => item.number === 100 && !item.computer), true);
-  receive(lab, { workQueue: { handed: { id: hand.id, ok: true } } });
+  await receiveHanded(lab, { id: hand.id, ok: true });
   assert.equal((await view("all")).items.some(item => item.number === 100), false);
 
   // One lab says to send again later (its conversation moving): again at its next minute, not at once.
@@ -532,10 +539,10 @@ test("an item handed to a session on another computer moves once: unchanged here
   await tool("queue_hand", { item: "#101", to: "ses_far" }, "ses_lead");
   await link.pushQueues(host, link.readLink(), targets, now + 100_000);
   const retried = mailTo(lab).map(each => each.workQueue).find(each => each.hand)?.hand;
-  receive(lab, { workQueue: { handed: { id: retried.id, ok: false, retry: true } } });
+  await receiveHanded(lab, { id: retried.id, ok: false, retry: true });
   await link.pushQueues(host, link.readLink(), targets, Date.now());
   assert.equal(mailTo(lab).filter(each => each.workQueue.hand).length, 0, "not at once");
-  receive(lab, { workQueue: { handed: { id: retried.id, ok: true } } });
+  await receiveHanded(lab, { id: retried.id, ok: true });
 
   // One lab can't take comes back as it was, with why.
   await tool("queue_add", { title: "Second" }, "ses_lead");
@@ -543,7 +550,7 @@ test("an item handed to a session on another computer moves once: unchanged here
   await link.pushQueues(host, link.readLink(), targets, now + 200_000);
   const second = mailTo(lab).map(each => each.workQueue).find(each => each.hand)?.hand;
   assert.equal(second.to, "ses_wren", "a bot on lab, by its name");
-  receive(lab, { workQueue: { handed: { id: second.id, ok: false, why: "That queue has 2,000 open items already." } } });
+  await receiveHanded(lab, { id: second.id, ok: false, why: "That queue has 2,000 open items already." });
   const back = await tool("queue_show", { item: 102 }, "ses_lead");
   assert.match(back.text, /Couldn't be handed to Wren on another computer: That queue has 2,000 open items already\. It's still here\./);
   assert.equal((await tool("queue_update", { item: 102, note: "ok" }, "ses_lead")).isError, false);
@@ -610,9 +617,9 @@ test("a hand-off to a computer that's no longer one of yours comes back after a 
   fresh();
   agentsTold();
   assert.equal((await tool("queue_hand", { item: "#100", to: "ses_far" }, "ses_lead")).isError, false);
-  link.handUpkeep(link.readLink(), Date.now() + 1000);
+  await link.handUpkeep(link.readLink(), Date.now() + 1000);
   assert.equal((await view("ses_lead")).items.find(item => item.number === 100).handing?.to, "ses_far", "on its way still");
-  link.handUpkeep(link.readLink(), Date.now() + 31 * 86_400_000);
+  await link.handUpkeep(link.readLink(), Date.now() + 31 * 86_400_000);
   assert.match((await tool("queue_show", { item: 100 }, "ses_lead")).text, /it couldn't be reached for 30 days\. It's still here\./);
 
   // You delete one on its way: its hand-off is called off, and it goes no more.
@@ -670,7 +677,7 @@ test("what happened to an item goes with it to another computer, as its notes do
   await link.pushQueues(host, link.readLink(), targets, Date.now());
   const hand = mailTo(lab).map(each => each.workQueue).find(each => each.hand)?.hand;
   assert.deepEqual(hand.item.events, events, "it goes whole and a pending transfer is not marked complete");
-  receive(lab, { workQueue: { handed: { id: hand.id, ok: true } } });
+  await receiveHanded(lab, { id: hand.id, ok: true });
 
   // One handed here keeps what happened to it there, who and when.
   const far = [{ at: 1500, by: { session: "ses_farlead", name: "Far lead" }, kind: "started" }, { at: 1600, by: { user: true }, kind: "moved", from: "todo", to: "backlog" }];

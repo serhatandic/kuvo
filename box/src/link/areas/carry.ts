@@ -257,7 +257,7 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
     // At once, before anything it waits for: what follows the conversation goes on in the new one,
     // before a client that heard it archived holds it there. Stopped by you, its queue stays
     // stopped there, with what waited on the box; Autopilot's calls and its Work Queue come along.
-    carryQueue(id, moved, renamed);
+    await carryQueue(id, moved, renamed);
     carryDecided(id, moved);
     // Its Work Queue too: the new one's, items, links and all.
     try { carryWorkQueue(id, moved); } catch (error) { console.error(`Work Queue: ${id}'s queue wasn't carried to ${moved}: ${(error as Error).message}`); }

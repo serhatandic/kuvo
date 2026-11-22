@@ -7,6 +7,7 @@ import { ownName } from "../letters/start";
 import { BOX, CONFIG_LOCK, IS_MAC } from "../home";
 import { keyNames } from "../keys";
 import { KEY, namedBoxes, ownKey, peersOf, type MailSender } from "../peers/known";
+import { settingsDisk } from "../server/disk-worker";
 import type { RouteContext } from "../server/context";
 import { acceptedMembership } from "../setup/membership";
 import { followedSetup, ledSetup, setupDoc } from "../setup/record";
@@ -296,6 +297,11 @@ async function preview(given: Record<string, unknown>, context: RouteContext): P
   const batch = fetched.value;
   if (!batchFits(batch, scope)) return unavailable();
   const existingKeys = await keyNames().catch(() => []);
+  return settingsDisk.run("previewConfig", batch, source, destination, changeSet, scope, existingKeys, context.info.name || ownName());
+}
+
+export function previewConfig(batch: Batch, source: string, destination: string, changeSet: string, scope: Scope,
+  existingKeys: string[], destinationName: string): Acted {
   return locked(CONFIG_LOCK, () => {
     const current = readLink();
     const peer = member(current, source);
@@ -310,7 +316,7 @@ async function preview(given: Record<string, unknown>, context: RouteContext): P
     const { made, ...shown } = planChanges(batch, settings, existingKeys);
     if (catalog !== catalogRevision() || expires <= Date.now()) return unavailable();
     const details = { plan, expires, source: { computer: source, name: peer.name },
-      destination: { computer: destination, name: context.info.name || ownName() }, ...shown };
+      destination: { computer: destination, name: destinationName }, ...shown };
     const approval = digest(details);
     keep(planFile(plan), { ...scope, source, destination, changeSet, batch: digest(batch), expires,
       revision, catalogRevision: catalog, approval, made, keys: shown.keys,
@@ -324,10 +330,16 @@ function operation(id: string): ApplyResult | undefined {
   return read<ApplyResult>(resultFile(id));
 }
 
+export function readConfigPlan(id: string, approval: unknown) {
+  return locked(CONFIG_LOCK, () => {
+    const plan = read<Plan>(planFile(id));
+    return { plan, previous: plan && plan.approval === approval ? operation(id) : undefined };
+  }, { required: true });
+}
+
 async function confirm(id: string, approval: unknown, context: RouteContext): Promise<Acted> {
-  const plan = locked(CONFIG_LOCK, () => read<Plan>(planFile(id)), { required: true });
+  const { plan, previous } = await settingsDisk.run("readConfigPlan", id, approval);
   if (!plan || plan.approval !== approval) return reply(plan ? 409 : 404, { status: plan ? "freshPreview" : "planUnknown" });
-  const previous = locked(CONFIG_LOCK, () => operation(id), { required: true });
   if (previous) return reply(200, previous);
   if (plan.expires <= Date.now()) return reply(409, { status: "freshPreview" });
   const link = readLink();
@@ -337,6 +349,10 @@ async function confirm(id: string, approval: unknown, context: RouteContext): Pr
   if (fetched.status !== 200) return fetched;
   if (!isObject(fetched.value) || fetched.value.batch !== plan.batch) return reply(409, { status: "freshPreview" });
   const existingKeys = plan.keys.length ? await keyNames().catch(() => []) : [];
+  return settingsDisk.run("confirmConfig", id, plan, existingKeys);
+}
+
+export function confirmConfig(id: string, plan: Plan, existingKeys: string[]): Acted {
   return locked(CONFIG_LOCK, () => {
     const previous = operation(id);
     if (previous) return reply(200, previous);

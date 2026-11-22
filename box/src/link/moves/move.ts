@@ -763,7 +763,7 @@ async function carryOn(id: string): Promise<void> {
     const decided = decidedOf(record.sessions);
     if (Object.keys(decided).length) contents.decided = decided;
     // Its conversations' Work Queues.
-    contents.sessionNotes = packSessionNotes(record.sessions);
+    contents.sessionNotes = await packSessionNotes(record.sessions);
     if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
       throw new Refused("Update the destination computer before moving these ordinary session notes.");
     const workQueue = packWorkQueues(record.sessions);
@@ -922,7 +922,7 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
     const before = outgoing.get(record.id)?.exports;
     // Taken back meanwhile (its copy there couldn't be set up, or it took too long): nothing more.
     if (!still()) return;
-    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), packSessionNotes(record.sessions)) !== before) {
+    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), await packSessionNotes(record.sessions)) !== before) {
       if (record.tries >= 2) throw new Refused(say.busy(record.name));
       // (Getting it ready again from now: what `keepMoving` counts its half hour from.)
       changeMove(record.id, each => { each.tries += 1; each.stage = "holding"; each.step = undefined; each.holdSince = Date.now(); });
@@ -1003,7 +1003,7 @@ async function finish(id: string, verifiedPayloads = false): Promise<void> {
       }
       for (const session of record.sessions) forgetQueue(session);
       forgetWorkQueues(record.sessions);
-      forgetSessionNotes(record.sessions);
+      await forgetSessionNotes(record.sessions);
       const trash = await toTrash(place);
       noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...(record.lane ? { lane: true } : {}), ...(trash ? { trash } : {}), ...(record.leftOf?.length ? { left: record.leftOf } : {}) });
     }
@@ -1388,7 +1388,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   }
   if (goOn.length) changeMove(record.id, each => { each.queuesGoOn = goOn; });
   if (contents.sessionNotes !== undefined) {
-    try { placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
+    try { await placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
     catch (error) { throw new NotTaken((error as Error).message); }
   }
   // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
@@ -1664,7 +1664,7 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       forgetDecided(session);
       forgetQueue(session);
     }
-    forgetSessionNotes(record.sessions, importReceipt(record));
+    await forgetSessionNotes(record.sessions, importReceipt(record));
     if (created.size && !record.payloads) forgetWorkQueues([...created]);
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.

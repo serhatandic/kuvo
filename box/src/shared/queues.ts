@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "./format-version";
 import { isObject } from "./json";
-import { locked, writeDurablePrivate } from "./files";
+import { locked, lockedWhile, writeDurablePrivate, writeDurablePrivateLater } from "./files";
 
 /** Where a box keeps its queues: its run folder's. */
 export interface QueueFiles {
@@ -225,6 +225,18 @@ export function readQueues(files: QueueFiles, strict = false): Record<string, Qu
   try { all = JSON.parse(fs.readFileSync(files.file, "utf8")); } catch (error) {
     if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  return decodedQueues(all, strict);
+}
+
+export async function readQueuesLater(files: QueueFiles, strict = false): Promise<Record<string, QueueState>> {
+  let all: unknown = {};
+  try { all = JSON.parse(await fs.promises.readFile(files.file, "utf8")); } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return decodedQueues(all, strict);
+}
+
+function decodedQueues(all: unknown, strict: boolean): Record<string, QueueState> {
   if (!isObject(all)) {
     if (strict) throw new Error("The queue index could not be read");
     return {};
@@ -239,37 +251,58 @@ export function readQueues(files: QueueFiles, strict = false): Record<string, Qu
   }));
 }
 
-/** `session`'s queue as `change` makes it, read again just before, under its lock; `changed`, told
- * once it's written. */
-export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void, reseal: boolean | (() => boolean) = false): QueueState {
-  let made = false;
+function indexQueue(all: Record<string, QueueState>, session: string, before: QueueState, next: QueueState, reseal: boolean) {
+  const state = keptState(next);
+  state.held = [...new Set(state.held)];
+  // (What came held and isn't held any more is no longer among those, whatever let it go.)
+  if (state.cameHeld) state.cameHeld = state.cameHeld.filter(id => state.held.includes(id));
+  if (!state.cameHeld?.length) delete state.cameHeld;
+  const made = JSON.stringify(state) !== JSON.stringify(before);
+  if (!made && !reseal) return { state, made, data: undefined };
+  all[session] = state;
+  // Kept while it's paused, holds something, was resumed a moment ago, or waits for a message
+  // a Stop named (until it's held, or its time is up).
+  for (const [id, each] of Object.entries(all)) {
+    if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR) delete each.resumed;
+    if (each.arriving) {
+      for (const [message, until] of Object.entries(each.arriving)) if (until <= Date.now()) delete each.arriving[message];
+      if (!Object.keys(each.arriving).length) delete each.arriving;
+    }
+    if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt) delete all[id];
+  }
+  const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+  return { state, made, data: JSON.stringify(indexed) };
+}
+
+type Reseal = boolean | (() => boolean);
+const emptyQueue = (): QueueState => ({ paused: false, held: [] });
+
+/** Change one queue and publish its new index under the existing cross-process lock. */
+export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void, reseal: Reseal = false): QueueState {
   const after = locked(files.lock, () => {
     const all = readQueues(files, true);
-    const before = all[session] ?? { paused: false, held: [] };
-    const state = keptState(change(before));
-    state.held = [...new Set(state.held)];
-    // (What came held and isn't held any more is no longer among those, whatever let it go.)
-    if (state.cameHeld) state.cameHeld = state.cameHeld.filter(id => state.held.includes(id));
-    if (!state.cameHeld?.length) delete state.cameHeld;
-    made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !(typeof reseal === "function" ? reseal() : reseal)) return state;
-    all[session] = state;
-    // Kept while it's paused, holds something, was resumed a moment ago, or waits for a message
-    // a Stop named (until it's held, or its time is up).
-    for (const [id, each] of Object.entries(all)) {
-      if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR) delete each.resumed;
-      if (each.arriving) {
-        for (const [message, until] of Object.entries(each.arriving)) if (until <= Date.now()) delete each.arriving[message];
-        if (!Object.keys(each.arriving).length) delete each.arriving;
-      }
-      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt) delete all[id];
-    }
-    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
-    writeDurablePrivate(files.file, JSON.stringify(indexed));
-    return state;
+    const before = all[session] ?? emptyQueue();
+    const next = change(before);
+    const result = indexQueue(all, session, before, next, typeof reseal === "function" ? reseal() : reseal);
+    if (result.data !== undefined) writeDurablePrivate(files.file, result.data);
+    return result;
   }, { required: true });
-  if (made) changed?.();
-  return after;
+  if (after.made) changed?.();
+  return after.state;
+}
+
+export async function changeQueueLater(files: QueueFiles, session: string, change: (state: QueueState) => QueueState | Promise<QueueState>,
+  changed?: () => void, reseal: Reseal = false): Promise<QueueState> {
+  const after = await lockedWhile(files.lock, async () => {
+    const all = await readQueuesLater(files, true);
+    const before = all[session] ?? emptyQueue();
+    const next = await change(before);
+    const result = indexQueue(all, session, before, next, typeof reseal === "function" ? reseal() : reseal);
+    if (result.data !== undefined) await writeDurablePrivateLater(files.file, result.data);
+    return result;
+  }, { required: true });
+  if (after.made) changed?.();
+  return after.state;
 }
 
 export const waitingFile = (files: QueueFiles, id: string) => path.join(files.waiting, `${id}.json`);
@@ -278,6 +311,16 @@ export function readWaitingFile(file: string): Record<string, unknown> | null {
   try {
     const saved: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
     return isObject(saved) ? payloadFormat.read(saved) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return null;
+  }
+}
+
+export async function readWaitingFileLater(file: string): Promise<Record<string, unknown> | null> {
+  try {
+    const value: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
+    return isObject(value) ? payloadFormat.read(value) : null;
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) throw error;
     return null;
@@ -302,21 +345,42 @@ const fileNames = (files: unknown[] | undefined): string[] => (files ?? []).flat
 export type Place = (state: QueueState, item: Waiting) => QueueState;
 const last: Place = (state, item) => ({ ...state, waiting: [...(state.waiting ?? []), item] });
 
+function waitingEntry(message: Outgoing & { id: string }, { from, words }: Shown): Waiting {
+  const names = fileNames(message.files);
+  const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
+  const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
+  return { id: message.id, ...(from ? { from } : {}), text: words ?? message.text, ...(names.length ? { files: names } : {}), ...(keyword ? { keyword } : {}), at: Date.now() };
+}
+
 /** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while its engine is
  * being changed (`holds`, PROTOCOL.md "A new engine"), or while it retries a limit's release.
  * Otherwise it isn't kept. `changed`: as `changeQueue`'s. */
-export function keepWaiting(files: QueueFiles, session: string, message: Outgoing & { id: string }, { from, words, kept: keptText }: Shown = {}, changed?: () => void, place: Place = last, holds = false): boolean {
+export function keepWaiting(files: QueueFiles, session: string, message: Outgoing & { id: string }, shown: Shown = {}, changed?: () => void, place: Place = last, holds = false): boolean {
   let kept = false;
   changeQueue(files, session, state => {
     if (!state.paused && !state.limitStop?.releasing && !holds) return state;
     if (!isWaitingID(message.id)) throw new InvalidWaitingID();
-    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), shown.kept === undefined ? message : { ...message, text: shown.kept }, path.dirname(files.file));
     kept = true;
-    const names = fileNames(message.files);
-    const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
-    const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
-    const waiting: Waiting = { id: message.id, ...(from ? { from } : {}), text: words ?? message.text, ...(names.length ? { files: names } : {}), ...(keyword ? { keyword } : {}), at: Date.now() };
+    const waiting = waitingEntry(message, shown);
     return place({ ...state, waiting: (state.waiting ?? []).filter(each => each.id !== message.id) }, waiting);
+  }, changed, () => kept);
+  return kept;
+}
+
+/** Same payload-before-index ordering as keepWaiting, with disk I/O off the resident loop. */
+export async function keepWaitingLater(files: QueueFiles, session: string, message: Outgoing & { id: string }, shown: Shown = {},
+  changed?: () => void, place: Place = last, holds: () => boolean = () => false): Promise<boolean> {
+  let kept = false;
+  await changeQueueLater(files, session, async state => {
+    if (!state.paused && !state.limitStop?.releasing && !holds()) return state;
+    if (!isWaitingID(message.id)) throw new InvalidWaitingID();
+    const file = waitingFile(files, message.id);
+    await readWaitingFileLater(file);
+    const payload = shown.kept === undefined ? message : { ...message, text: shown.kept };
+    await writeDurablePrivateLater(file, JSON.stringify(payloadFormat.write(payload)), path.dirname(files.file));
+    kept = true;
+    return place({ ...state, waiting: (state.waiting ?? []).filter(each => each.id !== message.id) }, waitingEntry(message, shown));
   }, changed, () => kept);
   return kept;
 }
