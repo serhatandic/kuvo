@@ -28820,7 +28820,15 @@
         "draft": "string",
         "before?": "string",
         "receipt?": "string",
-        "metadata?": "any"
+        "metadata?": "any",
+        "attached?": {
+         "list": {
+          "object": {
+           "uri": "string",
+           "name?": "string"
+          }
+         }
+        }
        }
       }
      }
