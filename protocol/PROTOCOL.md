@@ -4185,32 +4185,21 @@ in every client (gpui's `kuvo_box` too), so every client holds the same boxes; a
 there as it drops its fallback for a box without it, or its words that such a box needs a newer
 Kuvo Code.
 
-- **Capabilities, not versions** (the desktop app; the phone still holds on the whole list): a box
-  lacking some of those names is only *behind*. It's used as it is, each feature drawn where it has
-  it and drawn without where it hasn't (an older box simply shows no bot states), and its update
-  is offered (the title bar's chip). A box is *held* only where a client can't speak to it at
-  all: lacking the baseline (gpui's `gate::BASELINE`: `sessions.list`, `messages.send`,
-  `messages.commands`, `sessions.start.empty`, `clients.kind`, `queue.stop.arriving`, the names
-  without which a request it sends would mean something else there), or answering no `kuvo/info`.
-  A name joins the baseline only for that, never for what's only drawn. A held box's view always carries what brings it up (Update Now: for
-  this Mac's own, by the release the app carries, else `kuvo/update {now}` on that box, asked
-  first only where its `kuvo/computers` row names what's at work).
-- **Every computer is independent**: a held box still answers your computers' list
-  (`kuvo/computers`, `kuvo/computers/events`), what's at work there (`kuvo/box/at-work`) and the
-  app's pairing (`kuvo/devices/pair`), so one computer's version never hides or holds another
-  (a box from before `computers` lists nothing: the app keeps the list it last had).
-- **Held**: a client sends a held box nothing but `kuvo/info`, `kuvo/update` and `kuvo/box/update`,
-  its Mac's app's own registration (`kuvo/box/app`, "This Mac's app") and the keys it holds for
-  that app (`kuvo/box/proof`, "This Mac's box: its keys, for its app"),
-  and what keeps work already under way there going, so a session waiting on you can be answered:
-  its engine (`api/…`) and coding agents' bridge (`kuvo/agents/…`), the tool calls of the agents at
-  work there (`kuvo/agent-tools`; a tool that box hasn't is said to the agent as waiting for the
-  update), its asks (`kuvo/asks`, `kuvo/sandbox/asks`, `kuvo/vault/asks`, `kuvo/work/asks`, and a
-  conversation's, `kuvo/sessions/<id>/asks…`, where it has them) and
-  Auto's decisions (`kuvo/sessions/<id>/decisions`). Every other request is refused in the client,
-  in the gate's words (`503`, `reason: "updating"`), without reaching the box. Its sessions wait where they'd show, beside what it waits for or why it couldn't be updated.
-  A new chat there says the same, though its `kuvo/info` (which names its chats folder) answers.
-  A held box whose `kuvo/info` says it has everything is let go, and read again at once.
+- **The box says it** (the desktop app): every box states how it stands with clients in its
+  `kuvo/info` and on each `kuvo/computers` row, `compatibility: {state, missing?}`, worked out by
+  the box from this list; a client draws it and keeps no reading of its own. `open`: it has
+  everything. `behind` (with `missing`): it's used as it is, each feature drawn where it has it and
+  drawn without where `missing` names it (an older box simply shows no bot states), and its update
+  is offered (the title bar's chip). `held`: a client can't use it until it's updated (the box
+  lacks a name without which a request would mean something else there), and shows its update in
+  place of its areas; a box answering no `kuvo/info` is held too, and one that says no
+  `compatibility` is used as it is. A held box's view always carries what brings it up (Update
+  Now: for this Mac's own, by the release the app carries, else `kuvo/update {now}` on that box,
+  asked first only where its `kuvo/computers` row names what's at work).
+- **Every request goes to the box**: a client refuses nothing on a box's behalf, held or not. The
+  box answers each request, or refuses it in its own words; what a client draws of a held box is
+  only what's shown. One computer's version never hides or holds another (a box from before
+  `computers` lists nothing: the app keeps the list it last had).
 - Plan limits, usage history and usage settings are the coding agents' bridge's
   (`kuvo/agents/api/kuvo/limits…`, `kuvo/agents/api/kuvo/usage…`; the Mac app asks the bridge
   itself, at `api/kuvo/…`), so they're asked of a held box too, as all of its bridge is: what

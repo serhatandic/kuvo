@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal};
+use crate::gate::Gate;
 use crate::lines;
 use crate::messages::{self, Applied, Conversation, Message, Page, ReadParts, Where};
 use crate::parts::Parts;
@@ -398,20 +399,24 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
     let mut backoff = Backoff::new(timing);
     let mut quiet = Quiet::default();
     while !stop.is_stopped() {
+        // (A box that says it's held for this client shows its update, not its sessions: its list
+        // waits, and what it is is read again in a while, to let it go once it's updated.)
+        if client.current_gate() == Gate::Unknown {
+            let _ = client.connect();
+        }
+        if let Gate::Held { missing } = client.gate() {
+            needs_listing = true;
+            latest.put(ListUpdate::Held { missing });
+            if stop.wait(timing.held_again) {
+                return;
+            }
+            let _ = client.connect();
+            continue;
+        }
         let streams = client.streams();
         let path = if streams { sessions::events_route(listing.at()) } else { sessions::route(listing.at()) };
         let mut stream = match client.open(&Request::get(path), &|closer| stop.hold(closer)) {
             Ok(stream) => stream,
-            Err(Error::NeedsUpdating { missing }) => {
-                needs_listing = true;
-                latest.put(ListUpdate::Held { missing });
-                if stop.wait(timing.held_again) {
-                    return;
-                }
-                // Asked again whether it has updated.
-                let _ = client.connect();
-                continue;
-            }
             Err(error) => {
                 stop.release();
                 if stop.is_stopped() {

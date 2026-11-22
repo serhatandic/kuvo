@@ -72,7 +72,8 @@ fn the_rust_link_pairs_with_a_real_box_asks_it_and_follows_it() {
     let boxed = BoxClient::new(LinkBox::new(client.clone(), host.clone(), "real-box"));
     let info = boxed.connect().expect("kuvo/info from the real box");
     assert_eq!((info.kind.as_str(), info.name.as_str()), ("machine", "real-box"));
-    assert_eq!(gate::missing(&info.features), Vec::<String>::new(), "this build's box has every feature this client requires");
+    let missing: Vec<&str> = gate::REQUIRED.iter().copied().filter(|name| !info.features.iter().any(|has| has == name)).collect();
+    assert_eq!(missing, Vec::<&str>::new(), "this build's box has every feature this client requires");
     assert_eq!(boxed.gate(), Gate::Open);
 
     // The box took it as a desktop, from the hello's `client`, and knows who asks.

@@ -49,13 +49,23 @@ impl BoxInfo {
     }
 }
 
-/// The box's compatibility report for display in Info and Computers.
+/// How the box says it stands with this client (`compatibility`): every client draws it as it is,
+/// the box's word alone. `missing`: what this client draws that it lacks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum Compatibility {
     Open,
-    Behind,
-    Held,
+    /// Used as it is, what it lacks drawn without.
+    Behind {
+        #[serde(default)]
+        missing: Vec<String>,
+    },
+    /// This client can't use it until it's updated.
+    Held {
+        #[serde(default)]
+        missing: Vec<String>,
+    },
+    /// It didn't say (a box from before it did).
     #[default]
     #[serde(other)]
     Unknown,
@@ -63,10 +73,14 @@ pub enum Compatibility {
 
 impl Compatibility {
     pub fn is_held(&self) -> bool {
-        matches!(self, Self::Held)
+        matches!(self, Self::Held { .. })
     }
 
     pub fn is_older(&self) -> bool {
-        matches!(self, Self::Behind | Self::Held)
+        matches!(self, Self::Behind { .. } | Self::Held { .. })
+    }
+
+    pub fn is_behind(&self) -> bool {
+        matches!(self, Self::Behind { .. })
     }
 }

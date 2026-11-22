@@ -2221,6 +2221,13 @@ impl StandIn {
         }
         let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();
         let now = state.made.unwrap_or_else(now_ms);
+        // (A box from before a bot's job fields doesn't know the route that takes them: it answers
+        // as an older box does.)
+        if method == "PATCH" && route.starts_with("kuvo/bots/") && (body.get("jobLine").is_some() || body.get("jobDetails").is_some())
+            && state.lacks.iter().any(|name| name == "bots.job-fields")
+        {
+            return answer(404, json!({}));
+        }
         if let Some((status, value)) = state.bots.answer(method, route, &|name| query(path, name).map(decoded), &body, &projects, now) {
             state.sync_bots();
             return answer(status, value);
@@ -2280,7 +2287,8 @@ impl StandIn {
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
-                let missing = kuvo_box::gate::missing(&features);
+                // (As a box says it of itself, by the list the app draws.)
+                let missing: Vec<&str> = kuvo_box::gate::REQUIRED.iter().copied().filter(|name| !features.contains(name)).collect();
                 let compatibility = if state.older { "held" } else if missing.is_empty() { "open" } else { "behind" };
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "compatibility": { "state": compatibility, "missing": missing }, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }

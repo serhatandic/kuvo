@@ -164,15 +164,18 @@ fn what_a_machine_says_wrong_is_said_plainly() {
     }
 }
 
+/// An older machine that says it's held for this client is held as it says, and still asked.
 #[test]
-fn an_older_machine_is_held() {
+fn an_older_machine_is_held_as_it_says() {
     let machine = Machine::new();
-    machine.answer("info", 200, &machine_info(json!(["sessions.list"])));
+    let mut info = machine_info(json!(["sessions.list"]));
+    info["compatibility"] = json!({ "state": "held", "missing": ["messages.send"] });
+    machine.answer("info", 200, &info);
     machine.answer("list", 200, &list());
     let client = machine.client();
-    assert!(matches!(client.session_list(None), Err(Error::NeedsUpdating { .. })));
-    // Asked only what it is.
-    assert_eq!(machine.asked().len(), 1);
+    assert!(client.session_list(None).is_ok(), "asked, and it answers");
+    assert!(client.gate().is_held());
+    assert_eq!(machine.asked().len(), 2);
 }
 
 #[test]

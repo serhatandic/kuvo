@@ -120,6 +120,8 @@ struct Served {
     ticks: Mutex<Option<Receiver<String>>>,
     closed: Arc<Mutex<bool>>,
     features: Mutex<Option<Vec<String>>>,
+    /// What its `kuvo/info` says of this client (`compatibility`), where a test says.
+    compatibility: Mutex<Option<Value>>,
     /// Once set, the next "send" it's asked drops this device's relay connection as it's taken,
     /// before its answer can go back (a network drop just then).
     drops: Mutex<Option<(Relay, keys::Address)>>,
@@ -190,7 +192,11 @@ impl Transport for Served {
         match request.route() {
             "kuvo/info" => {
                 let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect());
-                json(200, json!({ "kind": "machine", "name": "devbox", "features": features, "chats": "/home/me/chats" }))
+                let mut info = json!({ "kind": "machine", "name": "devbox", "features": features, "chats": "/home/me/chats" });
+                if let Some(compatibility) = self.compatibility.lock().unwrap().clone() {
+                    info["compatibility"] = compatibility;
+                }
+                json(200, info)
             }
             "echo" => json(200, json!({ "method": request.method, "path": request.path, "headers": request.headers, "body": request.body })),
             "big" => json(200, json!({ "text": "x".repeat(200_000) })),
@@ -365,15 +371,16 @@ fn a_box_that_started_again_is_asked_again_and_its_gate_is_read_anew() {
     // follows it opens it again), and the next read finds a new session and reads its gate anew.
     world.host.stop();
     *world.served.features.lock().unwrap() = Some(vec!["sessions.list".into()]);
+    *world.served.compatibility.lock().unwrap() = Some(json!({ "state": "held", "missing": ["messages.send"] }));
     world.host.connect();
     let mut reader = stream.reader;
     let mut line = String::new();
     let failed = (0..2).any(|_| reader.read_line(&mut line).is_err());
     assert!(failed, "the followed route failed, it didn't just end");
-    let held = boxed.send(&Request::get("echo")).expect_err("held: it's older now");
-    assert!(matches!(held, Error::NeedsUpdating { .. }), "{held:?}");
+    boxed.send(&Request::get("echo")).expect("still asked: the box answers");
+    assert!(boxed.gate().is_held(), "held, as it says now");
     assert_eq!(client.sessions_over(&host), 1);
-    assert!(world.served.seen.lock().unwrap().iter().all(|request| request.route() != "echo"), "a held box is sent nothing but what's allowed");
+    assert!(world.served.seen.lock().unwrap().iter().any(|request| request.route() == "echo"));
 }
 
 #[test]

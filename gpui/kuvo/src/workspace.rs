@@ -666,13 +666,10 @@ impl Workspace {
         workspace
     }
 
-    /// Reads the box at once, on this thread, as the follows would hand it: what it is, its lists,
-    /// and the landing composer's chips (shots and tests, against a stand-in).
+    /// The session list, read once (shots and tests, against a stand-in).
     #[cfg(feature = "stand-in")]
-    pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
-        let info = self.client.connect();
-        self.connected(info, cx);
-        let update = match self.client.session_list(None) {
+    fn read_list_at_once(&self) -> ListUpdate {
+        match self.client.session_list(None) {
             Ok(line) => {
                 let mut listing = Listing::new();
                 listing.take(line);
@@ -680,6 +677,19 @@ impl Workspace {
             }
             Err(kuvo_box::Error::NeedsUpdating { missing }) => ListUpdate::Held { missing },
             Err(error) => ListUpdate::Failed(error),
+        }
+    }
+
+    /// Reads the box at once, on this thread, as the follows would hand it: what it is, its lists,
+    /// and the landing composer's chips (shots and tests, against a stand-in).
+    #[cfg(feature = "stand-in")]
+    pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
+        let info = self.client.connect();
+        self.connected(info, cx);
+        // (As the follow does: a box that says it's held shows its update, not its sessions.)
+        let update = match self.client.gate() {
+            kuvo_box::Gate::Held { missing } => ListUpdate::Held { missing },
+            _ => self.read_list_at_once(),
         };
         self.take_list(update, cx);
         self.landing.update(cx, |composer, cx| composer.read_at_once(cx));
@@ -1437,7 +1447,7 @@ impl Workspace {
             let (title, detail) = away.map(|notice| (notice.title, notice.detail)).unwrap_or_else(|| unreached_words(&name));
             ("unreached", title, detail, false, true, Some(("Try Again".to_owned(), BlockedDo::TryAgain)))
         } else if let Some((feature, page, shows)) = self.area_feature()
-            && self.info.as_ref().is_some_and(|info| info.compatibility == kuvo_box::info::Compatibility::Behind)
+            && self.info.as_ref().is_some_and(|info| info.compatibility.is_behind())
             && !self.client.gate().has(feature)
         {
             let computer = if name == "This Mac" { "this Mac" } else { name.as_str() };

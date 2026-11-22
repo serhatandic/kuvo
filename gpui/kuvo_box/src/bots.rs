@@ -475,13 +475,6 @@ impl BoxClient {
     /// Changes a bot. Asked of a box it doesn't live on, the box holds it for that computer.
     pub fn change_bot(&self, bot: &str, change: &BotChange) -> Result<Outcome> {
         let request = Request { method: "PATCH".into(), path: format!("kuvo/bots/{bot}"), headers: Vec::new(), body: Some(change.body()) };
-        if change.job_line.is_some() || change.job_details.is_some() {
-            self.check_gate(&request)?;
-            let feature = "bots.job-fields";
-            if !self.gate().has(feature) {
-                return Err(Error::NeedsUpdating { missing: vec![feature.to_owned()] });
-            }
-        }
         self.bot_outcome(request)
     }
 

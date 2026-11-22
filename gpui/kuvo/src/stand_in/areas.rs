@@ -641,7 +641,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
             json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "reach": "away", "version": "0.8.0-beta.10", "kuvo": "0.8.0-beta.32", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "connect", "label": "Connect" }] }),
             // A Mac on an older Kuvo Code: what it answers lacks what this app needs, and it never said what's at work.
-            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": kuvo_box::gate::BASELINE, "actions": [] }),
+            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": ["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"], "actions": [] }),
         ]);
     }
     let reaches = ["connected", "connected", "away", "connecting"];
