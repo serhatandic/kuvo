@@ -18,6 +18,7 @@ import { fromPatch, unified } from "../../agents/diff"
 import { isBinary, isText, kindOf, typeOf, type Kind } from "./kinds"
 import { CopyPolicy, freeSpace, privateReasons, type NoCopy } from "./policy"
 import { inScratch } from "./turnfiles"
+import { realOf } from "./paths"
 import { budgetConfirmation } from "../../shared/artifact-budget"
 import { artifactIndexFormat, artifactSettingsFormat } from "../../shared/artifact-format"
 import { isObject } from "../../shared/json"
@@ -591,14 +592,39 @@ export class ArtifactStore {
    * `next` of the page before, an opaque cursor; `next` is null once there are no more.
    */
   list(scope: Scope, { limit = 200, before }: { limit?: number; before?: string } = {}): { artifacts: Summary[]; next: string | null } {
-    const matching = [...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before))
     const key = (artifact: Artifact) => [artifact.updated, artifact.id]
+    // Each file once, before any page is cut, so every page agrees on which one stands for it.
+    const matching = this.oneEach([...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before)), key)
     const pinned = before ? [] : matching.filter((artifact) => artifact.pinned).sort((a, b) => later(key(a), key(b)))
     const after = before?.split("|")
     const rest = matching.filter((artifact) => !artifact.pinned && (!after || later(key(artifact), after) > 0)).sort((a, b) => later(key(a), key(b)))
     const page = rest.slice(0, Math.max(0, limit - pinned.length))
     const next = rest.length > page.length && page.length ? key(page.at(-1)!).join("|") : null
     return { artifacts: [...pinned, ...page].map(summary), next }
+  }
+
+  /**
+   * One of each file: of records that are one file by two paths (reached through a link, recorded
+   * before the record named each file one way), the pinned one, else the latest changed.
+   */
+  private oneEach(artifacts: Artifact[], key: (artifact: Artifact) => string[]): Artifact[] {
+    const first = (a: Artifact, b: Artifact) => Number(!!b.pinned) - Number(!!a.pinned) || later(key(a), key(b))
+    const best = new Map<string, Artifact>()
+    for (const artifact of artifacts) {
+      const file = this.fileOf(artifact)
+      const other = best.get(file)
+      if (!other || first(artifact, other) < 0) best.set(file, artifact)
+    }
+    return best.size === artifacts.length ? artifacts : artifacts.filter((artifact) => best.get(this.fileOf(artifact)) === artifact)
+  }
+
+  /** Where each artifact's file really is (`realOf`), looked up once a run. */
+  private files = new Map<string, string>()
+
+  private fileOf(artifact: Artifact): string {
+    let file = this.files.get(artifact.id)
+    if (file === undefined) this.files.set(artifact.id, (file = realOf(artifact.path) ?? artifact.path))
+    return file
   }
 
   /**

@@ -10209,6 +10209,9 @@ the bridge as it answers (`503 {"message"}` while it isn't running).
   own browser, or this Mac's app for the browser in its panel, tells the bridge (`POST
   /api/kuvo/artifacts/noted {path, session, via: "download"}`, with the bridge's password; not a
   client's route). A download in a page you'd taken over is yours, and isn't recorded.
+- **One file, one artifact**: a file is named by its path as the conversation's folder (or the
+  bots' folder) spells it, however a tool reached it (through a link to that folder, like a
+  worktree opened at `/tmp/…`), so its versions are one artifact's.
 - **Versions**: one per turn (more edits in that turn make it `edits` more); changes with no turn
   running, within 5 minutes of each other, are one version. A file the record first sees changed
   has a version 0 (`before: true`), what it was, worked out from the change when it fits the file
@@ -10256,8 +10259,11 @@ the same chat made the version before; `restored`, it put back version `n`.
 - `GET kuvo/artifacts?<scope>[&kind=][&pinned=1][&limit=][&before=]`: `{artifacts: [summary],
   next}`, the scope's pinned ones first, then the latest changed; a summary has `versions` (how
   many) and `latest` (the newest version) in place of the list. The scope is exactly one of
-  `session=`, `bot=`, `group=` or `project=` (400 otherwise). `next`, an opaque cursor: pass it as
-  `before` for the next page; null when there are none.
+  `session=`, `bot=`, `group=` or `project=` (400 otherwise). Each file is listed once: artifacts
+  that are one file by two paths (recorded before it was named one way) list as one, the pinned one
+  or else the latest changed. Two files of the same name in different folders are two (a client
+  tells them apart by `path`). `next`, an opaque cursor: pass it as `before` for the next page;
+  null when there are none.
 - `GET kuvo/artifacts/events?<scope>`: `application/x-ndjson`, the list now (the latest 200), then
   again each time it changes.
 - `GET kuvo/artifacts/timeline?<scope>[&by=<bot>][&limit=][&before=]`: `{entries: [{artifact, version}],

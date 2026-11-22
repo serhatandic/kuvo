@@ -7,6 +7,8 @@
 //   engine and the coding agents alike), a write's path, the pictures a tool that makes them
 //   made, a picture a read brought into the conversation (a screenshot it then looked at), and
 //   Kuvo Code's own tools (show_file, show_in_panel, mark_final).
+// - A file is named as the conversation's folder (or the bots') spells it, however a tool reached
+//   it (through a link to that folder), so one file is one record.
 // - A turn runs from `session.execution.started` to its end; the message that started it is the
 //   first `session.inbox.delivered`, a wake-up's when `session.inbox.enqueued` says so.
 // - Who: the conversation's bot (its folder, its `kuvo.bot` metadata, or the bots' folders), a
@@ -19,6 +21,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unapplyExactly } from "./changes"
 import { kindOf } from "./kinds"
+import { spelledIn } from "./paths"
 import type { ArtifactStore, Made, Trigger } from "./store"
 import type { Handover } from "../library/store"
 import { attachmentNote } from "../../shared/attachment-paths"
@@ -265,7 +268,7 @@ export class Recorder {
     const context = await this.context(source, id, live, directory)
     if (!context) return
     const { made, folder } = context
-    const absolute = (path: string) => (isAbsolute(path) ? path : resolve(folder ?? "/", path))
+    const absolute = (path: string) => spelledIn(isAbsolute(path) ? path : resolve(folder ?? "/", path), [folder, this.options.bots])
     const name = toolName(call.name ?? "")
     const input = call.input ?? {}
 
@@ -286,7 +289,7 @@ export class Recorder {
         if (part?.type !== "file" || typeof part.uri !== "string" || !part.uri.startsWith("file:")) continue
         let path: string
         try {
-          path = fileURLToPath(part.uri)
+          path = absolute(fileURLToPath(part.uri))
         } catch {
           continue
         }

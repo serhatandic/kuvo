@@ -1341,6 +1341,44 @@ describe("a conversation's outputs", () => {
     expect(listed.map((each: any) => [each.name, each.kind]).sort()).toEqual([["chart.png", "image"], ["report.pdf", "document"]])
     for (const each of listed) expect(each.shown).toBeNumber()
   })
+
+  test("a file reached through a link to the project is the same output as by its own path: one row, its latest version", async () => {
+    session("ses_claude", project)
+    // The project opened through a link elsewhere (a worktree at /tmp/kuvo-ai).
+    const linked = join(root, "linked-project")
+    symlinkSync(project, linked)
+    const file = join(project, "fleet.rs")
+    writeFileSync(file, "fn one() {}\n")
+    for (const event of turn("ses_claude", "m1", claudeTool("ses_claude", "t1", "Write", { file_path: join(linked, "fleet.rs"), content: "fn one() {}\n" }))) await recorder.heard(claude, event)
+    // Then edited by its own path, a turn later.
+    writeFileSync(file, "fn one() {}\nfn two() {}\n")
+    const patch = unified("fn one() {}\n", "fn one() {}\nfn two() {}\n").patch
+    for (const event of turn("ses_claude", "m2", claudeTool("ses_claude", "t2", "Edit", { file_path: file, old_string: "", new_string: "fn two() {}\n" }, [{ type: "text", text: "" }], { files: [{ file, patch, status: "modified" }] }))) await recorder.heard(claude, event)
+    const listed = await outputs("ses_claude")
+    expect(listed.map((each: any) => [each.path, each.versions, each.latest.turn.message])).toEqual([[file, 2, "m2"]])
+  })
+
+  test("a file recorded under two paths before is listed once, the latest; paging still misses nothing and repeats nothing", async () => {
+    store = new ArtifactStore(join(root, "artifacts"), { bots, disk: () => disk })
+    const linked = join(root, "linked-project")
+    symlinkSync(project, linked)
+    const made = (at: string) => ({ by: { kind: "agent" as const, session: "ses_code" }, turn: { session: "ses_code", message: at }, via: "write", where: { session: "ses_code", project }, at: new Date(at) })
+    const names = ["a.md", "b.md", "c.md", "d.md"]
+    for (const name of names) writeFileSync(join(project, name), name)
+    // Recorded as an older record did: b.md first by the link's path, then by its own, later.
+    await store.change(join(linked, "b.md"), made("2026-11-20T09:00:00.000Z"))
+    for (const [i, name] of names.entries()) await store.change(join(project, name), made(`2026-11-20T10:0${i}:00.000Z`))
+    const whole = await outputs("ses_code")
+    expect(whole.map((each: any) => each.path)).toEqual(["d.md", "c.md", "b.md", "a.md"].map((name) => join(project, name)))
+    const seen: string[] = []
+    let before: string | null = null
+    do {
+      const { value }: { value: any } = await route("GET", `kuvo/artifacts?session=ses_code&limit=1${before ? `&before=${encodeURIComponent(before)}` : ""}`)
+      seen.push(...value.artifacts.map((artifact: any) => artifact.name))
+      before = value.next
+    } while (before)
+    expect(seen).toEqual(["d.md", "c.md", "b.md", "a.md"])
+  })
 })
 
 describe("the routes", () => {
