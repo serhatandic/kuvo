@@ -8,9 +8,13 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AccountRefresh } from "../../src/agents/account-refresh"
+import type { Agent } from "../../src/agents/agent"
+import { subscribe } from "../../src/agents/events"
 import { UsageAccounts } from "../../src/usage/accounts"
 import { agentAccounts, Limits, limitsRoutes, type AccountLimits } from "../../src/usage/limits"
 import { LimitResets } from "../../src/usage/limits-resets"
+import { UsageSettings } from "../../src/usage/settings"
 import { agentPrograms, keepJSON } from "./support/agent-programs"
 
 const NOW = Date.parse("2026-11-22T09:00:00.000Z")
@@ -72,6 +76,51 @@ test("a Codex account signed out in its folder shows nothing to read, and Codex 
   const limits = new Limits(() => agentAccounts([accounts.source("codex", "codex-cli", { id: "default", home })]), undefined, () => NOW)
   expect((await refresh(limits)).map(each => each.windows)).toEqual([[]])
   expect(programs.asked()).toEqual([])
+})
+
+test("Codex publishes its limits immediately after sign-in and reports the first later threshold crossing", async () => {
+  const root = folder()
+  const programs = agentPrograms(join(root, "programs"))
+  const home = join(root, "home")
+  const accounts = new UsageAccounts(root, { programs, codexKeychain: async () => undefined })
+  const source = accounts.source("codex", "codex-cli", { id: "default", home })
+  let signedIn = false
+  let now = NOW
+  const limits = new Limits(() => signedIn ? agentAccounts([source]) : [], undefined, () => now)
+  limits.settings = new UsageSettings()
+  limits.settings.change({ notifications: { underTenPercent: true, healthyToClose: false, closeToRunningOut: false } })
+  const refresh = new AccountRefresh(limits, () => now, (_provider, known) => { signedIn = known })
+  const agent: Agent = {
+    ...source, id: "codex", name: "Codex", methods: () => [],
+    account: async () => ({ installed: true, signedIn: Boolean(source.limits?.signIn?.()) }),
+    models: async () => [],
+    thread: () => { throw new Error("The account should publish before starting any conversation.") },
+  }
+  const updates: unknown[] = []
+  const stop = subscribe(event => {
+    if (event.type === "kuvo.limits.updated") updates.push(event.data)
+  })
+  try {
+    await limits.tick()
+    expect(limits.rows()).toEqual([])
+    codexSignIn(home, "acct-1")
+    codexUsage(home, "acct-1", 50)
+    await refresh.signedIn(agent)
+    expect(updates.at(-1)).toMatchObject({
+      accounts: [{ windows: expect.arrayContaining([expect.objectContaining({ id: "primary", used: 0.5, resetsAt: NOW + 3_600_000 })]) }],
+      notices: [],
+    })
+
+    now += 60_000
+    codexUsage(home, "acct-1", 99)
+    await limits.readAgain(agent.providerID)
+    expect(updates.at(-1)).toMatchObject({ notices: expect.arrayContaining([expect.objectContaining({
+      service: "codex", milestone: "underTenPercent", resetsAt: NOW + 3_600_000,
+    })]) })
+  } finally {
+    stop()
+    limits.stop()
+  }
 })
 
 test("a Codex reset credit is spent through Codex: the soonest to expire, once, as the journal's request, even confirmed twice", async () => {

@@ -109,6 +109,7 @@ export function antigravitySubagents(args: any): SubagentTask[] {
   }
   if (!Array.isArray(list)) return []
   return list.map((subagent: any) => ({
+    ...(typeof subagent?.Model === "string" && subagent.Model.trim() ? { requestedModel: subagent.Model.trim() } : {}),
     title: String(subagent?.Role ?? subagent?.TypeName ?? "A subagent's task"),
     prompt: typeof subagent?.Prompt === "string" ? subagent.Prompt : undefined,
     agent: typeof subagent?.TypeName === "string" && subagent.TypeName !== "self" ? subagent.TypeName : undefined,

@@ -484,6 +484,27 @@ async function run(events: [string, any][], session: { agent?: string; permissio
   return id
 }
 
+test("Codex keeps a model's limit and reset from the matching usage window", async () => {
+  const error = { codexErrorInfo: "usageLimitExceeded", message: "The model reached its usage limit." }
+  const id = await run([
+    ["account/rateLimits/updated", { rateLimits: { limitId: "test", normalModelSlug: "gpt-test", primary: { usedPercent: 100, resetsAt: 1900000000 } } }],
+    ["account/rateLimits/updated", { rateLimits: { limitId: "test", normalModelSlug: null, primary: null, secondary: null } }],
+    ["turn/completed", { turn: { id: "u1", status: "failed", error } }],
+    untilStopped,
+  ])
+  expect(sessions.messages(id).find((message) => message.type === "idle")).toMatchObject({
+    outcome: "failed", error: { type: "limit", limit: { scope: "model", resetsAt: 1900000000000 } },
+  })
+})
+
+test("a Codex subagent names its resolved model from the spawn activity", async () => {
+  const id = await run([
+    ["item/completed", { item: { type: "subAgentActivity", id: "sa1", kind: "started", agentThreadId: "t2", agentPath: "/root/worker", model: "gpt-worker" } }],
+  ])
+  const [child] = sessions.list(undefined, id)
+  expect(child.metadata?.kuvo).toMatchObject({ ranOn: "gpt-worker" })
+})
+
 const steps = (id: string) => sessions.messages(id).filter((message: any) => message.type === "assistant") as any[]
 const tools = (id: string) => sessions.messages(id).flatMap((message: any) => (message.type === "assistant" ? message.content.filter((content: any) => content.type === "tool") : []))
 const notices = (id: string) => sessions.messages(id).flatMap((message: Message) => (message.type === "synthetic" ? [(message as { text: string }).text] : []))

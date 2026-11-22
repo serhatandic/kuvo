@@ -133,6 +133,19 @@ describe("what counts as handed over", () => {
     expect(store.at(code)).toBeDefined()
   })
 
+  for (const folder of [".agents", ".codex", ".cursor", ".gemini", ".grok"]) {
+    test(`files inside ${folder}/skills stay out of the Library`, async () => {
+      session("ses_code", project)
+      const notes = file(join(project, folder, "skills", "review", "references", "skills", "notes.md"), "# References")
+      const report = file(join(project, "skills", "report.md"), "# Report")
+      await hear(turn("ses_code", "msg_1", [
+        ...tool("ses_code", "msg_a", "c1", "show_file", { path: notes }),
+        ...tool("ses_code", "msg_a", "c2", "show_file", { path: report }),
+      ]))
+      expect(await names()).toEqual(["report.md"])
+    })
+  }
+
   test("a page it built is named by its title, and a subagent's is its parent's, at the turn", async () => {
     session("ses_code", project)
     session("ses_child", project, { parentID: "ses_code" })

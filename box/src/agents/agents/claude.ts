@@ -1003,6 +1003,7 @@ class ClaudeThread implements Thread {
     this.subagents = await subagentsFor(this.session.location.directory)
     const subagents = claudeSubagents(this.subagents)
     const subagentsKey = JSON.stringify(subagents)
+    if (hooks.signal.aborted) return { outcome: "interrupted" }
     const usage = this.usageGeneration
     const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.()
     // (What it left going in the background ends with it: this message says so.)
@@ -1018,6 +1019,7 @@ class ClaudeThread implements Thread {
     // (Those set right since the relay stood in for them first, so their addresses are new.)
     const serversNow = await serversKey(this.session.id, computer)
     const servers = relayedServers(this.session.id, this, this.session.location.directory, computer)
+    if (hooks.signal.aborted) return { outcome: "interrupted" }
     const opening = !this.query
     if (opening) {
       this.open(sdk, modelID, effort, input.plan, append, hooks, skills, subagents)
@@ -2222,9 +2224,10 @@ class ClaudeThread implements Thread {
     // Its words for a limit, when it stopped: "Claude AI usage limit reached|<when it resets>".
     const text = !succeeded && typeof result.result === "string" ? result.result : ""
     const reached = /usage limit reached\|?(\d+)?/i.exec(text)
-    if (!succeeded && !active.limit && (reached || result.api_error_status === 429)) {
+    if (!succeeded && (reached || result.api_error_status === 429)) {
       const resetsAt = reached?.[1] ? Number(reached[1]) * 1000 : undefined
-      active.limit = { scope: "provider", resetsAt }
+      active.limit ??= { scope: "provider" }
+      active.limit.resetsAt ??= resetsAt
       active.problem ??= "You've reached your Claude usage limit for now."
     }
     if (active.limit && !active.stopping) {

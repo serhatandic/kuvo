@@ -13,6 +13,7 @@ export interface ListedWork {
   outcome?: string;
   model?: WorkSession["model"];
   ranOn?: string;
+  requestedModel?: string;
   bot?: string;
   starter?: string;
   depth?: number;
@@ -32,10 +33,12 @@ export function listedWork(data: Listed["data"]): ListedWork | undefined {
   if (bot || (data.parentID && !isHiddenRun(data))) {
     const model = data.model;
     const ranOn = data.metadata?.kuvo?.ranOn;
+    const requestedModel = data.metadata?.kuvo?.requestedModel;
     row = {
       idle: data.time?.idle, outcome: data.outcome,
       ...(model?.id && model.providerID ? { model: { id: model.id, providerID: model.providerID, ...(model.variant ? { variant: model.variant } : {}) } } : {}),
       ...(data.parentID && typeof ranOn === "string" && ranOn.trim() ? { ranOn: ranOn.trim() } : {}),
+      ...(data.parentID && typeof requestedModel === "string" && requestedModel.trim() ? { requestedModel: requestedModel.trim() } : {}),
     };
     if (bot && starter) {
       const answered = answersOn(data.metadata);

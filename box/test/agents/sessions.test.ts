@@ -2231,7 +2231,7 @@ process.stdin.on("data", (chunk) => {
     const brain = join(folder, "brain")
     const turnOne = [
       { source: "USER_EXPLICIT", type: "USER_INPUT", content: "spawn two" },
-      { type: "PLANNER_RESPONSE", tool_calls: [{ name: "invoke_subagent", args: { Subagents: JSON.stringify([{ Role: "Timer Worker 1", TypeName: "self", Prompt: "Wait, then say hi" }, { Role: "Timer Worker 2", TypeName: "self", Prompt: "Wait too" }]) } }] },
+      { type: "PLANNER_RESPONSE", tool_calls: [{ name: "invoke_subagent", args: { Subagents: JSON.stringify([{ Role: "Timer Worker 1", TypeName: "self", Prompt: "Wait, then say hi", Model: "gemini-flash" }, { Role: "Timer Worker 2", TypeName: "self", Prompt: "Wait too" }]) } }] },
       { type: "INVOKE_SUBAGENT", content: 'Created the following subagents:\n{ "conversationId":  "c1" }\n{ "conversationId":  "c2" }' },
       { type: "PLANNER_RESPONSE", content: "Started them." },
     ]
@@ -2267,6 +2267,8 @@ process.stdin.on("data", (chunk) => {
       ["subagent", "Timer Worker 2"],
     ])
     const [first, second] = rows.map((row: any) => row.state.metadata.sessionID)
+    expect(sessions.get(first).metadata?.kuvo).toMatchObject({ requestedModel: "gemini-flash" })
+    expect((sessions.get(first).metadata?.kuvo as any).ranOn).toBeUndefined()
     expect(sessions.messages(first)[0]).toMatchObject({ type: "user", text: "Wait, then say hi" })
     const tools = sessions.messages(first).flatMap((message: any) => (message.type === "assistant" ? message.content.filter((content: any) => content.type === "tool") : []))
     expect(tools.map((tool: any) => [tool.name, tool.state.status])).toEqual([
@@ -2895,10 +2897,11 @@ process.stdin.on("data", (chunk) => {
       { providerID: "alpha", modelID: "one" },
       { providerID: "beta", modelID: "one" },
     ])
+    auto.hold({ providerID: "unrelated", modelID: "one" }, { scope: "provider", resetsAt: 1899990000000 })
     a.script = limited("provider")
     b.script = async (input, turn, hooks, thread) => {
       const result = await limited("provider")(input, turn, hooks, thread)
-      return { ...result, limit: { scope: "provider", resetsAt: Date.now() + 3_600_000 } }
+      return { ...result, limit: { scope: "provider", resetsAt: 1900000000000 } }
     }
     const id = create({ providerID: "auto", id: "auto" })
     send(id, "do it")
@@ -2907,6 +2910,10 @@ process.stdin.on("data", (chunk) => {
     expect(idle.outcome).toBe("failed")
     expect(idle.error?.message).toContain("Every model in your Custom Auto list is at a usage limit")
     expect(idle.error?.message).toContain("the first resets at")
+    expect(idle.error?.limit).toEqual({ scope: "model", resetsAt: 1900000000000 })
+    send(id, "try again")
+    await settled(id, 2)
+    expect(idles(id)[1].error?.limit).toEqual(idle.error?.limit)
   })
 
   test("a signed-out agent is skipped", async () => {

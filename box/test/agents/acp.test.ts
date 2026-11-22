@@ -2,6 +2,8 @@
 // it asks is answered as the session's rules and modes say; Stop stops it; what it costs is counted.
 
 import "../safety"
+import type { EngineLink } from "../../src/agents/engine"
+import { setSkillSource } from "../../src/agents/skills"
 import { compactionFile } from "../../src/shared/context"
 import { writePrivate } from "../../src/shared/files"
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
@@ -741,6 +743,32 @@ describe("What ACP agents ask", () => {
     }
   })
 })
+
+for (const kind of ["Grok", "Antigravity"]) {
+  test(`stopping during the skills lookup keeps ${kind} from launching`, async () => {
+    const began = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const engine = { ready: true, request: async (_method: string, path: string) => {
+      if (path === "/api/skill") { began.resolve(); await release.promise }
+      return { data: [] }
+    } } as unknown as EngineLink
+    setSkillSource(engine, root)
+    try {
+      const script = fakeAcp([said("Done.")])
+      const agent = kind === "Grok" ? new TestGrok(program(script, join(root, "grok")), root) : new TestAntigravity(script, root)
+      const id = start(agent)
+      await began.promise
+      await sessions.interrupt(id)
+      release.resolve()
+      await settled(id)
+      expect(ended(id)).toMatchObject({ outcome: "interrupted" })
+      expect(launches()).toEqual([])
+    } finally {
+      release.resolve()
+      setSkillSource(undefined, undefined)
+    }
+  })
+}
 
 // MARK: Your subagents
 

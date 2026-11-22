@@ -7,6 +7,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.
+- Stop cancels startup before Claude Code, Grok, Antigravity or Cursor can start on a message you canceled. Cursor also closes an agent that finishes starting after Stop.
+- Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
+- Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
+- The Library leaves out files from coding agents’ project skill folders.
 
 - A conversation on another computer no longer freezes on an old "Working…" step: its steps, replies, asks and queue keep arriving as they happen, through a restart of that computer or a slow connection, and what you missed while the connection was down fills in once it's back. A computer shows as offline only after it has been silent for 30 seconds, not when one answer is slow, and what it asks you stays on screen while it restarts.
 - A message waiting over the composer always has its actions, even while it's still on its way: Remove and Edit take it out as soon as it arrives, or say it was already sent.

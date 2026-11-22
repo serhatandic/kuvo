@@ -266,6 +266,8 @@ export interface SubagentTask {
   prompt?: string
   /** The kind of agent it is, when the agent names one ("Explore"). */
   agent?: string
+  /** The model the parent asked for, when the agent has not confirmed which ran. */
+  requestedModel?: string
   /** Its session from before, when the agent gives the same subagent more to do. */
   sessionID?: string
   /** Sent off to work in the background: its session goes on after the turn that started it. */
