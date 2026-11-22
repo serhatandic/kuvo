@@ -43,7 +43,12 @@ agents, so the agent's own folder is fine there too. The old folders move over o
 2. **One sign-in path per agent.** Codex gets no "Connect with ChatGPT" managed-renewal path.
 3. **Antigravity** uses a private `GEMINI_HOME` from the first account, as T3 does.
 4. **The sandbox (Auto mode only):** the agent's own folder is opened to it, read and write. Full
-   Access sessions run outside the sandbox anyway.
+   Access sessions run outside the sandbox anyway. The sandbox only guards against accidents, so
+   on a Mac Apple's `security` tool may write your login Keychain inside it (the keychain file and
+   the copy it saves beside it, nothing else): Claude Code renews its sign-in there itself, with no
+   plaintext fallback and no stale item (lead's decision, 22 November 2026). That tool could also
+   remove items or the keychain: accepted for the same reason. On Linux, Landlock grants the
+   agent's own folder whole (`~/.claude`'s `.credentials.json` is renewed there).
 
 ## Sign-in, renewal and usage
 
@@ -125,7 +130,10 @@ The box's path that copied a sign-in into Kuvo's folder goes, along with any fir
 - Done: Kuvo's own ChatGPT usage and reset-credit requests for Codex accounts (the engine's `openai`
   sign-in keeps its own). The direct xAI billing request and "sign-in has lapsed" case for Grok
   accounts. The machine-only first-account folders (`managedDefaults`, `yourHomes`).
-- Next: Claude on a Mac: `setup-token`, `agents/claude/tokens`, the Console folder, the
-  `CLAUDE_CODE_OAUTH_TOKEN` it set, the token-based usage probe and the terminal-screen scraping in
-  `signin.ts`. Antigravity: the pinned 1.3.0 download, `AGY_ACP_FORCE_FILE_STORAGE`, and the ACP
-  token file. Onboarding's sign-in copy.
+- Done: Claude on a Mac: `setup-token`, the Console folder as Kuvo's own (an earlier one is now an
+  added account, `claude-compat.ts`), the `CLAUDE_CODE_OAUTH_TOKEN` it set (but an earlier token,
+  until your own sign-in is there), the token-based usage read and the terminal-screen scraping in
+  `signin.ts`. Claude's resets still read Claude Code's `.credentials.json` where it keeps one
+  (Linux): Claude Code has no reset request to ask.
+- Next: Antigravity: the pinned 1.3.0 download, `AGY_ACP_FORCE_FILE_STORAGE`, and the ACP token
+  file. Onboarding's sign-in copy.

@@ -1,5 +1,6 @@
 import { writePrivate } from "../files";
 import { compactionChoice, compactionChoices, compactionFile, isCompactionChoice } from "../../shared/context";
+import { agentsUpdateThemselves, agentUpdatesFile } from "../../shared/agent-updates";
 import { queuedRefusal } from "../server/context";
 // `kuvo/settings`: this box's settings as it describes them (PROTOCOL.md, "A box's settings"), so
 // every client draws each of them by its kind, with the box's words: its sections, each section's
@@ -771,6 +772,11 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
     ...(devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}),
   }));
   const groups: SettingGroup[] = [{ id: "computer", rows }];
+  // The coding agents' own updaters: off, Kuvo turns them off and says when there's a new version.
+  groups.push({ id: "agents", title: "Coding Agents", rows: [row({
+    id: "agents-update", title: "Update coding agents automatically", kind: "switch", value: agentsUpdateThemselves(K), can: true,
+    line: "Off: each agent keeps its version until you update it in Accounts. On: agents update themselves as they run.",
+  })] });
 
   // What macOS allows the program a Mac's own agents run under: only there.
   const permissions = await computerFacts.permissions();
@@ -795,6 +801,11 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
 const updateAnswer = (context: RouteContext) => updateRoute(context);
 
 async function computerChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  if (at.id === "agents-update") {
+    if (typeof value !== "boolean") return { status: 400, message: "Turn it on or off." };
+    if (value !== agentsUpdateThemselves(K)) writePrivate(agentUpdatesFile(K), JSON.stringify(value));
+    return null;
+  }
   if (at.id !== "devices") return { status: 400, message: "That isn't something to change." };
   try {
     return (await computerFacts.letDevices(value === true)) ? null : { status: 409, message: "This copy of Kuvo has no relay for your devices to connect through." };
@@ -857,7 +868,7 @@ const PAGES: Record<string, Section> = {
   mcp: mcpSection,
   "custom-auto": customAutoSection,
   skills: skillsSection,
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(agentUpdatesFile(K))} ${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 
 // Told as a change is made here, so a page followed shows it at once.

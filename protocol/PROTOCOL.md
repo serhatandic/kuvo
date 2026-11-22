@@ -11510,7 +11510,10 @@ programs or package sources (`.bunfig.toml`, `.docker/cli-plugins`, `.config/gh`
 `.gemrc`, `.gnupg`…); on Linux systemd's, autostart's and environment.d's folders and the desktop's
 start-up files; on macOS `~/Library` but its `Caches`, `Developer`, `Logs`, iCloud Drive and
 provisioning profiles (`homeKept`, `homeOpen`), and the window and key tools' settings (Hammerspoon, Karabiner, skhd,
-yabai, AeroSpace, SketchyBar). Your personal folders (`personal`: on macOS Desktop, Documents,
+yabai, AeroSpace, SketchyBar). Your login Keychain (`~/Library/Keychains/login.keychain-db`,
+`loginKeychains`) is written by Apple's `security` tool alone (its file and the copy it saves
+beside it, `.sb-<hex>-<random>`), so an agent renews its own sign-in kept there (Claude Code's);
+nothing else writes it. Your personal folders (`personal`: on macOS Desktop, Documents,
 Downloads, Pictures, Movies, Music and iCloud Drive; on Linux those `~/.config/user-dirs.dirs` names)
 only take new files on macOS (no `file-write-data`, `-unlink`, `-mode` or `-flags`: a file's own
 first open still writes it), and are only read on Linux, where Landlock can't tell a new file from

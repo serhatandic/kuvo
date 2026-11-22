@@ -223,7 +223,6 @@ class UpdateAntigravity extends AntigravityAgent {
 /** One bridge's agent of `kind` and its sessions, over the session store in `folder`, as a bridge starts with them. */
 export function bridge(kind: Kind, folder: string, launcher: string, held: Map<string, HeldTurn> = new Map()): { agent: Agent; sessions: Sessions } {
   // (Claude Code's own sign-in, as on a machine.)
-  ClaudeAgent.keychain = false
   const agent: Agent = kind === "codex" ? new UpdateCodex(launcher, folder) : kind === "claude" ? new UpdateClaude(launcher, folder) : kind === "grok" ? new UpdateGrok(launcher, folder) : new UpdateAntigravity(folder)
   const roster = { find: (id: string | undefined) => (id === agent.providerID ? agent : undefined), all: () => [agent] } as unknown as Roster
   const sessions = new Sessions(new Store(join(folder, "sessions")), roster, new Auto(folder), undefined, undefined, undefined, undefined, undefined, held)

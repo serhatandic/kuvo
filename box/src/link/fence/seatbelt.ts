@@ -150,6 +150,12 @@ export function seatbeltProfile(policy: FencePolicy, options: SeatbeltOptions): 
   // your PATH.)
   allow(WRITE, ...policy.writable.filter(folder => policy.readOnly.some(wall => folder.startsWith(wall + "/"))).map(subpath));
   allowGiven(true);
+  // Your login Keychain, where an agent keeps its own sign-in (Claude Code's) and renews it as it
+  // runs: written only by Apple's `security` tool, which saves the whole file anew beside it
+  // (`login.keychain-db.sb-<hex>-<random>`) and moves it into place; nothing else writes it. (The
+  // sandbox is a guard against accidents: that tool could still remove items, or the keychain.)
+  allow(WRITE, ...(policy.loginKeychains ?? []).map(file =>
+    `(require-all ${regex(`^${escapeRegex(file)}(\\.sb-[0-9a-f]+-[A-Za-z0-9]+)?$`)} (vnode-type REGULAR-FILE) (signing-identifier "com.apple.security"))`));
 
   // What's in them is neither read (nor listed) nor written; a path through them is still looked up,
   // so a command can go to its own folder inside them. (A carve-out overrides a refusal only of

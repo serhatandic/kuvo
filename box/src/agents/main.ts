@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameS
 import { basename, dirname, join } from "node:path"
 import { format } from "node:util"
 import { Accounts, adoptOwnFolders, parseProvider } from "./accounts"
+import { adoptConsoleFolder } from "./claude-compat"
 import { Auto } from "./auto"
 import { Deps } from "./deps"
 import { EngineAgent, EngineLink } from "./engine"
@@ -209,6 +210,8 @@ const context = { home, temporary, deps }
 // Each agent's first account is its own folder now, on Linux too: an earlier bridge's moved there.
 const accounts = new Accounts(home)
 adoptOwnFolders(home, accounts)
+// And on a Mac, an earlier version's Anthropic Console sign-in becomes an account you added.
+if (process.platform === "darwin") adoptConsoleFolder(home, accounts)
 const roster = new Roster(accounts, context)
 const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)

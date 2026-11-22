@@ -433,24 +433,6 @@ exit 1
     }
   })
 
-  test("a command that prints its page and takes a code only in a terminal (claude setup-token): run in one, the code typed with Return", async () => {
-    const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-signin-"))
-    try {
-      const script = join(folder, "terminal-only")
-      writeFileSync(script, `#!/bin/sh\n[ -t 0 ] || exit 3\nprintf 'Use the url below\\nhttps://example.com/terminal?redirect=platform\\n\\nPaste code here if prompted > '\nIFS= read -r code\n[ "$code" = "$(printf '\\033[200~good\\033[201~')" ] && echo signed > "${join(folder, "account")}"\n`)
-      chmodSync(script, 0o755)
-      const sign = await commandSignIn({
-        command: script, args: [], home: folder, temporary: folder, instructions: "Finish on the page.", terminal: true, printedPage: true,
-        codePrompt: /Paste code here if prompted\s*>\s*/g, signedIn: async () => existsSync(join(folder, "account")),
-      })
-      expect(sign.url).toBe("https://example.com/terminal?redirect=platform")
-      await sign.complete!("good")
-      expect((await settled(sign)).status).toBe("complete")
-    } finally {
-      rmSync(folder, { recursive: true, force: true })
-    }
-  })
-
   test("opens the page handed to the browser, not the one printed first", async () => {
     const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-signin-"))
     try {

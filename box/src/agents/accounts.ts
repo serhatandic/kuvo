@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import { additiveListFormat, UnsupportedFormatVersion } from "../shared/format-version"
 
 export type AgentKind = "claude" | "codex" | "cursor" | "grok" | "antigravity"
@@ -30,6 +30,9 @@ export interface AccountRecord {
   id: string
   /** What you called it ("Work"); an added account without one goes by its sign-in. */
   label?: string
+  /** COMPAT(0.8 Claude on a Mac): its folder, within the bridge's, where an earlier version kept it
+   * (claude-compat.ts); else `<agent>/accounts/<id>`. */
+  folder?: string
 }
 
 /** One account as an agent runs it. */
@@ -64,7 +67,7 @@ export class Accounts {
   private read(): AccountRecord[] {
     try {
       const saved = accountFormat.read(JSON.parse(readFileSync(this.file, "utf8"))) as AccountRecord[]
-      return saved.filter((record) => kinds.includes(record?.kind) && record?.id && record.id !== "default")
+      return saved.filter((record) => kinds.includes(record?.kind) && record?.id && record.id !== "default" && (record.folder === undefined || (typeof record.folder === "string" && !isAbsolute(record.folder) && !record.folder.split(/[\\/]/).includes(".."))))
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion) throw error
       return []
@@ -82,12 +85,13 @@ export class Accounts {
 
   /** The folder an added account is kept in; none for the first, which is the agent's own. */
   home(record: AccountRecord): string | undefined {
-    return record.id === "default" ? undefined : join(this.root, record.kind, "accounts", record.id)
+    if (record.id === "default") return undefined
+    return record.folder ? join(this.root, record.folder) : join(this.root, record.kind, "accounts", record.id)
   }
 
-  add(kind: AgentKind, label?: string): AccountRecord {
+  add(kind: AgentKind, label?: string, folder?: string): AccountRecord {
     const records = this.read()
-    const record: AccountRecord = { kind, id: randomBytes(4).toString("hex"), label: label?.trim() || undefined }
+    const record: AccountRecord = { kind, id: randomBytes(4).toString("hex"), label: label?.trim() || undefined, ...(folder ? { folder } : {}) }
     mkdirSync(this.home(record)!, { recursive: true, mode: 0o700 })
     this.save([...records, record])
     return record

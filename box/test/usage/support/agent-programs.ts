@@ -1,11 +1,14 @@
 // Stand-ins for the coding agents' own programs, as the usage reader and the bridge run them:
-// `codex app-server` (JSON-RPC lines) and `grok agent stdio` (ACP), each answering from the folder
-// it's given (CODEX_HOME, GROK_HOME), as the real ones read their sign-in there, and `codex logout`
-// / `grok logout`. What each was asked is written to `asked.jsonl` beside them.
+// `codex app-server` (JSON-RPC lines), `grok agent stdio` (ACP) and Claude Code's stream-json
+// control requests (`initialize`, `get_usage`), each answering from the folder it's given
+// (CODEX_HOME, GROK_HOME, CLAUDE_CONFIG_DIR, else `~/.claude`), as the real ones read their sign-in
+// there, and `codex logout` / `grok logout` / `claude auth logout`. What each was asked is written
+// to `asked.jsonl` beside them.
 //
 // In a folder: `<folder>/auth.json` is its sign-in (Codex's `tokens.account_id` says who);
-// `<folder>/usage.json` is Codex's answer to `account/rateLimits/read`, by account (`*`: any);
-// `<folder>/billing.json` is Grok's answer to `_x.ai/billing`.
+// `<folder>/usage.json` is Codex's answer to `account/rateLimits/read`, by account (`*`: any), or
+// Claude Code's to `get_usage` (none: it isn't signed in); `<folder>/billing.json` is Grok's
+// answer to `_x.ai/billing`.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -16,15 +19,35 @@ const { join } = require("node:path")
 const [program, ...args] = process.argv.slice(2)
 const log = process.env.STAND_IN_LOG_FILE
 const note = (entry) => appendFileSync(log, JSON.stringify(entry) + "\n")
-const home = program === "codex" ? process.env.CODEX_HOME : process.env.GROK_HOME
+const home = program === "codex" ? process.env.CODEX_HOME : program === "grok" ? process.env.GROK_HOME : (process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME, ".claude"))
 const read = (name) => { try { return JSON.parse(readFileSync(join(home, name), "utf8")) } catch { return undefined } }
-if (args[0] === "logout") { note({ program, home, args }); process.exit(0) }
+if (args[0] === "logout" || (args[0] === "auth" && args[1] === "logout")) { note({ program, home, args }); process.exit(0) }
+if (program === "claude") {
+  let pending = ""
+  process.stdin.on("data", (chunk) => {
+    pending += chunk
+    let end
+    while ((end = pending.indexOf("\n")) >= 0) {
+      const line = pending.slice(0, end); pending = pending.slice(end + 1)
+      if (!line.trim()) continue
+      const { type, request_id, request } = JSON.parse(line)
+      if (type !== "control_request") continue
+      note({ program, home, method: request.subtype, params: request, ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { token: true } : {}) })
+      // (Read only when asked for it: a test can hold the answer by making it a pipe.)
+      const usage = request.subtype === "get_usage" ? read("usage.json") : undefined
+      const reply = request.subtype === "initialize" ? { subtype: "success", request_id, response: {} }
+        : request.subtype === "get_usage" && usage ? { subtype: "success", request_id, response: usage }
+        : { subtype: "error", request_id, error: request.subtype === "get_usage" ? "Not logged in · Please run /login" : "Unknown request" }
+      process.stdout.write(JSON.stringify({ type: "control_response", response: reply }) + "\n")
+    }
+  })
+}
 const jsonrpc = program === "grok"
 let authenticated = false
 const consumed = new Set()
 const answer = (id, result, error) => process.stdout.write(JSON.stringify({ ...(jsonrpc ? { jsonrpc: "2.0" } : {}), id, ...(error ? { error } : { result }) }) + "\n")
 let buffer = ""
-process.stdin.on("data", (chunk) => {
+if (program !== "claude") process.stdin.on("data", (chunk) => {
   buffer += chunk
   let end
   while ((end = buffer.indexOf("\n")) >= 0) {
@@ -53,6 +76,7 @@ process.stdin.on("data", (chunk) => {
 `
 
 export interface AgentPrograms {
+  claude: string
   codex: string
   grok: string
   /** What each was asked, in order. */
@@ -72,6 +96,7 @@ export function agentPrograms(folder: string): AgentPrograms {
     return path
   }
   return {
+    claude: program("claude"),
     codex: program("codex"),
     grok: program("grok"),
     asked: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),

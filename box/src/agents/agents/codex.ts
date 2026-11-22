@@ -22,6 +22,7 @@ import { elicitationField } from "../forms"
 import { newID } from "../ids"
 import { onMachine, ownFoldersConfig } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
+import { agentsUpdateThemselves } from "../../shared/agent-updates"
 import { codexProgram } from "../../shared/agent-programs"
 import { run } from "../proc"
 import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } from "../../usage/limits"
@@ -421,7 +422,8 @@ export class CodexAgent implements Agent {
     const directory = key === ACCOUNT ? this.accountFolder() : (thread?.session.location.directory ?? this.home)
     const fence = key === SHARED ? undefined : this.fenced(directory, key === ACCOUNT ? undefined : key, seatBot(thread?.session))
     if (key !== SHARED && !fence) throw new Error("Codex runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
-    const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`])]
+    // Its own updater off, unless you let the agents update themselves (Settings › Computer).
+    const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`]), ...(agentsUpdateThemselves() ? [] : ["-c", "check_for_update_on_startup=false"])]
     const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
     const argv = fence ? [fence.command, ...args] : [executable, ...args]
     const cwd = fence ? directory : this.context.temporary
