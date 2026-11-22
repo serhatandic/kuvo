@@ -162,7 +162,14 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
             revisions.push(revision);
         }
     }
-    if conversation.running {
+    // One sign of work at a time: while the last steps line spins (a tool running, thinking under
+    // way), it says what's going on, and "Working…" under it would be a second spinner.
+    let step_under_way = matches!(rows.last(), Some(Entry::Steps { items, .. }) if items.iter().any(|(step, n)| match &step.content[*n] {
+        Content::Tool { state, .. } => call_status(state).0,
+        Content::Reasoning { done, .. } => !done,
+        _ => false,
+    }));
+    if conversation.running && !step_under_way {
         // BOX-NEEDED: the working row's words for a run that isn't a summary ("Working…"); only a
         // summary's come from the box so far (`workingTitle`, `GET api/session/<id>/message`).
         rows.push(Entry::Working { title: summarizing.unwrap_or_else(|| "Working…".to_owned()) });
@@ -2096,7 +2103,8 @@ mod tests {
         conversation.catch_up(newest_first, None, &[], Some(true));
         let (later, later_revisions) = entries(conversation);
         assert_eq!(keys(&rows), ["u1", "a", "working"]);
-        assert_eq!(keys(&later), ["u1", "a", "working"]);
+        // (Its command running, the group's line is the sign of work: no Working… under it.)
+        assert_eq!(keys(&later), ["u1", "a"]);
         assert!(later_revisions[1] > revisions[1], "drawn again");
         assert!(matches!(&later[1], Entry::Steps { items, .. } if items.len() == 2));
     }

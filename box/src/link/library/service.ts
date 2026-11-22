@@ -4,15 +4,13 @@
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
-import { readdir } from "node:fs/promises"
-import { artifactDisk } from "../server/disk-worker"
 import { fileURLToPath } from "node:url"
 import { readSavedSessionHeaders, readSavedSessions } from "../../agents/store"
 import type { ArtifactStore } from "../artifacts/store"
 import { copyLimit } from "../artifacts/store"
 import { attachedPaths, toolName } from "../artifacts/recorder"
 import { libraryRoutes, type LibraryHost } from "./routes"
-import { LibraryStore, type Handover, type Item } from "./store"
+import { LibraryStore, type LibrarySnapshot, type Handover, type Item } from "./store"
 import { Thumbnails } from "./thumbnails"
 
 /** What the first start fills the Library from, once: bumped, it's filled again (what's there stays). */
@@ -30,8 +28,8 @@ export interface LibraryOptions {
   platform?: NodeJS.Platform
 }
 
-export function libraryService(root: string, options: LibraryOptions) {
-  const store = new LibraryStore(root, { bots: options.bots })
+export function libraryService(root: string, options: LibraryOptions, prepared?: LibrarySnapshot) {
+  const store = new LibraryStore(root, { bots: options.bots }, prepared)
   const thumbnails = new Thumbnails(join(root, "thumbnails"), options.platform)
   const described = new Map<string, { name: string | undefined; look: Record<string, unknown> | undefined; at: number }>()
   /** A bot's name and look as its folder describes it (read again after a while: it can be renamed). */
@@ -85,12 +83,6 @@ export function libraryService(root: string, options: LibraryOptions) {
     handed: (handover: Handover) => void store.hand(handover),
     /** Filled once from the coding agents' saved conversations and the artifact record. */
     backfill: () => backfill(store, root, options),
-    async backfillInBackground() {
-      if (backfilled(root)) return
-      const entries = await readdir(options.sessions).catch(() => [])
-      const saved = entries.length ? await artifactDisk.run("libraryHandovers", options.sessions, options.bots) : []
-      backfill(store, root, options, saved)
-    },
     handle(request: Request): Promise<Response> {
       const url = new URL(request.url)
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
@@ -99,6 +91,13 @@ export function libraryService(root: string, options: LibraryOptions) {
       return libraryRoutes(store, host, request.method, parts.slice(at + 1), url.searchParams, () => request.json().catch(() => ({})), request.signal)
     },
   }
+}
+
+/** Load the current Library and carry out its one-time backfill on the disk worker. */
+export function prepareLibrary(root: string, options: LibraryOptions) {
+  const store = new LibraryStore(root, { bots: options.bots })
+  backfill(store, root, options)
+  return store.snapshot()
 }
 
 /**

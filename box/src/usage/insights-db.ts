@@ -1,3 +1,4 @@
+import { historyWorkerEntry } from "../link/server/history-worker-entry"
 // SQLite and pricing run on one worker. Its message queue orders writes, price changes and reads.
 import type { Pricing } from "./pricing"
 import type { InsightRecord } from "./insight-records"
@@ -42,14 +43,6 @@ export type DBRequest = { id: number; catalog?: PricingSnapshot } & {
 type Command = { [Each in Method]: [method: Each, args: Commands[Each]] }[Method]
 type Reply = { id: number; result?: unknown; error?: string }
 
-// Defined by build-box.sh for the shipped link. Source tests use the same worker's entrypoint.
-declare const __KUVO_INSIGHTS_WORKER__: string | undefined
-let embeddedWorker: string | undefined
-function workerEntry() {
-  if (typeof __KUVO_INSIGHTS_WORKER__ !== "string") return new URL("./insights-db-worker.ts", import.meta.url)
-  return embeddedWorker ??= URL.createObjectURL(new Blob([__KUVO_INSIGHTS_WORKER__], { type: "application/javascript" }))
-}
-
 export class InsightsDB {
   private worker?: Worker
   private opened?: Promise<void>
@@ -64,8 +57,16 @@ export class InsightsDB {
   constructor(private file: string, private readonly entry?: string) {}
 
   private start() {
-    const worker = this.worker = new Worker(this.entry ?? workerEntry(), { smol: true, argv: this.entry ? [] : ["--insights-db-source-worker"] })
-    worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+    const worker = this.worker = new Worker(this.entry ?? historyWorkerEntry(), { smol: true, argv: this.entry ? [] : ["--insights-db-source-worker"] })
+    // The worker may need to load modules before installing its message listener.
+    let started: (() => void) | undefined
+    let startupFailed: ((error: Error) => void) | undefined
+    const ready = this.entry ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+      started = resolve
+      startupFailed = reject
+    })
+    worker.onmessage = ({ data }: MessageEvent<Reply | "ready">) => {
+      if (data === "ready") { started?.(); return }
       const waiting = this.pending.get(data.id)
       if (!waiting) return
       this.pending.delete(data.id)
@@ -81,16 +82,20 @@ export class InsightsDB {
     }
     worker.onerror = (event) => {
       if (this.worker !== worker) return
-      this.fail(new Error(event.message || "The Insights worker stopped."))
+      const error = new Error(event.message || "The Insights worker stopped.")
+      startupFailed?.(error)
+      this.fail(error)
       this.park()
     }
     worker.addEventListener("close", (event) => {
       if (this.worker === worker) {
         this.worker = undefined
-        this.fail(new Error(`The Insights worker exited (code ${event.code}).`))
+        const error = new Error(`The Insights worker exited (code ${event.code}).`)
+        startupFailed?.(error)
+        this.fail(error)
       }
     })
-    return this.opened = this.send<void>(["open", [this.file]]).catch((error) => {
+    return this.opened = ready.then(() => this.send<void>(["open", [this.file]])).catch((error) => {
       this.fail(error)
       this.park()
       throw error

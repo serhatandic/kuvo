@@ -1,5 +1,3 @@
-import type { citationUpdate } from "../artifacts/service";
-import type { libraryHandovers } from "../library/service";
 import type { verifyHeldPack } from "../updates/fleet";
 import type { packForTransfer, unpackForTransfer } from "../moves/bundle";
 import type { checkMoveQueueFiles, clearQueuePlacement, forgetWorkQueues, packQueuesForMove, placeMoveWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
@@ -39,8 +37,6 @@ type Operations = {
   listFolders: typeof listFolders;
   makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
-  citationUpdate: typeof citationUpdate;
-  libraryHandovers: typeof libraryHandovers;
   scanSourceGeneration: typeof scanSourceGeneration;
   authenticate: (file: string, key: string, context: Buffer) => ReturnType<typeof authenticate>;
   openArchive: typeof openArchive;
@@ -101,8 +97,6 @@ if (isDiskWorker) {
         case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
         case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;
         case "scanSourceGeneration": value = (await import("../setup/removal-generation")).scanSourceGeneration(...args); break;
-        case "citationUpdate": value = (await import("../artifacts/service")).citationUpdate(...args); break;
-        case "libraryHandovers": value = (await import("../library/service")).libraryHandovers(...args); break;
         case "captureBackup": value = (await import("../backup/engine")).captureBackup(...args); break;
         case "authenticate": {
           const [file, key, context] = args;
@@ -220,5 +214,3 @@ export const backlogDisk = new DiskWorker();
 export const queueMoveDisk = new DiskWorker();
 export const numberUpkeepDisk = new DiskWorker();
 export const moveBundleDisk = new DiskWorker();
-
-export const artifactDisk = new DiskWorker();

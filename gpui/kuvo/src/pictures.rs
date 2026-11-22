@@ -225,7 +225,8 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
                 .border_color(c.border)
                 .cursor_pointer()
                 .on_click(move |_, window, cx| open(&id, window, cx))
-                .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Contain))
+                // (Rounded itself, inside its edge: a frame clips square, and its corners would show past the edge.)
+                .child(img(thumb.clone()).size_full().rounded(radius::CARD - px(1.)).object_fit(ObjectFit::Contain))
                 .into_any_element()
         }
         read => {

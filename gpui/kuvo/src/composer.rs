@@ -2439,7 +2439,7 @@ pub fn attachment_strip<V: 'static>(attached: &[PathBuf], client: &BoxClient, re
                 .cursor_pointer()
                 .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(name.clone()).build(cx))
                 .on_click(open_viewer)
-                .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover).with_fallback(|| Icon::new(IconName::Image).size(IconSize::Card).into_any_element()))
+                .child(img(path.clone()).size_full().rounded(radius::NAV - px(1.)).object_fit(ObjectFit::Cover).with_fallback(|| Icon::new(IconName::Image).size(IconSize::Card).into_any_element()))
                 .child(
                     div()
                         .id(("detach", at))
