@@ -119,12 +119,14 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
       ...groups.allBots(),
     ]
     const cache = join(folder, "insights-logs")
+    // Old unstamped observations use the stable local Insights alias, even before the
+    // peer directory learns this box's public key. New stamped observations keep their origin.
     const scanner: ConstructorParameters<typeof Insights>[1] = bundle && !fixtures
-      ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since, now, origins) }
+      ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: localKey(), engine: engineData }, pricing, since, now, origins) }
       : new InsightsScan({
         root: home, cache, agents,
         store: () => readSavedSessions(join(home, "sessions"), "insight"),
-        bots: readBots, computer, engine: engineData,
+        bots: readBots, computer: localKey, engine: engineData,
       })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots())

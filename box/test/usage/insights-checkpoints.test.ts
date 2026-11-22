@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InsightsDB } from "../../src/usage/insights-db"
+import { usageReader } from "../../src/usage/service"
 import { bundledPricing } from "../../src/usage/pricing"
 
 // A real Insights worker and index read the same saved files after a restart.
@@ -66,6 +67,42 @@ test("Insights adds engine updates without replaying the older calls in the same
   } finally {
     await db.close()
     source.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("learning the box's peer name leaves its unchanged local history checkpoint in place", async () => {
+  const home = mkdtempSync(join(tmpdir(), "insights-roster-"))
+  const folder = join(home, "sessions", "ses_local")
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, "session.json"), JSON.stringify({ id: "ses_local", title: "Local", time: { updated: Number.MAX_SAFE_INTEGER } }))
+  writeFileSync(join(folder, "messages.json"), JSON.stringify([{
+    type: "user", id: "prompt", text: "Hello", time: { created: 0 },
+  }]))
+  const run = join(home, "run")
+  mkdirSync(run)
+  const bundle = join(import.meta.dir, "../../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js")
+  const reader = usageReader({ home, run, box: home, bots: join(home, "bots"), bundle })
+  const { Database } = await import("bun:sqlite")
+  const refresh = () => reader.handle(new Request("http://box/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1"))
+  const checkpoint = () => {
+    const db = new Database(join(home, "usage", "insights.sqlite"), { readonly: true })
+    try {
+      return db.query<{ body: string }, []>("SELECT body FROM state WHERE key='scan/transcript-v1/ses_local'").get()?.body
+    } finally { db.close() }
+  }
+  try {
+    expect((await refresh()).status).toBe(200)
+    const before = checkpoint()
+    expect(before).toBeDefined()
+    const roster = await reader.handle(new Request("http://box/api/kuvo/peers", {
+      method: "PUT", body: JSON.stringify({ self: { key: "box-public-key", name: "Box" }, boxes: [], bots: [] }),
+    }))
+    expect(roster.status).toBe(200)
+    expect((await refresh()).status).toBe(200)
+    expect(checkpoint()).toBe(before)
+  } finally {
+    await reader.closeInsights()
     rmSync(home, { recursive: true, force: true })
   }
 })

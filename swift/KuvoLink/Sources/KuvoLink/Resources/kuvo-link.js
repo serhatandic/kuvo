@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 02b8de8b2bf4
+// Kuvo folder layout 23 5cad0fad9cc1
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "02b8de8b2bf4";
+var BRIDGE_VERSION = "5cad0fad9cc1";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -125499,13 +125499,13 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
       ...groups.allBots()
     ];
     const cache = join40(folder, "insights-logs");
-    const scanner = bundle && !fixtures ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since, now, origins) } : new InsightsScan({
+    const scanner = bundle && !fixtures ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: localKey(), engine: engineData }, pricing, since, now, origins) } : new InsightsScan({
       root: home,
       cache,
       agents,
       store: () => readSavedSessions(join40(home, "sessions"), "insight"),
       bots: readBots,
-      computer,
+      computer: localKey,
       engine: engineData
     });
     index = new InsightsDB(join40(folder, "insights.sqlite"), bundle);
