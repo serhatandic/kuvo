@@ -5,7 +5,7 @@
 // agent, and the note at the message's end says where each file is. They're kept a folder for each
 // session, and go with it (`letAttachmentsGo`).
 import crypto from "node:crypto";
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { conversationOf, everySession } from "../engine/conversations";
 import { engineGet } from "../engine/client";
@@ -47,7 +47,7 @@ export async function keptFiles(given: unknown[], session: string, modelInput: M
   const input = await modelInput(session).catch(() => null);
   authorize?.();
   const attachments = path.join(K, "attachments");
-  letOldGo(attachments);
+  scheduleExpiry(attachments);
   const folder = SESSION.test(session) ? path.join(attachments, session) : attachments;
   const sent: PromptFile[] = [], included: string[] = [], paths: string[] = [];
   for (const file of files) {
@@ -56,7 +56,7 @@ export async function keptFiles(given: unknown[], session: string, modelInput: M
       sent.push(file);
       continue;
     }
-    const saved = save(folder, data.bytes, typeof file.name === "string" ? file.name : "");
+    const saved = await save(folder, data.bytes, typeof file.name === "string" ? file.name : "");
     if (reads(data.mime, data.bytes.length, input, !toAgents, toAgents ? AGENTS_TEXT_BYTES : MODEL_BYTES)) {
       // Text the engine reads as words only when it's `text/plain`; any other type goes to the
       // model as a file it can't open (Markdown, JSON).
@@ -103,24 +103,24 @@ const KEPT_DAYS = 14;
 
 // `bytes` in a folder of its own in `attachments` (two can have the same name), under its own
 // name; its path, or null when it can't be written.
-function save(attachments: string, bytes: Buffer, name: string): string | null {
+async function save(attachments: string, bytes: Buffer, name: string): Promise<string | null> {
   const given = path.basename(name.replace(/\\/g, "/")).trim();
   const base = ["", ".", ".."].includes(given) ? "attachment" : given;
   try {
-    fs.mkdirSync(attachments, { recursive: true });
+    await fs.mkdir(attachments, { recursive: true });
     let folder = "";
     // A folder that's there already (a name drawn twice) is never shared.
     for (let tries = 0; !folder; tries++) {
       const drawn = path.join(attachments, crypto.randomBytes(4).toString("hex"));
       try {
-        fs.mkdirSync(drawn);
+        await fs.mkdir(drawn);
         folder = drawn;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" || tries > 8) throw error;
       }
     }
     const file = path.join(folder, base);
-    fs.writeFileSync(file, bytes);
+    await fs.writeFile(file, bytes);
     return file;
   } catch {
     return null;
@@ -129,25 +129,34 @@ function save(attachments: string, bytes: Buffer, name: string): string | null {
 
 // The kept files sent more than `KEPT_DAYS` ago: in their session's folder (and that folder, once
 // it's empty), or in `attachments` itself, as they were kept before.
-function letOldGo(attachments: string): void {
+let nextExpiry = 0;
+
+function scheduleExpiry(attachments: string): void {
+  if (Date.now() < nextExpiry) return;
+  nextExpiry = Infinity;
+  setImmediate(() => {
+    void letOldGo(attachments).finally(() => { nextExpiry = Date.now() + 3600_000; }).catch(() => {});
+  }).unref();
+}
+
+async function letOldGo(attachments: string): Promise<void> {
   const before = Date.now() - KEPT_DAYS * 24 * 60 * 60 * 1000;
-  for (const name of listOf(attachments)) {
+  for (const name of await listOf(attachments)) {
     const folder = path.join(attachments, name);
     if (!SESSION.test(name)) {
-      try { if (fs.statSync(folder).mtimeMs < before) fs.rmSync(folder, { recursive: true, force: true }); } catch {}
+      try { if ((await fs.stat(folder)).mtimeMs < before) await fs.rm(folder, { recursive: true, force: true }); } catch {}
       continue;
     }
-    for (const sent of listOf(folder)) {
+    for (const sent of await listOf(folder)) {
       if (movedPayloadFolder(sent)) continue;
-      try { if (fs.statSync(path.join(folder, sent)).mtimeMs < before) fs.rmSync(path.join(folder, sent), { recursive: true, force: true }); } catch {}
+      try { if ((await fs.stat(path.join(folder, sent))).mtimeMs < before) await fs.rm(path.join(folder, sent), { recursive: true, force: true }); } catch {}
     }
-    try { fs.rmdirSync(folder); } catch {}
   }
 }
 
 // What's in `folder`, or nothing when it can't be read.
-function listOf(folder: string): string[] {
-  try { return fs.readdirSync(folder); } catch { return []; }
+async function listOf(folder: string): Promise<string[]> {
+  try { return await fs.readdir(folder); } catch { return []; }
 }
 
 // A session's name, as its files' folder is named (anything else keeps them as before, in
@@ -188,16 +197,16 @@ async function letGo({ engine, bridge }: SessionPlaces, session?: string): Promi
     // of conversations on other computers too, moved there long ago among them (the app lets those
     // go as they're deleted there).
     gone = [];
-    for (const name of listOf(path.join(K, "attachments")).filter(name => SESSION.test(name) && !moving.has(name))) {
+    for (const name of (await listOf(path.join(K, "attachments"))).filter(name => SESSION.test(name) && !moving.has(name))) {
       if (await isGone(engine, name) && await isGone(bridge, name)) gone.push(name);
     }
   }
   const roots = session !== undefined ? keptIn() : [path.join(K, "attachments")];
-  const folders = gone.flatMap(id => roots.map(root => path.join(root, id))).filter(folder => fs.existsSync(folder));
-  if (!folders.length) return;
+  const folders = gone.flatMap(id => roots.map(root => path.join(root, id)));
+  if (!(await Promise.all(folders.map(folder => fs.access(folder).then(() => true, () => false)))).some(Boolean)) return;
   const shown = await stillShown([engine, bridge], gone);
   for (const folder of folders) {
-    if (!shown.has(path.basename(folder))) fs.rmSync(folder, { recursive: true, force: true });
+    if (!shown.has(path.basename(folder))) await fs.rm(folder, { recursive: true, force: true });
   }
 }
 

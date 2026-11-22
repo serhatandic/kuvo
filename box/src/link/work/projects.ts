@@ -7,8 +7,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { changeProjects, readProjects } from "../areas/projects";
-import { askedArgs } from "../../shared/git";
-import { firstCommit, gitIn } from "../git";
+import { askedArgsLater } from "../../shared/git";
+import { firstCommit, gitLater } from "../git";
 import { homeFolder } from "../home";
 import { projectsFolder } from "./settings";
 import type { Project } from "../../shared/routes/projects";
@@ -93,14 +93,13 @@ export const isEmptyFolder = (folder: string) => {
 };
 
 // git clone, without holding up the box, for as long as a big repository takes (ten minutes at most).
-function cloneInto(address: string, folder: string): Promise<string | null> {
+async function cloneInto(address: string, folder: string): Promise<string | null> {
+  // Never asking anything: ssh too, unless you set how git runs it.
+  const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || await gitLater(path.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(ownSSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }) };
+  const args = await askedArgsLater(["clone", "--quiet", "--", address, folder]);
+  if (!args) return "Kuvo Code won’t run git there.";
   return new Promise(resolve => {
-    // Never asking anything: ssh too, unless you set how git runs it.
-    const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || gitIn(path.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(ownSSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }) };
-    // (A clone makes a repository, so it never has one's commondir to refuse.)
-    const args = askedArgs(["clone", "--quiet", "--", address, folder]);
-    if (!args) return resolve("Kuvo Code won’t run git there.");
     execFile("git", args, { encoding: "utf8", env, timeout: 600_000 }, (error, _stdout, stderr) => {
       resolve(error ? (String(stderr ?? "").trim().split("\n").pop() || String(error.message)) : null);
     });
@@ -140,9 +139,9 @@ export async function makeProject(given: NewProject, madeBy: MadeBy | null, root
     kind = "cloned";
   } else {
     fs.mkdirSync(folder, { recursive: true });
-    if (given.git !== false) kind = gitIn(folder, ["init", "--quiet", "--initial-branch=main"]) !== null || gitIn(folder, ["init", "--quiet"]) !== null ? "git" : "noGit";
+    if (given.git !== false) kind = await gitLater(folder, ["init", "--quiet", "--initial-branch=main"]) !== null || await gitLater(folder, ["init", "--quiet"]) !== null ? "git" : "noGit";
   }
-  if (kind === "git" || kind === "cloned") firstCommit(folder);
+  if (kind === "git" || kind === "cloned") await firstCommit(folder);
   // (Where it is now is where it is, as its maker's own: `found-folders.ts`.)
   await noteFolderFound(folder).catch(() => {});
   let project!: Project;

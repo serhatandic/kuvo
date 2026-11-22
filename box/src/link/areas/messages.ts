@@ -13,6 +13,7 @@ import { commandParts, commandsSettled, commandTemplate, keptCommand, madeText, 
 import { composeArguments, composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
 import { withAttachedNote } from "../peers/naming";
 import type { MessageFields } from "../messages/parts";
+import { keepsList } from "../lists/sessions";
 import { folderOf } from "../lists/rule";
 import { frozen } from "../moves/records";
 import { keptFiles } from "../server/attached";
@@ -24,7 +25,7 @@ import { REQUEST_HEADERS } from "../server/paths";
 import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
 import { swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { RUN } from "../home";
-import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
+import { answering, BUSY, SENDING_PATIENCE, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
 import { fromAPhone } from "../server/context";
@@ -136,7 +137,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   });
   const readSession = async (target: Target, url: URL, signal: AbortSignal) => {
     if (target !== engine) {
-      const result = await bridgeRequest(target, url, { signal }, bridge, true);
+      const result = await bridgeRequest(target, url, { signal }, keepsList() ? undefined : bridge, true);
       agents = result.target;
       return result;
     }
@@ -149,11 +150,11 @@ async function* sending(context: RouteContext, session: string, retry = true): A
     if (!place && !agents && !swapHoldsFor(null, session)) {
       agents = bridge(); // It can have published while the engine was answering.
       if (!agents && agentsAway({ bridge })?.reason === "agentsRestarting") {
-        agents = await bridgeBack(bridge, signal);
+        agents = keepsList() ? bridge() : await bridgeBack(bridge, signal);
         if (!agents) return yield* answering(notAdmitted({ message: AGENTS_RESTARTING }));
       }
       agents ??= bridge();
-      if (agents) place = await placeOfSessionPatiently(session, [agents], readSession);
+      if (agents && !keepsList()) place = await placeOfSessionPatiently(session, [agents], readSession);
     }
   } catch (error) {
     if (retry && engine && !engineHere() && swapHoldsFor(null, session)) return yield* sending(context, session, false);
@@ -173,7 +174,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
     }
   }
   const target = place?.target ?? null;
-  const toAgents = target !== null && agents === target;
+  const toAgents = target !== null && agents?.port === target.port && agents.password === target.password;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (target) headers.authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
@@ -235,7 +236,8 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         if (!target || !at) return notAdmitted({ message: "The engine isn't running." });
         let answeredBy = target;
         const post = async (): Promise<SentAnswer> => {
-          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined };
+          const deadline = AbortSignal.timeout(SENDING_PATIENCE.ms);
+          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command && signal ? AbortSignal.any([signal, deadline]) : deadline };
           authorize?.();
           const result = toAgents ? await bridgeRequest(target, at, options, bridge, false, authorize) : { response: await fetch(at, options), target };
           const { response } = result;

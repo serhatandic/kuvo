@@ -15,6 +15,7 @@ import { carryMacKit } from "../bots/kit";
 import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
 import { agentsState } from "../areas/agents-down";
+import { keepsList, keptSessions, listFollowers } from "../lists/sessions";
 import { bridgeTarget, readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
@@ -69,6 +70,11 @@ export async function ownAgents(readEngine: () => Target, machine?: string, read
   const bots = listBots(machine).filter(bot => !away.has(bot.session)).map(bot => ({ session: bot.session, name: bot.name, kind: "bot" as const, id: bot.id, ...(bot.job ? { about: bot.job } : {}), ...(bot.look ? { look: bot.look } : {}) }));
   const botSessions = new Set(bots.map(bot => bot.session));
   const sessionsOf = async (target: Target): Promise<EngineSession[]> => {
+    if (keepsList()) {
+      const kept = keptSessions(target);
+      if (!kept) throw new Error("The box has not heard its sessions yet.");
+      return [...kept.values()];
+    }
     const response = await fetch(`http://127.0.0.1:${target.port}/api/session?parentID=null&limit=100&order=desc`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new Error(`It answered ${response.status}.`);
     // (As the engine and the agents' bridge answer it: their sessions, each whole.)
@@ -107,6 +113,7 @@ let refreshes = 0, keptRefresh = 0;
 // Them, worked out again for one asking here (`list_agents`, `kuvo/named`) on box `machine`, and
 // kept unless a working out begun since was kept first. Null when its engine can't say.
 export async function ownAgentsNow(readEngine: () => Target, machine: string | null): Promise<ListedAgent[] | null> {
+  if (keepsList()) return ownList;
   const turn = ++refreshes;
   const list = await ownAgents(readEngine, machine ?? undefined);
   if (list && turn > keptRefresh) {
@@ -123,6 +130,23 @@ export async function ownAgentsNow(readEngine: () => Target, machine: string | n
 export function ownAsLast(ownID: string | null): ListedAgent[] {
   if (ownList) return ownList;
   try { return ((JSON.parse(fs.readFileSync(AGENTS_FILE, "utf8")) as Partial<AgentsFile> | null)?.agents ?? []).filter(agent => fitsAgent(agent) && (agent.machine ?? null) === ownID); } catch { return []; }
+}
+
+/** Refresh the directory from the resident session list as changes settle. */
+export function followOwnAgents(readEngine: () => Target): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const changed = () => {
+    timer ??= setTimeout(() => {
+      timer = undefined;
+      void refreshOwn(readEngine).catch(() => {});
+    }, 250);
+    timer.unref?.();
+  };
+  listFollowers.add(changed);
+  return () => {
+    listFollowers.delete(changed);
+    clearTimeout(timer);
+  };
 }
 
 // Writes `run/agents.json`: this box's agents and its peers'. Its own as last written while it
@@ -143,8 +167,8 @@ export function writeAgents(link: LinkState | null = readLink()): void {
 
 // This box's own agents, worked out again, and `run/agents.json` with them, relay or not.
 export async function refreshOwn(readEngine: () => Target, link: LinkState | null = readLink()): Promise<ListedAgent[] | null> {
-  // (This Mac's box lists its agents with its link off too: its group chats name them.)
-  if (!link?.key && !IS_MAC) return ownList;
+  // A resident box also needs the directory for local tools while disconnected from the relay.
+  if (!link?.key && !IS_MAC && !keepsList()) return ownList;
   ownMachine = link?.id ?? null;
   const turn = ++refreshes;
   const list = await ownAgents(readEngine, link?.id);

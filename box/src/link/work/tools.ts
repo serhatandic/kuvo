@@ -21,7 +21,7 @@ import { isObject } from "../../shared/json";
 import fs from "node:fs";
 import path from "node:path";
 import { readProjects } from "../areas/projects";
-import { gitIn } from "../git";
+import { gitLater } from "../git";
 import { HERE } from "../home";
 import { answerOf, askWork, botAllows, doWork } from "./asks";
 import type { ResetGiven } from "./plan-reset";
@@ -367,15 +367,16 @@ export async function askReset(caller: Caller, given: ResetGiven, { signal, wait
 
 /** list_projects: the projects here, with where each is, whether it's a git repository, and who
  * made it. */
-export function listProjectsTool(where = HERE): ToolAnswer {
+export async function listProjectsTool(where = HERE): Promise<ToolAnswer> {
   const projects = readProjects().filter(each => !each.removed);
   const root = projectsFolder();
   const folder = root ? ` New ones go in ${shownPath(root)}.` : " No projects folder is picked yet: the user picks one the first time you make a project.";
   if (!projects.length) return said(`There are no projects on ${where} yet.${folder}`);
-  const lines = projects.slice(0, 60).map(each => {
-    const git = gitIn(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
-    return `- ${each.name ?? path.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
-  });
+  const lines = [];
+  for (const each of projects.slice(0, 60)) {
+    const git = await gitLater(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
+    lines.push(`- ${each.name ?? path.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`);
+  }
   return said(`Projects on ${where}:\n${lines.join("\n")}\n${folder.trim()}`);
 }
 

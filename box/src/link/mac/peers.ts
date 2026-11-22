@@ -14,7 +14,7 @@ import { pushNumbers } from "../work-queue/numbers";
 import { scheduleWipe } from "../setup/wipe";
 import { sendRemovalUpdates } from "../setup/removal";
 import { noteSetupNow } from "../setup/lead";
-import { refreshReceiptIndex } from "../ownership/receipt-index";
+import { refreshReceipts } from "../ownership/receipt-worker";
 import { sendSetupCopies } from "../setup/seed";
 import { pushQueues } from "../work-queue/across";
 import { FORWARDS, forwardsSoon, sendForwards } from "../work-queue/forward";
@@ -84,7 +84,7 @@ export function runMacPeers(): void {
       try { sendRemovalUpdates(macLink.host); } catch {}
       macSendOutbox();
       forwardsSoon.send();
-      void refreshReceiptIndex().catch(() => {});
+      void refreshReceipts().catch(() => {});
       heldSoon.send();
       macReachAgain();
       // The rows of sessions here whose lead lives on another computer, told to it as they change.
