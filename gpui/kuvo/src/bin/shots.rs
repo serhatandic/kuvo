@@ -195,7 +195,18 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "branches", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(branches) },
     Screen { slug: "worktree", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(branches) },
     Screen { slug: "pull-request", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(pull_request) },
-    Screen { slug: "panel-narrow", width: 980., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(changes) },
+    Screen { slug: "panel-narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(changes) },
+    // The side panel (#796), each tab as it shows, as draft 1 drew them.
+    Screen { slug: "panel-browser", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_browser) },
+    Screen { slug: "panel-terminal", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_terminal) },
+    Screen { slug: "panel-new-tab", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_new_tab) },
+    Screen { slug: "panel-file", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_file) },
+    Screen { slug: "panel-changes", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(changes) },
+    Screen { slug: "panel-process", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_process) },
+    Screen { slug: "panel-subagents", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_subagents) },
+    Screen { slug: "panel-subagent-detail", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_subagent_detail) },
+    Screen { slug: "panel-side-chat", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_side_chat) },
+    Screen { slug: "panel-many-tabs", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(panel_many_tabs) },
     // The rail's areas (`kuvo/src/rail.rs`, `areas.rs`): Sessions with what needs you on top, each
     // other area with a row picked, a narrow window folded and opened, and the first run.
     Screen { slug: "area-sessions", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1230,6 +1241,71 @@ fn disconnect(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace
 /// In a narrow window, the Sessions sidebar brought out by its button.
 fn sessions_out(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.rail_pressed(Area::Sessions, window, cx);
+}
+
+/// The side panel on its New tab page.
+fn panel_new_tab(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.toggle_panel(cx);
+}
+
+/// Two files open, the sign-up form showing, the folder's files beside it.
+fn panel_file(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let root = kuvo::stand_in::git::website();
+    workspace.preview_file(&format!("{root}/src/lib/validate.ts"), window, cx);
+    workspace.preview_file(&format!("{root}/src/components/SignupForm.tsx"), window, cx);
+    if let Some(tree) = workspace.panel().read(cx).files() {
+        tree.update(cx, |tree, cx| {
+            for folder in ["src", "src/components"] {
+                tree.toggle(&format!("{root}/{folder}"), cx);
+            }
+        });
+    }
+}
+
+/// Another computer's browser, live (its page's picture comes after it opens).
+fn panel_browser(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Browser(0), cx);
+}
+
+/// A terminal in the session's folder (what its shell printed comes after it opens).
+fn panel_terminal(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Terminal(0), cx);
+}
+
+/// A dev server's output as it prints.
+fn panel_process(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    let command = serde_json::from_value(serde_json::json!({ "id": "sh_dev", "command": "bun run dev", "started": NOW - 95_000.0, "folder": kuvo::stand_in::git::website() })).expect("a command");
+    workspace.arrive(kuvo::panel::Arrival::Process { session: "ses_signup".into(), command }, cx);
+}
+
+fn panel_subagents(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.arrive(kuvo::panel::Arrival::Subagents(None), cx);
+}
+
+/// One subagent open, its conversation in the tab.
+fn panel_subagent_detail(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.arrive(kuvo::panel::Arrival::Subagents(Some("ses_limits".into())), cx);
+}
+
+/// A side chat with two questions answered.
+fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::SideChat(None), cx);
+    let Some(view) = workspace.panel().read(cx).side_chat() else { return };
+    for question in ["Why check 23505 instead of querying first?", "Should 409 share the rate-limit bucket?"] {
+        let field = view.read(cx).field().clone();
+        field.update(cx, |field, cx| field.set_text(question, cx));
+        view.update(cx, |view, cx| view.ask(cx));
+    }
+}
+
+/// Many tabs: Changes, two files, a process, the subagents; a file showing.
+fn panel_many_tabs(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, cx);
+    panel_process(workspace, window, cx);
+    workspace.show_panel(Kind::Subagents, cx);
+    let root = kuvo::stand_in::git::website();
+    workspace.preview_file(&format!("{root}/src/lib/validate.ts"), window, cx);
+    workspace.preview_file(&format!("{root}/src/components/SignupForm.tsx"), window, cx);
 }
 
 fn changes(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
@@ -2301,6 +2377,8 @@ fn main() -> anyhow::Result<()> {
                 change(Change::SidebarWidth(width), cx);
             });
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            // (Kept to print into a terminal once the screen has opened it.)
+            let shell = stand_in.clone();
             if screen.slug == "sidebar-long-computer" {
                 stand_in.set_elsewhere(true);
                 stand_in.set_computer_name("WWWWW Engineering Workstation East Coast");
@@ -2522,6 +2600,27 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
+            }
+            if screen.slug == "panel-browser" {
+                stand_in.set_elsewhere(true);
+                stand_in.browser_pages(serde_json::json!({ "active": "P", "pages": [{ "targetId": "P", "url": "http://localhost:3000/signup", "title": "", "loading": false, "canGoBack": true, "canGoForward": false, "working": false }] }));
+            }
+            if screen.slug.starts_with("panel-") {
+                use serde_json::json;
+                stand_in.set_background("ses_signup", json!({
+                    "commands": [{ "id": "sh_dev", "command": "bun run dev", "started": NOW - 95_000.0, "folder": kuvo::stand_in::git::website() }],
+                    "subagents": [],
+                }), &[("sh_dev", "$ next dev --turbopack\n▲ Next.js 15.3.1 (Turbopack)\n- Local:   http://localhost:3000\n\n✓ Ready in 612ms\n○ Compiling /signup …\n✓ Compiled /signup in 184ms\nPOST /api/signup 409 in 19ms\nPOST /api/signup 201 in 31ms")]);
+                let day = 86_400_000.0;
+                let done: Vec<_> = [("ses_d1", "Check 409 retry path"), ("ses_limits", "Audit email rate limits"), ("ses_d3", "Scan signup tests"), ("ses_d4", "Verify focus ring order"), ("ses_d5", "Compare OAuth conflicts"), ("ses_d6", "Read Postgres error codes")]
+                    .iter()
+                    .map(|(session, title)| json!({ "session": session, "title": title, "started": NOW - 3.0 * day, "ended": NOW - 3.0 * day + 18_000.0, "state": "finished", "model": "Claude Sonnet 4.6", "effort": "High" }))
+                    .collect();
+                stand_in.set_subagents_done("ses_signup", done);
+                stand_in.answer_side_questions(&[
+                    "Postgres raises **23505** atomically on a unique violation, so two sign-ups with the same email can’t both pass a check made first.",
+                    "Yes: counting 409s alongside 201s stops anyone probing whether an address already has an account.",
+                ]);
             }
             if screen.slug == "session-menu-held" {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
@@ -2828,6 +2927,18 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "panel-browser" {
+                // A page's picture: a plain page, as wide as the panel shows it.
+                let picture = image::RgbImage::from_pixel(960, 1200, image::Rgb([250, 250, 250]));
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80).encode_image(&picture).expect("a picture");
+                shell.browser_frame(serde_json::json!({ "targetId": "P", "frameId": 1, "width": 480, "height": 600, "scrollX": 0, "scrollY": 0 }), &jpeg);
+                cx.run_until_parked();
+            }
+            if screen.slug == "panel-terminal" {
+                shell.pty_print("pty_1", b"\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf bun test src/components/SignupForm.test.tsx\r\n\r\n \x1b[32m\xe2\x9c\x93\x1b[0m keeps the email on 409 \x1b[2m9ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m focuses the email after the error \x1b[2m6ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m submits a new account \x1b[2m14ms\x1b[0m\r\n\r\n \x1b[32m3 pass\x1b[0m \x1b[2m0 fail [42ms]\x1b[0m\r\n\r\n\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf ");
+                cx.run_until_parked();
+            }
             if screen.slug == "composer-queue-dragging" {
                 let to = cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");
