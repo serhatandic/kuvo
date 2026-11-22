@@ -47,7 +47,7 @@ function sandboxed(root: string) {
   const mine = (paths: string[] | undefined) => [...new Set((paths ?? []).map(each => !within(each, home) && within(each, policy.home) ? home + each.slice(policy.home.length) : each).filter(each => within(each, home)))]
   const fenceFolder = realFence(kuvo, [], {
     writable: ["/dev", ...mine(policy.writable)], readOnly: mine(policy.readOnly), homeWrites: mine(policy.homeWrites), homeKept: mine(policy.homeKept),
-    homeOpen: mine(policy.homeOpen), personal: mine(policy.personal), secrets: mine(policy.secrets),
+    homeOpen: mine(policy.homeOpen), personal: mine(policy.personal), secrets: mine(policy.secrets), loginKeychains: mine(policy.loginKeychains),
   })
   const claude = (settings: string, program: string, args: string[], input?: string) => {
     process.env.KUVO_FENCE = fenceFolder
@@ -117,12 +117,10 @@ test.skipIf(!canFence)("an account you added renews its sign-in and its record i
 // On a Mac, Claude Code keeps its sign-in in your login Keychain, one file of all your items
 // (`~/Library/Keychains/login.keychain-db`), which `security` saves anew whole beside it
 // (`login.keychain-db.sb-<hex>-<random>`) and moves into place. The sandbox keeps ~/Library from
-// commands whole (policy.ts `MAC_HOME_KEPT`, seatbelt.ts `homeKept`), so today Claude Code can't
-// write it: it falls back to `.credentials.json` in its settings folder, can't take the Keychain's
-// item away either, and goes on reading the Keychain's older one first. Todo until you decide
-// whether the sandbox lets `security` write your login Keychain (`bun test --todo` runs it).
-test.todo("Claude Code renews its sign-in in your login Keychain from inside the sandbox", () => {
-  if (!canFence || process.platform !== "darwin") return
+// commands whole (policy.ts `MAC_HOME_KEPT`), but for that file, written by `security` alone
+// (seatbelt.ts `loginKeychains`): so Claude Code renews its sign-in there, and nothing else
+// writes the file.
+test.skipIf(!canFence || process.platform !== "darwin")("Claude Code renews its sign-in in your login Keychain from inside the sandbox, and nothing but `security` writes it", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-sandbox-renewal-")))
   const keychain = join(root, "home", "Library", "Keychains", "login.keychain-db")
   try {
@@ -142,6 +140,11 @@ test.todo("Claude Code renews its sign-in in your login Keychain from inside the
     const read = Bun.spawnSync(["security", "find-generic-password", "-a", "kuvo-test", "-s", "Kuvo test credentials", "-w", keychain], { stdin: "ignore" })
     expect(read.stdout.toString().trim()).toBe(signIn("renewed"))
     expect(readdirSync(join(home, "Library", "Keychains")).filter(name => name.includes(".sb-"))).toEqual([])
+    // Any other program is kept from the file, as from the rest of ~/Library.
+    const before = readFileSync(keychain)
+    expect(claude(settings, "/bin/sh", ["-c", `printf x >> '${keychain}'`]).status).not.toBe(0)
+    expect(claude(settings, "/bin/rm", ["-f", keychain]).status).not.toBe(0)
+    expect(readFileSync(keychain).equals(before)).toBe(true)
   } finally {
     if (existsSync(keychain)) Bun.spawnSync(["security", "delete-keychain", keychain], { stdin: "ignore" })
     rmSync(root, { recursive: true, force: true })

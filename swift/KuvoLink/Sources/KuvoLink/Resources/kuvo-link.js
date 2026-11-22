@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 31f9de38d90c
+// Kuvo folder layout 23 26898b5af797
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "31f9de38d90c";
+var BRIDGE_VERSION = "26898b5af797";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -4499,6 +4499,7 @@ function fencePolicy(ports = []) {
       homeKept: inHomes(MAC_HOME_KEPT),
       homeOpen: inHomes(MAC_HOME_OPEN),
       personal: inHomes(MAC_PERSONAL),
+      loginKeychains: homes.map((each) => path17.join(each, "Library", "Keychains", "login.keychain-db")),
       readOnlyPatterns: [
         ...userTemporary().map((folder) => `^${escapeRegex(folder)}/T/bunx-`),
         ...yourCaches.map((folder) => `^${escapeRegex(folder)}/p10k-`),
@@ -6247,6 +6248,7 @@ function seatbeltProfile(policy, options) {
   deny(WRITE, ...chunked(policy.readOnly).map(regex), ...(policy.readOnlyPatterns ?? []).map(regex), ...(policy.homeWrites ?? []).map((home) => `(require-all ${regex(`^${escapeRegex(home)}/${GUARDED}`)} ${caches(home).join(" ")})`));
   allow(WRITE, ...policy.writable.filter((folder) => policy.readOnly.some((wall) => folder.startsWith(wall + "/"))).map(subpath));
   allowGiven(true);
+  allow(WRITE, ...(policy.loginKeychains ?? []).map((file) => `(require-all ${regex(`^${escapeRegex(file)}(\\.sb-[0-9a-f]+-[A-Za-z0-9]+)?$`)} (vnode-type REGULAR-FILE) (signing-identifier "com.apple.security"))`));
   out.push(";; Kuvo Code's own folders: neither read nor written; its helpers run");
   const HIDDEN = `file-read-data ${WRITE}`;
   deny(HIDDEN, ...policy.kuvo.map(subpath), ...policy.kuvoPatterns.map(regex));
