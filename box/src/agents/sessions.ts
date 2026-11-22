@@ -987,9 +987,12 @@ export class Sessions {
       }
       else turn.gate.drop(turn.thread)
     }
-    // Turns a quit or crash cut short: ended, as Stop ends one.
-    for (const session of store.all()) this.repair(session.id)
-    for (const session of store.all()) this.readCitations(session.id)
+    // Repair an interrupted conversation when its messages are first needed.
+    store.prepare = id => {
+      this.repair(id)
+      this.readCitations(id)
+    }
+    for (const id of this.resuming.keys()) this.readCitations(id)
   }
 
   /** Its replies kept with Codex's directives in their words (`:codex-…`), read as a reply now reads them. */
@@ -1345,6 +1348,11 @@ export class Sessions {
     return this.record(id).messages
   }
 
+  messagePage(id: string, after: string | undefined, limit: number, ascending: boolean) {
+    this.record(id)
+    return this.store.page(id, after, limit, ascending)
+  }
+
   update(id: string, body: { title?: string; permissions?: PermissionRule[]; metadata?: Record<string, unknown> }) {
     const record = this.record(id)
     const session = record.session
@@ -1413,6 +1421,13 @@ export class Sessions {
     session.time.viewed = idle
     this.store.save(id)
     emit("session.viewed", { sessionID: id, idle }, session.location.directory)
+  }
+
+  /** Pending edits and live turns may still hold mutable messages. */
+  pruneTranscripts() {
+    if (this.commands || this.sending || this.removing) return
+    const working = new Set(this.active())
+    this.store.prune(id => working.has(id) || this.resuming.has(id))
   }
 
   active(): string[] {
@@ -1904,7 +1919,8 @@ export class Sessions {
   /** Record the same row that clients see as soon as the input leaves the inbox. */
   private recordInput(record: Record_, input: Input, order?: WorkOrder, nativeProvider?: string) {
     const created = Date.now()
-    const attachments: Attachment[] = input.files.map(file => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
+    const attachments: Attachment[] = input.files.map(file =>
+      this.store.keepAttachment(record.session.id, { mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     const message: Message = input.synthetic
       ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata }
       : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata }
@@ -2725,7 +2741,7 @@ export class Sessions {
       turnAway()
       letHeldGo()
       if (run.agent === working) run.agent = undefined
-      this.store.save(id, true)
+      this.store.progress(id, undefined, true)
     }
   }
 
@@ -3051,7 +3067,7 @@ export class Sessions {
     return {
       signal,
       state: slot.state,
-      saveState: () => this.store.save(id, true),
+      saveState: () => this.store.progress(id, undefined, true),
       instructions: (withAgent = true) =>
         [
           ...Object.values((record.agent.kuvoInstructions as Record<string, string> | undefined) ?? {}),
@@ -3881,6 +3897,9 @@ function mime(uri: string): string {
       gif: "image/gif",
       webp: "image/webp",
       heic: "image/heic",
+      heif: "image/heif",
+      bmp: "image/bmp",
+      tiff: "image/tiff",
       pdf: "application/pdf",
       txt: "text/plain",
       md: "text/markdown",

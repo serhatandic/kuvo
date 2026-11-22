@@ -259,7 +259,7 @@ describe("a session's files", () => {
       // Room again: written.
       rmSync(join(folder, "ses_full"))
       store.flush()
-      const kept = JSON.parse(readFileSync(join(folder, "ses_full", "messages.json"), "utf8"))
+      const kept = new Store(folder).get("ses_full")!.messages
       expect(kept.at(-1)).toMatchObject({ type: "idle", outcome: "succeeded" })
       expect(JSON.stringify(kept)).toContain("Done.")
     } finally {

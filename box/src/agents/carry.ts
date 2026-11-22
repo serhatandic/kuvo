@@ -1,3 +1,4 @@
+import { transcriptBytes } from "./transcript"
 import { mapAttachmentPaths } from "../shared/attachment-paths"
 // A session with the coding agents on its way to another of your computers (PROTOCOL.md, `kuvo/moves`):
 // the box's link drives the move, and asks here for what only the bridge knows: its sessions' records,
@@ -188,11 +189,25 @@ export class Carrying {
       const marks = (record.session.metadata ?? {}) as Record<string, any>
       const archived = record.session.time.archived ?? marks["kuvo.archived"] ?? marks.kuvo?.archived ?? null
       said.push(JSON.stringify([id, record.session.title ?? null, record.session.model ?? null, archived]))
-      for (const name of ["session.json", "messages.json", "agent.json"]) {
+      const transcript = join("sessions", id, "messages.json")
+      const hash = createHash("sha256")
+      let size = 0
+      const measure = (text: string) => {
+        hash.update(text)
+        size += Buffer.byteLength(text)
+      }
+      // Hash the same bytes that go into the portable move, independent of local SQLite pages.
+      if (into) {
+        const target = join(into, transcript)
+        await mkdir(dirname(target), { recursive: true })
+        this.store.exportMessages(id, target, measure)
+      } else {
+        for (const text of transcriptBytes(this.store.saved(id))) measure(text)
+      }
+      records.push({ path: transcript, size, sha256: hash.digest("hex") })
+      for (const name of ["session.json", "agent.json"]) {
         const file = this.store.fileOf(id, name)
         const path = join("sessions", id, name)
-        // (What it says of itself changes as it's looked at and told things: its conversation is what counts.)
-        if (name === "messages.json") records.push({ path, size: (await stat(file)).size, sha256: await hashOf(file) })
         if (into) {
           await mkdir(dirname(join(into, path)), { recursive: true })
           await copyFile(file, join(into, path))
@@ -306,7 +321,8 @@ export class Carrying {
       this.store.save(session.id, true)
       const folder = join(into, session.id)
       await mkdir(folder, { recursive: true })
-      for (const name of ["session.json", "messages.json"]) await copyFile(this.store.fileOf(session.id, name), join(folder, name))
+      this.store.exportMessages(session.id, join(folder, "messages.json"))
+      await copyFile(this.store.fileOf(session.id, "session.json"), join(folder, "session.json"))
     }
   }
 

@@ -213,7 +213,7 @@ adoptOwnFolders(home, accounts)
 // And on a Mac, an earlier version's Anthropic Console sign-in becomes an account you added.
 if (process.platform === "darwin") adoptConsoleFolder(home, accounts)
 const roster = new Roster(accounts, context)
-const store = new Store(join(home, "sessions"), Boolean(transfer))
+const store = new Store(join(home, "sessions"), Boolean(transfer), machineHome && join(machineHome, "attachments"))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
@@ -443,12 +443,17 @@ let transferring = false
 const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
+setInterval(() => {
+  if (!answering) sessions.pruneTranscripts()
+}, 30_000).unref()
 const serveRequest = (request: Request) => {
   if (transferring) return answer(request)
   if (new URL(request.url).pathname === "/api/event" || servicePath(new URL(request.url).pathname)) return answer(request)
   answering++
   if (request.method !== "GET" && request.method !== "HEAD") renewal?.busied()
-  return answer(request).finally(() => answering--)
+  return answer(request).finally(() => {
+    if (--answering === 0) sessions.pruneTranscripts()
+  })
 }
 try {
   if (standby) {

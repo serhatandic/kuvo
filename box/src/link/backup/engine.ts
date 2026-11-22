@@ -1,3 +1,4 @@
+import { exportTranscript, savedMessages, transcriptDatabase } from "../../agents/transcript";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -237,6 +238,7 @@ export function captureBackup(file: string, key: string, source: string, id: str
     yield bytes("meta/attachment-roots.json", { attachments: roots.attachments, macAttachments: roots.macAttachments });
     yield* boundary.entries;
     let db = 0;
+    const transcripts = new Set<string>();
     yield* queue;
     for (const item of storageInventory(roots, kind => !queueBackupKind(kind))) {
       if (!ownedHere(item.name)) continue;
@@ -248,7 +250,17 @@ export function captureBackup(file: string, key: string, source: string, id: str
       if (item.expectedSize !== undefined && fs.lstatSync(item.file).size !== item.expectedSize) {
         throw new Error(`Backup payload size differs from its record: ${item.name}.`);
       }
-      if (item.snapshot !== "bytes") {
+      if (item.snapshot === "agent transcript" || /^agents\/sessions\/[^/]+\/messages\.json$/.test(item.name)) {
+        const name = path.posix.join(path.posix.dirname(item.name), "messages.json");
+        if (transcripts.has(name)) continue;
+        transcripts.add(name);
+        if (fs.existsSync(path.join(path.dirname(item.file), transcriptDatabase))) {
+          const copy = path.join(scratch, `transcript-${db++}`);
+          exportTranscript(copy, savedMessages(path.dirname(item.file)));
+          yield { name, file: copy };
+          fs.rmSync(copy);
+        } else yield { ...item, name, file: item.file };
+      } else if (item.snapshot !== "bytes") {
         const copy = path.join(scratch, `db-${db++}`);
         snapshotDatabase(item.file, copy);
         if (item.snapshot === "engine database") scrubEngine(copy, [], false);

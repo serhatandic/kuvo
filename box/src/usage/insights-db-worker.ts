@@ -30,7 +30,7 @@ export function serveInsightsDB() {
             const accounts = new UsageAccounts(input.home)
             scanner = new InsightsScan({
               root: input.home, cache: input.cache, agents: () => accounts.all(),
-              store: () => readSavedSessions(join(input.home, "sessions")),
+              store: () => readSavedSessions(join(input.home, "sessions"), "insight"),
               bots: () => input.bots, computer: () => input.computer, engine: input.engine,
             })
           }

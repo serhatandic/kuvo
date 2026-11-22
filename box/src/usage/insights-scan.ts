@@ -153,7 +153,7 @@ export class InsightsScan {
     root: string
     cache: string
     agents: () => UsageAgent[]
-    store: Pick<Store, "all" | "get"> | (() => Iterable<Record_>)
+    store: Pick<Store, "all" | "get"> | (() => Iterable<Omit<Record_, "messages"> & { messages: Iterable<Record_["messages"][number]> }>)
     bots: () => InsightBot[]
     computer: () => string
     engine?: string

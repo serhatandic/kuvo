@@ -24,7 +24,7 @@ const sessionFrom = async (target: Target, id: string) => {
 
 export function artifactCitations(sessions: string): { path: string; at: number }[] {
   const shown: { path: string; at: number }[] = []
-  for (const { session, messages } of readSavedSessions(sessions)) {
+  for (const { session, messages } of readSavedSessions(sessions, "artifacts")) {
     for (const message of messages) {
       // Old directives may already have been normalized by the bridge.
       citedIn(message)

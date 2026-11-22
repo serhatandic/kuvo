@@ -7,7 +7,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readdir } from "node:fs/promises"
 import { artifactDisk } from "../server/disk-worker"
 import { fileURLToPath } from "node:url"
-import { readSavedSessions } from "../../agents/store"
+import { readSavedSessionHeaders, readSavedSessions } from "../../agents/store"
 import type { ArtifactStore } from "../artifacts/store"
 import { copyLimit } from "../artifacts/store"
 import { attachedPaths, toolName } from "../artifacts/recorder"
@@ -148,14 +148,13 @@ export function libraryHandovers(sessions: string, bots: string): Handover[] {
     return first.startsWith("bot_") ? first : undefined
   }
   try {
-    const saved = [...readSavedSessions(sessions)]
-    const parents = new Map(saved.map(({ session }) => [session.id, (session as any).parentID as string | undefined]))
+    const parents = new Map(Array.from(readSavedSessionHeaders(sessions), ({ session }) => [session.id, session.parentID]))
     const rootOf = (id: string) => {
       let at = id
       for (let depth = 0; depth < 8 && parents.get(at); depth++) at = parents.get(at)!
       return at
     }
-    for (const { session, messages } of saved) {
+    for (const { session, messages } of readSavedSessions(sessions, "artifacts")) {
       const directory = session.location?.directory
       const metadata = (session as any).metadata
       const seat = metadata?.kuvo?.seat
@@ -166,7 +165,7 @@ export function libraryHandovers(sessions: string, bots: string): Handover[] {
         ...(seat && typeof seat.group === "string" ? { group: seat.group } : { session: top }),
       }
       const absolute = (path: string) => (isAbsolute(path) ? path : resolve(directory ?? "/", path))
-      for (const message of messages as any[]) {
+      for (const message of messages as Iterable<any>) {
         const at = new Date(message.time?.completed ?? message.time?.created ?? 0)
         if (message.type === "user" && own) {
           for (const path of attachedPaths({ files: message.files, text: message.text })) found.push({ path, how: "attached", ...where, message: message.id, at })

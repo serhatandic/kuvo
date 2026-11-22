@@ -26,7 +26,7 @@ export type DataConflict =
 // Vaults have a separate, optional encrypted export. External project files can be opted in.
 export type RestorePolicy = "portable" | "machine-local" | "needs fresh approval";
 
-export type BackupSnapshot = "bytes" | "engine database" | "sqlite";
+export type BackupSnapshot = "bytes" | "engine database" | "sqlite" | "agent transcript";
 type BackupStorage = readonly (string | {
   pattern: string;
   restore?: RestorePolicy;
@@ -84,7 +84,7 @@ export const DATA_DECLARATIONS = {
   peerDirectoryAndReach: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
   installAndSeedProgress: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Add, reinstall and seed", "Repair and update state", "Installed release"] },
 
-  conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "engine/opencode*.db", snapshot: "engine database" }, "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json"], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
+  conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "engine/opencode*.db", snapshot: "engine database" }, "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json", { pattern: "agents/sessions/*/messages-v1.sqlite", snapshot: "agent transcript" }], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
   conversationSettings: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/run/session-settings.json", "home/run/named.json", "home/run/archived.json"], families: ["Engine database", "Conversation metadata and queue"] },
   sessionQueue: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/queues.json", "home/run/waiting/"], families: ["Conversation metadata and queue"] },
   sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "attachments/", inventory: "session payloads" }, { pattern: "macAttachments/", inventory: "session payloads" }], families: ["Managed attachment files", "Artifacts"] },

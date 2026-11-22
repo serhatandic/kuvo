@@ -18,6 +18,7 @@ import { handler } from "../../src/agents/server"
 import { Sessions, shellProcesses, timing } from "../../src/agents/sessions"
 import { Snapshots } from "../../src/agents/snapshots"
 import { Store } from "../../src/agents/store"
+import { transcriptDatabase } from "../../src/agents/transcript"
 import type { Turn } from "../../src/agents/turn"
 import type { Message, Model, ServerEvent } from "../../src/agents/wire"
 
@@ -1790,7 +1791,7 @@ describe("undo, carefully", () => {
     sessions.closeAll()
     // Closed a while; you edited meanwhile.
     const old = new Date(Date.now() - 10 * 60_000)
-    utimesSync(join(root, "sessions", id, "messages.json"), old, old)
+    utimesSync(join(root, "sessions", id, transcriptDatabase), old, old)
     writeFileSync(join(folder, "a.txt"), "mine\n")
     const agents = new Map([a, b].map((agent) => [agent.providerID, agent]))
     sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider ? agents.get(provider) : undefined) } as unknown as Roster, auto, undefined, undefined, undefined, new Snapshots(join(root, "snapshots")))
