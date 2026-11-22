@@ -12,6 +12,8 @@ import type { Pricing, PricingStore } from "./pricing"
 
 const DAY = 86_400_000
 const SCAN_EVERY = 5 * 60_000
+/** How long a summary asked for with `refresh=1` waits for the count it asks for. */
+const RECOUNT_WAIT = 60_000
 const MAX_PAGE = 100
 type Request = { kind: "insights"; action: "pull"; after: number; epoch?: string; refresh?: true }
 type Page = { kind: "insights"; action: "page"; after: number; next: number; more: boolean; epoch: string; reset?: true; scanned?: number; issues?: string[]; records: InsightRecord[] }
@@ -103,6 +105,19 @@ export class Insights {
       return this.db.write("failed", true).catch(() => {})
     }).finally(() => { this.scan = undefined })
     return this.scan
+  }
+
+  /** Counts again now, for a summary asked for with `refresh=1`: after a count already under way
+   * (it may have read before what's new), waited for up to `RECOUNT_WAIT`. */
+  async recount() {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const waited = new Promise<void>(resolve => { timer = setTimeout(resolve, RECOUNT_WAIT); timer.unref?.() })
+    const counted = (async () => {
+      if (this.scan) await this.scan
+      await this.refresh(true)
+    })()
+    await Promise.race([counted, waited])
+    clearTimeout(timer)
   }
 
   private async round() {
@@ -311,6 +326,7 @@ export class Insights {
     }
     return {
       state: !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty", period, zone,
+      ...(local ? { countedAt: local.scanned } : {}),
       totals: measures(totals), change, trend: facts.trend, lists,
       standouts: facts.standouts.map((each) => ({ id: each.session, name: title(each.title), reason: each.reason, kind: each.kind, ...measures(each.sums) })),
     }
@@ -384,8 +400,12 @@ export async function insightsRoutes(insights: Insights | undefined, method: str
   }
   if (method !== "GET") return json({ message: "Not found." }, 404)
   if (path.length === 1 && path[0] === "summary") {
+    // `refresh=1`: count again first, and answer what that counted.
+    const refresh = params.get("refresh") === "1"
+    params.delete("refresh")
+    if (refresh && [7, 30, 90].includes(Number(params.get("period") ?? 30))) await insights.recount()
     // (What the box last read for it at once, while it's read afresh: insights-kept.ts.)
-    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params)) : await insights.summary(params)
+    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params), refresh) : await insights.summary(params)
     return data ? json({ data }) : json({ message: "Choose a 7, 30 or 90 day period." }, 400)
   }
   const route = path.length === 0 ? (params.has("session") ? "detail" : "overview") :

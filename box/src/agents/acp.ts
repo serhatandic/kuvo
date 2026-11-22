@@ -90,6 +90,8 @@ export interface AcpFlavor {
    * per turn. One that asks as it starts has lost it: `signInEnded`.
    */
   asksSignIn?(line: string): boolean
+  /** Whether `authenticate`'s refusal says its sign-in is gone (`signInEnded` then). */
+  signInRefused?(error: unknown): boolean
   signInEnded?(): void
   /** Requests of the agent's own (`x.ai/ask_user_question`…). */
   request?(method: string, params: any, context: AcpContext): Promise<unknown> | undefined
@@ -421,7 +423,14 @@ export class AcpThread implements Thread {
       const authenticate = async () => {
         const methodId = this.flavor.authMethod(advertised)
         if (!methodId) throw new Error(`${this.name} isn't signed in. Sign in again in Settings › Accounts.`)
-        await rpc.request("authenticate", { methodId }, 300_000)
+        try {
+          await rpc.request("authenticate", { methodId }, 300_000)
+        } catch (error) {
+          // Its sign-in is gone (it says so as it's asked to use it): Sign In Again.
+          if (!this.flavor.signInRefused?.(error)) throw error
+          this.flavor.signInEnded?.()
+          throw new Error(`${this.name} needs you to sign in again: Settings › Accounts.`)
+        }
       }
       if (this.flavor.authenticatesFirst) await authenticate()
       const cwd = this.session.location.directory

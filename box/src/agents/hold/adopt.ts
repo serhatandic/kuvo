@@ -25,7 +25,8 @@ export const CLAUDE_REJOINS = "2.1.268"
 /** Whether a held agent can be taken up: Claude Code only from the version that sends its open asks again (an older one's ask would wait forever). */
 export function adoptable(meta: Partial<HeldMeta>): boolean {
   if (!meta.kind || !HELD_KINDS.has(meta.kind)) return false
-  if (meta.kind === "antigravity") return meta.version === ANTIGRAVITY_ACP
+  // (Google's earlier agent pinned to its version, or its `agy` CLI, `version` "agy".)
+  if (meta.kind === "antigravity") return meta.version === ANTIGRAVITY_ACP || meta.version === "agy"
   if (meta.kind === "cursor") return meta.sdk === CURSOR_SDK
   if (meta.kind !== "claude") return true
   return meta.sdk === CLAUDE_SDK && typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)

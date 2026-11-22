@@ -195,6 +195,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agent-messages", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "text-overflow", width: 1080., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(text_overflow_open) },
     Screen { slug: "work-item-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "reply-items", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(hover_reply) },
+    // The same, the pointer on the chip in its words: the item's hover card.
+    Screen { slug: "reply-items-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -464,6 +467,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "insights-expanded", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-providers", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-narrowed", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-refreshing", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-grid", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-list", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -2214,6 +2218,42 @@ fn stage_work_item_hover(stand_in: &StandIn) {
     }));
 }
 
+/// A reply naming Work Queue items: in its words (a chip where it's written) and in a Work Queue
+/// step's row, its words in two parts around what it did, the pointer on its first part (its one
+/// time, Copy and Quote at its end).
+fn stage_reply_items(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Conversation polish");
+    });
+    stand_in.work_item_fixture("wqi_234", json!({ "owner": "ses_dark", "number": 954, "title": "Remove slash commands from the desktop app and the box", "status": "in-progress" }), None);
+    stand_in.work_item_fixture("wqi_235", json!({ "owner": "ses_dark", "number": 820, "title": "Drop the Worked for line under replies", "status": "done" }), None);
+    let first = "I checked #954 first: it's under way, and #820 is done, so the list is clear.";
+    let mention = |needle: &str, number: u64| { let start = first.find(needle).unwrap(); json!({ "start": start, "end": start + needle.len(), "number": number }) };
+    stand_in.work_queue_mention_fixture(first, json!([mention("#954", 954), mention("#820", 820)]));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_ri_u1", "time": { "created": NOW - 120_000.0 },
+        "text": "Where are we on the polish items? Mark the slash commands one as in progress."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_ri_a1", "time": { "created": NOW - 110_000.0, "completed": NOW - 60_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": first },
+            { "type": "tool", "id": "call_ri_q", "name": "kuvo-browser_queue_update", "state": { "status": "completed", "input": { "item": "#954", "status": "in-progress" } } },
+            { "type": "text", "text": "Moved it to In progress. Next I'll take the composer changes." }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({ "type": "idle", "id": "msg_ri_end", "time": { "created": NOW - 60_000.0 }, "outcome": "succeeded" }));
+}
+
+/// The pointer on a reply's first part.
+fn hover_reply(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| view.hover_row("msg_ri_a1", cx));
+    }
+}
+
 /// The messages from other agents in view, the longer one opened.
 fn agent_letters(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
@@ -3127,6 +3167,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "work-item-hover" {
                 stage_work_item_hover(&stand_in);
             }
+            if screen.slug == "reply-items" || screen.slug == "reply-items-hover" {
+                stage_reply_items(&stand_in);
+            }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
@@ -3384,6 +3427,7 @@ fn main() -> anyhow::Result<()> {
             let hover = match screen.slug {
                 "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
                 "work-item-hover" => Some((ShotHoverTarget::Reference(840), 320)),
+                "reply-items-hover" => Some((ShotHoverTarget::Reference(954), 320)),
                 "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
                 _ => None,
             };

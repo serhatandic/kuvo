@@ -6,6 +6,13 @@ import { bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number,
 import { MAC_FEATURES } from "./mac";
 import { SAVE_RECEIPT } from "./setup-save";
 
+/** A coding agent's update notice (`kuvo/agents/api/kuvo/updates/notices`): the box's words, and
+ * `action` `update` where Kuvo Code can update it (`POST kuvo/agents/api/kuvo/updates/<provider>`). */
+export const UPDATE_NOTICE = object({
+  id: string, program: string, provider: string, kind: words("available", "updated"), version: string,
+  title: string, body: string, at: number, "action?": object({ id: literal("update"), label: string }),
+});
+
 /** One of a machine's pieces (`kuvo/info`'s `pieces`): the version it runs (null while it doesn't,
  * or doesn't say), the one its files hold now, and whether it runs another than those (`behind`). */
 const PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
@@ -611,6 +618,9 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
   // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state"): the box's own route,
   // among those it passes on to the bridge (`kuvo/agents/…`).
+  // The coding agents' update notices, the bridge's (PROTOCOL.md, "Update notices").
+  { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
+  { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
   { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
   { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } },
 ];

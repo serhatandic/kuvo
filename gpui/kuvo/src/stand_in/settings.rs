@@ -930,7 +930,11 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         ("signedIn", Some(first)) if agents && meta["unchecked"] == true && first.1.is_empty() => "Couldn’t check just now".into(),
         ("signedIn", Some(first)) => {
             let line = if first.2 { format!("Signed in {} {}", if listed[0]["what"] == true { "with" } else { "as" }, first.1) } else { first.0["line"].as_str().unwrap_or_default().to_owned() };
-            if said.len() > 1 { format!("{line} · {} accounts", said.len()) } else { line }
+            let line = if said.len() > 1 { format!("{line} · {} accounts", said.len()) } else { line };
+            // What a coding agent says it needs while it still runs, as the box adds it.
+            let needs = if agents { text(&meta["message"]) } else { String::new() };
+            let needs = needs.strip_suffix('.').unwrap_or(&needs);
+            if needs.is_empty() { line } else { format!("{line} · {needs}") }
         }
         _ if agents => "Not signed in".into(),
         _ if !signs_in && !environment.is_empty() => format!("Set {} in your shell profile", environment.join(" or ")),

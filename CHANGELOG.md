@@ -6,12 +6,17 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.
 - Stop cancels startup before Claude Code, Grok, Antigravity or Cursor can start on a message you canceled. Cursor also closes an agent that finishes starting after Stop.
 - Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
 - Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
 - The Library leaves out files from coding agents’ project skill folders.
 - A conversation's Activity shows how full its context is (for example "412k of 1M"), with a mark where it will be summarized and a note when it's close. Pin Activity to keep it as a small card at the top right of the conversation while you chat, with a line each for its sessions, outputs and processes; many sessions fold to one line.
 
+- A Work Queue item named in a reply shows as a small chip right where it's written (its status, number and title), and a Work Queue step shows its item's chip in its own line. Clicking a chip opens the item in the Work Queue.
+- Time, Copy and Quote now show once per reply, at its end, and Copy takes the whole reply.
+- Replies no longer end with a "Worked for …" line.
+- Insights has a refresh button beside 7d, 30d and 90d that counts your usage again, and says when its numbers were last counted ("Updated 5m ago").
 - A conversation on another computer no longer freezes on an old "Working…" step: its steps, replies, asks and queue keep arriving as they happen, through a restart of that computer or a slow connection, and what you missed while the connection was down fills in once it's back. A computer shows as offline only after it has been silent for 30 seconds, not when one answer is slow, and what it asks you stays on screen while it restarts.
 - A message waiting over the composer always has its actions, even while it's still on its way: Remove and Edit take it out as soon as it arrives, or say it was already sent.
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
@@ -19,6 +24,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Kuvo uses less memory while idle. The session engine starts when needed, and the engine and the machine’s browser close after ten minutes without work.
 
 - Warnings and errors look the same everywhere: one quiet row with a small colored icon, what happened, why, and at most one action, placed where it applies. A message that couldn’t be sent says so under it with Retry, a sign-in that ended says so inside its account row, a turn that stopped says why under it, and a computer that can’t be reached says so beside its name. Moves that failed or finished now wait under the bell in the title bar instead of a card over the window. Each notice goes away by itself once it’s resolved.
+- Antigravity now runs on Google's Antigravity CLI (`agy`), installed with Google's installer and kept up to date with it, so it gets Google's newest models and fixes. Sign in with your Google account and paste the code Google's page gives you; this works from your phone or another computer too. Its Claude and GPT models show as "Claude Opus 5.5 (Antigravity)" and so on, apart from Claude Code's and Codex's own. An account you signed in to before keeps working, and asks you to sign in again to update it.
+- Claude Code, Codex and Grok no longer update themselves while Kuvo Code runs them, unless you turn on Settings › Computer › "Update coding agents automatically". With it off, your computer tells you as soon as a newer version is out ("Codex 0.161.0 is available"), with Update where Kuvo Code can update it; with it on, it tells you once an agent updated itself. Each version is mentioned once.
 - What you send appears immediately in the conversation or queue and stays visible until the box has it. If the connection drops or the box restarts, Kuvo retries the same send. Steered messages leave the queue as soon as you steer them.
 - Long Claude Code, Codex and Grok conversations summarize earlier by default, so ongoing chats and bots spend fewer tokens replaying old context.
 

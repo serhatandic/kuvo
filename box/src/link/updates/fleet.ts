@@ -21,7 +21,7 @@ import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import {
   type BoxRelease, UPDATE_KEYS, boxVersion, installedPack, isUpdating, newerVersion,
-  packName, startUpdate, switchPending, updateOnTrial, updatesBlocked, verifyBoxes,
+  packName, releaseDrainDeferred, startUpdate, switchPending, updateOnTrial, updatesBlocked, verifyBoxes,
 } from "./update";
 
 /** The newest shareable release held here. */
@@ -415,7 +415,7 @@ function followRelease(options: FleetOptions): void {
     if (expected && cannotFor(expected)) return;
     if (expected && sameRelease(readyFact(), expected)) {
       if (pull) endPull();
-      if (activationAllowed(expected, now)) start({ phase: "activate", expected, keys });
+      if (!releaseDrainDeferred(expected.version, now) && activationAllowed(expected, now)) start({ phase: "activate", expected, keys });
       return;
     }
     if (kept) {

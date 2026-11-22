@@ -309,7 +309,7 @@ import { atWorkForSure, settleStarted } from "./work-queue/started";
 import { checkRepairFormat, repairWithFetch } from "./updates/repair";
 import { checkRepairRequest, repairReplyFormat } from "./updates/repair-record";
 import { readSwap, installHoldFile } from "../shared/engine-swap";
-import { checkRollbackRecords } from "./updates/update";
+import { checkRollbackRecords, finishReleaseHold, releaseSwitchQuiet } from "./updates/update";
 import { readHandOver } from "./compat/helper-handover";
 import { readMachineJob } from "../shared/machine-job";
 import { fleetWith } from "./updates/fleet";
@@ -1721,7 +1721,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
       || mode === "update") checkFolderVersion(K);
     // A staged probe must leave the current box layout alone.
-    else if (mode !== "selftest" && !updateProbe && !useSshPipe) upgradeLinkFolder();
+    else if (mode !== "selftest" && mode !== "release-switch-quiet" && !updateProbe && !useSshPipe) upgradeLinkFolder();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
@@ -1751,7 +1751,13 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       }
     }
   }
-  else if (mode === "continue-update-turns") await continueCutTurns(K);
+  else if (mode === "release-switch-quiet") {
+    if (!await releaseSwitchQuiet(argument === "keep")) process.exitCode = 1;
+  }
+  else if (mode === "continue-update-turns") {
+    await finishReleaseHold();
+    await continueCutTurns(K);
+  }
   else if (mode === "serve") {
     try { await serve(); }
     catch (error) {

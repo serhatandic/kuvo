@@ -18,10 +18,10 @@ import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
-import { commandLineOf, engineHome, processRuns as runs } from "../../shared/platform";
+import { commandLineOf, engineHome, engineRuns, processRuns as runs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { LastUpdate, UpdateStatus, UpdateStep } from "../../shared/routes/box";
-import { asked, fetchedPatiently, readBridgeFile, readEngineFile } from "../engine/client";
+import { asked, call, fetchedPatiently, readBridgeFile, readEngineFile } from "../engine/client";
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, locked, textOf, writePrivate } from "../files";
 import { BRIDGE_FILE, K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder, upgradeLinkFolder } from "../home";
@@ -36,6 +36,8 @@ import { recordCannot, recordReady, sameRelease, type ReleaseRef } from "./facts
 import { appendUpdateEvent } from "./journal";
 import { activeBin, convertBin, previousBin, pruneVersions, stageVersion, versionBin } from "./versions";
 import { rememberCutTurns } from "./interrupted";
+import { isEngineModel } from "../../shared/subagents";
+import { sleep } from "../../shared/wait";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -244,6 +246,79 @@ export async function agentsWorking(readEngine: () => EngineRecord = readEngineF
 }
 
 
+const RELEASE_DRAIN_MOST = 5 * 60_000;
+const ENGINE_TURNS_WAIT = "The release is ready. Kuvo will try again after the engine has had time to finish.";
+const RELEASE_DRAIN_RETRY = 60_000;
+
+export function releaseDrainDeferred(version: string, now: number): boolean {
+  const last = updateState().last;
+  return last?.result === "waiting" && last.version === version && last.message === ENGINE_TURNS_WAIT &&
+    now - last.at < RELEASE_DRAIN_RETRY;
+}
+
+async function bridgeEngineWorking(signal: AbortSignal): Promise<boolean> {
+  let bridge: BridgeRecord;
+  try { bridge = readBridgeFile(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!runs(bridge.pid, "kuvo-agents")) return false;
+  const reply = await asked(bridge, "GET", "api/session/active?release-switch", undefined, 3000);
+  if (!isObject(reply) || !isObject(reply.data)) return true;
+  if (Array.isArray(reply.engineTurns)) return reply.engineTurns.length !== 0;
+  // An installed bridge may predate the query. Its session model includes Auto, which can fall
+  // back to an engine model. The bridge and its loopback listener stay up until the switch.
+  const active = await Promise.all(Object.keys(reply.data).map(id =>
+    call(bridge, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal)));
+  return active.some(session => !isObject(session) || !isObject(session.model) ||
+    typeof session.model.providerID !== "string" || isEngineModel({ providerID: session.model.providerID }));
+}
+
+async function nativeEngineWorking(signal: AbortSignal): Promise<boolean> {
+  let engine: EngineRecord;
+  try { engine = readEngineFile(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!engineRuns(engine.pid, K)) return false;
+  const active = await call(engine, "GET", "/api/session/active", undefined, signal);
+  return Array.isArray(active) ? active.length !== 0 : !isObject(active) || Object.keys(active).length !== 0;
+}
+
+/** The release hold was published before probing. Unknown work defers the switch too. */
+export async function releaseSwitchQuiet(keepEngine: boolean): Promise<boolean> {
+  const signal = AbortSignal.timeout(3000);
+  const busy = await Promise.all([
+    bridgeEngineWorking(signal).catch(() => true),
+    keepEngine ? false : nativeEngineWorking(signal).catch(() => true),
+  ]);
+  return !busy.some(Boolean);
+}
+
+async function drainEngineTurns(keepEngine: boolean, deadline: number, clock: () => number): Promise<boolean> {
+  while (true) {
+    if (await releaseSwitchQuiet(keepEngine)) return true;
+    const left = deadline - clock();
+    if (left <= 0) return false;
+    await sleep(Math.min(1000, left));
+  }
+}
+
+/** Release messages held through the keeper's health check, under the same lock as activation. */
+export async function finishReleaseHold(): Promise<void> {
+  const hold = installHoldFile(RUN);
+  if (!fs.existsSync(hold) || fs.existsSync(previousBin(K)) || !takeUpdateLock()) return;
+  try {
+    if (fs.existsSync(previousBin(K))) return;
+    await releaseWaiting(readEngineFile());
+    fs.rmSync(hold, { force: true });
+  } finally {
+    fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
+
 export const hexSHA256 = (data: Buffer): string => crypto.createHash("sha256").update(data).digest("hex");
 
 // `command` with `args`, in the box's folder, its environment the bridge's: its exit status and
@@ -350,6 +425,7 @@ export interface UpdateOptions {
   url?: string;
   blocked?: string | null;
   clock?: () => number;
+  drainClock?: () => number;
   step?: (running: UpdateStep) => void;
 
 }
@@ -385,7 +461,7 @@ export function packedBox(pack: Buffer, version: string): BoxFiles {
 // (a start of it under way): what the installer's update tries once more by itself (`main.ts`),
 // unlike a check that would fail again (what it got isn't what it says, no room, a self-test).
 export async function update({ now = false, from, phase, expected, keys = UPDATE_KEYS, url = UPDATE_URL,
-  blocked = updatesBlocked(), clock = Date.now, step = () => {} }: UpdateOptions = {}): Promise<UpdateOutcome> {
+  blocked = updatesBlocked(), clock = Date.now, drainClock = () => performance.now(), step = () => {} }: UpdateOptions = {}): Promise<UpdateOutcome> {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
   if (switchPending() || updateOnTrial() || !takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
@@ -407,6 +483,9 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
       if (path.basename(K) !== ".kuvo-code" || path.resolve(K) !== path.resolve(home ?? path.dirname(K), ".kuvo-code")) {
         throw new Error("This keeper doesn’t run from Kuvo’s home folder.");
       }
+      const selectedHome = home ?? path.dirname(K);
+      const keepEngine = ran("sh", [keeper, "switch-engine", target], { HOME: selectedHome }).output === "keep";
+      const deadline = drainClock() + RELEASE_DRAIN_MOST;
       const holding = Date.now();
       const to = /^V=(.+)$/m.exec(textOf(keeper) ?? "")?.[1] ?? "";
       const hold: EngineSwap = { from: runningEngineVersion() ?? "", to, since: holding, stage: "holding", holding, pid: process.pid };
@@ -414,11 +493,19 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
       step("installing");
       writePrivate(installHoldFile(RUN), JSON.stringify(engineSwapFormat.write(hold)));
       await waitForPromptWrites();
-      if (!activationAllowed(expected, clock())) return { result: "waiting" };
-      await rememberCutTurns(K);
+      if (!await drainEngineTurns(keepEngine, deadline, drainClock)) {
+        return { result: "waiting", version: expected.version, message: ENGINE_TURNS_WAIT };
+      }
+      if (!activationAllowed(expected, clock()) || ["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark)))) {
+        return { result: "waiting", version: expected.version };
+      }
+      await rememberCutTurns(K, !keepEngine);
       writeDurablePrivate(previousBin(K), previous + "\n", K);
-      const changed = ran("sh", [keeper, "stop", "--switch", target], { HOME: home ?? path.dirname(K) });
-      if (activeBin(K) !== target) throw new Error(changed.output || "Kuvo couldn’t stop its workers for the release.");
+      const changed = ran("sh", [keeper, "stop", "--switch", target, keepEngine ? "keep" : "restart"], { HOME: selectedHome });
+      if (activeBin(K) !== target) {
+        fs.rmSync(previousBin(K), { force: true });
+        throw new Error(changed.output || "Kuvo couldn’t stop its workers for the release.");
+      }
       return { result: "updated", version: expected.version };
     }
 
@@ -584,9 +671,9 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
     }
     return { result: "failed", message: reason, version: attempt?.version };
   } finally {
-    if (engineHold) {
+    if (engineHold && !fs.existsSync(previousBin(K))) {
       fs.rmSync(installHoldFile(RUN), { force: true });
-      try { if (!fs.existsSync(previousBin(K))) await releaseWaiting(readEngineFile()); } catch {}
+      try { await releaseWaiting(readEngineFile()); } catch {}
     }
     try { if (stage) fs.rmSync(stage, { recursive: true, force: true }); }
     finally { fs.rmSync(UPDATE_LOCK, { recursive: true, force: true }); }

@@ -87,7 +87,7 @@ test("the atomic fleet switch preserves a held agent turn and starts the release
   assert.equal(holderFor(session).child, firstHolder.child);
   assert.ok(holderFor(session).generation > firstHolder.generation);
   assert.ok(runs(firstHolder.child), "the same agent process continued");
-  assert.notEqual(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   const again = await pending();
   assert.equal(again.length, 1);
   assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${again[0].id}/reply`, { decision: "once" })).status, 200);
@@ -108,8 +108,8 @@ test("the atomic fleet switch preserves a held agent turn and starts the release
   await until(() => turns(fake).some(turn => turn.text === "new work"), "the adopted server to accept new work");
   await until(async () => (await bridgeAPI().api("GET", `api/session/${another}/message?limit=100&order=asc`)).json?.data?.at(-1)?.type === "idle", "the new work to finish");
 
-  // The release’s engine starts with the rest of its workers.
-  assert.notEqual(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  // The original engine finishes the turn it started.
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   fs.rmSync(path.join(scratch, "engine-busy"));
   assert.equal(await link.agentsWorking(), false, "both finished");
 

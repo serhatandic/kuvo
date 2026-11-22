@@ -34,8 +34,10 @@ export interface CommandSignInOptions {
   pageWait?: number
   /** Where a device code is in what it prints, for showing beside the page. */
   userCode?: RegExp
-  /** Its command has ended, and what it left (the page it handed its browser) is gone. */
-  onEnd?: () => void
+  /** Why it isn't signed in though the command ended (what checking the sign-in found), in a line. */
+  whyNot?: () => string | undefined
+  /** Its command has ended (with `code`), and what it left (the page it handed its browser) is gone. */
+  onEnd?: (code: number) => void
 }
 
 /**
@@ -131,13 +133,15 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
   }
   void child.exited.then(async (code) => {
     rmSync(own, { recursive: true, force: true })
-    options.onEnd?.()
+    options.onEnd?.(code)
     if (status.status !== "pending") return
     const signedIn = await options.signedIn().catch(() => false)
     if (status.status !== "pending") return
     // Signed in before (an ended sign-in still reads as one): only the command's own success says
     // this one worked.
+    const why = signedIn ? undefined : options.whyNot?.()
     if (signedIn && (code === 0 || signedInBefore === false)) succeed()
+    else if (why) status = { status: "failed", message: why }
     else if (pasted) status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." }
     else {
       console.error(`The sign-in command stopped (exit code ${code}).`)

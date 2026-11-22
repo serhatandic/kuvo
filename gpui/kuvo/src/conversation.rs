@@ -103,6 +103,8 @@ pub struct ConversationView {
     /// The message "Show in conversation" brings into view as soon as its row is here (the Library).
     reveal: Option<String>,
     chat_references: crate::queue::chat_references::ChatReferences,
+    /// The row under the pointer: its reply shows its time, Copy and Quote at its end.
+    hovered_row: Option<String>,
     /// Each row's revision: a row is drawn again only once it's changed.
     revisions: Vec<u64>,
     list: ChatListState,
@@ -212,6 +214,7 @@ impl ConversationView {
             entries: Vec::new(),
             reveal: None,
             chat_references: Default::default(),
+            hovered_row: None,
             revisions: Vec::new(),
             list: ChatListState::new(0, cx),
             problem: None,
@@ -418,6 +421,13 @@ impl ConversationView {
         &self.bars
     }
 
+    /// Draws as though the pointer were on row `key` (for shots).
+    #[cfg(feature = "stand-in")]
+    pub fn hover_row(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.hovered_row = Some(key.to_owned());
+        cx.notify();
+    }
+
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -439,12 +449,15 @@ impl ConversationView {
             order.cmp(&at, &selection::Spot::row_start(start.unit.row.clone())) != Some(std::cmp::Ordering::Less)
                 && order.cmp(&at, &selection::Spot::row_start(end.unit.row.clone())) != Some(std::cmp::Ordering::Greater)
         });
-        selection::copy_text(&order, rows.map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open))), &start, &end)
+        let items = self.chat_references.items();
+        let text = selection::copy_text(&order, rows.map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open, items.as_deref()))), &start, &end);
+        kuvo_ui::markdown::plain_items(&text)
     }
 
     /// The rows' text as copying sees it (for shots and tests to select in).
     pub fn units(&self) -> Vec<(SharedString, Vec<selection::Unit>)> {
-        self.entries.iter().map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open))).collect()
+        let items = self.chat_references.items();
+        self.entries.iter().map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open, items.as_deref()))).collect()
     }
 
     /// Selects from the first `from` to the end of the first `to` after it (for shots and tests).
@@ -462,7 +475,7 @@ impl ConversationView {
 
     /// Copies message `key`'s text (as Markdown) from the row's Copy: a check shows for two seconds.
     fn copy_message(&mut self, key: &str, cx: &mut Context<Self>) {
-        let Some((text, _)) = self.entries.iter().find(|entry| entry.key() == key).and_then(entries::copyable) else { return };
+        let Some(text) = self.copied_text(key) else { return };
         selection::copy_to_clipboard(text, cx);
         let clicks = self.copied.as_ref().map_or(0, |(_, clicks)| *clicks) + 1;
         self.copied = Some((key.to_owned(), clicks));
@@ -480,10 +493,31 @@ impl ConversationView {
         .detach();
     }
 
-    /// Replies to message `key` whole, from the row's Quote: the same quote as the menu's Reply.
+    /// The rows of the reply that ends at row `end` (its last words), in order.
+    fn reply_rows(&self, end: usize) -> Vec<usize> {
+        entries::reply_ends(&self.entries).into_iter().enumerate().filter(|(_, at)| *at == Some(end)).map(|(ix, _)| ix).collect()
+    }
+
+    /// What Copy under row `key` takes, as Markdown: yours, or the whole reply it ends (all of
+    /// the agent's words in it, a paragraph apart).
+    fn copied_text(&self, key: &str) -> Option<String> {
+        let ix = self.entries.iter().position(|entry| entry.key() == key)?;
+        if !matches!(self.entries[ix], Entry::Words { .. }) {
+            return entries::copyable(&self.entries[ix]).map(|(text, _)| text);
+        }
+        let words: Vec<String> = self.reply_rows(ix).into_iter().filter_map(|at| entries::copyable(&self.entries[at]).map(|(text, _)| text)).collect();
+        (!words.is_empty()).then(|| words.join("\n\n"))
+    }
+
+    /// Replies to message `key` whole, from the row's Quote: the same quote as the menu's Reply;
+    /// under a reply, the whole reply's words.
     fn quote_message(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.entries.iter().position(|entry| entry.key() == key) else { return };
-        let text = self.message_text(ix);
+        let text = if matches!(self.entries[ix], Entry::Words { .. }) {
+            self.reply_rows(ix).into_iter().filter(|at| matches!(self.entries[*at], Entry::Words { .. })).map(|at| self.message_text(at)).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n")
+        } else {
+            self.message_text(ix)
+        };
         self.quote(&text, window, cx);
     }
 
@@ -531,7 +565,7 @@ impl ConversationView {
 
     fn select_all(&mut self, _: &selection::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         // From the first row with text to the last (not "Working…", which goes when the turn ends).
-        let rows: Vec<&str> = self.entries.iter().filter(|entry| !entries::units(entry, &self.open).is_empty()).map(Entry::key).collect();
+        let rows: Vec<&str> = self.entries.iter().filter(|entry| !entries::units(entry, &self.open, None).is_empty()).map(Entry::key).collect();
         if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
             self.selection.select_all(first, last);
             cx.notify();
@@ -582,12 +616,14 @@ impl ConversationView {
     pub fn message_at(&self, point: gpui::Point<gpui::Pixels>) -> Option<usize> {
         // (By the text drawn there, as a selection finds it.)
         let row = self.selection.spot_at(point)?.unit.row;
-        self.entries.iter().position(|entry| entry.key() == row.as_ref() && matches!(entry, Entry::Message(_) | Entry::Outgoing { .. }) && !entries::units(entry, &self.open).is_empty())
+        self.entries.iter().position(|entry| entry.key() == row.as_ref() && matches!(entry, Entry::Message(_) | Entry::Outgoing { .. }) && !entries::units(entry, &self.open, None).is_empty())
     }
 
     /// Row `ix`'s words as a quote takes them: its text as copying sees it, the parts apart.
     pub fn message_text(&self, ix: usize) -> String {
-        self.entries.get(ix).map(|entry| entries::units(entry, &self.open).into_iter().map(|unit| unit.text.to_string()).collect::<Vec<_>>().join("\n\n")).unwrap_or_default()
+        let items = self.chat_references.items();
+        let text = self.entries.get(ix).map(|entry| entries::units(entry, &self.open, items.as_deref()).into_iter().map(|unit| unit.text.to_string()).collect::<Vec<_>>().join("\n\n")).unwrap_or_default();
+        kuvo_ui::markdown::plain_items(&text)
     }
 
     /// Why the page before couldn't be read, while that's said.
@@ -1956,6 +1992,11 @@ impl Render for ConversationView {
             let retry_file: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |id: &str, _: &mut Window, cx: &mut App| {
                 file_retrier.update(cx, |this, cx| this.retry_shown_file(id, cx));
             });
+            // One time, Copy and Quote for each reply, at its end, shown while the pointer is on
+            // any of its rows (the user, 11-22: "for each full response").
+            let ends = Rc::new(entries::reply_ends(&self.entries));
+            let hovered_end = self.hovered_row.as_ref().and_then(|row| self.entries.iter().position(|entry| entry.key() == row)).and_then(|ix| ends.get(ix).copied().flatten());
+            let items = self.chat_references.items();
             let list = chat_list(&self.list, move |ix, _window, cx| {
                 let cx: &App = cx;
                 let this = list_view.read(cx);
@@ -2000,21 +2041,47 @@ impl Render for ConversationView {
                     retry: retry_file.clone(),
                     show_changes: this.show_changes.clone(),
                 };
-                let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone(), files: &files, file_actions };
-                let actions = entries::copyable(entry).map(|(_, time)| {
+                let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone(), files: &files, file_actions, items: items.clone() };
+                let reply = ends.get(ix).copied().flatten();
+                let ends_reply = reply == Some(ix);
+                let actions = entries::copyable(entry).filter(|_| matches!(entry, Entry::Message(_)) || ends_reply).map(|(_, time)| {
                     let key = entry.key().to_owned();
                     let (copier, quoter) = (list_view.clone(), list_view.clone());
                     let (copy_key, quote_key) = (key.clone(), key.clone());
                     entries::Actions {
                         time,
+                        shown: ends_reply && hovered_end == Some(ix),
                         now: this.now(),
                         copied: this.copied.as_ref().is_some_and(|(copied, _)| *copied == key),
                         copy: Rc::new(move |_, cx| copier.update(cx, |this, cx| this.copy_message(&copy_key, cx))),
                         quote: Rc::new(move |window, cx| quoter.update(cx, |this, cx| this.quote_message(&quote_key, window, cx))),
                     }
                 });
-                let references = this.chat_references.chips(entry.reference_text(), &this.client, this.live, cx);
-                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, actions, references, cx)
+                let row = entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, actions, cx);
+                match reply {
+                    Some(_) => {
+                        let (hover_view, key) = (list_view.clone(), entry.key().to_owned());
+                        div()
+                            .id(SharedString::from(format!("reply-row-{key}")))
+                            .on_hover(move |hovered, _, cx| {
+                                let hovered = *hovered;
+                                hover_view.update(cx, |this, cx| {
+                                    if hovered {
+                                        if this.hovered_row.as_deref() != Some(key.as_str()) {
+                                            this.hovered_row = Some(key.clone());
+                                            cx.notify();
+                                        }
+                                    } else if this.hovered_row.as_deref() == Some(key.as_str()) {
+                                        this.hovered_row = None;
+                                        cx.notify();
+                                    }
+                                });
+                            })
+                            .child(row)
+                            .into_any_element()
+                    }
+                    None => row,
+                }
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.

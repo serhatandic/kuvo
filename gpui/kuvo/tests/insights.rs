@@ -1,7 +1,8 @@
 //! Insights as someone uses it, against the stand-in box (nothing real is reached): the period's
 //! totals, its trend and its ranked lists as the box sums them; a bot opened to its sessions;
 //! narrowing to a row and back by the crumbs; a usage ring's account; a first week, nothing at all,
-//! a failed read, and an older box that only has the overview. Clicks go through the window.
+//! a failed read, an older box that only has the overview, and the refresh button that has the box
+//! count again. Clicks go through the window.
 
 use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::area::Area;
@@ -178,6 +179,27 @@ fn insights_opens_at_once_on_the_boxs_last_summary_marked_as_updating(cx: &mut T
 }
 
 #[gpui::test]
+fn refresh_asks_the_box_to_count_again_and_shows_its_new_numbers_in_place(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, cx) = insights(cx, stand_in.clone());
+    // A month of work, as the box last counted it five minutes ago.
+    assert!(shown(cx, "insights-row-4"));
+    assert!(shown(cx, "insights-counted-Updated 5m ago"));
+    assert!(!last_asked(&stand_in).contains("refresh="));
+
+    // What the box has changes: until it's asked, the numbers on screen stay what they were.
+    stand_in.set_insights(Sample::Little);
+    assert!(shown(cx, "insights-row-4"));
+
+    // Refreshed: the box is asked to count again, and its new numbers replace the old in place.
+    click(cx, "insights-refresh");
+    assert!(last_asked(&stand_in).ends_with("&refresh=1"), "{}", last_asked(&stand_in));
+    assert!(shown(cx, "insights-row-1") && !shown(cx, "insights-row-2"));
+    assert!(shown(cx, "insights-counted-Updated just now") && !shown(cx, "insights-counted-Updated 5m ago"));
+    assert!(!shown(cx, "insights-said"), "never a blank \u{201c}Reading usage\u{2026}\u{201d} page");
+}
+
+#[gpui::test]
 fn a_usage_ring_opens_insights_narrowed_to_its_account(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
@@ -235,6 +257,11 @@ fn an_older_box_shows_its_totals_trend_and_providers(cx: &mut TestAppContext) {
         assert!(shown(cx, part), "{part}");
     }
     assert!(!shown(cx, "insights-tab-bots") && !shown(cx, "insights-standouts"));
+    // It doesn't say when it counted, and refresh reads it again.
+    assert!(!shown(cx, "insights-counted"));
+    let reads = stand_in.seen_at("GET", "kuvo/agents/api/kuvo/insights").len();
+    click(cx, "insights-refresh");
+    assert_eq!(stand_in.seen_at("GET", "kuvo/agents/api/kuvo/insights").len(), reads + 1);
     // Its providers still narrow, as it can.
     click(cx, "insights-row-0");
     assert!(stand_in.seen_at("GET", "kuvo/agents/api/kuvo/insights").last().unwrap().path.contains("&provider="));

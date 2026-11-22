@@ -3657,7 +3657,14 @@ bridge, checks the keeper's shell syntax, and asks the staged link
 `box route --internal kuvo/info`. The prepared tools and plugin live at
 `versions/<version>-<sha12>/bin`. The keeper stops the box's workers and changes the `bin` symlink
 with one rename. The plugin directory follows `bin/opencode-plugins` and the selected keeper names
-the engine. The existing `bin/kuvo-start` launch path stays in use. After a restart, the keeper uses
+the engine. The existing `bin/kuvo-start` launch path stays in use. A matching engine version,
+launcher and installed plugins let the engine keep its process and running turns. Ahead of a
+restart, the box lets running engine turns finish. It also waits for bridge conversations using
+engine models to finish before stopping their bridge, even if the engine stays up. New engine
+messages wait during the switch and its startup check. If work is still running after about five
+minutes, the attempt defers and lets waiting work go before trying again. If the installed
+updater predates this wait, the staged keeper checks for work before stopping anything and
+allows Try Again if it finds a turn still running. After a restart, the keeper uses
 `run/previous` to restore the previous target if the selected release can't start and answer within
 two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of every holder, at
 work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in
@@ -4099,7 +4106,7 @@ new version without cutting a turn:
   client reconnects for events. The keeper starts the saved previous build if the replacement
   exits or fails to publish within a minute. Only the active bridge writes the store.
 
-  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity ACP 1.3.0, and
+  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity (`agy`, or ACP 1.3.0), and
   Cursor with the same worker SDK can transfer when their journal is complete. Antigravity's ACP
   server keeps its native session and answers the original prompt request after an approval.
   Cursor's worker keeps its SDK run alive and sends updates with that run's ID. Open forms,
@@ -4476,6 +4483,7 @@ device of kind `desktop` (`clients.kind`) is sent none, as Apple has nothing for
 | `report` | A bot's news: its reply to you, what it sent you on purpose (`notify_user`), a goal's digest (`quiet`) or its report. |
 | `blocked` | A bot's goal needs you (`quiet`, or `wake` where you asked to be woken). |
 | `message` | Something in a group chat. |
+| `update` | A coding agent's update notice ("Codex 0.161.0 is available", "Codex updated to 0.161.0"); `data.notice` is its id in `kuvo/agents/api/kuvo/updates/notices`, `thread` `update:<program>`. |
 
 **Handed over, and how it went.** A push counts as handed over only once the box's relay
 connection takes it: one closing as it's handed over is held and tried again, as when the relay
@@ -4615,7 +4623,7 @@ a browser's, itself).
   405 for another method.
 - **`GET kuvo/notices/events`**: the same, a line now and one each time it changes (NDJSON).
 - **A client** shows each notice of the categories that are news (`finished`, `failed`, `report`,
-  `message`) once, by its `id`, and none of what was listed the first time it read a box (news from
+  `message`, `update`) once, by its `id`, and none of what was listed the first time it read a box (news from
   before it was there). The desktop app, which has no answer buttons in its notifications,
   shows what's asked (`permission`, `question`, `ask`, `blocked`) the same way, as the box words
   it; each device decides only whether it shows them (its own settings: none while its window is
@@ -4846,7 +4854,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     say just now whether it's signed in (its check failed or took too long, on a busy computer);
     the account and its models are as it last said, and its connection's message says so when
     nothing was known yet. Only the agent's own word that it's signed out is a sign-out.
-  - Installing and updating an agent's program (Claude Code, Codex, Grok), on the computer the
+  - Installing and updating an agent's program (Claude Code, Codex, Grok, Antigravity's `agy`), on the computer the
     bridge is on: `metadata.installed` false, with `metadata.install` the maker's installer
     command; `POST kuvo/agents/api/integration/<provider>/install` runs it (a few minutes at most)
     → `{data: {installed, version?, message?}}` (`message`: why not, in the installer's words).
@@ -4870,12 +4878,26 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     still runs after 30 minutes, the update ends and the held messages go ahead. A replacement
     bridge restores the pending update and its original deadline before admitting queued turns.
     A client draws the outcomes, says each once and then that it was seen. Update All on
-    the phone asks each computer. Installing done,
+    the phone asks each computer.
+  - **Update notices** (`agents.updates.notices`): the box checks each installed agent's newest
+    version (npm or Homebrew, as its installer would update it) as accounts are read and every
+    hour, and decides its notices. With "Update coding agents automatically" off (Settings ›
+    Computer): `available`, "Codex 0.161.0 is available", as soon as a newer version is known;
+    on: `updated`, "Codex updated to 0.161.0", once the installed version moved on. One per
+    program and version, kept across restarts; it goes once the program is updated to it or past
+    it, or once a client says it was seen, and the same version is never raised again.
+    `GET kuvo/agents/api/kuvo/updates/notices` → `{data: {notices: [{id, program, provider, kind:
+    "available" | "updated", version, title, body, at, action?}]}}`, newest first: `title` and
+    `body` are the box's words, drawn as they are; `action` `{id: "update", label}` where Kuvo
+    Code can update it, done through `POST …/kuvo/updates/<provider>` (`provider`: the agent's own
+    sign-in). `DELETE …/kuvo/updates/notices/<id>`: seen, for every client. The bridge's
+    `kuvo.updates.notices.updated` says the list changed; each notice, as it's made, is told once
+    on `kuvo/notices` (category `update`) for macOS and your phones. Installing done,
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
     …/connect/oauth/<attempt>` → its status (`pending`, with `url`, `instructions`, `userCode` and
-    `message` as they come, for an agent downloaded first, Antigravity;
+    `message` as they come;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
     {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
     `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With
@@ -5005,7 +5027,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     doesn't have; `503 {message}` while it can't be asked, or when it has no way to close a folder,
     which only a restart does then. Every box with `accounts.refresh`.
   - `GET kuvo/accounts/found` → `{agents, opencode, shell, connected}`: what the computer already has, for
-    the first launch's Bring your subscriptions. `agents`: the coding agents' programs (`{id, name,
+    Kuvo Code 0.7's first launch (1.0's first run reads `kuvo/sign-in/accounts`, where a coding
+    agent's own sign-in is its first account, signed in already, and nothing is brought over). `agents`: the coding agents' programs (`{id, name,
     installed, signedIn, label?}`, `label` who it's signed in as). `opencode`: an opencode used
     apart from Kuvo Code (its `auth.json`), each `{id, integrationID, name, kind, connected}`: a
     `key` can come over, a `signIn` is done again here (both apps renewing one refresh token would
@@ -8285,6 +8308,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `agents.accounts` | `kuvo/agents/api/kuvo/accounts…`: add, rename and remove named coding-agent accounts |
 | `agents.start` | `POST kuvo/agents/start`: restart the coding agents' bridge when it fails to start |
 | `agents.updates` | `kuvo/agents/api/kuvo/updates…`: start program updates and acknowledge the results |
+| `agents.updates.notices` | `kuvo/agents/api/kuvo/updates/notices`: the coding agents' update notices ("Update notices") |
 | `agents.voice` | `kuvo/agents/api/kuvo/voice…`: voice routes |
 | `approval` | `kuvo/approval` and `kuvo/sessions/<id>/approval` ("Approval", bridge 0.9.180) |
 | `approval.default` | A new conversation's approval where its client doesn't say: Auto the first time on a computer, then the last one picked there (`kuvo/approval`'s `default`, bridge 0.9.185); one a client made with `kuvo.approval` alone gets that ("Approval") |
@@ -12832,6 +12856,15 @@ by the box; a client draws it as it comes:
   (a client asks again shortly). Its last summaries are kept on disk, so
   a box that just started answers at once too. One read in the last 30 s
   is answered as it is, without `asOf`; a `loading` one is never kept.
+- `countedAt`: when the box last counted its own usage (ms), absent
+  before its first count. Older boxes don't send it.
+
+`refresh=1` on `GET /insights/summary` asks the box to count again first
+(after a count already under way, and syncing its peers as
+`POST /insights/refresh` does), waiting up to a minute for it, then
+answers the summary read afresh, never `asOf`, and keeps it as the last.
+An older box ignores it and answers as usual, so a client can send it to
+any box.
 
 Each usage record carries the bot over it: a bot's own conversation and
 group-chat seat are its, a session it started (`kuvo.by`) is its, a
