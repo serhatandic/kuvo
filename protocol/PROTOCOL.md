@@ -2083,6 +2083,13 @@ reported context capacity when known. The field can be absent before a measureme
 summary without a new measurement. Cursor supplies aggregate billing usage and has no measurement
 for this field. Session `tokens` still describes usage across the conversation.
 
+`kuvo/agents/api/session/<id>` adds `summarizeAt` to it, in tokens, where the box's
+"Summarize long conversations at" setting (`kuvo/settings/conversations`) decides when the
+conversation is summarized by itself: Claude Code, Codex and Grok, unless the choice is `never`
+(Claude Code under a 900k window still summarizes at 400k) or above 85% of `window`, where the
+agent's own margin decides. Where it's absent, a client draws no mark. Clients draw used of window
+with a mark at `summarizeAt` (the desktop app's Activity, as a strip and on its pinned card).
+
 ### Session lists
 
 What each session is, and where every client's lists show it (`sessions.list`): the box decides it

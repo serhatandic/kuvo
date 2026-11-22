@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 91d2e63ac343
+// Kuvo folder layout 23 f1b6657a1f13
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1640,7 +1640,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "91d2e63ac343";
+var BRIDGE_VERSION = "f1b6657a1f13";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -62584,9 +62584,10 @@ function stepContext(usage) {
   const used = values.reduce((sum, value) => sum + value, 0);
   return used || undefined;
 }
-var compactionChoices, compactionFile = (home) => join4(home, "box", "conversation-compaction.json"), tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var compactionChoices, compactionFile = (home) => join4(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 var init_context = __esm(() => {
   compactionChoices = ["200000", "400000", "600000", "never"];
+  choosing = new Set(["claude", "codex", "grok"]);
 });
 
 // box/src/link/engine/context.ts

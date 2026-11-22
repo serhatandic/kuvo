@@ -810,6 +810,14 @@ function compactionChoice(home = process.env.KUVO_HOME) {
   } catch {}
   return "400000";
 }
+function summarizeAt(kind, window, choice = compactionChoice()) {
+  if (!kind || !choosing.has(kind))
+    return;
+  const at = choice !== "never" ? Number(choice) : kind === "claude" && !(window && window >= 900000) ? 400000 : undefined;
+  if (at === undefined || window && at > window * 0.85)
+    return;
+  return at;
+}
 function stepContext(usage) {
   const tokens = usage;
   if (!tokenCount(tokens?.input))
@@ -820,9 +828,10 @@ function stepContext(usage) {
   const used = values.reduce((sum, value) => sum + value, 0);
   return used || undefined;
 }
-var compactionChoices, compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var compactionChoices, compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 var init_context = __esm(() => {
   compactionChoices = ["200000", "400000", "600000", "never"];
+  choosing = new Set(["claude", "codex", "grok"]);
 });
 
 // box/src/shared/git.ts
@@ -30466,6 +30475,13 @@ async function integration(agent, accounts, fresh = false, auto, note = maintain
     connections: account.signedIn ? [{ type: "agent", label: account.label, method: "oauth", ...account.what && account.label ? { what: true } : {}, status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }] : []
   };
 }
+function withSummarizeAt(session) {
+  const context = session.context;
+  if (!context)
+    return session;
+  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window);
+  return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } };
+}
 function page(items, url) {
   const limit = Number(url.searchParams.get("limit") ?? 100) || 100;
   const cursor = url.searchParams.get("cursor");
@@ -30692,7 +30708,7 @@ function handler(context, transferring) {
         const id = a;
         if (!b) {
           if (method === "GET")
-            return json9({ data: sessions.get(id) });
+            return json9({ data: withSummarizeAt(sessions.get(id)) });
           if (method === "PATCH") {
             sessions.update(id, await body());
             return json9({ data: sessions.get(id) });
@@ -31034,6 +31050,7 @@ var init_server = __esm(() => {
   init_post();
   init_routes();
   init_shells();
+  init_context();
   attempts = new Map;
   setInterval(() => {
     for (const [id, pending] of attempts) {
@@ -32692,4 +32709,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents c734d57608c7595d363eb06b05fef8260ca3ff955ee34072b98cf3aa7cbd9c4f
+// Built from Packages/Box/src/agents 57ace381a7a5a5dc2bd696d03421a562eeabba4b780c67c056a68227687c66e2
