@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 f6ff7999ee8c
+// Kuvo folder layout 23 bc5c56461713
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1802,7 +1802,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f6ff7999ee8c";
+var BRIDGE_VERSION = "bc5c56461713";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -80009,7 +80009,8 @@ async function locked2(home, waiting, work) {
     try {
       checkRehomeFormats(home);
     } catch (error) {
-      return { result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) };
+      const result = moveUnderWay(home) ? "stuck" : "refused";
+      return { result, message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) };
     }
     return;
   };

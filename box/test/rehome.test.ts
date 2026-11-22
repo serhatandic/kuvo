@@ -880,10 +880,11 @@ test.if(!mac)("a machine's box is in its home already: rehome refuses, saying so
   expect(readdirSync(join(home, ".kuvo-code"))).toEqual([])
 }, 60_000)
 
-test.if(mac)("a move back that stops part way goes back to the box moved, or on to the box back, as a move does", () => {
-  for (const [point, ends] of [["in-place", "moved"], ["in-merge", "moved"], ["in-clear", "back"]] as const) {
+for (const [point, ends] of [["in-place", "moved"], ["in-merge", "moved"], ["in-clear", "back"]] as const) {
+  test.if(mac)(`a move back that stops part way at ${point} recovers the box ${ends}`, () => {
     const w = world()
-    expect(move(w).status).toBe(0)
+    const movedHere = move(w)
+    expect(movedHere.status, JSON.stringify(movedHere)).toBe(0)
     // (The app made one of its files again meanwhile: what goes back merges with it.)
     put(join(w.S, "box", "machines.json"), "[\"the app's\"]")
     const moved = { K: snapshot(w.K, boxOnly), S: snapshot(w.S) }
@@ -903,8 +904,8 @@ test.if(mac)("a move back that stops part way goes back to the box moved, or on 
       expect(readFileSync(join(w.S, "box", "machines 2.json"), "utf8")).toBe("[\"the app's\"]")
       expect(here(w)).toMatchObject({ use: "own" })
     }
-  }
-}, 60_000)
+  }, 60_000)
+}
 
 test.if(mac)("going back, stopped part way itself, goes back again from the start: the app's folder as it was", () => {
   const w = world()
@@ -942,8 +943,8 @@ test.if(mac)("a journal that can't be read is a move under way that no one finis
   const w = world()
   put(join(w.K, "updates", "rehome", "journal.json"), "")
   expect(here(w)).toMatchObject({ verdict: "moving", use: "wait" })
-  const resumed = rehome(w, ["--resume"])
-  expect([resumed.status, resumed.said?.result]).toEqual([3, "stuck"])
+  const resumed = rehome(w, ["--resume"], { KUVO_HOME: w.K })
+  expect([resumed.status, resumed.said?.result], JSON.stringify(resumed)).toEqual([3, "stuck"])
   expect(move(w).said).toMatchObject({ result: "stuck" })
   expect(await rehomeReady(w.K, w.S, { busy: async () => false })).toMatchObject({ ready: false })
   expect(readdirSync(w.S)).toContain("box")
