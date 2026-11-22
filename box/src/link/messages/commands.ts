@@ -34,3 +34,8 @@ function readKept(): Map<string, MessageParts> {
 export function keptCommand(id: string): MessageParts | null {
   return readKept().get(id) ?? null;
 }
+
+/** Reads `run/commands.json` afresh next time (tests, which write it after another test read it). */
+export function forgetKept(): void {
+  kept = null;
+}

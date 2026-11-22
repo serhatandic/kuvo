@@ -49,10 +49,11 @@ const RAN = { id: "msg_ran", text: "Review the code: this branch", parts: { word
 beforeAll(async () => {
   const messages = await import("../src/link/areas/messages")
   const queue = await import("../src/link/areas/queue")
-  // (Kept as a box that ran commands before left it, before anything reads it.)
+  // (Kept as a box that ran commands before left it, and read afresh: another file may have read it.)
   const { RUN } = await import("../src/link/home")
   mkdirSync(RUN, { recursive: true })
   writeFileSync(join(RUN, "commands.json"), JSON.stringify({ [RAN.id]: RAN.parts }))
+  ;(await import("../src/link/messages/commands")).forgetKept()
   mod = { sendRoute: messages.sendRoute, partsRoute: messages.partsRoute, SEND_ROUTE: messages.SEND_ROUTE, queueRoute: queue.queueRoute, QUEUE_ROUTE: queue.QUEUE_ROUTE }
   engine = Bun.serve({
     hostname: "127.0.0.1",
