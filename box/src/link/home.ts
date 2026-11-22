@@ -180,6 +180,8 @@ export const CONFIG_LOCK = path.join(RUN, ".config.lock");
 // A Mac's box finds them where its app keeps them, as the engine does (KUVO_BOTS, KUVO_WAKES, and the
 // app's own kuvo-wake); a machine's, in its folder.
 export const BOTS = process.env.KUVO_BOTS || path.join(K, "bots");
+// Its group chats, one folder each (`groups/<id>/group.json`), kept by the agents' bridge.
+export const GROUPS = process.env.KUVO_GROUPS || path.join(APP_FOLDER ?? K, "groups");
 // Its chats (conversations of no project): where a Mac's app keeps them (KUVO_CHATS, beside its box),
 // a box in a home of its own in its folder. The one place a box names it (`kuvo/info`'s `chats`, the
 // chat mark, moves, the sandbox).

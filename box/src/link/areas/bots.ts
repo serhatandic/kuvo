@@ -63,7 +63,7 @@ export async function* botRoute(context: RouteContext, oneBot: RegExpMatchArray)
   // One that lives on another of your computers: held here for it, and handed on once it answers
   // ("Held for another computer"). `on` names that computer for one this box hasn't heard of yet.
   const here = botHere(id);
-  const owner = ownershipReady() ? ownerOf({ kind: "botSettings", id }, { localRecord: Boolean(here) }) : null;
+  const owner = ownershipReady() ? ownerOf({ kind: "botSettings", id }) : null;
   if (!here || (owner && !owner.local)) {
     const query = new URLSearchParams(request.path.split("?")[1] ?? "");
     const link = readLink();

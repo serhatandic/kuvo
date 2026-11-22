@@ -130,10 +130,44 @@ test("a holder retry returns its original setup receipt after a later save", () 
   assert.equal((await save({ ...body, value: { ...body.value, imported: false } })).status, 409);
 `));
 
+test("an older conversation on another computer is found there, not run here", () => isolated(`
+  import { takeAgents } from ${url("peers/directory")};
+  import { LIST_FILE } from ${url("lists/sessions")};
+  import { ownedDigests, ownerOf } from ${url("ownership/resolve")};
+  // The other computer has 60 conversations. It names its 40 newest, and says it has every one.
+  const sessions = Object.fromEntries(Array.from({ length: 60 }, (_, ix) =>
+    ["ses_older" + ix, { seq: ix + 1, facts: { kind: "project", directory: "/", created: ix, updated: ix } }]));
+  fs.mkdirSync(path.dirname(LIST_FILE), { recursive: true });
+  fs.writeFileSync(LIST_FILE, JSON.stringify({ epoch: "b", seq: 60, floor: 0, gone: {}, projects: {}, sessions }));
+  const owns = ownedDigests();
+  fs.rmSync(LIST_FILE);
+  const newest = Array.from({ length: 40 }, (_, ix) => ({ session: "ses_older" + (59 - ix), name: "Newer", kind: "session" }));
+  assert.equal(takeAgents(peer(from), { at: Date.now(), list: newest, owns, features: ["moves.two-computers"] }), true);
+  assert.equal(ownerOf({ kind: "conversations", id: "ses_older0" })?.key, from);
+  assert.equal(ownerOf({ kind: "conversations", id: "ses_nowhere" }), null);
+  // A client still pointed at this computer renames it: told where it is.
+  const renamed = await ask("POST", "kuvo/sessions/ses_older0/rename", { title: "Renamed" });
+  assert.equal(renamed.status, 409);
+  assert.equal(renamed.value.computer, from);
+`));
+
+test("a conversation this computer has is here, whatever another computer last said", () => isolated(`
+  import { takeAgents } from ${url("peers/directory")};
+  import { LIST_FILE } from ${url("lists/sessions")};
+  // The computer it came back from named it, and hasn't said otherwise since.
+  takeAgents(peer(from), { at: Date.now(), list: [{ session: "ses_back", name: "Back", kind: "session" }], features: ["moves.two-computers"] });
+  fs.mkdirSync(path.dirname(LIST_FILE), { recursive: true });
+  fs.writeFileSync(LIST_FILE, JSON.stringify({ epoch: "a", seq: 1, floor: 0, gone: {}, projects: {},
+    sessions: { ses_back: { seq: 1, facts: { kind: "project", directory: "/", created: 1, updated: 1 } } } }));
+  const { value } = await ask("GET", "kuvo/data/owner?kind=conversations&id=ses_back");
+  assert.equal(value.owner.local, true);
+  assert.equal(value.owner.key, own);
+`));
+
 test("authoritative absence replaces a remote record in the snapshot cache", () => isolated(`
   import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
   const run = path.join(process.env.KUVO_HOME, "run");
-  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [{ session: "ses_a", name: "A", kind: "session" }] } }));
   const route = "kuvo/data/owner?kind=conversations&id=ses_a&computer=" + from;
   let status = 200;
   forwardsSoon.send = () => {
@@ -165,7 +199,7 @@ test("authoritative absence replaces a remote record in the snapshot cache", () 
 test("owner read observations survive out-of-order replies without resurrecting a page", () => isolated(`
   import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
   const run = path.join(process.env.KUVO_HOME, "run");
-  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [{ session: "ses_a", name: "A", kind: "session" }] } }));
   const route = "kuvo/data/owner?kind=conversations&id=ses_a&computer=" + from;
   const acts = new Set();
   forwardsSoon.send = () => {
@@ -237,6 +271,7 @@ test("an attachment-only edit rejected by the owner stays in the outbox with its
 test("a scoped forwarded write keeps its operation across deliveries and rechecks the exact pairing", () => isolated(`
   import { takeScopedAct } from ${url("work-queue/forward")};
   import { recordKey, readRecord } from ${url("ownership/store")};
+  import { forgetMovedAway, noteMovedAway } from ${url("moves/records")};
   const key = keyOf(50), pairing = "original";
   const state = readLink();
   state.phones = [{ key, pairing, from: "pair" }];
@@ -262,13 +297,10 @@ test("a scoped forwarded write keeps its operation across deliveries and recheck
   assert.equal((await attempt("A", "accepted")).status, 200);
   assert.equal(readRecord("mutations", recordKey("scoped-forward", id, "accepted")).answer.status, 200);
   assert.equal((await attempt("B", "accepted", "Different")).status, 409);
-  const current = readLink();
-  writeLink({ ...current, shared: { ...current.shared, ownershipAssignments: {
-    sequence: 1, value: { ["queue item:" + item]: { computer: other, queue: "usr_you" } },
-  } } });
+  noteMovedAway([item], other, Date.now(), { queue: "usr_you" });
   assert.equal(await attempt("F", "wrong-owner"), undefined);
   assert.equal(effects, 1);
-  writeLink(current);
+  forgetMovedAway([item]);
   const revoked = readLink();
   revoked.phones = [{ key, pairing: "replacement", from: "pair" }];
   revoked.removed = [{ key, pairing }];
@@ -285,6 +317,7 @@ test("an interrupted native draft remains ambiguous after its durable claim", ()
   import { runMutation } from ${url("ownership/mutation")};
   import { ownerOf } from ${url("ownership/resolve")};
   import { recordKey } from ${url("ownership/store")};
+  import { noteMovedAway } from ${url("moves/records")};
   const given = { id: "msg_heldshell", text: "!test", message: {} };
   const payload = { given, submitter: { kind: "computer" } };
   await assert.rejects(runMutation(recordKey("typed-draft", id, "ses_native", given.id), payload, async () => {
@@ -294,9 +327,7 @@ test("an interrupted native draft remains ambiguous after its durable claim", ()
   assert.equal(response.status, 409);
   assert.equal(response.value.ambiguous, true);
   assert.equal(response.value.restore, undefined);
-  const state = readLink();
-  const ownershipAssignments = { sequence: 1, value: { "session computer:ses_native": { computer: from } } };
-  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
+  noteMovedAway(["ses_native"], from);
   assert.equal(ownerOf({ kind: "conversations", id: "ses_native" })?.key, from);
   assert.deepEqual(await ask("POST", "kuvo/sessions/ses_native/draft", given), response);
 `));
@@ -306,15 +337,15 @@ test("submission receipts survive either handoff order and compact without relea
   import { keepRecord, readRecord, records } from ${url("ownership/store")};
   import { submissionIntent, submissionKey } from ${url("ownership/submissions")};
   import { fingerprint } from ${url("ownership/merge")};
+  import { forgetMovedAway, noteMovedAway } from ${url("moves/records")};
   const session = "ses_handoff";
   const state = readLink();
-  const moved = () => writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: { sequence: 1,
-    value: { ["session computer:" + session]: { computer: other, from } } } } });
+  const moved = () => noteMovedAway([session], other);
   const host = { welcomed: true, send() {} };
   const setupID = id;
   const submitter = { kind: "computer" };
   for (let ix = 0; ix < 205; ix++) {
-    writeLink(state);
+    forgetMovedAway([session]);
     const submission = setupID + "." + from + ".msg_handoff" + ix;
     const operation = submissionKey(setupID, session, submission);
     const body = { id: "msg_handoff" + ix, submission, text: "Draft " + ix, message: { files: [{ uri: "data:text/plain;base64,QQ==", name: "A.txt" }] } };
@@ -365,7 +396,13 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   import { archiveContext, newRecoveryKey, openArchive } from ${url("backup/archive")};
   import { receiptReference } from ${url("backup/locations")};
   import { keepRecord, recordKey } from ${url("ownership/store")};
+  import { noteMovedAway } from ${url("moves/records")};
+  import { LIST_FILE } from ${url("lists/sessions")};
   const session = "ses_evidence";
+  // The conversation is this computer's: its session list has it.
+  fs.mkdirSync(path.dirname(LIST_FILE), { recursive: true });
+  fs.writeFileSync(LIST_FILE, JSON.stringify({ epoch: "a", seq: 1, floor: 0, gone: {}, projects: {},
+    sessions: { [session]: { seq: 1, facts: { kind: "project", directory: "/", created: 1, updated: 1 } } } }));
   let effects = 0;
   const submitter = { kind: "computer" };
   const prepare = (suffix) => {
@@ -401,7 +438,7 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   assert.equal(evidence.kind, "draftSubmissionEvidence");
   assert.equal(ownerOf(evidence).key, own);
   assert.equal(fence.kind, "draftSubmissionReplayFences");
-  assert.equal(ownerOf(fence, { localRecord: true }).key, own);
+  assert.equal(ownerOf(fence).key, own);
   assert.equal(kept("mutations", legacyKey(legacy.body.id)), undefined, "opaque old draft claims carry no domain authority");
   const archive = point => {
     const scratch = fs.mkdtempSync(path.join(process.env.HOME, "capture-"));
@@ -415,8 +452,7 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   const before = archive("before");
   assert.ok(before.includes(evidenceFile) && before.includes(fenceFile));
   const state = readLink();
-  const ownershipAssignments = { sequence: 1, value: { ["session computer:" + session]: { computer: from, from: own } } };
-  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
+  noteMovedAway([session], from);
   assert.equal(ownerOf(evidence).key, own);
   assert.equal(mayActivate(evidence), true);
   assert.equal(mayActivate(evidence, { activating: "move" }), false);
@@ -473,7 +509,7 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   replacementState.setup.role = "member";
   replacementState.shared.membershipAndAccess.value.left = [own];
   replacementState.shared.membershipAndAccess.value.boxes = [from, other].map(peer);
-  replacementState.shared.ownershipAssignments.value["replacement:" + own] = { computer: other, source: "approved" };
+  replacementState.shared.ownershipRecovery = { sequence: 1, value: { ["replacement:" + own]: { computer: other, source: "approved" } } };
   assert.equal(ownerOf(evidence, { link: replacementState }).key, other);
   assert.equal(ownerOf(fence, { link: replacementState }).key, from);
   const changedSetup = "set_" + "B".repeat(22);

@@ -1,6 +1,7 @@
 import "./safety";
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
+import path from "node:path";
 import { K, ENGINE_FILE, LINK_FILE, RUN } from "../src/link/home";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { newKey, addressOf, publicOf } from "../src/link/crypto/keys";
@@ -17,6 +18,8 @@ import { recordKey } from "../src/link/ownership/store";
 import { mutationKey } from "../src/link/ownership/mutation";
 import { sendOfflineEdits, takeOfflineEdit } from "../src/link/ownership/edits";
 import { ask } from "./route-answer";
+import { LIST_FILE } from "../src/link/lists/sessions";
+import { forgetMovedAway, noteMovedAway } from "../src/link/moves/records";
 
 const handle = engineHandler();
 const session = "ses_OrdinaryNotes";
@@ -43,15 +46,17 @@ const engine = Bun.serve({
       : Response.json({}, { status: 404 });
   },
 });
+/** The conversation lives here, or (`computer`) where a move from here took it. */
 function assign(computer?: string) {
   writeLink({
     key: local.key, sign: local.sign,
     setup: { id: setup, epoch: 1, primary: local.peer.key, sign: local.peer.sign, role: "primary", managed: true, checkpointed: true },
     sharedSetup: setup, shared: {
       membershipAndAccess: { sequence: 1, value: { boxes: [local.peer, remote.peer], left: [] } },
-      ownershipAssignments: { sequence: 1, value: computer ? { [`session computer:${session}`]: { computer } } : {} },
     },
   });
+  if (computer && computer !== local.peer.key) noteMovedAway([session], computer);
+  else forgetMovedAway([session]);
 }
 beforeAll(() => {
   previousLink = readLink();
@@ -59,11 +64,17 @@ beforeAll(() => {
   upgradeKuvoFolder(K);
   fs.mkdirSync(RUN, { recursive: true });
   fs.writeFileSync(ENGINE_FILE, JSON.stringify({ port: engine.port!, password: "disposable-fixture" }));
+  // The box's session list has the engine's session, as the box keeps it.
+  fs.mkdirSync(path.dirname(LIST_FILE), { recursive: true });
+  fs.writeFileSync(LIST_FILE, JSON.stringify({ epoch: "fixture", seq: 1, floor: 0, gone: {}, projects: {},
+    sessions: { [session]: { seq: 1, facts: { kind: "project", directory: "/", created: 1, updated: 1 } } } }));
   assign();
 });
 afterAll(() => {
   engine.stop(true);
   forgetSessionNotes([session]);
+  forgetMovedAway([session]);
+  fs.rmSync(LIST_FILE, { force: true });
   if (previousLink) writeLink(previousLink);
   else fs.rmSync(LINK_FILE, { force: true });
   if (previousEngine) fs.writeFileSync(ENGINE_FILE, previousEngine);

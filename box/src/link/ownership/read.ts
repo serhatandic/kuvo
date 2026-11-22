@@ -148,7 +148,7 @@ async function localRead(ref: ReadRequest, context: RouteContext, places: PeerPl
   const me = (queue?: string) => {
     const address = { ...ref, computer: computer ?? undefined, queue };
     const current = readLink();
-    return ownerOf(address, { link: current, localRecord: true })?.local && mayActivate(address, { link: current });
+    return ownerOf(address, { link: current })?.local && mayActivate(address, { link: current });
   };
   if (isPrimaryRead(kind)) {
     if (!me()) return { status: 409, value: null };
@@ -253,17 +253,11 @@ export async function readOwned(context: RouteContext) {
   const farItem = queueKind && !hereQueue ? itemElsewhere({ id }, link, { deleted: true }) : null;
   const address = { kind, id, computer: computer ?? farItem?.computer.key, queue: hereQueue ?? farItem?.owner ?? queue,
     client: context.phone?.key?.toString("base64url") };
-  const localBot = dataOwner(kind, queue) === "bot home" && listBots().some(bot => bot.id === id || bot.session === id);
-  const owner = ownerOf(address, { link, name: info.name, localRecord: localBot || Boolean(hereQueue) });
-  // A group without a known address may still live on the box the client is asking.
+  const resolved = ownerOf(address, { link, name: info.name });
   const placesHere = (): PeerPlaces => {
     const targets = targetsOf(context);
     return { targets, bridge: targets.length === 2 };
   };
-  const local = !owner && ref && !computer && (kind === "groupTranscript" || kind === "groupSettings" || dataOwner(kind, queue) === "session computer")
-    ? await localRead(ref, context, placesHere(), null).catch(() => null)
-    : null;
-  const resolved = owner ?? (local?.status === 200 ? ownerOf(address, { link, name: info.name, localRecord: true }) : null);
   if (!resolved) return json(404, { message: "This box doesn’t know which computer owns that record." });
   if (!ref) return json(200, view(resolved, null, query, "metadataOnly"));
   if (!ownershipReady()) return json(200, view(resolved, null, query, "withheld"));
@@ -276,13 +270,13 @@ export async function readOwned(context: RouteContext) {
   const before = markOf();
   const started = Date.now();
   const peer = peersOf(link).find(each => each.key === resolved.key);
-  const answer = local ?? (resolved.local
+  const answer = resolved.local
     ? await localRead(ref, context, placesHere(), resolved.key).catch(() => null)
-    : peer && resolved.reachable ? await forwardAct(peer, id, { method: "GET", area: "ownership", item: id, body: { kind, offset } }, signal, link) : null);
+    : peer && resolved.reachable ? await forwardAct(peer, id, { method: "GET", area: "ownership", item: id, body: { kind, offset } }, signal, link) : null;
   let displayed = resolved;
   if (!resolved.local) {
     const current = readLink();
-    const currentOwner = ownerOf(address, { link: current, name: info.name, localRecord: Boolean(hereQueue) });
+    const currentOwner = ownerOf(address, { link: current, name: info.name });
     if (followedSetup(current)?.id !== followedSetup(link)?.id || !peersOf(current).some(each => each.key === resolved.key)
       || currentOwner?.key !== resolved.key)
       return json(409, { message: "The owner changed. Read the record again." });
