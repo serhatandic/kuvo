@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 46512d68743c
+// Kuvo folder layout 23 5bdbd138a6a4
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "46512d68743c";
+var BRIDGE_VERSION = "5bdbd138a6a4";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -103941,7 +103941,7 @@ var init_settings_peers = __esm(() => {
 // box/src/agents/accounts.ts
 import { randomBytes as randomBytes7 } from "node:crypto";
 import { existsSync as existsSync2, mkdirSync as mkdirSync5, readdirSync as readdirSync4, readFileSync as readFileSync8, renameSync as renameSync4, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync5 } from "node:fs";
-import { dirname as dirname5, join as join11 } from "node:path";
+import { dirname as dirname5, isAbsolute, join as join11 } from "node:path";
 function providerID(kind, id) {
   return id === "default" ? baseProvider[kind] : `${baseProvider[kind]}@${id}`;
 }
@@ -103963,7 +103963,7 @@ class Accounts {
   read() {
     try {
       const saved = accountFormat.read(JSON.parse(readFileSync8(this.file, "utf8")));
-      return saved.filter((record) => kinds2.includes(record?.kind) && record?.id && record.id !== "default");
+      return saved.filter((record) => kinds2.includes(record?.kind) && record?.id && record.id !== "default" && (record.folder === undefined || typeof record.folder === "string" && !isAbsolute(record.folder) && !record.folder.split(/[\\/]/).includes("..")));
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion)
         throw error;
@@ -103977,11 +103977,13 @@ class Accounts {
     return [...kinds2.map((kind) => ({ kind, id: "default" })), ...this.records];
   }
   home(record) {
-    return record.id === "default" ? undefined : join11(this.root, record.kind, "accounts", record.id);
+    if (record.id === "default")
+      return;
+    return record.folder ? join11(this.root, record.folder) : join11(this.root, record.kind, "accounts", record.id);
   }
-  add(kind, label) {
+  add(kind, label, folder) {
     const records = this.read();
-    const record = { kind, id: randomBytes7(4).toString("hex"), label: label?.trim() || undefined };
+    const record = { kind, id: randomBytes7(4).toString("hex"), label: label?.trim() || undefined, ...folder ? { folder } : {} };
     mkdirSync5(this.home(record), { recursive: true, mode: 448 });
     this.save([...records, record]);
     return record;
@@ -106941,7 +106943,7 @@ var init_cursor_history = __esm(() => {
 
 // box/src/usage/engine-db.ts
 import { readdirSync as readdirSync7, realpathSync as realpathSync3, statSync as statSync6 } from "node:fs";
-import { isAbsolute, join as join16, relative as relative2, sep } from "node:path";
+import { isAbsolute as isAbsolute2, join as join16, relative as relative2, sep } from "node:path";
 function engineDatabases2(folder) {
   let files;
   let root;
@@ -106965,7 +106967,7 @@ function engineDatabases2(folder) {
     try {
       const resolved = realpathSync3(path);
       const inside = relative2(root, resolved);
-      if (inside && inside !== ".." && !inside.startsWith(".." + sep) && !isAbsolute(inside))
+      if (inside && inside !== ".." && !inside.startsWith(".." + sep) && !isAbsolute2(inside))
         paths.add(resolved);
     } catch (error) {
       if (error?.code !== "ENOENT")
@@ -107441,7 +107443,7 @@ import { execFileSync as execFileSync4 } from "node:child_process";
 import { createHash as createHash17 } from "node:crypto";
 import { lstatSync as lstatSync3, mkdirSync as mkdirSync9, readFileSync as readFileSync12, realpathSync as realpathSync4, renameSync as renameSync8, statSync as statSync7, writeFileSync as writeFileSync9 } from "node:fs";
 import { homedir, hostname as hostname3 } from "node:os";
-import { basename as basename3, dirname as dirname7, isAbsolute as isAbsolute2, join as join18, relative as relative3, sep as sep2 } from "node:path";
+import { basename as basename3, dirname as dirname7, isAbsolute as isAbsolute3, join as join18, relative as relative3, sep as sep2 } from "node:path";
 function usageRows(boxes) {
   const groups = [];
   const found = new Map;
@@ -107840,7 +107842,7 @@ function claudeRoots(agent, env = process.env, home = homedir()) {
   return [...new Set(roots)];
 }
 function insideUsageHome(home, path) {
-  const inside = (from) => from !== ".." && !from.startsWith(".." + sep2) && !isAbsolute2(from);
+  const inside = (from) => from !== ".." && !from.startsWith(".." + sep2) && !isAbsolute3(from);
   try {
     const root = realpathSync4(home);
     if (!inside(relative3(home, path)) && !inside(relative3(root, path)))
@@ -115135,7 +115137,7 @@ var init_changes3 = () => {};
 
 // box/src/link/artifacts/recorder.ts
 import { readdirSync as readdirSync13, readFileSync as readFileSync26 } from "node:fs";
-import { isAbsolute as isAbsolute3, join as join32, relative as relative6, resolve as resolve2, sep as sep9 } from "node:path";
+import { isAbsolute as isAbsolute4, join as join32, relative as relative6, resolve as resolve2, sep as sep9 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 
 class Recorder {
@@ -115303,7 +115305,7 @@ class Recorder {
     if (!context)
       return;
     const { made, folder } = context;
-    const absolute = (path) => spelledIn(isAbsolute3(path) ? path : resolve2(folder ?? "/", path), [folder, this.options.bots]);
+    const absolute = (path) => spelledIn(isAbsolute4(path) ? path : resolve2(folder ?? "/", path), [folder, this.options.bots]);
     const name = toolName(call.name ?? "");
     const input = call.input ?? {};
     const files = Array.isArray(metadata?.files) ? metadata.files : [];
@@ -116253,7 +116255,7 @@ var init_thumbnails = __esm(() => {
 
 // box/src/link/library/service.ts
 import { existsSync as existsSync8, readFileSync as readFileSync29, statSync as statSync13, writeFileSync as writeFileSync18 } from "node:fs";
-import { isAbsolute as isAbsolute4, join as join35, relative as relative7, resolve as resolve3, sep as sep12 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join35, relative as relative7, resolve as resolve3, sep as sep12 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 function libraryService(root, options) {
   const store = new LibraryStore(root, { bots: options.bots });
@@ -116355,7 +116357,7 @@ function backfill(store, root, options) {
         ...botOf(directory, metadata) ? { bot: botOf(directory, metadata) } : {},
         ...seat && typeof seat.group === "string" ? { group: seat.group } : { session: top }
       };
-      const absolute = (path) => isAbsolute4(path) ? path : resolve3(directory ?? "/", path);
+      const absolute = (path) => isAbsolute5(path) ? path : resolve3(directory ?? "/", path);
       for (const message of messages) {
         const at = new Date(message.time?.completed ?? message.time?.created ?? 0);
         if (message.type === "user" && own) {

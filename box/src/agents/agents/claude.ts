@@ -23,6 +23,7 @@ import { run } from "../proc"
 import { Queue } from "../queue"
 import { commandSignIn } from "../signin"
 import { claudeProgram } from "../../shared/agent-programs"
+import { forgetLegacyToken, legacyToken } from "../claude-compat"
 import { newID } from "../ids"
 import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
@@ -207,7 +208,9 @@ export class ClaudeAgent implements Agent {
     if (instance.id === "default") {
       this.signOutShared = true
       this.signOut = async () => {
-        await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env())
+        // (An earlier version's token, if it's there, goes either way.)
+        forgetLegacyToken(this.context.home, this.instance.id)
+        await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env({ legacy: false }))
         // A session's Claude Code holds the sign-in it started with: its next message starts one signed out.
         this.programUpdated()
         this.known.reset()
@@ -264,7 +267,7 @@ export class ClaudeAgent implements Agent {
   }
 
   /** What `claude auth status` says; throws when it says nothing to go by (`TookTooLong`, or why not). */
-  private async readStatus(env = this.env()): Promise<Status> {
+  private async readStatus(env = this.env({ legacy: false })): Promise<Status> {
     const executable = this.executable()
     if (!executable) throw new Error("Claude Code isn't installed.")
     const result = await run(executable, ["auth", "status", "--json"], { timeout: 20_000, env })
@@ -290,6 +293,14 @@ export class ClaudeAgent implements Agent {
     }
     const account = await this.known.read(fresh, async () => {
       const status = await this.readStatus()
+      // COMPAT(0.8 Claude on a Mac): an earlier version's token runs it until Claude Code's own
+      // sign-in is there, which then takes over (a session's next message starts without it).
+      const earlier = legacyToken(this.context.home, this.instance.id)
+      if (status.loggedIn && earlier) {
+        forgetLegacyToken(this.context.home, this.instance.id)
+        this.programUpdated()
+      }
+      if (!status.loggedIn && earlier) return { installed: true, signedIn: true, label: "Claude plan", what: true, message: "Sign in again to see your plan's usage." }
       if (!status.loggedIn) return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." }
       return { installed: true, signedIn: true, ...named(status, "Claude Code") }
     })
@@ -370,7 +381,7 @@ export class ClaudeAgent implements Agent {
     const executable = this.executable()
     if (!executable) throw new Error(`Install Claude Code first: ${this.install}`)
     if (this.instance.home) mkdirSync(this.instance.home, { recursive: true, mode: 0o700 })
-    const env = this.env()
+    const env = this.env({ legacy: false })
     return commandSignIn({
       command: executable,
       args: ["auth", "login", methodID === "console" ? "--console" : "--claudeai"],
@@ -491,11 +502,14 @@ export class ClaudeAgent implements Agent {
     return [join(settings, "skills"), ...upward(directory).map((folder) => join(folder, ".claude", "skills"))]
   }
 
-  /** Claude Code's environment: an added account's own folder (which names its Keychain item too). */
-  env(): Record<string, string | undefined> {
+  /** Claude Code's environment: an added account's own folder (which names its Keychain item too);
+   * and, until Claude Code's own sign-in is there, an earlier version's token (`legacy`, claude-compat.ts). */
+  env({ legacy = true }: { legacy?: boolean } = {}): Record<string, string | undefined> {
     // Not one the box was started with (the runner would merge it back if only deleted).
     const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CODE_TMPDIR: join(this.context.temporary, "claude"), CLAUDE_CODE_OAUTH_TOKEN: undefined }
     if (this.instance.home) env.CLAUDE_CONFIG_DIR = this.instance.home
+    const earlier = legacy ? legacyToken(this.context.home, this.instance.id) : undefined
+    if (earlier) env.CLAUDE_CODE_OAUTH_TOKEN = earlier
     // On a machine, its commands get the machine's own folders back (it keeps its own in Kuvo
     // Code's folder).
     const own = onMachine ? ownFoldersScript(this.context.home) : undefined
@@ -508,6 +522,7 @@ export class ClaudeAgent implements Agent {
 
   /** An added account signs out as it goes, through Claude Code in its folder (its Keychain item with it). */
   async removeAccount() {
+    forgetLegacyToken(this.context.home, this.instance.id)
     const executable = this.executable()
     if (executable && this.instance.home) await run(executable, ["auth", "logout"], { timeout: 20_000, env: this.env() }).catch(() => {})
   }
