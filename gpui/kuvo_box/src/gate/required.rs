@@ -55,6 +55,7 @@ pub const REQUIRED: &[&str] = &[
     "models.offered.sides",
     "models.readiness",
     "names.titles",
+    "pty.socket",
     "queue.items",
     "queue.removed.keyword",
     "queue.stop.arriving",

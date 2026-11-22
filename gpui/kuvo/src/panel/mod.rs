@@ -156,6 +156,7 @@ enum View {
     Process(Entity<ProcessView>),
     Subagents(Entity<SubagentsView>),
     SideChat(Entity<SideChatView>),
+    Terminal(Entity<crate::terminal::TerminalView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -401,6 +402,15 @@ impl SidePanel {
         self.now = Some(now);
     }
 
+    /// The terminal tab showing.
+    pub fn terminal(&self) -> Option<Entity<crate::terminal::TerminalView>> {
+        let conversation = self.current()?;
+        match conversation.views.get(&conversation.strip.active().id) {
+            Some(View::Terminal(view)) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// The side chat tab showing.
     pub fn side_chat(&self) -> Option<Entity<SideChatView>> {
         let conversation = self.current()?;
@@ -498,6 +508,27 @@ impl SidePanel {
                 }
                 conversation.views.insert(tab.id, View::Subagents(view));
             }
+            Kind::Terminal(_) if !conversation.views.contains_key(&tab.id) => {
+                let directory = conversation.place.as_ref().map(|place| place.directory.clone());
+                let view = cx.new(|cx| crate::terminal::TerminalView::new(client, live, directory, cx));
+                let id = tab.id;
+                conversation.subscriptions.push(cx.subscribe(&view, move |this: &mut SidePanel, _, event: &crate::terminal::TerminalEvent, cx| match event {
+                    // A new terminal in the ended one's place.
+                    crate::terminal::TerminalEvent::Restart => {
+                        let next = &mut this.next;
+                        if let Some(conversation) = this.conversations.get_mut(&this.key)
+                            && conversation.strip.select(id)
+                        {
+                            let kind = Kind::Terminal(*next + 1);
+                            conversation.strip.replace_active(kind, next);
+                            conversation.views.remove(&id);
+                        }
+                        this.after_move(cx);
+                    }
+                    crate::terminal::TerminalEvent::Changed => cx.notify(),
+                }));
+                conversation.views.insert(tab.id, View::Terminal(view));
+            }
             Kind::SideChat(thread) if !conversation.views.contains_key(&tab.id) => {
                 let Some(session) = key else { return };
                 let view = cx.new(|cx| SideChatView::new(client, live, session, thread, cx));
@@ -542,6 +573,7 @@ impl SidePanel {
                     View::Process(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Subagents(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::SideChat(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
+                    View::Terminal(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -600,6 +632,7 @@ impl SidePanel {
     fn title(conversation: &Conversation, tab: &Tab, cx: &App) -> SharedString {
         match (&tab.kind, conversation.views.get(&tab.id)) {
             (_, Some(View::Process(view))) => view.read(cx).title(),
+            (_, Some(View::Terminal(view))) => view.read(cx).title(),
             _ => Self::named(tab),
         }
     }
@@ -762,6 +795,7 @@ impl SidePanel {
             (_, Some(View::Process(view))) => view.clone().into_any_element(),
             (_, Some(View::Subagents(view))) => view.clone().into_any_element(),
             (_, Some(View::SideChat(view))) => view.clone().into_any_element(),
+            (_, Some(View::Terminal(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),

@@ -698,3 +698,27 @@ fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outp
     click(cx, "activity-side-chat-btw_1");
     assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
 }
+
+#[gpui::test]
+fn a_terminal_opens_as_a_tab_in_the_conversations_folder_and_keeps_its_shell_while_hidden(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-terminal");
+    assert!(matches!(showing(&workspace, cx), Some(Kind::Terminal(_))));
+    assert_eq!(stand_in.seen_at("POST", "api/pty")[0].body, Some(json!({ "cwd": website() })), "in the conversation's folder");
+    let terminal = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).terminal()).unwrap();
+    stand_in.pty_print("pty_1", b"~/website $ ");
+    cx.run_until_parked();
+    assert!(terminal.read_with(cx, |view, _| view.screen_text().join("\n")).contains("~/website $"));
+
+    // Another tab, and back: the same shell, what it printed meanwhile there.
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    stand_in.pty_print("pty_1", b"done\r\n");
+    let tab = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).strip().unwrap().tabs().iter().find(|tab| matches!(tab.kind, Kind::Terminal(_))).map(|tab| tab.id)).unwrap();
+    click(cx, &format!("panel-tab-{tab}"));
+    assert_eq!(stand_in.seen_at("POST", "api/pty").len(), 1, "no second shell");
+    assert!(terminal.read_with(cx, |view, _| view.screen_text().join("\n")).contains("done"));
+}

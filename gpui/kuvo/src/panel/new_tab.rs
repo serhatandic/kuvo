@@ -20,6 +20,11 @@ fn tiles(panel: &SidePanel, place: Option<&Place>) -> Vec<Tile> {
     if panel.key.is_some() && panel.client.gate().has(kuvo_box::side_chats::SIDE_CHATS) {
         tiles.push(Tile { id: "tile-side-chat", icon: IconName::Message, label: "Side chat", kind: Kind::SideChat(None) });
     }
+    // A terminal on the conversation's computer: another computer's over the relay, this Mac's
+    // where its box passes terminals to the app.
+    if !panel.client.here() || panel.client.gate().has("pty.socket") {
+        tiles.push(Tile { id: "tile-terminal", icon: IconName::TerminalWindow, label: "Terminal", kind: Kind::Terminal(0) });
+    }
     if place.is_some() {
         tiles.push(Tile { id: "tile-files", icon: IconName::Folder, label: "Files", kind: Kind::Files });
     }
