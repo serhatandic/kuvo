@@ -13066,7 +13066,8 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   `routines`, `skills`, `off`).
   Required apps must already be connected on that computer. Marketplace bots' workspaces carry the
   selected Marketplace apps and skills, and the box and bridge use that selection when exposing tools.
-- **Skills.** `POST skills/preview` takes `{link}`, `{repository,path,ref?}`, or `{folder}` on
+- **Skills.** `POST skills/preview` takes `{from}` (what was typed: a folder when it starts with `/`
+  or `~`, else a GitHub link), `{link}`, `{repository,path,ref?}`, or `{folder}` on
   the answering computer. It returns `{preview,skill,files,action}`. Each file has its relative
   `path`, base64 `data` and SHA-256 `sha256`. GitHub sources include `repository`, `path` and
   `commit`. `POST skills/install` with `{preview,was?}` installs the exact bytes reviewed on that
@@ -13084,7 +13085,10 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   on this computer. `deleted` is Recently Deleted (`{title, note, items, action}`): `POST
   skills/restore` with `{id}` brings one back. `places` is Other Places (`{title, note, items, add,
   remove}`): `POST skills/places` with `{place}` adds one; `DELETE skills/places` with `{index}`
-  removes one.
+  removes one. The skills area's `preview` and `create` actions, and a skill's `edit`, carry the
+  `form` a client draws as it is (fields with `kind` `lines` for several lines, `mono`, `value`
+  and `line`, the words under a field). A skill in this computer's own folder answers its details
+  like any other, with its text as `revision`.
 - **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
   primary and published in signed setup state. The Work Queue peer mail carries requests to the
   primary and bot creation to the selected owner. An offline computer projects the last accepted

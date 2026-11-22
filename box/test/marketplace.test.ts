@@ -279,6 +279,15 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   expect(area.items.find((skill: any) => skill.id === "release")).toMatchObject({ category: "Your skills", installed: true, enabled: true });
   expect(area.items.find((skill: any) => skill.id === "review-changes").enabled).toBeUndefined();
 
+  // Its details read like any other skill's, with the Edit form filled in, and Edit saves through it.
+  const details = (await route("GET", "/skills/release")).json;
+  const edit = details.actions.find((action: any) => action.id === "edit");
+  expect(edit.form.fields.map((field: any) => [field.id, field.value])).toEqual([["description", "Write a short summary"], ["instructions", "Pinned instructions."]]);
+  expect((await route("PATCH", "/skills/release", { description: "Write a shorter summary", instructions: "Keep it short.", was: details.revision })).status).toBe(200);
+  expect((await route("GET", "/skills/release")).json.summary).toBe("Write a shorter summary");
+  expect(area.actions.find((action: any) => action.id === "create").form.fields.map((field: any) => field.id)).toEqual(["name", "description", "instructions"]);
+  expect((await route("POST", "/skills/preview", { from: "~/no-such-skill-folder" })).status).toBe(400);
+
   expect((await route("POST", "/skills/release/enabled", { on: false })).json).toEqual({ enabled: false });
   expect(JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "skill", resource: "release", effect: "deny" }]);
   expect((await skills()).items.find((skill: any) => skill.id === "release").enabled).toBe(false);

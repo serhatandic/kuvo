@@ -1,5 +1,6 @@
 // Marketplace clients read box-authored cards and submit explicit install, sign-in and Add actions.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import { marketplaceScope } from "../../shared/marketplace";
@@ -140,7 +141,7 @@ async function catalogView(context: RouteContext, state: Installations, query: U
       { ...area("skills", "Skills", withHere([...skills, ...managed, ...local.filter(skill => !installed.has(skill.id)),
         ...(here.problem !== undefined ? [] : here.found.filter(skill => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some(each => each.id === skill.id))
           .map(skill => ({ ...skill, category: YOUR_SKILLS, origin: "found", installed: true })))]), query,
-        [{ id: "preview", title: "Add from Link or Folder" }, { id: "create", title: "New Skill" }]),
+        [{ id: "preview", title: "Add from Link or Folder", form: PREVIEW_FORM }, { id: "create", title: "New Skill", form: CREATE_FORM }]),
         // This computer's own: whether each skill is on here, Recently Deleted and Other Places.
         here: here.problem !== undefined ? { problem: here.problem } : {
           computer: context.info.name, switchTitle: `Use on ${context.info.name}`,
@@ -155,6 +156,20 @@ async function catalogView(context: RouteContext, state: Installations, query: U
 }
 
 const YOUR_SKILLS = "Your skills";
+const skillText = (skill: InstalledSkill) => Buffer.from(skill.files.find(file => file.path === "SKILL.md")!.data, "base64").toString("utf8");
+const USE_IT_WHEN = { id: "description", title: "Use it when", kind: "lines", placeholder: "Writing release notes from the commits since the last tag",
+  line: "The agent reads this to decide when the skill is needed, and loads the instructions only then." };
+const INSTRUCTIONS = { id: "instructions", title: "Instructions", kind: "lines", mono: true,
+  line: "Markdown. Mention any other files in the skill so the agent knows to use them." };
+// The forms a client draws as they are, with what's there now.
+function editForm(title: string, markdown: string) {
+  return { title: `Edit ${title}`, submit: "Save", fields: [
+    { ...USE_IT_WHEN, value: skillAbout(markdown).description ?? "" },
+    { ...INSTRUCTIONS, value: markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "").trim() },
+  ] };
+}
+const CREATE_FORM = { title: "New Skill", submit: "Create Skill", fields: [{ id: "name", title: "Name", placeholder: "release-notes" }, USE_IT_WHEN, INSTRUCTIONS] };
+const PREVIEW_FORM = { title: "Add a Skill", submit: "Preview", fields: [{ id: "from", title: "GitHub link or folder", placeholder: "https://github.com/owner/repository/tree/main/skill" }] };
 // The quiet line under each area's title.
 const LINES: Record<string, string> = {
   apps: "Connect services once for all your computers.",
@@ -379,7 +394,7 @@ async function skillAction(context: RouteContext, id: string, action: string | u
       summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? YOUR_SKILLS, files: info.files, installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
       actions: skill ? [{ id: "remove", title: "Remove" }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
-        ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit" }] : [])] : [{ id: "add", title: "Install Skill" }] });
+        ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : [])] : [{ id: "add", title: "Install Skill" }] });
   }
   if (skill && verb === "DELETE") return save("remove-skill", { id, was: body.was }, context);
   if (skill && verb === "PATCH") {
@@ -391,7 +406,18 @@ async function skillAction(context: RouteContext, id: string, action: string | u
   }
   if (!skill && filesOnThisBox(id)) {
     const legacy = `kuvo/skills/${encodeURIComponent(id)}`;
-    if (verb === "GET" || verb === "DELETE") return answerSkills(verb, legacy, body, null);
+    if (verb === "GET") {
+      // This computer's own skill, read and written by the skills routes: its card, its text as its
+      // revision, and the same actions as a Marketplace skill.
+      const got = await answerSkills("GET", legacy, undefined, null);
+      if (!("text" in got.value)) return got;
+      const text = got.value.text;
+      const about = skillAbout(text);
+      return success({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local", installed: true,
+        revision: text, files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha256(Buffer.from(text)) }],
+        actions: [{ id: "remove", title: "Delete" }, { id: "edit", title: "Edit", form: editForm(about.name ?? id, text) }] });
+    }
+    if (verb === "DELETE") return answerSkills(verb, legacy, body, null);
     if (verb === "PATCH") {
       const old = await answerSkills("GET", legacy, undefined, null);
       if (!("text" in old.value)) return old;
@@ -435,7 +461,12 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
       return yield* json(result.status, { ...(isObject(result.value) ? result.value : {}), id });
     }
     if (action === "/skills/preview" && verb === "POST") {
-      const skill = typeof body.folder === "string" ? candidate(localSkill(body.folder), "folder") : candidate(await githubSkill(body), "github");
+      // `from`: what was typed or pasted, a folder on this computer or a GitHub link.
+      const from = typeof body.from === "string" ? body.from.trim() : undefined;
+      const folder = from !== undefined && /^[~/]/.test(from) ? from.replace(/^~(?=\/|$)/, os.homedir()) : body.folder;
+      if (typeof folder === "string" && !fs.existsSync(folder)) return yield* json(400, { message: "Choose a folder on this computer that contains SKILL.md." });
+      const given = from !== undefined && folder === undefined ? { link: from } : body;
+      const skill = typeof folder === "string" ? candidate(localSkill(folder), "folder") : candidate(await githubSkill(given), "github");
       const preview = stagePreview(skill);
       return yield* json(preview.status, preview.value);
     }
