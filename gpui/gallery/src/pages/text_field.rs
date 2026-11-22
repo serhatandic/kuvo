@@ -51,7 +51,7 @@ impl Fields {
             let mut f = TextField::new(cx)
                 .multi_line(1, 8)
                 .bare()
-                .placeholder("Ask anything, / for commands, @ for files");
+                .placeholder("Ask anything, @ for files");
             f.set_text(
                 "The sign-up form wipes everything when the email is already taken.\n\nKeep what was typed, show the error under the email field, and add a test for it.",
                 cx,
@@ -62,7 +62,7 @@ impl Fields {
             TextField::new(cx)
                 .multi_line(1, 8)
                 .bare()
-                .placeholder("Ask anything, / for commands, @ for files")
+                .placeholder("Ask anything, @ for files")
         });
         let japanese = cx.new(|cx| {
             let mut f = TextField::new(cx).placeholder("Message");

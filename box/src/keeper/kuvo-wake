@@ -485,7 +485,6 @@ if [ "$1" = fire ]; then
   sandbox "${record%/*/*}"
   # Gone sessions' wake-ups (`settle`) are kept a month, then go for good.
   find "${botsroot%/*}/trash" -mindepth 1 -maxdepth 1 -name 'wakes-*' -mtime +30 -exec rm -rf {} + 2>/dev/null
-  [ -f "$record" ] || exit 0
   eport=$(listens "$record" port)
   epassword=$(listens "$record" password)
   # The coding agents' bridge beside the engine, which answers the same paths for its sessions.

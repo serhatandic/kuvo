@@ -43,7 +43,7 @@ trap 'rm -f "$raw" "$built"' EXIT
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 build() {
   BUN_BE_BUN=1 "$BUN" build box/src/link/main.ts --target=node --external bun:sqlite --format=esm --outfile "$raw" \
-    --banner "$(printf '%s\n' '// Kuvo resident serve v1' '// Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.')" >/dev/null
+    --banner "$(printf '%s\n' '// Kuvo resident serve v1' '// Kuvo resident workers v1' '// Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.')" >/dev/null
   if ! grep -q "\"$SOURCE_VERSION\"" "$raw"; then
     echo "scripts/build-box.sh: the built link doesn't have \"$SOURCE_VERSION\" (box/src/link/version.ts) to write its version in." >&2
     exit 1

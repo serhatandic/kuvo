@@ -73,6 +73,18 @@ fn the_panel_opens_beside_the_conversation_and_keeps_its_width(cx: &mut TestAppC
     cx.run_until_parked();
     assert!(bounds(cx, "new-tab").is_some());
     assert!(bounds(cx, "tile-files").is_some(), "the session works in a folder");
+    // The tiles are a grid: two equal columns, each tile in its column, a lone last one keeping
+    // its column's width, and the section's title over the tiles' left edge.
+    let tiles: Vec<_> = ["tile-side-chat", "tile-terminal", "tile-browser", "tile-files"].iter().filter_map(|id| bounds(cx, id)).collect();
+    assert!(tiles.len() >= 3, "a last row with a lone tile: {}", tiles.len());
+    let grid = bounds(cx, "new-tab-tiles").unwrap();
+    for (i, tile) in tiles.iter().enumerate() {
+        assert_eq!(tile.size.width, tiles[0].size.width, "tile {i} as wide as the first");
+        assert_eq!(tile.left(), tiles[i % 2].left(), "tile {i} in its column");
+    }
+    assert_eq!(tiles[0].left(), grid.left());
+    assert_eq!(tiles[1].right(), grid.right());
+    assert_eq!(tiles[1].left() - tiles[0].right(), tiles[2].top() - tiles[0].bottom(), "the same gap across and down");
     // ⌥⌘I: the session's folder's changes, as the box groups them, in a tab of their own.
     cx.simulate_keystrokes("cmd-alt-i");
     cx.run_until_parked();

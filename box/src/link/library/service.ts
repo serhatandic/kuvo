@@ -4,6 +4,8 @@
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
+import { readdir } from "node:fs/promises"
+import { artifactDisk } from "../server/disk-worker"
 import { fileURLToPath } from "node:url"
 import { readSavedSessions } from "../../agents/store"
 import type { ArtifactStore } from "../artifacts/store"
@@ -83,6 +85,12 @@ export function libraryService(root: string, options: LibraryOptions) {
     handed: (handover: Handover) => void store.hand(handover),
     /** Filled once from the coding agents' saved conversations and the artifact record. */
     backfill: () => backfill(store, root, options),
+    async backfillInBackground() {
+      if (backfilled(root)) return
+      const entries = await readdir(options.sessions).catch(() => [])
+      const saved = entries.length ? await artifactDisk.run("libraryHandovers", options.sessions, options.bots) : []
+      backfill(store, root, options, saved)
+    },
     handle(request: Request): Promise<Response> {
       const url = new URL(request.url)
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
@@ -99,21 +107,48 @@ export function libraryService(root: string, options: LibraryOptions) {
  * message) and, for the engine's, what the artifact record saw shown or generated (at the turn).
  * Nothing it already has newer.
  */
-export function backfill(store: LibraryStore, root: string, options: LibraryOptions) {
-  const marker = join(root, "backfill.json")
+export function backfill(store: LibraryStore, root: string, options: LibraryOptions, saved?: Handover[]) {
+  if (backfilled(root)) return
+  const found = saved ?? libraryHandovers(options.sessions, options.bots)
+  // The engine's: what the record saw `show_file` show or `generate_image` make, at its turn.
+  for (const { artifact, version } of options.artifacts?.timeline({}, { limit: 100_000 }).entries ?? []) {
+    const how = version.via.includes("show_file") ? "shown" : version.via.includes("generate_image") ? "generated" : undefined
+    if (!how) continue
+    const bot = version.by.bot ?? artifact.where.bots[0]
+    const session = version.turn?.session ?? artifact.where.sessions[0]
+    const group = version.group?.id
+    found.push({
+      path: artifact.path, how,
+      ...(bot ? { bot } : {}),
+      ...(group ? { group } : session ? { session } : {}),
+      ...(version.turn?.message ? { message: version.turn.message } : {}),
+      at: new Date(version.at),
+    })
+  }
+  // Oldest first, so each file keeps its latest hand-over; one gone since isn't brought in.
+  found.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0))
+  for (const handover of found) if (existsSync(handover.path) || options.artifacts?.at(handover.path)?.versions.some((version) => version.kept)) store.hand(handover)
   try {
-    if (JSON.parse(readFileSync(marker, "utf8"))?.done >= BACKFILL) return
+    writeFileSync(join(root, "backfill.json"), JSON.stringify({ done: BACKFILL }))
   } catch {}
+}
+
+function backfilled(root: string): boolean {
+  try { return JSON.parse(readFileSync(join(root, "backfill.json"), "utf8"))?.done >= BACKFILL }
+  catch { return false }
+}
+
+export function libraryHandovers(sessions: string, bots: string): Handover[] {
   const found: Handover[] = []
   const botOf = (directory: string | undefined, metadata: any): string | undefined => {
     if (typeof metadata?.kuvo?.seat?.bot === "string") return metadata.kuvo.seat.bot
     if (typeof metadata?.kuvo?.bot === "string") return metadata.kuvo.bot
-    if (!directory || !(directory + sep).startsWith(options.bots + sep)) return undefined
-    const first = relative(options.bots, directory).split(sep)[0]
+    if (!directory || !(directory + sep).startsWith(bots + sep)) return undefined
+    const first = relative(bots, directory).split(sep)[0]
     return first.startsWith("bot_") ? first : undefined
   }
   try {
-    const saved = [...readSavedSessions(options.sessions)]
+    const saved = [...readSavedSessions(sessions)]
     const parents = new Map(saved.map(({ session }) => [session.id, (session as any).parentID as string | undefined]))
     const rootOf = (id: string) => {
       let at = id
@@ -160,25 +195,5 @@ export function backfill(store: LibraryStore, root: string, options: LibraryOpti
   } catch (error: any) {
     console.error("library: the coding agents' conversations couldn't be read:", error?.message ?? error)
   }
-  // The engine's: what the record saw `show_file` show or `generate_image` make, at its turn.
-  for (const { artifact, version } of options.artifacts?.timeline({}, { limit: 100_000 }).entries ?? []) {
-    const how = version.via.includes("show_file") ? "shown" : version.via.includes("generate_image") ? "generated" : undefined
-    if (!how) continue
-    const bot = version.by.bot ?? artifact.where.bots[0]
-    const session = version.turn?.session ?? artifact.where.sessions[0]
-    const group = version.group?.id
-    found.push({
-      path: artifact.path, how,
-      ...(bot ? { bot } : {}),
-      ...(group ? { group } : session ? { session } : {}),
-      ...(version.turn?.message ? { message: version.turn.message } : {}),
-      at: new Date(version.at),
-    })
-  }
-  // Oldest first, so each file keeps its latest hand-over; one gone since isn't brought in.
-  found.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0))
-  for (const handover of found) if (existsSync(handover.path) || options.artifacts?.at(handover.path)?.versions.some((version) => version.kept)) store.hand(handover)
-  try {
-    writeFileSync(marker, JSON.stringify({ done: BACKFILL }))
-  } catch {}
+  return found
 }

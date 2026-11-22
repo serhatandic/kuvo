@@ -111,7 +111,7 @@ export function swapDue(now = Date.now()): { from: string; to: string } | null {
  * subagent's, one retrying), in any folder it has open a question or permission waiting on you, a
  * terminal or a command an agent left running (as closing a folder on it counts them,
  * `engine/models.ts`), or the agent's browser waiting on you. Unknown counts as at work. */
-async function engineBusy(engine: Target): Promise<boolean> {
+export async function engineBusy(engine: Target): Promise<boolean> {
   if (readAsks().length > 0) return true;
   const active = await asked(engine, "GET", "api/session/active").then(answer => (answer as { data?: unknown } | null)?.data, () => undefined);
   if (Array.isArray(active) ? active.length > 0 : active && typeof active === "object" ? Object.keys(active).length > 0 : true) return true;

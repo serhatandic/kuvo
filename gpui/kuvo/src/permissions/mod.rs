@@ -502,6 +502,6 @@ impl gpui::Render for HeadsUp {
             .flex_none()
             .gap(space::S3)
             .child(crate::first_run::list(rows, cx))
-            .children(self.problem.clone().map(|why| div().debug_selector(|| "permission-problem".into()).px(space::S1).text_ui(TypeSize::Small).text_color(c.danger).child(why)))
+            .children(self.problem.clone().map(|why| div().px(space::S1).child(kuvo_ui::Notice::said("permission-problem", kuvo_ui::Tone::Error, why))))
     }
 }

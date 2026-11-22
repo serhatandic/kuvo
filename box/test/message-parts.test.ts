@@ -43,7 +43,6 @@ let partsRoute: typeof import("../src/link/areas/messages").partsRoute
 let SEND_ROUTE: RegExp
 let queueRoute: typeof import("../src/link/areas/queue").queueRoute
 let QUEUE_ROUTE: RegExp
-let heardCommand: typeof import("../src/link/messages/commands").heardCommand
 
 async function asked(request: Request): Promise<Asked> {
   const text = await request.text()
@@ -53,7 +52,6 @@ async function asked(request: Request): Promise<Asked> {
 beforeAll(async () => {
   ;({ sendRoute, partsRoute, SEND_ROUTE } = await import("../src/link/areas/messages"))
   ;({ queueRoute, QUEUE_ROUTE } = await import("../src/link/areas/queue"))
-  ;({ heardCommand } = await import("../src/link/messages/commands"))
   engine = Bun.serve({
     port: 0,
     async fetch(request) {
@@ -64,8 +62,6 @@ beforeAll(async () => {
       if (each.path === "/api/session/ses_text") return Response.json({ data: { id: "ses_text", location: { directory: "/srv/app" }, time: { created: 1, updated: 1 }, model: { id: "words", providerID: "p", capabilities: { input: ["text"] } } } })
       if (/^\/api\/session\/ses_text\//.test(each.path)) return Response.json({ data: {} })
       if (each.path === "/api/session/ses_main/inbox") return Response.json({ data: [] })
-      // (A command's prompt waits in the inbox, as the engine's events say.)
-      if (each.path === "/api/session/ses_main/command") heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_main", inboxID: `msg_ran${engineAsked.length}`, item: { type: "user", payload: { text: each.body.text } } } })
       if (/^\/api\/session\/ses_main\//.test(each.path)) return Response.json({ data: {} }, { status: engineAnswers })
       if (/^\/api\/session\//.test(each.path)) return Response.json({ message: "Not here." }, { status: 404 })
       return Response.json({ data: null })
@@ -119,10 +115,10 @@ const send = (session: string, body: unknown, from: "phone" | "app" | "mac" = "a
   const route = `kuvo/sessions/${session}/send`
   return ask(context => sendRoute(context, route.match(SEND_ROUTE)!), "POST", route, body, from)
 }
-const prompted = (asked: Asked[]) => asked.filter(each => each.method === "POST" && /\/(prompt|command)$/.test(each.path))
+const prompted = (asked: Asked[]) => asked.filter(each => each.method === "POST" && /\/prompt$/.test(each.path))
 
 describe("kuvo/sessions/<id>/send", () => {
-  test("the box writes what the agent reads and keeps its parts with it", async () => {
+  test("the box writes what the agent reads and keeps its parts with it; a keyword an older client sends is left out", async () => {
     const comments = [{ file: "a.js", line: 4, side: "new", snippet: "x()", text: "Call it once" }]
     const { status } = await send("ses_main", { id: "msg_one", words: " Have a look ", keyword: "/plan", comments, notes: { paths: ["/x/y.txt"] }, delivery: "steer" })
     expect(status).toBe(200)
@@ -130,9 +126,9 @@ describe("kuvo/sessions/<id>/send", () => {
     expect(sent.path).toBe("/api/session/ses_main/prompt")
     expect(sent.body.id).toBe("msg_one")
     expect(sent.body.delivery).toBe("steer")
-    expect(sent.body.text).toBe(composeMessage({ words: "Have a look", keyword: "/plan", comments: comments as any, notes: { paths: ["/x/y.txt"] } }, { excluding: "ses_main", here: null, agents: [] }))
-    expect(sent.body.text.startsWith("Have a look\n\n<sent-with>\n")).toBe(true)
-    expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Have a look", keyword: "/plan", comments, paths: ["/x/y.txt"] })
+    expect(sent.body.text).toBe(composeMessage({ words: "Have a look", comments: comments as any, notes: { paths: ["/x/y.txt"] } }, { excluding: "ses_main", here: null, agents: [] }))
+    expect(sent.body.text.startsWith("Have a look\n\n<review-comments>\n")).toBe(true)
+    expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Have a look", comments, paths: ["/x/y.txt"] })
   })
 
   test("a reply to two quotes keeps each answer under its quote, as written, for the agent and kept", async () => {
@@ -197,20 +193,11 @@ describe("kuvo/sessions/<id>/send", () => {
     expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Ask again", keyword: "/plan" })
   })
 
-  test("a command runs with its arguments and its files' note", async () => {
-    await send("ses_main", { words: "the tests", command: "review-quick", notes: { paths: ["/x/y.txt"] } })
-    const [ran] = prompted(engineAsked)
-    expect(ran.path).toBe("/api/session/ses_main/command")
-    expect(ran.body.name).toBe("review-quick")
-    expect(ran.body.text).toBe("the tests\n\n<attached-files>\nOpen these attached files with your tools if you need them:\n/x/y.txt\n</attached-files>")
-  })
-
-  test("a command's arguments go as written, naming no one and saying nothing of a phone: only its files' note follows", async () => {
-    await send("ses_main", { words: " ask &Mira about it ", command: "review-quick" }, "phone")
-    await send("ses_main", { words: " main ", command: "review-quick", notes: { paths: ["/x/y.txt"] } })
-    const [phone, withFiles] = prompted(engineAsked)
-    expect(phone.body.text).toBe(" ask &Mira about it ")
-    expect(withFiles.body.text).toBe(" main \n\n<attached-files>\nOpen these attached files with your tools if you need them:\n/x/y.txt\n</attached-files>")
+  test("words starting with \"/\" go as a message: a command an older client names isn't run", async () => {
+    expect((await send("ses_main", { id: "msg_slash", words: "/review-quick main", command: "review-quick" })).status).toBe(200)
+    expect(engineAsked.some(each => each.path.endsWith("/command"))).toBe(false)
+    const [sent] = prompted(engineAsked)
+    expect(sent.body).toMatchObject({ id: "msg_slash", text: "/review-quick main", metadata: { kuvo: { parts: { words: "/review-quick main" } } } })
   })
 
   test("one sent again (Retry) after switching to a model that reads only words sends its picture as a path", async () => {
@@ -238,13 +225,6 @@ describe("kuvo/sessions/<id>/send", () => {
     expect(prompted(engineAsked)).toEqual([])
   })
 
-  test("a command with nothing after its name runs", async () => {
-    expect((await send("ses_main", { words: "", command: "init" })).status).toBe(200)
-    const [ran] = prompted(engineAsked)
-    expect(ran.path).toBe("/api/session/ses_main/command")
-    expect(ran.body).toMatchObject({ name: "init", text: "" })
-  })
-
   test("nothing written and nothing with it isn't sent; nor is it to a conversation that isn't here", async () => {
     expect((await send("ses_main", { words: "  " })).status).toBe(400)
     expect((await send("ses_main", { text: " " })).status).toBe(400)
@@ -264,11 +244,11 @@ describe("queue/add", () => {
     expect(sent.body.metadata.kuvo.parts).toEqual({ words: "After this", widget: "Plans" })
   })
 
-  test("one waiting on the box while the queue's paused shows the keyword it was sent with", async () => {
+  test("an older message put back while the queue's paused shows the keyword it was sent with", async () => {
     const stop = "kuvo/sessions/ses_main/stop"
     expect((await ask(context => queueRoute(context, stop.match(QUEUE_ROUTE)!), "POST", stop, {})).status).toBe(200)
     const route = "kuvo/sessions/ses_main/queue/add"
-    const { json } = await ask(context => queueRoute(context, route.match(QUEUE_ROUTE)!), "POST", route, { id: "msg_held", words: "check CI", keyword: "/loop every hour", delivery: "queue" })
+    const { json } = await ask(context => queueRoute(context, route.match(QUEUE_ROUTE)!), "POST", route, { id: "msg_held", text: "check CI\n\n<sent-with>…</sent-with>", kept: true, words: "check CI", metadata: { kuvo: { parts: { words: "check CI", keyword: "/loop every hour" } } }, delivery: "queue" })
     expect(json.waits).toBe(true)
     expect(json.waiting.find((each: any) => each.id === "msg_held")).toMatchObject({ text: "check CI", keyword: "/loop every hour" })
     const resume = "kuvo/sessions/ses_main/queue/resume"

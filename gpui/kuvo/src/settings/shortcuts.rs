@@ -72,10 +72,10 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
         "model_picker::Row7" => ("Choosing models", "Choose model 7"),
         "model_picker::Row8" => ("Choosing models", "Choose model 8"),
         "model_picker::Row9" => ("Choosing models", "Choose model 9"),
-        "composer::SlashNext" => ("Writing messages", "Next command"),
-        "composer::SlashPrevious" => ("Writing messages", "Previous command"),
-        "composer::SlashPick" => ("Writing messages", "Choose command"),
-        "composer::SlashDismiss" => ("Writing messages", "Close command list"),
+        "composer::ListNext" => ("Writing messages", "Next suggestion"),
+        "composer::ListPrevious" => ("Writing messages", "Previous suggestion"),
+        "composer::ListPick" => ("Writing messages", "Choose suggestion"),
+        "composer::ListDismiss" => ("Writing messages", "Close suggestions"),
         "sidebar::WalkNext" => ("Sidebar", "Next item"),
         "sidebar::WalkPrevious" => ("Sidebar", "Previous item"),
         "sidebar::WalkOpen" => ("Sidebar", "Open selected item"),
@@ -139,7 +139,7 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
 
 /// Where a binding works, without the keymap's internal predicate syntax.
 pub fn description(context: &str) -> &'static str {
-    if context.contains("ComposerSlash") { "While choosing a command" }
+    if context.contains("MentionList") { "While choosing a suggestion" }
     else if context.contains("Composer") { "While writing a message" }
     else if context.contains("KuvoMenu") { "While a menu is open" }
     else if context.contains("QueueReferences") { "While choosing an item reference" }

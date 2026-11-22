@@ -1,7 +1,7 @@
 //! The composer: the text field, the model and effort chips, and Send (Stop while a run is under
-//! way and nothing's written). What's written goes through `kuvo_box`'s typed send: a plain message
-//! straight to the box as fields, "/" and "!" to the box first, which says what they mean. "/"
-//! offers what the box says it offers there, as you type.
+//! way and nothing's written). What's written goes to the box through `kuvo_box`'s draft send, as a
+//! message for the agent, whatever it starts with. "@" and "&" offer what the box suggests as you
+//! type.
 //!
 //! In a new conversation (the landing view) Send starts it on the box, in the project picked, then
 //! sends the same way.
@@ -22,7 +22,7 @@ use crate::model_picker::{Catalog, ModelPicker};
 use kuvo_box::approval::{Approval, Here, Picked, Shown};
 use kuvo_box::client::DraftReceiptStatus;
 use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, Starred, effort_title};
-use kuvo_box::typed::{self, Answer, ModelRef, Offers};
+use kuvo_box::typed::{self, Answer, ModelRef};
 use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
 use kuvo_box::image_names;
@@ -32,14 +32,14 @@ use kuvo_box::{BoxClient, Draft, Sent, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Pasted, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::{Menu, MenuEntry, PopoverMenu, PopoverMenuHandle},
-    small::{Chip, ChipTone},
+    small::Chip,
     theme::{radius, space},
 };
 
-actions!(composer, [SlashNext, SlashPrevious, SlashPick, SlashDismiss, SendQueued, ChooseModel]);
+actions!(composer, [ListNext, ListPrevious, ListPick, ListDismiss, SendQueued, ChooseModel]);
 
 const CONTEXT: &str = "Composer";
-const SLASH: &str = "SlashMenu";
+const LIST: &str = "MentionList";
 /// How long before what the box couldn't say of its models is asked again, at first and at most.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MOST: Duration = Duration::from_secs(30);
@@ -50,20 +50,20 @@ const ASK_AGAIN_MOST: u32 = 6;
 const NOT_ANSWERED: &str = "Its computer isn't answering.";
 /// How long typing a mention pauses before the box is asked what it suggests.
 const MENTION_PAUSE: Duration = Duration::from_millis(150);
-/// How many of "/"'s offers show at once (the rest scroll).
-const SLASH_MOST: usize = 8;
+/// How many of the list's offers show at once (the rest scroll).
+const LIST_MOST: usize = 8;
 
-/// The keys "/"'s list takes while it shows, ahead of the field's own; ⌘Return, for after this run.
+/// The keys the mention list takes while it shows, ahead of the field's own; ⌘Return, for after this run.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-enter", SendQueued, Some(CONTEXT)), KeyBinding::new("cmd-shift-m", ChooseModel, Some(CONTEXT))]);
-    let context = format!("{SLASH} > {}", kuvo_ui::text_field::CONTEXT);
+    let context = format!("{LIST} > {}", kuvo_ui::text_field::CONTEXT);
     let context = Some(context.as_str());
     cx.bind_keys([
-        KeyBinding::new("down", SlashNext, context),
-        KeyBinding::new("up", SlashPrevious, context),
-        KeyBinding::new("tab", SlashPick, context),
-        KeyBinding::new("enter", SlashPick, context),
-        KeyBinding::new("escape", SlashDismiss, context),
+        KeyBinding::new("down", ListNext, context),
+        KeyBinding::new("up", ListPrevious, context),
+        KeyBinding::new("tab", ListPick, context),
+        KeyBinding::new("enter", ListPick, context),
+        KeyBinding::new("escape", ListDismiss, context),
     ]);
 }
 
@@ -103,8 +103,6 @@ pub enum ComposerEvent {
     Wrote,
     /// What's on its way from here changed (`outgoing`): the conversation draws it again.
     Outgoing,
-    /// A question was asked aside ("/btw"): its side chat, by its thread.
-    AskedAside { thread: String },
 }
 
 /// A message sent from here, drawn in its conversation at once as your message (0.7's "Sending"
@@ -206,7 +204,7 @@ pub struct Note {
     pub warning: bool,
 }
 
-/// One of "/"'s offers.
+/// One of the mention list's offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     pub name: String,
@@ -260,11 +258,10 @@ pub struct Composer {
     place_known: bool,
     /// Whether it's on screen (a kept conversation's isn't): only then is it asked again.
     shown: bool,
-    offers: Option<Offers>,
-    slash_scroll: ScrollHandle,
-    slash_at: usize,
-    /// The text "/"'s list was put away for (with Escape): it shows again once that changes.
-    slash_dismissed: Option<String>,
+    list_scroll: ScrollHandle,
+    list_at: usize,
+    /// The text the mention list was put away for (with Escape): it shows again once that changes.
+    list_dismissed: Option<String>,
     note: Option<Note>,
     /// What the field held as the note was shown: the note goes once that changes.
     noted: String,
@@ -326,8 +323,8 @@ impl Focusable for Composer {
 }
 
 impl Composer {
-    /// A composer for `target`. `read`: whether to read what it shows (the model, the efforts,
-    /// "/"'s offers) from the box now.
+    /// A composer for `target`. `read`: whether to read what it shows (the model, the efforts)
+    /// from the box now.
     pub fn new(client: BoxClient, target: Target, read: bool, cx: &mut Context<Self>) -> Composer {
         Composer::in_folder(client, target, None, read, cx)
     }
@@ -345,7 +342,7 @@ impl Composer {
 
     fn make(client: BoxClient, target: Target, folder: Option<String>, read: bool, item_editor: bool, cx: &mut Context<Self>) -> Composer {
         let placeholder: SharedString = match &target {
-            Target::Session { .. } => "Ask anything, / for commands".into(),
+            Target::Session { .. } => "Ask anything".into(),
             Target::New(_) => "What should we work on?".into(),
             Target::Group { .. } => "Message the group…".into(),
         };
@@ -369,7 +366,7 @@ impl Composer {
                     }
                 }
                 TextFieldEvent::Changed => {
-                    this.slash_at = 0;
+                    this.list_at = 0;
                     this.read_mentions(cx);
                     if this.note.is_some() && this.text(cx) != this.noted {
                         this.note = None;
@@ -408,10 +405,9 @@ impl Composer {
             picking: None,
             place_known: false,
             shown: true,
-            offers: None,
-            slash_scroll: ScrollHandle::new(),
-            slash_at: 0,
-            slash_dismissed: None,
+            list_scroll: ScrollHandle::new(),
+            list_at: 0,
+            list_dismissed: None,
             note: None,
             noted: String::new(),
             attached: Vec::new(),
@@ -435,10 +431,9 @@ impl Composer {
             _field: subscription,
             _pasting: pasting,
         };
-        // A group chat has no model of its own to pick, nor "/" to offer: its bots each have theirs.
+        // A group chat has no model of its own to pick: its bots each have theirs.
         if read && !matches!(composer.target, Target::Group { .. }) {
             composer.read_models(cx);
-            composer.read_offers(cx);
             // (A conversation's mode is read as it's shown: `set_shown`.)
             if matches!(composer.target, Target::New(_)) {
                 composer.read_approval(cx);
@@ -564,7 +559,7 @@ impl Composer {
                 self.keep_owner_draft(Draft::new(id.clone(), written), files, OwnerReceipt::Pending, cx);
                 self.watch_draft_receipt(id, receipt.operation, cx);
             }
-            Ok(sent) => self.sent(sent, written, files, cx),
+            Ok(sent) => self.sent(sent, files, cx),
             Err(error) => {
                 self.attach(files, cx);
                 self.put_back(written, Some(error), cx);
@@ -686,11 +681,6 @@ impl Composer {
         cx.notify();
     }
 
-    pub fn take_offers(&mut self, offers: Offers, cx: &mut Context<Self>) {
-        self.offers = Some(offers);
-        cx.notify();
-    }
-
     /// Runs `work` off the UI thread, then `then` with what it gave.
     fn spawn<T: Send + 'static>(&mut self, cx: &mut Context<Self>, work: impl FnOnce() -> T + Send + 'static, then: impl FnOnce(&mut Composer, T, &mut Context<Self>) + 'static) {
         let task = cx.background_executor().spawn(async move { work() });
@@ -765,7 +755,7 @@ impl Composer {
         self.took_models(None, true, Some(Said::Is(Box::new(state))), cx);
     }
 
-    /// Reads what the chips and "/" show at once, on this thread (shots and tests, against a stand-in).
+    /// Reads what the chips show at once, on this thread (shots and tests, against a stand-in).
     #[cfg(feature = "stand-in")]
     pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
         let (offered, said_all, state) = models_of(&self.client, &self.target, self.picked.as_ref(), self.offered_in().as_deref(), self.models.offered.as_ref());
@@ -774,11 +764,6 @@ impl Composer {
             Target::Session { id, .. } => self.approval = self.client.session_approval(id).ok(),
             Target::New(_) => self.here = self.client.approval_here().ok(),
             Target::Group { .. } => {}
-        }
-        if let Target::Session { id, .. } = &self.target
-            && let Ok(offers) = self.client.typed_offers(id)
-        {
-            self.take_offers(offers, cx);
         }
     }
 
@@ -802,16 +787,6 @@ impl Composer {
     /// known where it runs.
     pub fn can_pick(&self) -> bool {
         matches!(self.target, Target::New(_)) || self.place_known
-    }
-
-    fn read_offers(&mut self, cx: &mut Context<Self>) {
-        let Target::Session { id, .. } = &self.target else { return };
-        let (client, id) = (self.client.clone(), id.clone());
-        self.spawn(cx, move || client.typed_offers(&id).ok(), |this, offers, cx| {
-            if let Some(offers) = offers {
-                this.take_offers(offers, cx);
-            }
-        });
     }
 
     /// Picks a model (and effort) for the conversation, or for the new one.
@@ -1033,8 +1008,6 @@ impl Composer {
         draft.named = self.named.iter().filter(|(text, _)| mentioned(&draft.text, text)).map(|(_, session)| session.clone()).collect();
         draft.named.dedup();
         draft.refusal = self.models.state.as_ref().and_then(|state| state.refusal.clone());
-        // ("/" and "!" texts go to the box, which says whether they need the model: "!" commands and
-        // a goal's pause don't.)
         if self.needs_model() && !matches!(self.target, Target::Session { .. }) {
             self.attached = files;
             let choice = self.models.offered.as_ref().and_then(|offered| offered.start_choice.as_ref());
@@ -1045,7 +1018,7 @@ impl Composer {
         }
         self.sending = true;
         self.note = None;
-        self.slash_dismissed = None;
+        self.list_dismissed = None;
         self.field.update(cx, |field, cx| {
             field.set_text("", cx);
             field.set_error(None, cx);
@@ -1067,17 +1040,15 @@ impl Composer {
                     cx.notify();
                 });
             }
-            Target::Session { id, place } => {
-                draft.place = self.place_known.then_some(place);
-                // What it replies to goes ahead of its words: a plain message's now (so it shows so
-                // at once), a typed one's as its box says it sends (`send_draft`'s `quote`).
+            Target::Session { id, .. } => {
+                // What it replies to goes ahead of its words: now (so it shows so at once), and
+                // with the draft as its box sends it (`send_draft`'s `quote`).
                 self.sync_answers(cx);
                 let quotes = std::mem::take(&mut self.quotes);
                 self.answers.clear();
-                // A plain message shows in the conversation at once, as you wrote it ("/" and "!"
-                // texts are the box's to say what they are; one kept for a model that can't run
-                // goes back to the composer, saying why).
-                let shows = !typed::asks_box(&text) && typed::plain_answer(&text, draft.side, draft.refusal.as_deref()).is_none();
+                // It shows in the conversation at once, as you wrote it (one kept for a model that
+                // can't run goes back to the composer, saying why).
+                let shows = typed::plain_answer(&text, draft.refusal.as_deref()).is_none();
                 if !quotes.is_empty() {
                     draft.capture_quote(&|words| quoting::message(&quotes, words));
                 }
@@ -1165,7 +1136,7 @@ impl Composer {
                 // Its answer didn't come (its computer restarting, the connection lost): asked again
                 // under its id, which its box takes once and settles (sent, or sent now), drawn
                 // meanwhile as on its way; still unanswered, it says so once, with Retry.
-                Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) && !typed::asks_box(&text) && !kept_draft.side => {
+                Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) => {
                     if !(shows && this.ask_again(&session_again, &id, cx)) {
                         let warning = answer.error.unwrap_or_else(|| "Check the conversation before sending this draft again.".into());
                         this.keep_owner_draft(kept_draft, files, OwnerReceipt::Interrupted(warning), cx);
@@ -1180,7 +1151,7 @@ impl Composer {
                         quotes.append(&mut this.quotes);
                         this.set_quotes(quotes, cx);
                     }
-                    this.sent(sent, &text, files, cx);
+                    this.sent(sent, files, cx);
                 }
                 Err(why) if shows => this.mark(&id, |outgoing| if outgoing.at_box == AtBox::Unseen { outgoing.failed = Some(why) }, cx),
                 Err(why) => {
@@ -1392,32 +1363,20 @@ impl Composer {
         }
     }
 
-    /// What the box did with a typed text, shown; what goes back to the composer, put back. Files
-    /// stay attached unless the answer took them (`send` or `command`). What this client is to do
-    /// that it can't yet keeps what was written (`written`).
-    fn sent(&mut self, sent: Sent, written: &str, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+    /// What goes back to the composer, put back, with why. Files stay attached unless the answer
+    /// took them (`send`).
+    fn sent(&mut self, sent: Sent, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         let Sent::Typed { answer, .. } = sent else { return };
         if !answer.takes_files() {
             self.attach(files, cx);
         }
-        let Answer { restore, error, .. } = (*answer).clone();
-        let note = said(&answer);
-        // Asked aside: its answer shows in its side chat, in the panel.
-        if let Some(thread) = answer.side_question.as_ref().and_then(|asked| asked.get("thread").or_else(|| asked.get("id"))).and_then(|thread| thread.as_str()) {
-            cx.emit(ComposerEvent::AskedAside { thread: thread.to_owned() });
-        }
-        if restore.is_none() && answer.ambiguous != Some(true) && is_clients_to_do(&answer) {
-            self.put_back(written, None, cx);
-        }
+        let Answer { restore, error, .. } = *answer;
         if let Some(restore) = restore {
             let now = self.text(cx);
             let joined = ahead_of(restore.text_beside(&now), &now);
             self.field.update(cx, |field, cx| field.set_text(joined, cx));
         }
         self.field.update(cx, |field, cx| field.set_error(error.map(SharedString::from), cx));
-        if let Some(note) = note {
-            self.set_note(note, cx);
-        }
     }
 
     /// Shows `note` under the composer, until what's written changes.
@@ -1915,30 +1874,6 @@ impl Composer {
         Some(div().debug_selector(|| "attachments".into()).flex().flex_wrap().items_center().gap(space::S1_5).children(items).into_any_element())
     }
 
-    /// "/"'s offers for what's written: shown while it's "/" and a name being typed.
-    pub fn slash_offers(&self, cx: &App) -> Vec<Offer> {
-        let text = self.text(cx);
-        let Some(typed) = text.strip_prefix('/') else { return Vec::new() };
-        if typed.contains(char::is_whitespace) || self.slash_dismissed.as_deref() == Some(text.as_str()) {
-            return Vec::new();
-        }
-        let Some(offers) = &self.offers else { return Vec::new() };
-        let typed = typed.to_lowercase();
-        let keywords = offers.keywords.iter().map(|keyword| Offer { name: keyword.name.clone(), summary: keyword.summary.clone(), icon: None });
-        let commands = offers.commands.iter().map(|command| Offer { name: command.name.clone(), summary: command.description.clone().unwrap_or_default(), icon: None });
-        // Names starting with what's typed first, then those containing it, each by name, as
-        // KuvoClient's `SlashCommands.matches` orders them.
-        let mut matched: Vec<(bool, Offer)> = keywords
-            .chain(commands)
-            .filter_map(|offer| {
-                let name = offer.name.to_lowercase();
-                name.contains(&typed).then(|| (!name.starts_with(&typed), offer))
-            })
-            .collect();
-        matched.sort_by(|(a_later, a), (b_later, b)| a_later.cmp(b_later).then_with(|| a.name.cmp(&b.name)));
-        matched.into_iter().map(|(_, offer)| offer).collect()
-    }
-
     /// The mention being typed, if one is, and what the box suggests for it: read as it changes.
     fn read_mentions(&mut self, cx: &mut Context<Self>) {
         let text = self.text(cx);
@@ -1994,15 +1929,15 @@ impl Composer {
     }
 
     /// What the list over the field offers now: what "@" or "&" suggests while a mention's being
-    /// typed, else "/"'s. Each as it shows: its name, and what's beside it.
-    pub fn shown_offers(&self, cx: &App) -> (Vec<Offer>, bool) {
+    /// typed. Each as it shows: its name, and what's beside it.
+    pub fn shown_offers(&self, cx: &App) -> Vec<Offer> {
         let text = self.text(cx);
         let typing = match self.target {
             Target::Group { .. } => group_mention_query(&text).is_some(),
             _ => mention_query(&text).is_some(),
         };
-        if typing && self.slash_dismissed.as_deref() != Some(text.as_str()) {
-            let offers = self.mentions.iter().map(|mention| Offer {
+        if typing && self.list_dismissed.as_deref() != Some(text.as_str()) {
+            return self.mentions.iter().map(|mention| Offer {
                     name: mention.title.clone(),
                     summary: mention.detail.clone().unwrap_or_default(),
                     icon: Some(match mention.kind.as_str() {
@@ -2012,10 +1947,8 @@ impl Composer {
                         _ => IconName::File,
                     }),
                 }).collect();
-            return (offers, true);
         }
-        let offers = self.slash_offers(cx).into_iter().map(|offer| Offer { name: format!("/{}", offer.name), summary: offer.summary, icon: None }).collect();
-        (offers, false)
+        Vec::new()
     }
 
     /// Puts mention `at` in place of the one being typed, and a space after it; an agent picked is
@@ -2038,35 +1971,29 @@ impl Composer {
         cx.notify();
     }
 
-    fn slash_step(&mut self, by: isize, cx: &mut Context<Self>) {
-        let count = self.shown_offers(cx).0.len() as isize;
+    fn list_step(&mut self, by: isize, cx: &mut Context<Self>) {
+        let count = self.shown_offers(cx).len() as isize;
         if count > 0 {
-            self.slash_at = (self.slash_at as isize + by).rem_euclid(count) as usize;
-            self.slash_scroll.scroll_to_item(self.slash_at);
+            self.list_at = (self.list_at as isize + by).rem_euclid(count) as usize;
+            self.list_scroll.scroll_to_item(self.list_at);
             cx.notify();
         }
     }
 
     /// Puts offer `at` in the field, ready for what follows it.
-    fn slash_pick(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shown_offers(cx).1 {
-            return self.mention_pick(at, window, cx);
+    fn list_pick(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shown_offers(cx).is_empty() {
+            self.mention_pick(at, window, cx);
         }
-        let offers = self.slash_offers(cx);
-        let Some(offer) = offers.get(at.min(offers.len().saturating_sub(1))) else { return };
-        let text = format!("/{} ", offer.name);
-        self.field.update(cx, |field, cx| field.set_text(text, cx));
-        window.focus(&self.field.focus_handle(cx), cx);
-        cx.notify();
     }
 
-    fn slash_list(&self, offers: &[Offer], cx: &mut Context<Self>) -> AnyElement {
+    fn offers_list(&self, offers: &[Offer], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let rows = offers.iter().enumerate().map(|(ix, offer)| {
-            let selected = ix == self.slash_at;
+            let selected = ix == self.list_at;
             div()
-                .id(("slash", ix))
+                .id(("mention", ix))
                 .flex()
                 .items_center()
                 .gap(space::S3)
@@ -2076,16 +2003,16 @@ impl Composer {
                 .cursor_pointer()
                 .when(selected, |d| d.bg(c.selected))
                 .hover(|s| s.bg(c.hover))
-                .on_click(cx.listener(move |this, _, window, cx| this.slash_pick(ix, window, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| this.list_pick(ix, window, cx)))
                 .children(offer.icon.map(|icon| Icon::new(icon).size(IconSize::Nav).color(c.text_muted)))
                 .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(offer.name.clone()))
                 .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(offer.summary.clone()))
         });
         div()
-            .id("slash-list")
-            .track_scroll(&self.slash_scroll)
+            .id("mention-list")
+            .track_scroll(&self.list_scroll)
             .overflow_y_scroll()
-            .max_h(px(30. * SLASH_MOST as f32 + 8.))
+            .max_h(px(30. * LIST_MOST as f32 + 8.))
             .absolute()
             .bottom_full()
             .left_0()
@@ -2526,65 +2453,6 @@ fn ahead_of(front: &str, now: &str) -> String {
     }
 }
 
-/// Whether the box's answer leaves the client a step this one can't take yet: what was written is
-/// kept in the field rather than lost.
-fn is_clients_to_do(answer: &Answer) -> bool {
-    answer.toggle_autopilot == Some(true) || answer.side_thread == Some(true) || answer.show_goal == Some(true)
-}
-
-/// What the box did with a typed text, as a line under the composer; and, for what's this
-/// client's to do that it can't yet, that plainly (what was written is put back by the box's
-/// `restore`, else kept by [`Composer::sent`]).
-fn said(answer: &Answer) -> Option<Note> {
-    let note = |text: &str, warning: bool| Some(Note { text: text.to_owned().into(), warning });
-    if let Some(agent) = &answer.agent {
-        let mode = match agent.as_str() {
-            "plan" => "Plan".to_owned(),
-            "build" => "Build".to_owned(),
-            other => other.to_owned(),
-        };
-        return note(&format!("Switched to {mode}."), false);
-    }
-    if answer.shell.is_some() {
-        return None;
-    }
-    if answer.compact == Some(true) {
-        // (The box's words; a box that sends none shows none: the summary's own row says it.)
-        return answer.said.as_deref().and_then(|said| note(said, false));
-    }
-    if answer.toggle_autopilot == Some(true) {
-        return note("Turning Autopilot on or off isn’t in this app yet.", true);
-    }
-    if answer.autopilot.is_some() {
-        return note("Autopilot changed. It isn’t shown in this app yet.", false);
-    }
-    if answer.side_question.is_some() {
-        return note("Asked aside. The answer shows in a side chat in the panel.", false);
-    }
-    if answer.handoff.is_some() {
-        return note("Writing a handoff note. The new session shows in the sidebar once it’s ready.", false);
-    }
-    if answer.asked_bot == Some(true) {
-        return note("Asked the bot for a plan.", false);
-    }
-    if answer.goal_cleared == Some(true) {
-        return note("Goal cleared.", false);
-    }
-    if answer.side_thread == Some(true) {
-        return note("Side threads aren’t in this app yet.", true);
-    }
-    if answer.show_goal == Some(true) || answer.goal.is_some() {
-        return note("Goals aren’t shown in this app yet.", true);
-    }
-    if answer.wake_up.is_some() {
-        return note("Set to come back on its schedule.", false);
-    }
-    if answer.review.is_some() {
-        return note("Review started.", false);
-    }
-    None
-}
-
 impl Composer {
     /// While the agent works: Send (into its run, at its next step), Queue for After This Run, and
     /// Send Now (the step under way stopped for it), as 0.7 offered them.
@@ -2679,10 +2547,8 @@ impl Render for Composer {
         let c = &theme.colors;
         let text = self.text(cx);
         let empty = text.trim().is_empty() && self.attached.is_empty();
-        let (offers, _) = self.shown_offers(cx);
-        self.slash_at = self.slash_at.min(offers.len().saturating_sub(1));
-        // The keyword it starts with, as the box will read it (and as the sent message shows it).
-        let keyword = typed::keyword(&text).map(|(keyword, _)| Chip::new("typed-keyword", format!("/{keyword}")).icon(IconName::Sparkle).tone(ChipTone::Accent));
+        let offers = self.shown_offers(cx);
+        self.list_at = self.list_at.min(offers.len().saturating_sub(1));
         let group = matches!(self.target, Target::Group { .. });
         let stop = self.running && empty && matches!(self.target, Target::Session { .. } | Target::Group { .. });
         let send = if stop {
@@ -2710,13 +2576,12 @@ impl Render for Composer {
         });
         // The list's keys while it shows, and while a mention's suggestions are on their way.
         let waiting = self.mention_pending && !group && mention_query(&text).is_some();
-        let context = if offers.is_empty() && !waiting { CONTEXT.to_owned() } else { format!("{CONTEXT} {SLASH}") };
+        let context = if offers.is_empty() && !waiting { CONTEXT.to_owned() } else { format!("{CONTEXT} {LIST}") };
         let card = card(cx)
-            .when(!offers.is_empty(), |d| d.child(self.slash_list(&offers, cx)))
+            .when(!offers.is_empty(), |d| d.child(self.offers_list(&offers, cx)))
             .children(self.full_access_question(cx))
             .children(self.quote_cards(window, cx))
             .children(self.attachments(cx))
-            .children(keyword.map(|chip| div().flex().child(chip)))
             .child(field_room(self.field.clone()))
             .child(
                 controls()
@@ -2737,11 +2602,11 @@ impl Render for Composer {
             .on_action(cx.listener(|this, _: &ChooseModel, window, cx| {
                 this.open_model_picker(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SlashNext, _, cx| this.slash_step(1, cx)))
-            .on_action(cx.listener(|this, _: &SlashPrevious, _, cx| this.slash_step(-1, cx)))
-            .on_action(cx.listener(|this, _: &SlashPick, window, cx| this.slash_pick(this.slash_at, window, cx)))
-            .on_action(cx.listener(|this, _: &SlashDismiss, _, cx| {
-                this.slash_dismissed = Some(this.text(cx));
+            .on_action(cx.listener(|this, _: &ListNext, _, cx| this.list_step(1, cx)))
+            .on_action(cx.listener(|this, _: &ListPrevious, _, cx| this.list_step(-1, cx)))
+            .on_action(cx.listener(|this, _: &ListPick, window, cx| this.list_pick(this.list_at, window, cx)))
+            .on_action(cx.listener(|this, _: &ListDismiss, _, cx| {
+                this.list_dismissed = Some(this.text(cx));
                 cx.notify();
             }))
             .when(!group, |d| d.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx))))
@@ -2757,39 +2622,6 @@ impl Render for Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A summary asked for says so in the box's words, and nothing where the box sent none.
-    #[test]
-    fn a_summary_asked_for_is_said_in_the_boxs_words() {
-        let answer: Answer = serde_json::from_value(serde_json::json!({"keyword": "compact", "compact": true, "said": "Asked to summarize the conversation."})).unwrap();
-        assert_eq!(said(&answer).map(|note| (note.text.to_string(), note.warning)), Some(("Asked to summarize the conversation.".to_owned(), false)));
-        let silent: Answer = serde_json::from_value(serde_json::json!({"keyword": "compact", "compact": true})).unwrap();
-        assert!(said(&silent).is_none());
-    }
-
-    #[test]
-    fn executed_composer_actions_are_not_restored_as_unsupported() {
-        for value in [serde_json::json!({"shell": "pwd"}), serde_json::json!({"compact": true})] {
-            let answer: Answer = serde_json::from_value(value).unwrap();
-            assert!(!is_clients_to_do(&answer));
-            assert!(!answer.takes_files());
-            assert!(said(&answer).is_none_or(|note| !note.warning));
-        }
-    }
-
-    #[test]
-    fn unsupported_composer_actions_stay_clients_to_do() {
-        for value in [
-            serde_json::json!({"toggleAutopilot": true}),
-            serde_json::json!({"sideThread": true}),
-            serde_json::json!({"showGoal": true}),
-        ] {
-            let answer: Answer = serde_json::from_value(value).unwrap();
-            assert!(is_clients_to_do(&answer));
-            assert!(!answer.takes_files());
-            assert!(said(&answer).is_some_and(|note| note.warning));
-        }
-    }
 
     #[test]
     fn the_mention_being_typed_is_read_from_the_end() {

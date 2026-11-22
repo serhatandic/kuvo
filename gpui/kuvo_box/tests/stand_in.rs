@@ -119,18 +119,18 @@ fn a_box_held_as_it_says_is_still_asked_until_it_updates() {
     // Its first request reads what it is first, then goes to it.
     assert!(client.messages("ses_1", Where::Engine, 10).is_ok());
     assert_eq!(client.gate(), Gate::Held { missing: vec!["typed".into()] });
-    let _ = client.typed_offers("ses_1");
+    let _ = client.messages("ses_1", Where::Engine, 10);
     assert_eq!(stand_in.seen_routes().len(), 3, "{:?}", stand_in.seen_routes());
     assert_eq!(stand_in.seen_routes()[..2], ["GET kuvo/info", "GET api/session/ses_1/message?limit=10&order=desc"]);
 
     // Updated, it's let go once it's read again.
     stand_in.answer(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        _ => Answer::json(200, json!({ "keywords": [], "commands": [] })),
+        _ => Answer::json(200, json!({ "data": [] })),
     });
     client.connect().unwrap();
     assert_eq!(client.gate(), Gate::Open);
-    assert!(client.typed_offers("ses_1").is_ok());
+    assert!(client.messages("ses_1", Where::Engine, 10).is_ok());
 
     // One that answers no kuvo/info at all is held.
     stand_in.answer(|_| Answer::json(404, json!({})));
@@ -408,19 +408,11 @@ fn a_coding_agents_conversation_is_read_from_its_bridge() {
 }
 
 #[test]
-fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
+fn a_composer_sends_its_fields_and_slash_or_bang_is_just_text() {
     use kuvo_box::parts::{Comment, File, Notes, Side};
     let stand_in = StandInBox::start(|seen| match (seen.method.as_str(), seen.route()) {
         (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-        ("GET", "api/session/ses_1") | ("POST", "api/session/ses_1/shell") => Answer::json(200, json!({})),
         ("POST", "kuvo/sessions/ses_1/send") => Answer::json(200, json!({})),
-        ("POST", "kuvo/sessions/ses_1/typed") => match seen.body.as_ref().unwrap()["text"].as_str().unwrap() {
-            "/plan sketch it" => Answer::json(200, json!({ "keyword": "plan", "agent": "plan", "send": { "text": "sketch it", "typed": "/plan", "quoted": true } })),
-            "/loop every hour check" => Answer::json(200, json!({ "wakeUp": { "due": 1, "every": "1h", "note": "check" }, "send": { "text": "check", "typed": "/loop every hour", "steer": true } })),
-            "/init now" => Answer::json(200, json!({ "command": { "name": "init", "arguments": "now" } })),
-            "!ls" => Answer::json(200, json!({ "shell": "ls" })),
-            _ => Answer::json(503, json!({ "message": "The engine isn't answering.", "restore": { "text": "/review now" } })),
-        },
         _ => Answer::json(404, json!({})),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
@@ -462,60 +454,15 @@ fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
     assert_eq!((answer.error.as_deref(), answer.restore.unwrap().text.as_str()), (Some("Sign in to Anthropic again."), "fix it"));
     assert_eq!(stand_in.seen().len(), before);
 
-    // "/plan sketch it": the box says what it means; the words it says to send go with the keyword
-    // as typed and what they reply to, and the box writes what the agent reads.
-    let mut plan = Draft::new("msg_p", "/plan sketch it");
-    plan.files = vec![File { uri: "data:image/png;base64,AA==".into(), name: None }];
-    plan.widget = Some("Pick one".into());
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &plan, Some(&quote)).unwrap() else { panic!("typed") };
-    assert_eq!((answer.agent.as_deref(), message.as_deref()), (Some("plan"), Some("msg_p")));
-    let seen = stand_in.seen();
-    let [.., typed, sent] = &seen[..] else { panic!() };
-    assert_eq!(typed.body.as_ref().unwrap(), &json!({ "id": "msg_p", "text": "/plan sketch it", "files": true, "side": false }));
-    assert_eq!(sent.body.as_ref().unwrap(), &json!({ "id": "msg_p", "words": "> the line\n\nsketch it", "keyword": "/plan", "delivery": "steer", "files": [{ "uri": "data:image/png;base64,AA==" }], "widget": "Pick one" }));
-
-    // A /loop's first goes now, whatever was asked.
-    let mut looped = Draft::new("msg_l", "/loop every hour check");
-    looped.delivery = Delivery::Queue;
-    client.send_draft("ses_1", &looped, None).unwrap();
-    assert_eq!(stand_in.seen().pop().unwrap().body.unwrap(), json!({ "id": "msg_l", "words": "check", "keyword": "/loop every hour", "delivery": "steer" }));
-
-    // One of the engine's commands runs with its arguments as written: not a message, so no id.
-    let Sent::Typed { message: None, .. } = client.send_draft("ses_1", &Draft::new("msg_c", "/init now"), None).unwrap() else { panic!("a command") };
-    let ran = stand_in.seen().pop().unwrap();
-    assert_eq!(ran.body.unwrap(), json!({ "words": "now", "command": "init", "delivery": "steer" }));
-    assert_eq!(ran.headers.get("idempotency-key"), None);
-
-    // With the side thread's tag on, a message is a follow-up there, the client's to ask.
-    let before = stand_in.seen().len();
-    let mut side = Draft::new("msg_t", "what about tests?");
-    side.side = true;
-    let Sent::Typed { answer, message: None } = client.send_draft("ses_1", &side, None).unwrap() else { panic!("side") };
-    assert_eq!(answer.side_thread, Some(true));
-    assert_eq!(stand_in.seen().len(), before);
-
-    // Both at once: the model that can't run is said first, as the box checks it first
-    // (typed/decide.ts), and the message is kept, not taken to the side thread.
-    side.refusal = Some("Sign in to Anthropic again.".into());
-    let Sent::Typed { answer, message: None } = client.send_draft("ses_1", &side, None).unwrap() else { panic!("kept") };
-    assert_eq!((answer.side_thread, answer.error.as_deref()), (None, Some("Sign in to Anthropic again.")));
-    assert_eq!(answer.restore.map(|restore| restore.text), Some("what about tests?".to_owned()));
-    assert_eq!(stand_in.seen().len(), before);
-
-    // "!ls": the box decides, then runs it without sending an agent message.
-    let before = stand_in.seen().len();
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_s", "!ls"), None).unwrap() else { panic!() };
-    assert_eq!((answer.shell.as_deref(), message), (Some("ls"), None));
-    assert_eq!(stand_in.seen().len(), before + 3);
-    assert_eq!(stand_in.seen().last().unwrap().body, Some(json!({ "command": "ls" })));
-
-    // Refused: it all goes back to the composer, saying why.
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_r", "/review now"), None).unwrap() else { panic!() };
-    assert_eq!(message, None);
-    assert_eq!(answer.error.as_deref(), Some("The engine isn't answering."));
-    assert_eq!(answer.restore.unwrap().text_beside(""), "/review now");
-    // Nothing went the way before.
-    assert!(stand_in.seen().iter().all(|seen| !seen.route().ends_with("/prompt") && !seen.route().ends_with("/queue/add")));
+    // What starts with "/" or "!" is a message like any other: sent as written, nothing asked
+    // of the box about what it means and nothing run.
+    for (id, text) in [("msg_p", "/plan sketch it"), ("msg_s", "!ls"), ("msg_c", "  /init now")] {
+        assert_eq!(client.send_draft("ses_1", &Draft::new(id, text), None).unwrap(), Sent::Message { id: id.into() });
+        let sent = stand_in.seen().pop().unwrap();
+        assert_eq!(sent.route(), "kuvo/sessions/ses_1/send");
+        assert_eq!(sent.body.unwrap(), json!({ "id": id, "words": text, "delivery": "steer" }));
+    }
+    assert!(stand_in.seen().iter().all(|seen| !seen.route().ends_with("/typed") && !seen.route().ends_with("/shell") && !seen.route().ends_with("/command")));
 }
 
 #[test]
@@ -983,82 +930,5 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
     match follow.next_blocking() {
         Some(Followed::Now(now)) => assert!(!now.row("offers").unwrap().is_on()),
         other => panic!("the page again, not {other:?}"),
-    }
-}
-
-#[test]
-fn compact_drafts_use_the_sessions_own_engine_and_preserve_refusal_words() {
-    for agents in [false, true] {
-        let stand_in = StandInBox::start(move |seen| match seen.route() {
-            "kuvo/info" => Answer::json(200, mac_info(current_features())),
-            "kuvo/sessions/ses_compact/typed" => Answer::json(200, json!({ "compact": true })),
-            "api/session/ses_compact" if !agents => Answer::json(200, json!({ "id": "ses_compact" })),
-            "kuvo/agents/api/session/ses_compact" if agents => Answer::json(200, json!({ "id": "ses_compact" })),
-            "api/session/ses_compact/compact" if !agents => Answer::json(200, json!({ "data": { "state": "waiting" } })),
-            "kuvo/agents/api/session/ses_compact/compact" if agents => Answer::json(400, json!({ "message": "There’s nothing to summarize yet." })),
-            _ => Answer::json(404, json!({})),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        let result = client.send_draft("ses_compact", &Draft::new("draft_compact", "/compact"), None);
-        if agents {
-            assert!(result.unwrap_err().to_string().contains("There’s nothing to summarize yet."));
-        } else {
-            assert!(matches!(result.unwrap(), Sent::Typed { answer, .. } if answer.compact == Some(true)));
-        }
-        let seen = stand_in.seen();
-        let expected = if agents { "kuvo/agents/api/session/ses_compact/compact" } else { "api/session/ses_compact/compact" };
-        assert_eq!(seen.last().unwrap().route(), expected);
-    }
-}
-
-#[test]
-fn shell_drafts_send_the_box_command_to_the_sessions_engine() {
-    for agents in [false, true] {
-        let stand_in = StandInBox::start(move |seen| match seen.route() {
-            "kuvo/info" => Answer::json(200, mac_info(current_features())),
-            "kuvo/sessions/ses_shell/typed" => Answer::json(200, json!({ "shell": "printf hello" })),
-            "api/session/ses_shell" if !agents => Answer::json(200, json!({})),
-            "kuvo/agents/api/session/ses_shell" if agents => Answer::json(200, json!({})),
-            "api/session/ses_shell/shell" | "kuvo/agents/api/session/ses_shell/shell" => {
-                assert_eq!(seen.method, "POST");
-                Answer::json(200, json!({}))
-            }
-            _ => Answer::json(404, json!({})),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        client.send_draft("ses_shell", &Draft::new("draft_shell", "!printf hello"), None).unwrap();
-        let seen = stand_in.seen();
-        let last = seen.last().unwrap();
-        assert_eq!(last.route(), if agents { "kuvo/agents/api/session/ses_shell/shell" } else { "api/session/ses_shell/shell" });
-        assert_eq!(last.body, Some(json!({ "command": "printf hello" })));
-    }
-}
-
-#[test]
-fn drafts_with_known_place_skip_where_is_for_shell_and_compact() {
-    for (agents, text, route) in [
-        (false, "!pwd", "api/session/ses_known/shell"),
-        (true, "/compact", "kuvo/agents/api/session/ses_known/compact"),
-    ] {
-        let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
-            (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-            ("POST", "kuvo/sessions/ses_known/typed") => Answer::json(
-                200,
-                if text.starts_with('!') { json!({ "shell": "pwd" }) } else { json!({ "compact": true }) },
-            ),
-            ("POST", "api/session/ses_known/shell") if !agents => Answer::json(200, json!({})),
-            ("POST", "kuvo/agents/api/session/ses_known/compact") if agents => Answer::json(200, json!({ "data": { "state": "compacting" } })),
-            _ => panic!("unexpected request: {} {}", seen.method, seen.route()),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        let mut draft = Draft::new("draft_known", text);
-        draft.place = Some(if agents { Where::Agents } else { Where::Engine });
-        client.send_draft("ses_known", &draft, None).unwrap();
-        let seen = stand_in.seen();
-        let routes: Vec<&str> = seen.iter().map(|s| s.route()).collect();
-        assert_eq!(routes, ["kuvo/info", "kuvo/sessions/ses_known/typed", route]);
     }
 }

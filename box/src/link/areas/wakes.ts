@@ -1,3 +1,4 @@
+import { acquireEngine, engineManaged } from "../engine/lifetime";
 import { queuedRefusal } from "../server/context";
 // Wake-ups and watches (PROTOCOL.md, `kuvo/wakes`): a conversation's or a bot's, kept beside it as
 // `kuvo-wake` keeps them, listed, added, held, cancelled and sent now from any client.
@@ -164,8 +165,25 @@ export function allWakes(): SessionWakes[] {
   return sessions;
 }
 
-// When `kuvo-wake fire` next has something to send, in seconds since 1970: the soonest wake-up of a
-// conversation that isn't paused, or the time one that couldn't go is tried again; null for none.
+/** Which worker a due wake or a watch needs for this round. */
+function wakeDemand(now: number): "engine" | "bridge" | null {
+  let bridge = false;
+  const check = (folder: string) => {
+    if (fs.existsSync(path.join(folder, "paused")) || textOf(path.join(folder, "session")) === null) return false;
+    const retry = Number((textOf(path.join(folder, ".retry")) ?? "").trim().split(/\s+/)[0]);
+    if (retry > now) return false;
+    const due = listOf(path.join(folder, "watches")).length > 0 ||
+      listOf(path.join(folder, "wakes")).some(name => (wakeOf(name)?.due ?? Infinity) <= now);
+    if (!due) return false;
+    if (textOf(path.join(folder, "via"))?.trim() !== "bridge") return true;
+    bridge = true;
+    return false;
+  };
+  return [BOTS, SESSION_WAKES].some(root => listOf(root).some(name => check(path.join(root, name))))
+    ? "engine" : bridge ? "bridge" : null;
+}
+
+// When `kuvo-wake fire` next has something to send: the earliest unpaused wake, including retries.
 export function nextWake(): number | null {
   let soonest: number | null = null;
   const look = (folder: string) => {
@@ -195,11 +213,11 @@ export function sendWakes(): () => Promise<void> {
     if (stopped) return;
     clearTimeout(timer!);
     const due = nextWake(), now = Date.now() / 1000;
-    const missed = afterFire && due !== null && due <= now && due < started;
+    const missed = afterFire && due !== null && due <= now && due <= started;
     const wait = due === null || missed ? 60_000 : Math.min(60_000, Math.max(500, (due + 1 - now) * 1000));
     timer = setTimeout(fire, wait);
   };
-  const fire = () => {
+  const fire = async () => {
     if (stopped) return;
     if (running) return void (again = true);
     running = true;
@@ -207,7 +225,15 @@ export function sendWakes(): () => Promise<void> {
     // (With this box's own command, which a wake-up due in a conversation you stopped is handed to,
     // to wait there: `box route`.)
     const env = { ...process.env, KUVO_LINK_RUNTIME: process.execPath, KUVO_LINK_FLAGS: OWN_RUNTIME.join(" "), KUVO_LINK_SCRIPT: SCRIPT };
+    const demand = engineManaged() ? wakeDemand(started) : "bridge";
+    if (!demand) {
+      running = false;
+      schedule(true);
+      return;
+    }
+    const release = demand === "engine" ? await acquireEngine() : undefined;
     execFile(WAKE_COMMAND, ["fire", BOTS, path.join(RUN, "engine.json")], { env }, error => {
+      release?.();
       running = false;
       if (error?.code === "ENOENT" && !said) {
         said = true;

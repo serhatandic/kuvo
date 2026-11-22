@@ -410,7 +410,7 @@ async function agentsPage(context: RouteContext): Promise<SettingsPage> {
   }];
 
   // Claude Code's subagents on this computer, to bring over.
-  const claude = (await claudeCodeList(path.join(homeFolder(), ".claude"), known.settings, new Set()).catch(() => null))?.agents ?? [];
+  const claude = (await claudeCodeList(path.join(homeFolder(), ".claude"), known.settings).catch(() => null))?.agents ?? [];
   if (claude.length) {
     groups.push({
       id: "claude-code", title: "From Claude Code",
@@ -474,7 +474,7 @@ async function agentsAct(context: RouteContext, at: SettingItem, action: Setting
     return refusal(written);
   }
   if (at.id.startsWith("claude-") && action.id === "import") {
-    const claude = await claudeCodeList(path.join(homeFolder(), ".claude"), known.settings, new Set());
+    const claude = await claudeCodeList(path.join(homeFolder(), ".claude"), known.settings);
     const found = claude.agents.find(each => each.path[1] === at.id.slice("claude-".length));
     if (!found || found.imported) return STALE;
     return staleOrRefusal(await write(context, [{ path: [...found.path], value: found.settings, was: null }]));

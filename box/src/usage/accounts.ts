@@ -1,16 +1,15 @@
 import { CodexCredentials, type KeychainRead } from "./codex-credentials"
 // Read the credentials and log locations belonging to this box. Provider turns, install, login
 // and token renewal are the agents' responsibility.
-import { claudeToken, grokCredential, grokHome } from "../shared/agent-credentials"
+import { grokCredential, grokHome } from "../shared/agent-credentials"
 import { join } from "node:path"
 import { Accounts, providerID, type AgentAccount, type AgentKind } from "../agents/accounts"
 import { ClaudePlan, credentialsIn } from "./claude-limits"
 import { installedVersion } from "../agents/maintenance"
-import { which } from "../agents/proc"
 import { homeFolder } from "../shared/account"
 import { chatGPTIdentity, fingerprint, LimitsProblem, xaiIdentity, type LimitsSource } from "./limits"
 import { codexAccountNow, readCodexNative, readGrokNative, spendCodexResetNative } from "./native-usage"
-import { codexProgram, grokProgram } from "../shared/agent-programs"
+import { claudeProgram, codexProgram, grokProgram } from "../shared/agent-programs"
 import { AntigravityPlan, type AntigravityFetch } from "./antigravity-plan"
 import { CursorClient, cursorKey, cursorKeyUnreadable } from "./cursor-api"
 import { readCursorPlan, readingOf } from "./cursor-plan"
@@ -32,10 +31,11 @@ export class UsageAccounts {
   private readonly sources = new Map<string, UsageAgent>()
 
   constructor(private readonly root: string, private readonly options: {
-    claudeByToken?: boolean
+    /** Whether Claude Code keeps its sign-in in the Keychain (a Mac's), not a file. */
+    claudeKeychain?: boolean
     codexKeychain?: KeychainRead
     /** The agents' programs (a test's stand-ins); else each one's own, where its installer puts it. */
-    programs?: { codex?: string; grok?: string }
+    programs?: { claude?: string; codex?: string; grok?: string }
     antigravity?: { fetch?: AntigravityFetch; bases: string[] }
   } = {}) {}
 
@@ -62,26 +62,26 @@ export class UsageAccounts {
     const every = 10 * 60_000
     switch (kind) {
       case "claude": {
-        const byToken = this.options.claudeByToken ?? (process.platform === "darwin")
-        const token = () => claudeToken(join(this.root, "claude", "tokens", instance.id + ".json"))
-        const standard = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude")
-        const consoleHome = join(this.root, "claude", "console")
-        const configHome = () => instance.home ?? (byToken && !token() ? consoleHome : standard)
-        const signIn = () => {
-          const own = byToken ? token() : undefined
-          return own ? { token: own } : !byToken ? credentialsIn(configHome()) : undefined
-        }
-        let version: { at: number; value?: string } | undefined
+        // Your own sign-in where Claude Code keeps it (`~/.claude`, or CLAUDE_CONFIG_DIR), or an added account's folder.
+        const configHome = instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude")
         // (Where Claude Code keeps who's signed in, `.claude.json`: its folder when given one, else your home.)
-        const recordHome = instance.home ?? (byToken ? undefined : process.env.CLAUDE_CONFIG_DIR ?? home)
-        const plan = new ClaudePlan({ byToken, home: recordHome, token, configHome, signIn, version: async () => {
-          if (version && Date.now() - version.at < 3_600_000) return version.value
-          const executable = which("claude", [join(home, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"])
-          const value = executable ? await installedVersion(executable).catch(() => undefined) : undefined
-          version = { at: Date.now(), value }
-          return value
-        } })
-        return { ...common, limits: plan.limits, conversationRoots: () => [...new Set([configHome(), ...(!instance.home ? [consoleHome, standard] : [])])].map(folder => join(folder, "projects")) }
+        const recordHome = instance.home ?? (process.env.CLAUDE_CONFIG_DIR?.trim() ? process.env.CLAUDE_CONFIG_DIR : home)
+        const executable = () => this.options.programs?.claude ?? claudeProgram()
+        let version: { at: number; value?: string } | undefined
+        const plan = new ClaudePlan({
+          recordHome,
+          keychain: this.options.claudeKeychain ?? process.platform === "darwin",
+          program: () => { const path = executable(); return path ? { executable: path, home: instance.home, cwd: this.root } : undefined },
+          signIn: () => credentialsIn(configHome),
+          version: async () => {
+            if (version && Date.now() - version.at < 3_600_000) return version.value
+            const path = executable()
+            const value = path ? await installedVersion(path).catch(() => undefined) : undefined
+            version = { at: Date.now(), value }
+            return value
+          },
+        })
+        return { ...common, limits: plan.limits, conversationRoots: () => [join(configHome, "projects")] }
       }
       case "codex": {
         const folder = instance.home ?? process.env.CODEX_HOME ?? join(home, ".codex")

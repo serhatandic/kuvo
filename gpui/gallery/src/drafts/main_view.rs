@@ -200,7 +200,7 @@ fn conversation(working: bool, cx: &App) -> AnyElement {
             .child(prose("All 42 posts are exported with their slugs. The import writes to the live CMS, so I'd like your word before it runs.", cx))
             .into_any_element()
     };
-    let bottom = if working { composer(true, "Ask anything, / for commands", cx).into_any_element() } else { ask_card(cx) };
+    let bottom = if working { composer(true, "Ask anything", cx).into_any_element() } else { ask_card(cx) };
     column(
         div()
             .size_full()

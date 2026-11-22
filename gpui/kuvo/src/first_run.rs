@@ -838,15 +838,12 @@ pub(crate) fn two_lines(title: impl Into<SharedString>, detail: impl Into<Shared
 impl FirstRun {
     /// Something that couldn't be read, in the box's words, with a way to ask again.
     fn failed(&self, id: &'static str, why: &str, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
         div()
             .debug_selector(move || id.into())
-            .flex()
-            .items_center()
-            .gap(space::S3)
             .py(space::S2)
-            .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.danger).child(why.to_owned()))
-            .child(Button::new(SharedString::from(format!("{id}-again")), "Try Again").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.read(cx))))
+            .child(kuvo_ui::Notice::said(format!("{id}-notice"), kuvo_ui::Tone::Error, why.to_owned()).trailing(
+                div().debug_selector(move || format!("{id}-again")).child(Button::new(SharedString::from(format!("{id}-again")), "Try Again").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.read(cx)))),
+            ))
             .into_any_element()
     }
 
@@ -1012,7 +1009,7 @@ impl FirstRun {
             .children(open.map(|sheet| div().ml(px(60.)).mr(space::S4).mb(space::S3).p(space::S3).rounded(radius::NAV).bg(c.sunken).border_1().border_color(c.border).child(sheet)))
             .children(problem.map(|why| {
                 let selector = format!("first-run-{key}-problem");
-                div().debug_selector(move || selector).ml(px(60.)).mr(space::S4).mb(space::S3).text_ui(TypeSize::Caption).text_color(c.danger).child(why)
+                div().ml(px(60.)).mr(space::S4).mb(space::S3).child(kuvo_ui::Notice::said(selector, kuvo_ui::Tone::Error, why))
             }))
             .into_any_element()
     }
@@ -1056,17 +1053,11 @@ impl FirstRun {
                 let again = why.action.clone().map(|action| {
                     Button::new("first-run-down-again", action.label.clone()).size(ButtonSize::Small).disabled(self.starting_agents).on_click(cx.listener(move |this, _, _, cx| this.take_action(action.clone(), cx)))
                 });
-                div()
-                    .debug_selector(|| "first-run-down".into())
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .text_ui(TypeSize::Small)
-                    .text_color(c.warning)
-                    .child(Icon::new(IconName::Warning).color(c.warning))
-                    .child(div().flex_1().min_w_0().child(why.message.clone()))
-                    .children(again)
-                    .into_any_element()
+                let notice = kuvo_ui::Notice::inline("first-run-down", kuvo_ui::Tone::Warning, why.message.clone());
+                match again {
+                    Some(again) => notice.trailing(again).into_any_element(),
+                    None => notice.into_any_element(),
+                }
             })
             .collect()
     }
@@ -1285,7 +1276,7 @@ impl FirstRun {
         ];
         match listed {
             Listed::Reading => body.push(waiting("first-run-browse-reading", "Reading this folder…", cx)),
-            Listed::Failed(why) => body.push(div().debug_selector(|| "first-run-browse-failed".into()).text_ui(TypeSize::Small).text_color(c.danger).child(why).into_any_element()),
+            Listed::Failed(why) => body.push(kuvo_ui::Notice::said("first-run-browse-failed", kuvo_ui::Tone::Error, why).into_any_element()),
             Listed::Unreadable(unreadable) => body.push(
                 div()
                     .debug_selector(|| "first-run-browse-unreadable".into())

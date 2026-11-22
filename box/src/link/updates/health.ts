@@ -30,7 +30,7 @@ import { macFeatures } from "../../shared/routes/mac";
 import { sleep } from "../../shared/wait";
 import { asked } from "../engine/client";
 import { isObject } from "../../shared/json";
-import { residentInstalled } from "../server/resident";
+import { residentInstalled, residentWorkersInstalled } from "../server/resident";
 import { readServeRecord, SERVE_ROLE } from "../serve-kept";
 import { activeBin } from "./versions";
 import { writePrivate } from "../files";
@@ -171,7 +171,8 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   const log = size(path.join(RUN, "engine.log"));
   let engineOK: boolean;
   if (enginePid) engineOK = (await answers(engine!, "api/session?limit=1")) || (last.engineLog !== undefined && log > last.engineLog);
-  else engineOK = ["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark)));
+  else engineOK = ["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark))) ||
+    (resident && residentWorkersInstalled() && !engine && !["engine.now", "previous", "continue-after-update.json"].some(mark => fs.existsSync(path.join(RUN, mark))));
   last.engineLog = log;
 
   // The coding agents' bridge: answers while the engine runs, where its keeper keeps it (or its
@@ -184,7 +185,7 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   const bridgePid = bridge?.pid && runs(bridge.pid, "kuvo-agents") ? bridge.pid : null;
   let keeps = false;
   try { keeps = /^bridge\)/m.test(fs.readFileSync(path.join(K, "bin", "kuvo-start"), "utf8")); } catch {}
-  const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
+  const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && (enginePid !== null || residentWorkersInstalled()) && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
   // (One whose new build doesn't run here, or that nothing would start again, isn't taking it.)
   if (bridgePid && bridge!.renewal?.waits === "restart") bridgeOK = false;
@@ -193,7 +194,7 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   // Only after the new bridge has taken ownership. A live pre-split bridge still owns these routes.
   const services = bridgePid && bridge?.boxServices ? readServices(RUN) : undefined;
   if (bridgePid && bridge?.boxServices && !["off", "paused", "stopped"].some(mark => fs.existsSync(path.join(RUN, mark)))) {
-    serveOK &&= !!services && runsAs(services.pid, BOX_SERVICES_ROLE) && await answers(services, "api/kuvo/limits");
+    serveOK &&= !!services && (services.pid === live?.pid && residentWorkersInstalled() || runsAs(services.pid, BOX_SERVICES_ROLE)) && await answers(services, "api/kuvo/limits");
   }
 
   return {

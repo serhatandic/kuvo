@@ -2490,7 +2490,7 @@ impl Render for ActivityCard {
                 list = list.child(section);
             }
 
-            list.children(bars.failure.clone().map(|why| div().p(space::S2).text_color(c.warning).child(why)))
+            list.children(bars.failure.clone().map(|why| div().px(space::S2).child(kuvo_ui::Notice::said("work-bars-failure", kuvo_ui::Tone::Warning, why))))
                 .into_any_element()
         };
         div()

@@ -443,11 +443,12 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
     if (from) attempt = ref;
     step("downloading");
     const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await fetchedPatiently(manifest.pack.url, 100_000_000, 300_000);
-    if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     if (!from) {
-      if (isUpdateMain() && !keepRelease(released, pack)) throw new Error("Couldn’t keep the signed release.");
+      if (isUpdateMain() && !await releaseDisk.run("keepDownloadedRelease", released, pack, manifest.pack.sha256))
+        throw new Error("Couldn’t keep the signed release.");
       return { result: "waiting", version: manifest.version };
     }
+    if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     const behind = engineBehind(manifest.engine);
     if (behind) throw new Error(behind);
     const running = runningEngineVersion();
@@ -590,6 +591,13 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
     try { if (stage) fs.rmSync(stage, { recursive: true, force: true }); }
     finally { fs.rmSync(UPDATE_LOCK, { recursive: true, force: true }); }
   }
+}
+
+/** Validate and save a downloaded pack off the resident request loop. */
+export function keepDownloadedRelease(released: Uint8Array, pack: Uint8Array, sha256: string): boolean {
+  const bytes = Buffer.from(pack.buffer, pack.byteOffset, pack.byteLength);
+  if (hexSHA256(bytes) !== sha256) throw new Error("The release's files aren't what it says.");
+  return keepRelease(Buffer.from(released), bytes);
 }
 
 // A release's file in a folder here: a file, not too big, read whole; or why it can't be.

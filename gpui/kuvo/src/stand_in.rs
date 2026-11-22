@@ -2013,67 +2013,6 @@ fn model_name(model: &Value) -> Option<String> {
     models().into_iter().chain(agents_models()).chain(first_run::free_models()).find(|(each, _)| each["providerID"] == model["providerID"] && each["id"] == model["id"]).and_then(|(each, _)| each["name"].as_str().map(str::to_owned))
 }
 
-/// The keywords and commands "/" offers.
-fn offers() -> Value {
-    json!({
-        "keywords": [
-            { "name": "plan", "title": "Plan", "summary": "Plan before changing anything", "argument": "what to plan" },
-            { "name": "goal", "title": "Goal", "summary": "Keep working until a goal is met", "argument": "the goal" },
-            { "name": "loop", "title": "Loop", "summary": "Do something again on a schedule", "argument": "how often, then what" },
-            { "name": "review", "title": "Review", "summary": "Have another model review the changes", "argument": "with a model, or what to look at" },
-            { "name": "autopilot", "title": "Autopilot", "summary": "Work without stopping to ask" },
-            { "name": "btw", "title": "By the way", "summary": "Ask aside without interrupting", "argument": "your question" },
-            { "name": "handoff", "title": "Hand off", "summary": "Carry on in a fresh session" },
-            { "name": "compact", "title": "Compact", "summary": "Summarise the conversation to free up room" }
-        ],
-        "commands": [
-            { "name": "init", "description": "Write an AGENTS.md for this project" },
-            { "name": "test", "description": "Run the project's tests and fix what fails" }
-        ]
-    })
-}
-
-fn typed_vectors() -> &'static Value {
-    static VECTORS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    VECTORS.get_or_init(|| serde_json::from_str(include_str!("../../../protocol/vectors/typed.json")).expect("protocol/vectors/typed.json"))
-}
-
-/// Matches `box/src/link/typed/words.ts`'s `shellCommand`: `"!"` at index 0 with a non-empty
-/// command after trimming.
-fn shell_command(text: &str) -> Option<&str> {
-    let command = text.strip_prefix('!')?.trim();
-    (!command.is_empty()).then_some(command)
-}
-
-/// What the box makes of a typed text, for the few the stand-in knows: as `typed/decide.ts` would.
-fn decide(text: &str) -> Value {
-    if let Some(vector) = typed_vectors()["shell"].as_array().and_then(|cases| cases.iter().find(|case| case["text"].as_str() == Some(text))) {
-        if let Some(shell) = vector["command"].as_str() {
-            return json!({ "shell": shell });
-        }
-        return json!({ "send": { "text": text, "quoted": true } });
-    }
-    if let Some(shell) = shell_command(text) {
-        return json!({ "shell": shell });
-    }
-    let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix('/') {
-        let (name, words) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(name, words)| (name, words.trim()));
-        match name.to_lowercase().as_str() {
-            "plan" if words.is_empty() => return json!({ "keyword": "plan", "agent": "plan" }),
-            "plan" => return json!({ "keyword": "plan", "agent": "plan", "send": { "text": words, "typed": "/plan" } }),
-            "autopilot" if words.is_empty() => return json!({ "keyword": "autopilot", "toggleAutopilot": true }),
-            "compact" => return json!({ "keyword": "compact", "compact": true, "said": "Asked to summarize the conversation." }),
-            "loop" if !words.starts_with("every") => {
-                return json!({ "keyword": "loop", "restore": { "text": text, "beside": "" }, "error": "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop." })
-            }
-            "init" | "test" => return json!({ "command": { "name": name, "arguments": words } }),
-            _ => {}
-        }
-    }
-    json!({ "send": { "text": text, "quoted": true } })
-}
-
 impl StandIn {
     fn route(&self, request: &Request) -> Result<Response> {
         let path = request.path.as_str();
@@ -2628,7 +2567,6 @@ impl StandIn {
                     }),
                 )
             }
-            ("GET", ["kuvo", "sessions", session, "typed"]) if state.sessions.contains_key(*session) => answer(200, offers()),
             ("GET", ["kuvo", "sessions", session, "mentions"]) if state.sessions.contains_key(*session) => {
                 let wanted = query(path, "q").map(decoded).unwrap_or_default().to_lowercase();
                 let mentions: Vec<Value> = match query(path, "for") {
@@ -2755,10 +2693,6 @@ impl StandIn {
                 }
                 state.list_changed();
                 answer(200, json!({}))
-            }
-            ("POST", ["kuvo", "sessions", session, "typed"]) if state.sessions.contains_key(*session) => {
-                let text = request.body.as_ref().and_then(|body| body["text"].as_str()).unwrap_or("");
-                answer(200, decide(text))
             }
             ("POST", ["kuvo", "sessions", session, "send"]) => {
                 let session = (*session).to_owned();
@@ -3448,28 +3382,6 @@ mod shell_tests {
             assert_eq!(stand_in.route(&Request::post(format!("api/session/{session}/shell"), json!({ "command": command }))).unwrap().status, status);
         }
         assert_eq!(stand_in.state().messages.get("ses_dark").map_or(0, Vec::len), before);
-    }
-
-    #[test]
-    fn typed_bang_matches_words_ts_and_protocol_vectors() {
-        let stand_in = StandIn::new(Replies::Never);
-        let cases = typed_vectors()["shell"].as_array().expect("shell vectors");
-        assert!(!cases.is_empty());
-        for case in cases {
-            let text = case["text"].as_str().unwrap();
-            let expected = case["command"].as_str();
-            assert_eq!(shell_command(text), expected, "shell_command({text:?})");
-            let response = stand_in.route(&Request::post("kuvo/sessions/ses_dark/typed", json!({ "text": text }))).unwrap();
-            assert_eq!(response.status, 200);
-            let answer: Value = serde_json::from_slice(&response.body).unwrap();
-            match expected {
-                Some(command) => assert_eq!(answer, json!({ "shell": command }), "vector {text:?}"),
-                None => assert_eq!(answer, json!({ "send": { "text": text, "quoted": true } }), "vector {text:?}"),
-            }
-        }
-        // Plain words without a leading '/' must not match keywords.
-        assert_eq!(decide("plan this"), json!({ "send": { "text": "plan this", "quoted": true } }));
-        assert_eq!(decide("/autopilot"), json!({ "keyword": "autopilot", "toggleAutopilot": true }));
     }
 
     #[test]

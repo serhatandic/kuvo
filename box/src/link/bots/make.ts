@@ -1,3 +1,4 @@
+import { acquireEngine } from "../engine/lifetime";
 // New bots made here (`POST kuvo/bots`), as New Bot makes them on the Mac.
 
 import crypto from "node:crypto";
@@ -105,13 +106,18 @@ const MADE_FOR = 3600_000;
 const madeFor = new Map<string, { answer: Promise<MadeAnswer>; at: number }>();
 
 export function makeBot(given: GivenBot | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string): Promise<MadeAnswer> {
+  const make = async () => {
+    const release = given && !(isModel(given.model) && runsWithAgents(given.model)) ? await acquireEngine() : undefined;
+    try { return await makeOnce(given, readEngine, readBridge, machine); }
+    finally { release?.(); }
+  };
   const request = typeof given?.request === "string" && REQUEST.test(given.request) ? given.request : null;
-  if (!request) return makeOnce(given, readEngine, readBridge, machine);
+  if (!request) return make();
   const now = Date.now();
   for (const [id, made] of madeFor) if (now - made.at > MADE_FOR) madeFor.delete(id);
   const before = madeFor.get(request);
   if (before) return before.answer;
-  const answer = makeOnce(given, readEngine, readBridge, machine).then(made => {
+  const answer = make().then(made => {
     if (made.status === 201) madeFor.set(request, { answer, at: Date.now() });
     else madeFor.delete(request);
     return made;

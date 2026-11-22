@@ -1,3 +1,4 @@
+import { acquireSessionEngine } from "../engine/lifetime";
 import { SESSION_NOTE_ROUTE } from "../ownership/session-notes";
 import { mutationNonce } from "../ownership/mutation";
 import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit, sessionNoteRoute } from "../ownership/edits";
@@ -438,7 +439,12 @@ export function createBoxDispatcher({
     if (route === LOCAL_SETUP_SAVE) return yield* saveLocalSetup(context);
     const matched = matchBoxRoute(route, request, phone);
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.
-    if (matched) return yield* matched.entry.answer(context, matched.match as never);
+    if (matched) {
+      const session = (SESSION_ACTION_ROUTE.exec(route) ?? SESSION_MOVE_ROUTE.exec(route))?.[1];
+      const release = session ? await acquireSessionEngine(session) : undefined;
+      try { return yield* matched.entry.answer(context, matched.match as never); }
+      finally { release?.(); }
+    }
     return yield* engineRoute(context);
   }
 

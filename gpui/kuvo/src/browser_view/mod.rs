@@ -942,7 +942,7 @@ impl Render for BrowserView {
                 };
                 root.child(self.bar(cx))
                     .when_some(refused, |root, why| {
-                        root.child(div().debug_selector(|| "browser-refused".into()).flex_none().px(space::S3).py(space::S1).border_b_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.danger).child(why))
+                        root.child(div().flex_none().px(space::S3).border_b_1().border_color(c.border).child(kuvo_ui::Notice::said("browser-refused", kuvo_ui::Tone::Error, why)))
                     })
                     .child(body)
             }

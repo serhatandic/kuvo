@@ -1,4 +1,5 @@
 // The link records both conversation sources and serves the artifact index and file copies.
+import { readdir } from "node:fs/promises"
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { citedIn } from "../../agents/agents/codex-citations"
@@ -13,6 +14,7 @@ import type { Event, Source } from "./recorder"
 import { artifactRoutes, notedRoute } from "./routes"
 import { ArtifactStore } from "./store"
 import { libraryService } from "../library/service"
+import { artifactDisk } from "../server/disk-worker"
 
 const sessionRoute = (id: string) => `api/session/${encodeURIComponent(id)}`
 const sessionFrom = async (target: Target, id: string) => {
@@ -20,24 +22,34 @@ const sessionFrom = async (target: Target, id: string) => {
   return found?.data ?? found
 }
 
-/** `library`: the Library's folder, told by the same recorder what was handed over (none: no Library). */
-export function artifactService(root: string, bots: string, sessions: string, { library, computer }: { library?: string; computer?: () => string } = {}) {
-  let store: ArtifactStore
-  try {
-    const shown: { path: string; at: number }[] = []
-    for (const { session, messages } of readSavedSessions(sessions)) {
-      for (const message of messages) {
-        // Old directives may already have been normalized by the bridge.
-        citedIn(message)
-        if (message.type !== "assistant") continue
-        for (const part of message.content) {
-          if (part.type !== "tool" || !part.id.startsWith(`cited-${message.id}-`)) continue
-          const path = (part.state.input as { path?: unknown } | undefined)?.path
-          if (typeof path === "string") shown.push({ path: resolve(session.location.directory, path), at: message.time.completed ?? message.time.created })
-        }
+export function artifactCitations(sessions: string): { path: string; at: number }[] {
+  const shown: { path: string; at: number }[] = []
+  for (const { session, messages } of readSavedSessions(sessions)) {
+    for (const message of messages) {
+      // Old directives may already have been normalized by the bridge.
+      citedIn(message)
+      if (message.type !== "assistant") continue
+      for (const part of message.content) {
+        if (part.type !== "tool" || !part.id.startsWith(`cited-${message.id}-`)) continue
+        const path = (part.state.input as { path?: unknown } | undefined)?.path
+        if (typeof path === "string") shown.push({ path: resolve(session.location.directory, path), at: message.time.completed ?? message.time.created })
       }
     }
-    store = new ArtifactStore(root, { bots, shown })
+  }
+  return shown
+}
+
+/** Read and normalize saved history off the resident loop before opening the recorder. */
+export async function artifactHistory(sessions: string) {
+  const entries = await readdir(sessions).catch(() => [])
+  return entries.length ? artifactDisk.run("artifactCitations", sessions) : []
+}
+
+/** `library`: the Library's folder, told by the same recorder what was handed over (none: no Library). */
+export function artifactService(root: string, bots: string, sessions: string, { library, computer, shown }: { library?: string; computer?: () => string; shown?: ReturnType<typeof artifactCitations> } = {}) {
+  let store: ArtifactStore
+  try {
+    store = new ArtifactStore(root, { bots, shown: shown ?? artifactCitations(sessions) })
   } catch (error) {
     console.error("artifacts:", error)
     return (request: Request) => /^\/api\/kuvo\/(link\/)?library(?:\/|$)/.test(new URL(request.url).pathname)
@@ -56,13 +68,7 @@ export function artifactService(root: string, bots: string, sessions: string, { 
   }
   const { recorder } = record(store, { bots, handed: shelf?.handed })
   // Filled once from what came before it, after the start (the record's own reading comes first).
-  if (shelf) setTimeout(() => {
-    try {
-      shelf!.backfill()
-    } catch (error) {
-      console.error("library:", error)
-    }
-  }, 0)
+  if (shelf) void shelf.backfillInBackground().catch(error => console.error("library:", error))
   const engine: Source = { name: "engine", session: id => sessionFrom(readEngineFile(), id), agent: () => "engine" }
   const bridge: Source = {
     name: "bridge",

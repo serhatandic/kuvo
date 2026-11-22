@@ -19,7 +19,7 @@ use kuvo_box::follow::{ConversationUpdate, Follow, Followed, Timing};
 use kuvo_box::BoxClient;
 use kuvo_box::error::Offered;
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Notice, StyledType, Tone, TypeSize,
     anchor::{Placement, Popover},
     chat_list::{ChatListState, chat_list},
     menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
@@ -639,7 +639,7 @@ impl ConversationView {
             div()
                 .debug_selector(|| "conversation-problem-action".into())
                 .flex_none()
-                .child(Button::new("conversation-problem-action", label).size(ButtonSize::Small).disabled(self.taking_action).on_click(move |_, _, cx| {
+                .child(Button::new("conversation-problem-action", label).ghost().size(ButtonSize::Small).disabled(self.taking_action).on_click(move |_, _, cx| {
                     view.update(cx, |this, cx| this.take_action(action.clone(), cx)).ok();
                 }))
                 .into_any_element(),
@@ -1629,7 +1629,7 @@ impl ConversationView {
         div()
             .flex()
             .gap(space::S1)
-            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
+            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").ghost().size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
                 retry.update(cx, |composer, cx| composer.retry(&retry_id, cx));
             })))
             .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-unsent-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, window, cx| {
@@ -1893,7 +1893,7 @@ impl ConversationView {
                         if this.queue_dragging.is_some() { this.cancel_queue_drag(cx); }
                     }))
                     .children(rows))
-                .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
+                .children(self.queue_failed.clone().map(|why| div().px(space::S2).child(Notice::said("queue-failed", Tone::Warning, why))))
                 .into_any_element(),
         )
     }
@@ -2035,8 +2035,8 @@ impl Render for ConversationView {
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = match (&self.problem, self.read) {
-            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), c.warning)),
-            (Some(Problem::Gone(why)), true) => Some((why.clone(), c.danger)),
+            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), Tone::Warning)),
+            (Some(Problem::Gone(why)), true) => Some((why.clone(), Tone::Error)),
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
@@ -2061,23 +2061,19 @@ impl Render for ConversationView {
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
-                    .children(banner.map(|(why, color)| {
-                        let button = self.action_button(cx);
-                        div()
-                            .debug_selector(|| "conversation-problem".into())
-                            .w_full()
-                            .max_w(px(COLUMN))
-                            .pb(space::S2)
-                            .flex()
-                            .items_center()
-                            .gap(space::S2)
-                            .text_ui(TypeSize::Caption)
-                            .text_color(color)
-                            .child(div().flex_1().min_w_0().child(why))
-                            .children(button)
+                    // What's wrong with it, said once over the composer as the one notice; it goes as
+                    // soon as it's read again.
+                    .children(banner.map(|(why, tone)| {
+                        let notice = Notice::inline("conversation-problem", tone, why);
+                        let notice = match self.action_button(cx) {
+                            Some(button) => notice.trailing(button),
+                            None => notice,
+                        };
+                        div().w_full().max_w(px(COLUMN)).pb(space::S2).child(notice)
                     }))
+                    // BOX-NEEDED: plain words for asks that couldn't be read (the box's raw error is shown).
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
-                        div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
+                        div().w_full().max_w(px(COLUMN)).pb(space::S2).child(Notice::said("asks-failed", Tone::Warning, why))
                     }))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.

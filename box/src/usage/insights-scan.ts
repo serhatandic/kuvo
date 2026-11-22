@@ -12,7 +12,7 @@ import type { Pricing } from "./pricing"
 import { numberOf } from "./numbers"
 
 const nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" } as const
-type Bot = { id: string; name: string; sessionID: string }
+export type InsightBot = { id: string; name: string; sessionID: string }
 
 function skillsNamed(tools: readonly (readonly [unknown, unknown])[]): string[] {
   const names = new Set<string>()
@@ -57,7 +57,7 @@ export type LineNode = { parent?: string; starters?: string[]; bot?: string; bot
 export type Lineage = { root: string; bot?: string; botName?: string; own?: true }
 
 /** A conversation's place, from its session and its marks (`kuvo.seat`, `kuvo.by`, `kuvo.startedBy`). */
-export function lineNode(session: { id: string; parentID?: unknown; metadata?: unknown }, bots: Map<string, Bot>, names: Map<string, string>): LineNode {
+export function lineNode(session: { id: string; parentID?: unknown; metadata?: unknown }, bots: Map<string, InsightBot>, names: Map<string, string>): LineNode {
   const kuvo = kuvoOf(session.metadata)
   const parent = typeof session.parentID === "string" && session.parentID ? session.parentID : undefined
   const startedBy = typeof kuvo?.startedBy === "string" && kuvo.startedBy ? kuvo.startedBy : undefined
@@ -154,7 +154,7 @@ export class InsightsScan {
     cache: string
     agents: () => UsageAgent[]
     store: Pick<Store, "all" | "get"> | (() => Iterable<Record_>)
-    bots: () => Bot[]
+    bots: () => InsightBot[]
     computer: () => string
     engine?: string
   }) {

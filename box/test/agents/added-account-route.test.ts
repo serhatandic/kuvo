@@ -110,3 +110,37 @@ test.each(["codex", "grok"] as const)("removing an added %s account signs it out
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// Cursor has no program to sign out with: its SDK keeps each account's key in the account's folder,
+// and its logout only forgets that file. CURSOR_API_KEY is your first account's alone.
+test("an added Cursor account has a key of its own, never CURSOR_API_KEY, and removing it forgets only its key", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kuvo-remove-account-"))
+  const before = process.env.CURSOR_API_KEY
+  process.env.CURSOR_API_KEY = "key_yours"
+  try {
+    const agents = join(root, "agents")
+    const accounts = new Accounts(agents)
+    const record = accounts.add("cursor", "Work")
+    const folder = accounts.home(record)!
+    mkdirSync(join(agents, "cursor"), { recursive: true })
+    writeFileSync(join(agents, "cursor", "auth.json"), JSON.stringify({ apiKey: "key_first" }))
+    const roster = new Roster(accounts, { home: agents, temporary: join(root, "temporary") } as any)
+    const added = roster.find(providerID("cursor", record.id))!
+    // Not signed in yet: it asks for its own sign-in rather than running on your key.
+    expect(await added.account(true)).toMatchObject({ signedIn: false })
+    writeFileSync(join(folder, "auth.json"), JSON.stringify({ apiKey: "key_work" }))
+
+    const answer = handler({ roster, password: "pw", sessions: { forgetProvider() {} } } as any)
+    const response = await answer(new Request(`http://agent/api/kuvo/accounts/${added.providerID}`, { method: "DELETE", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
+    expect(response.status).toBe(200)
+    expect(existsSync(folder)).toBe(false)
+    expect(roster.find(added.providerID)).toBeUndefined()
+    // Your first Cursor account keeps its sign-in, and your environment's key.
+    expect(JSON.parse(readFileSync(join(agents, "cursor", "auth.json"), "utf8"))).toEqual({ apiKey: "key_first" })
+    expect(process.env.CURSOR_API_KEY).toBe("key_yours")
+  } finally {
+    if (before === undefined) delete process.env.CURSOR_API_KEY
+    else process.env.CURSOR_API_KEY = before
+    rmSync(root, { recursive: true, force: true })
+  }
+})

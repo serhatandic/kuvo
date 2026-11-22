@@ -114,15 +114,18 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
   let index: InsightsDB | undefined
   try {
     const groups = new GroupStore(join(box, "groups"), bots, undefined, false)
-    const scanner = new InsightsScan({
-      root: home, cache: join(folder, "insights-logs"), agents,
-      store: () => readSavedSessions(join(home, "sessions")),
-      bots: () => [
-        ...directory.bots().flatMap(({ id, name, session }) => session ? [{ id, name, sessionID: session }] : []),
-        ...groups.allBots(),
-      ],
-      computer, engine: engineData,
-    })
+    const readBots = () => [
+      ...directory.bots().flatMap(({ id, name, session }) => session ? [{ id, name, sessionID: session }] : []),
+      ...groups.allBots(),
+    ]
+    const cache = join(folder, "insights-logs")
+    const scanner: ConstructorParameters<typeof Insights>[1] = bundle && !fixtures
+      ? { scan: (pricing, since, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since) }
+      : new InsightsScan({
+        root: home, cache, agents,
+        store: () => readSavedSessions(join(home, "sessions")),
+        bots: readBots, computer, engine: engineData,
+      })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots())
     usage.insights.kept = new KeptSummaries(join(folder, "insights-kept.json"))
