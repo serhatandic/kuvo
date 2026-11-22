@@ -122,6 +122,8 @@ struct State {
     nothing_runs: bool,
     /// What it says of a session's model, where a test has said otherwise.
     model_states: HashMap<String, Value>,
+    /// What each session's `data.context` says (`{used, window?, summarizeAt?}`), where a test said.
+    contexts: HashMap<String, Value>,
     /// The coding agents' bridge can't say its models now (it's starting again).
     agents_unknown: bool,
     /// Your starred models, as `kuvo/models/starred` keeps them.
@@ -1063,6 +1065,12 @@ impl StandIn {
         }
         state.work_bars.background.insert(session.to_owned(), background);
         state.work_bars.changed();
+    }
+
+    /// What `session`'s `GET api/session/<id>` says of its context from now on (PROTOCOL.md,
+    /// "Session context"): `{used, window?, summarizeAt?}`.
+    pub fn set_context(&self, session: &str, context: Value) {
+        self.state().contexts.insert(session.to_owned(), context);
     }
 
     /// `session`'s subagents that are done, newest first (as `kuvo/work/subagents/<session>` lists
@@ -2797,7 +2805,10 @@ impl StandIn {
                 let active: serde_json::Map<String, Value> = state.running.iter().map(|session| (session.clone(), json!({}))).collect();
                 answer(200, json!({ "data": active }))
             }
-            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => answer(200, json!({ "id": session })),
+            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => match state.contexts.get(*session) {
+                Some(context) => answer(200, json!({ "data": { "id": session, "context": context } })),
+                None => answer(200, json!({ "id": session })),
+            },
             ("GET", ["api", "session", session, "message"]) if state.sessions.contains_key(*session) => {
                 let all = state.messages.get(*session).cloned().unwrap_or_default();
                 let limit: usize = query(path, "limit").and_then(|limit| limit.parse().ok()).unwrap_or(100);
