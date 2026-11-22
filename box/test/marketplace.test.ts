@@ -243,6 +243,60 @@ test("Add Agent creates a bot with the selected account, its job and a paused ro
   expect((await route("GET", "/agents/coding-reviewer")).json.bots).toEqual([{ id: bot.id, name: bot.name, computer: "here" }]);
 });
 
+test("an agent's routine turned on in Add runs from the start, and the sheet's words come from the box", async () => {
+  fs.mkdirSync(path.join(K, "bin"), { recursive: true });
+  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(K, "bin/bot-words.json"));
+  const session = { id: "ses_marketplace_routine", metadata: {}, permissions: [] };
+  useNetwork(url => {
+    if (url.pathname === "/api/provider") return Response.json([{ id: "test-account" }]);
+    if (url.pathname === "/api/integration") return Response.json([]);
+    if (url.pathname === "/api/model") return Response.json([{ id: "test-model", providerID: "test-account", name: "Test Model" }]);
+    if (url.pathname === "/api/model/default") return Response.json({ id: "test-model", providerID: "test-account" });
+    if (url.pathname.startsWith("/api/session")) return Response.json(session);
+    return Response.json({});
+  });
+  const details = (await route("GET", "/agents/bug-triager")).json;
+  expect(details.labels).toMatchObject({ computer: "Runs on", apps: "Needed apps", routines: "Routines" });
+  const options = (await route("GET", "/agents/bug-triager/options?computer=here")).json;
+  expect(options.missing).toEqual([{ id: "linear", title: "Linear", connect: true, words: "Not connected" }]);
+  expect(options.blocked).toBe("1 app still to connect");
+  const listed = (await route("GET")).json.areas[1].items.find((agent: any) => agent.id === "coding-reviewer");
+  expect(listed.detail).toBe("1 skill");
+  const body = { computer: "here", version: "1.0.0", request: "stable-marketplace-routine", routines: ["weekly"], model: { providerID: "test-account", id: "test-model" } };
+  const made = await route("POST", "/agents/coding-reviewer/add", body);
+  expect(made.status).toBe(201);
+  expect(made.json.bot.paused).toBe(false);
+  const { json: schedule } = await ask(handler, "GET", `kuvo/wakes/${made.json.bot.session}`);
+  expect(schedule.wakes).toHaveLength(1);
+  expect((await route("POST", "/agents/coding-reviewer/add", { ...body, request: "another-marketplace-routine", routines: ["nightly"] })).status).toBe(400);
+});
+
+test("Marketplace › Skills keeps what Settings › Skills did on this computer: a switch, Recently Deleted and Other Places", async () => {
+  const skills = async () => (await route("GET")).json.areas[2];
+  expect((await ask(handler, "PUT", "kuvo/skills/release", { text: skillFile.replace("private-skill", "release"), new: true })).status).toBe(200);
+  let area = await skills();
+  expect(area.here.switchTitle).toBe("Use on Test box");
+  expect(area.items.find((skill: any) => skill.id === "release")).toMatchObject({ category: "Yours", installed: true, enabled: true });
+  expect(area.items.find((skill: any) => skill.id === "review-changes").enabled).toBeUndefined();
+
+  expect((await route("POST", "/skills/release/enabled", { on: false })).json).toEqual({ enabled: false });
+  expect(JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "skill", resource: "release", effect: "deny" }]);
+  expect((await skills()).items.find((skill: any) => skill.id === "release").enabled).toBe(false);
+
+  expect((await route("POST", "/skills/places", { place: "/srv/team-skills" })).status).toBe(200);
+  expect((await skills()).here.places.items).toEqual([{ id: "0", title: "/srv/team-skills" }]);
+  expect((await route("DELETE", "/skills/places", { index: 0 })).status).toBe(200);
+  expect((await skills()).here.places.items).toEqual([]);
+
+  expect((await route("DELETE", "/skills/release")).status).toBe(200);
+  area = await skills();
+  expect(area.items.some((skill: any) => skill.id === "release")).toBe(false);
+  const [deleted] = area.here.deleted.items;
+  expect(deleted.title).toBe("release");
+  expect((await route("POST", "/skills/restore", { id: deleted.id })).status).toBe(200);
+  expect((await skills()).items.some((skill: any) => skill.id === "release")).toBe(true);
+});
+
 test("another computer receives the installed skill through the signed setup document", async () => {
   upgradeKuvoFolder(K);
   const identity = () => {

@@ -9,7 +9,7 @@ const browse = object({
   title: string, computers: list(computer), searchPlaceholder: string,
   areas: list(object({ id: string, title: string, count: number,
     categories: list(object({ title: string, count: number })), items: list(data),
-    actions: list(action), "filters?": list(action), empty: string })),
+    actions: list(action), "filters?": list(action), empty: string, "here?": data })),
 });
 const refresh = object({ refreshed: bool, "message?": string });
 const preview = object({ preview: string, skill: data, installed: bool, files: list(file), action });
@@ -37,6 +37,10 @@ export const MARKETPLACE_ROUTES: RouteShape[] = [
   route("POST", "/skills/create", { 200: data }),
   route("POST", "/skills/preview", { 200: preview }),
   route("POST", "/skills/install", { 200: data }),
+  route("POST", "/skills/restore", { 200: data }),
+  route("POST", "/skills/places", { 200: data }),
+  route("DELETE", "/skills/places", { 200: data }),
+  route("POST", "/skills/:id/enabled", { 200: object({ enabled: bool }) }),
   route("GET", "/skills/:id", { 200: data }),
   route("POST", "/skills/:id/add", { 200: data }),
   route("POST", "/skills/:id/update-preview", { 200: preview }),

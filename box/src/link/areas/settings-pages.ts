@@ -114,7 +114,7 @@ const SECTIONS: SettingsSection[] = [
   vaultSection.listed,
   mcpSection.listed,
   customAutoSection.listed,
-  skillsSection.listed,
+  // (Skills are in Marketplace › Skills now: `kuvo/settings/skills` still answers, unlisted.)
 ];
 
 export { revised };
