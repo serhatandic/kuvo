@@ -50,3 +50,36 @@ These follow rule 1 and the drawing half of rule 2:
 - Machine and compatibility bridge tool calls wait for the box. Messages, session starts, Work Queue item edits, and approved commands keep receipts across resident restarts.
 
 Still to build: the line, rule 3, ids for tool calls, and the merged lists.
+
+## Building: the line (branch `kuvo/delivery-3-one-line`)
+
+Rule 2, for one computer at a time. The merged lists come later and ride the same line.
+
+**Added on the box.** One route, `kuvo/line` (feature `line`), answered in whichever process took the request: the resident serve, or the relay host where the launch is still split.
+
+- `GET kuvo/line?line=<id>&after=<n>&watch=<topics>` opens it. `watch` holds the client's topics, `{name: route}`, as base64url JSON. Every topic is a route the box already follows: a list's `…/events` (one JSON line per state), or a conversation's events (`api/event`, `kuvo/agents/api/event`). The box runs each one through its own dispatcher, under the same pairing and authority as the line.
+- `POST kuvo/line/watch` with `{line, watch}` changes the topics. It answers at once. What it changes comes back on the line.
+- **What comes on the line** is one JSON line each. Every line but the heartbeat has its number `n`, counted per line:
+  - `hello`: `{line, fresh, beat}`, sent first.
+  - `{t, n, d}`: what topic `t` said: a state, or one event.
+  - `{t, n, refused: {status, message}}`: the box turned the topic down. It ends after a 4xx. After a 5xx (the engine isn't ready), the box tries it again by itself.
+  - `{t, n, gap: true}`: an event topic's source dropped and came back, so events may be missing. The conversation is read again.
+  - `{beat}`: every 5 s, with no number.
+- **Replay rule.** The box keeps each line's last 4 MB of numbered lines. Its topics keep running for 2 minutes after the stream drops. A reconnect with the same `line` and `after` gets every line after `after`, then the live ones. If the box doesn't know the line (it restarted, or the 2 minutes passed) or the lines are gone, it answers `fresh: true` with a new id. Each topic then starts over from its current state, and the client takes those as a snapshot.
+- On a box that can't keep a stream (a one-shot SSH `box route`), `once=1` answers each topic's current state and ends. That client asks again every 5 s, with one request for all topics.
+
+**Added in the client** (`gpui/kuvo_box/src/line.rs`). One `Line` for each computer's `BoxClient`, started by the first view that follows something.
+
+- It reconnects with its position after any drop.
+- 15 s without a line or a heartbeat counts as a drop.
+- The line's silence is what makes a computer offline. "Offline" shows only after 30 s of silence, never because one request was slow or failed.
+- A drop is never handed to a view. Each view keeps drawing the last state it received, its asks and queue included, through a restart.
+
+**Removed.**
+
+- Every separate follow stream: the session list, the conversation's events, its asks, queue, subagents and side threads, bots, group chats, the computers list, notices, usage, waiting, moves, the Library, Settings pages, Changes, wake-ups, background work, accounts, and the `poll_if_missing` fallback. Each `follow_*` in `kuvo_box` stays as the view's handle and becomes a topic on the line.
+- The polling reads the line replaces: the conversation's 5 s fallback read, the lists' 30 s reads, the per-stream backoffs and quiet-retry rules, and `EVENT_QUIET_TIMEOUT`.
+- "What it asks you couldn't be read" and "The queue couldn't be read" for a dropped connection.
+- A computer's `Away` coming from one failed `kuvo/info`.
+
+**Next, on the same line.** A box-side snapshot of the open conversation, so the client stops reading its page after each step. Then the Work Queue's own events, which replace its request/response reads.
