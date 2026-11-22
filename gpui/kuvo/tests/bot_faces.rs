@@ -290,6 +290,37 @@ fn a_failed_sessions_list_leaves_each_bots_source_independent(cx: &mut TestAppCo
     assert!(workspace.read_with(cx, |workspace, _| matches!(workspace.lists(), kuvo::workspace::Lists::Failed(_))));
 }
 
+/// A bot on a computer that's away says when it was last seen, never "Can’t be reached"; once
+/// its box says the computer answers again, the row is live with no step of yours.
+#[gpui::test]
+fn a_bot_on_a_computer_that_comes_back_goes_live_as_its_box_says(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // Release Captain lives on studio-mini, which hasn't been heard from for three hours.
+    stand_in.move_bot("bot_release", "studio-mini");
+    stand_in.bot_computer_away("bot_release", Some(NOW - 3.0 * 3_600_000.0));
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.set_now(NOW, cx);
+        workspace.show_area(Area::Bots, window, cx);
+    });
+    until(cx, &workspace, |cx| bounds(cx, "elsewhere-bot_release").is_some() && drawn(cx, "bot_release").is_some());
+    assert_eq!(drawn(cx, "bot_release"), Some(State::Offline));
+    assert!(bounds(cx, "bot-said-bot_release-seen 3h").is_some(), "when studio-mini was last seen");
+
+    // It answers again: live, with no step of yours.
+    stand_in.bot_computer_away("bot_release", None);
+    until(cx, &workspace, |cx| drawn(cx, "bot_release") != Some(State::Offline));
+    assert!(bounds(cx, "bot-said-bot_release-seen 3h").is_none(), "live again: no last seen");
+}
+
 /// Waits, as the live follows hand on what they read, until `done`.
 fn until<T: 'static>(cx: &mut VisualTestContext, view: &Entity<T>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
     use futures::StreamExt as _;

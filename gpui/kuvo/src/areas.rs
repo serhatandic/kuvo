@@ -426,21 +426,15 @@ impl AreaView {
             Some(remote) if remote.reachability == Reachability::Reached => remote.bots.iter()
                 .find(|bot| bot.id == listed.id)
                 .map_or(State::Idle, |bot| crate::bot_face::state_of(&bot.now)),
-            _ if self.peer_is_away(listed) => State::Offline,
+            _ if listed.away => State::Offline,
             _ => State::Idle,
         }
     }
 
-    fn peer_is_away(&self, listed: &Elsewhere) -> bool {
-        self.away_words(listed).is_some()
-    }
-
-    /// The box's word for its computer while it's away ("Can’t be reached"), drawn on its name.
+    /// While its computer is away, as the box says it with the row: when it was last heard from
+    /// ("seen 2h"), drawn on its name.
     fn away_words(&self, listed: &Elsewhere) -> Option<String> {
-        ready(&self.computers).and_then(|computers| {
-            computers.iter().find(|each| !listed.computer_key.is_empty() && each.key == listed.computer_key)
-                .or_else(|| computers.iter().find(|each| each.name == listed.computer))
-        }).filter(|computer| computer.reach == "away").map(|computer| computer.reach_title("away"))
+        listed.away.then(|| listed.last_seen.map(|seen| format!("seen {}", crate::time::ago(seen, self.now()))).unwrap_or_default())
     }
 
     pub(crate) fn reachability(&self) -> Reachability {
@@ -1236,7 +1230,11 @@ impl AreaView {
                 let detail = move_status.unwrap_or_else(|| {
                     div().min_w_0().flex().items_center().gap(px(4.))
                         .child(div().min_w_0().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(line))
-                        .children(away.map(|words| kuvo_ui::notice::on_name(words, cx)))
+                        .children(away.map(|words| {
+                            // (What it says, for tests: "seen 2h".)
+                            let said = format!("bot-said-{}-{words}", there.id);
+                            div().debug_selector(move || said).child(kuvo_ui::notice::on_name(words, cx))
+                        }))
                         .into_any_element()
                 });
                 let row = div()

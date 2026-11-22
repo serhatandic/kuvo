@@ -75,7 +75,13 @@ impl Bots {
             held: vec![json!({ "bot": "bot_scout", "box": "key_studio-mini", "computer": "studio-mini", "name": "Scout", "look": { "color": "amber", "shape": "gem", "face": "calm" }, "change": { "name": "Scout", "job": { "line": "Watches CI", "details": "" } }, "since": now - 2.0 * HOUR })],
             refused: Vec::new(),
             elsewhere: vec![
-                elsewhere("bot_scout", "ses_scout", "Scout", json!({ "color": "amber", "shape": "gem", "face": "calm" }), "Watches the checks", ("studio-mini", "mac")),
+                // (On studio-mini, which is away: when it was last heard from, as the box says it.)
+                {
+                    let mut scout = elsewhere("bot_scout", "ses_scout", "Scout", json!({ "color": "amber", "shape": "gem", "face": "calm" }), "Watches the checks", ("studio-mini", "mac"));
+                    scout["away"] = json!(true);
+                    scout["lastSeen"] = json!(now - 3.0 * HOUR);
+                    scout
+                },
                 elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine")),
             ],
             made: HashMap::new(),

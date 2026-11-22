@@ -880,6 +880,27 @@ impl StandIn {
         state.sync_bots();
     }
 
+    /// The computer `bot` lives on (one of your others) as the box says it on the bot's row: away,
+    /// last heard from at `seen` (ms), or answering (`None`). Those following the bots hear it.
+    pub fn bot_computer_away(&self, bot: &str, seen: Option<f64>) {
+        let mut state = self.state();
+        if let Some(row) = state.bots.elsewhere.iter_mut().find(|each| each["id"] == json!(bot))
+            && let Some(row) = row.as_object_mut()
+        {
+            match seen {
+                Some(seen) => {
+                    row.insert("away".into(), json!(true));
+                    row.insert("lastSeen".into(), json!(seen));
+                }
+                None => {
+                    row.remove("away");
+                    row.remove("lastSeen");
+                }
+            }
+        }
+        state.sync_bots();
+    }
+
     /// What `computer` refused of an edit held for `bot`, in its words.
     pub fn refuse_bot_edit(&self, bot: &str, computer: &str, message: &str) {
         let mut state = self.state();
