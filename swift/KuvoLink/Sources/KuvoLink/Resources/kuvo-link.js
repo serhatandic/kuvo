@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 25f5744cc5a1
+// Kuvo folder layout 23 31d8c74017fe
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "25f5744cc5a1";
+var BRIDGE_VERSION = "31d8c74017fe";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24337,7 +24337,7 @@ var init_sessions2 = __esm(() => {
     needsYou: list(NEEDS_YOU2),
     "pending?": list(string)
   });
-  LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number, "updating?": bool };
+  LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number, "updating?": bool, "here?": bool };
   SETUP_SESSION = object({
     id: string,
     facts: SESSION_FACTS,
@@ -24364,7 +24364,7 @@ var init_sessions2 = __esm(() => {
   });
   SETUP_WAITING = object({ waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
   SETUP_QUEUES = object({ queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
-  RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, ...START_CATALOG.object })) });
+  RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, "here?": bool, ...START_CATALOG.object })) });
   SIDE_QUESTION = object({
     id: string,
     session: string,
@@ -61456,11 +61456,11 @@ async function shareSetupLists(host, readers = { readEngine: readEngineFile, bri
 async function merged(topic, context) {
   const link = readLink();
   const computer = listComputer(link);
-  const local = { computer, away: false };
+  const local = { computer, away: false, here: true };
   if (topic === "runs-on") {
     const [peers, here] = await Promise.all([peerSetupLists(link), startCatalog(context)]);
     return {
-      computers: [{ computer, ...here }, ...peers.flatMap(({ saved, origin }) => origin.away ? [] : [{ computer: origin.computer, ...saved.catalog }])]
+      computers: [{ computer, here: true, ...here }, ...peers.flatMap(({ saved, origin }) => origin.away ? [] : [{ computer: origin.computer, ...saved.catalog }])]
     };
   }
   const [peers, here] = await Promise.all([peerSetupLists(link), ownRows(context, context.signal)]);

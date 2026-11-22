@@ -26127,7 +26127,8 @@
          },
          "away": "bool",
          "lastSeen?": "number",
-         "updating?": "bool"
+         "updating?": "bool",
+         "here?": "bool"
         }
        }
       },
@@ -26161,7 +26162,8 @@
          },
          "away": "bool",
          "lastSeen?": "number",
-         "updating?": "bool"
+         "updating?": "bool",
+         "here?": "bool"
         }
        }
       }
@@ -26227,7 +26229,8 @@
          },
          "away": "bool",
          "lastSeen?": "number",
-         "updating?": "bool"
+         "updating?": "bool",
+         "here?": "bool"
         }
        }
       }
@@ -26299,7 +26302,8 @@
          },
          "away": "bool",
          "lastSeen?": "number",
-         "updating?": "bool"
+         "updating?": "bool",
+         "here?": "bool"
         }
        }
       }
@@ -26327,6 +26331,7 @@
            "name": "string"
           }
          },
+         "here?": "bool",
          "offered": {
           "object": {
            "models": {

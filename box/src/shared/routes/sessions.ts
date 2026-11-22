@@ -357,7 +357,7 @@ export const SESSION_LIST = object({
 });
 
 // Full setup lists. Identity and availability are stamped by the receiving box, never by a peer.
-const LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number, "updating?": bool } as const;
+const LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number, "updating?": bool, "here?": bool } as const;
 export const SETUP_SESSION = object({
   id: string, facts: SESSION_FACTS, actions: list(words("open", "manage")),
 });
@@ -376,7 +376,7 @@ export const SETUP_SESSIONS = object({
 });
 export const SETUP_WAITING = object({ waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
 export const SETUP_QUEUES = object({ queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
-export const RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, ...START_CATALOG.object })) });
+export const RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, "here?": bool, ...START_CATALOG.object })) });
 
 export type SessionKind = (typeof SESSION_KINDS)[number];
 export type SessionFacts = Infer<typeof SESSION_FACTS>;

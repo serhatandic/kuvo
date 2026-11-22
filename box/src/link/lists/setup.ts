@@ -117,11 +117,11 @@ type Topic = "sessions" | "waiting" | "queues" | "runs-on";
 async function merged(topic: Topic, context: RouteContext) {
   const link = readLink();
   const computer = listComputer(link);
-  const local = { computer, away: false };
+  const local: { computer: typeof computer; away: boolean; lastSeen?: number; updating?: true; here?: true } = { computer, away: false, here: true };
   if (topic === "runs-on") {
     const [peers, here] = await Promise.all([peerSetupLists(link), startCatalog(context)]);
     return {
-      computers: [{ computer, ...here }, ...peers.flatMap(({ saved, origin }) =>
+      computers: [{ computer, here: true, ...here }, ...peers.flatMap(({ saved, origin }) =>
         origin.away ? [] : [{ computer: origin.computer, ...saved.catalog }])],
     };
   }

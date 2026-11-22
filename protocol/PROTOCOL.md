@@ -246,7 +246,7 @@ routes.
 | `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). Away computers are omitted. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
 
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
-public box key in `computer.id` to address its routes. The local box uses `here` while it has
+public box key in `computer.id` to address its routes. Rows of the box answering have `here: true`. The local box uses `here` while it has
 no peer identity. Key rows by computer and row ID. An away row includes `lastSeen`, the time
 in milliseconds when the receiving box last received its snapshot. An away row from a computer
 that last said it was ready for a release, or switching to it, and went quiet less than ten
