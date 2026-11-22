@@ -78,6 +78,10 @@ export function swapHoldsFor(target: Target | null, session?: string): boolean {
 /** Every session's queue the box keeps (one that's neither paused nor holds anything isn't kept). */
 export const readQueues = (strict = false): Record<string, QueueState> => files.readQueues(FILES, strict);
 
+/** The queue overview shared by both the local and setup-wide lists. */
+export const shownQueues = () => Object.fromEntries(Object.entries(readQueues())
+  .filter(([, state]) => showsQueue(state)).map(([session, state]) => [session, shownQueue(state)]));
+
 export const queueOf = (session: string, strict = false): QueueState => readQueues(strict)[session] ?? { paused: false, held: [] };
 
 /** Told of each change this process makes (`kuvo/sessions/queues/events`). */

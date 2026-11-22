@@ -14,7 +14,7 @@ import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/l
 import { keepsList, keptSessions } from "../lists/sessions";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, sendingWaiting, showsQueue, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
+import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, reorderQueue, resumeQueue, sendNow, sendingWaiting, shownQueues, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
@@ -92,7 +92,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
   if (!rawSession) {
     if (method !== "GET") return yield* json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ queues: Object.fromEntries(Object.entries(readQueues()).filter(([, state]) => showsQueue(state)).map(([session, state]) => [session, shownQueue(state)])) }), queueFollowers, signal);
+    return yield* followed(() => ({ queues: shownQueues() }), queueFollowers, signal);
   }
   const session = decodeURIComponent(rawSession);
   if (action === "queue" && !step && !item) {

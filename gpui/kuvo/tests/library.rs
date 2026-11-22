@@ -176,3 +176,27 @@ fn a_document_opens_in_the_side_panel_beside_its_conversation(cx: &mut TestAppCo
     let showing = workspace.read_with(cx, |workspace, cx| (workspace.area(), workspace.is_panel_open(), workspace.panel().read(cx).active().map(|tab| tab.kind.clone())));
     assert_eq!(showing, (kuvo::area::Area::Sessions, true, Some(kuvo::panel::Kind::File("/Users/sample/Library Items/Series A Term Sheet.pdf".into()))));
 }
+
+/// Which area is shown, the bot whose conversation Bots shows, and the session open in Sessions.
+fn landed(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> (kuvo::area::Area, Option<String>, Option<String>) {
+    workspace.read_with(cx, |workspace, _| {
+        (workspace.area(), workspace.bot_chat().map(|(bot, _)| bot.to_owned()), workspace.opened().map(str::to_owned))
+    })
+}
+
+#[gpui::test]
+fn show_in_conversation_on_a_bots_item_opens_the_bots_conversation_in_bots(cx: &mut TestAppContext) {
+    let (_stand_in, workspace, cx) = open(cx, false);
+    // Foreman's picture, handed over in its own conversation (`ses_foreman`, a bot's as the box lists it).
+    right_click(cx, "library-item-lib_04");
+    click(cx, "menu-item-Show in conversation");
+    assert_eq!(landed(&workspace, cx), (kuvo::area::Area::Bots, Some("bot_foreman".into()), None));
+}
+
+#[gpui::test]
+fn show_in_conversation_on_a_sessions_item_opens_it_in_sessions(cx: &mut TestAppContext) {
+    let (_stand_in, workspace, cx) = open(cx, false);
+    right_click(cx, "library-item-lib_06");
+    click(cx, "menu-item-Show in conversation");
+    assert_eq!(landed(&workspace, cx), (kuvo::area::Area::Sessions, None, Some("ses_yours".into())));
+}

@@ -2566,13 +2566,14 @@ impl Render for Composer {
         };
         // The other ways to send while the agent works, beside Send.
         let choices = (self.running && !empty && matches!(self.target, Target::Session { .. })).then(|| self.send_choices(cx));
+        // (A warning is the warnings standard's row, `Notice`; anything else a quiet line.)
         let note = self.note.clone().map(|note| {
-            div()
-                .px(space::S2)
-                .pt(space::S2)
-                .text_ui(TypeSize::Caption)
-                .text_color(if note.warning { c.warning } else { c.text_muted })
-                .child(note.text)
+            let row = div().px(space::S2).pt(space::S2);
+            if note.warning {
+                row.child(kuvo_ui::notice::Notice::said("composer-note", kuvo_ui::notice::Tone::Warning, note.text))
+            } else {
+                row.text_ui(TypeSize::Caption).text_color(c.text_muted).child(note.text)
+            }
         });
         // The list's keys while it shows, and while a mention's suggestions are on their way.
         let waiting = self.mention_pending && !group && mention_query(&text).is_some();

@@ -367,7 +367,7 @@ impl Transcript {
             .ok();
         };
         let around = Around { open_session: Rc::new(|_, _, _| {}), waiting: false, now: crate::time::now_ms() };
-        entries::render(ix, entry, &self.open, toggle, div().into_any_element(), &around, &self.selection, &crate::pictures::Looks::none(), None, None, cx)
+        entries::render(ix, entry, &self.open, toggle, div().into_any_element(), &around, &self.selection, &crate::pictures::Looks::none(), None, cx)
     }
 }
 

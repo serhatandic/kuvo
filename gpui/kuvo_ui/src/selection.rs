@@ -666,6 +666,11 @@ pub fn range_rects(layout: &TextLayout, range: Range<usize>, nub: bool) -> Vec<B
 
 type LinkClick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
+/// What's drawn under a stretch of text that names something (a Work Queue item, as a chip):
+/// given where the stretch was laid out (its first line, if it wraps), the element that sits under
+/// its glyphs there, taking the pointer (its hover card, its click).
+pub type ItemOverlay = Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) -> AnyElement>;
+
 /// Text that can be selected: a `StyledText` (with its links, if any, opening on a click), which
 /// reports where it was laid out to its transcript's [`SelectionState`] and paints its part of the
 /// selection under its glyphs. Inline code's fill is painted here too, as a chip under the
@@ -679,12 +684,14 @@ pub struct SelectableText {
     links: Rc<Vec<(Range<usize>, String)>>,
     on_link: Option<LinkClick>,
     link_title: Option<Rc<dyn Fn(&str) -> String>>,
+    items: Vec<(Range<usize>, ItemOverlay)>,
+    overlays: Vec<AnyElement>,
     inner: Option<(AnyElement, TextLayout)>,
 }
 
 impl SelectableText {
     pub fn new(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), text: text.into(), runs: None, unit: None, chips: Vec::new(), links: Rc::default(), on_link: None, link_title: None, inner: None }
+        Self { id: id.into(), text: text.into(), runs: None, unit: None, chips: Vec::new(), links: Rc::default(), on_link: None, link_title: None, items: Vec::new(), overlays: Vec::new(), inner: None }
     }
 
     pub fn runs(mut self, runs: Vec<TextRun>) -> Self {
@@ -714,6 +721,13 @@ impl SelectableText {
 
     pub fn link_title(mut self, title: impl Fn(&str) -> String + 'static) -> Self {
         self.link_title = Some(Rc::new(title));
+        self
+    }
+
+    /// Stretches drawn over an element of their own (an item's chip), under the selection and the
+    /// glyphs, which stay this text's: selected and copied with it.
+    pub fn items(mut self, items: Vec<(Range<usize>, ItemOverlay)>) -> Self {
+        self.items = items;
         self
     }
 
@@ -777,6 +791,16 @@ impl Element for SelectableText {
         let (element, layout) = self.build();
         element.prepaint(window, cx);
         let layout = layout.clone();
+        // (After the text's hitboxes, so an item's own takes the pointer over it.)
+        self.overlays.clear();
+        for (range, build) in &self.items {
+            if let Some(first) = range_rects(&layout, range.clone(), false).into_iter().next() {
+                let rect = Bounds::new(point(first.left(), first.top() + px(1.)), size(first.size.width, first.size.height - px(2.)));
+                let mut overlay = build(rect, window, cx);
+                overlay.prepaint_as_root(rect.origin, rect.size.map(gpui::AvailableSpace::Definite), window, cx);
+                self.overlays.push(overlay);
+            }
+        }
         if let Some((state, unit)) = &self.unit {
             let visible = bounds.intersect(&window.content_mask().bounds);
             if visible.size.width > px(0.) && visible.size.height > px(0.) {
@@ -795,6 +819,9 @@ impl Element for SelectableText {
                 let rect = Bounds::new(point(rect.left() - px(2.), rect.top() + px(1.)), size(rect.size.width + px(4.), rect.size.height - px(2.)));
                 window.paint_quad(quad(rect, px(4.), *color, px(0.), gpui::transparent_black(), Default::default()));
             }
+        }
+        for overlay in &mut self.overlays {
+            overlay.paint(window, cx);
         }
         if let Some((state, unit)) = &self.unit {
             if let Some(hitbox) = hitbox {

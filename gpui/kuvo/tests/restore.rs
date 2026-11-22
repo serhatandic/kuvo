@@ -94,6 +94,24 @@ fn a_conversation_and_folded_sidebar_open_again_after_a_restart(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn a_folded_sidebar_stays_folded_after_switching_areas_and_a_restart(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        let here = workspace(&home, cx);
+        here.update_in(cx, |workspace, window, cx| workspace.toggle_sidebar(window, cx));
+        here.update_in(cx, |workspace, window, cx| workspace.rail_pressed(Area::Bots, window, cx));
+        here.update_in(cx, |workspace, window, cx| workspace.rail_pressed(Area::Sessions, window, cx));
+        cx.run_until_parked();
+    }
+    // (Kept as it went: nothing waits for a quit.)
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["sidebarFolded"], true);
+    let (home, cx) = open(cx, &path);
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| (workspace.area(), workspace.sidebar_shown())), (Area::Sessions, false));
+    assert!(!shown(cx, "area-sidebar"));
+}
+
+#[gpui::test]
 fn the_area_in_front_and_a_bots_conversation_open_again(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     {

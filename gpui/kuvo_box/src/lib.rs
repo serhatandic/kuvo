@@ -53,6 +53,7 @@ pub mod queue;
 pub mod quoting;
 pub mod search;
 pub mod session_actions;
+pub mod session_context;
 pub mod sessions;
 pub mod subagents;
 pub mod settings;

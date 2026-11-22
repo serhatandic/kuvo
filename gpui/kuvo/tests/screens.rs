@@ -1857,10 +1857,11 @@ fn whats_offered_is_read_in_the_conversations_folder(cx: &mut TestAppContext) {
     assert_eq!(folders(&stand_in), vec![Some("/Users/sam/Projects/website".to_owned()), None], "a chat: the box's own lists");
 }
 
-/// A model gone: what's written waits for one, whatever it starts with ("!" and "/" included:
-/// they're words for the agent like any other), saying why in its box's words.
+/// A model gone: what's written comes back to the composer, whatever it starts with ("!" and "/"
+/// included: they're words for the agent like any other), and a warning row (the Notice) says why
+/// in its box's words. Nothing is sent.
 #[gpui::test]
-fn with_a_model_to_choose_nothing_goes_whatever_it_starts_with(cx: &mut TestAppContext) {
+fn with_its_model_gone_what_you_write_comes_back_with_a_notice_saying_why(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let composer = open_session(&workspace, "ses_limits", cx);
@@ -1873,9 +1874,11 @@ fn with_a_model_to_choose_nothing_goes_whatever_it_starts_with(cx: &mut TestAppC
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert_eq!(typed(&composer, cx).0, text, "kept");
-        // Said under the composer, or on the field, in its box's words.
+        // Said under the composer, or on the field, in its box's words, as a Notice row.
         let said = composer.read_with(cx, |composer, _| composer.note().map(|note| note.text.to_string())).or_else(|| typed(&composer, cx).1);
         assert_eq!(said.as_deref(), Some("gpt-4 is no longer available: choose another model."), "{text}");
+        assert!(bounds(cx, "field-error").or_else(|| bounds(cx, "composer-note")).is_some(), "drawn as a Notice: {text}");
+        assert!(bounds(cx, "field-error-icon").or_else(|| bounds(cx, "composer-note-icon")).is_some(), "with its warning mark: {text}");
     }
     assert!(stand_in.seen().iter().all(|seen| !(seen.method == "POST" && (seen.path.ends_with("/send") || seen.path.contains("/typed") || seen.path.ends_with("/shell")))));
 }

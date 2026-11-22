@@ -7,12 +7,19 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Resting on a usage ring now says how fast each limit is going: "5-hour · 38% left · runs out ~17:45, resets 18:35" when it's on pace to run out before it resets, or "lasts until reset", from your recent use (nothing is guessed until there's enough). A small amber dot on the ring marks an account on pace to run out, red one that's used up ("Back at 20:00"). Each card shows only its own account, 5-hour first, then Weekly. An agent with three or more accounts is one ring with their count; its card shows them all, emptiest first, and the one in use in full. Codex's card shows its resets ("2 resets left · next expires Nov 30") with Use a reset, which asks first and uses the one that expires soonest.
+- Show in conversation in the Library opens a bot's conversation in Bots with that bot selected, instead of in Sessions. Notifications, search and Activity open a bot's conversation there too.
+- The sidebar stays hidden once you hide it: switching between Bots, Sessions, the Work Queue and the rest no longer brings it back, and it stays hidden after a restart.
 - Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.
 - Stop cancels startup before Claude Code, Grok, Antigravity or Cursor can start on a message you canceled. Cursor also closes an agent that finishes starting after Stop.
 - Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
 - Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
 - The Library leaves out files from coding agents’ project skill folders.
+- A conversation's Activity shows how full its context is (for example "412k of 1M"), with a mark where it will be summarized and a note when it's close. Pin Activity to keep it as a small card at the top right of the conversation while you chat, with a line each for its sessions, outputs and processes; many sessions fold to one line.
 
+- A Work Queue item named in a reply shows as a small chip right where it's written (its status, number and title), and a Work Queue step shows its item's chip in its own line. Clicking a chip opens the item in the Work Queue.
+- Time, Copy and Quote now show once per reply, at its end, and Copy takes the whole reply.
+- Replies no longer end with a "Worked for …" line.
+- Insights has a refresh button beside 7d, 30d and 90d that counts your usage again, and says when its numbers were last counted ("Updated 5m ago").
 - A conversation on another computer no longer freezes on an old "Working…" step: its steps, replies, asks and queue keep arriving as they happen, through a restart of that computer or a slow connection, and what you missed while the connection was down fills in once it's back. A computer shows as offline only after it has been silent for 30 seconds, not when one answer is slow, and what it asks you stays on screen while it restarts.
 - A message waiting over the composer always has its actions, even while it's still on its way: Remove and Edit take it out as soon as it arrives, or say it was already sent.
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.

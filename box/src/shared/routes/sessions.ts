@@ -4,18 +4,20 @@
 // conversation's queue, what it asks you ("A conversation's asks"), what "@" and "&" suggest in
 // it ("Mentions"), and its side threads ("Side questions, handoffs and reviews").
 
-import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { any, bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
 /** The coding agents' session it goes on in now. */
 export const CARRIED = object({ session: string });
 
 export type Carried = Infer<typeof CARRIED>;
 
+export const LIST_COMPUTER = object({ id: string, name: string });
+
 /** A session started: its address, title, folder and project (null for a chat), whether it shows
  * beside the conversation that started it, and with `wait`, its first answer (null for none yet).
  * A client's start with no task: the session as it's made (`info`, as the engine lists it), and the
  * worktree made for it (`worktree`, as `kuvo/worktrees` makes one). */
-export const STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
+export const STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "computer?": LIST_COMPUTER, "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
 
 export type StartedSession = Infer<typeof STARTED>;
 
@@ -354,6 +356,28 @@ export const SESSION_LIST = object({
   "pending?": list(string),
 });
 
+// Full setup lists. Identity and availability are stamped by the receiving box, never by a peer.
+const LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number } as const;
+export const SETUP_SESSION = object({
+  id: string, facts: SESSION_FACTS, actions: list(words("open", "manage")),
+});
+export const SETUP_PROJECT = object({ directory: string, facts: LISTED_PROJECT });
+export const SETUP_WAIT = object({
+  session: string, since: number, "title?": string, asks: ASKS_WORDS, actions: list(words("review")),
+});
+export const SETUP_QUEUE = object({
+  session: string, queue: QUEUE, actions: list(words("open", "pause", "resume", "messages")),
+});
+const OFFERED_AGENT = object({ id: string, name: string });
+export const START_CATALOG = object({ offered: MODELS_OFFERED, agents: list(OFFERED_AGENT) });
+export const SETUP_SESSIONS = object({
+  sessions: list(object({ ...SETUP_SESSION.object, ...LIST_ORIGIN })),
+  projects: list(object({ ...SETUP_PROJECT.object, ...LIST_ORIGIN })),
+});
+export const SETUP_WAITING = object({ waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
+export const SETUP_QUEUES = object({ queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
+export const RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, ...START_CATALOG.object })) });
+
 export type SessionKind = (typeof SESSION_KINDS)[number];
 export type SessionFacts = Infer<typeof SESSION_FACTS>;
 export type ListedProject = Infer<typeof LISTED_PROJECT>;
@@ -394,7 +418,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/pin", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/rename", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
   { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string }), 400: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED, 502: object({ message: string, "session?": string }), 503: REFUSED } },
+  { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: oneOf(object({ message: string, reason: words("fullAccessOff") }), object({ message: string, computer: LIST_COMPUTER })), 429: REFUSED, 502: object({ message: string, "session?": string }), 503: REFUSED } },
   { route: "POST kuvo/agent-tools", feature: "agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED } },
   { route: "GET kuvo/sessions/queues/events", feature: "queue.items", answers: { 200: object({ queues: map(QUEUE) }) } },
   { route: "GET kuvo/sessions/glance", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED, 503: REFUSED } },
@@ -403,6 +427,17 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/session", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/messages", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/events", feature: "line.peer-conversation", answers: { 200: BYTES, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/asks", feature: "line.peer-conversation", answers: { 200: SESSION_ASKS, 403: REFUSED, 404: oneOf(REFUSED, SESSION_ASKS), 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/asks/events", feature: "line.peer-conversation", answers: { 200: SESSION_ASKS, 403: REFUSED, 404: oneOf(REFUSED, SESSION_ASKS), 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/queue", feature: "line.peer-conversation", answers: { 200: QUEUE_READ, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/queue/events", feature: "line.peer-conversation", answers: { 200: QUEUE_SHOWN, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/setup/sessions/events", feature: "line.setup-lists", answers: { 200: SETUP_SESSIONS, 405: REFUSED } },
+  { route: "GET kuvo/setup/waiting/events", feature: "line.setup-lists", answers: { 200: SETUP_WAITING, 405: REFUSED } },
+  { route: "GET kuvo/setup/queues/events", feature: "line.setup-lists", answers: { 200: SETUP_QUEUES, 405: REFUSED } },
+  { route: "GET kuvo/setup/runs-on/events", feature: "line.setup-lists", answers: { 200: RUNS_ON, 405: REFUSED } },
   { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },

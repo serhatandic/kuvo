@@ -29,8 +29,8 @@ Too many things fail in Kuvo Code because a client asks a box something and wait
 
 The picker still ships. Its approved removal depends on these changes:
 
-- **Merged lists.** Sessions, bots and the Work Queue show all your computers, each row carrying its computer. Today the Work Queue (`kuvo/work-queue?owner=all`, with copies in `run/work-queue/peers/`), bots (`kuvo/bots` `elsewhere`, from `run/peer-agents.json`), computers (`kuvo/computers/events`) and the Library are setup-wide. Sessions (`kuvo/sessions/list`), what waits on you (`kuvo/waiting`) and the message queues are this box's only, and no box keeps another's sessions.
-- **The simplest way.** Each box already sends its peers its Work Queue and its agents. It sends its session list and what waits on you the same way, and keeps the newest copy of each peer's (`run/peers/<key>/…`, with `at` and `away`). The one line carries the merged lists from the box the app is nearest to, each row with `computer`. A computer that's off shows its last copy, marked with when it was seen. Actions that need it are hidden.
+- **Merged lists.** Sessions, bots and the Work Queue show all your computers, each row carrying its computer. The Work Queue (`kuvo/work-queue?owner=all`, with copies in `run/work-queue/peers/`), bots (`kuvo/bots` `elsewhere`, from `run/peer-agents.json`), computers (`kuvo/computers/events`) and the Library are setup-wide. The original session list (`kuvo/sessions/list`), waiting (`kuvo/waiting`) and message queue routes still read one box. Their setup-wide topics use `kuvo/setup/…/events`.
+- **How the lists travel.** Each box mails its session summaries, waiting items and queues to its peers. It keeps the newest copy it received from each peer (`run/peers/<key>/lists-v1.json`). The one line carries the merged lists from the box the app is nearest to, each row with `computer`. A computer that's off shows its last copy, marked with when it was seen. Actions that need it are hidden.
 - **Runs on.** The new-session composer gets a "Runs on" choice next to the model. Starting a session or bot goes to that computer's box.
 - **Per-session things** (files, terminals, the browser, Changes) follow the session's computer. They use that box's routes, as they do today.
 - **Settings** for each computer live under Computers › that computer.
@@ -39,7 +39,7 @@ The picker still ships. Its approved removal depends on these changes:
 
 [#924](one-client-process.md) gives every computer one resident box process, with SSH piped into it. That's the process the one line comes from. Its pipe should queue a call until the process is ready, instead of failing after 5 s. Rule 3 keeps that one process free to answer.
 
-## Landed on main
+## Already built
 
 - GPUI shows a send at once, keyed by its ID, and keeps it until the conversation has it.
 - GPUI retries an interrupted send with the same ID. The box settles an interrupted
@@ -51,7 +51,15 @@ The picker still ships. Its approved removal depends on these changes:
   verification and some sandbox work have moved off the resident loop.
   Other blocking work remains.
 
-Still to build or verify end to end: merged lists, picker removal
+- The box shares session summaries, waiting and message queues, and its new-session model and
+  agent catalog with its peers. The line serves setup-wide lists and a Runs on catalog. Away
+  rows keep their last-seen time and hide their actions. Starts are addressed to the chosen box,
+  where its identity is checked before it starts the session (branch `kuvo/delivery-4-merged-lists`).
+- The nearest box can open a bot's chat or a session on another computer and carry its live turn,
+  queue and asks on the same line. The nearest box queues messages in its durable outbox and
+  delivers them to the owner.
+
+Still to build or verify end to end: the desktop's switch to merged topics, picker removal
 and Settings relocation, the rest of the off-loop work, and full tool-call
 delivery and restart coverage. The typed and slash composer remain in this build.
 

@@ -22,6 +22,8 @@ import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
 import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
+import { takeSessionFollow } from "./session-follow";
+import { takeSetupLists, tellListsAgain } from "./lists";
 import { noteHeard } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
 import { takeMoveMail } from "../moves/move";
@@ -49,7 +51,7 @@ const asksFrom = new Map<string, number>();
 
 // What peers tell each other: their agents, letters, how letters went, and moves, theirs between
 // them and what moves on each (PROTOCOL.md, "Peers").
-export function peerMail(sender: MailSender, payload: Record<string, unknown>, host: LinkHost | null | undefined, places: () => PeerPlaces = () => ({ targets: [], bridge: true })): void {
+export function peerMail(sender: MailSender, payload: Record<string, unknown>, host: LinkHost | null | undefined, places: () => PeerPlaces = () => ({ targets: [], bridge: true })): Promise<void> | undefined {
   const send = (peer: LetterSender, message: { delivered: Delivered }) => {
     const link = readLink();
     const bytes = link && mailFor(peer, { ...message, at: Date.now() }, link);
@@ -82,8 +84,11 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   }
   if (payload.ask === "agents") {
     tellQueuesAgain(sender.key);
+    tellListsAgain(sender.key);
     tellMovingAgain();
   }
+  if (isObject(payload.sessionFollow)) takeSessionFollow(sender, payload.sessionFollow, host);
+  const listsSaved = isObject(payload.setupLists) ? takeSetupLists(sender, payload.setupLists).catch(() => {}) : undefined;
   if (isObject(payload.activity)) try { takeActivity(sender.key, payload.activity); } catch {}
   if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   if (isObject(payload.letter)) takeLetter(sender, payload.letter, { send, ...places(), currentPlaces: places, answer: leaveAnswer, moving: async session => frozen().has(session) }).catch(() => {});
@@ -124,6 +129,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     letterWent(sender, payload.delivered as unknown as Delivered);
     if (payload.delivered.ok === true) rowsWent(sender, payload.delivered.id);
   }
+  return listsSaved;
 }
 
 const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id })?.local;
@@ -160,12 +166,19 @@ export function receiveMail(
     peerMail(sender, { workQueue: payload.workQueue });
     return true;
   }
+  // Stream parts arrive many times a second on a live turn. The authenticated opening and regular
+  // peer snapshots handle reachability; transport data needs only its subscription's sequence.
+  if (isObject(payload.sessionFollow) && isObject(payload.sessionFollow.part)) {
+    peerMail(sender, { sessionFollow: payload.sessionFollow });
+    return true;
+  }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).
   // Back after not answering: what's kept for it goes now, not at its next minute.
   if (noteHeard(sender.key)) {
     callsBack(sender.key);
     rowsBack();
     queuesBack(sender.key);
+    tellListsAgain(sender.key);
     heldBack(sender.key);
   }
   if (macsOf(link).includes(sender.key)) heardFromMac(sender.key, payload);

@@ -186,6 +186,18 @@ pub fn present(
     }
 }
 
+/// The Work Queue item a Work Queue step is about, by its number, when its row names one: the
+/// item it changed, handed, removed or checked, or the one it added.
+pub fn queue_item(name: &str, state: &Value) -> Option<u64> {
+    let input = state.get("input").unwrap_or(&Value::Null);
+    let number = match kuvo_tool_name(name) {
+        "queue_update" | "queue_hand" | "queue_remove" | "queue_show" => format_item_number(input),
+        "queue_add" => state.pointer("/metadata/number").and_then(Value::as_u64).map(|n| format!("#{n}")).or_else(|| extract_hash_number(&printed(state))),
+        _ => None,
+    }?;
+    number.strip_prefix('#')?.parse().ok()
+}
+
 /// Human-only details shown when a non-engine tool step is opened.
 pub fn note(name: &str, state: &Value) -> Option<Note> {
     if is_engine_tool(name) || name == "kuvo-browser_show_file" {

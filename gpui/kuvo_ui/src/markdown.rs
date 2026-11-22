@@ -15,7 +15,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use crate::{
     code_block::CodeBlock,
-    selection::{Lead, Path, SelectableText, SelectionState, Unit, UnitId},
+    selection::{ItemOverlay, Lead, Path, SelectableText, SelectionState, Unit, UnitId},
     icon::{Icon, IconName},
     theme::{ActiveTheme, Colors, MEDIUM, MONO_FONT, REGULAR, StyledType, TypeSize, UI_FONT, radius, space},
 };
@@ -318,6 +318,111 @@ pub struct Markdown {
     pictures: Option<Pictures>,
     on_link: Option<LinkClick>,
     item_chip: Option<ItemChip>,
+    inline_items: Option<InlineItems>,
+}
+
+/// What draws an item named in the text (its [`item_label`]) as a chip where it's written, by its
+/// number: none for one it doesn't know, which shows as the words it is.
+pub type InlineItems = std::rc::Rc<dyn Fn(u64, &App) -> Option<ItemOverlay>>;
+
+/// How an item named in a message reads in the text, where its chip is drawn: room for its status
+/// mark (two figure spaces and a narrow one), its number, its title (shortened), and a narrow space at its end. Its
+/// spaces don't break, so the chip keeps to one line; it's selected and copied as text.
+pub const ITEM_LEAD: &str = "\u{2007}\u{2007}\u{202f}";
+const ITEM_END: char = '\u{202f}';
+/// The most of an item's title a chip shows, in characters.
+const ITEM_TITLE: usize = 40;
+
+/// Item `number`'s label in the text, with `title`: see [`ITEM_LEAD`].
+pub fn item_label(number: u64, title: &str) -> String {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = if title.chars().count() > ITEM_TITLE {
+        format!("{}…", title.chars().take(ITEM_TITLE - 1).collect::<String>().trim_end())
+    } else {
+        title
+    };
+    let title = title.replace(' ', "\u{a0}").replace('-', "\u{2011}");
+    if title.is_empty() { format!("{ITEM_LEAD}#{number}{ITEM_END}") } else { format!("{ITEM_LEAD}#{number}\u{a0}{title}{ITEM_END}") }
+}
+
+/// An item's label found in some text: where it is, its number, and where its `#number` is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemLabel {
+    pub range: Range<usize>,
+    pub number: u64,
+    pub number_range: Range<usize>,
+}
+
+/// The items' labels in `text` ([`item_label`]'s), in order.
+pub fn item_labels(text: &str) -> Vec<ItemLabel> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(ITEM_LEAD) {
+        let start = from + at;
+        let hash = start + ITEM_LEAD.len();
+        from = hash;
+        let rest = &text[hash..];
+        let Some(digits) = rest.strip_prefix('#').map(|after| after.bytes().take_while(u8::is_ascii_digit).count()).filter(|digits| *digits > 0) else { continue };
+        let Some(end) = rest.find(ITEM_END).filter(|end| !rest[..*end].contains('\n')) else { continue };
+        let Ok(number) = rest[1..1 + digits].parse() else { continue };
+        let range = start..hash + end + ITEM_END.len_utf8();
+        from = range.end;
+        out.push(ItemLabel { range, number, number_range: hash..hash + 1 + digits });
+    }
+    out
+}
+
+/// `text` as it's copied: each item's label as plain words ("#954 Remove slash commands").
+pub fn plain_items(text: &str) -> String {
+    let labels = item_labels(text);
+    if labels.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for label in labels {
+        out.push_str(&text[at..label.range.start]);
+        let inner = &text[label.range.start + ITEM_LEAD.len()..label.range.end - ITEM_END.len_utf8()];
+        out.push_str(&inner.replace('\u{a0}', " ").replace('\u{2011}', "-"));
+        at = label.range.end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// `runs` with the stretch `range` in `color` (split where it starts and ends).
+pub fn recolor(runs: Vec<TextRun>, range: Range<usize>, color: Hsla) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + 2);
+    let mut at = 0;
+    for run in runs {
+        let (start, end) = (at, at + run.len);
+        at = end;
+        let (a, b) = (range.start.clamp(start, end), range.end.clamp(start, end));
+        if a >= b {
+            out.push(run);
+            continue;
+        }
+        for (from, to, inside) in [(start, a, false), (a, b, true), (b, end, false)] {
+            if to > from {
+                out.push(TextRun { len: to - from, color: if inside { color } else { run.color }, ..run.clone() });
+            }
+        }
+    }
+    out
+}
+
+/// Plain text's runs with its items' numbers muted (none when it names none).
+pub fn item_runs(text: &str, color: Hsla, muted: Hsla) -> Option<Vec<TextRun>> {
+    let labels = item_labels(text);
+    if labels.is_empty() {
+        return None;
+    }
+    let font = gpui::Font { family: UI_FONT.into(), weight: REGULAR, ..gpui::font(UI_FONT) };
+    let mut runs = vec![TextRun { len: text.len(), font, color, background_color: None, underline: None, strikethrough: None }];
+    for label in labels {
+        runs = recolor(runs, label.number_range, muted);
+    }
+    Some(runs)
 }
 
 /// What draws a markdown's pictures, given each one's address and alt text.
@@ -395,7 +500,7 @@ impl Selectable {
 
 impl Markdown {
     pub fn new(id: impl Into<ElementId>, source: &str) -> Self {
-        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None, on_link: None, item_chip: None }
+        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None, on_link: None, item_chip: None, inline_items: None }
     }
 
     pub fn item_links(mut self, source: &str, open: LinkClick) -> Self {
@@ -406,6 +511,12 @@ impl Markdown {
 
     pub fn item_chips(mut self, draw: ItemChip) -> Self {
         self.item_chip = Some(draw);
+        self
+    }
+
+    /// Draws the items named in its text ([`item_label`]s) as chips where they're written.
+    pub fn inline_items(mut self, items: InlineItems) -> Self {
+        self.inline_items = Some(items);
         self
     }
 
@@ -426,7 +537,7 @@ impl RenderOnce for Markdown {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors.clone();
         let mut path = Vec::new();
-        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), on_link: self.on_link.as_ref(), item_chip: self.item_chip.as_ref(), cx };
+        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), on_link: self.on_link.as_ref(), item_chip: self.item_chip.as_ref(), inline_items: self.inline_items.as_ref(), cx };
         blocks(&draw, &mut path, &self.blocks, TextLevel::Normal)
             .text_ui(TypeSize::Body)
             .text_color(colors.text)
@@ -441,6 +552,7 @@ struct Draw<'a> {
     pictures: Option<&'a Pictures>,
     on_link: Option<&'a LinkClick>,
     item_chip: Option<&'a ItemChip>,
+    inline_items: Option<&'a InlineItems>,
     cx: &'a App,
 }
 
@@ -772,10 +884,21 @@ fn append_inline_text(
 }
 
 fn inline_text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
-    let runs = inline_runs(inline, d.c, color, weight);
+    let mut runs = inline_runs(inline, d.c, color, weight);
+    // The items it names, each a chip where it's written, its number muted.
+    let mut items = Vec::new();
+    if let Some(draw) = d.inline_items {
+        for label in item_labels(&inline.text) {
+            if let Some(overlay) = draw(label.number, d.cx) {
+                runs = recolor(runs, label.number_range.clone(), d.c.text_muted);
+                items.push((label.range, overlay));
+            }
+        }
+    }
     let open = d.on_link.cloned();
     SelectableText::new(element_id(d.id, path), inline.text.clone())
         .runs(runs)
+        .items(items)
         .chips(code_chips(inline, d.c))
         .links(inline.links.clone(), move |url, window, cx| {
             if opens(url) {

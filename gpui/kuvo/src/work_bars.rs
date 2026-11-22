@@ -6,15 +6,16 @@ use std::time::Duration;
 use gpui::{
     AnyElement, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    Global, Pixels, StatefulInteractiveElement, Styled, StyledImage, Subscription, Task, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use kuvo_box::areas::Look;
 use kuvo_box::artifacts::{Artifact, Outputs, Version};
 use kuvo_box::background::{Activity, ActivitySession, Background};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
-use kuvo_box::{BoxClient, Follow};
+use kuvo_box::session_context::{ContextSize, short_tokens};
+use kuvo_box::{BoxClient, Follow, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     icon::{Mark, provider_mark, provider_mark_color},
@@ -75,13 +76,52 @@ pub struct WorkBars {
     _work_follow: Option<Follow<Followed<WorkChanged>>>,
     /// When the bot's work was last said to change, as last seen.
     work_seen: Option<f64>,
+    /// Where the conversation lives on its box, once known (its context is read there).
+    place: Option<Where>,
+    /// How full its context is, as its box last said (none: it doesn't say, or not yet measured).
+    context: Option<ContextSize>,
+    /// Its context was read (or couldn't be): the popover draws once it has.
+    context_heard: bool,
+    context_reads: u64,
+    /// The conversation as last told (running, how many messages): its context is read again as
+    /// a step or a turn ends.
+    told: Option<(bool, usize)>,
+    /// Pinned: the card floats at the top right of the conversation, kept open as you chat.
+    pinned: bool,
+    pinned_card: Option<Entity<ActivityCard>>,
+    /// How wide the conversation was last drawn, so a pinned card keeps the column clear of it
+    /// only where that leaves the column room.
+    pane_width: Rc<std::cell::Cell<Pixels>>,
     tasks: Vec<Task<()>>,
 }
+
+/// The conversations whose Activity is pinned, kept while the app runs (window state: the box has
+/// no say in it).
+#[derive(Default)]
+struct PinnedActivity(HashSet<String>);
+
+impl Global for PinnedActivity {}
+
+/// Its Activity was pinned or unpinned: the conversation draws the card, or stops.
+pub struct PinChanged;
+
+impl EventEmitter<PinChanged> for WorkBars {}
+
+/// The pinned card's width (T3 Code's is about this), and what the conversation keeps clear for it.
+const PINNED_WIDTH: f32 = 292.;
+const PINNED_RESERVE: f32 = PINNED_WIDTH + 28.;
+/// The narrowest a conversation's column gets for a pinned card beside it; narrower, it floats over.
+const PINNED_MIN_COLUMN: f32 = 440.;
+/// More sessions at work than this, and the pinned card folds them to one line until opened.
+const PINNED_FOLD_OVER: usize = 3;
+/// How near the summarize point (of it) the strip turns to a warning.
+const NEAR_SUMMARY: f64 = 0.9;
 
 impl WorkBars {
     /// Activity in `session`'s conversation. `live`: follow its box (the app); else it shows what
     /// it's read with [`WorkBars::read_at_once`] (tests and shots).
     pub fn new(client: BoxClient, session: String, live: bool, cx: &mut Context<Self>) -> WorkBars {
+        let pinned = cx.try_global::<PinnedActivity>().is_some_and(|pinned| pinned.0.contains(&session));
         let mut bars = WorkBars {
             client: client.clone(),
             session,
@@ -118,6 +158,14 @@ impl WorkBars {
             _background_follow: None,
             _work_follow: None,
             work_seen: None,
+            place: None,
+            context: None,
+            context_heard: false,
+            context_reads: 0,
+            told: None,
+            pinned,
+            pinned_card: None,
+            pane_width: Rc::new(std::cell::Cell::new(px(0.))),
             tasks: Vec::new(),
         };
         if live {
@@ -350,7 +398,14 @@ impl WorkBars {
     }
 
     fn is_collapsed(&self, section: &str) -> bool {
-        self.collapsed.contains(section)
+        let toggled = self.collapsed.contains(section);
+        // The pinned card's sessions start folded when many are at work, so the corner stays calm.
+        if section == PINNED_SESSIONS { toggled != self.pinned_busy() } else { toggled }
+    }
+
+    /// More sessions at work than the pinned card lists unasked.
+    fn pinned_busy(&self) -> bool {
+        self.active_rows.len() + self.subagent_rows.len() > PINNED_FOLD_OVER
     }
 
     fn fold(&mut self, section: &'static str, cx: &mut Context<Self>) {
@@ -486,6 +541,128 @@ impl WorkBars {
             this.after_stop(cx);
         });
         cx.notify();
+    }
+
+    /// The conversation as its view last read it: where it lives, whether it runs and how many
+    /// messages it has. While its Activity shows, its context is read again as a step or turn ends.
+    pub fn conversation_changed(&mut self, place: Where, running: bool, messages: usize, cx: &mut Context<Self>) {
+        self.place = Some(place);
+        if self.pinned && self.pinned_card.is_none() {
+            let card = self.new_card(cx);
+            card.update(cx, |card, _| card.pinned = true);
+            self.pinned_card = Some(card);
+            cx.emit(PinChanged);
+        }
+        let told = Some((running, messages));
+        if self.told != told {
+            self.told = told;
+            if self.handle.is_open() || self.pinned {
+                self.read_context(cx);
+            }
+        }
+    }
+
+    /// Reads how full its context is now, as its box says (where it fails, the last known stays).
+    fn read_context(&mut self, cx: &mut Context<Self>) {
+        self.context_reads += 1;
+        let read = self.context_reads;
+        let (client, session, place) = (self.client.clone(), self.session.clone(), self.place);
+        let work = move || -> kuvo_box::Result<(Where, Option<ContextSize>)> {
+            let place = match place { Some(place) => place, None => client.where_is(&session)? };
+            Ok((place, client.session_context(&session, place)?))
+        };
+        let then = move |this: &mut WorkBars, result: kuvo_box::Result<(Where, Option<ContextSize>)>, cx: &mut Context<Self>| {
+            if this.context_reads != read { return; }
+            this.context_heard = true;
+            if let Ok((place, context)) = result {
+                this.place = Some(place);
+                this.context = context;
+            }
+            cx.notify();
+        };
+        if self.live {
+            self.spawn(cx, work, then);
+        } else {
+            let result = work();
+            then(self, result, cx);
+        }
+    }
+
+    /// A card for its Activity, built from what's here (this may be mid-update).
+    fn new_card(&self, cx: &mut Context<Self>) -> Entity<ActivityCard> {
+        let bars = cx.entity();
+        let source = self.wake_source();
+        let show_wakes = self.wake_label().is_some();
+        let (sessions, recent) = (self.active_rows.clone(), self.recent_rows.clone());
+        cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, false, &sessions, &recent, cx))
+    }
+
+    fn set_pinned(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        self.pinned = pinned;
+        let kept = &mut cx.default_global::<PinnedActivity>().0;
+        if pinned { kept.insert(self.session.clone()); } else { kept.remove(&self.session); }
+        cx.emit(PinChanged);
+        cx.notify();
+    }
+
+    /// Pins `card` (the popover's, or a new one): it floats at the top right of the conversation
+    /// and stays as you chat, until closed or unpinned.
+    fn pin(&mut self, card: Option<Entity<ActivityCard>>, window: &mut Window, cx: &mut Context<Self>) {
+        let card = card.or_else(|| self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()))
+            .unwrap_or_else(|| self.new_card(cx));
+        self.handle.close(window, cx);
+        card.update(cx, |card, cx| {
+            card.pinned = true;
+            card.preview = None;
+            card.reading = None;
+            card.drilldown = None;
+            cx.notify();
+        });
+        self.pinned_card = Some(card);
+        self.set_pinned(true, cx);
+    }
+
+    /// Unpins it: closed, or (`reopen`) back to the popover under its button, as it was.
+    fn unpin(&mut self, reopen: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let card = self.pinned_card.take();
+        self.set_pinned(false, cx);
+        if let Some(card) = card.filter(|_| reopen) {
+            card.update(cx, |card, _| card.pinned = false);
+            self.handle.open(card, window, cx);
+        }
+    }
+
+    /// Its pinned card, floating at the top right of the conversation, and how much of the
+    /// conversation's right it keeps clear for it (none where the column would get too narrow:
+    /// there it floats over).
+    pub fn pinned_layer(&self) -> Option<(AnyElement, Pixels)> {
+        let card = self.pinned_card.clone().filter(|_| self.pinned)?;
+        let width = self.pane_width.clone();
+        let reserve = if self.pane_width.get() - px(PINNED_RESERVE) >= px(PINNED_MIN_COLUMN) { px(PINNED_RESERVE) } else { px(0.) };
+        let measure = gpui::canvas(
+            move |bounds, window, _| {
+                if width.get() != bounds.size.width {
+                    width.set(bounds.size.width);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        ).size_full();
+        let layer = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(div().absolute().top_0().left_0().size_full().child(measure))
+            .child(div().absolute().top(space::S3).right(space::S3).child(card))
+            .into_any_element();
+        Some((layer, reserve))
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn pin_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pin(None, window, cx);
+        self.read_context(cx);
     }
 
     fn after_stop(&mut self, cx: &mut Context<Self>) {
@@ -694,6 +871,24 @@ impl Render for WorkBars {
         let running = self.is_running();
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
+        let dot = running.then(|| div().absolute().top(px(3.)).right(px(3.))
+            .debug_selector(|| "conversation-activity-running".into()).child(status_dot(c.accent)));
+        if self.pinned {
+            // Pinned, its button closes the card, as T3 Code's does its panel.
+            return div()
+                .debug_selector(|| "conversation-activity-button".into())
+                .relative()
+                .flex_none()
+                .child(Button::icon_only("conversation-activity-menu", IconName::Activity, "Activity · Pinned")
+                    .ghost()
+                    .size(ButtonSize::Medium)
+                    .icon_size(IconSize::Large)
+                    .selected(true)
+                    .track_focus(self.trigger_focus.clone())
+                    .on_click(cx.listener(|this, _, window, cx| this.unpin(false, window, cx))))
+                .children(dot)
+                .into_any_element();
+        }
         let button = Button::icon_only(
             "conversation-activity-button", IconName::Activity,
             if running { "Activity · Work in progress" } else { "Activity" },
@@ -709,10 +904,11 @@ impl Render for WorkBars {
             .flex_none()
             .child(PopoverMenu::button("conversation-activity-menu", button, move |_, cx| {
                 let bars = this.upgrade().expect("activity trigger is visible");
+                bars.update(cx, |bars, cx| bars.read_context(cx));
                 cx.new(|cx| ActivityCard::new(&bars, false, cx))
             }).with_handle(self.handle.clone()).align_right())
-            .children(running.then(|| div().absolute().top(px(3.)).right(px(3.))
-                .debug_selector(|| "conversation-activity-running".into()).child(status_dot(c.accent))))
+            .children(dot)
+            .into_any_element()
     }
 }
 
@@ -819,11 +1015,14 @@ impl WorkBars {
         let sessions = self.active_rows.clone();
         let recent = self.recent_rows.clone();
         let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, &sessions, &recent, cx));
+        self.read_context(cx);
         self.handle.open(card, window, cx);
         cx.notify();
     }
 }
 
+/// The pinned card's sessions section, folded by its own rule.
+const PINNED_SESSIONS: &str = "pinned-sessions";
 const STRIP_IMAGES: usize = 3;
 /// The most subagent marks in the Subagents row, each once.
 const SUBAGENT_MARKS: usize = 4;
@@ -876,6 +1075,8 @@ struct ActivityCard {
     subagents: Option<kuvo_box::subagents::Subagents>,
     subagents_heard: bool,
     _subagents: Option<(Follow<Followed<kuvo_box::subagents::Subagents>>, Task<()>)>,
+    /// Pinned: drawn as the slim card at the top right of the conversation, kept open as you chat.
+    pinned: bool,
     /// Held loading, to show how it looks (shots).
     #[cfg(feature = "stand-in")]
     held_loading: bool,
@@ -958,6 +1159,7 @@ impl ActivityCard {
             subagents: None,
             subagents_heard: false,
             _subagents: None,
+            pinned: false,
             #[cfg(feature = "stand-in")]
             held_loading: false,
         };
@@ -1042,6 +1244,7 @@ impl ActivityCard {
             return false;
         }
         bars.heard()
+            && (bars.context_heard || bars.context_reads == 0)
             && (self.outputs.is_some() || self.outputs_failed)
             && self.side_heard
             && self.subagents_heard
@@ -1446,8 +1649,201 @@ impl ActivityCard {
         cx.notify();
     }
 
+    /// Closes the popover (a pinned card stays: it goes only by Unpin or its button).
     fn dismiss(&self, cx: &mut Context<Self>) {
-        cx.emit(DismissEvent);
+        if !self.pinned {
+            cx.emit(DismissEvent);
+        }
+    }
+
+    /// Pins it, or unpins it back to the popover (`reopen`) or closed: after this event, as the
+    /// card moves between the popover and the conversation.
+    fn set_pinned(&self, pinned: bool, reopen: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (bars, card) = (self.activity.clone(), cx.entity());
+        window.defer(cx, move |window, cx| {
+            bars.update(cx, |bars, cx| if pinned { bars.pin(Some(card), window, cx) } else { bars.unpin(reopen, window, cx) }).ok();
+        });
+    }
+
+    /// The popover's heading: its name, and Pin.
+    fn heading(&self, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        div()
+            .debug_selector(|| "activity-heading".into())
+            .px(space::S2)
+            .pb(space::S1)
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Activity"))
+            .child(Button::icon_only("activity-pin", IconName::Pin, "Pin beside the conversation")
+                .ghost()
+                .size(ButtonSize::Small)
+                .on_click(cx.listener(|this, _, window, cx| this.set_pinned(true, false, window, cx))))
+            .into_any_element()
+    }
+
+    /// How full its context is, as its box says: used of its model's window, with a mark where it's
+    /// summarized by itself; near there, in the warning colour, saying so. None where it doesn't say.
+    fn context_strip(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
+        let context = bars.context?;
+        let c = cx.theme().colors.clone();
+        let near = context_near(&context);
+        let words = context_words(&context);
+        let selector = format!("activity-context-words-{words}");
+        let figures = div()
+            .debug_selector(move || selector)
+            .text_mono(TypeSize::Caption)
+            .when(!self.pinned, |d| d.medium())
+            .text_color(if near { c.warning } else if self.pinned { c.text_muted } else { c.text })
+            .child(words);
+        let note = context.summarize_at.filter(|_| near).map(|at| {
+            div().debug_selector(|| "activity-context-near".into()).text_ui(TypeSize::Caption).text_color(c.warning)
+                .child(format!("Summarizes at {}", short_tokens(at)))
+        });
+        let top = if self.pinned {
+            div().flex().items_center().justify_between().gap(space::S2)
+                .child(div().min_w_0().flex().items_baseline().gap(space::S1_5)
+                    .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child("Context"))
+                    .child(figures))
+                .child(self.pinned_controls(cx))
+        } else {
+            div().flex().items_baseline().justify_between()
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child("Context"))
+                .child(figures)
+        };
+        Some(div()
+            .debug_selector(|| "activity-context".into())
+            .px(space::S2)
+            .pb(space::S1)
+            .flex()
+            .flex_col()
+            .gap(space::S1_5)
+            .child(top)
+            .children(context_bar(&context, cx))
+            .children(note)
+            .into_any_element())
+    }
+
+    /// Unpin (back to the popover), at the pinned card's top right: the one way the card goes.
+    fn pinned_controls(&self, cx: &Context<Self>) -> AnyElement {
+        div().flex_none().flex().items_center()
+            .child(Button::icon_only("activity-unpin", IconName::Pin, "Unpin")
+                .ghost()
+                .size(ButtonSize::Small)
+                .selected(true)
+                .on_click(cx.listener(|this, _, window, cx| this.set_pinned(false, true, window, cx))))
+            .into_any_element()
+    }
+
+    /// The pinned card: its context, the sessions at work (folded when many are), and a line each
+    /// for what it made and what runs, as T3 Code's pinned panel keeps its rows.
+    fn pinned_view(&self, bars: &WorkBars, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let top = self.context_strip(bars, cx).unwrap_or_else(|| {
+            div().px(space::S2).pb(space::S1).flex().items_center().justify_between()
+                .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Activity"))
+                .child(self.pinned_controls(cx))
+                .into_any_element()
+        });
+        let hairline = || div().my(space::S1_5).h(px(1.)).w_full().bg(c.border).into_any_element();
+        let mut card = div().flex().flex_col().child(top);
+        if !self.loaded(bars, cx) {
+            return card.child(div().debug_selector(|| "activity-loading".into()).h(px(40.)).flex().items_center().justify_center()
+                .child(kuvo_ui::small::LoadingLabel::new("activity-loading-label", "Loading…"))).into_any_element();
+        }
+
+        let sessions: Vec<&SessionRow> = bars.active_rows.iter().chain(bars.subagent_rows.iter()).collect();
+        if !sessions.is_empty() {
+            let asking = sessions.iter().filter(|row| row.state == WorkState::Asking).count();
+            let working = sessions.len() - asking;
+            // ("2 working" alone where that's all of them: never "2 · 2 working".)
+            let mut words = if asking > 0 { vec![sessions.len().to_string()] } else { Vec::new() };
+            if working > 0 { words.push(format!("{working} working")); }
+            let attention = (asking > 0).then(|| {
+                let start = words.iter().map(|word| word.len() + " · ".len()).sum::<usize>();
+                let word = format!("{asking} waiting");
+                let range = start..start + word.len();
+                words.push(word);
+                range
+            });
+            let label = words.join(" · ");
+            let selector = format!("activity-pinned-sessions-meta-{label}");
+            let meta = div().debug_selector(move || selector).text_ui(TypeSize::Caption).text_color(c.text_faint)
+                .child(kuvo_ui::small::status_words(label, attention, cx)).into_any_element();
+            let rows = sessions.iter().map(|row| self.pinned_session_row(bars, row, cx)).collect();
+            card = card.child(hairline()).child(self.section(bars, PINNED_SESSIONS, "Sessions", Some(meta), None, rows, cx));
+        }
+
+        let outputs = self.outputs.as_ref().map_or(0, |page| page.artifacts.len());
+        let more = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
+        let commands = bars.background.commands.len();
+        if outputs > 0 || commands > 0 {
+            card = card.child(hairline());
+        }
+        if outputs > 0 {
+            let words = format!("{outputs}{} {}", if more { "+" } else { "" }, if outputs == 1 && !more { "item" } else { "items" });
+            let trailing = div().flex().items_center().gap(px(4.)).text_ui(TypeSize::Caption).text_color(c.text_faint)
+                .child(words).child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint));
+            card = card.child(summary_row("activity-pinned-outputs", IconName::File, "Outputs", trailing.into_any_element(), cx)
+                .tooltip(|_, cx| Tooltip::new("Show all outputs").build(cx))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.show_outputs_kind(OutputKind::All, window, cx);
+                    this.set_pinned(false, true, window, cx);
+                })));
+        }
+        if commands > 0 {
+            let trailing = div().flex().items_center().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_faint)
+                .child(format!("{commands} running")).child(status_dot(c.success));
+            card = card.child(summary_row("activity-pinned-processes", IconName::TerminalWindow, "Processes", trailing.into_any_element(), cx)
+                .tooltip(|_, cx| Tooltip::new("Show background processes").build(cx))
+                .on_click(cx.listener(|this, _, window, cx| this.set_pinned(false, true, window, cx))));
+        }
+        if sessions.is_empty() && outputs == 0 && commands == 0 && bars.context.is_none() {
+            card = card.child(div().debug_selector(|| "activity-empty".into()).px(space::S2).py(space::S1_5)
+                .text_ui(TypeSize::Caption).text_color(c.text_muted).child("No files, sessions or processes yet."));
+        }
+        card.children(bars.failure.clone().map(|why| div().px(space::S2).pt(space::S1).child(kuvo_ui::Notice::said("work-bars-failure", kuvo_ui::Tone::Warning, why))))
+            .into_any_element()
+    }
+
+    /// One line for a session at work in the pinned card: its provider's mark (or bot), its title, and "Waiting"
+    /// while it waits on you. It opens its conversation (a subagent, the side panel's Subagents).
+    fn pinned_session_row(&self, bars: &WorkBars, row: &SessionRow, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let asking = row.state == WorkState::Asking;
+        let (id, computer, subagent) = (row.id.clone(), row.computer.clone(), row.subagent);
+        let selector = format!("activity-pinned-session-{id}");
+        let hover = c.hover;
+        let avatar = self.avatar(bars, row, "pinned", cx);
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .w_full()
+            .min_w_0()
+            .flex_none()
+            .h(px(26.))
+            .px(space::S2)
+            .rounded(radius::NAV)
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .tab_index(0)
+            .cursor_pointer()
+            .hover(move |d| d.bg(hover))
+            .focus_visible(move |d| d.bg(hover).border_1().border_color(c.accent))
+            .child(avatar)
+            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(row.title.clone()))
+            .children(asking.then(|| status_dot(c.accent)))
+            .children(asking.then(|| div().flex_none().text_ui(TypeSize::Caption).text_color(c.attention).child("Waiting")))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if subagent {
+                    this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
+                } else {
+                    this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
+                }
+            }))
+            .into_any_element()
     }
 
     fn outputs(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
@@ -2396,10 +2792,39 @@ impl Render for ActivityCard {
         let bars = activity.read(cx);
         let theme = cx.theme().clone();
         let c = &theme.colors;
+        if self.pinned {
+            let max_h = (window.viewport_size().height - px(140.)).max(px(120.));
+            return div()
+                .id("activity-pinned-card")
+                .debug_selector(|| "activity-pinned-card".into())
+                .track_focus(&self.focus)
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .tab_group()
+                .occlude()
+                .w(px(PINNED_WIDTH))
+                .max_h(max_h)
+                .overflow_y_scroll()
+                .p(space::S3)
+                .rounded(radius::POPOVER)
+                .bg(c.elevated)
+                .border_1()
+                .border_color(c.border)
+                .shadow(theme.elevated_shadow())
+                .text_ui(TypeSize::Small)
+                .text_color(c.text)
+                .child(self.pinned_view(bars, cx))
+                .into_any_element();
+        }
         // Keep the popover compact and strictly below its header trigger button so `anchor::place`
         // never clamps upward over the button itself.
         let cap = if self.preview.is_some() { px(560.) } else { px(480.) };
         let max_h = cap.min((window.viewport_size().height - px(120.)).max(px(160.)));
+        let top = (self.preview.is_none() && self.drilldown.is_none()).then(|| {
+            let strip = self.context_strip(bars, cx);
+            let ruled = strip.is_some();
+            div().flex().flex_col().child(self.heading(cx)).children(strip)
+                .when(ruled, |d| d.child(div().my(space::S1_5).h(px(1.)).w_full().bg(c.border)))
+        });
         let content = if let Some((name, preview)) = &self.preview {
             self.preview(name, preview, cx)
         } else if let Some(drilldown) = self.drilldown {
@@ -2518,9 +2943,75 @@ impl Render for ActivityCard {
             .shadow(theme.elevated_shadow())
             .text_ui(TypeSize::Small)
             .text_color(c.text)
+            .children(top)
             .child(content)
             .into_any_element()
     }
+}
+
+/// "412k of 1M", or "412k used" where its box doesn't know the model's window.
+fn context_words(context: &ContextSize) -> String {
+    match context.window {
+        Some(window) => format!("{} of {}", short_tokens(context.used), short_tokens(window)),
+        None => format!("{} used", short_tokens(context.used)),
+    }
+}
+
+/// Near (or past) where it's summarized by itself.
+fn context_near(context: &ContextSize) -> bool {
+    context.summarize_at.is_some_and(|at| context.used as f64 >= at as f64 * NEAR_SUMMARY)
+}
+
+/// A slim bar of used against the window, with a tick at the summarize point; none without a window.
+fn context_bar(context: &ContextSize, cx: &App) -> Option<AnyElement> {
+    let window = context.window.filter(|window| *window > 0)? as f32;
+    let c = &cx.theme().colors;
+    let near = context_near(context);
+    let fill = (context.used as f32 / window).clamp(0.015, 1.);
+    let tick = context.summarize_at.map(|at| at as f32 / window).filter(|tick| *tick > 0. && *tick < 1.);
+    Some(div()
+        .debug_selector(|| "activity-context-bar".into())
+        .relative()
+        .w_full()
+        .h(px(3.))
+        .rounded(radius::PILL)
+        .bg(c.border)
+        .child(div().h_full().w(relative(fill)).rounded(radius::PILL).bg(if near { c.warning } else { c.text_muted }))
+        .children(tick.map(|tick| div()
+            .debug_selector(|| "activity-context-tick".into())
+            .absolute()
+            .top(px(-2.))
+            .left(relative(tick))
+            .w(px(1.))
+            .h(px(7.))
+            .bg(if near { c.warning } else { c.border_strong })))
+        .into_any_element())
+}
+
+/// A one-line row of the pinned card: its icon, its name, and what's under it at its end.
+fn summary_row(id: &'static str, icon: IconName, label: &'static str, trailing: AnyElement, cx: &App) -> gpui::Stateful<gpui::Div> {
+    let c = &cx.theme().colors;
+    let hover = c.hover;
+    let accent = c.accent;
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .w_full()
+        .min_w_0()
+        .flex_none()
+        .h(px(28.))
+        .px(space::S2)
+        .rounded(radius::NAV)
+        .flex()
+        .items_center()
+        .gap(space::S2)
+        .tab_index(0)
+        .cursor_pointer()
+        .hover(move |d| d.bg(hover))
+        .focus_visible(move |d| d.bg(hover).border_1().border_color(accent))
+        .child(div().flex_none().size(px(16.)).flex().items_center().justify_center().child(Icon::new(icon).size(IconSize::Nav).color(c.icon)))
+        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(label))
+        .child(div().flex_none().child(trailing))
 }
 
 fn popover_row(row: TextRow, cx: &App) -> gpui::Stateful<gpui::Div> {

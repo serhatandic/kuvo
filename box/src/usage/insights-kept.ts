@@ -35,19 +35,20 @@ export class KeptSummaries {
    * once (with `asOf`, when it was read), while `read` reads it afresh; with none kept, as `read`
    * gives it. Only a finished summary is kept (never one that says the box is still reading its
    * usage). */
-  async answer(params: URLSearchParams, read: () => Promise<Summary | undefined>): Promise<Summary | undefined> {
+  async answer(params: URLSearchParams, read: () => Promise<Summary | undefined>, fresh = false): Promise<Summary | undefined> {
     const key = keptKey(params)
     const kept = this.kept.get(key)
-    if (kept && this.now() - kept.at < FRESH && kept.at <= this.now()) return kept.data
-    let reading = this.reading.get(key)
+    // (`fresh`: just counted again, so read afresh and waited for, never what was read before.)
+    if (!fresh && kept && this.now() - kept.at < FRESH && kept.at <= this.now()) return kept.data
+    let reading = fresh ? undefined : this.reading.get(key)
     if (!reading) {
       reading = read().then(data => {
         if (data && data.state !== "loading") this.keep(key, data)
         return data
-      }).finally(() => this.reading.delete(key))
+      }).finally(() => { if (this.reading.get(key) === reading) this.reading.delete(key) })
       this.reading.set(key, reading)
     }
-    if (!kept) return reading
+    if (!kept || fresh) return reading
     reading.catch(() => {})
     return { ...kept.data, asOf: kept.at }
   }

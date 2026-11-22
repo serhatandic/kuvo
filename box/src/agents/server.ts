@@ -37,7 +37,8 @@ import { groupRoutes } from "./groups/routes"
 import type { GroupRunner } from "./groups/runner"
 import type { GroupStore } from "./groups/store"
 import { shell, shellOutput, shells, stopShell } from "./shells"
-import type { Integration, Model } from "./wire"
+import type { Integration, Model, Session } from "./wire"
+import { summarizeAt } from "../shared/context"
 
 export interface Context {
   roster: Roster
@@ -204,6 +205,14 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
       ? [{ type: "agent", label: account.label, method: "oauth", ...(account.what && account.label ? { what: true as const } : {}), status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }]
       : [],
   }
+}
+
+/** A session as the app reads it: its context with where it's summarized by itself (PROTOCOL.md, "Session context"). */
+export function withSummarizeAt(session: Session): Session {
+  const context = session.context
+  if (!context) return session
+  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window)
+  return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } }
 }
 
 function page<T extends { id: string }>(items: T[], url: URL): { data: T[]; cursor: { next?: string; previous?: string } } {
@@ -465,7 +474,7 @@ export function handler(context: Context, transferring?: () => boolean) {
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
         const id = a
         if (!b) {
-          if (method === "GET") return json({ data: sessions.get(id) })
+          if (method === "GET") return json({ data: withSummarizeAt(sessions.get(id)) })
           if (method === "PATCH") {
             sessions.update(id, await body())
             return json({ data: sessions.get(id) })

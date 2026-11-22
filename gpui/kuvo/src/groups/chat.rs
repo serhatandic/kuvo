@@ -436,7 +436,13 @@ impl GroupChatView {
     // MARK: Selecting
 
     fn units(&self) -> Vec<(SharedString, Vec<selection::Unit>)> {
-        self.rows.iter().map(|row| (SharedString::from(row.key().to_owned()), row_units(row, &self.open))).collect()
+        let items = self.chat_references.items();
+        self.rows.iter().map(|row| (SharedString::from(row.key().to_owned()), row_units(row, &self.open, items.as_deref()))).collect()
+    }
+
+    /// How its rows draw what they show: the Work Queue items they name, as chips.
+    fn looks(&self) -> crate::pictures::Looks<'static> {
+        crate::pictures::Looks { items: self.chat_references.items(), ..crate::pictures::Looks::none() }
     }
 
     /// What's selected, as it's copied.
@@ -448,7 +454,9 @@ impl GroupChatView {
             order.cmp(&at, &selection::Spot::row_start(start.unit.row.clone())) != Some(std::cmp::Ordering::Less)
                 && order.cmp(&at, &selection::Spot::row_start(end.unit.row.clone())) != Some(std::cmp::Ordering::Greater)
         });
-        selection::copy_text(&order, rows.map(|row| (SharedString::from(row.key().to_owned()), row_units(row, &self.open))), &start, &end)
+        let items = self.chat_references.items();
+        let text = selection::copy_text(&order, rows.map(|row| (SharedString::from(row.key().to_owned()), row_units(row, &self.open, items.as_deref()))), &start, &end);
+        kuvo_ui::markdown::plain_items(&text)
     }
 
     /// Selects from the first `from` to the end of the first `to` after it (for shots and tests).
@@ -464,7 +472,7 @@ impl GroupChatView {
     }
 
     fn select_all(&mut self, _: &selection::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        let rows: Vec<&str> = self.rows.iter().filter(|row| !row_units(row, &self.open).is_empty()).map(Row::key).collect();
+        let rows: Vec<&str> = self.rows.iter().filter(|row| !row_units(row, &self.open, None).is_empty()).map(Row::key).collect();
         if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
             self.selection.select_all(first, last);
             cx.notify();
@@ -514,9 +522,9 @@ pub fn drawn(said: &GroupMessage) -> Message {
     }
 }
 
-fn row_units(row: &Row, open: &HashSet<Fold>) -> Vec<selection::Unit> {
+fn row_units(row: &Row, open: &HashSet<Fold>, items: Option<&crate::queue::chat_references::Items>) -> Vec<selection::Unit> {
     match row {
-        Row::Message { said, drawn } if said.author.is_some() || said.kind == "message" => entries::message_units(drawn, open),
+        Row::Message { said, drawn } if said.author.is_some() || said.kind == "message" => entries::message_units(drawn, open, items),
         _ => Vec::new(),
     }
 }
@@ -559,7 +567,7 @@ impl GroupChatView {
         let body: AnyElement = match row {
             Row::Talking => self.talking(cx),
             Row::Message { said, drawn } => match (&said.author, said.kind.as_str()) {
-                (None, "message") => entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &crate::pictures::Looks::none(), cx),
+                (None, "message") => entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &self.looks(), cx),
                 (None, "meeting") => div()
                     .flex()
                     .justify_center()
@@ -583,8 +591,6 @@ impl GroupChatView {
                 (Some(bot), _) => self.bot_message(ix, bot, said, drawn, view, toggle, cx),
             },
         };
-        let references = self.chat_references.chips(row.reference_text(), &self.client, self.live, cx);
-        let body = if let Some(references) = references { div().child(body).child(references).into_any_element() } else { body };
         entries::frame(ix, row.key(), body, matches!(row, Row::Talking))
     }
 
@@ -638,7 +644,7 @@ impl GroupChatView {
             let view = view.clone();
             head = head.cursor_pointer().on_click(move |_, _, cx| view.update(cx, |_, cx| cx.emit(ChatEvent::BotChat { bot: id.clone(), session: session.clone() })));
         }
-        let body = entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &crate::pictures::Looks::none(), cx);
+        let body = entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &self.looks(), cx);
         div()
             .flex()
             .flex_col()
@@ -871,7 +877,7 @@ impl GroupChatView {
 
 impl Render for GroupChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.chat_references.refresh(self.rows.iter().rev().flat_map(Row::reference_text), &self.id, &self.client, self.live, self.list.clone(), cx);
+        self.chat_references.refresh(self.rows.iter().rev().flat_map(Row::reference_text).map(std::borrow::Cow::Borrowed), &self.id, &self.client, self.live, self.list.clone(), cx);
         let c = cx.theme().colors.clone();
         let view = cx.entity();
         let body: AnyElement = if !self.read {
