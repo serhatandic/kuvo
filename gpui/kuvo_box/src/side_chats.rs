@@ -10,7 +10,7 @@ use crate::error::{Error, Refusal, Result};
 use crate::follow::{Followed, follow_lines};
 use crate::paths;
 use crate::transport::Request;
-use crate::{BoxClient, Follow, Timing};
+use crate::{BoxClient, Follow};
 
 pub const SIDE_CHATS: &str = "btw.threads.events";
 
@@ -83,9 +83,9 @@ impl BoxClient {
     }
 
     /// `session`'s side threads, now and as each question is asked and answered.
-    pub fn follow_side_threads(&self, session: &str, timing: Timing) -> Follow<Followed<SideThreads>> {
+    pub fn follow_side_threads(&self, session: &str) -> Follow<Followed<SideThreads>> {
         let once = format!("{}/threads", route(session));
-        follow_lines(self, "kuvo-box side threads", format!("{once}/events"), once, timing)
+        follow_lines(self, format!("{once}/events"))
     }
 
     /// Asks `question` aside about `session`: a follow-up in `thread`, or a new side thread. Answers

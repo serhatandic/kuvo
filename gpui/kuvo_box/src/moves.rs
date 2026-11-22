@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    BoxClient, Result, Timing,
+    BoxClient, Result,
     accounts::Confirm,
     follow::{Follow, Followed, follow_lines},
     paths::query_value,
@@ -152,14 +152,8 @@ impl BoxClient {
         self.get("kuvo/moves")
     }
 
-    pub fn follow_moves(&self, timing: Timing) -> Follow<Followed<Moves>> {
-        follow_lines(
-            self,
-            "kuvo-box moves",
-            "kuvo/moves/events".into(),
-            "kuvo/moves".into(),
-            timing,
-        )
+    pub fn follow_moves(&self) -> Follow<Followed<Moves>> {
+        follow_lines(self, "kuvo/moves/events".into())
     }
 }
 

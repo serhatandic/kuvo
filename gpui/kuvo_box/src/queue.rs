@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, follow_lines};
 use crate::parts::File;
 use crate::paths;
 use crate::transport::Request;
@@ -95,8 +95,8 @@ impl BoxClient {
     }
 
     /// Follows `session`'s queue: now, and again as it changes.
-    pub fn follow_queue(&self, session: &str, timing: Timing) -> Follow<Followed<Queue>> {
-        follow_lines(self, "kuvo-box queue", format!("{}/events", route(session)), format!("{}?items=1", route(session)), timing)
+    pub fn follow_queue(&self, session: &str) -> Follow<Followed<Queue>> {
+        follow_lines(self, format!("{}/events", route(session)))
     }
 
     /// Steer: `item` to the agent at its next step, the run going on (`queue.steer`; its box says
@@ -116,18 +116,27 @@ impl BoxClient {
 
     /// Takes `item` out of the queue (wherever it waits), with what it was.
     pub fn remove_queued(&self, session: &str, item: &str) -> Result<Option<Removed>> {
-        self.remove_queued_with_receipt(session, item, None)
+        self.remove_queued_with_receipt(session, item, None, false)
     }
 
     /// An operation ID lets a subsequent retry recover its own removal across reconnects.
-    pub fn remove_queued_with_receipt(&self, session: &str, item: &str, receipt: Option<&str>) -> Result<Option<Removed>> {
+    /// `arriving`: this client still shows it on its way (sent, not listed yet). The box takes it
+    /// out as it arrives (`409` meanwhile, asked again), or says it went to the agent already.
+    pub fn remove_queued_with_receipt(&self, session: &str, item: &str, receipt: Option<&str>, arriving: bool) -> Result<Option<Removed>> {
         #[derive(Deserialize)]
         struct Answer {
             removed: Option<Removed>,
         }
         let mut path = format!("{}/{}", route(session), paths::segment(item));
+        let mut query = Vec::new();
         if let Some(receipt) = receipt {
-            path.push_str(&format!("?receipt={}", paths::query_value(receipt)));
+            query.push(format!("receipt={}", paths::query_value(receipt)));
+        }
+        if arriving {
+            query.push("arriving=1".to_owned());
+        }
+        if !query.is_empty() {
+            path.push_str(&format!("?{}", query.join("&")));
         }
         let request = Request::delete(path);
         let read = || {

@@ -2999,6 +2999,9 @@ impl Transport for StandIn {
         if self.state().down {
             return Err(kuvo_box::Error::Unreachable("ssh: connect to host 192.168.1.101 port 22: No route to host".into()));
         }
+        if let Some(answer) = kuvo_box::line::by_routes::send(request) {
+            return answer;
+        }
         self.route(request)
     }
 
@@ -3051,6 +3054,14 @@ impl Transport for StandIn {
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
+        // The one line, carrying the routes below as a box's does.
+        if self.state().down && request.route() == "kuvo/line" {
+            return Err(kuvo_box::Error::Unreachable("The computer is away.".into()));
+        }
+        let me = self.clone();
+        if let Some(line) = kuvo_box::line::by_routes::open(request, hold, Arc::new(move |request: &Request, hold: &dyn Fn(Closer) -> bool| me.open(request, hold))) {
+            return line;
+        }
         let route = request.route();
         // A conversation's asks or queue, followed: as it is now, then a line as it changes.
         let parts: Vec<&str> = route.split('/').collect();

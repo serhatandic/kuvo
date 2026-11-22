@@ -527,7 +527,7 @@ impl Host {
                 }
             };
             let headers = |content_type: Option<String>| json!({ "content-type": content_type.unwrap_or_else(|| "application/json".into()) });
-            let follows = request.route().ends_with("/events") || request.route() == "api/event";
+            let follows = request.route().ends_with("/events") || matches!(request.route(), "api/event" | "kuvo/line");
             if !follows {
                 match host.inner.served.send(&request) {
                     Ok(response) => reply(json!({ "t": "res", "id": id, "s": response.status, "h": headers(response.content_type) }), &response.body, true),

@@ -7,7 +7,7 @@ use gpui::{
     Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::{
-    BoxClient, Follow, Timing,
+    BoxClient, Follow,
     areas::Bot,
     follow::Followed,
     wakes::{Cancel, Schedule},
@@ -172,7 +172,7 @@ impl WakeSchedule {
             let follow = view
                 .source
                 .client
-                .follow_wake_schedule(&view.source.session, Timing::default());
+                .follow_wake_schedule(&view.source.session);
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {

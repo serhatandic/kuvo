@@ -33,6 +33,7 @@ pub mod library;
 pub mod image_names;
 pub mod info;
 pub mod install;
+pub mod line;
 pub mod lines;
 pub mod link;
 pub mod mentions;

@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::areas::Look;
 use crate::client::BoxClient;
 use crate::error::Result;
-use crate::follow::{Follow, Followed, Timing, follow_lines, follow_lines_filled};
+use crate::follow::{Follow, Followed, follow_lines, follow_lines_filled};
 use crate::paths;
 use crate::transport::Request;
 
@@ -256,8 +256,8 @@ impl BoxClient {
     }
 
     /// Follows the chats that live on this box: the list now, and again as it changes.
-    pub fn follow_groups(&self, timing: Timing) -> Follow<Followed<Groups>> {
-        follow_lines(self, "kuvo-box groups", "kuvo/groups/events".into(), "kuvo/groups".into(), timing)
+    pub fn follow_groups(&self) -> Follow<Followed<Groups>> {
+        follow_lines(self, "kuvo/groups/events".into())
     }
 
     /// One chat as it is now.
@@ -267,9 +267,9 @@ impl BoxClient {
 
     /// Follows one chat: as it is now, then again as it changes (a line may leave its messages
     /// out: they're as they were).
-    pub fn follow_group(&self, group: &str, timing: Timing) -> Follow<Followed<Chat>> {
+    pub fn follow_group(&self, group: &str) -> Follow<Followed<Chat>> {
         let mut last = None;
-        follow_lines_filled(self, "kuvo-box group", route(group, "/events"), route(group, ""), timing, false, move |chat: Chat| chat.filled(&mut last))
+        follow_lines_filled(self, route(group, "/events"), move |chat: Chat| chat.filled(&mut last))
     }
 
     /// Who can be in a chat made on this box: its bots, the first made first, then those of your

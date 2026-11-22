@@ -202,7 +202,9 @@ receipt; a pending, interrupted or no-longer-valid pairing carries `waiting` and
 Transport messages then go both ways, in order (the relay keeps the order of one
 connection). Any message that doesn't decrypt ends the session.
 
-**Historical reach behavior** (#443, `Reach` in the retired KuvoClient). A computer under
+**Historical reach behavior** (#443, `Reach` in the retired KuvoClient). With the line (below,
+"The line"), its silence alone says a computer isn't connected: 30 s without a line or a beat.
+What follows is for a computer with nothing followed on it. A computer under
 a heavy load answers late and drops its link now and then, and is still there. Its event feed
 down, a client says nothing for 10 s (at most that what's on screen is being read again); then it
 checks (`kuvo/info`, or the engine's `api/info` through a tunnel) and only a check with no answer
@@ -211,6 +213,22 @@ keeps it in reach, checked again 10 s later while the feed stays down. A request
 while the computer is there (the phone's waits up to 10 minutes with nothing back; the link's own
 checks fail what's on a session that's gone), and a read that fails because the link went is read
 again, not shown as a failure.
+
+### The line
+
+Feature `line`. A client opens one stream to each box, and everything it follows there comes on it (docs/architecture/message-delivery.md, rule 2).
+
+- `GET kuvo/line?watch=<topics>[&line=<id>&after=<n>][&once=1]` opens it. `watch` is base64url JSON, `{name: route}`. Each route is one the box already follows: a list's `…/events` (one JSON state a line) or a conversation's events (`api/event`, `kuvo/agents/api/event`). The box runs each topic through its own routes, as the asker of the line, so a topic is allowed exactly what its route is.
+- `POST kuvo/line/watch` `{line, watch}` changes the topics of an open line. It answers `{line}` at once. A `404 {fresh: true}` means the box doesn't know the line, so open it again with every topic.
+- **What comes on it**, one JSON object a line:
+  - first `{hello: {line, fresh, beat}}`;
+  - then `{t, n, d}`: what topic `t` said. `d` is a state, or one event;
+  - `{t, n, refused: {status, message, said?}}`: the box turned the topic down. After a 4xx the topic ends. After a 5xx the box tries it again by itself;
+  - `{t, n, gap: true}`: an event topic's source dropped, went quiet for a minute, or wasn't ready. Read what it's of again;
+  - `{beat}` every `beat` ms while it's quiet. A beat has no `n`.
+- **Resuming.** `n` counts each line on the line. Reopen with the same `line` and the last `n` you got as `after`. If the box still keeps them (4 MB, for 2 minutes after the stream drops, with its topics still running), it sends every line after `after`, then the live ones, with `fresh: false`. Otherwise it answers `fresh: true` with a new id, and each topic starts over from its state now. A client takes that as a snapshot, and reads again what an event topic is of.
+- **Once.** A box reached in a way that can't keep a stream (a one-shot `box route`) is asked with `once=1`. It answers the hello and each topic's state now, then ends. Ask again every few seconds.
+- **Offline.** A client counts a computer as away only once its line has been silent for 30 s. With nothing heard for 15 s, it reopens the line. A slow or failed request never makes a computer away, and a dropped stream is never shown: each view keeps the last state it received.
 
 ## Mail
 
