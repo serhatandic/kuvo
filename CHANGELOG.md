@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A conversation on another computer no longer freezes on an old "Working…" step: its steps, replies, asks and queue keep arriving as they happen, through a restart of that computer or a slow connection, and what you missed while the connection was down fills in once it's back. A computer shows as offline only after it has been silent for 30 seconds, not when one answer is slow, and what it asks you stays on screen while it restarts.
+- A message waiting over the composer always has its actions, even while it's still on its way: Remove and Edit take it out as soon as it arrives, or say it was already sent.
 - Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
 - Messages waiting in a conversation's queue are no longer lost or paused when Kuvo Code's coding agents restart (an update, a restart): they go once, in order, when the agent is back.
 

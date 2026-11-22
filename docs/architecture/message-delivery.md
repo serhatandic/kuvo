@@ -82,4 +82,13 @@ Rule 2, for one computer at a time. The merged lists come later and ride the sam
 - "What it asks you couldn't be read" and "The queue couldn't be read" for a dropped connection.
 - A computer's `Away` coming from one failed `kuvo/info`.
 
-**Next, on the same line.** A box-side snapshot of the open conversation, so the client stops reading its page after each step. Then the Work Queue's own events, which replace its request/response reads.
+**Also built.**
+
+- An event topic whose source says nothing at all for a minute is opened again by the box, with a gap. A stalled engine stream never freezes a conversation.
+- A queued message still on its way keeps Steer, Send Now, Edit and Remove. `DELETE …/queue/<id>?arriving=1` takes it out as it arrives (`409`, asked again), or says it went to the agent already (`404 delivered`).
+
+**Next, on the same line.**
+
+- A box-side snapshot of the open conversation, so the client stops reading its page after each step.
+- The Work Queue's own events, which replace its request/response reads.
+- Steer and Send Now settled by the box for a message still on its way.
