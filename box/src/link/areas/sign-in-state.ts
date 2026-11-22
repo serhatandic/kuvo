@@ -143,7 +143,10 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
         if (agents && meta.unchecked === true && !inUse!.who) return "Couldn’t check just now";
         // ("as" someone, "with" something: an agent's own name for a key or a kind of account.)
         const first = inUse!.signedInAs ? `Signed in ${inUse!.what ? "with" : "as"} ${inUse!.who}` : inUse!.line;
-        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        // What a coding agent says it needs while it still runs ("Sign in again to update Antigravity.").
+        const needs = agents ? text(meta.message).replace(/\.$/, "") : "";
+        const line = said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        return needs ? `${line} · ${needs}` : line;
       }
       case "signedOut":
         if (agents) return "Not signed in";

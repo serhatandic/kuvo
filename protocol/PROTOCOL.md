@@ -4975,7 +4975,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     doesn't have; `503 {message}` while it can't be asked, or when it has no way to close a folder,
     which only a restart does then. Every box with `accounts.refresh`.
   - `GET kuvo/accounts/found` → `{agents, opencode, shell, connected}`: what the computer already has, for
-    the first launch's Bring your subscriptions. `agents`: the coding agents' programs (`{id, name,
+    Kuvo Code 0.7's first launch (1.0's first run reads `kuvo/sign-in/accounts`, where a coding
+    agent's own sign-in is its first account, signed in already, and nothing is brought over). `agents`: the coding agents' programs (`{id, name,
     installed, signedIn, label?}`, `label` who it's signed in as). `opencode`: an opencode used
     apart from Kuvo Code (its `auth.json`), each `{id, integrationID, name, kind, connected}`: a
     `key` can come over, a `signIn` is done again here (both apps renewing one refresh token would

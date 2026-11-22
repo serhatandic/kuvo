@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 6b00658ed29d
+// Kuvo folder layout 23 55c02506fafb
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6b00658ed29d";
+var BRIDGE_VERSION = "55c02506fafb";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -17857,7 +17857,9 @@ function accountState(account, offered, { agents = false, ended, computer }) {
         if (agents && meta.unchecked === true && !inUse.who)
           return "Couldn’t check just now";
         const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
-        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        const needs = agents ? text(meta.message).replace(/\.$/, "") : "";
+        const line = said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        return needs ? `${line} · ${needs}` : line;
       }
       case "signedOut":
         if (agents)

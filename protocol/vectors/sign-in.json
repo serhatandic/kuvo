@@ -4165,6 +4165,89 @@
      "line": "Signed in"
     }
    ]
+  },
+  {
+   "about": "a coding agent still on an earlier sign-in: what it needs, after who it's signed in with, and Sign In Again",
+   "agents": true,
+   "account": {
+    "id": "antigravity",
+    "name": "Antigravity",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "oauth-personal",
+      "label": "Sign in with Google"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "Google account",
+      "method": "oauth",
+      "what": true,
+      "status": {
+       "status": "connected",
+       "message": "Signed in as Google account"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "antigravity",
+     "accountID": "default",
+     "installed": true,
+     "message": "Sign in again to update Antigravity.",
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": true,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true,
+     "addedAccounts": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "oauth-personal",
+      "label": "Sign in with Google"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in with Google"
+   },
+   "plan": true,
+   "state": "signedIn",
+   "line": "Signed in with Google account · Sign in again to update Antigravity",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Antigravity"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Antigravity"
+    },
+    {
+     "id": "signOut",
+     "label": "Sign Out",
+     "confirm": {
+      "title": "Sign out of Antigravity?",
+      "message": "Antigravity is signed out in Kuvo Code on Studio, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, Antigravity stays as it is.",
+      "label": "Sign Out"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "Google account"
+    }
+   ]
   }
  ]
 }
