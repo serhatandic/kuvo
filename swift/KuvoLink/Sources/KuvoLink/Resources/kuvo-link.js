@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 0df7585fb7f8
+// Kuvo folder layout 23 4d2a87465e73
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0df7585fb7f8";
+var BRIDGE_VERSION = "4d2a87465e73";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -67555,6 +67555,9 @@ async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)
     const ran = typeof kuvo.ranOn === "string" && kuvo.ranOn.trim() ? kuvo.ranOn.trim() : null;
     if (ran)
       return { model: { providerID: own?.providerID ?? "", id: ran }, name: modelName(ran).name, runs: true, fixed: true };
+    const requested = typeof kuvo.requestedModel === "string" ? kuvo.requestedModel.trim() : "";
+    if (requested)
+      return { model: { providerID: own?.providerID ?? "", id: requested }, name: `${modelName(requested).name} (requested)`, runs: true, fixed: true };
     if (!own)
       return;
     const state = stateOf(own, { engine: null, bridge: await reads.bridge() });
@@ -72447,11 +72450,13 @@ function listedWork(data) {
   if (bot || data.parentID && !isHiddenRun(data)) {
     const model = data.model;
     const ranOn = data.metadata?.kuvo?.ranOn;
+    const requestedModel = data.metadata?.kuvo?.requestedModel;
     row = {
       idle: data.time?.idle,
       outcome: data.outcome,
       ...model?.id && model.providerID ? { model: { id: model.id, providerID: model.providerID, ...model.variant ? { variant: model.variant } : {} } } : {},
-      ...data.parentID && typeof ranOn === "string" && ranOn.trim() ? { ranOn: ranOn.trim() } : {}
+      ...data.parentID && typeof ranOn === "string" && ranOn.trim() ? { ranOn: ranOn.trim() } : {},
+      ...data.parentID && typeof requestedModel === "string" && requestedModel.trim() ? { requestedModel: requestedModel.trim() } : {}
     };
     if (bot && starter) {
       const answered = answersOn(data.metadata);
@@ -72519,6 +72524,8 @@ function subagentsOf(session, { file = WORK_BACKGROUND, list = keptList() } = {}
     const work = listed[id]?.work;
     if (work?.ranOn)
       return displayModel(work.ranOn);
+    if (work?.requestedModel)
+      return `${displayModel(work.requestedModel)} (requested)`;
     return work?.model ? lastName(work.model) ?? displayModel(work.model.id) : undefined;
   };
   const titleOf = (id) => listed[id]?.facts.title?.trim() || "Subagent";
@@ -100874,10 +100881,7 @@ function handedOver(path, bots) {
       return false;
   }
   const parts = path.split(sep9);
-  const skills = parts.lastIndexOf("skills");
-  if (skills > 0 && [".opencode", ".claude", "opencode"].includes(parts[skills - 1]))
-    return false;
-  return true;
+  return !parts.some((part, index) => part === "skills" && skillFolders2.has(parts[index - 1]));
 }
 function titleOf3(path) {
   let text = "";
@@ -101039,11 +101043,12 @@ class LibraryStore {
     }
   }
 }
-var images2, documents2, pages2, never, stamp6 = (date) => date.toISOString();
+var skillFolders2, images2, documents2, pages2, never, stamp6 = (date) => date.toISOString();
 var init_store6 = __esm(() => {
   init_kinds();
   init_policy3();
   init_library_format();
+  skillFolders2 = new Set([".opencode", ".claude", "opencode", ".agents", ".codex", ".cursor", ".gemini", ".grok"]);
   images2 = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "svg", "bmp", "tiff", "tif", "avif"]);
   documents2 = new Set(["pdf", "doc", "docx", "rtf", "pages", "odt", "md", "markdown", "txt"]);
   pages2 = new Set(["html", "htm"]);
@@ -102278,7 +102283,7 @@ async function active(target) {
   const sessions = await call(target, "GET", "/api/session/active", undefined, AbortSignal.timeout(3000));
   return Array.isArray(sessions) ? sessions.filter((id) => typeof id === "string") : isObject(sessions) ? Object.keys(sessions) : [];
 }
-async function rememberCutTurns(root, engine) {
+async function rememberCutTurns(root, engine = true) {
   if (fs240.existsSync(record3(root)))
     await continueCutTurns(root);
   const turns = savedTurns(root);
@@ -102389,6 +102394,7 @@ __export(exports_update, {
   receiveRelease: () => receiveRelease,
   releaseDrainDeferred: () => releaseDrainDeferred,
   releaseRound: () => releaseRound,
+  releaseSwitchQuiet: () => releaseSwitchQuiet,
   requestUpdateNow: () => requestUpdateNow,
   roomForData: () => roomForData,
   startUpdate: () => startUpdate,
@@ -102565,14 +102571,17 @@ async function nativeEngineWorking(signal) {
   const active = await call(engine, "GET", "/api/session/active", undefined, signal);
   return Array.isArray(active) ? active.length !== 0 : !isObject(active) || Object.keys(active).length !== 0;
 }
+async function releaseSwitchQuiet(keepEngine) {
+  const signal = AbortSignal.timeout(3000);
+  const busy = await Promise.all([
+    bridgeEngineWorking(signal).catch(() => true),
+    keepEngine ? false : nativeEngineWorking(signal).catch(() => true)
+  ]);
+  return !busy.some(Boolean);
+}
 async function drainEngineTurns(keepEngine, deadline, clock) {
   while (true) {
-    const signal = AbortSignal.timeout(3000);
-    const busy = await Promise.all([
-      bridgeEngineWorking(signal).catch(() => true),
-      keepEngine ? false : nativeEngineWorking(signal).catch(() => true)
-    ]);
-    if (!busy.some(Boolean))
+    if (await releaseSwitchQuiet(keepEngine))
       return true;
     const left = deadline - clock();
     if (left <= 0)
@@ -102741,7 +102750,7 @@ async function update({
       await rememberCutTurns(K, !keepEngine);
       writeDurablePrivate(previousBin(K), previous + `
 `, K);
-      const changed = ran2("sh", [keeper, "stop", "--switch", target, ...keepEngine ? ["keep"] : []], { HOME: selectedHome });
+      const changed = ran2("sh", [keeper, "stop", "--switch", target, keepEngine ? "keep" : "restart"], { HOME: selectedHome });
       if (activeBin(K) !== target) {
         fs241.rmSync(previousBin(K), { force: true });
         throw new Error(changed.output || "Kuvo couldn’t stop its workers for the release.");
@@ -129704,7 +129713,7 @@ if (!isMainThread3 && process.argv.includes("--insights-db-worker")) {
     }
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode) || mode === "box" && ["labels", "adopt", "seed"].includes(argument) || mode === "update")
       checkFolderVersion(K);
-    else if (mode !== "selftest" && !updateProbe && !useSshPipe)
+    else if (mode !== "selftest" && mode !== "release-switch-quiet" && !updateProbe && !useSshPipe)
       upgradeLinkFolder();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -129745,6 +129754,9 @@ if (!isMainThread3 && process.argv.includes("--insights-db-worker")) {
         }
       }
     }
+  } else if (mode === "release-switch-quiet") {
+    if (!await releaseSwitchQuiet(argument === "keep"))
+      process.exitCode = 1;
   } else if (mode === "continue-update-turns") {
     await finishReleaseHold();
     await continueCutTurns(K);

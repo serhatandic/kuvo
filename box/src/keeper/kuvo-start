@@ -451,7 +451,8 @@ keep_engine_for_switch() {
     [ "$running" = "$after" ] || return 1
   fi
   [ -n "$before" ] && [ "$before" = "$after" ] &&
-    cmp -s "$K/bin/kuvo-launch" "$K/$target/kuvo-launch" &&
+    { { [ ! -e "$K/bin/kuvo-launch" ] && [ ! -e "$K/$target/kuvo-launch" ]; } ||
+      cmp -s "$K/bin/kuvo-launch" "$K/$target/kuvo-launch"; } &&
     diff -qr -x kuvo-sandbox.js -x kuvo-defaults.js "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1
 }
 # A release that changes only the client process keeps the other workers too.
@@ -988,7 +989,20 @@ stop)
     old=$(previous)
     target=${3:-}
     valid_bin "$old" && valid_bin "$target" && [ "$old" = "$(bin_target)" ] || exit 1
-    stop_for_switch "$target" "${4:-}" && select_bin "$target" || exit 1
+    mode=${4:-}
+    # The installed updater calls the staged keeper. An updater from before engine draining
+    # supplies no mode and expects a quick answer. Ask the staged box before stopping any worker.
+    if [ -z "$mode" ] && [ -f "$R/update-engine-hold.json" ]; then
+      mode=restart
+      if keep_engine_for_switch "$target"; then mode=keep; fi
+      if ! KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+        "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/$target/kuvo-link.js" release-switch-quiet "$mode" </dev/null; then
+        rm -f "$R/previous"
+        echo "Kuvo couldn’t stop its workers for the release. Let the running engine turns finish, then try again." >&2
+        exit 1
+      fi
+    fi
+    stop_for_switch "$target" "$mode" && select_bin "$target" || exit 1
     unlock
     exec sh "$K/bin/kuvo-start" start --switch
   fi

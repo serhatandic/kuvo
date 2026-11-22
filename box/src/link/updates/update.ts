@@ -288,14 +288,18 @@ async function nativeEngineWorking(signal: AbortSignal): Promise<boolean> {
 }
 
 /** The release hold was published before probing. Unknown work defers the switch too. */
+export async function releaseSwitchQuiet(keepEngine: boolean): Promise<boolean> {
+  const signal = AbortSignal.timeout(3000);
+  const busy = await Promise.all([
+    bridgeEngineWorking(signal).catch(() => true),
+    keepEngine ? false : nativeEngineWorking(signal).catch(() => true),
+  ]);
+  return !busy.some(Boolean);
+}
+
 async function drainEngineTurns(keepEngine: boolean, deadline: number, clock: () => number): Promise<boolean> {
   while (true) {
-    const signal = AbortSignal.timeout(3000);
-    const busy = await Promise.all([
-      bridgeEngineWorking(signal).catch(() => true),
-      keepEngine ? false : nativeEngineWorking(signal).catch(() => true),
-    ]);
-    if (!busy.some(Boolean)) return true;
+    if (await releaseSwitchQuiet(keepEngine)) return true;
     const left = deadline - clock();
     if (left <= 0) return false;
     await sleep(Math.min(1000, left));
@@ -497,7 +501,7 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
       }
       await rememberCutTurns(K, !keepEngine);
       writeDurablePrivate(previousBin(K), previous + "\n", K);
-      const changed = ran("sh", [keeper, "stop", "--switch", target, ...(keepEngine ? ["keep"] : [])], { HOME: selectedHome });
+      const changed = ran("sh", [keeper, "stop", "--switch", target, keepEngine ? "keep" : "restart"], { HOME: selectedHome });
       if (activeBin(K) !== target) {
         fs.rmSync(previousBin(K), { force: true });
         throw new Error(changed.output || "Kuvo couldn’t stop its workers for the release.");

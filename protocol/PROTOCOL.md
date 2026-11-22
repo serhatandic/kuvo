@@ -3655,7 +3655,9 @@ launcher and installed plugins let the engine keep its process and running turns
 restart, the box lets running engine turns finish. It also waits for bridge conversations using
 engine models to finish before stopping their bridge, even if the engine stays up. New engine
 messages wait during the switch and its startup check. If work is still running after about five
-minutes, the attempt defers and lets waiting work go before trying again. After a restart, the keeper uses
+minutes, the attempt defers and lets waiting work go before trying again. If the installed
+updater predates this wait, the staged keeper checks for work before stopping anything and
+allows Try Again if it finds a turn still running. After a restart, the keeper uses
 `run/previous` to restore the previous target if the selected release can't start and answer within
 two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of every holder, at
 work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in

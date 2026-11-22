@@ -2255,7 +2255,9 @@ class EngineThread {
           return;
         case "session.execution.failed": {
           const error = data.error ?? { type: "engine", message: "The engine stopped with an error." };
-          finish({ outcome: "failed", error, limit: limit ?? limitOf(error), taken: delivered });
+          const reported = limitOf(error);
+          const reached = reported && limit?.scope === reported.scope ? { ...reported, resetsAt: reported.resetsAt ?? limit.resetsAt } : reported ?? limit;
+          finish({ outcome: "failed", error, limit: reached, taken: delivered });
           return;
         }
       }
@@ -2323,14 +2325,15 @@ class EngineThread {
 function limitOf(error) {
   if (!error)
     return;
-  if (error.type === "provider.quota")
-    return { scope: "provider", message: error.message };
-  if (error.type === "provider.rate-limit")
-    return { scope: "model", message: error.message };
-  return;
+  const scope = error.limit?.scope === "model" || error.limit?.scope === "provider" ? error.limit.scope : ["provider.quota", "provider.budget-limit", "provider.free-limit"].includes(error.type) ? "provider" : ["provider.rate-limit", "provider.model-budget-limit", "limit"].includes(error.type) ? "model" : undefined;
+  if (!scope)
+    return;
+  const resetsAt = Number.isFinite(error.limit?.resetsAt) ? error.limit?.resetsAt : resetsIn(error.message);
+  return { scope, resetsAt, message: error.message };
 }
 var named = (name) => (agent) => agent?.id === name || agent?.name === name, OUTSIDE = "/kuvo-code/an/outside/folder/*", EngineError, outputLimit = 64000;
 var init_engine = __esm(() => {
+  init_limits();
   init_context();
   init_agent();
   init_ids();
@@ -8412,12 +8415,23 @@ class AcpThread {
   async open(input, hooks) {
     const closes = this.closes;
     const opening = ++this.opens;
+    const replaced = () => this.closes !== closes || this.opens !== opening;
+    const cancelled = () => hooks.signal.aborted || replaced();
+    const stopped = () => {
+      if (replaced())
+        throw new Error(`${this.name} stopped.`);
+      return;
+    };
+    if (hooks.signal.aborted)
+      return;
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks);
     const subagents = await this.flavor.subagents?.(this.session.location.directory);
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...subagents ? { subagents } : {}, ...this.flavor.whole && fenceRules() ? { whole: true } : {} };
     const fence = this.flavor.whole && fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : "";
     const computer = await computerServers(this.session.location.directory);
     const servers = await serversKey(this.session.id, computer);
+    if (cancelled())
+      return stopped();
     const launchOptions = this.flavor.launchOptions?.(input.model.id);
     const key = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers });
     this.computer = computer;
@@ -8429,7 +8443,13 @@ class AcpThread {
       this.cut.push(...this.taskWork());
     this.drop();
     const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
+    if (cancelled())
+      return stopped();
     const launch = await this.flavor.command(mode);
+    if (cancelled()) {
+      launch.onExit?.();
+      return stopped();
+    }
     if (launchOptions)
       launch.env = { ...launch.env, ...launchOptions };
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents]);
@@ -8450,12 +8470,12 @@ class AcpThread {
         console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
         return;
       }) : undefined;
-      if (this.closes !== closes || this.opens !== opening) {
+      if (cancelled()) {
         held?.stop();
         await held?.exited;
         launch.onExit?.();
         ended?.();
-        throw new Error(`${this.name} stopped.`);
+        return stopped();
       }
     } finally {
       if (holdIn && !whole)
@@ -8640,6 +8660,8 @@ class AcpThread {
   async renew(active, input) {
     try {
       const rpc = await this.open(input, active.hooks);
+      if (!rpc)
+        return this.end(active, "interrupted");
       active.rpc = rpc;
       if (active.ended)
         return;
@@ -8661,7 +8683,8 @@ class AcpThread {
     }
   }
   async prepare(input, hooks) {
-    await this.open(input, hooks);
+    if (!await this.open(input, hooks))
+      return;
     const fresh = this.startedOver;
     this.startedOver = false;
     return { fresh };
@@ -8759,6 +8782,8 @@ class AcpThread {
       return this.adopt(turn, hooks);
     this.own = undefined;
     const rpc = await this.open(input, hooks);
+    if (!rpc)
+      return { outcome: "interrupted" };
     await loadKuvoTools();
     if (hooks.signal.aborted)
       return { outcome: "interrupted" };
@@ -10774,6 +10799,7 @@ function antigravitySubagents(args) {
   if (!Array.isArray(list))
     return [];
   return list.map((subagent) => ({
+    ...typeof subagent?.Model === "string" && subagent.Model.trim() ? { requestedModel: subagent.Model.trim() } : {},
     title: String(subagent?.Role ?? subagent?.TypeName ?? "A subagent's task"),
     prompt: typeof subagent?.Prompt === "string" ? subagent.Prompt : undefined,
     agent: typeof subagent?.TypeName === "string" && subagent.TypeName !== "self" ? subagent.TypeName : undefined
@@ -13138,6 +13164,8 @@ class ClaudeThread {
     this.subagents = await subagentsFor(this.session.location.directory);
     const subagents = claudeSubagents(this.subagents);
     const subagentsKey = JSON.stringify(subagents);
+    if (hooks.signal.aborted)
+      return { outcome: "interrupted" };
     const usage = this.usageGeneration;
     const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.();
     if (this.query && (this.opened?.compaction !== compaction || signInChanged || !this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
@@ -13147,6 +13175,8 @@ class ClaudeThread {
     const computer = await computerServers(this.session.location.directory);
     const serversNow = await serversKey(this.session.id, computer);
     const servers = relayedServers(this.session.id, this, this.session.location.directory, computer);
+    if (hooks.signal.aborted)
+      return { outcome: "interrupted" };
     const opening = !this.query;
     if (opening) {
       this.open(sdk, modelID, effort, input.plan, append, hooks, skills, subagents);
@@ -14254,9 +14284,10 @@ ${input.text}` } : input, this.copies());
     }
     const text = !succeeded && typeof result.result === "string" ? result.result : "";
     const reached = /usage limit reached\|?(\d+)?/i.exec(text);
-    if (!succeeded && !active.limit && (reached || result.api_error_status === 429)) {
+    if (!succeeded && (reached || result.api_error_status === 429)) {
       const resetsAt = reached?.[1] ? Number(reached[1]) * 1000 : undefined;
-      active.limit = { scope: "provider", resetsAt };
+      active.limit ??= { scope: "provider" };
+      active.limit.resetsAt ??= resetsAt;
       active.problem ??= "You've reached your Claude usage limit for now.";
     }
     if (active.limit && !active.stopping) {
@@ -15471,7 +15502,14 @@ class CodexAgent {
       const snapshot = params?.rateLimits;
       const identity = this.chatGPTAccount();
       if (snapshot && from && this.signedInAs.get(from) === identity) {
-        this.rateLimits.set(snapshot.limitId ?? "codex", snapshot);
+        const id = snapshot.limitId ?? "codex";
+        const previous = this.rateLimits.get(id);
+        this.rateLimits.set(id, {
+          ...snapshot,
+          normalModelSlug: snapshot.normalModelSlug ?? previous?.normalModelSlug,
+          primary: snapshot.primary ?? previous?.primary,
+          secondary: snapshot.secondary ?? previous?.secondary
+        });
         if (snapshot.planType && snapshot.planType !== "unknown")
           this.notePlan(snapshot.planType, identity);
         for (const window of codexWindows(snapshot))
@@ -16869,13 +16907,21 @@ ${said.map((each) => each.text).join(`
   }
   spawned(main, item) {
     const threadID = item.agentThreadId;
-    if (typeof threadID !== "string" || main.subagents.has(threadID))
+    if (typeof threadID !== "string")
       return;
+    const existing = main.subagents.get(threadID);
+    if (existing) {
+      if (typeof item.model === "string")
+        existing.turn.ranOn(item.model);
+      return;
+    }
     const title = agentTitle(item.agentPath) || "A spawned agent's task";
     main.toolsSinceText = true;
     if (!main.turn.hasTool(item.id))
       main.turn.toolStart(item.id, "subagent", { description: title, background: true });
     const lane = this.linkSubagent(main, item.id, threadID);
+    if (typeof item.model === "string")
+      lane.turn.ranOn(item.model);
     main.turn.toolSucceeded(item.id, "Started.", { sessionID: lane.run.sessionID });
   }
   linkSubagent(active, call, threadID, prompt) {
@@ -18098,6 +18144,7 @@ class CursorThread {
   startedFence;
   worker;
   startingOutside = 0;
+  startup = 0;
   get sandboxed() {
     return Boolean(this.startedFence && this.worker && !this.worker.isClosed);
   }
@@ -18120,7 +18167,8 @@ class CursorThread {
       return;
     if (!onMachine && hooks.approvesAll(false) && !fenceRules())
       await this.owner.prime(sdk, apiKey, this.session.location.directory);
-    await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks);
+    if (!await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks))
+      return;
     const fresh = this.startedOver;
     this.startedOver = false;
     return { fresh };
@@ -18159,6 +18207,8 @@ class CursorThread {
     };
   }
   async ensureAgent(sdk, options, hooks) {
+    if (hooks.signal.aborted)
+      return false;
     const approvesAll = hooks.approvesAll(false);
     const skills = options.local?.dirs?.[0];
     const tools = createHash11("sha256").update(JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])).digest("hex");
@@ -18166,7 +18216,9 @@ class CursorThread {
     if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || this.startedFence !== fence || this.worker?.isClosed)
       this.stop();
     if (this.agent)
-      return;
+      return true;
+    const started = ++this.startup;
+    const stale = () => hooks.signal.aborted || this.startup !== started;
     this.startedApproving = approvesAll;
     this.startedSkills = skills;
     this.startedTools = tools;
@@ -18175,7 +18227,14 @@ class CursorThread {
       if (!fence)
         this.startingOutside++;
       try {
-        this.worker = await this.startWorker(options, Boolean(fence));
+        const worker = await this.startWorker(options, Boolean(fence), stale);
+        if (!worker)
+          return false;
+        if (stale()) {
+          worker.stop();
+          return false;
+        }
+        this.worker = worker;
       } finally {
         if (!fence)
           this.startingOutside--;
@@ -18183,20 +18242,32 @@ class CursorThread {
     }
     const agents = this.worker ?? sdk;
     const id = this.state.cursorAgent;
-    this.agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => {
+    let agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => {
       return;
     })) : undefined;
-    if (!this.agent && id) {
+    const resumed = Boolean(agent);
+    if (!stale())
+      agent ??= await agents.Agent.create(options);
+    if (stale()) {
+      try {
+        agent?.close?.();
+      } catch {}
+      if (this.startup === started)
+        this.stop();
+      return false;
+    }
+    if (id && !resumed) {
       this.startedOver = true;
       delete this.state.cursorInstructions;
       delete this.state.cursorInstructed;
     }
-    this.agent ??= await agents.Agent.create(options);
+    this.agent = agent;
     if (this.state.cursorAgent !== this.agent.agentId) {
       this.state.cursorAgent = this.agent.agentId;
       hooks.saveState();
     }
     this.worker?.note({ agent: this.agent.agentId, started: { approving: approvesAll, skills, tools, fence } });
+    return true;
   }
   async run(input, turn, hooks) {
     if (input.held) {
@@ -18218,14 +18289,17 @@ class CursorThread {
     const selection = await this.owner.effort(input.model);
     const mode = input.plan ? "plan" : "agent";
     const options = await this.options(sdk, input, hooks, apiKey, selection);
+    if (hooks.signal.aborted)
+      return { outcome: "interrupted" };
     if (!onMachine && approvesAll && !fenceRules())
       await this.owner.prime(sdk, apiKey, cwd);
+    if (!await this.ensureAgent(sdk, options, hooks))
+      return { outcome: "interrupted" };
     if (!approvesAll && !input.plan && !this.state.cursorAskNoted) {
       turn.notice("Cursor can't stop to ask you before it acts here: it runs what its sandbox allows and declines the rest. Use Plan mode to have it propose changes first.");
       this.state.cursorAskNoted = true;
       hooks.saveState();
     }
-    await this.ensureAgent(sdk, options, hooks);
     const images = [];
     const byPath = [];
     for (const file of input.files) {
@@ -18434,7 +18508,12 @@ ${text}`;
     if (known)
       return known;
     const args = call.args ?? {};
-    const run = active.hooks.subagent(id, { title: String(args.description ?? "A subagent's task"), prompt: typeof args.prompt === "string" ? args.prompt : undefined, agent: args.subagentType?.kind });
+    const run = active.hooks.subagent(id, {
+      title: String(args.description ?? "A subagent's task"),
+      prompt: typeof args.prompt === "string" ? args.prompt : undefined,
+      agent: args.subagentType?.kind,
+      requestedModel: typeof args.model === "string" ? args.model : undefined
+    });
     const lane = { turn: run.turn, toolsSinceText: false, sawText: false, output: new Map, run };
     active.subagents.set(id, lane);
     return lane;
@@ -18448,8 +18527,10 @@ ${text}`;
     for (let waited = 0;waited < 1e4 && this.active === active; waited += 100)
       await Bun.sleep(100);
   }
-  async startWorker(options, fenced) {
+  async startWorker(options, fenced, stale) {
     const runtime = await this.owner.runtime();
+    if (stale())
+      return;
     const directory = this.session.location.directory;
     const worker = cursorWorker(runtime);
     const folder = agentHoldFolder("cursor");
@@ -18464,6 +18545,12 @@ ${text}`;
         console.error("Cursor's holder didn't start:", error?.message ?? error);
         return;
       }) : undefined;
+      if (stale()) {
+        held?.stop();
+        await held?.exited;
+        ended?.();
+        return;
+      }
       return new CursorWorker(held ?? command, { cwd: directory, env, ended, session: this.session.id });
     };
     const args = ["--config=/dev/null", "--no-env-file", worker];
@@ -18515,6 +18602,7 @@ ${text}`;
       this.agent = this.worker.attached(meta.agent);
   }
   stop() {
+    this.startup++;
     clearTimeout(this.idle);
     try {
       this.agent?.close?.();
@@ -18530,8 +18618,9 @@ ${text}`;
 }
 function limitOf2(message, error) {
   const code = String(error?.code ?? error?.name ?? "");
-  if (/resource_exhausted|RateLimit/i.test(code) || /resource.?exhausted|usage limit (?:reached|exceeded)|quota exceeded|rate limit exceeded|too many requests/i.test(message))
-    return { scope: "provider", message };
+  if (error?.status === 429 || /resource.exhausted|rate.?limit/i.test(code) || /resource.?exhausted|usage limit (?:reached|exceeded)|quota exceeded|rate limit exceeded|too many requests/i.test(message)) {
+    return { scope: "provider", message, resetsAt: resetsIn(message) };
+  }
   return;
 }
 function kuvoTool3(call) {
@@ -18694,6 +18783,7 @@ var init_cursor = __esm(() => {
   init_adopt();
   init_client();
   init_machine();
+  init_limits();
   init_files();
   init_limits2();
   init_cursor_api();
@@ -22345,7 +22435,7 @@ ${text.slice(0, 4000)}
     if (outcome !== "succeeded")
       this.dropCompaction(id, record, turn);
     const before = record.messages[record.messages.length - 1]?.id;
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined);
     this.settleRelays(live, run);
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded)
@@ -22406,7 +22496,7 @@ ${text.slice(0, 4000)}
     if (!run.heldTaken)
       this.closeTools(record);
     const before = record.messages[record.messages.length - 1]?.id;
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined);
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded)
         continue;
@@ -22490,7 +22580,7 @@ ${text.slice(0, 4000)}
     message.status = outcome === "succeeded" ? "completed" : "failed";
     message.time.completed = Date.now();
     emit(outcome === "succeeded" ? "session.compaction.ended" : "session.compaction.failed", { sessionID: id }, directory);
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined);
     session.outcome = before;
     this.store.save(id, true);
     this.settleAsks(id, live);
@@ -22696,8 +22786,11 @@ ${text.slice(0, 4000)}
         const stopped = await this.whyNone(tried, input.model.id);
         if (stopped)
           return { outcome: "failed", error: stopped };
-        if (last?.limit)
-          return { outcome: "failed", error: { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now${this.nextReset()}.` } };
+        if (last?.limit) {
+          const limit = await this.autoListLimit(input.model.id);
+          const when = limit.resetsAt === undefined ? "" : `; the first resets at ${resetTime(limit.resetsAt)}`;
+          return { outcome: "failed", error: { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now${when}.`, limit } };
+        }
         return last ?? { outcome: "failed", error: { type: "limit", message: `Your Custom Auto list has no model to run. Edit it in Settings \u203A Custom Auto.` } };
       }
       if (!tried.size && heldBefore.has(Auto.modelKey(entry)))
@@ -22811,18 +22904,26 @@ ${text.slice(0, 4000)}
       return { type: "signin", message: `${subject}${where}, where this conversation runs (each machine signs in on its own: your Mac's sign-ins don't reach it). Sign in to ${agents} there in ${signInPage}.` };
     }
     const limits = [...held].map(([name, until]) => `${name} until ${resetTime(until)}`).join("; ");
-    if (!signIn.size && !gone.length && !tried.size)
-      return { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now: ${limits}.` };
+    if (!signIn.size && !gone.length && !tried.size) {
+      return { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now: ${limits}.`, limit: await this.autoListLimit(list) };
+    }
     const reasons = [
       ...held.size ? [`at a usage limit: ${limits}`] : [],
       ...signIn.size ? [`not signed in${where}: ${agents} (sign in in ${signInPage})`] : [],
       ...gone.length ? [`not available now: ${gone.join(", ")}`] : []
     ];
-    return { type: signIn.size ? "signin" : "limit", message: `No ${tried.size ? "other " : ""}model in your Custom Auto list can run now. ${reasons.map((reason) => reason[0].toUpperCase() + reason.slice(1)).join(". ")}.` };
+    return {
+      type: signIn.size ? "signin" : "limit",
+      message: `No ${tried.size ? "other " : ""}model in your Custom Auto list can run now. ${reasons.map((reason) => reason[0].toUpperCase() + reason.slice(1)).join(". ")}.`,
+      ...!signIn.size && held.size ? { limit: await this.autoListLimit(list) } : {}
+    };
   }
-  nextReset() {
-    const known = this.auto.limits().filter((limit) => limit.known).map((limit) => limit.until);
-    return known.length ? `; the first resets at ${resetTime(Math.min(...known))}` : "";
+  async autoListLimit(list) {
+    const known = (await this.autoEntries(list)).flatMap((entry) => {
+      const hold = this.auto.isHeld(entry);
+      return hold?.known ? [hold.until] : [];
+    });
+    return { scope: "model", ...known.length ? { resetsAt: Math.min(...known) } : {} };
   }
   async entryName(entry, agentOnly = false) {
     const name = this.agent(entry.providerID)?.name ?? entry.providerID;
@@ -22998,6 +23099,7 @@ ${live.agentPrompt}` : ""
       };
     }
     const before = task.sessionID ? this.store.get(task.sessionID) : undefined;
+    const requestedModel = task.requestedModel?.trim() || undefined;
     const messages = task.messages ?? cantTakeMessages(this.agent(model.providerID)?.name);
     if (before && before.session.parentID === id) {
       if (task.prompt)
@@ -23018,7 +23120,7 @@ ${live.agentPrompt}` : ""
       time: { created: now, updated: now },
       title: task.title || "A subagent's task",
       location: { directory },
-      metadata: { kuvoAgent: parent.metadata?.kuvoAgent, kuvoSubagent: true, kuvo: { messages } }
+      metadata: { kuvoAgent: parent.metadata?.kuvoAgent, kuvoSubagent: true, kuvo: { messages, ...requestedModel ? { requestedModel } : {} } }
     };
     this.store.add(session);
     const record = this.store.get(session.id);
@@ -23785,6 +23887,16 @@ async function signedOut(agent) {
     return false;
   const out = (account) => account.installed !== false && !account.signedIn;
   return out(await agent.account()) && out(await agent.account(true));
+}
+function runError(result) {
+  const { error, limit } = result;
+  if (!limit || error?.limit && (error.limit.scope !== limit.scope || error.limit.resetsAt !== undefined))
+    return error;
+  const { scope, resetsAt, message } = limit;
+  return {
+    ...error ?? { type: "limit", message: message ?? "A usage limit was reached." },
+    limit: { scope, ...resetsAt !== undefined ? { resetsAt } : {} }
+  };
 }
 var legacyKeys, carryOn = "Carry on with my last message from where you left off: you're on another model now.", timing, changes, shellProcesses, shellTimeout, shellOutputLimit = 50000, engineDefaults, shellKeywords, wrappers, fileActions, madeForAuto = (session) => session.metadata?.kuvo?.applied === "auto", EDITS, sameKind = (saved, asked) => saved === asked || EDITS.has(saved) && EDITS.has(asked), KIND_WORDS, RUNS_ANOTHER, agentActions, looks, NotFound, BadRequest, textFileLimit;
 var init_sessions = __esm(() => {
@@ -32622,4 +32734,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 4b2e50f0191acdc90bd3bb42ec222a32ac78f0ec517ba6a18f4f9a216258988f
+// Built from Packages/Box/src/agents cd9137fa9766c07de5827b700551cc5264483cb8fd6ef26e1abbc70a9010356e
