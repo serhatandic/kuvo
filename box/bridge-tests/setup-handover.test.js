@@ -24,6 +24,14 @@ const link = await import(script);
 const TAKEOVER = 180_000;
 const submit = (box, primary, epoch) => box.route("POST", "kuvo/setup/handover", { primary: primary.key, epoch });
 
+function peerOwns(box, owner, id) {
+  try {
+    const owns = JSON.parse(fs.readFileSync(path.join(box.run, "peer-agents.json"), "utf8"))[owner.key]?.owns ?? "";
+    const digest = crypto.createHash("sha256").update(id).digest("base64url").slice(0, 6);
+    return owns.match(/.{6}/g)?.includes(digest) ?? false;
+  } catch { return false; }
+}
+
 function checkpoint(box, epoch) {
   const transition = link.readDoc(box.read().leadership[epoch]);
   assert.equal(transition.body.boxes, undefined);
@@ -107,7 +115,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const draftEffects = [];
   const groupMessages = [];
   const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
-  const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
+  // The real bridge persists groups here, and the link uses those files to announce ownership.
+  const groupCopies = new Map();
+  const groupFolder = (box, id) => path.join(box.appFolder ?? box.home, "groups", id);
+  const saveGroup = (box, chat) => {
+    groupCopies.set(box.name, chat);
+    put(path.join(groupFolder(box, chat.group.id), "group.json"), JSON.stringify({ kuvo: 1, status: chat.status, group: chat.group }));
+    put(path.join(groupFolder(box, chat.group.id), "messages.json"), JSON.stringify(chat.messages));
+  };
   let ownedConversationPresent = true;
   let ownedReadFailure = 0;
   let ownedLookupRefused = false;
@@ -144,20 +159,25 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     const groupPath = movingGroup && /^\/api\/kuvo\/groups(?:\/(grp_[a-z0-9]+)(?:\/(hold|activate|release))?)?$/.exec(request.url);
     if (groupPath) {
       const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
+      const computer = boxes.find(each => each.name === box);
+      if (!computer) return response.writeHead(404).end("{}");
       const chat = groupCopies.get(box);
       const send = (status, data) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
       if (!groupPath[1]) return send(200, chat ? [chat] : []);
       if (request.method === "PUT") {
         const parts = [];
         request.on("data", part => parts.push(part));
-        request.on("end", () => { groupCopies.set(box, JSON.parse(Buffer.concat(parts))); send(200, true); });
+        request.on("end", () => { saveGroup(computer, JSON.parse(Buffer.concat(parts))); send(200, true); });
         return;
       }
       if (!chat) return send(404, null);
-      if (groupPath[2] === "hold") chat.status = "held";
-      if (groupPath[2] === "activate") chat.status = "active";
-      if (groupPath[2] === "release") groupCopies.delete(box);
-      return send(200, chat);
+      if (groupPath[2] === "hold") saveGroup(computer, { ...chat, status: "held" });
+      if (groupPath[2] === "activate") saveGroup(computer, { ...chat, status: "active" });
+      if (groupPath[2] === "release") {
+        fs.rmSync(groupFolder(computer, chat.group.id), { recursive: true, force: true });
+        groupCopies.delete(box);
+      }
+      return send(200, groupCopies.get(box) ?? chat);
     }
     // The bridge lists its running group chats to its link (`/api/kuvo/link/groups`), which
     // tells the other computers which groups live here.
@@ -408,6 +428,10 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     };
   });
   const [a, b, c] = boxes;
+  if (movingGroup) saveGroup(boxes.find(box => box.name === "Lab"), { group: movingGroup, messages: [], status: "active" });
+  if (owned) put(path.join(groupFolder(boxes.find(box => box.name === "Lab"), "grp_lab"), "group.json"), JSON.stringify({
+    kuvo: 1, status: "active", group: { id: "grp_lab", name: "Lab group", members: [] },
+  }));
   const setup = { id: `set_${crypto.randomBytes(16).toString("base64url")}`, epoch: 1, primary: a.key };
   const roster = { boxes: boxes.map(box => box.entry), moved: [], left: [] };
   const accepted = movingGroup || acceptedRoster ? { managed: true, checkpointed: true } : {};
@@ -542,10 +566,6 @@ test("failure bench: a real idle group move survives source loss and replacement
   const group = { id: "grp_recovery", name: "Recovered group", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
   const { a, b, c, groupCopies, relay, phase } = await network(t, false, undefined, false, group, false, false, undefined, { phaseDiagnostics: true });
   const groupPath = "groups/" + group.id;
-  const oldGroup = path.join(c.env.HOME, groupPath);
-  fs.mkdirSync(oldGroup, { recursive: true });
-  fs.writeFileSync(path.join(oldGroup, "group.json"), JSON.stringify({ kuvo: 1, status: "active", group }));
-  fs.writeFileSync(path.join(oldGroup, "messages.json"), "[]");
   const phone = link.newKey();
   const invite = await a.route("POST", "kuvo/phones/pair");
   const paired = await deviceAt(relay, a, phone, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Receipt fixture" });
@@ -574,27 +594,19 @@ test("failure bench: a real idle group move survives source loss and replacement
   const savedPath = box => path.join(box.run, "owned-data", "mutations", saved + ".json");
   assert.equal(JSON.parse(fs.readFileSync(savedPath(c), "utf8")).forward.kind, "forwardedQueueDecisions");
   phase("source accepted the forwarding decision");
-  const folder = path.join(c.env.TMPDIR, "backups");
+  const folder = fs.realpathSync(c.env.TMPDIR) + "/backups";
   fs.mkdirSync(folder);
   const destination = { kind: "disk", path: folder };
   const source = "b_" + crypto.randomBytes(16).toString("base64url");
   const recoveryKey = crypto.randomBytes(32).toString("base64url");
-  const point = "2026-11-19T000000.000Z-daily-0123456789abcdef";
-  const backup = await c.evaluate(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
-    import { captureBackup, scratchFolder } from ${JSON.stringify(new URL("../src/link/backup/engine.ts", import.meta.url).href)};
-    import { destinationStore } from ${JSON.stringify(new URL("../src/link/backup/destination.ts", import.meta.url).href)};
-    const destination = ${JSON.stringify(destination)};
-    const source = ${JSON.stringify(source)};
-    const point = ${JSON.stringify(point)};
-    const scratch = scratchFolder();
-    const file = scratch + "/archive";
-    const manifest = captureBackup(file, ${JSON.stringify(recoveryKey)}, source, point, Date.now(), [], scratch);
-    await destinationStore(destination, source).put(point, file);
-    console.log(JSON.stringify(manifest));
-  `]);
-  assert.equal(backup.status, 0, backup.err);
-  assert.equal(backup.value.paired, true);
-
+  put(path.join(c.home, "backup", "configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source, key: recoveryKey, dest: destination,
+    disk: fs.statSync(folder).dev, projects: [],
+  }));
+  const backup = await c.route("POST", "kuvo/box/backups/now", {}, true);
+  assert.equal(backup.status, 200, JSON.stringify(backup.value));
+  const point = backup.value.point?.id;
+  assert.ok(point);
   phase("captured the source backup");
   const moved = await c.route("POST", "kuvo/moves", { kind: "group", id: group.id, to: a.key, receipt: true }, true);
   assert.equal(moved.status, 202, JSON.stringify(moved.value));
@@ -620,8 +632,7 @@ test("failure bench: a real idle group move survives source loss and replacement
   await until("replacement ownership replica", () => b.read().shared?.ownershipRecovery?.value?.["replacement:" + c.key], t.signal);
 
   phase("replacement assignment verified");
-  const told = () => { try { return JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
-  await until("the replacement heard the destination announce the group", () => told()[a.key]?.groups?.includes(group.id), t.signal);
+  await until("the replacement heard the destination announce the group", () => peerOwns(b, a, group.id), t.signal);
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
   assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
   assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
@@ -633,6 +644,8 @@ test("failure bench: a real idle group move survives source loss and replacement
 
 test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 90_000 }, async t => {
   const { a, b, c, relay, prompts, groupMessages } = await network(t, false, undefined, true);
+  await until("both computers know the conversation and group owner", () =>
+    [a, b].every(box => peerOwns(box, c, "ses_owned") && peerOwns(box, c, "grp_lab")), t.signal);
   const read = (box, query = "") => box.route("GET", `kuvo/data/owner?kind=conversations&id=ses_owned&computer=${c.key}${query}`);
   const before = await read(b);
   assert.equal(before.status, 200);
@@ -950,23 +963,24 @@ test("failure bench: a successor that goes unreachable during handover follows t
   await Promise.all([see(a, 3, b), see(b, 3, b), see(c, 3, b)]);
 });
 
-test("failure bench: a primary killed after commit and before publishing resumes as a member", { timeout: 45_000 }, async t => {
+test("failure bench: a primary killed after committing a lease transfer resumes as a member", { timeout: 45_000 }, async t => {
   const { a, b, c, relay, see } = await network(t);
-  const resumeWitness = relay.pause(a.address, c.address);
-  // Let the primary's readiness request pass, then block its publication to both members.
-  let resumeTarget;
+  // The lease moves at the relay. Only the successor can publish the new epoch.
+  const resumeWitness = relay.pause(b.address, c.address);
+  let resumeFormerMain;
   const unhook = relay.intercept(b.address, a.address, packet => {
     const message = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), a.read())?.payload;
     if (message?.workQueue?.acted?.value?.sign !== b.sign) return false;
-    resumeTarget = relay.pause(a.address, b.address);
+    resumeFormerMain = relay.pause(b.address, a.address);
     unhook();
     return false;
   });
   assert.equal((await submit(a, b, 2)).status, 202);
   await a.stop();
+  await see(b, 3, b);
   assert.equal(c.read().setup.epoch, 2);
-  assert.equal(typeof resumeTarget, "function");
-  resumeTarget();
+  assert.equal(typeof resumeFormerMain, "function");
+  resumeFormerMain();
   resumeWitness();
   a.start();
   await Promise.all([see(a, 3, b), see(b, 3, b), see(c, 3, b)]);
@@ -2288,16 +2302,19 @@ test("failure bench: setup preferences merge at the main and survive a takeover"
 });
 
 test("failure bench: a bot's offline name and instructions are applied only at its home", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay } = await network(t, false, undefined, true);
-  const ref = { kind: "botSettings", id: "bot_Lab", computer: c.key };
-  const home = path.dirname(c.run);
-  const folder = path.join(home, "bots", ref.id);
-  fs.mkdirSync(folder, { recursive: true });
-  fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
-  fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: ref.id, name: "Lab bot" }));
-  fs.writeFileSync(path.join(folder, "session"), "ses_owned\n");
-  fs.writeFileSync(path.join(folder, "job.json"), JSON.stringify({ line: "Report status", details: "Check the queue." }));
+  const id = "bot_Lab";
+  const { a, b, c, relay } = await network(t, false, undefined, true, undefined, false, false, undefined, {
+    prepare: ([, , home]) => {
+      const folder = path.join(home.home, "bots", id);
+      fs.mkdirSync(path.join(home.home, "bin"), { recursive: true });
+      fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home.home, "bin", "bot-words.json"));
+      put(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id, name: "Lab bot" }));
+      put(path.join(folder, "session"), "ses_owned\n");
+      put(path.join(folder, "job.json"), JSON.stringify({ line: "Report status", details: "Check the queue." }));
+    },
+  });
+  const ref = { kind: "botSettings", id, computer: c.key };
+  await until("both computers know the bot's home", () => [a, b].every(box => peerOwns(box, c, id)), t.signal);
   const { value: before, status } = await editRead(a, ref);
   assert.equal(status, 200, JSON.stringify(before));
   const baseRevision = before.revision;
@@ -2346,14 +2363,15 @@ function separateExportRoot(t, source) {
     let attached = false;
     const diskImage = args => {
       const ran = spawnSync("/usr/bin/hdiutil", args, { encoding: "utf8", timeout: 20_000 });
-      assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+      assert.equal(ran.status, 0, ran.error?.message || ran.stderr || String(ran.signal));
     };
     t.after(() => {
       if (attached) diskImage(["detach", mount]);
       fs.rmSync(root, { recursive: true, force: true });
     });
     fs.mkdirSync(mount);
-    diskImage(["create", "-size", "24m", "-fs", "HFS+", "-volname", "Kuvo Export Fixture", image]);
+    // APFS avoids hdiutil's deprecated HFS+ creation path.
+    diskImage(["create", "-size", "64m", "-fs", "APFS", "-volname", "Kuvo Export Fixture", image]);
     diskImage(["attach", "-nobrowse", "-noautoopen", "-owners", "off", "-mountpoint", mount, image]);
     attached = true;
     assert.notEqual(fs.statSync(mount).dev, fs.statSync(source.home).dev);
@@ -3785,6 +3803,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     put(receiptFile, JSON.stringify(saved));
     const bytes = Buffer.of(0, 255, 3, 128);
     const { id: item, paths: [attachment] } = await uploadQueueFiles(a, { "recovery.lock": bytes });
+    await until("pc2 has listed its session", () => peerOwns(b, a, session), t.signal);
     const deleted = editAddress(a, itemID());
     const created = good(await editSubmit(a, deleted, {
       operation: "create-before-delete", create: true, baseRevision: null, fields: { title: "Delete this item" },
@@ -4009,8 +4028,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.match(good(await backup(c, "restore", restore), 409).message, /Confirm the replacement on the main computer/);
     good(await backup(b, "match", { source, previous: a.key, replacement: c.key }));
     await until("pc5 sees its approved replacement mapping", () => c.read().shared?.ownershipRecovery?.value?.["replacement:" + a.key], t.signal);
-    const told = () => { try { return JSON.parse(fs.readFileSync(path.join(c.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
-    await until("pc5 heard pc4 announce the conversation it owns", () => told()[b.key]?.list?.some(agent => agent.session === session), t.signal);
+    await until("pc5 heard pc4 announce the conversation it owns", () => peerOwns(c, b, session), t.signal);
     const restored = good(await backup(c, "restore", restore));
     assert.ok(restored.unavailable.some(entry => entry.entry === item && entry.reason === "moved or transfer needs review"),
       JSON.stringify(restored.unavailable));
