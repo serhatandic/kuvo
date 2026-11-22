@@ -1,3 +1,5 @@
+> Historical, superseded by [Membership lifecycle](../architecture/membership-lifecycle.md), kept for its findings.
+
 # Rule 54 combined recovery bench
 
 The combined check invokes `scripts/failure-bench.sh`, which selects the named recovery cases in `setup-handover.test.js`. The preparation step resolves both historical pins. The bench verifies the build bytes against SHA-256 before it launches them. The lokum runner transfers those same bytes when its scratch checkout has no Git history.

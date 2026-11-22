@@ -1,10 +1,10 @@
 # Message delivery
 
-Work Queue #809 · Draft for the user's OK, 2026-11-22
+Work Queue #809 · Approved design · status at `36db4ec2e`, 2026-11-22
 
 Too many things fail in Kuvo Code because a client asks a box something and waits for the answer: "The draft's outcome is unknown", a bot's tool call ending "Kuvo on this computer is starting", and the Mini "may be asleep or offline" while its box is only busy. This page says what goes wrong, and the three rules that fix it.
 
-## What we measured
+## Baseline measurements, 22 November 2026
 
 - **A send's own work on the box is small**: claiming its id and recording the answer takes 10 ms (median) to 50 ms (worst of 40), on a loaded Mac, in a test home. The seconds come from what the request waits on. It looks up where the session runs 2 or 3 times (each lookup retried after 10 s, then 20 s), then posts to the engine or bridge, with no time limit. The app drew nothing useful until all of that came back. It also drew a message from three streams that don't agree (the composer's copy, the queue, the conversation), so a message vanished between them.
 - **A tool call** starts a new process, which gets 5 s for the link to accept it, with no retry (`ssh-pipe.ts`). While the link starts or restarts, the pipe is chosen before it listens, so every call in that window fails at once.
@@ -17,7 +17,7 @@ Too many things fail in Kuvo Code because a client asks a box something and wait
 2. **One open line per client.** A client opens one stream per box. The box pushes each change on it (sessions, queues, conversations, asks, bots, the Work Queue, computers), and the client draws the last state it received. A request only changes something; the result comes back on the line. A computer counts as offline only after its line has been silent for a while (the box sends a heartbeat). A slow answer is never read as offline.
 3. **The box answers from what it knows.** Requests are answered from state the box already keeps: where each session runs, the session list, its queue. Slow or blocking work (git, the engine, fsync, sweeps) runs off the request path, and its result arrives on the line. The link's loop never waits on a lock or a child process.
 
-## What this removes
+## What the completed design removes
 
 - "The draft's outcome is unknown", and the client-side fence that kept a lost send from being asked again.
 - "Kuvo on this computer is starting" for tool calls: the call waits for its id to be taken, through a restart.
@@ -27,7 +27,7 @@ Too many things fail in Kuvo Code because a client asks a box something and wait
 
 ## Removing the computer picker
 
-The title bar's picker goes once this is approved. The app needs:
+The picker still ships. Its approved removal depends on these changes:
 
 - **Merged lists.** Sessions, bots and the Work Queue show all your computers, each row carrying its computer. Today the Work Queue (`kuvo/work-queue?owner=all`, with copies in `run/work-queue/peers/`), bots (`kuvo/bots` `elsewhere`, from `run/peer-agents.json`), computers (`kuvo/computers/events`) and the Library are setup-wide. Sessions (`kuvo/sessions/list`), what waits on you (`kuvo/waiting`) and the message queues are this box's only, and no box keeps another's sessions.
 - **The simplest way.** Each box already sends its peers its Work Queue and its agents. It sends its session list and what waits on you the same way, and keeps the newest copy of each peer's (`run/peers/<key>/…`, with `at` and `away`). The one line carries the merged lists from the box the app is nearest to, each row with `computer`. A computer that's off shows its last copy, marked with when it was seen. Actions that need it are hidden.
@@ -37,16 +37,20 @@ The title bar's picker goes once this is approved. The app needs:
 
 ## How it fits #924
 
-#924 (`one-client-process.md`) gives every computer one resident box process, with SSH piped into it. That's the process the one line comes from. Its pipe should queue a call until the process is ready, instead of failing after 5 s. Rule 3 keeps that one process free to answer.
+[#924](one-client-process.md) gives every computer one resident box process, with SSH piped into it. That's the process the one line comes from. Its pipe should queue a call until the process is ready, instead of failing after 5 s. Rule 3 keeps that one process free to answer.
 
-## Already built (branch `kuvo/809-seamless-send`)
+## Landed on main
 
-These follow rule 1 and the drawing half of rule 2:
+- GPUI shows a send at once, keyed by its ID, and keeps it until the conversation has it.
+- GPUI retries an interrupted send with the same ID. The box settles an interrupted
+  claim against its queue or transcript. The agents bridge persists queued messages.
+- Machine and compatibility tool calls wait for the resident box. Sends, session
+  starts, Work Queue edits and approved commands keep restart receipts. Durable
+  delivery for all tool calls is still partial.
+- Work Queue imports and numbering, move bundles, attachments, release
+  verification and some sandbox work have moved off the resident loop.
+  Other blocking work remains.
 
-- The app draws a message at once, where it goes, keyed by its id, and keeps it until the conversation has it.
-- The app asks the box again under the same id when an answer is lost.
-- The box settles a send that a restart cut off.
-- The bridge keeps queued messages across its restarts.
-- Machine and compatibility bridge tool calls wait for the box. Messages, session starts, Work Queue item edits, and approved commands keep receipts across resident restarts.
-
-Still to build: the line, rule 3, ids for tool calls, and the merged lists.
+Still to build or verify end to end: one event line, merged lists, picker removal
+and Settings relocation, the rest of the off-loop work, and full tool-call
+delivery and restart coverage. The typed and slash composer remain in this build.

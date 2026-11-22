@@ -1,7 +1,12 @@
 # Contributing to Kuvo Code
 
-Thanks for helping improve Kuvo Code. It's a native Mac interface for the
-opencode engine, so the best changes keep it that way:
+Kuvo Code does not accept outside pull requests or code contributions.
+Bug reports and ideas are welcome as [GitHub issues](https://github.com/serhatandic/kuvo-code/issues).
+Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+This guide is for Kuvo maintainers and their coding sessions. See [CLAUDE.md](CLAUDE.md)
+for session rules and [How Kuvo works](docs/architecture/how-kuvo-works.md) for the
+current architecture. Keep the desktop native and put shared behavior in the box:
 
 - **Native first.** Build the desktop UI in GPUI.
 - **The engine stays opencode, unmodified.** Kuvo Code changes how working with
@@ -12,34 +17,16 @@ opencode engine, so the best changes keep it that way:
 The desktop app lives in `gpui/`. Its box runs in `box/`, with Kuvo Helper on
 macOS in `mac/helper/`.
 
-## Before opening a change
+## Maintainer development setup
 
-- Search existing issues and pull requests first.
-- Open an issue before starting a large feature, a new dependency, or a change
-  to how the app runs the engine. Small fixes don't need prior approval.
-- Keep pull requests focused. Separate mechanical moves from behavior changes.
-- If the change is user-facing, say what the docs at
-  [kuvo.run/code/docs](https://kuvo.run/code/docs/) need to cover.
-
-## Development setup
-
-You need an Apple silicon Mac with macOS 26 or later, Xcode 27 or later, Rust,
-and the Bun version pinned by `scripts/build-box.sh`.
-
-```sh
-git clone https://github.com/serhatandic/kuvo-code.git
-cd kuvo-code
-scripts/merge-setup.sh
-cd gpui
-../scripts/cargo-locked.sh build -p kuvo
-```
+Desktop development needs an Apple silicon Mac with macOS 26 or later, Xcode
+27 or later, Rust, and the Bun version pinned by `scripts/build-box.sh`. In the
+maintainer checkout, run `scripts/merge-setup.sh` once. From `gpui/`, build with
+`../scripts/cargo-locked.sh build -p kuvo`.
 
 From the repository root, `scripts/build-desktop-app.sh` packages the desktop app
-and `scripts/build-dmg.sh` makes the disk image. See `gpui/README.md` for local
-runs and `docs/releases.md` for the release workflow.
-
-CI checks generated files and box types, tests the box and bridge on macOS
-and Linux, and tests Kuvo Helper and the build scheduler on macOS.
+and `scripts/build-dmg.sh` makes the disk image. See [GPUI local runs](gpui/README.md)
+and [releases](docs/releases.md).
 
 A release carries what every box runs, for boxes to update themselves with, signed with the
 `KUVO_BOX_SIGNING_KEY` secret (an Ed25519 key; `scripts/set-box-key.sh` makes it once, keeps it in
@@ -61,7 +48,7 @@ The desktop app as a Mac bundle, for trying it on a Mac: `scripts/build-desktop-
 pack), always signed ad hoc, and `scripts/check-desktop-app.sh` checks one (`--run`: a dry run
 of a copy with another bundle ID, in a home of its own). With Kuvo Code's own bundle ID (the
 default) it installs into the real `~/.kuvo-code` when opened, so open it only on a Mac or in an
-account kept for that. What a release adds isn't built yet: `gpui/README.md`, "As a bundle".
+account kept for that. See [release verification](docs/releases.md) for signing and publication status.
 
 The keeper's files are plain files: edit them in `box/src/keeper`, where the bridge's tests run
 `kuvo-wake` from. Where one names the engine's version it says `@ENGINE@`, which the release
@@ -74,7 +61,7 @@ is stamped with, so after a change there `scripts/check-built.sh` asks for
 
 ### Tests
 
-Run the tests for the area you change, including callers that use it:
+Read [the testing guide](docs/testing.md) and run focused checks for the area you change and its callers:
 
 - Desktop: `scripts/cargo-locked.sh` from `gpui/`, with the package and test filter.
 - Box and bridge: `scripts/test-box.sh [box|bridge|all] [filter]`. Use
@@ -120,9 +107,9 @@ runners. To add a scenario:
   file an area, with each field an answer can have (one ending in `?` may be left out) and its
   type, which the box's code takes its types from too. A new route, or a new field in an answer,
   goes there first; `./scripts/route-shapes.sh` writes `routes/shapes/answers.json` for both
-  runners, and `routes/features.json` from the box's lists of what it answers (the box's suite,
-  `test/route-shapes.test.ts`, and CI check both are current: never edit them), and both hold an answer to a shape by
-  `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
+  runners, and `routes/features.json` from the box's advertised capabilities.
+  `test/route-shapes.test.ts` checks the generated files. The runners check
+  answers against `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
   is JSON, `{}` at least.
 - Run the runners. `./scripts/route-vectors.sh` refreshes the integration and
   MCP catalogs in `routes/box` from `box/src/shared/integrations`.
@@ -138,11 +125,11 @@ runners. To add a scenario:
 | `scripts/` | Builds, checks and the test runners |
 | `Licenses/` | License texts for code copied into this repository |
 
-### The browser on a machine
+### The box browser
 
-A machine's browser is Chrome for Testing, the full browser run in Chrome's own headless mode
+Each box's browser is Chrome for Testing, the full browser run in Chrome's own headless mode
 (the separate headless shell is one sites take for a bot), with its libraries and fonts, in
-`~/.kuvo-code/browser` there. The machine's box sets it up itself, with or without a Mac
+`~/.kuvo-code/browser` there. The box sets it up on macOS and Linux, with or without a client
 (`box/src/link/browser`, PROTOCOL.md's "The browser on a machine"): the build pinned in
 `linux.json` and `mac.json` there (`scripts/browser-runtime.py` writes them; on a Mac machine,
 Chrome for Testing as it comes, with a `chrome` launcher, as it won't run through a link),
@@ -162,7 +149,7 @@ engine's own runtime in three ways:
   in `current`, it stops once nothing uses the browser, keeping the open pages, so the next
   start runs the new one.
 - **mcp**, the agent's browser tools for the machine's engine, talking to the keeper.
-- **connect**, the Mac's live view of the pages, over SSH, also through the keeper.
+- **connect**, the retained direct connector to the keeper. Current desktops use the box browser-view route where the transport supports it.
 
 New clients can open `kuvo/browser/view` through serve (its Basic password) or a paired relay
 session. The box translates the keeper's newline stream to JSON facts and binary JPEG frames.
@@ -175,8 +162,8 @@ resize an agent's working page. The wire format and message budget are in PROTOC
 The first two, finding no browser, have the box set it up and wait for it (`kuvo-link.js browser
 install`); a browser that doesn't start because its build isn't whole is set up again once.
 
-What agents ask you for there also goes to `run/browser-asks.json`, for the machine's phone link,
-which answers it for a phone with the Mac closed (`Kuvo.answer` on the keeper's socket).
+The box reads browser asks from `run/browser-asks.json` and handles answers through
+`box/src/link/areas/asks.ts`. It can send `Kuvo.answer` to the keeper with the desktop closed.
 
 On a Mac, Chrome's editing keys come from its window's key bindings, which a key sent over DevTools
 never reaches: the keeper names what each does (`keyForHere`), so clients send the same keys to
@@ -185,7 +172,7 @@ every machine.
 Its source is `box/src/browser/kuvo-browser.js`; the scripts it runs in pages
 (`page.ts`, with `page/` and browser-use's `buildDomTree.js`), the agents' tools (`tools.ts`) and
 what they're told (`instructions.ts`) are filled in by `./scripts/build-browser.sh`, which you run
-and commit after changing them (CI checks it with `--check`, and so does the box's suite). It
+and commit after changing them (the box suite checks it too). It
 writes `KEEPER` too, a hash of the source, so a copy built from changed sources replaces the keeper
 that's running. To update the historical browser tools fixture, see
 `box/bridge-tests/browser-tools-built.test.js`.
@@ -212,12 +199,11 @@ uses numpy, OpenCV and Xcode.
 
 Claude Code, Codex, Cursor, Grok and Antigravity run beside the engine, the way
 [T3 Code](https://github.com/pingdotgg/t3code) runs them: each as its maker built it, signed in
-as you. `box/src/agents` is a small server, the agents bridge, that `OutsideAgents` starts with the
-engine's Bun as it starts the engine (it prints `{"url": …}`, takes the password in
-`OPENCODE_PASSWORD` and stops when its stdin closes). It answers the app in the engine's own API
-(sessions, messages, events, permissions, questions, models, sign-in), so their sessions use
-the app's usual views; `Workspace` sends a session to it when its metadata names an agent
-(`kuvoAgent`), and the phone reaches it at `kuvo/agents/api/…`.
+as you. `box/src/agents` builds the agents bridge. The keeper runs it with the engine's
+Bun, separately from both the engine and the resident link. The bridge serves
+the engine-shaped session, message, event, permission, question, model and
+sign-in API. The box routes sessions by their agent metadata (`kuvoAgent`) and
+retains `kuvo/agents/api/…` for compatible readers.
 
 - **Claude Code**: the Claude Agent SDK, with your `claude` and its sign-in.
 - **Codex**: `codex app-server`, JSON-RPC over stdio.
@@ -228,9 +214,7 @@ the app's usual views; `Workspace` sends a session to it when its metadata names
 The SDKs are installed from npm the first time each is needed (`runtime/<agent>`), at the
 versions in the agents' files, and aren't part of the app. After changing `box/src/agents`, run
 `./scripts/build-agents.sh` and commit `box/dist/kuvo-agents.js`, the bundle a box's release
-carries; CI fails when it isn't built from the sources as they are (`build-agents.sh --check`). In a
-debug build, `KUVO_AGENTS_SCRIPT=<checkout>/box/src/agents/main.ts` runs the source
-instead.
+carries. Use `scripts/build-agents.sh --check` to verify it is current.
 
 ### Dependencies
 
@@ -239,47 +223,19 @@ Sparkle is pinned by `scripts/sparkle.sh`. Run
 `./scripts/third-party-licenses.sh` after changes to included third-party code
 or assets and commit its updated notices.
 
-## Workflow
+## Maintainer workflow
 
-Every change starts from an issue and lands on `main` through a pull request.
-
-1. **Find or open an issue** for the change, and comment that you're working on
-   it.
-2. **Fork the repository** and create a branch named
-   `type/issue-short-description`, for example `fix/42-sidebar-width` or
-   `feat/57-session-search`. Use one of these types:
-
-   | Type | For |
-   | --- | --- |
-   | `feat` | new behavior |
-   | `fix` | bug fixes |
-   | `perf` | speed, memory or battery improvements |
-   | `refactor` | code changes that don't change behavior |
-   | `docs` | documentation only |
-   | `test` | tests only |
-   | `ci` | workflows and build scripts |
-   | `chore` | dependencies and other upkeep |
-
-3. **Open a pull request** against `main`.
-   - **The title becomes the commit message**, because pull requests are
-     squash-merged into a single commit. Write it as one plain sentence that
-     says what the change does, in the imperative: "Stop the sidebar from
-     growing past its maximum width", not "Fixed sidebar" or "feat: sidebar".
-   - **Start the description with `Fixes #42`** (your issue's number), so
-     merging closes the issue.
-   - Fill in the rest of the template: what changed, why, and how you verified
-     it.
-   - **If people using Kuvo Code would notice the change, add a line to
-     `CHANGELOG.md`** under Unreleased, saying what they'll see. It becomes
-     part of the next release's notes, on GitHub and in the app's update
-     window.
-     (`.gitattributes` merges `CHANGELOG.md` line by line, so branches that
-     each add a line there merge without a conflict; if two edit the same line,
-     both versions stay, so tidy that one by hand.)
-4. **CI must pass**, and a maintainer reviews and approves the pull request.
-   It's then squash-merged and the branch is deleted.
-
-`main` only accepts changes through pull requests.
+1. Work on a branch in a separate worktree and keep commits focused. Follow
+   [CLAUDE.md](CLAUDE.md) for design decisions, tests, and handover.
+2. Run focused local checks. CI is paused for session work. AI review passes
+   run only when requested.
+3. For changes people notice, add a line under Unreleased in [CHANGELOG.md](CHANGELOG.md)
+   and update the matching site docs in a separate local commit. See
+   [the docs map](docs/docs-map.md).
+4. Commit tested work with short, factual messages. Keep credentials, personal
+   paths, session metadata and AI attribution out of commits. Follow the lead's
+   instructions for local integration. Sessions never push. The lead pushes
+   only on the user's word.
 
 ### What branches don't edit by hand
 
@@ -305,11 +261,10 @@ and the lists they add to merge line by line:
   (without union): the bridge's test of each name's route (`routes` in
   `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES`, `MACHINE_FEATURES`, and
   PROTOCOL.md's table of names ("Features").
-- **The update gate's lists** (what a client needs of a box, PROTOCOL.md's "The update gate"): one
-  name a line, in order, in `gpui/kuvo_box/src/gate/required.rs` and
-  `protocol/gate-required.txt`. The desktop's vector test checks that they agree.
-  Removing one, look at the lists after a merge: union keeps a line one side removed if the other
-  added a name beside it.
+- **Compatibility requirement lists** are kept in sync between
+  `gpui/kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt`. Keep
+  entries sorted and check removals after a merge. The lists describe expected
+  capabilities, while the box decides whether to refuse a request.
 - **A branch from before these were one a line** (#396) merges main into itself first, where the
   old lines conflict as they always did, and puts its names back one a line, in order. Merged the
   other way, into main, `features.ts`'s union takes its old line whole beside the new ones: it
@@ -331,27 +286,10 @@ and the lists they add to merge line by line:
   run `scripts/merge-setup.sh` after cloning. It writes `merge.kuvo-built` into `.git/config`,
   which every worktree of that clone shares, so a new worktree needs nothing more. A clone without
   it merges these files as text, and they conflict as they always did: then take either side and
-  build again. GitHub's own merge button doesn't run it, so a pull request can still show these
-  files as conflicting there.
+  build again.
 - **`CHANGELOG.md`**: add lines; it's merged by union too.
 
-## Pull requests
-
-Keep commit messages on your branch short and factual; they're combined when
-the pull request is merged. Don't include generated build output, credentials,
-personal paths, AI session metadata, or co-author trailers added by coding
-tools. Screenshots and recordings are welcome for UI changes; make sure they
-don't show your sessions, accounts or file paths.
-
-## Contribution license
+## License
 
 Kuvo Code is source-available for noncommercial use under the
-[PolyForm Noncommercial License](LICENSE). To keep commercial licensing rights
-coherent as the project accepts outside work, every contributor must accept
-the [Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md).
-
-You retain ownership of your contribution. The agreement grants the project
-owner the additional rights needed to include it in both the public
-noncommercial project and any separately licensed commercial version. A pull
-request can't be merged until every contributor to it has accepted those
-terms.
+[PolyForm Noncommercial License](LICENSE).

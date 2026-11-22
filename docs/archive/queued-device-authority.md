@@ -1,3 +1,5 @@
+> Historical, superseded by [Message delivery](../architecture/message-delivery.md), kept for its findings.
+
 # Deferred operations and computer action receipts
 
 Revision-aware phone and desktop edits have the same operation routes and owner checks. A base

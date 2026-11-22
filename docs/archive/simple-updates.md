@@ -1,3 +1,5 @@
+> Historical, superseded by [How kuvo works](../architecture/how-kuvo-works.md), kept for its findings.
+
 # Simple updates: prepare everywhere, then switch together
 
 Status: design, trimmed to the smallest version that meets the user's rules (2026-11-21).

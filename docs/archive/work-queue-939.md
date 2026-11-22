@@ -1,3 +1,5 @@
+> Historical, superseded by [How kuvo works](../architecture/how-kuvo-works.md), kept for its findings.
+
 # Work Queue 939 architecture decisions
 
 Base commit `b592c91126003d2786721902d86df84119c09705`. This covers the four Box gaps from the November 20 audit. The separate screens and mobile work remain parked.
