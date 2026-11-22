@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 df7c54ca3744
+// Kuvo folder layout 23 91d2e63ac343
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1640,7 +1640,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "df7c54ca3744";
+var BRIDGE_VERSION = "91d2e63ac343";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24381,7 +24381,7 @@ var init_sessions2 = __esm(() => {
     { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED2, 502: REFUSED2 } },
     { route: "GET kuvo/agents/api/kuvo/btw/:session/threads", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/agents/api/kuvo/btw/:session/threads/events", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED2, 503: REFUSED2 } },
-    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED2, 404: object({ message: string, "delivered?": bool }), 409: object({ message: string, "arriving?": bool }), 502: REFUSED2, 503: REFUSED2 } }
   ];
 });
 
@@ -24814,6 +24814,7 @@ var init_features = __esm(() => {
     "limits.resets",
     "limits.rings",
     "limits.titles",
+    "line",
     "mcp.catalog",
     "messages.commands",
     "messages.compaction-words",
@@ -62217,6 +62218,15 @@ async function sentOnce(key, send, now = Date.now) {
     throw error;
   }
 }
+function wentAlready(session, id) {
+  for (const [key, entry] of sent6) {
+    const [place, of, message] = key.split(`
+`);
+    if (place !== "queue" && of === session && message === id && entry.went !== undefined)
+      return true;
+  }
+  return false;
+}
 function forgetSent(session, id) {
   for (const place of ["engine", "agents", "queue"])
     sent6.delete(`${place}
@@ -70367,8 +70377,16 @@ async function* queueRoute(context, match) {
         });
         return { target: place?.target, bridge: !!place && bridge()?.port === place.target.port };
       });
-      if (!removed)
+      if (!removed) {
+        const arriving = new URLSearchParams(request.path.split("?")[1] ?? "").get("arriving") === "1";
+        if (arriving && wentAlready(session, id))
+          return yield* json(404, { message: "It was already sent to the agent.", delivered: true });
+        if (arriving) {
+          await holdArriving(session, [id]);
+          return yield* json(409, { message: "It’s still on its way, and is taken out as it arrives.", arriving: true });
+        }
         return yield* json(404, { message: "That message isn't waiting any more." });
+      }
       forgetSent(session, id);
       return yield* json(200, { ...shownQueue(queueOf(session)), removed });
     } catch (error) {
@@ -86270,6 +86288,7 @@ library
 limits.bar
 limits.rings
 limits.titles
+line
 messages.commands
 messages.compaction-words
 messages.send
@@ -106070,7 +106089,7 @@ var init_insights = __esm(() => {
 });
 
 // box/src/usage/limits-resets.ts
-import { randomBytes as randomBytes8 } from "node:crypto";
+import { randomBytes as randomBytes9 } from "node:crypto";
 import { mkdirSync as mkdirSync9, readFileSync as readFileSync17, renameSync as renameSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { dirname as dirname8 } from "node:path";
 
@@ -106190,7 +106209,7 @@ class LimitResets {
     for (const [id, kept] of this.confirms)
       if (at - kept.at > CONFIRM_FOR)
         this.confirms.delete(id);
-    const confirm = `rsc_${randomBytes8(12).toString("hex")}`;
+    const confirm = `rsc_${randomBytes9(12).toString("hex")}`;
     this.confirms.set(confirm, { row: rowID, at, ...resets.on.here ? { provider } : { via: resets.on.key } });
     return {
       offer: {
@@ -106494,7 +106513,7 @@ async function resetRoutes(resets, method, rest, body) {
   }
   return json8({ message: "Not found" }, 404);
 }
-var isResetMail = (value) => value !== null && typeof value === "object" && value.kind === "reset", NOT_ALLOWED3 = "Always Allow is off for this account now: nothing was used. Ask the user first.", NOT_YET = "This computer can't tell yet whether Always Allow holds here: nothing was used. Ask the user first, or try again in a moment.", JOIN_FOR, STILL_OPEN = "It can't be asked of its maker from here right now. An earlier try may have gone through: asking again later won't use another.", OPEN, MINUTE = 60000, CONFIRM_FOR, PEER_WAIT = 45000, KEEP2 = 200, KEEP_FOR3, READ_AFTER = 8000, NOT_YOURS2 = "The computer with its sign-in isn't one of yours now, so it doesn't use your resets: nothing was used.", NOT_YOURS_OPEN = "The computer with its sign-in isn't one of yours now, so it can't be asked again from here. An earlier try may have gone through: nothing more was used.", OUTCOMES2, UNSETTLED_FOR, requestID = () => randomBytes8(16).toString("hex"), json8 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var isResetMail = (value) => value !== null && typeof value === "object" && value.kind === "reset", NOT_ALLOWED3 = "Always Allow is off for this account now: nothing was used. Ask the user first.", NOT_YET = "This computer can't tell yet whether Always Allow holds here: nothing was used. Ask the user first, or try again in a moment.", JOIN_FOR, STILL_OPEN = "It can't be asked of its maker from here right now. An earlier try may have gone through: asking again later won't use another.", OPEN, MINUTE = 60000, CONFIRM_FOR, PEER_WAIT = 45000, KEEP2 = 200, KEEP_FOR3, READ_AFTER = 8000, NOT_YOURS2 = "The computer with its sign-in isn't one of yours now, so it doesn't use your resets: nothing was used.", NOT_YOURS_OPEN = "The computer with its sign-in isn't one of yours now, so it can't be asked again from here. An earlier try may have gone through: nothing more was used.", OUTCOMES2, UNSETTLED_FOR, requestID = () => randomBytes9(16).toString("hex"), json8 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 var init_limits_resets = __esm(() => {
   JOIN_FOR = 10 * 60000;
   OPEN = new Set(["unknown", "unconfirmed"]);
@@ -106622,7 +106641,7 @@ var init_ids = __esm(() => {
 });
 
 // box/src/agents/events.ts
-function emit(type, data, directory) {
+function emit2(type, data, directory) {
   const event = { id: newID3("evt"), type, created: Date.now(), data: compactionEventWords(type, data) };
   if (directory)
     event.location = { directory };
@@ -107103,7 +107122,7 @@ class Limits {
     for (const push of [false, true]) {
       const facts = notices.filter((n) => currentNotice(n, this.now()) && pushes.has(n.id) === push);
       if (facts.length)
-        emit("kuvo.usage.notices", { notices: facts, push });
+        emit2("kuvo.usage.notices", { notices: facts, push });
     }
   }
   resets;
@@ -107331,7 +107350,7 @@ class Limits {
       this.refreshFailed = true;
     }).finally(() => {
       this.refreshing = undefined;
-      emit("kuvo.limits.updated", { accounts: this.shown(), rows: this.rows(), notices: this.notices(), ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability(), refreshFinished: true });
+      emit2("kuvo.limits.updated", { accounts: this.shown(), rows: this.rows(), notices: this.notices(), ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability(), refreshFinished: true });
     });
     return this.refreshing;
   }
@@ -107673,7 +107692,7 @@ class Limits {
     if (now === this.said)
       return;
     this.said = now;
-    emit("kuvo.limits.updated", { accounts: list, rows, notices, ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability() });
+    emit2("kuvo.limits.updated", { accounts: list, rows, notices, ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability() });
   }
   load() {
     if (!this.file)
@@ -110102,7 +110121,7 @@ class Usage {
   set settings(settings) {
     this.kept = settings;
     settings?.listen((units) => {
-      emit("kuvo.usage.settings", { units });
+      emit2("kuvo.usage.settings", { units });
       if (units.includes("codexFallback"))
         this.tick();
     });
@@ -110295,7 +110314,7 @@ class Usage {
     if (now === this.said)
       return;
     this.said = now;
-    emit("kuvo.usage.updated", { services: this.services });
+    emit2("kuvo.usage.updated", { services: this.services });
   }
   load() {
     if (!this.file)
@@ -110612,7 +110631,7 @@ function engineCodexSource(folder, signedIn, kept, computer = ownComputer2) {
     ];
   };
 }
-function ownerOf5(grok, owns) {
+function ownerOf6(grok, owns) {
   const owner = new Map;
   for (const agent of grok)
     for (const root of agent.conversationRoots())
@@ -110624,7 +110643,7 @@ function grokSources(folder, computer = ownComputer2, native) {
   const files = new JSONLFiles((line) => grokLine(line).map(keptGrok), (entry) => entry[0], folder ? join29(folder, "grok-files") : undefined, 1);
   const last = new Map;
   return (agents) => {
-    const owner = ownerOf5(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots), native?.owns);
+    const owner = ownerOf6(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots), native?.owns);
     return agents.flatMap((agent) => {
       const parsed = parseProvider(agent.providerID);
       if (parsed?.kind !== "grok" || !agent.conversationRoots)
@@ -111336,7 +111355,7 @@ class GroupStore {
     renameSync14(this.folder(id), join30(into, id));
     syncDurableFile(into, dirname12(trash));
     syncDurableFile(this.root, dirname12(this.root));
-    emit("kuvo.group.trashed", { id, path: into });
+    emit2("kuvo.group.trashed", { id, path: into });
   }
   settings() {
     const value = read10(join30(this.root, "settings.json"));
@@ -115718,7 +115737,7 @@ class GitHubSignIn {
       userCode: /One-time code\s*:\s*([A-Z0-9]{4}-[A-Z0-9]{4})/i,
       onComplete: () => {
         this.account = undefined;
-        emit("integration.updated", { integrationID: GITHUB_WORK_QUEUE });
+        emit2("integration.updated", { integrationID: GITHUB_WORK_QUEUE });
       }
     });
     const id = newID3("att");
@@ -115792,7 +115811,7 @@ var init_github_sign_in = __esm(() => {
 // box/src/link/services.ts
 import { existsSync as existsSync9, mkdirSync as mkdirSync19, rmSync as rmSync11 } from "node:fs";
 import { dirname as dirname15, join as join38 } from "node:path";
-import { randomBytes as randomBytes9, timingSafeEqual } from "node:crypto";
+import { randomBytes as randomBytes10, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
   const { handle, started, closeInsights } = usageReader({
     ...options,
@@ -115822,7 +115841,7 @@ function serveBoxServices(options) {
   mkdirSync19(temporary, { recursive: true, mode: 448 });
   leftSignIns(temporary);
   const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join38(options.box, "workspace")));
-  const password = randomBytes9(24).toString("hex");
+  const password = randomBytes10(24).toString("hex");
   const expected = Buffer.from(servicesAuthorization(password));
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -125547,12 +125566,327 @@ async function* signInActionRoute(context) {
 
 // box/src/link/server/router.ts
 init_authority();
+
+// box/src/link/server/line.ts
+import { randomBytes as randomBytes8 } from "node:crypto";
+var LINE_ROUTE = "kuvo/line";
+var LINE_WATCH_ROUTE = "kuvo/line/watch";
+var lineTiming = { beat: 5000, kept: 120000, bytes: 4 * 1024 * 1024, eventsQuiet: 60000 };
+var ONCE_MS = 1e4;
+var AGAIN_MS = [250, 1000, 2000, 5000];
+var lines2 = new Map;
+function end(line) {
+  clearTimeout(line.expiry);
+  for (const topic of line.topics.values())
+    topic.stop.abort();
+  line.topics.clear();
+  line.listener = null;
+  if (lines2.get(line.id) === line)
+    lines2.delete(line.id);
+}
+function ownerOf5(request, phone) {
+  if (phone?.key)
+    return `key:${phone.key.toString("hex")}:${phone.pairing ?? ""}`;
+  return ["fromApp", "fromMac", "served", "internal", "addressedSsh", "residentSsh", "desktop"].filter((flag) => request[flag]).join(",") || "local";
+}
+function readWatch(given) {
+  let value = given;
+  if (typeof given === "string") {
+    try {
+      value = JSON.parse(Buffer.from(given, "base64url").toString("utf8"));
+    } catch {
+      return null;
+    }
+  }
+  if (!isObject(value))
+    return null;
+  const topics = new Map;
+  for (const [name, route] of Object.entries(value)) {
+    if (typeof route !== "string" || !route || route.startsWith("/") || route.split("?")[0].startsWith(LINE_ROUTE) || name.length > 200)
+      return null;
+    topics.set(name, route);
+  }
+  return topics;
+}
+function emit(line, value) {
+  const n = ++line.n;
+  const text = JSON.stringify({ ...value, n });
+  line.sent.push({ n, text });
+  line.bytes += text.length;
+  while (line.bytes > lineTiming.bytes && line.sent.length > 1)
+    line.bytes -= line.sent.shift().text.length;
+  line.listener?.(text);
+}
+function isEvents(route, contentType) {
+  if (contentType?.includes("event-stream"))
+    return true;
+  const path = route.split("?")[0];
+  return path === "api/event" || path === "kuvo/agents/api/event";
+}
+var wait = (ms, signal) => new Promise((done) => {
+  if (signal.aborted)
+    return done();
+  const timer = setTimeout(done, ms);
+  signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    done();
+  }, { once: true });
+});
+async function runTopic(line, name, topic) {
+  const { signal } = topic.stop;
+  let attempts = 0;
+  let refusedLast = "";
+  let last;
+  let tries = 0;
+  while (!signal.aborted) {
+    const attempt = attempts++;
+    let status = 0;
+    let events = false;
+    let refusal = "";
+    let rest = "";
+    let data = [];
+    const take = (text) => {
+      if (signal.aborted)
+        return;
+      if (events) {
+        if (text === "") {
+          const body = data.join(`
+`);
+          data = [];
+          if (!body)
+            return;
+          const value = parsed(Buffer.from(body));
+          if (value !== undefined)
+            emit(line, { t: name, d: value });
+        } else if (text.startsWith("data:")) {
+          data.push(text.slice(text[5] === " " ? 6 : 5));
+        }
+        return;
+      }
+      if (!text.trim())
+        return;
+      if (text === last)
+        return;
+      const value = parsed(Buffer.from(text));
+      if (value === undefined)
+        return;
+      last = text;
+      emit(line, { t: name, d: value });
+    };
+    const opening = new AbortController;
+    const ended = () => opening.abort();
+    signal.addEventListener("abort", ended, { once: true });
+    let quiet;
+    const heard = () => {
+      clearTimeout(quiet);
+      if (events)
+        quiet = setTimeout(() => opening.abort(), lineTiming.eventsQuiet);
+    };
+    try {
+      const request = { ...line.base, method: "GET", path: topic.route, body: undefined };
+      for await (const piece of line.dispatch(request, opening.signal)) {
+        if (signal.aborted || opening.signal.aborted)
+          break;
+        if (piece.head) {
+          status = piece.head.status;
+          const headers = piece.head.headers ?? {};
+          const type = Object.entries(headers).find(([key]) => key.toLowerCase() === "content-type")?.[1];
+          events = isEvents(topic.route, typeof type === "string" ? type : undefined);
+          heard();
+          if (status >= 200 && status < 300) {
+            tries = 0;
+            refusedLast = "";
+            if (events && attempt > 0)
+              emit(line, { t: name, gap: true });
+          }
+        }
+        if (piece.body) {
+          if (status && (status < 200 || status >= 300)) {
+            refusal += piece.body.toString("utf8");
+            continue;
+          }
+          heard();
+          rest += piece.body.toString("utf8");
+          let at;
+          while ((at = rest.indexOf(`
+`)) >= 0) {
+            take(rest.slice(0, at).replace(/\r$/, ""));
+            rest = rest.slice(at + 1);
+          }
+        }
+      }
+      if (rest)
+        take(rest.replace(/\r$/, ""));
+      if (events)
+        take("");
+    } catch {} finally {
+      clearTimeout(quiet);
+      signal.removeEventListener("abort", ended);
+    }
+    if (signal.aborted)
+      return;
+    if (status && (status < 200 || status >= 300)) {
+      const said = parsed(Buffer.from(refusal));
+      const message = isObject(said) && typeof said.message === "string" ? said.message : refusal.slice(0, 500);
+      const refused = { status, message, ...isObject(said) ? { said } : {} };
+      if (JSON.stringify(refused) !== refusedLast)
+        emit(line, { t: name, refused });
+      refusedLast = JSON.stringify(refused);
+      if (status < 500) {
+        line.topics.delete(name);
+        return;
+      }
+    }
+    await wait(AGAIN_MS[Math.min(tries++, AGAIN_MS.length - 1)], signal);
+  }
+}
+function setTopics(line, watch) {
+  for (const [name, topic] of line.topics) {
+    if (watch.get(name) !== topic.route) {
+      topic.stop.abort();
+      line.topics.delete(name);
+    }
+  }
+  for (const [name, route] of watch) {
+    if (line.topics.has(name))
+      continue;
+    const topic = { route, stop: new AbortController };
+    line.topics.set(name, topic);
+    runTopic(line, name, topic);
+  }
+}
+function query(path) {
+  const at = path.indexOf("?");
+  return new URLSearchParams(at < 0 ? "" : path.slice(at + 1));
+}
+async function* lineRoute(context, dispatch) {
+  const { request, phone, json, signal } = context;
+  const method = request.method.toUpperCase();
+  const owner = ownerOf5(request, phone);
+  if (context.route === LINE_WATCH_ROUTE) {
+    if (method !== "POST")
+      return yield* json(405, {});
+    const body = parsed(request.body);
+    const id = isObject(body) && typeof body.line === "string" ? body.line : "";
+    const watch = isObject(body) ? readWatch(body.watch) : null;
+    if (!watch)
+      return yield* json(400, { message: "Name what this line follows." });
+    const line = lines2.get(id);
+    if (!line || line.owner !== owner)
+      return yield* json(404, { fresh: true, message: "Open the line again." });
+    setTopics(line, watch);
+    return yield* json(200, { line: line.id });
+  }
+  if (method !== "GET")
+    return yield* json(405, {});
+  const asked = query(request.path);
+  const watch = readWatch(asked.get("watch") ?? "e30");
+  if (!watch)
+    return yield* json(400, { message: "Name what this line follows." });
+  const after = Number(asked.get("after") ?? "0");
+  const once = asked.get("once") === "1";
+  const base = { ...request, path: "", body: undefined };
+  let line = once ? undefined : lines2.get(asked.get("line") ?? "");
+  const resumable = line !== undefined && line.owner === owner && Number.isInteger(after) && after >= 0 && after <= line.n && (after === line.n || line.sent.length > 0 && line.sent[0].n <= after + 1);
+  const fresh = !resumable;
+  if (fresh) {
+    line = { id: randomBytes8(12).toString("base64url"), owner, dispatch, base, n: 0, sent: [], bytes: 0, topics: new Map, listener: null, expiry: undefined };
+    lines2.set(line.id, line);
+  }
+  const it = line;
+  clearTimeout(it.expiry);
+  it.dispatch = dispatch;
+  it.base = base;
+  const queue = [];
+  let wake = null;
+  const listener = (text) => {
+    queue.push(text);
+    wake?.();
+  };
+  const from = fresh ? 0 : after;
+  for (const sent of it.sent)
+    if (sent.n > from)
+      queue.push(sent.text);
+  it.listener = listener;
+  setTopics(it, watch);
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } } };
+  yield { body: Buffer.from(JSON.stringify({ hello: { line: it.id, fresh, beat: lineTiming.beat } }) + `
+`) };
+  if (once) {
+    const until = Date.now() + ONCE_MS;
+    const pending = new Set(watch.keys());
+    try {
+      while (pending.size && Date.now() < until && !signal?.aborted) {
+        while (queue.length) {
+          const text = queue.shift();
+          const said = JSON.parse(text);
+          if (said.t)
+            pending.delete(said.t);
+          yield { body: Buffer.from(text + `
+`) };
+        }
+        if (!pending.size)
+          break;
+        await new Promise((done) => {
+          const timer = setTimeout(done, 50);
+          wake = () => {
+            clearTimeout(timer);
+            done();
+          };
+        });
+        wake = null;
+      }
+    } finally {
+      end(it);
+    }
+    return;
+  }
+  const woken = () => wake?.();
+  signal?.addEventListener("abort", woken, { once: true });
+  let beat = Date.now();
+  try {
+    while (!signal?.aborted && it.listener === listener) {
+      if (queue.length) {
+        const texts = queue.splice(0);
+        beat = Date.now();
+        yield { body: Buffer.from(texts.join(`
+`) + `
+`) };
+        continue;
+      }
+      if (Date.now() - beat >= lineTiming.beat) {
+        beat = Date.now();
+        yield { body: Buffer.from(JSON.stringify({ beat: it.n }) + `
+`) };
+        continue;
+      }
+      await new Promise((done) => {
+        const timer = setTimeout(done, Math.max(1, lineTiming.beat - (Date.now() - beat)));
+        wake = () => {
+          clearTimeout(timer);
+          done();
+        };
+      });
+      wake = null;
+    }
+  } finally {
+    signal?.removeEventListener("abort", woken);
+    if (it.listener === listener) {
+      it.listener = null;
+      it.expiry = setTimeout(() => end(it), lineTiming.kept);
+      it.expiry.unref?.();
+    }
+  }
+}
+
+// box/src/link/server/router.ts
 var WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
 async function* backupRoutes(context) {
   yield* (await Promise.resolve().then(() => (init_computer_backups(), exports_computer_backups))).computerBackupsRoute(context);
 }
 var ROUTES = [
   { feature: "info", when: (route) => route === "kuvo/info", answer: infoRoute },
+  { feature: "line", when: (route) => route === LINE_ROUTE || route === LINE_WATCH_ROUTE, answer: (context) => lineRoute(context, context.redispatch) },
   { feature: "vault", when: (route) => route === "kuvo/vault" || route.startsWith("kuvo/vault/"), answer: vaultRoute },
   { feature: "sandbox", when: (route) => route === "kuvo/sandbox" || route.startsWith("kuvo/sandbox/"), answer: sandboxRoute },
   { feature: "file", when: (route) => route === "kuvo/file", answer: ({ request, json }) => fileAt(request.path, json) },
@@ -125730,7 +126064,19 @@ function createBoxDispatcher({
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
     const method = request.method.toUpperCase();
-    const context = { ...entry, request, phone, signal, route, readEngine, readBridge, bridge, json, text };
+    const context = {
+      ...entry,
+      request,
+      phone,
+      signal,
+      route,
+      readEngine,
+      readBridge,
+      bridge,
+      json,
+      text,
+      redispatch: (asked, topicSignal) => dispatch(entry, asked, phone, topicSignal)
+    };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
       if (method !== "POST" && !editRouteAllowed(context))
