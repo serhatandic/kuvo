@@ -239,11 +239,28 @@ export function controlledHolders(): readonly Held[] | undefined {
   return startingHolders.size ? undefined : [...live]
 }
 
-export function releaseHolders(keep: ReadonlySet<string>) {
+/**
+ * A bridge making way for the next lets go of every agent it holds, idle or at work, and of those
+ * still starting: none is stopped, written to or signalled from here on (whatever this bridge does
+ * as it ends), and the next bridge takes each up (adopt.ts). Done once each has heard (2 s at most).
+ */
+export function releaseHolders(): Promise<void> {
+  const letGo = [...live]
+  for (const held of letGo) held.detach()
+  startingHolders.clear()
+  // Once each holder has all that was sent it (a turn's note, the last ack) and has let go too: a
+  // bridge ending at once would lose what's still on its way.
+  return Promise.race([Promise.all(letGo.map((held) => held.closed)).then(() => {}), new Promise<void>((resolve) => setTimeout(resolve, WITHIN / 5).unref?.())])
+}
+
+/** The sessions whose agents this bridge holds: theirs are the next bridge's to take up. */
+export function heldSessions(): Set<string> {
+  const found = new Set<string>()
   for (const held of live) {
-    if (keep.has(held.id)) held.detach()
-    else held.stop("bridge transfer")
+    if (typeof held.meta.session === "string") found.add(held.meta.session)
+    for (const note of Object.values((held.meta.turns ?? {}) as Record<string, { session?: unknown }>)) if (typeof note?.session === "string") found.add(note.session)
   }
+  return found
 }
 
 /**

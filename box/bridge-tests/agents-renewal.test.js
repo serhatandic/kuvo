@@ -1,8 +1,8 @@
 // A newer coding agents' bridge put on a machine while its sessions work (a Mac that connected
 // brought it, on a box that works day and night): the bridge running takes it without cutting a
-// turn. The turn under way ends on the bridge it began on, which then makes way, and the next turn
-// runs on the new one; on a box with no quiet moment, new turns wait (kept) once it has waited long
-// enough, and run on the new one. Nothing sent is lost or run twice. The box says meanwhile which
+// turn. The turn under way ends on the bridge it began on, which then makes way, letting go of its
+// Codex, and the next turn runs through the new one, in that same Codex; on a box with no quiet
+// moment, new turns wait (kept) once it has waited long enough, and run through the new one. Nothing sent is lost or run twice. The box says meanwhile which
 // build each runs (`kuvo/info`'s `pieces`). The real bridge (box/dist/kuvo-agents.js, on
 // Bun) and the real link, a stand-in `codex app-server` whose turns wait to be let go, and what
 // keeps a machine's bridge running (its launch starts it again from what's there as it ends).
@@ -207,7 +207,8 @@ test("a newer bridge put in place while a turn runs: that turn ends on the bridg
   assert.deepEqual(messages.filter(each => each.type === "user").map(each => each.text), ["hold one", "two"]);
   assert.deepEqual(textOf(messages), ["Done: hold one", "Done: two"]);
   assert.deepEqual(outcomes(messages), ["succeeded", "succeeded"]);
-  assert.deepEqual(box.turns(), [{ text: "hold one", bridge: first.pid }, { text: "two", bridge: second.pid }], "each turn ran once, the second on the new bridge");
+  // (The Codex the first bridge started, never stopped: the new bridge took it up as it made way.)
+  assert.deepEqual(box.turns(), [{ text: "hold one", bridge: first.pid }, { text: "two", bridge: first.pid }], "each turn ran once, the second through the new bridge in the same Codex");
   assert.equal(box.starts(), 2, "its launch started it again once");
 });
 
@@ -236,7 +237,7 @@ test("a machine as it runs: its link asks the bridge whether it answers and a cl
   await box.send(session, "msg_renewalwatch00002", "two");
   const messages = await box.finished(session, 2);
   assert.deepEqual(textOf(messages), ["Done: one", "Done: two"]);
-  assert.deepEqual(box.turns(), [{ text: "one", bridge: first.pid }, { text: "two", bridge: second.pid }]);
+  assert.deepEqual(box.turns(), [{ text: "one", bridge: first.pid }, { text: "two", bridge: first.pid }], "the same Codex, taken up by the new bridge");
 });
 
 test("a box with no quiet moment: once it has waited, a new message waits, kept, the turn under way ends on its bridge, and what waited runs once on the new one", { skip: bun ? false : NO_BUN }, async () => {
@@ -272,7 +273,7 @@ test("a box with no quiet moment: once it has waited, a new message waits, kept,
   const waited = await box.finished(other, 1);
   assert.deepEqual(waited.filter(each => each.type === "user").map(each => each.text), ["four"]);
   assert.deepEqual(textOf(waited), ["Done: four"]);
-  assert.deepEqual(box.turns(), [{ text: "hold three", bridge: first.pid }, { text: "seat part", bridge: first.pid }, { text: "four", bridge: second.pid }], "what waited ran once, on the new bridge");
+  assert.deepEqual(box.turns(), [{ text: "hold three", bridge: first.pid }, { text: "seat part", bridge: first.pid }, { text: "four", bridge: first.pid }], "what waited ran once, through the new bridge, in the Codex the first started");
   assert.deepEqual((await box.api("GET", `api/session/${other}/inbox`)).json.data, [], "and nothing's left in line");
 });
 

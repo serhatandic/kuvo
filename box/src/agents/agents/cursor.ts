@@ -3,6 +3,7 @@
 // The SDK is downloaded the first time it's needed; its sign-in and its agents' conversations stay
 // in the bridge's folder.
 
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -21,8 +22,8 @@ import { computerServers } from "../servers"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
 import { CursorWorker, cursorWorker, type CursorRun } from "./cursor-worker"
-import { agentHoldFolder, CURSOR_SDK } from "../hold/adopt"
-import { hold } from "../hold/client"
+import { agentHoldFolder, CURSOR_SDK, type HeldMeta } from "../hold/adopt"
+import { hold, type Held } from "../hold/client"
 import { onMachine } from "../machine"
 import { privateFolder } from "../../shared/files"
 import { fingerprint, type LimitsSource } from "../../usage/limits"
@@ -395,7 +396,9 @@ class CursorThread implements Thread {
     // mode, other skills or other tools (Kuvo Code's, or another set of the computer's servers),
     // or other subagents, start it again.
     const skills = options.local?.dirs?.[0] as string | undefined
-    const tools = JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]: [string, any]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])
+    // (Kept as its sum: Kuvo Code's tools' key can hold a server's environment, and it goes in the
+    // worker's holder's record.)
+    const tools = createHash("sha256").update(JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]: [string, any]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])).digest("hex")
     // In the sandbox: its rules and the folders Also Allowed gives the project, as it starts.
     const fence = fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : ""
     // (And the worker it runs in, as it starts again, or once it has stopped.)
@@ -428,6 +431,8 @@ class CursorThread implements Thread {
       this.state.cursorAgent = this.agent.agentId
       hooks.saveState()
     }
+    // (For a bridge taking the worker up: the agent live in it, and what it was started with.)
+    this.worker?.note({ agent: this.agent.agentId, started: { approving: approvesAll, skills, tools, fence } })
   }
 
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
@@ -436,6 +441,7 @@ class CursorThread implements Thread {
       this.stop()
       this.startedFence = taken.meta.fenced === true ? "previous" : undefined
       const worker = this.worker = new CursorWorker(taken.held, { adopting: true, session: this.session.id })
+      this.takeUp(taken.meta)
       return this.stream(turn, hooks, onDelta => Promise.resolve(worker.continue(taken, onDelta)), () => {})
     }
     const sdk = await this.owner.sdk()
@@ -677,7 +683,7 @@ class CursorThread implements Thread {
     const start = async (command: string[], env: Record<string, string | undefined>, ended?: () => void) => {
       const held = folder ? await hold(command, {
         folder, kind: "jsonrpc", cwd: directory, env: { ...process.env, ...env },
-        meta: { provider: this.owner.providerID, kind: "cursor", sdk: CURSOR_SDK, fenced, turns: {} },
+        meta: { provider: this.owner.providerID, kind: "cursor", session: this.session.id, sdk: CURSOR_SDK, fenced, turns: {} },
       }).catch(error => {
         console.error("Cursor's holder didn't start:", error?.message ?? error)
         return undefined
@@ -708,6 +714,35 @@ class CursorThread implements Thread {
       CURSOR_SANDBOX_POLICY_DIR: join(own, "sandbox-policies"),
       CUA_APP_SUPPORT_DIR: join(own, "computer-use"),
     }, fence.ended)
+  }
+
+  /**
+   * The worker as the bridge before this one left it between turns (it made way, or crashed): this
+   * conversation's again, as it is, with the agent live in it; its next message goes to them.
+   */
+  adoptIdle(held: Held, meta: HeldMeta): boolean {
+    if (this.worker || this.agent || meta.session !== this.session.id || meta.sdk !== CURSOR_SDK) return false
+    this.worker = new CursorWorker(held, { session: this.session.id })
+    this.takeUp(meta)
+    return true
+  }
+
+  /**
+   * What a worker taken up was started with, as its holder's record says, so the next message goes
+   * on in it when nothing has changed since, to the agent live in it. (One from a bridge that didn't
+   * say starts again then.)
+   */
+  private takeUp(meta: HeldMeta) {
+    const started = meta.started as { approving?: boolean; skills?: string; tools?: string; fence?: string } | undefined
+    if (!started) {
+      this.startedFence = meta.fenced === true ? "previous" : undefined
+      return
+    }
+    this.startedApproving = started.approving
+    this.startedSkills = started.skills
+    this.startedTools = started.tools
+    this.startedFence = started.fence
+    if (typeof meta.agent === "string" && meta.agent === this.state.cursorAgent) this.agent = this.worker!.attached(meta.agent)
   }
 
   /** Its agent stopped, and the worker it ran in (its key to Kuvo Code's tools kept for the next). */

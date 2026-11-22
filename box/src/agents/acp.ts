@@ -3,7 +3,7 @@
 // per turn, and what it does told in `session/update`s. Each agent says how it starts, signs in,
 // picks a model, and anything of its own.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { LostWork, OwnTurn, RunInput, RunResult, Thread, TurnHooks, SubagentRun, SubagentTask } from "./agent"
 import { failure, lostWorkNote } from "./agent"
@@ -20,7 +20,7 @@ import { elicitationField } from "./forms"
 import type { Turn } from "./turn"
 import type { AgentKind } from "./accounts"
 import { hold, type Held } from "./hold/client"
-import { agentHoldFolder, noteTurn, type HeldTurn } from "./hold/adopt"
+import { agentHoldFolder, noteTurn, type HeldMeta, type HeldTurn, type HeldTurnNote } from "./hold/adopt"
 import type { Decision, FormField, Session, TokenUsage } from "./wire"
 import { workOrder, type WorkOrder } from "../shared/work-order"
 
@@ -41,6 +41,8 @@ export interface AcpFlavor {
     onExit?: () => void
     /** A file the agent writes when it wants you to sign in (its "browser" writes the page down): it can't go on. */
     signInFile?: string
+    /** A folder of the run's own, which `onExit` removes: kept in its holder's record, for a bridge taking the agent up to remove as it ends. */
+    temporary?: string
   }>
   /**
    * Settings › Skills' skills for a session, made ready for the agent as it starts: a folder of
@@ -292,7 +294,7 @@ export class AcpThread implements Thread {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { ...this.flavor.held!, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { ...this.flavor.held!, session: this.session.id, fenced: Boolean(whole), key: startedWith, ...(launch.temporary ? { temporary: launch.temporary } : {}), turns: {} } }).catch((error) => {
             console.error(`${this.name}'s holder didn't start:`, error?.message ?? error)
             return undefined
           })
@@ -441,6 +443,8 @@ export class AcpThread implements Thread {
         await authenticate()
         await openSession()
       }
+      // (For a bridge taking it up: its conversation here, and what it said it offers.)
+      held?.note({ acpSession: this.sessionID, setup: portableSetup(this.setup) })
     } catch (error) {
       // It couldn't get its session going: the next message starts it again.
       if (this.rpc === rpc) this.drop()
@@ -545,23 +549,14 @@ export class AcpThread implements Thread {
   private resumeHeld(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
     const taken = input.held!
     const flavor = this.flavor
-    // (Its own ids past those any earlier bridge sent it.)
-    const rpc = new RPC(taken.held, { jsonrpc: true, firstID: 2 ** 30 + taken.held.generation * 2 ** 24, filter: (line) => flavor.filter?.(line) ?? true })
-    rpc.onNotification = (method, params) => this.notification(method, params)
-    rpc.onRequest = (method, params) => this.agentRequest(method, params)
     this.close()
-    this.rpc = rpc
+    const rpc = this.taken(taken.held, taken.meta)
     this.sessionID = taken.thread
-    this.fenced = taken.meta.fenced === true
-    // Antigravity's negotiated model and mode options also belong to its original bridge.
-    // Keep the native session for this turn, then reopen it normally for the next prompt.
-    this.spawnedWith = flavor.held?.kind !== "antigravity" && typeof taken.meta.key === "string" ? taken.meta.key : undefined
+    // (Antigravity's negotiated model and mode options are its holder's record's, where it kept
+    // them: without them, it opens again for the next prompt.)
+    if (flavor.held?.kind === "antigravity" && !taken.meta.setup) this.spawnedWith = undefined
     return new Promise<RunResult>((resolve) => {
       const active: Active = { turn, hooks, resolve, rpc, tools: new Map(), toolsSinceText: false, ended: false, children: new Map(), served: new Map(), started: Date.now(), prompt: 1 }
-      rpc.onExit = () => {
-        if (this.rpc === rpc) this.rpc = undefined
-        if (!active.ended) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
-      }
       // The answer to its prompt, which that bridge sent.
       rpc.onStray = (id, result: any, error) => {
         if (id !== taken.note.request || active.ended) return
@@ -576,6 +571,61 @@ export class AcpThread implements Thread {
       taken.gate.onOpen(() => rpc.start())
       taken.gate.ready(taken.thread)
     })
+  }
+
+  /**
+   * The agent's process, under its holder, as the bridge before this one left it (it made way, or
+   * crashed): this thread's, as one it started is (its ids past any earlier bridge's), its
+   * conversation and what it offers as its record says; the run's own folder goes as it ends.
+   */
+  private taken(held: Held, meta: HeldMeta): RPC {
+    const flavor = this.flavor
+    const rpc = new RPC(held, { jsonrpc: true, firstID: 2 ** 30 + held.generation * 2 ** 24, filter: (line) => flavor.filter?.(line) ?? true })
+    rpc.onNotification = (method, params) => this.notification(method, params)
+    rpc.onRequest = (method, params) => this.agentRequest(method, params)
+    rpc.onExit = () => {
+      if (typeof meta.temporary === "string") rmSync(meta.temporary, { recursive: true, force: true })
+      // Ended by itself between turns: what it had going went with it (as for one started here).
+      const lost = this.rpc === rpc && !this.active ? this.taskWork() : []
+      if (this.rpc === rpc) {
+        this.rpc = undefined
+        this.leftRunning()
+      }
+      if (lost.length) this.onWorkLost?.(lost)
+      const active = this.active
+      if (active && !active.ended && active.rpc === rpc) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+    }
+    this.rpc = rpc
+    this.fenced = meta.fenced === true
+    this.spawnedWith = typeof meta.key === "string" ? meta.key : undefined
+    if (meta.setup && typeof meta.setup === "object") this.setup = { ...meta.setup }
+    return rpc
+  }
+
+  /**
+   * The agent as the bridge before this one left it between turns (it made way): this
+   * conversation's again, as it is, its conversation open in it; its next message goes to it.
+   */
+  adoptIdle(held: Held, meta: HeldMeta): boolean {
+    if (this.rpc || meta.session !== this.session.id || typeof meta.acpSession !== "string" || meta.acpSession !== this.state.acpSession || !meta.setup) return false
+    const rpc = this.taken(held, meta)
+    this.sessionID = meta.acpSession
+    rpc.start()
+    return true
+  }
+
+  /**
+   * The bridge making way: what the next one needs to take the turn under way up, in its holder's
+   * record (Antigravity's place in its transcript). One it can't say that of (a request of the
+   * agent's being answered, a subagent at work) is left without it: the next bridge ends it.
+   */
+  handOver() {
+    const active = this.active
+    const held = active?.rpc.holder
+    if (!active || active.ended || !held || !this.sessionID) return
+    const note = (held.meta.turns as Record<string, HeldTurnNote> | undefined)?.[this.sessionID]
+    const state = this.transferState()
+    if (note && state !== undefined && state !== false) noteTurn(held, this.sessionID, { ...note, state })
   }
 
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
@@ -1271,6 +1321,14 @@ export class AcpThread implements Thread {
     dropRelayed(this.session.id, this)
     this.fenced = false
   }
+}
+
+/** What an agent said it offers as its session opened, as a bridge taking it up reads it: without
+ * what this bridge chose from it since (its model and mode, set again for the next prompt). */
+function portableSetup(setup: any) {
+  if (!setup || typeof setup !== "object") return undefined
+  const { kuvoModel: _model, kuvoMode: _mode, ...offered } = setup
+  return offered
 }
 
 // MARK: Tools, as the app knows them

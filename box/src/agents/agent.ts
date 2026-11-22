@@ -8,7 +8,8 @@ import type { LimitsSource } from "../usage/limits"
 import type { InstallResult, Maintenance, UpdateResult } from "./maintenance"
 import type { Deps } from "./deps"
 import type { Turn, Outcome } from "./turn"
-import type { HeldTurn } from "./hold/adopt"
+import type { HeldMeta, HeldTurn } from "./hold/adopt"
+import type { Held } from "./hold/client"
 import type { Decision, FormAnswer, FormField, IntegrationMethod, Model, ModelRef, OAuthStatus, PermissionRule, Session, StructuredError } from "./wire"
 import { run } from "./proc"
 
@@ -353,6 +354,11 @@ export interface Thread {
    */
   prepare?(input: RunInput, hooks: TurnHooks): Promise<{ fresh: boolean } | undefined>
   run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult>
+  /** Its agent's process as the bridge before this one held it between turns (it made way): this
+   * conversation's again, as it is, for what it does next; false when it can't take it up. */
+  adoptIdle?(held: Held, meta: HeldMeta): boolean
+  /** The bridge making way: what the next needs to take its turn under way up, written to its holder's record. */
+  handOver?(): void
   /** Bridge-owned state for the current turn, or false if it cannot be transferred now. */
   transferState?(): unknown
   /**
@@ -458,6 +464,9 @@ export interface Agent {
   outside?(): boolean
   /** Stops those (`outside`) that nothing is at work in now, to start again in the sandbox (you said to restart them); whether one is still at work. */
   restartOutside?(): boolean
+  /** A process of its that serves its sessions (Codex's app-server) as the bridge before this one
+   * held it between turns (it made way): its own again, as it is; false when it can't take it up. */
+  adoptIdle?(held: Held, meta: HeldMeta): boolean
   /** What it lists for the picker; with `hidden`, also those it still runs but keeps out of its
    * own picker (Codex's), each marked `hidden`. */
   models(options?: { hidden?: boolean; refresh?: boolean }): Promise<Model[]>
