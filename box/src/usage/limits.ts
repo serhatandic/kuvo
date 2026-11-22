@@ -20,6 +20,8 @@ import { emit, subscribe } from "../agents/events"
 import type { LimitsPeers } from "./limits-peers"
 import { resetRoutes, type LimitResets } from "./limits-resets"
 import { limitRows, shownAccount, type LimitRow } from "./limits-rows"
+import { railOf } from "./limit-card"
+import { Pace } from "./pace"
 import { initialState, meter, newNotice, currentNotice, visibleMetric, notificationAvailability, reconcileNotices, noticeAccountName, transitions, takeNotices, takeStates, type UsageNotice, type NoticeState } from "./notices"
 import type { UsageSettings } from "./settings"
 
@@ -319,6 +321,8 @@ interface Saved {
   accounts: Record<string, Entry>
   /** Makers' holds on reads, by bucket: until when, in ms. */
   holds: Record<string, number>
+  /** Each window's recent readings, for how fast it's going (`pace.ts`). */
+  paces?: Record<string, unknown>
   /** When each bucket was last asked, in ms. */
   asked?: Record<string, number>
   /** Reads each bucket turned away in a row. */
@@ -341,6 +345,8 @@ const SHARED_SLACK = 2 * MINUTE
 
 export class Limits {
   private entries = new Map<string, Entry>()
+  /** How fast each account's windows are going, from their recent readings on any of your computers. */
+  readonly pace = new Pace()
   private generations = new Map<string, number>()
   private holds = new Map<string, number>()
   /** When each maker's bucket was last asked, in ms. */
@@ -444,7 +450,7 @@ export class Limits {
   /** Every account across your computers, one row each (`limits-rows.ts`): this box's first. */
   rows(presentUsage = false): LimitRow[] {
     const own = this.list(false)
-    return this.peers ? this.peers.rows(own, presentUsage) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage)
+    return this.peers ? this.peers.rows(own, presentUsage, this.pace) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage, this.pace)
   }
 
   /** What a peer told changed what's listed: the clients are told. */
@@ -562,7 +568,9 @@ export class Limits {
         ...(account.label ? { label: account.label } : {}),
         ...(entry.identity ? { identity: entry.identity } : {}),
         ...(entry.plan ? { plan: entry.plan } : {}),
-        windows: account.limits.keepLastReading ? entry.windows : entry.windows.filter(window => this.recent(account.limits, window)),
+        // (A coding agent's last numbers stay, however old, so its ring and card never go blank
+        // while it isn't running: its card says as of when, `limit-card.ts`.)
+        windows: account.limits.keepLastReading || account.agent ? entry.windows : entry.windows.filter(window => this.recent(account.limits, window)),
         ...(entry.notices?.length ? { notices: entry.notices.filter(n => currentNotice(n, this.now())) } : {}),
         ...(entry.noticeState ? { noticeState: entry.noticeState } : {}),
         ...(entry.balance ? { balance: entry.balance } : {}),
@@ -1097,6 +1105,7 @@ export class Limits {
       for (const [bucket, until] of Object.entries(saved.holds ?? {})) if (typeof until === "number") this.holds.set(bucket, until)
       for (const [bucket, at] of Object.entries(saved.asked ?? {})) if (typeof at === "number") this.asked.set(bucket, at)
       for (const [bucket, count] of Object.entries(saved.refusals ?? {})) if (typeof count === "number") this.refusals.set(bucket, count)
+      this.pace.load(saved.paces)
     } catch {}
   }
 
@@ -1104,7 +1113,7 @@ export class Limits {
 
   private save() {
     if (!this.file) return
-    const saved = JSON.stringify({ accounts: Object.fromEntries(this.entries), holds: Object.fromEntries(this.holds), asked: Object.fromEntries(this.asked), refusals: Object.fromEntries(this.refusals) } satisfies Saved)
+    const saved = JSON.stringify({ accounts: Object.fromEntries(this.entries), holds: Object.fromEntries(this.holds), asked: Object.fromEntries(this.asked), refusals: Object.fromEntries(this.refusals), paces: this.pace.save(this.now()) } satisfies Saved)
     if (saved === this.kept) return
     try {
       mkdirSync(dirname(this.file), { recursive: true })
@@ -1151,7 +1160,7 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
     const rows = limits.rows(true)
     const usageUpdatedAt = Math.max(0, ...rows.map(row => row.usage?.updatedAt ?? 0)) || undefined
     return json({ data: {
-      accounts: limits.shown(), services: limits.services(), rows, usageUpdatedAt,
+      accounts: limits.shown(), services: limits.services(), rows, rail: railOf(rows), usageUpdatedAt,
       refreshPending: !!limits.refreshing, refreshFailed: limits.refreshFailed, refreshCompletedAt: limits.refreshCompletedAt,
       notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices(),
     } })

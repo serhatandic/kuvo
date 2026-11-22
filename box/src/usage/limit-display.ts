@@ -93,13 +93,15 @@ export function resetLabels(at: number | undefined, now: number, until: number):
   return labels
 }
 
-function usageTitle(window: LimitWindow): string {
+/** A window's name on a card: "5-hour", "Weekly", "Sonnet · Weekly", its maker's name for what it counts. */
+export function usageTitle(window: Pick<LimitWindow, "name" | "model" | "minutes">): string {
   if (window.name) return window.name
   const span = window.minutes === 300 ? "5-hour" : windowTitle({ minutes: window.minutes })
   return window.model ? (span === "Limit" ? window.model : `${window.model} · ${span}`) : span
 }
 
-function statusOf(problem: LimitsProblemKind | undefined, hasMeters: boolean, checked: boolean): LimitDisplay["status"] {
+/** What a card says where its account has no numbers to show: why, and what to do. */
+export function statusOf(problem: LimitsProblemKind | undefined, hasMeters: boolean, checked: boolean): LimitDisplay["status"] {
   switch (problem) {
     case "ended": return { words: "Plan ended.", warning: false }
     case "expired": return { words: "Sign-in expired. Sign in again under Accounts.", warning: true }

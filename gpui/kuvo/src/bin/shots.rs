@@ -395,6 +395,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     // The rail's rings, each filled with what's left, and a ring's card open beside it.
     Screen { slug: "rail-ring-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    // The box's cards (#952): on pace to run out, used up, Codex's resets and its confirm, an
+    // agent's many accounts (20, and 4), one before its first reading, and one Google doesn't count.
+    Screen { slug: "rail-card-claude-max", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-claude-used-up", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
+    Screen { slug: "rail-card-codex-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_2) },
+    Screen { slug: "rail-card-codex-confirm", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_confirm) },
+    Screen { slug: "rail-card-antigravity-20", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_3) },
+    Screen { slug: "rail-card-antigravity-4", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "rail-card-codex-no-resets", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card_1) },
+    Screen { slug: "rail-card-antigravity-as-of", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
@@ -2305,6 +2315,26 @@ fn ring_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspa
     workspace.rings().update(cx, |rings, cx| rings.show_card(0, cx));
 }
 
+fn ring_card_1(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(1, cx));
+}
+
+fn ring_card_2(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(2, cx));
+}
+
+fn ring_card_3(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(3, cx));
+}
+
+/// Codex's card asking before a reset is used.
+fn ring_card_confirm(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| {
+        rings.show_card(2, cx);
+        rings.ask_reset("codex#pro".into(), cx);
+    });
+}
+
 fn session_menu_row_hover(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.pin_session("ses_recipes", true, cx);
     workspace.set_hovered_row(Some("session-project:ses_dark".into()), cx);
@@ -2615,6 +2645,9 @@ fn main() -> anyhow::Result<()> {
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
                 "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
+                "rail-card-antigravity-4" | "rail-card-codex-no-resets" => stand_in.set_usage_sample(UsageSample::CardsFew),
+                "rail-card-antigravity-as-of" => stand_in.set_usage_sample(UsageSample::CardsAsOf),
+                slug if slug.starts_with("rail-card-") => stand_in.set_usage_sample(UsageSample::Cards),
                 _ => {}
             }
             if screen.slug.starts_with("settings-custom-auto") {

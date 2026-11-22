@@ -14,6 +14,7 @@ import { kinds, type AgentKind } from "../agents/accounts"
 import type { AccountLimits, LimitedAccount, LimitExtra, LimitWindow, Limits, LimitsService } from "./limits"
 import { takeNotices, takeStates, currentNotice, type UsageNotice, type NoticeState } from "./notices"
 import { limitRows, type LimitRow, type LimitsBox } from "./limits-rows"
+import type { Pace } from "./pace"
 
 /** What one box tells another of its limits (`{"limits": …}` between links). */
 export interface LimitsMail {
@@ -169,7 +170,7 @@ export class LimitsPeers {
   }
 
   /** Every computer's accounts, this box's first, then each peer's by name. */
-  rows(own: AccountLimits[], presentUsage = false): LimitRow[] {
+  rows(own: AccountLimits[], presentUsage = false, pace?: Pace): LimitRow[] {
     const now = this.now()
     const self = this.directory.own()
     const boxes: LimitsBox[] = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }]
@@ -181,7 +182,7 @@ export class LimitsPeers {
       const awayAt = kept.heard + PEER_AWAY
       boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, accounts: visible })
     }
-    return limitRows(boxes, now, presentUsage)
+    return limitRows(boxes, now, presentUsage, pace)
   }
 
   /**

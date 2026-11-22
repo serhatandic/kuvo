@@ -773,6 +773,9 @@ pub struct ResetLabel {
 pub struct UsageSnapshot {
     #[serde(deserialize_with = "readable")]
     pub rows: Vec<Account>,
+    /// The rings to draw, in order, as the box lays them out (`rail`); none from a box before cards.
+    #[serde(default, deserialize_with = "readable_list")]
+    pub rail: Option<Vec<RailItem>>,
     pub usage_updated_at: Option<f64>,
     pub refresh_completed_at: Option<f64>,
     #[serde(default)]
@@ -836,6 +839,133 @@ pub struct Account {
     pub boxes: Vec<RowBox>,
     #[serde(default, deserialize_with = "lenient")]
     pub usage: Option<LimitDisplay>,
+    /// What its card on the rail shows, in the box's words (`card`); none from a box before cards.
+    #[serde(default, deserialize_with = "lenient")]
+    pub card: Option<Card>,
+}
+
+/// A piece of a card's line, as the box words it: its text, then the moment `at` written in this
+/// computer's time (`as`: `time` or `date`), in its tone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CardWord {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub at: Option<f64>,
+    #[serde(default, rename = "as")]
+    pub written_as: Option<String>,
+    #[serde(default)]
+    pub tone: Option<String>,
+    #[serde(default)]
+    pub strong: bool,
+}
+
+/// How a window, an account or its mark stands, in the box's word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CardTone {
+    Calm,
+    Warning,
+    Danger,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// One window on a card: its name, what's left of it for its bar, and the rest of its line.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CardLine {
+    #[serde(default)]
+    pub window: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub left: f32,
+    #[serde(default)]
+    pub tone: CardTone,
+    #[serde(default, deserialize_with = "readable")]
+    pub words: Vec<CardWord>,
+}
+
+/// What asking before a reset is used says, in the box's words.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CardConfirm {
+    #[serde(default, deserialize_with = "readable")]
+    pub title: Vec<CardWord>,
+    #[serde(default)]
+    pub message: String,
+    pub button: String,
+    pub cancel: String,
+}
+
+/// An account's resets, where one can be used now.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CardResets {
+    #[serde(default, deserialize_with = "readable")]
+    pub words: Vec<CardWord>,
+    pub action: String,
+    pub confirm: CardConfirm,
+}
+
+/// An account's card, as the box words it (PROTOCOL.md, "Cards and the rail").
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Card {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub dot: Option<CardTone>,
+    #[serde(default)]
+    pub tone: CardTone,
+    #[serde(default)]
+    pub left: Option<f32>,
+    #[serde(default, deserialize_with = "readable")]
+    pub lines: Vec<CardLine>,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Its numbers aren't current: as of when (`asOf`), said quietly; empty where they are.
+    #[serde(default, deserialize_with = "readable")]
+    pub as_of: Vec<CardWord>,
+    #[serde(default)]
+    pub in_use: bool,
+    #[serde(default, deserialize_with = "lenient")]
+    pub resets: Option<CardResets>,
+}
+
+/// One account's mark in an agent's strip.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct StripMark {
+    pub row: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub left: Option<f32>,
+    #[serde(default)]
+    pub tone: CardTone,
+    #[serde(default, deserialize_with = "readable")]
+    pub heading: Vec<CardWord>,
+}
+
+/// One ring on the rail, as the box lays them out: an account's, or an agent's many accounts'.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RailItem {
+    #[serde(default)]
+    pub key: String,
+    pub rows: Vec<String>,
+    pub ring: String,
+    pub selected: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub dot: Option<CardTone>,
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default, deserialize_with = "readable")]
+    pub strip: Vec<StripMark>,
 }
 
 /// A computer an account is signed in on, as a row says it: `here`, the computer whose box answered.
@@ -853,6 +983,12 @@ pub struct RowBox {
 pub(crate) fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Vec<T>, D::Error> {
     let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
     Ok(values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect())
+}
+
+/// A list that may be missing (a box before it): its items this can read, or none.
+pub(crate) fn readable_list<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Option<Vec<T>>, D::Error> {
+    let value = Option::<Vec<serde_json::Value>>::deserialize(deserializer)?;
+    Ok(value.map(|values| values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect()))
 }
 
 /// One value, or none where it isn't one this client reads (a newer box's shape).
@@ -1105,6 +1241,33 @@ impl BoxClient {
             data: UsageSnapshot,
         }
         self.value::<Answer>(request).map(|answer| answer.data)
+    }
+
+    /// Uses one of an account's resets (`limits/reset`: asked, then confirmed, at once: the user
+    /// already confirmed it on its card). `None` where it went through (or its maker took it);
+    /// otherwise the box's words for why not.
+    pub fn use_limit_reset(&self, row: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Offer {
+            confirm: String,
+        }
+        #[derive(Deserialize)]
+        struct Done {
+            outcome: String,
+            #[serde(default)]
+            message: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Answer<T> {
+            data: T,
+        }
+        let route = "kuvo/agents/api/kuvo/limits/reset";
+        let offer = self.value::<Answer<Offer>>(&Request::post(route, serde_json::json!({ "row": row })))?.data;
+        let done = self.value::<Answer<Done>>(&Request::post(route, serde_json::json!({ "row": row, "confirm": offer.confirm })))?.data;
+        Ok(match done.outcome.as_str() {
+            "reset" | "unconfirmed" => None,
+            _ => Some(done.message.unwrap_or_else(|| "The reset wasn\u{2019}t used.".to_owned())),
+        })
     }
 
     /// A signal to read the latest snapshot, also sent when first connecting to cover missed events.
