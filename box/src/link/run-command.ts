@@ -117,10 +117,10 @@ process.once("exit", () => {
 /** Runs `command` with the user's shell in `folder`: its output (the last few megabytes of it), its
  * exit code, and whether it ran out of time. `name` names it while it runs (`ended`: what's left of
  * it to clear away should this process end first). */
-export function runCommand(command: string, folder: string, env: Record<string, string>, timeout: number, signal?: AbortSignal, name = String(Math.random()), ended?: () => void): Promise<{ output: string; code: number | null; timedOut: boolean }> {
+export function runCommand(command: string, folder: string, env: Record<string, string>, timeout: number, signal?: AbortSignal, name = String(Math.random()), ended?: () => void, argv?: string[]): Promise<{ output: string; code: number | null; timedOut: boolean }> {
   return new Promise(resolve => {
     const shell = env.SHELL && fs.existsSync(env.SHELL) ? env.SHELL : "/bin/sh";
-    const child = spawn(shell, ["-lc", command], { cwd: folder, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    const child = spawn(argv ? command : shell, argv ?? ["-lc", command], { cwd: folder, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     if (child.pid) running.set(name, { pid: child.pid, ended });
     let output = Buffer.alloc(0);
     const take = (chunk: Buffer) => {

@@ -4,7 +4,7 @@
 //! standout sessions. Every grouping and figure is the box's; this view draws what it says. Clicking
 //! a row narrows the whole screen to it.
 
-use std::{collections::HashSet, time::Duration};
+use std::{collections::{HashMap, HashSet}, time::Duration};
 
 use gpui::{
     AnyElement, App, Bounds, Context, Hsla, IntoElement, PathBuilder, Pixels, Render, ScrollHandle, SharedString,
@@ -144,6 +144,9 @@ struct Summary {
     lists: Vec<List>,
     #[serde(default)]
     standouts: Vec<Standout>,
+    /// The box's last summary for it, served at once while it reads it afresh: when it was read.
+    #[serde(default, rename = "asOf")]
+    as_of: Option<f64>,
 }
 
 /// An older box's overview: totals, days and providers, without cache rates, change or bots.
@@ -186,6 +189,7 @@ impl From<Overview> for Summary {
                 }).collect(),
             }],
             standouts: Vec::new(),
+            as_of: None,
         }
     }
 }
@@ -225,6 +229,14 @@ pub struct InsightsView {
     show_all: bool,
     hovered_day: Option<usize>,
     summary: Option<Summary>,
+    /// What `summary` was read for (its query) and its period's days: another's while the box reads
+    /// the one chosen now, and drawn as updating then, never as this one's.
+    shown_for: Option<(String, u16)>,
+    /// The last of each period and narrowing the box answered, by its query, drawn at once when it's
+    /// chosen again while the box reads it afresh.
+    kept: HashMap<String, Summary>,
+    /// The box said it's still reading what's chosen now (`state` "loading").
+    waiting: bool,
     /// A usage ring's title, for words about what it couldn't read.
     ring: Option<String>,
     problem: Option<String>,
@@ -250,6 +262,9 @@ impl InsightsView {
             show_all: false,
             hovered_day: None,
             summary: None,
+            shown_for: None,
+            kept: HashMap::new(),
+            waiting: false,
             ring: None,
             problem: None,
             reachability: Reachability::Unanswered,
@@ -276,6 +291,7 @@ impl InsightsView {
         let read = Self::read(&self.client, self.query());
         self.reachability = Reachability::of(&read);
         self.summary = read.ok();
+        self.shown_for = Some((self.query(), self.period.days()));
         cx.notify();
     }
 
@@ -295,11 +311,16 @@ impl InsightsView {
             return;
         }
         if self.summary.is_none() { self.load(cx); }
-        // (Read again now and then while it's shown, sooner while the box first reads its usage.)
+        self.keep_reading(cx);
+    }
+
+    /// Read again now and then while it's shown, sooner while the box reads what's chosen (from the
+    /// next tick at that pace: started again when that begins).
+    fn keep_reading(&mut self, cx: &mut Context<Self>) {
         self.survey = Some(cx.spawn(async move |this, cx| {
             loop {
                 let Ok(delay) = this.read_with(cx, |this, _| {
-                    if this.summary.as_ref().is_some_and(|summary| summary.state == "loading") { 2 } else { 20 }
+                    if this.waiting { 2 } else { 20 }
                 }) else { break };
                 cx.background_executor().timer(Duration::from_secs(delay)).await;
                 if this.update(cx, |this, cx| if !this.reading { this.load(cx) }).is_err() { break; }
@@ -373,15 +394,43 @@ impl InsightsView {
         self.reading = true;
         let client = self.client.clone();
         let query = self.query();
-        let read = cx.background_executor().spawn(async move { Self::read(&client, query) });
+        let days = self.period.days();
+        // (What's chosen now, as the box last answered it, at once, while it's read afresh.)
+        if self.shown_for.as_ref().is_none_or(|(shown, _)| *shown != query) && let Some(kept) = self.kept.get(&query) {
+            self.summary = Some(kept.clone());
+            self.shown_for = Some((query.clone(), days));
+            self.waiting = false;
+        }
+        let asked = query.clone();
+        let read = cx.background_executor().spawn(async move { Self::read(&client, asked) });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = read.await;
             this.update(cx, |this, cx| {
+                // (Another period or narrowing chosen since: not this answer's to draw.)
+                if this.query() != query { return; }
                 this.reading = false;
                 this.reachability = Reachability::of(&result);
                 match result {
+                    // Still reading: what's on screen stays (drawn as updating where it's another's).
+                    Ok(summary) if summary.state == "loading" => {
+                        if !this.waiting && this.visible { this.waiting = true; this.keep_reading(cx); }
+                        this.waiting = true;
+                        this.problem = None;
+                        if this.summary.is_none() {
+                            this.summary = Some(summary);
+                            this.shown_for = Some((query, days));
+                        }
+                    }
                     Ok(summary) => {
+                        // (A handful at most: three periods, and what was narrowed to lately.)
+                        if this.kept.len() >= 24 { this.kept.clear(); }
+                        this.kept.insert(query.clone(), summary.clone());
+                        // (The box's last, while it reads it afresh: asked again soon.)
+                        let waiting = summary.as_of.is_some();
+                        if waiting && !this.waiting && this.visible { this.waiting = true; this.keep_reading(cx); }
+                        this.waiting = waiting;
                         this.summary = Some(summary);
+                        this.shown_for = Some((query, days));
                         this.problem = None;
                     }
                     Err(error) => this.problem = Some(Self::error_words(&error, this.ring.as_deref())),
@@ -441,9 +490,17 @@ impl InsightsView {
                 }
             }))
         }).collect(), TypeSize::Caption, cx);
+        // (Quiet, beside the periods: what's below is another's, read afresh for this one now.)
+        let updating = self.summary.as_ref().is_some_and(|summary| summary.state != "loading"
+            && (summary.as_of.is_some() || self.shown_for.as_ref().is_some_and(|(shown, _)| *shown != self.query())));
         div().flex().items_center().justify_between().gap(space::S4)
             .child(div().flex_1().min_w_0().flex().child(place))
-            .child(div().flex_none().child(periods))
+            .child(div().flex_none().flex().items_center().gap(space::S2)
+                .when(updating, |d| d.child(div().debug_selector(|| "insights-updating-mark".into()).flex().items_center().gap(space::S1_5)
+                    .text_ui(TypeSize::Caption).text_color(c.text_muted)
+                    .child(kuvo_ui::small::spinner("insights-updating-spin", IconSize::XSmall, c.text_muted))
+                    .child("Updating…")))
+                .child(periods))
             .into_any_element()
     }
 
@@ -679,6 +736,10 @@ impl Render for InsightsView {
         // (Room for the share bars beside the figures.)
         let wide = window.viewport_size().width >= px(760.);
         let summary = self.summary.clone();
+        // What's drawn was read for another period or narrowing (the box reads this one now): it
+        // stays in place, faded and marked as updating, never as this one's figures.
+        let query = self.query();
+        let other = self.shown_for.as_ref().filter(|(shown, _)| *shown != query).map(|(_, days)| *days);
         let content: Vec<AnyElement> = match (&summary, &self.problem) {
             (None, Some(problem)) => vec![self.said(problem.clone(), true, cx)],
             (None, None) => vec![self.said("Reading usage…".into(), false, cx)],
@@ -686,13 +747,17 @@ impl Render for InsightsView {
             (Some(summary), problem) => {
                 let mut parts = Vec::new();
                 if let Some(problem) = problem { parts.push(self.said(problem.clone(), true, cx)); }
-                parts.push(self.totals(summary, cx));
-                parts.push(self.trend(summary, cx));
+                let mut figures = vec![self.totals(summary, cx), self.trend(summary, cx)];
                 if summary.state == "empty" {
-                    parts.push(self.said(format!("No usage in the last {} days.", self.period.days()), false, cx));
+                    figures.push(self.said(format!("No usage in the last {} days.", other.unwrap_or(self.period.days())), false, cx));
                 } else {
-                    parts.push(self.ranked(summary, wide, cx));
-                    if !summary.standouts.is_empty() { parts.push(self.standouts(summary, cx)); }
+                    figures.push(self.ranked(summary, wide, cx));
+                    if !summary.standouts.is_empty() { figures.push(self.standouts(summary, cx)); }
+                }
+                match other {
+                    None => parts.extend(figures),
+                    Some(_) => parts.push(div().debug_selector(|| "insights-updating".into()).flex().flex_col().gap(px(28.)).opacity(0.4)
+                        .children(figures).into_any_element()),
                 }
                 parts
             }

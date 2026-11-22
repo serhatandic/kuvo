@@ -13,8 +13,8 @@ import { accountName, ContextWindows, failure, KnownAccount, model, signOutWith 
 import { fileDiff, fromPatch } from "../diff"
 import { emit } from "../events"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "../fence"
-import { kuvoTools, toolServerName } from "../kuvotools"
-import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
+import { toolServerName } from "../kuvotools"
+import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { elicitationField } from "../forms"
@@ -385,7 +385,7 @@ export class CodexAgent implements Agent {
       homes,
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...(onMachine ? [process.execPath] : []), ...(skills ? [skills] : []), ...(subagents ? [subagents] : []), ...(attached ? [attached] : [])],
+      read: [process.execPath, ...(skills ? [skills] : []), ...(subagents ? [subagents] : []), ...(attached ? [attached] : [])],
       port: relayPort(),
       session: sessionID,
       bot,
@@ -473,8 +473,7 @@ export class CodexAgent implements Agent {
       // A title or commit text it was writing won't come.
       for (const oneOff of this.oneOffs.values()) if (oneOff.rpc === rpc) oneOff.fail(new Error("Codex stopped."))
       // Stopped on purpose: the threads were told then (they may be on a newer one by now).
-      if (slot.server !== rpc) return
-      slot.server = undefined
+      if (slot.server === rpc) slot.server = undefined
       for (const each of this.threads.values()) each.serverStopped(rpc)
     }
   }
@@ -1205,7 +1204,9 @@ class CodexThread implements Thread {
     const active = this.active
     if (!active) return
     this.active = undefined
-    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : { outcome: "failed", error: failure(active.problem ?? "Codex stopped.") })
+    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : {
+      outcome: "failed", error: failure(active.problem ?? "Codex stopped."), agentExited: server.agentExited,
+    })
   }
 
   private policy(hooks: TurnHooks, plan: boolean, rpc: RPC) {
@@ -1248,7 +1249,7 @@ class CodexThread implements Thread {
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join("\n\n")
     // Loaded again with what the app adds to its instructions, when that changed. (In the box's
     // sandbox, through the bridge's relay: the sandbox hides where they are.)
-    const tools = fenced ? forwardedTools(this.session.id, this.agent) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this.agent, fenced)
     // Settings › Skills' skills, as extra ones (but those it reads itself), and those of its own
     // you turned off, off for this thread.
     const directory = this.session.location.directory

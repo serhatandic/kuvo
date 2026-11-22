@@ -25,7 +25,7 @@ import {
   addItem, changeItem, currentUnlockKey, generationsTold, givenWho, notePrimeTrouble, isLocked, isMade, itemByID, LOCKED, makeVault, onHost, primeGenerations, readGrants, readItems,
   removeItem, setGrant, setPaused, unlockWith, valuesOf, VaultRefusal, vaultState,
 } from "../vault/store";
-import { callTool, VAULT_TOOLS } from "../vault/tools";
+import { callTool, resumedVaultCommand, VAULT_TOOLS } from "../vault/tools";
 import { callerOf, callingNow, isCalling } from "../vault/who";
 
 const NOT_OPEN = "This computer's vault isn't open: Kuvo Code's link here isn't running. Try again in a moment.";
@@ -150,15 +150,20 @@ async function* answerVault(context: RouteContext): AsyncGenerator<AnswerPiece> 
     // What a tool server lists (`tools/list`), in this box's own words.
     if (method === "GET") return yield* json(200, { tools: agentsUseVault() ? VAULT_TOOLS : [] });
     if (method !== "POST") return yield* json(405, {});
-    const answer = await answerToolCall(request, given, async () => {
+    const durable = given.name === "vault_run";
+    const answer = await answerToolCall(request, given, async operation => {
+      if (operation && durable) {
+        const resumed = await resumedVaultCommand(operation);
+        if (resumed) return resumed;
+      }
       if (!agentsUseVault()) return { text: AGENTS_LATER, isError: true };
       const args = isObject(given.arguments) ? given.arguments : {};
       if (typeof given.name !== "string" || !await isCalling(stringOf(given.session), [given.name], args, readEngine, readBridge)) {
         return { text: NOT_CALLING, isError: true };
       }
       const caller = await callerOf(given.session, readEngine, readBridge);
-      return callTool(given.name, args, caller, signal);
-    });
+      return callTool(given.name, args, caller, operation && durable ? undefined : signal, operation);
+    }, durable);
     return yield* json(answer.status, answer.value);
   }
   if (route === "kuvo/vault/fill") {

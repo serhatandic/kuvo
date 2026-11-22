@@ -206,7 +206,7 @@ export async function* submissionsRoute(context: RouteContext, match: RegExpMatc
   const stillLocal = local.filter(outcome => issuerFor(outcome.originalOwner) === own);
   const combined = combine([...listing, ...stillLocal, ...visible].filter(value => isObject(value) && wanted(value)));
   const outcomes = combined.slice(0, PAGE);
-  if (id && outcomes[0]) settleListingOutcome(setup.id, session, outcomes[0]);
+  if (id && outcomes[0]) await settleListingOutcome(setup.id, session, outcomes[0]);
   const issuer = id ? issuerFor(id.origin) : undefined;
   const complete = (!page || (page.complete && stillLocal.length === page.owner.length && listing.length === page.listing.length)) &&
     (!issuer || issuer === own || currentPeers.has(issuer)) &&

@@ -18,7 +18,8 @@ import { ownKey, peersOf } from "../peers/known";
 import { leadershipDocuments, resolveCheckpoint } from "../setup/checkpoint";
 import { followedSetup } from "../setup/record";
 import { macLink, readLink, updateLink } from "../state";
-import { authenticate, archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
+import { backupDisk } from "../server/disk-worker";
+import { archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
 import { backupSshAddress, destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
 import { relayBackupAvailable } from "./relay-store";
 import { projectEntries } from "./projects";
@@ -60,8 +61,8 @@ export interface Manifest extends RestorePoint {
 
 export const bytes = (name: string, value: unknown): Entry => ({ name, bytes: Buffer.from(JSON.stringify(value)) });
 export const backupLock = <T>(work: () => Promise<T>) => exclusiveWhile(path.join(BACKUP, ".operation"), async () => {
-  for (const name of fs.readdirSync(privateFolder(BACKUP))) {
-    if (name.startsWith(".scratch-")) fs.rmSync(path.join(BACKUP, name), { recursive: true, force: true });
+  for (const name of await fs.promises.readdir(privateFolder(BACKUP))) {
+    if (name.startsWith(".scratch-")) await fs.promises.rm(path.join(BACKUP, name), { recursive: true, force: true });
   }
   return work();
 });
@@ -264,16 +265,16 @@ export function captureBackup(file: string, key: string, source: string, id: str
   return manifest;
 }
 
-type ExportBoundary = { attachmentHashes: ReadonlyMap<string, string>; checkSource: () => void };
+type ExportBoundary = { attachmentHashes: ReadonlyMap<string, string>; checkSource: () => void | Promise<void> };
 
 async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, source: string, key: string, id: string,
   now: number, projects: string[], scratch: string, insideUpdate = false, boundary?: ExportBoundary): Promise<RestorePoint> {
   const file = path.join(scratch, "archive");
-  boundary?.checkSource();
-  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
+  await boundary?.checkSource();
+  const { version, setup } = await backupDisk.run("captureBackup", file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
   if (store.setup !== undefined && store.setup !== setup) throw new Error("Backup membership changed during capture.");
   await store.put(id, file);
-  try { authenticate(await store.get(id, scratch), key, archiveContext(source, id)); }
+  try { await backupDisk.run("authenticate", await store.get(id, scratch), key, archiveContext(source, id)); }
   catch (error) { await store.erase(id).catch(() => {}); throw error; }
   return { id, at: now, version };
 }
@@ -286,10 +287,10 @@ export function verifyExport(point: ExportPoint, target: ExportTarget, commit?: 
     const store = destinationStore(target.destination, point.source);
     const scratch = scratchFolder();
     try {
-      authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
+      await backupDisk.run("authenticate", await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
     } catch (error) {
       throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });
-    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(scratch, { recursive: true, force: true }); }
     commit?.();
   });
 }
@@ -317,11 +318,11 @@ export function exportBeforeWipe(point: ExportPoint, target: ExportTarget, proje
     try {
       const store = destinationStore(destination, point.source);
       if ((await store.list()).includes(point.id)) {
-        authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
+        await backupDisk.run("authenticate", await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
       } else {
         await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch, false, boundary);
       }
-    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(scratch, { recursive: true, force: true }); }
   });
 }
 
@@ -353,7 +354,7 @@ export async function backupBefore(reason: Reason, { now = Date.now(), insideUpd
       save({ ...current, error: (error as Error).message });
       throw error;
     } finally {
-      if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+      if (scratch) await fs.promises.rm(scratch, { recursive: true, force: true });
     }
   });
 }

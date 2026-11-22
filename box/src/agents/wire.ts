@@ -120,15 +120,16 @@ export interface NoticeMessage {
   metadata?: Record<string, unknown>
 }
 
+export type InterruptionReason = "restart" | "agent-exit"
+
 export interface IdleMessage {
   type: "idle"
   id: string
   time: MessageTime
   outcome: "succeeded" | "failed" | "interrupted"
   error?: StructuredError
-  /** Why it was interrupted, when it wasn't a Stop: `restart`, the bridge stopped with it (an
-   * update, a restart, a quit). What waited in line goes on when it's back. */
-  reason?: "restart"
+  /** The process or its bridge stopped. The queue can continue. */
+  reason?: InterruptionReason
 }
 
 export interface ModelSwitchMessage {

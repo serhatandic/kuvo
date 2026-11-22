@@ -1064,3 +1064,29 @@ test("a message the engine holds for the queue is taken back with what it was, a
   assert.deepEqual(inboxes.ses_1, []);
   assert.equal((await ask("DELETE", "kuvo/sessions/ses_1/queue/msg_none")).status, 404);
 });
+
+test("turn liveness: a process exit releases the link queue live and after reconnect", { timeout: 10_000 }, async () => {
+  inboxes.ses_1 = [{ id: "msg_q1", delivery: "queue" }, { id: "msg_q2", delivery: "queue" }];
+  const b = box();
+  running.add("ses_1");
+  b.hear("session.execution.interrupted", { reason: "agent-exit" });
+  await b.looked(1500);
+  assert.deepEqual(asked, []);
+  running.delete("ses_1");
+  b.hear("session.idle");
+  b.wait(1500);
+  assert.deepEqual(await askedAfter(1), ["ses_1 msg_q1 steer"]);
+  inboxes.ses_1.shift();
+  latest.ses_1 = { type: "idle", outcome: "interrupted", reason: "agent-exit" };
+  await link.scanQueues({ ...target, pid: 103 });
+  assert.deepEqual(asked, ["ses_1 msg_q1 steer", "ses_1 msg_q2 steer"]);
+  assert.equal(link.queueOf("ses_1").paused, false);
+});
+
+test("turn liveness: a replacement engine releases an inbox behind an open turn", async () => {
+  inboxes.ses_1 = [{ id: "msg_q1", delivery: "queue" }];
+  latest.ses_1 = { type: "assistant", time: { created: Date.now() } };
+  await link.scanQueues({ ...target, pid: 104 });
+  assert.deepEqual(asked, ["ses_1 msg_q1 steer"]);
+  assert.equal(link.queueOf("ses_1").paused, false);
+});

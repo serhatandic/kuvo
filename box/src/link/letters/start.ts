@@ -13,7 +13,7 @@ import { isObject } from "../../shared/json";
 import { isChatsFolder } from "../engine/chats";
 import { asked, call, engineGet } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
-import { keepWaiting, writtenByYou } from "../engine/queue";
+import { keepWaitingLater, writtenByYou } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { BOTS, CHATS, HERE, homeFolder, IS_MAC } from "../home";
 import { macLink, readLink } from "../state";
@@ -648,7 +648,8 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
     if (!by && requested) rememberApproval(requested);
   } catch (error) {
     giveBack();
-    if (place.operation) throw new ToolCallPending("Waiting for the engine to confirm the session was created.");
+    const status = (error as { status?: number })?.status;
+    if (place.operation && !(status && status >= 400 && status < 500)) throw new ToolCallPending("Waiting for the engine to confirm the session was created.");
     await removeTree();
     return no(502, `Couldn't start a session in ${folder}: ${String((error as Error | null)?.message ?? error)}`);
   }
@@ -674,7 +675,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   }
   const id = making.prompt.id;
   try {
-    if (starter && by) linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
+    if (starter && by) await linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
     await promptMade(making, target, session);
   } catch (error) {
     went(session, true);
@@ -760,7 +761,7 @@ export async function markMade(making: Making, target: Target, session: string, 
 export async function promptMade(making: Making, target: Target, session: string): Promise<void> {
   const message = { id: making.prompt.id, text: making.prompt.text, delivery: "steer" as const, metadata: withParts(undefined, partsOf(making.prompt.text)) };
   // (Its engine being changed: it waits on the box, and goes once the new one runs.)
-  if (keepWaiting(session, message, {}, undefined, target)) return;
+  if (await keepWaitingLater(session, message, {}, undefined, target)) return;
   await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message);
 }
 

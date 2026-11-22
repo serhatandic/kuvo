@@ -8,7 +8,7 @@
 // The coding agents' own programs (Claude Code, Codex…) run their commands themselves, not
 // through the engine: `on` says nothing of them (`agents` does, false until they're sandboxed too).
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,8 +19,9 @@ import { accountHome, BOTS, BRIDGE_FILE, CHATS, ENGINE_CONFIG, ENGINE_DATA, ENGI
 import { tellLauncher } from "./allowed";
 import { agentShellScript, agentsNote, launcherScript, pluginScript, type FencePlaces } from "./files";
 import { didntFinish } from "./finished";
-import { LANDLOCK_RUNNER, landlockPolicy, ownNamespaceLater, readOnlyHere, triedNamespace, UNFINISHED, UNSHARE } from "./landlock";
+import { LANDLOCK_RUNNER, landlockPolicy, ownNamespaceLater, readOnlyHere, UNFINISHED, UNSHARE } from "./landlock";
 import { appTemporary, fencePolicy, realish, sandboxCaches, whenReadLate } from "./policy";
+import { wakeDisk } from "../server/disk-worker";
 import { seatbeltProfile } from "./seatbelt";
 
 export interface FenceState {
@@ -440,32 +441,33 @@ let readOnlyFor: string | null = null;
  * nothing counts on the sandbox (`setUpFence`): what commands' namespace comes from meanwhile. */
 let kept: string | null = null;
 const inUse = (): string | null => kept ?? namespace;
-const namespaceHere = (): string | null | typeof UNFINISHED => {
-  fs.mkdirSync(NAMESPACE_FOLDER, { recursive: true, mode: 0o700 });
-  return triedNamespace(NAMESPACE_FOLDER);
+const namespaceHere = async () => {
+  await fs.promises.mkdir(NAMESPACE_FOLDER, { recursive: true, mode: 0o700 });
+  return ownNamespaceLater(NAMESPACE_FOLDER);
 };
 
 /** Whether this computer can sandbox commands at all, and why not; `found`, whether commands can
  * have a namespace of their own, where that's just been found (otherwise it's tried now). One whose
  * try didn't finish keeps the one last found, or with none yet, `unshare`'s: never none for that, as
  * commands would reach your login's services (where they can't have one, they fail meanwhile). */
-function able(found?: string | null | typeof UNFINISHED): Checked {
+async function able(found?: string | null | typeof UNFINISHED): Promise<Checked> {
   if (platform === "darwin") return fs.existsSync("/usr/bin/sandbox-exec") ? { able: true, passed: false } : { able: false, passed: false, why: "macOS's sandbox isn't on this Mac.", reason: "macos" };
   if (!runtime()) return { able: false, passed: false, why: "The engine isn't installed here yet.", reason: "engineMissing" };
   if (!fs.existsSync("/sys/kernel/security/landlock") && !/landlock/.test(textOf("/sys/kernel/security/lsm") ?? "landlock")) {
     return { able: false, passed: false, why: `Linux ${os.release().split("-")[0]} can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).`, reason: "kernel", needs: "Linux 5.13" };
   }
-  const tried = found === undefined ? namespaceHere() : found;
-  namespaceUnfinished = tried === UNFINISHED;
-  if (!namespaceUnfinished) [namespace, namespaceKnown] = [tried as string | null, true];
-  else if (!namespaceKnown) namespace = UNSHARE.find(each => fs.existsSync(each)) ?? null;
-  withoutNamespace = namespace ? null : UNSHARE.some(each => fs.existsSync(each)) ? "user namespaces" : "util-linux";
-  // (Once for each `unshare` found; one that didn't finish says nothing new.)
-  if (namespace && !namespaceUnfinished && readOnlyFor !== namespace) {
-    fs.mkdirSync(NAMESPACE_FOLDER, { recursive: true, mode: 0o700 });
-    const found = readOnlyHere(namespace, NAMESPACE_FOLDER);
-    if (found !== UNFINISHED) [readOnly, readOnlyFor] = [found, namespace];
+  const tried = found === undefined ? await namespaceHere() : found;
+  const next = tried === UNFINISHED ? (namespaceKnown ? namespace : UNSHARE.find(each => fs.existsSync(each)) ?? null) : tried;
+  // Once for each unshare found. An unfinished check leaves the last result in place.
+  if (next && tried !== UNFINISHED && readOnlyFor !== next) {
+    await fs.promises.mkdir(NAMESPACE_FOLDER, { recursive: true, mode: 0o700 });
+    const writable = await readOnlyHere(next, NAMESPACE_FOLDER);
+    if (writable !== UNFINISHED) [readOnly, readOnlyFor] = [writable, next];
   }
+  namespace = next;
+  namespaceUnfinished = tried === UNFINISHED;
+  if (!namespaceUnfinished) namespaceKnown = true;
+  withoutNamespace = namespace ? null : UNSHARE.some(each => fs.existsSync(each)) ? "user namespaces" : "util-linux";
   if (withoutNamespace && WITHOUT_NAMESPACE === "off") {
     const services = "which the sandbox needs to keep commands from the services your login runs: systemd, your keyring, your agents";
     return withoutNamespace === "user namespaces"
@@ -475,7 +477,7 @@ function able(found?: string | null | typeof UNFINISHED): Checked {
   return { able: true, passed: false };
 }
 
-/** How long the check may take: it holds the box up while it runs. One that takes longer didn't
+/** How long the check may take. One that takes longer didn't
  * finish (fence/finished.ts), which isn't a failed one. */
 const CHECK_LIMIT = 20_000;
 
@@ -483,7 +485,7 @@ const CHECK_LIMIT = 20_000;
  * Runs one command through the launcher, as the engine would, and checks what the sandbox must
  * do: it writes in its folder and its temporary folder, and can neither read nor write Kuvo Code's.
  */
-function probe(): { passed: boolean; unfinished?: boolean; why?: string; check?: FenceCheck } {
+async function probe(): Promise<{ passed: boolean; unfinished?: boolean; why?: string; check?: FenceCheck }> {
   fs.rmSync(PROBE, { recursive: true, force: true });
   fs.mkdirSync(PROBE, { recursive: true, mode: 0o700 });
   const hidden = path.join(FOLDER, "hidden");
@@ -513,10 +515,14 @@ function probe(): { passed: boolean; unfinished?: boolean; why?: string; check?:
   const held = Boolean(hold && fs.statSync(hold, { throwIfNoEntry: false })?.isFIFO());
   const fails = Boolean(hold && !held && textOf(hold)?.trim() === "fail");
   const args = [places.launcher, "-c", script, PROBE, hidden, escaped];
-  const run = held
-    ? spawnSync("/bin/sh", ["-c", `read -r _ <"$0"; exec "$@"`, hold!, ...args], { env, encoding: "utf8", timeout: 250 })
-    : fails ? spawnSync("/bin/sh", ["-c", "exit 13"], { encoding: "utf8" })
-    : spawnSync(args[0]!, args.slice(1), { env, encoding: "utf8", timeout: CHECK_LIMIT });
+  const [command, ...argv] = held ? ["/bin/sh", "-c", `read -r _ <"$0"; exec "$@"`, hold!, ...args]
+    : fails ? ["/bin/sh", "-c", "exit 13"] : args;
+  const run = await new Promise<{ status: number | null; signal?: NodeJS.Signals; error?: Error; stdout: string; stderr: string }>(resolve => {
+    execFile(command!, argv, { env, encoding: "utf8", timeout: held ? 250 : CHECK_LIMIT, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+      const status = error ? typeof error.code === "number" ? error.code : null : 0;
+      resolve({ status, signal: error?.signal, error: error ?? undefined, stdout, stderr });
+    });
+  });
   const reasons: Record<number, [FenceCheck, string]> = {
     10: ["folder", "a command couldn't go to its own folder"], 11: ["folder", "a command couldn't write in its own folder"],
     12: ["tempFiles", "a command couldn't write its temporary files"], 13: ["readsOwn", "a command could read Kuvo Code's own files"],
@@ -624,7 +630,8 @@ function loosen(what: "withdraw" | "namespace", why: Checked, ready: "keep" | "r
 /** Every conversation's rules here are made for the sandbox being off (Auto asks first), all
  * through the hold `mark` names (`heldMark`, as the round began): what was held for that is done
  * now. */
-export function nothingCountsOnIt(mark: string | null): void {
+export async function nothingCountsOnIt(mark: string | null): Promise<void> {
+  if (checkingFence) return;
   const what = loosening;
   if (!what || !fenceWanted() || !mark || heldMark() !== mark || looseningMark !== mark) return;
   loosening = null;
@@ -632,7 +639,7 @@ export function nothingCountsOnIt(mark: string | null): void {
   // (Without its namespace, as the last try found: checked again, and held while it is.)
   mayLoosen = true;
   try {
-    setUpFence(null);
+    await setUpFence(null);
   } finally {
     mayLoosen = false;
   }
@@ -701,9 +708,16 @@ export function conversationPlaces(at = { bots: BOTS, engineData: ENGINE_DATA, c
  * commands go through it all the same, `checking` keeping anything from counting on it, until it's
  * checked again (each minute, or `POST kuvo/sandbox/check`). `found`: as `able`'s.
  */
-export function setUpFence(found?: string | null): FenceState {
+let checkingFence: Promise<FenceState> | undefined;
+
+export function setUpFence(found?: string | null): Promise<FenceState> {
+  checkingFence ??= checkFence(found).finally(() => { checkingFence = undefined; });
+  return checkingFence;
+}
+
+async function checkFence(found?: string | null): Promise<FenceState> {
   // Whether it can be on here, known while it's off too.
-  const can = able(found);
+  const can = await able(found);
   // (Kuvo Code's own kill switch: off at once, as it says.)
   if (!fenceWanted()) {
     withdraw();
@@ -733,8 +747,13 @@ export function setUpFence(found?: string | null): FenceState {
     tellLauncher();
     // (Not while whether commands have a namespace of their own isn't known: it didn't finish either.)
     // (Whether it's held, where the check didn't finish: only then is `on` written.)
-    let held = true;
-    let result: { passed: boolean; unfinished?: boolean; why?: string; check?: FenceCheck } = namespaceUnfinished ? { passed: false, unfinished: true } : probe();
+    let held = hold();
+    let result: { passed: boolean; unfinished?: boolean; why?: string; check?: FenceCheck } = namespaceUnfinished ? { passed: false, unfinished: true } : await probe();
+    if (!fenceWanted()) {
+      withdraw();
+      checked = can;
+      return fenceState();
+    }
     unfinishedInARow = result.unfinished ? unfinishedInARow + 1 : 0;
     // Not finished time after time: taken for a failed check, so it doesn't stay "checking" for good.
     if (unfinishedInARow >= MOST_UNFINISHED) result = { passed: false, check: "didntRun", why: `Its check didn't finish ${unfinishedInARow} times in a row.` };
@@ -820,12 +839,12 @@ export function sweepWakeFolders(now = Date.now()): void {
  * (macOS), its plugin put back if it went, what agents are told as it's on or not, and the wake
  * folders no one used cleared away. `every`: what runs its round every 10 seconds (a test's runs
  * each by hand, and awaits what it set going: the minute's namespace check). */
-export function keepFence(every: (round: () => Promise<void>) => void = round => { setInterval(round, 10_000).unref?.(); }): void {
+export async function keepFence(every: (round: () => Promise<void>) => void = round => { setInterval(round, 10_000).unref?.(); }): Promise<void> {
   // (A file of yours the walls are read from that waited on macOS, read since: written in at once.)
   whenReadLate(() => {
-    try { if (fenceWanted() && (checked.passed || checked.unfinished)) writeProfiles(); } catch {}
+    try { if (!checkingFence && fenceWanted() && (checked.passed || checked.unfinished)) writeProfiles(); } catch {}
   });
-  try { setUpFence(); } catch {}
+  try { await setUpFence(); } catch {}
   try { tellAgents(); } catch {}
   // Set up, or found it can't run here: the agents bridge starts the coding agents from now, never
   // before (it may have started first: this Mac's app starts it as the engine starts).
@@ -838,20 +857,22 @@ export function keepFence(every: (round: () => Promise<void>) => void = round =>
   let trying = false;
   every(async () => {
     const round = rounds++;
-    if (round % 60 === 0) sweepWakeFolders();
+    const sweeping = round % 60 === 0 ? wakeDisk.run("sweepWakeFolders").catch(() => {}) : undefined;
     // Agents told once the engine has loaded the plugin, and no longer once it's gone.
     try { tellAgents(); } catch {}
-    if (!fenceWanted()) return;
+    if (checkingFence || !fenceWanted()) {
+      await sweeping;
+      return;
+    }
     let checking: Promise<void> | undefined;
     try {
       if (checked.passed || checked.unfinished) writeProfiles();
-      // A failed check, or one that didn't finish, tried again each minute (it holds the box up
-      // while it runs), with commands' namespace as last found.
+      // A failed or unfinished check is tried again each minute with the last known namespace.
       const changed = textOf(PLUGIN) !== pluginScript(places, VERSION);
       // Checked again too where another of the box's processes (`box route`) found its check
       // didn't finish, or since passed it (or found it failed, and took it away).
       const elsewhere = checked.passed ? fs.existsSync(HELD) : (checked.unfinished === true || (loosening !== null && looseningMark !== null)) && !fs.existsSync(HELD);
-      if (checked.passed ? changed || elsewhere : round % 6 === 0 || elsewhere) setUpFence(namespaceKnown ? namespace : undefined);
+      if (checked.passed ? changed || elsewhere : round % 6 === 0 || elsewhere) await setUpFence(namespaceKnown ? namespace : undefined);
       // While it hasn't finished, its plugin put back at once, as while it's on.
       else if (checked.unfinished && changed) givePlugin();
       // And on Linux, set up again once commands can have a namespace of their own after all
@@ -863,12 +884,12 @@ export function keepFence(every: (round: () => Promise<void>) => void = round =>
         checking = ownNamespaceLater(NAMESPACE_FOLDER)
           // (One that didn't finish changes nothing.)
           // (And one found while the last try didn't finish, kept as found.)
-          .then(found => { if (fenceWanted() && found !== UNFINISHED && (!namespaceKnown || !found !== !namespace)) setUpFence(found); })
+          .then(async found => { if (fenceWanted() && found !== UNFINISHED && (!namespaceKnown || !found !== !namespace)) await setUpFence(found); })
           .catch(() => {})
           .finally(() => { trying = false; });
       }
     } catch {}
-    await checking;
+    await Promise.all([checking, sweeping]);
   });
 }
 

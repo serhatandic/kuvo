@@ -110,3 +110,9 @@ export function sourceGeneration(projects: readonly string[], attachmentHashes?:
   }
   return hash.digest("base64url");
 }
+
+/** An inventory with the exact attachment hashes captured by the same scan. */
+export function scanSourceGeneration(projects: readonly string[], includeAttachments: boolean) {
+  const attachmentHashes = includeAttachments ? new Map<string, string>() : undefined;
+  return { generation: sourceGeneration(projects, attachmentHashes), attachmentHashes };
+}

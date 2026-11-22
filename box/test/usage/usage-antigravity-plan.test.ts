@@ -675,7 +675,7 @@ describe("Antigravity quotas Google doesn't count", () => {
     } })
   }
 
-  test("Gemini running here while Google keeps calling its limits unused shows as unknown, never all left, until Google counts it", async () => {
+  test("A contradicted Gemini reading keeps the other pool readable until Google counts Gemini", async () => {
     const root = temp(); credential(root)
     let at = Date.UTC(2026, 10, 21, 14)
     const left = { gemini: 1, "3p": 1 }
@@ -692,18 +692,25 @@ describe("Antigravity quotas Google doesn't count", () => {
       at += 10 * 60_000 + 1
       await limits.tick()
       const unknown = row()
-      expect(unknown.windows).toEqual([])
-      expect(unknown.rings).toEqual({})
+      expect(unknown.windows.map(window => [window.id, window.used])).toEqual([["3p-5h", 0], ["3p-weekly", 0]])
+      expect(unknown.rings.short?.window).toBe("3p-5h")
+      expect(unknown.rings.long?.window).toBe("3p-weekly")
       expect(unknown.problem).toMatchObject({ kind: "failed", unknown: true })
-      expect(unknown.problem!.message).toContain("Gemini")
-      expect(unknown.usage?.meters).toEqual([])
+      expect(unknown.problem!.message).toBe("Google reports 0% used for Gemini · 5-hour and Gemini · Weekly despite recent Gemini use here. The remaining quota for those limits is unknown.")
+      expect(unknown.usage?.meters.map(meter => meter.title)).toEqual(["Claude and GPT · 5-hour", "Claude and GPT · Weekly"])
+      expect(unknown.usage?.meters.every(meter => meter.freshForMs > 0)).toBe(true)
       expect(unknown.usage?.status).toEqual({ words: unknown.problem!.message, warning: true })
       expect(unknown.plan).toBe("Pro")
       // It stays unknown while Google goes on saying so, read at its usual pace.
       at += 10 * 60_000 + 1
       await limits.tick()
-      expect(row().windows).toEqual([])
-      // Google counts it: its numbers show again.
+      expect(row().windows.map(window => window.id)).toEqual(["3p-5h", "3p-weekly"])
+      // Google reports a debit below half a percent. It still counts as a reading.
+      left.gemini = 0.999
+      at += 10 * 60_000 + 1
+      await limits.tick()
+      expect(row().problem).toBeUndefined()
+      expect(row().windows.find(window => window.id === "gemini-5h")?.used).toBeCloseTo(0.001, 8)
       left.gemini = 0.7
       at += 10 * 60_000 + 1
       await limits.tick()

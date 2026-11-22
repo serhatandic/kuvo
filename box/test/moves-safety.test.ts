@@ -18,7 +18,8 @@ const { upgradeKuvoFolder } = await import("../src/shared/folder-version")
 const { editSessionNote, forgetSessionNotes, packSessionNotes, sessionNoteView } = await import("../src/link/ownership/session-notes")
 const { pack, unpack } = await import("../src/link/moves/bundle")
 const { filesOf, WORK_QUEUE } = await import("../src/link/work-queue/store")
-const { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } = await import("../src/link/work-queue/moves")
+const { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeMoveWorkQueues, placeWorkQueues } = await import("../src/link/work-queue/moves")
+const { queueMoveDisk } = await import("../src/link/server/disk-worker")
 import type { CarriedQueues } from "../src/link/work-queue/moves"
 const { newKey, publicOf, addressOf } = await import("../src/link/crypto/keys")
 const { newSigningSeed, signingKeyOf } = await import("../src/link/documents/format")
@@ -652,7 +653,7 @@ async function incomingBot(queues?: Record<string, unknown>, workQueue?: Carried
   return { ...identity, part, activate }
 }
 
-for (const failure of ["attachment write", "directory sync", "index sync", "none"] as const) {
+for (const failure of ["attachment write", "directory sync", "index sync", "none", "worker"] as const) {
   test(`a Work Queue move waits for its attachment and index to persist (${failure})`, async () => {
     const added = handler({
       method: "POST", path: "kuvo/work-queue/items", headers: {}, fromApp: true,
@@ -680,13 +681,20 @@ for (const failure of ["attachment write", "directory sync", "index sync", "none
       injected = true
       return true
     })
+    // File fault hooks are local to this thread. Exercise the same placement transaction here
+    // for injected faults and fsync ordering, and the real worker in the separate worker case.
+    const run = queueMoveDisk.run.bind(queueMoveDisk)
+    const local = failure === "worker" ? undefined : spyOn(queueMoveDisk, "run").mockImplementation(
+      ((operation, ...args) => operation === "placeMoveWorkQueues"
+        ? Promise.resolve().then(() => placeMoveWorkQueues(...args as Parameters<typeof placeMoveWorkQueues>))
+        : run(operation, ...args)) as typeof queueMoveDisk.run)
     const arrivalSyncs: string[][] = []
     sendMovesWith((peer, message) => {
       if (message.op === "arrived") arrivalSyncs.push([...synced])
       return recordMail(peer, message)
     })
-    try { await incoming.part() } finally { restore(); sendMovesWith(recordMail) }
-    if (failure !== "none") {
+    try { await incoming.part() } finally { local?.mockRestore(); restore(); sendMovesWith(recordMail) }
+    if (failure !== "none" && failure !== "worker") {
       expect(injected).toBe(true)
       expect(mail.some(each => each.op === "arrived")).toBe(false)
       expect(mail.at(-1)).toMatchObject({ op: "failed" })
@@ -696,16 +704,18 @@ for (const failure of ["attachment write", "directory sync", "index sync", "none
     } else {
       expect(mail.at(-1)).toMatchObject({ op: "arrived", verifiedPayloads: true })
       expect(arrivalSyncs).toHaveLength(1)
-      const syncedAtArrival = arrivalSyncs[0]!
-      const fileAt = syncedAtArrival.indexOf(staged)
-      const publishedAt = syncedAtArrival.indexOf(path.dirname(attachment))
-      const parentAt = syncedAtArrival.indexOf(path.dirname(path.dirname(attachment)))
-      const indexAt = syncedAtArrival.findIndex(file => file.startsWith(`${index}.`))
-      expect(fileAt).toBeGreaterThanOrEqual(0)
-      expect(publishedAt).toBeGreaterThan(fileAt)
-      expect(parentAt).toBeGreaterThan(publishedAt)
-      expect(indexAt).toBeGreaterThan(parentAt)
-      expect(syncedAtArrival.slice(indexAt + 1)).toContain(path.dirname(index))
+      if (failure !== "worker") {
+        const syncedAtArrival = arrivalSyncs[0]!
+        const fileAt = syncedAtArrival.indexOf(staged)
+        const publishedAt = syncedAtArrival.indexOf(path.dirname(attachment))
+        const parentAt = syncedAtArrival.indexOf(path.dirname(path.dirname(attachment)))
+        const indexAt = syncedAtArrival.findIndex(file => file.startsWith(`${index}.`))
+        expect(fileAt).toBeGreaterThanOrEqual(0)
+        expect(publishedAt).toBeGreaterThan(fileAt)
+        expect(parentAt).toBeGreaterThan(publishedAt)
+        expect(indexAt).toBeGreaterThan(parentAt)
+        expect(syncedAtArrival.slice(indexAt + 1)).toContain(path.dirname(index))
+      }
       expect(fs.readFileSync(attachment, "utf8")).toBe("attachment")
       await peerMail("drop", incoming)
     }
@@ -718,33 +728,33 @@ test.each(["switch", "drop"] as const)("ordinary note history survives receiver 
   const previous = fs.existsSync(checkpoint) ? fs.readFileSync(checkpoint) : undefined
   upgradeKuvoFolder(K)
   const ref = { kind: "sessionNotes" as const, id: arrivingSession, note: "fixture" }
-  const initial = editSessionNote({ ref, operation: "a".repeat(43), create: true, baseRevision: null, fields: { text: "Original." } }, () => true, () => true)
+  const initial = await editSessionNote({ ref, operation: "a".repeat(43), create: true, baseRevision: null, fields: { text: "Original." } }, () => true, () => true)
   if (!initial) throw new Error("The source note was not created")
   for (const [operation, text] of [["b", "First."], ["c", "Alternative."]]) {
-    editSessionNote({ ref, operation: operation!.repeat(43), baseRevision: initial.revision, fields: { text } }, () => true, () => true)
+    await editSessionNote({ ref, operation: operation!.repeat(43), baseRevision: initial.revision, fields: { text } }, () => true, () => true)
   }
-  const source = sessionNoteView(ref)
+  const source = await sessionNoteView(ref)
   expect(source.choices[0]).toMatchObject({ accepted: "First.", proposed: "Alternative." })
-  const notes = packSessionNotes([arrivingSession])
-  forgetSessionNotes([arrivingSession])
+  const notes = await packSessionNotes([arrivingSession])
+  await forgetSessionNotes([arrivingSession])
   try {
     const incoming = await incomingBot(undefined, undefined, notes)
     await incoming.part()
     expect(mail.at(-1)).toMatchObject({ op: "arrived", hash: incoming.hash })
     expect(mayActivate(ref)).toBe(false)
-    expect(sessionNoteView(ref)).toEqual(source)
+    expect(await sessionNoteView(ref)).toEqual(source)
     if (action === "switch") {
       await incoming.activate()
       expect(mail.at(-1)).toMatchObject({ op: "switched", hash: incoming.hash })
       expect(mayActivate(ref)).toBe(true)
-      expect(sessionNoteView(ref)).toEqual(source)
+      expect(await sessionNoteView(ref)).toEqual(source)
     } else {
       await peerMail("drop", incoming)
       expect(mail.at(-1)).toMatchObject({ op: "dropped", hash: incoming.hash })
-      expect(packSessionNotes([arrivingSession])).toBeUndefined()
+      expect(await packSessionNotes([arrivingSession])).toBeUndefined()
     }
   } finally {
-    forgetSessionNotes([arrivingSession])
+    await forgetSessionNotes([arrivingSession])
     if (previous) fs.writeFileSync(checkpoint, previous)
     else fs.rmSync(checkpoint, { force: true })
   }

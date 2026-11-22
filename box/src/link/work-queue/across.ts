@@ -1,3 +1,4 @@
+import { numberDisk } from "../server/disk-worker";
 import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import type { Act } from "./forward";
 import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
@@ -22,7 +23,7 @@ import { awaySince, readReach } from "../peers/reach";
 import { usesAcceptedSaves } from "../setup/record";
 import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
-import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
+import { labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
@@ -34,9 +35,9 @@ import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
 import { mailsFor, sendMemoryMail, takePart } from "./parts";
 import { takeSetupCopy } from "../setup/seed";
-import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
+import { ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
-import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
+import { allItems, changeQueuesLater, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
 import { forgetTold, keepTold, MOST_TOLD, MOST_TOLD_DONE, patchTold, readTold, TOLD, toldItemOf, toldKeys, toldOf, type Numbering, type ToldItem } from "./told";
 import { locked, writePrivate } from "../files";
@@ -93,7 +94,6 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
 };
 
 // (A box that numbers from another takes that one's labels, and changes none of them itself.)
-followsBy(() => !("self" in primaryOf()));
 
 /** What this box tells of its Work Queue now: its items (not deleted ones; the latest Done ones
  * only), the owners they name, its labels, and how it numbers. */
@@ -136,13 +136,13 @@ let titles = new Map<string, unknown>();
 let titlesAt = 0;
 
 let labelRevision = "";
-function reconcileSetupLabels(link: LinkState) {
+async function reconcileSetupLabels(link: LinkState) {
   const selected = setupLabels(sharedValue(link, "queueLabels"));
   if (!selected) return;
   const revision = `${link.sharedSetup}:${link.shared?.queueLabels?.sequence}`;
   if (labelRevision === revision) return;
   const removed = new Set(selected.removed);
-  if (removed.size) changeQueues(book => {
+  if (removed.size) await changeQueuesLater(book => {
     for (const item of book.items()) if (item.labels.some(id => removed.has(id))) {
       item.labels = item.labels.filter(id => !removed.has(id));
     }
@@ -159,12 +159,12 @@ function reconcileSetupLabels(link: LinkState) {
  * conversations go first (`hand.ts`), whatever's told. */
 export async function pushQueues(host: Pick<LinkHost, "send">, link: LinkState | null = readLink(), targets: Target[], now = Date.now()): Promise<void> {
   if (!link?.key) return;
-  reconcileSetupLabels(link);
+  await reconcileSetupLabels(link);
   const peers = peersOf(link);
   // What's kept of computers you removed goes.
   const removed = removedBoxes(link);
   for (const key of toldKeys()) if (removed.has(key)) forgetTold(key);
-  sendHandings(host, link, targets, now);
+  await sendHandings(host, link, targets, now);
   // (Nothing to work out while no computer takes it.)
   if (building || !peers.some(peer => takesQueues(peer.key))) return;
   const changed = marks();
@@ -240,7 +240,7 @@ export function forgetPushed(): void {
 /** What a computer told of its Work Queue, kept (unless what's kept is newer) and said to be had;
  * the primary moves its counter past the numbers it uses; a box takes the labels of the
  * primary it numbers from (from the peer it reaches it through, one that numbers from it too). */
-function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void): void {
+async function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void): Promise<void> {
   const told = toldOf(given);
   if (!told) return;
   const link = readLink();
@@ -254,7 +254,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   // How it numbers changed: look at this box's setup now.
   if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
-  if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
+  if ("self" in primary) await numberDisk.run("movePast", Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
   else if (!usesAcceptedSaves(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
@@ -296,26 +296,26 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       else for (const bytes of mails) host.send(bytes);
     } catch {}
   };
-  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote)) takeNumbersMail(sender, whole, host);
-  if (isObject(whole.told)) takeTold(sender, whole.told, reply);
+  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote)) await takeNumbersMail(sender, whole, host);
+  if (isObject(whole.told)) await takeTold(sender, whole.told, reply);
   if (isObject(whole.setupCopy)) await takeSetupCopy(sender.key, whole.setupCopy);
   if (typeof whole.had === "string") {
     const before = pushed.get(sender.key);
     if (before?.id === whole.had) pushed.set(sender.key, { ...before, done: true });
   }
-  if (isObject(whole.handed)) handedBack(sender, whole.handed);
+  if (isObject(whole.handed)) await handedBack(sender, whole.handed);
   if (Object.hasOwn(whole, "evidenceHand")) {
     if (isObject(whole.evidenceHand) && !Object.hasOwn(whole, "hand"))
       await handArrived(sender, whole.evidenceHand, reply, places, undefined, true).catch(() => {});
   } else if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
-  if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
+  if (isObject(whole.offlineEditReceipt)) await takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
   if (Object.hasOwn(whole, "scopedOfflineEdit")) {
     if (isObject(whole.scopedOfflineEdit) && !Object.hasOwn(whole, "offlineEdit"))
       await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
   } else if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
-  if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
-  if (isObject(whole.ownerDraftReceipt)) takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
-  if (isObject(whole.submissionReceipt)) takeMessageReceipt(sender, whole.submissionReceipt, true, true);
+  if (isObject(whole.ownerMessageReceipt)) await takeMessageReceipt(sender, whole.ownerMessageReceipt);
+  if (isObject(whole.ownerDraftReceipt)) await takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.submissionReceipt)) await takeMessageReceipt(sender, whole.submissionReceipt, true, true);
   const messages = { scopedSubmission: "submission", scopedOwnerDraft: "draft", scopedOwnerMessage: "scoped", ownerMessage: "legacy" } as const;
   const lanes = (Object.keys(messages) as (keyof typeof messages)[]).filter(key => Object.hasOwn(whole, key));
   if (lanes.length === 1) {

@@ -18,6 +18,7 @@ import { LEFT_UNDONE_WORDS } from "../work/autopilot";
 import { type Caller, grantFor, untilOnAutopilot } from "./who";
 import { allowOnce, AUTOPILOT_HOW, alwaysFor, mayUse, noteUse } from "./use";
 import { note } from "./activity";
+import { commandReceipt, runToolCommand } from "../tool-command";
 import { askedEnv, runCommand } from "../run-command";
 
 /** What a tool answers: words for the agent, and whether it failed. */
@@ -170,7 +171,7 @@ function fieldOf(item: VaultItem, field: string | null): string | VaultRefusal {
   return new VaultRefusal(400, `Say which of “${item.name}”'s fields: ${item.fields.join(", ") || "it has none"} (\`${item.name}.<field>\`).`);
 }
 
-async function runWith(caller: Caller, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolAnswer> {
+async function runWith(caller: Caller, args: Record<string, unknown>, signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const command = typeof args.command === "string" ? args.command.trim() : "";
   const why = oneLine(typeof args.why === "string" ? args.why : "", 300).trim();
   if (!command) return failed("Give the command to run.");
@@ -199,6 +200,7 @@ async function runWith(caller: Caller, args: Record<string, unknown>, signal?: A
     if (!may.ok) return may.leftUndone ? { text: may.message, isError: false } : failed(may.message);
     allowed.set(item.id, may.how);
   }
+  let handedOff = false;
   const scratch = path.join(RUN_FOLDER, crypto.randomBytes(8).toString("hex"));
   // (With your login shell's environment on a Mac, as the engine's commands have it: `askedEnv`.
   // On every system the command itself runs in your login shell, `-lc`, which reads your startup files.)
@@ -234,27 +236,39 @@ async function runWith(caller: Caller, args: Record<string, unknown>, signal?: A
     // Within what a tool call may take altogether (the tool servers' 16 minutes), however long you took to answer.
     const left = Math.floor((CALL_BUDGET - (Date.now() - started)) / 1000);
     const seconds = Math.max(1, Math.min(600, left, Number(args.timeout) || 300));
-    const { output, code, timedOut } = await runCommand(command, folder, env, seconds * 1000, signal, scratch, () => fs.rmSync(scratch, { recursive: true, force: true }));
-    let shown = maskValues(output, hidden);
-    // Its last part when there's a lot, from a line's start.
-    if (shown.length > MOST_OUTPUT) shown = "…" + shown.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "");
-    const ended = timedOut ? `It was stopped after ${seconds} seconds.` : `It ended with ${code}.`;
-    return { text: `${shown.trim() ? shown.trimEnd() + "\n\n" : "It printed nothing.\n\n"}${ended} (Values from the vault are shown as [vault: <item>].)`, isError: timedOut || code !== 0 };
+    if (operation) {
+      handedOff = true;
+      const { result } = await runToolCommand(operation, { command, folder, env, timeout: seconds * 1000, hidden, scratch });
+      return vaultCommandAnswer(result);
+    }
+    const result = await runCommand(command, folder, env, seconds * 1000, signal, scratch, () => fs.rmSync(scratch, { recursive: true, force: true }));
+    return vaultCommandAnswer({ ...result, output: maskValues(result.output, hidden) }, seconds);
   } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    if (!handedOff) fs.rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+function vaultCommandAnswer({ output, code, timedOut }: Awaited<ReturnType<typeof runCommand>>, seconds?: number): ToolAnswer {
+  const shown = output.length > MOST_OUTPUT ? "…" + output.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "") : output;
+  const ended = timedOut ? (seconds ? `It was stopped after ${seconds} seconds.` : "It was stopped at its time limit.") : `It ended with ${code}.`;
+  return { text: `${shown.trim() ? shown.trimEnd() + "\n\n" : "It printed nothing.\n\n"}${ended} (Values from the vault are shown as [vault: <item>].)`, isError: timedOut || code !== 0 };
+}
+
+export async function resumedVaultCommand(operation: string): Promise<ToolAnswer | undefined> {
+  const kept = await commandReceipt(operation);
+  return kept && vaultCommandAnswer(kept.result);
 }
 
 // ── The door ──────────────────────────────────────────────────────────────────────────────────
 
 /** One of the tools, called for `caller`. */
-export async function callTool(name: unknown, args: unknown, caller: Caller, signal?: AbortSignal): Promise<ToolAnswer> {
+export async function callTool(name: unknown, args: unknown, caller: Caller, signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const given = isObject(args) ? args : {};
   try {
     switch (name) {
       case "vault_items": return await listItems(caller);
       case "vault_ask": return await askForItem(caller, given, signal);
-      case "vault_run": return await runWith(caller, given, signal);
+      case "vault_run": return await runWith(caller, given, signal, operation);
       default: return failed(`There's no vault tool “${oneLine(name, 40)}”.`);
     }
   } catch (error) {

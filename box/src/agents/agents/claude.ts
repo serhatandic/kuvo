@@ -24,8 +24,7 @@ import { Queue } from "../queue"
 import { writeSecret } from "../../shared/files"
 import { commandSignIn } from "../signin"
 import { newID } from "../ids"
-import { kuvoTools } from "../kuvotools"
-import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
+import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { claudeSubagents, subagentRules, subagentsFor, type Subagents } from "../subagents"
@@ -1092,7 +1091,7 @@ class ClaudeThread implements Thread {
     // What the app adds to its instructions changed (a worktree, the project's folders), or Claude
     // Code was updated: it starts again, going on with the same conversation. (Run whole in the
     // box's sandbox, through the relay, the one way out of it to them.)
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this, fenceOn())
     // Settings › Skills' skills, as a plugin of its own (but those it reads itself).
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)))
     // So does it when the box's sandbox was turned on or off, or its rules changed.
@@ -1133,7 +1132,7 @@ class ClaudeThread implements Thread {
     if (this.query && (opening || this.servers !== serversNow)) {
       const entries: Record<string, unknown> = {}
       // (Its key to them made again, if it started again: the old one went with it.)
-      const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+      const tools = agentToolsFor(this.session.id, this, fenceOn())
       if (tools) entries[tools.name] = tools.kind === "http" ? { type: "http", url: tools.url, headers: tools.headers, timeout: tools.timeout } : { type: "stdio", command: tools.command, args: tools.args, env: tools.env, timeout: tools.timeout }
       for (const server of servers) entries[server.name] = { type: "http", url: server.url, headers: server.headers, timeout: server.timeout }
       this.servers = serversNow
@@ -1526,11 +1525,14 @@ class ClaudeThread implements Thread {
     const named = botMemory(this.session)
     const ownMemory = named && existsSync(named) ? named : undefined
     this.input = new Queue()
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this, fenceOn())
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
     this.adopted = Boolean(taken)
-    this.query = sdk.query({
+    let query: any
+    let agentExited = false
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
+    query = this.query = sdk.query({
       prompt: this.input,
       options: {
         pathToClaudeCodeExecutable: this.agent.executable(),
@@ -1562,11 +1564,25 @@ class ClaudeThread implements Thread {
         // Its own sandbox off while the box's is on (yours, or a project's settings, may turn it
         // on): one sandbox can't run inside another on a Mac, and every command would fail.
         ...(whole ? { sandbox: { enabled: false } } : {}),
-        ...(spawning ? { spawnClaudeCodeProcess: spawning } : {}),
+        ...(spawning ? { spawnClaudeCodeProcess: (options: SpawnOptions) => {
+          const child = spawning(options)
+          child.once("exit", () => {
+            agentExited = !(taken?.held ?? this.held)?.relinquished
+            // The SDK can still have a result buffered. A descendant holding a pipe open
+            // shouldn't leave the turn waiting for the iterator forever.
+            exitTimer = setTimeout(() => {
+              if (this.query !== query) return
+              void this.queryEnded(query, undefined, agentExited)
+              try { query.close?.() } catch {}
+            }, 500)
+            exitTimer.unref?.()
+          })
+          return child
+        } } : {}),
         stderr: () => {},
       },
     })
-    void this.read(this.query, taken)
+    void this.read(query, taken, () => { clearTimeout(exitTimer); return agentExited })
   }
 
   /**
@@ -1590,7 +1606,7 @@ class ClaudeThread implements Thread {
       homes: [settings],
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...(onMachine ? [process.execPath] : []), ...(skills ? [skills] : []), ...(attached ? [attached] : []), ...(machineFolders ? [machineFolders] : [])],
+      read: [process.execPath, ...(skills ? [skills] : []), ...(attached ? [attached] : []), ...(machineFolders ? [machineFolders] : [])],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session),
@@ -1736,17 +1752,22 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any, taken?: TakenUp) {
+  private async read(query: any, taken: TakenUp | undefined, processExited: () => boolean) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
       for await (const message of query) {
         if (taken?.gate?.preparing) await taken.gate.activated
+        if (this.query !== query) break
         this.handle(message, usage)
       }
     } catch (error) {
       ended = error
     }
+    await this.queryEnded(query, ended, processExited())
+  }
+
+  private async queryEnded(query: any, ended: unknown, agentExited: boolean) {
     if (this.query === query) {
       // Ended by itself between turns (killed, or crashed) with work going that would have woken
       // it as it ended: that went with it, and nothing will (no turn here to fail and say so).
@@ -1772,7 +1793,7 @@ class ClaudeThread implements Thread {
     else {
       if (!active.problem) await this.heard(ended, active.hooks.signal)
       if (active.hooks.signal.aborted) return active.resolve({ outcome: "interrupted" })
-      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")) })
+      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited })
     }
   }
 

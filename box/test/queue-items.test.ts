@@ -409,7 +409,7 @@ test("Delete cannot remove a handoff backup while acceptance is unresolved", asy
   acceptsPrompt = false
   losePromptReply = true
   expect((await ask(handler, "POST", `${route}/now`)).status).toBe(502)
-  expect(() => dropWaiting(session, id)).toThrow(WaitingHandoff)
+  await expect(dropWaiting(session, id)).rejects.toThrow(WaitingHandoff)
   exactLookupFails = true
   expect((await ask(handler, "DELETE", route)).status).toBe(502)
   exactLookupFails = false

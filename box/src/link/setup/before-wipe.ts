@@ -1,3 +1,4 @@
+import { removalDisk } from "../server/disk-worker";
 import { additiveObjectFormat } from "../../shared/format-version";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -254,8 +255,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     }
   }
   const projects = selectedProjects(choice.export?.projects);
-  const attachmentHashes = choice.export ? new Map<string, string>() : undefined;
-  const generation = sourceGeneration(projects, attachmentHashes);
+  const { generation, attachmentHashes } = await removalDisk.run("scanSourceGeneration", projects, Boolean(choice.export));
   if (choice.moveTo && journal.recheckGeneration !== generation) {
     const verifiedSessions = new Set(journal.moves?.flatMap(move => move.verified ? [move.id, ...(move.sessions ?? [])] : []));
     const plan = await removalPlan(undefined, choice.moveTo, scopedDestination, verifiedSessions);
@@ -273,8 +273,8 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     }
     await exportBeforeWipe(journal.point!, targetOf(choice.export, independent), projects, {
       attachmentHashes,
-      checkSource: () => {
-        if (generation !== sourceGeneration(projects)) throw new Error("Source work changed during export. Review or retry the removal plan.");
+      checkSource: async () => {
+        if (generation !== (await removalDisk.run("scanSourceGeneration", projects, false)).generation) throw new Error("Source work changed during export. Review or retry the removal plan.");
       },
     });
     journal.exported = true;
@@ -285,7 +285,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     if (verified === false) throw new Error("The destination could not verify the moved files. Review and revise the removal plan.");
     if (!verified) return;
   }
-  if (generation !== sourceGeneration(projects)) return problems([]);
+  if (generation !== (await removalDisk.run("scanSourceGeneration", projects, false)).generation) return problems([]);
   delete journal.recheckGeneration;
   journal.generation = generation;
   journal.ready = true;
@@ -346,25 +346,29 @@ export function invalidatedPreparation(wipe: LocalWipe, key: string, failure = "
   save(file, journal);
 }
 
-export function currentPreparation(setup: string, key: string, record: Pick<MemberRemoval, "operation" | "plan" | "generation" | "selection">,
-  given: unknown, host?: PreparationHost): { generation?: string; export?: ExportPoint; inventoryVersion?: number; moveInventoryVersion?: number; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] } {
+export async function currentPreparation(setup: string, key: string, record: Pick<MemberRemoval, "operation" | "plan" | "generation" | "selection">,
+  given: unknown, host?: PreparationHost): Promise<{ generation?: string; export?: ExportPoint; inventoryVersion?: number; moveInventoryVersion?: number; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] }> {
   const file = sourceFile(setup, key, record.operation);
   let journal = read<Source>(file);
   if (journal?.ready && journal.generation) {
     const generation = journal.generation;
+    let changed = false;
+    let needsExport = false;
     try {
-      if (!journal.choice.export && needsIndependentExport(record.operation)) {
-        invalidatedPreparation({ setup, operation: record.operation, generation }, key, REMOVAL_EXPORT_REQUIRED);
-        journal = read<Source>(file);
-      } else if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
-        invalidatedPreparation({ setup, operation: record.operation, generation }, key);
-        journal = read<Source>(file);
-      }
-    } catch (error) {
-      invalidatedPreparation({ setup, operation: record.operation, generation }, key);
+      needsExport = !journal.choice.export && needsIndependentExport(record.operation);
+      changed = needsExport || !movesVerified(journal) ||
+        (await removalDisk.run("scanSourceGeneration", selectedProjects(journal.choice.export?.projects), false)).generation !== generation;
+    } catch { changed = true; }
+    // The scan can outlive a retry or an amended plan. Its result only applies to
+    // the exact generation that was scanned.
+    journal = read<Source>(file);
+    if (!journal?.ready || journal.generation !== generation) return {};
+    if (changed) {
+      invalidatedPreparation({ setup, operation: record.operation, generation }, key, needsExport ? REMOVAL_EXPORT_REQUIRED : undefined);
       journal = read<Source>(file);
     }
   }
+
   if (journal?.invalidated && journal.invalidated === record.generation) {
     return { invalidated: journal.invalidated, error: journal.error };
   }

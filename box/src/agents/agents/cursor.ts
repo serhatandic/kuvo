@@ -17,10 +17,11 @@ import { kuvoTools } from "../kuvotools"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { cursorSubagents, subagentsFor } from "../subagents"
-import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
+import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
+import { RPCClosed } from "../rpc"
 import { CursorWorker, cursorWorker, type CursorRun } from "./cursor-worker"
 import { agentHoldFolder, CURSOR_SDK, type HeldMeta } from "../hold/adopt"
 import { hold, type Held } from "../hold/client"
@@ -353,7 +354,7 @@ class CursorThread implements Thread {
     const fenced = Boolean(fenceRules())
     // Kuvo Code's own tools (the panel's browser, show_in_panel, messages to other agents), as the
     // other agents have them: what they do goes to this conversation (through the relay, in the sandbox).
-    const tools = fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this, fenced)
     // And the computer's MCP servers (yours and the integrations'), through
     // the relay, which keeps their keys.
     // (Those set right since the relay stood in for them, at new addresses, which start it again.)
@@ -542,6 +543,7 @@ class CursorThread implements Thread {
     } catch (error: any) {
       if (active.sawText || active.output.size) instructionsTaken()
       if (hooks.signal.aborted) return { outcome: "interrupted" }
+      if (error instanceof RPCClosed) return { outcome: "failed", error: failure(error), agentExited: true }
       const message = errorWords(error) ?? "Cursor stopped with an error."
       const limit = limitOf(message, error)
       if (limit) return { outcome: "failed", error: { type: "limit", message }, limit }

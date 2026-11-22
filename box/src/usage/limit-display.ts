@@ -38,7 +38,9 @@ export function limitDisplay(account: AccountLimits, members: Member[], now: num
     computers.add(source.box)
     const share = Math.min(1, Math.max(0, used))
     const freshUntil = Math.min(readAt + FRESH_FOR, resetsAt ?? Infinity, source.box.awayAt ?? Infinity)
-    const freshForMs = source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now))
+    const problem = source.account.problem
+    const failed = problem && !(problem.unknown && readAt === source.account.checked)
+    const freshForMs = source.box.away || failed ? 0 : Math.max(0, Math.floor(freshUntil - now))
     return {
       title, share, value: `${Math.round(share * 100)}%`, level: share > 0.7 ? levelOf(share) : "calm",
       readAt, resetsAt, freshForMs, resetLabels: resetLabels(resetsAt, now, now + freshForMs),

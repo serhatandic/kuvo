@@ -2843,6 +2843,14 @@ start on a model by the same rule.
   come, named as its side names its account (`label`: the account's own, a coding agent's second
   sign-in, "Work"); Custom Auto's lists as "Custom Auto"; one its side doesn't name, by its id. A
   picker names where each model is from by them, and draws the providers' marks by `id`.
+  A coding agent's says which of your accounts with it it is (`account`, `models.offered.accounts`):
+  `{agent, id, agentName, name, plan?}`: its agent (`claude`, `codex`, `cursor`, `grok`,
+  `antigravity`), the account's id with it (`default` for the agent's own sign-in, else the one you
+  added's, as in its provider's `<agent's provider>@<id>`), its agent's name ("Claude Code"), the
+  account's name to show (what you called it, else who's signed in, else its agent's), and its plan
+  as the box's usage reader last read it ("Max"; left out where it hasn't, or doesn't answer at
+  once). A picker shows an agent with two or more accounts as one, with a switch between them by
+  `name` and `plan`; a model picked under one runs on that account (its provider's).
 - `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
   (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
   are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET
@@ -3757,13 +3765,21 @@ did: the box keeps working as itself ("For released Macs").
     computer that has not reported its progress can still be shown behind.
     - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
       `line` `{words, tone, short?}` is what the row shows, all the box's: `words` ("Ready for
-      beta.41", "beta.40 · Off: updates when it’s back"), `tone` (`done`, `working`, `warning`
+      beta.41", "beta.40 · Can’t be reached: updates when it’s back"), `tone` (`done`, `working`, `warning`
       where it can't update for a reason you can fix, `blocked` where it can't until the next
       release, `off`), and on `warning` the few words a narrow place shows (`short`). `canRetry`
       says Try Again is offered on the row. A client draws these and decides neither.
       `requiresUpdate` is optional and tells clients when to hold new work. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
       and `failed` (`reason, rolledBackTo, nextRetryAt, failedAt`). Times are Unix milliseconds.
+      Today's boxes say `up-to-date`, `ready`, `getting-ready`, `updating` with `stage: "switching"`
+      (`line` "Switching to beta.42…", tone `working`), `cannot` and `off` ("Can't be reached:
+      updates when it's back"). A row only moves forward while a computer switches: one
+      restarting into the release says `switching` (its own box says so while the release is on
+      trial), a peer that goes quiet right after it was ready reads as switching for ten minutes,
+      and any peer keeps the state, sessions at work and agents it last told for two minutes of
+      quiet (a restart, a relay reconnecting) before it reads as `off`. A switching computer
+      counts as ready in the summary, which stays shown (`stage: "switching"`) until it's done.
     - The summary is `{target, targetSha256?, done, updating, behind, failed, stage, dismissed, failures}`.
       Its stages are `behind`, `downloading`, `waiting`, `switching`, `failed` and
       `finished`. Show an active update while `!dismissed && stage !== "finished"`.
@@ -6527,8 +6543,10 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   service, signed in or not). One signed in is listed at once, read or not yet (no `windows` until it's read, or until a turn
   tells of it: a Mac's Claude); one signed out goes at once, and what was read of it with it, so
   a reading is never older than its account's sign-in. Until every agent has said once (the
-  bridge just started), only what's signed in by then is listed, never what was kept from
-  before. One with no sign-in its plan limits could be read with (an API key, a Mac's Claude
+  bridge just started), what's signed in by then is listed, and so is a coding agent's account
+  whose sign-in is still in its folder, the same account as was last read here, as it was last
+  read (so a client's rings don't blink out while the box restarts); one whose sign-in is gone
+  from its folder is never listed from what was kept. One with no sign-in its plan limits could be read with (an API key, a Mac's Claude
   with an Anthropic Console sign-in) isn't.
   Each `account`:
   - `title` (`limits.titles`, #668): its name, the same in every client: its coding agent's
@@ -12749,6 +12767,11 @@ by the box; a client draws it as it comes:
 - `standouts`: at most three sessions, each with one short `reason` and
   its `kind` (`cost`, `cache` or `subagents`).
 - `state`: `loading`, `empty` or `ready`.
+- `asOf`: where present, this is the box's last summary for the same
+  query, read then (ms), answered at once while the box reads it afresh
+  (a client asks again shortly). Its last summaries are kept on disk, so
+  a box that just started answers at once too. One read in the last 30 s
+  is answered as it is, without `asOf`; a `loading` one is never kept.
 
 Each usage record carries the bot over it: a bot's own conversation and
 group-chat seat are its, a session it started (`kuvo.by`) is its, a

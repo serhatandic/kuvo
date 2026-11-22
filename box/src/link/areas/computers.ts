@@ -23,7 +23,7 @@ import { isObject, parsed, type Body } from "../../shared/json";
 import type { ListedComputer } from "../../shared/routes/box";
 import { macFeatures } from "../../shared/routes/mac";
 import { computerCompatibility, editFeatures } from "./compatibility";
-import { fleetFiles, fleetSummary, localFleetUpdate, peerFleetUpdate } from "../updates/progress";
+import { fleetFiles, fleetSummary, localFleetUpdate, peerFleetUpdate, QUIET_GRACE } from "../updates/progress";
 import { followedSetup } from "../setup/record";
 import { fleetFacts, fleetTarget } from "../updates/fleet";
 import { appBehind } from "../mac/app";
@@ -42,7 +42,7 @@ import { takesForwarded } from "../work-queue/forward";
 import { lonePrimary, readRemovalRequest, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
-import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
+import { awaySince, peerIsAway, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
 import { forwardAct, runForwardDecision } from "../work-queue/forward";
@@ -283,6 +283,13 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const said = told[peer.key];
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer;
+    // (Away a moment, as a box restarting or its relay reconnecting is: what it last told still
+    // stands, so nothing on a client blinks. Away longer: as it was found.)
+    // (Only what it told lately is kept: one never heard from, or not for half an hour, is away.)
+    const since = awaySince(peer.key, reach) ?? said?.heard;
+    const heardLately = said?.heard !== undefined && now - said.heard <= 30 * 60_000;
+    const awayFor = away && heardLately && since !== undefined ? now - since : Infinity;
+    const gone = away && !(awayFor < QUIET_GRACE);
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;
     const saved = direct ? sshAddressOf(peer.key)?.destination : undefined;
@@ -298,12 +305,12 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       // (Where a client of yours reaches it itself.)
       ...reachOf(link, peer.address),
       ...(ssh.length ? { ssh } : {}),
-      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
+      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !gone ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features, compatibility: computerCompatibility(features) } : {}),
-      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine, away) } : {}),
-      // What's at work there, as it last said: nothing seen at work while it's away; nothing said
-      // by one that never said it (an older box).
-      ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
+      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine, away, awayFor) } : {}),
+      // What's at work there, as it last said: nothing seen at work once it's been away a while;
+      // nothing said by one that never said it (an older box).
+      ...(mine?.working !== undefined ? (gone ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
       limits: limits.get(peer.key) ?? [],
     });
   }

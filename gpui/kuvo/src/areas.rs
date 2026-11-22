@@ -1158,8 +1158,12 @@ impl AreaView {
                     .child(div().size(px(5.)).flex_none().rounded(radius::PILL).bg(c.accent))
                     .child("Waking up…")
             } else {
-                let doing = self.has_fresh_bots().then(|| doing_parts(&bot.now, now)).flatten();
+                // What it's doing as the box last said, while the box can't be heard (restarting,
+                // reconnecting): kept, faint as last received, never swapped for its job and back.
+                let fresh = self.has_fresh_bots();
+                let doing = doing_parts(&bot.now, now);
                 let (words, waiting) = doing.map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
+                let (waiting, detail_color) = if fresh { (waiting, detail_color) } else { (None, c.text_faint) };
                 div().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(status_words(words, waiting, cx))
             };
             let (hover, selected_bg) = (c.hover, c.selected);

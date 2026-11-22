@@ -309,6 +309,10 @@ export interface SubagentRun {
 
 export interface RunResult {
   outcome: Outcome
+  /** The agent process was lost before it reported a turn end. */
+  agentExited?: boolean
+  /** Wait to send the next queued message until the engine is back. */
+  resumeQueue?: Promise<void>
   /** A failed run's agent had your message all the same (it took it, then failed). */
   taken?: boolean
   /** Messages you sent partway that it never got to: it's handed them with the next one. */

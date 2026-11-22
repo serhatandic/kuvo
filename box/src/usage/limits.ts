@@ -134,6 +134,8 @@ export interface ResetAttempt {
 export interface LimitReading {
   /** Incomplete response: missing windows keep their last successful readings. */
   partial?: boolean
+  /** Windows whose reported values are contradicted. Discard any older reading of them too. */
+  unknownWindows?: { ids: string[]; message: string }
   windows: Omit<LimitWindow, "read" | "source">[]
   /** The plan, in its maker's words ("Max 20x", "Pro"), when it says. */
   plan?: string
@@ -171,12 +173,6 @@ export class LimitsProblem extends Error {
     readonly until?: number,
     /** Whether a request went to its maker (false: what's kept here said so first). */
     readonly sent = true,
-    /**
-     * What its maker said contradicts what this box saw (Google calling a pool unused while its
-     * agent ran in that pool here since): nothing read before stands either, so its windows go,
-     * and it's read again at its usual pace.
-     */
-    readonly unknown = false,
   ) {
     super(message)
   }
@@ -281,9 +277,8 @@ export interface AccountLimits {
   /** When it will be read again, in ms. */
   next?: number
   /**
-   * Why the last read didn't work (the windows are as last read, with when). `unknown`: what its
-   * maker said was contradicted by what this box saw (`LimitsProblem.unknown`), so it has no
-   * windows: what's left isn't known, and `message` says why.
+   * Why the last read failed or was incomplete. With `unknown`, the provider's values for the
+   * windows named in `message` are contradicted and those windows are omitted.
    */
   problem?: { kind: Exclude<LimitsProblemKind, "none">; message: string; until?: number; unknown?: true }
 }
@@ -528,7 +523,10 @@ export class Limits {
    */
   list(borrowed = true): AccountLimits[] {
     const listed: AccountLimits[] = []
-    for (const account of this.accounts()) {
+    const accounts = this.accounts()
+    const kept = this.settled() ? [] : this.unconfirmed().filter(account =>
+      !accounts.some(each => each.provider === account.provider) && !!this.entries.get(account.provider)?.identity)
+    for (const account of [...accounts, ...kept]) {
       // Every account signed in here is listed (what lists them says which are: Accounts' word for
       // the coding agents'), read or not yet: nothing read is no windows, never another's.
       const entry = this.entries.get(account.provider) ?? { windows: [], next: 0 }
@@ -684,6 +682,14 @@ export class Limits {
   covers: () => LimitsService[] = () => []
 
   /**
+   * Accounts whose sign-in isn't confirmed yet (just after this box started, before the coding
+   * agents' bridge says): listed as last read while what lists the accounts hasn't said them all,
+   * where one was read here before, so a client's rings don't blink out while the box restarts.
+   * Never read, nor counted as this box's, until they're confirmed.
+   */
+  unconfirmed: () => LimitedAccount[] = () => []
+
+  /**
    * Reads now each account read longer ago than a minute, unless its maker said to wait or it was
    * read as recently as its maker allows, here or on another of your computers: a client pulled to
    * refresh, or an agent asked. `only`: those a peer asked for.
@@ -699,7 +705,11 @@ export class Limits {
     this.refreshing = this.refresh().then(() => {
       const checked = [...this.entries].filter(([id, entry]) => entry.checked !== before.get(id))
       // Individual failures appear on their cards. A round with only failures has no new success.
-      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => entry.problem && entry.problem.kind !== "ended")
+      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => {
+        const problem = entry.problem
+        if (!problem || problem.kind === "ended") return false
+        return !problem.unknown || !entry.windows.some(window => window.read === entry.checked)
+      })
       if (!this.refreshFailed) this.refreshCompletedAt = this.now()
       this.peers?.refreshElsewhere(this.rows(), this.reads())
     }, () => {
@@ -839,11 +849,13 @@ export class Limits {
       entry.extras = reading.extras?.length ? reading.extras : undefined
       // What it says now, in place of all it said before; a window a turn told of since it was
       // asked, or that only turns tell, stays as heard.
-      const missing = reading.partial ? entry.windows.filter(window => !reading.windows.some(each => each.id === window.id)) : []
-      const heard = entry.windows.filter((window) => (reading.partial && !reading.windows.some((each) => each.id === window.id) && (window.resetsAt !== undefined ? at < window.resetsAt : !entry.partialMissing?.includes(window.id))) || (window.source === "turn" && (window.read >= started || !reading.windows.some((each) => each.id === window.id))))
+      const unknown = reading.unknownWindows
+      const prior = unknown ? entry.windows.filter(window => !unknown.ids.includes(window.id)) : entry.windows
+      const missing = reading.partial ? prior.filter(window => !reading.windows.some(each => each.id === window.id)) : []
+      const heard = prior.filter((window) => (reading.partial && !reading.windows.some((each) => each.id === window.id) && (window.resetsAt !== undefined ? at < window.resetsAt : !entry.partialMissing?.includes(window.id))) || (window.source === "turn" && (window.read >= started || !reading.windows.some((each) => each.id === window.id))))
       entry.partialMissing = reading.partial ? missing.map(window => window.id) : undefined
       entry.windows = [...reading.windows.filter((window) => !heard.some((each) => each.id === window.id)).map((window) => ({ ...window, used: clamp(window.used), read: at, source: "usage" as const })), ...heard]
-      entry.problem = undefined
+      entry.problem = unknown ? { kind: "failed", message: unknown.message, unknown: true } : undefined
       entry.signIn = undefined
       entry.refusals = 0
       entry.failures = 0
@@ -857,16 +869,7 @@ export class Limits {
       if (!entry.identity) this.identify(entry, source.identity?.())
       entry.checked = at
       const problem = caught instanceof LimitsProblem ? caught : new LimitsProblem("failed", `Couldn't read its limits: ${caught instanceof Error ? caught.message : String(caught)}`)
-      entry.problem = { kind: problem.kind, message: problem.message, ...(problem.until ? { until: problem.until } : {}), ...(problem.unknown ? { unknown: true as const } : {}) }
-      if (problem.unknown) {
-        // Contradicted: what was kept from before is no more known than what was just said, and
-        // it's asked again at its usual pace, as its maker may catch up at any read.
-        entry.windows = []
-        entry.partialMissing = undefined
-        entry.failures = 0
-        entry.next = at + source.every
-        return problem.sent
-      }
+      entry.problem = { kind: problem.kind, message: problem.message, ...(problem.until ? { until: problem.until } : {}) }
       switch (problem.kind) {
         case "rate-limited": {
           // Counted per maker's bucket where there is one (its hold is the computer's): turned away

@@ -1,0 +1,4 @@
+{
+  "acp": "CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB, size INTEGER); CREATE TABLE steps(idx INTEGER PRIMARY KEY, metadata BLOB)",
+  "withoutGenerations": "CREATE TABLE steps(idx INTEGER PRIMARY KEY, metadata BLOB)"
+}

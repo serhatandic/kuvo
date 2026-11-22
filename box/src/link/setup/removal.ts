@@ -85,13 +85,21 @@ export async function takeWipeReceipt(envelope: unknown): Promise<void> {
   recordCompletion(record);
 }
 
+let checkingLocalRemoval = false;
 export function advanceLocalRemoval(link: LinkState): void {
+  if (checkingLocalRemoval) return;
+  checkingLocalRemoval = true;
+  void checkLocalRemoval(link).catch(error => console.error("Computer removal preparation:", error))
+    .finally(() => { checkingLocalRemoval = false; });
+}
+
+async function checkLocalRemoval(link: LinkState): Promise<void> {
   const setup = primary(link);
   if (!setup || !removalOperationsLayoutReady(K)) return;
   const record = removalsOf(link)[setup.primary];
   if (!record?.local || !record.plan || record.resolution) return;
   if (record.retry) retrySource(setup.id, setup.primary, record.operation, record.retry);
-  const progress = currentPreparation(setup.id, setup.primary, record, removalChoice(setup.id, setup.primary, record.operation));
+  const progress = await currentPreparation(setup.id, setup.primary, record, removalChoice(setup.id, setup.primary, record.operation));
   acceptProgress(record, progress, setup.id);
   scheduleWipe();
 }
@@ -191,7 +199,7 @@ function receiveAuthority(sender: string, message: Record<string, unknown>, link
   if (changed) writeCard();
 }
 
-function takeInstruction(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState) {
+async function takeInstruction(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState) {
   const setup = followedSetup(link);
   const proof = readDoc(message.instruction);
   const own = ownKey(link);
@@ -246,7 +254,10 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
       host?.keepOnly(new Set());
     }
     if (typeof their.retry === "string" && REMOVAL_ID.test(their.retry)) retrySource(setup.id, own, operation, their.retry);
-    const progress = currentPreparation(setup.id, own, record, message.choice, host);
+    const progress = await currentPreparation(setup.id, own, record, message.choice, host);
+    const current = readLink();
+    if (!current || current.setup?.id !== setup.id || current.setup.epoch !== setup.epoch
+      || current.removalSource?.operation !== operation || current.localWipe || challenge !== asked) return;
     if (generation === undefined || progress.generation !== generation) {
       sendRemoval(host, peer, link, { progress, setup: setup.id, operation, epoch: setup.epoch });
       return;
@@ -454,7 +465,10 @@ export function receiveRemovalMail(sender: string, message: Record<string, unkno
     if (removal && primary(link)) return deliverToRemoved(sender, message, host, link, removal, from);
     if (message.offer !== undefined) return takeOffer(sender, message, host, link, from);
     if (link.localWipe) return;
-    if (message.instruction !== undefined) return takeInstruction(sender, message, host, link);
+    if (message.instruction !== undefined) {
+      void takeInstruction(sender, message, host, link).catch(error => console.error("Computer removal delivery:", error));
+      return;
+    }
     if (message.authority !== undefined || message.authorityPart !== undefined) receiveAuthority(sender, message, link);
   } catch (error) { console.error("Computer removal delivery:", error); }
 }

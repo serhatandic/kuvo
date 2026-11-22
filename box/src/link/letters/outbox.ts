@@ -18,7 +18,7 @@ import { announce, toldPeers } from "../peers/agents";
 import { computerName } from "../peers/computer-name";
 import { isPutAway, peerOf, readPeerAgents } from "../peers/directory";
 import { KEY, mailFor, movedOf, ownKey, ownListed, peersOf, removedBoxes } from "../peers/known";
-import { bridgeAsk, giveUpSeat, ONLINE_STEP, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
+import { bridgeAsk, giveUpSeat, ONLINE_STEP, SEAT_LETTER_LIFE, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
 import { readLink } from "../state";
 import { READ_BY_MAIL, readConversation, TranscriptRefusal } from "./conversation";
 import { composeLetter, cutText, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, letterTries, NOTE_MEMORY, OUTBOX, waitingNote, placeOfSession, SENDING } from "./letter";
@@ -34,7 +34,7 @@ import type { BridgeAsk, SeatLetter } from "../peers/seats";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { OutboxCall } from "./calls";
-import { answerResumed, callLife, callRefused, sendCall } from "./calls";
+import { answerResumed, callLife, callRefused, recordToolStartAnswer, sendCall } from "./calls";
 
 /** A letter as it goes by mail (`{"letter": …}`): its id, from and for which conversations, its
  * words, whether its sender waits for the answer, when it was left (ms), and the letter it answers. */
@@ -227,6 +227,10 @@ export function letterWent(sender: Pick<Peer, "key">, { id, ok, why, retry, answ
   letterTries.delete(id);
   const words = typeof why === "string" ? why.slice(0, 500) : null;
   // A call kept for a box that was away, refused there for good: its lead hears why.
+  if (!ok && call && recordToolStartAnswer(id, sender.key, { failed: words ?? "It couldn't be done there." })) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
   if (!ok && call) callRefused(call, words ?? "It couldn't be done there.", sender);
   if (ok && letter.wait === true && answer !== false) {
     // On this Mac: the conversation waiting is told by whom its answer comes.
@@ -409,11 +413,14 @@ async function deliverHere(id: string, file: string, letter: OutboxLetter, step:
 // a message too (`deliverLeftAnswers`): it's kept with who it's from and for.
 export function answered(sender: { key: string; name?: string }, { answers: id, text, from, note, refused }: AnswerLetter, now = Date.now()): boolean {
   // Its answer says it was delivered, should that word have been lost on the way.
-  if (LETTER_ID.test(id) && fs.existsSync(path.join(SENDING, `${id}.json`))) letterWent(sender, { id, ok: true });
+
   // A call's answer: in its own words (its letter's are for its lead, should no tool wait), and
   // whether it couldn't.
   const words = noteOf(note)?.words;
   const isError = refused === true ? { isError: true } : {};
+  const toolStart = recordToolStartAnswer(id, sender.key, { answer: { text: cutText(words ?? text, READ_BY_MAIL), isError: refused === true } });
+  if (LETTER_ID.test(id) && fs.existsSync(path.join(SENDING, `${id}.json`))) letterWent(sender, { id, ok: true });
+  if (toolStart) return true;
   // On this Mac: the request still waiting for it, if it's still there.
   if (IS_MAC) {
     const waiter = macWaiting.get(id);
@@ -581,7 +588,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
       continue;
     }
     // A group chat's mail that mustn't be lost: to its computer only (never through a Mac), each
-    // minute until it says it has it, for two days of this link online (LETTER_MEMORY).
+    // minute until it says it has it, for two days of this link online (SEAT_LETTER_LIFE).
     if (isObject(letter.seat)) {
       const last = seatRounds.get(id);
       seatRounds.set(id, now);
@@ -591,7 +598,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
         // Kept a minute at a time: a restart loses no more.
         if (Math.floor(letter.aged! / 60_000) !== Math.floor(before / 60_000)) try { writePrivate(file, JSON.stringify(letter)); } catch {}
       }
-      if (letter.gaveUp === true || seatAge(letter) > LETTER_MEMORY) {
+      if (letter.gaveUp === true || seatAge(letter) > SEAT_LETTER_LIFE) {
         const told = giveUpSeat(id, letter as SeatLetter, ask);
         if (told) telling.push(told);
         continue;

@@ -26,7 +26,7 @@ import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
-import { keepRelayKeys, relayPort, usesToolRelay } from "./toolrelay"
+import { keepRelayKeys, relayPort, setToolRelayRun, usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
@@ -135,7 +135,7 @@ const hasOriginal = original && buildOf(original.toString("utf8")) === build
 
 // On a box: its engine, where its record says now (or where a launch from before said), and Kuvo
 // Code's tools as the engine has them.
-const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
+const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { pid: Number(process.env.KUVO_ENGINE_PID) || undefined, url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
 const port = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0
 if (onMachine) {
   setToolProgram(process.env.OPENCODE_CONFIG_CONTENT)
@@ -211,13 +211,13 @@ const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
-if (machineEngine) link.configure(machineEngine.url, machineEngine.password)
+if (machineEngine) link.configure(machineEngine.url, machineEngine.password, machineEngine.pid)
 // Its engine started again (a crash, a hang ended, an update's new engine): followed where its
 // record says now, every two seconds, its turns going on meanwhile (`EngineLink` reconnects).
 if (onMachine) {
   setInterval(() => {
     const now = recordedEngine()
-    if (now) link.configure(now.url, now.password)
+    if (now) link.configure(now.url, now.password, now.pid)
   }, 2_000).unref?.()
 }
 // The skills Settings › Skills lists, for the agents too (the engine lists them).
@@ -305,6 +305,7 @@ const peers: PeerParts = { post, directory }
 const agentsFile = onMachine ? join(machineHome!, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined
 // The box's queues, where a chat's part for a conversation you stopped waits (on the Mac, the box's run folder the app says).
 const runFolder = onMachine ? join(machineHome!, "run") : process.env.KUVO_RUN || undefined
+setToolRelayRun(runFolder)
 const boxServices = new BoxServicesClient(runFolder)
 // Sessions' turns held with the box's link, in its run folder.
 notesBeside(runFolder)

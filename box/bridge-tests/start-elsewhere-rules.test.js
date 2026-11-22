@@ -190,6 +190,18 @@ test("a lead on another computer starts a session here as its own would: marked 
   assert.match(answer.note.words, new RegExp(`^Started "Sign-in" in api \\(address ${made.id}\\)`));
 });
 
+test("a repeated tool start regenerates the peer receipt without starting another session", async () => {
+  const call = startCall({}, {}, { id: "cal_tool_" + "v".repeat(32) });
+  await take(call);
+  const initial = answerOf(call);
+  assert.ok(initial);
+  fs.unlinkSync(path.join(run, "outbox", "sending", `${call.id}-a.json`));
+  await take(call);
+  assert.equal(answerOf(call).note.words, initial.note.words);
+  assert.equal(eng.seen.made.length, 1);
+  assert.equal(eng.seen.prompts.length, 1);
+});
+
 test("a start from another computer is told as one here is: review: false drops the reviewer line, and one whose finish its lead doesn't hear is told to answer with send_message", async () => {
   await take(startCall({ review: false }));
   const plain = eng.seen.prompts.at(-1).text;
@@ -478,6 +490,25 @@ test("a start goes out with who's calling as this computer knows it, never as th
   assert.deepEqual(said, { text: "[On mini] Started \"Sign-in\" in api (address ses_far): Plan. It's on it now.", isError: false });
   // It lives on mini: a stop for it goes there at once.
   assert.equal(read(path.join(run, "work", "homes.json")).ses_far.key, mini.pub);
+});
+
+test("a repeated tool start reads the same stored answer when the sender session is unavailable", { timeout: 15000 }, async () => {
+  leadHere();
+  const operation = "k".repeat(43);
+  const args = { computer: "mini", project: "api", task: "Fix the sign-in." };
+  const place = { readEngine: () => eng.target, bridge: () => null, operation };
+  const going = link.agentTool("start_session", args, "ses_lead", place);
+  const id = "cal_tool_" + operation.slice(0, 32);
+  const file = path.join(run, "outbox", "sending", `${id}.json`);
+  for (let attempt = 0; attempt < 100 && !fs.existsSync(file); attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(read(file).peer, mini.pub);
+  await link.takeLetter(mini.peer, { id: id + "-a", answers: id, to: "ses_lead", text: 'Started "Sign-in" (address ses_far).', at: Date.now() }, {
+    send() {}, targets: [eng.target],
+  });
+  const first = await going;
+  assert.equal(first.isError, false);
+  eng.all.delete("ses_lead");
+  assert.deepEqual(await link.agentTool("start_session", args, "ses_lead", place), first);
 });
 
 test("a start on a computer that isn't answering is refused at once, and nothing waits to go", async () => {

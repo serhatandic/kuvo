@@ -21,7 +21,7 @@ import { answerHeaders, bridgeRefusedBeforeExecution, bridgeRequest, modelInput,
 import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
-import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
+import { holdQueue, keepWaitingLater, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
 import { answering, BUSY, SENDING_PATIENCE, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -195,12 +195,12 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         // One Stop named as still on its way, looked at as it goes (keeping its files can take a
         // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
         // the first thing to reach a stopped conversation), not set going.
-        const held = heldAsItComes(session, id);
+        const held = await heldAsItComes(session, id);
         // `now` (Send Now): to go now, the step under way stopped for it once the engine has it.
         const now = !held && given.delivery === "now";
         const delivery = held || given.delivery === "queue" ? "queue" : "steer";
         const body = { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
-        if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
+        if (held && id && await keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
         const engineTarget = toAgents ? undefined : target;
@@ -208,7 +208,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         // For after this run while its queue is paused (a Stop, from any client), or while its engine
         // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
         // (the engine would run all it holds with the next thing it had).
-        if ((delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, engineTarget)) {
+        if ((delivery === "queue" || holding) && await keepWaitingLater(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, engineTarget)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
         if (!target || !at) return notAdmitted({ message: "The engine isn't running." });

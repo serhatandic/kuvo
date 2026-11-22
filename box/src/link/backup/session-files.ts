@@ -4,6 +4,7 @@ import { visitAttachmentPaths, type AttachmentFormat } from "../../shared/attach
 import { isObject, parsed } from "../../shared/json";
 import { writeDurablePrivate } from "../files";
 import { recordKey } from "../ownership/store";
+import { restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
 import { inside, outputPath, stat } from "./locations";
 
 export function attachmentRecovery(saved: unknown, recovery: string, unavailable: { entry: string; reason: string }[]) {
@@ -13,8 +14,9 @@ export function attachmentRecovery(saved: unknown, recovery: string, unavailable
     return typeof folder === "string" && path.isAbsolute(folder) ? [[name, path.resolve(folder)] as const] : [];
   }));
   const placed = new Map<string, string>();
-  const reported = new Set<string>();
+  const reported = new Set(unavailable.map(item => item.entry));
   return {
+    placed,
     add(root: string, parts: string[], target: string) {
       const source = sources.get(root as typeof names[number]);
       if (source) placed.set(path.join(source, ...parts), target);
@@ -41,6 +43,18 @@ export function attachmentRecovery(saved: unknown, recovery: string, unavailable
       });
     },
   };
+}
+
+/** Rewrite the staged engine database and return any newly missing attachments. */
+export async function restoreEngineDatabase(file: string, fences: string[], saved: unknown, recovery: string, placed: Map<string, string>,
+  unavailable: { entry: string; reason: string }[]) {
+  scrubEngine(file, fences, true);
+  if (saved) {
+    const attachments = attachmentRecovery(saved, recovery, unavailable);
+    for (const [from, to] of placed) attachments.placed.set(from, to);
+    await restoreEngineAttachmentPaths(file, attachments.rewrite);
+  }
+  return unavailable;
 }
 
 /** Resolve V1 file addresses before allowing them into the engine's live storage. */

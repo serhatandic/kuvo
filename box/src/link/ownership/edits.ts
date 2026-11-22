@@ -1,7 +1,8 @@
+import { keepReceipt } from "./receipt-worker";
 import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
-import { locked } from "../../shared/files";
+import { lockedWhile } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
 import { listedGroups } from "../areas/groups";
 import { mailsFor } from "../work-queue/parts";
@@ -193,8 +194,8 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces, hos
       return [...new Set([sender, ...peersOf(link).map(peer => peer.key), ...(acceptedMembership(link)?.left ?? []), ...(own ? [own] : [])])]
         .map(key => operationOf(setup, key, envelope.nonce));
     };
-    const result = ref.kind === "queueItems" ? editQueue(edit, owns, authorize, { operation: mutationKey(setup, envelope.nonce), legacy: legacy() })
-      : ref.kind === "sessionNotes" ? editSessionNote(edit, () => owns(ref), authorize)
+    const result = ref.kind === "queueItems" ? await editQueue(edit, owns, authorize, { operation: mutationKey(setup, envelope.nonce), legacy: legacy() })
+      : ref.kind === "sessionNotes" ? await editSessionNote(edit, () => owns(ref), authorize)
       : ref.kind === "botSettings" ? await editBot(edit, owns, authorize, engines.engine, engines.bridge)
       : editSetup(edit, link => member(link, setup, sender), authorize);
     if (result === false) return interrupted("That operation id is already in use.");
@@ -210,8 +211,8 @@ const envelopeOf = (record: Outgoing | undefined) => record?.queuedEdit ?? recor
 
 const pending = (operation: string): EditReceipt => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." });
 
-function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
-  locked(LOCK, () => {
+async function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
+  await lockedWhile(LOCK, async () => {
     const kept = readRecord<Outgoing>("edit-outbox", receipt.operation);
     const envelope = envelopeOf(kept);
     if (!kept || !envelope || kept.setup !== outgoing.setup || kept.owner !== owner || kept.digest !== outgoing.digest) return;
@@ -222,7 +223,7 @@ function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
       for (const [field, value] of Object.entries(edit.fields ?? {})) if (typeof value === "string") recovery[field] = value;
       for (const note of edit.notes ?? []) recovery[`note:${note.id}`] = note.text;
     }
-    keepRecord("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery, submitter: kept.submitter,
+    await keepReceipt("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery, submitter: kept.submitter,
       ...(rejected && edit.attachments?.length ? { attachments: edit.attachments } : {}) });
   }, { required: true });
 }
@@ -253,13 +254,13 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces,
   const operation = legacyOutbox && !readRecord<Outgoing>("edit-outbox", current) ? legacy : current;
   const envelope = { setup: setup.id, nonce: given.operation, edit: { ...given, operation } };
   const digest = fingerprint(envelope);
-  const stored = locked(LOCK, () => {
+  const stored = await lockedWhile(LOCK, async () => {
     const existing = readRecord<Outgoing>("edit-outbox", operation);
     if (existing) return existing.digest === digest ? existing : null;
     if (!owner?.key) return;
     if (records("edit-outbox").filter(key => envelopeOf(readRecord<Outgoing>("edit-outbox", key))).length >= MAX_PENDING) return;
     const outgoing = { setup: setup.id, owner: owner.key, digest, queuedEdit: { ...envelope, submitter }, submitter, ref: given.ref, receipt: pending(operation) };
-    keepRecord("edit-outbox", operation, outgoing);
+    await keepReceipt("edit-outbox", operation, outgoing);
     return outgoing;
   }, { required: true });
   if (stored === null) return json(409, { message: "That operation id is already in use." });
@@ -269,7 +270,7 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces,
     applying.add(operation);
     try {
       const receipt = await apply(queued, sender, places);
-      if (receipt) finish(stored, stored.owner, receipt);
+      if (receipt) await finish(stored, stored.owner, receipt);
     } finally { applying.delete(operation); }
   }
   const kept = readRecord<Outgoing>("edit-outbox", operation)!;
@@ -326,8 +327,8 @@ async function readHere(ref: EditTarget, sender: string, setup: string, places: 
       const link = readLink();
       return member(link, setup, sender) && stillOwns(target, link!, checked);
     };
-    const value = ref.kind === "queueItems" ? queueEditView(ref, owns)
-      : !owns(ref) ? null : ref.kind === "botSettings" ? botEditView(ref, owns) : ref.kind === "sessionNotes" ? sessionNoteView(ref) : setupEditView(ref);
+    const value = ref.kind === "queueItems" ? await queueEditView(ref, owns)
+      : !owns(ref) ? null : ref.kind === "botSettings" ? botEditView(ref, owns) : ref.kind === "sessionNotes" ? await sessionNoteView(ref) : setupEditView(ref);
     if (value) return { status: 200, value };
   } catch (error) {
     if (!(error instanceof Refusal)) throw error;
@@ -393,12 +394,13 @@ const supportsEdit = (peer: string, ref: EditTarget) => ref.kind !== "sessionNot
 const retry = new Map<string, number>();
 const applying = new Set<string>();
 
-export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null, now: number, places: () => PeerPlaces) {
+async function flushOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null, now: number, places: () => PeerPlaces) {
   const setup = followedSetup(link);
   const self = link && ownKey(link);
   if (!setup || !link || !self) return;
   const waiting = records("edit-outbox");
   const remaining = new Set<string>();
+  const writes: Promise<unknown>[] = [];
   for (const operation of waiting) {
     const kept = readRecord<Outgoing>("edit-outbox", operation);
     const envelope = envelopeOf(kept);
@@ -410,7 +412,7 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
     if (authority === "checking") continue;
     let owner = location(envelope.edit.ref, link);
     if (!owner?.key && authority !== "allowed" && kept.owner !== self && !peersOf(link).some(peer => peer.key === kept.owner)) {
-      finish(kept, kept.owner, { operation, status: "interrupted", message: "The computer holding this edit left the setup." });
+      await finish(kept, kept.owner, { operation, status: "interrupted", message: "The computer holding this edit left the setup." });
       continue;
     }
     if (!owner?.key && authority !== "allowed") {
@@ -421,10 +423,10 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
     if (!owner?.key) continue;
     if (owner.key !== kept.owner) {
       const changed = { ...kept, owner: owner.key };
-      const saved = locked(LOCK, () => {
+      const saved = await lockedWhile(LOCK, async () => {
         const current = readRecord<Outgoing>("edit-outbox", operation);
         if (!current || !envelopeOf(current) || current.owner !== kept.owner) return false;
-        keepRecord("edit-outbox", operation, changed);
+        await keepReceipt("edit-outbox", operation, changed);
         return true;
       }, { required: true });
       if (!saved) continue;
@@ -433,8 +435,8 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
       const key = owner.key;
       retry.set(operation, now);
       applying.add(operation);
-      void apply(envelope, self, places(), host).then(result => { if (result) finish(kept, key, result); })
-        .catch(error => console.error("Offline edit:", error)).finally(() => applying.delete(operation));
+      writes.push(apply(envelope, self, places(), host).then(result => result && finish(kept, key, result))
+        .catch(error => console.error("Offline edit:", error)).finally(() => applying.delete(operation)));
     } else if (host?.welcomed) {
       const peer = peersOf(link).find(peer => peer.key === owner!.key);
       if (!peer || !takesForwarded(peer.key, FEATURE) || !supportsEdit(peer.key, envelope.edit.ref)
@@ -446,6 +448,20 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
     }
   }
   for (const operation of retry.keys()) if (!remaining.has(operation)) retry.delete(operation);
+  await Promise.all(writes);
+}
+
+let flushing: Promise<void> | undefined;
+let requested: Parameters<typeof flushOfflineEdits> | undefined;
+export function sendOfflineEdits(...args: Parameters<typeof flushOfflineEdits>): void {
+  requested = args;
+  flushing ??= (async () => {
+    while (requested) {
+      const next = requested;
+      requested = undefined;
+      await flushOfflineEdits(...next).catch(error => console.error("Offline edits:", error));
+    }
+  })().finally(() => { flushing = undefined; });
 }
 
 export async function takeOfflineEdit(sender: MailSender, given: Record<string, unknown>, reply: (value: Record<string, unknown>) => void, places: PeerPlaces, host?: Pick<LinkHost, "send"> | null, scoped = false) {
@@ -464,7 +480,7 @@ export async function takeOfflineEdit(sender: MailSender, given: Record<string, 
   } finally { applying.delete(edit.operation); }
 }
 
-export function takeOfflineEditReceipt(sender: MailSender, given: Record<string, unknown>) {
+export async function takeOfflineEditReceipt(sender: MailSender, given: Record<string, unknown>) {
   const receipt = given.receipt;
   if (!isObject(receipt) || typeof receipt.operation !== "string" || !KEY.test(receipt.operation)
     || typeof given.setup !== "string" || !member(readLink(), given.setup, sender.key)) return;
@@ -472,5 +488,5 @@ export function takeOfflineEditReceipt(sender: MailSender, given: Record<string,
     : !["committed", "choice", "deleted", "refresh"].includes(String(receipt.status)) || typeof receipt.revision !== "string" || !KEY.test(receipt.revision)
       || !Array.isArray(receipt.choices) || receipt.choices.some(id => typeof id !== "string" || !KEY.test(id))) return;
   const kept = readRecord<Outgoing>("edit-outbox", receipt.operation);
-  if (kept?.setup === given.setup && kept.owner === sender.key) finish(kept, sender.key, receipt as EditReceipt);
+  if (kept?.setup === given.setup && kept.owner === sender.key) await finish(kept, sender.key, receipt as EditReceipt);
 }

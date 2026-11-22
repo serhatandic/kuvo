@@ -16,6 +16,9 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { starredModels, type Starred } from "./models-starred";
 import { heldRead } from "../vault/holder";
 import { CHOOSE_MODEL } from "../work/model-words";
+import { askServices, readServices } from "../../shared/box-services";
+import { RUN } from "../home";
+import { isObject } from "../../shared/json";
 
 export const MODELS_OFFERED_ROUTE = "kuvo/models/offered";
 
@@ -72,8 +75,11 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
     }
     if (!place) return yield* json(404, { message: "This conversation is no longer available." });
   }
-  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
-  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  const [lists, plans] = await Promise.all([
+    listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
+    plansHere(signal),
+  ]);
+  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
   if (query.get("for") === "defaults") {
     const models = answer.models.filter(model => model.side === "engine" && !model.hidden && !model.retiring);
     return yield* json(200, { ...answer, models, scoped: true });
@@ -91,24 +97,60 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   });
 }
 
+/** A coding agent's account, as a picker tells your accounts with it apart
+ * (`models.offered.accounts`): the agent (`claude`), the account's id with it (`default` for its own
+ * sign-in, else the one you added's), its agent's name ("Claude Code"), the account's own name (what
+ * you called it, else who's signed in to it, else its agent's), and its plan where the box has read
+ * it ("Max"). */
+export interface OfferedAccount { agent: string; id: string; agentName: string; name: string; plan?: string }
+
 /** Each provider of `models`, named as its side lists its account (`label`: the account's own, a
  * coding agent's second sign-in), in the order its models come; Custom Auto's lists as "Custom
- * Auto"; one its side doesn't name, by its id. */
-export function providersOf(models: { providerID: string; agents: boolean }[], lists: Lists): { id: string; name: string; label?: string }[] {
-  const out: { id: string; name: string; label?: string }[] = [];
+ * Auto"; one its side doesn't name, by its id. A coding agent's says which of your accounts it is
+ * (`account`), with its plan from `plans` (by provider). */
+export function providersOf(models: { providerID: string; agents: boolean }[], lists: Lists, plans: Map<string, string> = new Map()): { id: string; name: string; label?: string; account?: OfferedAccount }[] {
+  const out: { id: string; name: string; label?: string; account?: OfferedAccount }[] = [];
   for (const model of models) {
     if (out.some(each => each.id === model.providerID)) continue;
     if (model.providerID === "auto") { out.push({ id: "auto", name: "Custom Auto" }); continue; }
-    const account = (model.agents ? lists.bridge?.accounts : lists.engine?.accounts)?.get(model.providerID);
-    out.push({ id: model.providerID, name: account?.name ?? model.providerID, ...(account?.label ? { label: account.label } : {}) });
+    const accounts = model.agents ? lists.bridge?.accounts : lists.engine?.accounts;
+    const account = accounts?.get(model.providerID);
+    const agent = model.agents ? account?.agent : undefined;
+    let offered: OfferedAccount | undefined;
+    if (account && agent) {
+      // (Its agent's own name is its own sign-in's: an added one's is "Claude Code · Work".)
+      const own = [...accounts!.values()].find(each => each.agent?.kind === agent.kind && each.agent.id === "default");
+      const agentName = agent.id === "default" ? account.name : own?.name ?? account.name;
+      const plan = plans.get(model.providerID);
+      offered = { agent: agent.kind, id: agent.id, agentName, name: account.label ?? agent.signedInAs ?? (agent.id === "default" ? agentName : account.name), ...(plan ? { plan } : {}) };
+    }
+    out.push({ id: model.providerID, name: account?.name ?? model.providerID, ...(account?.label ? { label: account.label } : {}), ...(offered ? { account: offered } : {}) });
   }
   return out;
+}
+
+/** Each coding agent's account's plan ("Max"), by provider, as this box's usage reader last read
+ * it; none where it hasn't, or doesn't answer at once (a picker shows the accounts without). */
+export async function plansHere(signal?: AbortSignal): Promise<Map<string, string>> {
+  const plans = new Map<string, string>();
+  const reader = readServices(RUN);
+  if (!reader) return plans;
+  try {
+    const reply = await askServices(reader, "api/kuvo/limits", { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_500)]) : AbortSignal.timeout(1_500) });
+    if (!reply.ok) { await reply.body?.cancel(); return plans; }
+    const said: unknown = await reply.json();
+    const accounts = isObject(said) && isObject(said.data) && Array.isArray(said.data.accounts) ? said.data.accounts : [];
+    for (const each of accounts) {
+      if (isObject(each) && typeof each.provider === "string" && typeof each.plan === "string" && each.plan.trim()) plans.set(each.provider, each.plan.trim());
+    }
+  } catch {}
+  return plans;
 }
 
 /** The route's answer from what the engine and the bridge list, for the model `wanted`, with your
  * starred models (`starred`, in the order starred: those that don't run here now too, a client
  * shows only those offered). */
-export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred[] = []) {
+export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred[] = [], plans: Map<string, string> = new Map()) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
   const offered = offeredHere(lists);
@@ -121,7 +163,7 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
     // Each provider's name, as its side names it (`models.offered.providers`), so a picker names
     // where each model is from; and your starred models (`models.starred`).
-    providers: providersOf(offered, lists),
+    providers: providersOf(offered, lists, plans),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...(lists.bridge?.generations ? { generations: lists.bridge.generations } : {}),

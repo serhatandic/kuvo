@@ -6,6 +6,8 @@ import type { Subprocess } from "bun"
 import { TookTooLong } from "./agent"
 import type { Held } from "./hold/client"
 
+export class RPCClosed extends Error {}
+
 export class RPCError extends Error {
   constructor(
     readonly code: number,
@@ -26,6 +28,7 @@ export class RPC {
   private child?: Subprocess<"pipe", "pipe", "pipe">
   private held?: Held
   private closed = false
+  agentExited = false
   /** What the child wrote to stderr lately, for errors. */
   stderr = ""
   onNotification: (method: string, params: any) => void = () => {}
@@ -51,7 +54,8 @@ export class RPC {
     this.filter = options.filter
     const ended = (code: number, signal: string | null) => {
       this.closed = true
-      for (const { reject } of this.pending.values()) reject(new Error(this.stderr.trim().split("\n").slice(-3).join("\n") || `The agent stopped (exit code ${code}).`))
+      this.agentExited = signal !== "fenced" && signal !== "detached"
+      for (const { reject } of this.pending.values()) reject(new RPCClosed(this.stderr.trim().split("\n").slice(-3).join("\n") || `The agent stopped (exit code ${code}).`))
       this.pending.clear()
       this.onExit(code, signal)
       return code
@@ -68,18 +72,26 @@ export class RPC {
       })
       const started = Promise.withResolvers<void>()
       this.begin = () => { read(); started.resolve() }
-      const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited
+      // A stopped holder can have a turn result waiting in the replay buffer.
+      const exit = started.promise.then(() => held.exited)
       // (Taken over by a newer bridge: the agent didn't stop, but it's that bridge's now.)
-      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1), exit.signal))
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" || exit.signal === "detached" ? -1 : 1), exit.signal))
       this.errorsRead = this.exited.then(() => {})
       return
     }
     // `cleanEnv`: only what's given (an agent that mustn't see your other keys).
     const env = options.cleanEnv ? options.env : { ...process.env, ...options.env }
     const child = (this.child = Bun.spawn(command, { cwd: options.cwd, env: env as Record<string, string>, stdin: "pipe", stdout: "pipe", stderr: "pipe" }))
-    this.exited = child.exited.then(code => ended(code, child.signalCode))
-    void this.read(child)
+    const output = this.read(child).catch(() => {})
     this.errorsRead = this.readErrors(child).catch(() => {})
+    this.exited = child.exited.then(async code => {
+      // Give the last protocol lines a chance to end the turn. A descendant can keep the
+      // pipes open after the agent exits, so waiting for EOF has a bound.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([Promise.all([output, this.errorsRead]), new Promise<void>(resolve => { timer = setTimeout(resolve, 500) })])
+      clearTimeout(timer)
+      return ended(code, child.signalCode)
+    })
   }
 
   private begin?: () => void
@@ -139,6 +151,7 @@ export class RPC {
   }
 
   private receive(line: string) {
+    if (this.closed) return
     let message: any
     try {
       message = JSON.parse(line)
@@ -179,7 +192,7 @@ export class RPC {
   }
 
   request<T = any>(method: string, params?: unknown, timeout?: number): Promise<T> {
-    if (this.closed) return Promise.reject(new Error(this.stderr.trim().split("\n").slice(-3).join("\n") || "The agent isn't running."))
+    if (this.closed) return Promise.reject(new RPCClosed(this.stderr.trim().split("\n").slice(-3).join("\n") || "The agent isn't running."))
     const id = this.next++
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })

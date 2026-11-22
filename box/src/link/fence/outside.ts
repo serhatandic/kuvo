@@ -22,6 +22,7 @@ import { askBook } from "../notices/asking";
 import type { Notice } from "../notices/notice";
 import { commandWords } from "../notices/plain";
 import { LINE_LONGEST, cutAtWord } from "../notices/sentence";
+import { commandReceipt, runToolCommand } from "../tool-command";
 import { askedEnv, runCommand } from "../run-command";
 import type { Caller } from "../vault/who";
 import { markedFullAccess } from "../work/full";
@@ -184,7 +185,7 @@ export function watchSandboxAsks(tell: (notice: Notice) => boolean, answered: (i
 
 const failed = (text: string): ToolAnswer => ({ text, isError: true });
 
-async function askToRun(caller: Caller, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolAnswer> {
+async function askToRun(caller: Caller, args: Record<string, unknown>, signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const started = Date.now();
   // A bot's seat in a group chat runs no commands, so the sandbox never stopped one of its own; and
   // it's a conversation you can't open, to see what it asks.
@@ -265,12 +266,27 @@ async function askToRun(caller: Caller, args: Record<string, unknown>, signal?: 
   if (notNow) { forgetFetched(fetched); return { text: notNow, isError: false }; }
   const left = Math.floor((CALL_BUDGET - (Date.now() - started)) / 1000);
   const seconds = Math.max(1, Math.min(600, left, Number(args.timeout) || 300));
+  const head = how === "always" ? `Ran outside the sandbox · Always for this: from now on your commands can write in ${always!.path} in the sandbox, so run them there.` : verdict?.decision === "allow" ? (verdict.by === "you" ? "Ran outside the sandbox · Approved by the user" : `Ran outside the sandbox · Allowed by Auto's reviewer: ${verdict.reason}`) : full ? "Ran outside the sandbox · Full Access" : "Ran outside the sandbox · Allowed once";
+  if (operation) {
+    const env = await askedEnv();
+    if (!authorized()) { forgetFetched(fetched); return failed(denied); }
+    const kept = await runToolCommand(operation, { command: fetched?.command ?? command, folder: project, env, timeout: seconds * 1000, head, files: fetched?.files });
+    return sandboxCommandAnswer(kept.result, kept.head ?? head);
+  }
   const ran = await runOutside(fetched?.command ?? command, project, seconds, signal, authorized).finally(() => forgetFetched(fetched));
   if (!ran) return failed(denied);
-  const { shown, code, timedOut } = ran;
-  const ended = timedOut ? `It was stopped after ${seconds} seconds.` : `It ended with ${code}.`;
-  const head = how === "always" ? `Ran outside the sandbox · Always for this: from now on your commands can write in ${always!.path} in the sandbox, so run them there.` : verdict?.decision === "allow" ? (verdict.by === "you" ? "Ran outside the sandbox · Approved by the user" : `Ran outside the sandbox · Allowed by Auto's reviewer: ${verdict.reason}`) : full ? "Ran outside the sandbox · Full Access" : "Ran outside the sandbox · Allowed once";
+  return sandboxCommandAnswer({ ...ran, output: ran.shown }, head, seconds);
+}
+
+function sandboxCommandAnswer({ output, code, timedOut }: Awaited<ReturnType<typeof runCommand>>, head: string, seconds?: number): ToolAnswer {
+  const shown = output.length > MOST_OUTPUT ? "…" + output.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "") : output;
+  const ended = timedOut ? (seconds ? `It was stopped after ${seconds} seconds.` : "It was stopped at its time limit.") : `It ended with ${code}.`;
   return { text: `${head}\n\n${shown.trim() ? shown.trimEnd() + "\n\n" : "It printed nothing.\n\n"}${ended}`, isError: timedOut || code !== 0 };
+}
+
+export async function resumedSandboxCommand(operation: string): Promise<ToolAnswer | undefined> {
+  const kept = await commandReceipt(operation);
+  return kept && sandboxCommandAnswer(kept.result, kept.head ?? "Ran outside the sandbox");
 }
 
 /** Whether the sandbox, and not something else, stopped a command that printed `printed`: on a
@@ -365,8 +381,8 @@ async function runOutside(command: string, folder: string, seconds: number, sign
 }
 
 /** One of the tools, called for `caller`. */
-export async function callSandboxTool(name: unknown, args: unknown, caller: Caller, signal?: AbortSignal): Promise<ToolAnswer> {
+export async function callSandboxTool(name: unknown, args: unknown, caller: Caller, signal?: AbortSignal, operation?: string): Promise<ToolAnswer> {
   const given = isObject(args) ? args : {};
-  if (name === "sandbox_ask") return askToRun(caller, given, signal);
+  if (name === "sandbox_ask") return askToRun(caller, given, signal, operation);
   return failed(`There's no sandbox tool “${oneLine(name, 40)}”.`);
 }

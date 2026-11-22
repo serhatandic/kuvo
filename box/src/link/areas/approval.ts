@@ -360,7 +360,7 @@ export function keepApprovals(engine: () => Target | null = ownEngine, bridge: (
       // held, which is safe: commands still go through it. (A bridge that isn't running isn't
       // waited for, nor its record left behind: one started again asks in Auto before its commands
       // while the sandbox is off, agents/sessions.ts. One running that doesn't answer keeps it held.)
-      if (off && last === now && here) nothingCountsOnIt(mark);
+      if (off && last === now && here) await nothingCountsOnIt(mark);
       await adoptPending(here, agents);
       await adoptBots(here, agents, adopted);
     } catch {} finally {

@@ -18,6 +18,7 @@ import { EngineAccounts, ENGINE_SERVICES } from "./engine-limits"
 import { LimitsPeers } from "./limits-peers"
 import { LimitResets } from "./limits-resets"
 import { Insights, insightsRoutes } from "./insights"
+import { KeptSummaries } from "./insights-kept"
 import { InsightsDB } from "./insights-db"
 import { InsightsScan } from "./insights-scan"
 import { insightKey } from "./insight-records"
@@ -74,6 +75,7 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
       await Promise.all([engineAccounts.refresh(), reading && Promise.allSettled(said.map(agent => agent.prepare?.()))])
     }, () => engineAccounts.answered && (!reading || said.every(agent => confirmed(agent) !== undefined)))
   limits.covers = () => agentAccounts(said).map(account => account.service)
+  limits.unconfirmed = () => reading ? agentAccounts(said.filter(agent => confirmed(agent) === undefined)) : []
   limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES]
   const limitsPeers = new LimitsPeers(limits, post, directory, join(home, "limits-peers.json"))
   const resets = new LimitResets(limits, join(home, "limits-resets.json"), Date.now, post, directory)
@@ -124,6 +126,7 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
     })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots())
+    usage.insights.kept = new KeptSummaries(join(folder, "insights-kept.json"))
   } catch (error) {
     console.error("Insights index:", error)
   }

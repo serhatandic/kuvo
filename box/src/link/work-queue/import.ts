@@ -8,7 +8,8 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { labelNamed } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
-import { claimNumbers, inRanges, MOST_NUMBER, numberWaiting, rangesOf, readNumbers, type Primary } from "./numbers";
+import { numberDisk } from "../server/disk-worker";
+import { inRanges, MOST_NUMBER, numberWaitingLater, rangesOf, readNumbers, type Primary } from "./numbers";
 import { readTold, toldKeys } from "./told";
 import { MOST_BODY, MOST_TITLE, newItemID, placeIn, type Book, type Item, type Who } from "./store";
 
@@ -122,7 +123,7 @@ export function parseBacklog(texts: string[]): { items: Imported[]; skipped: str
 }
 
 /** Markdown files on this box, read for an import. */
-export function readBacklogFiles(files: unknown): { texts: string[] } | { refused: string } {
+export function readBacklogFiles(files: unknown): ReturnType<typeof parseBacklog> | { refused: string } {
   const named = (Array.isArray(files) ? files : [files]).filter((each): each is string => typeof each === "string" && each.trim() !== "");
   if (!named.length) return { refused: "Name the files to import (files), as full paths." };
   const texts: string[] = [];
@@ -135,7 +136,7 @@ export function readBacklogFiles(files: unknown): { texts: string[] } | { refuse
       return { refused: `${file} can't be read.` };
     }
   }
-  return { texts };
+  return parseBacklog(texts);
 }
 
 /** Items an agent gave `queue_import`, checked: those that are, and why the rest aren't. */
@@ -178,7 +179,7 @@ export function givenItems(given: unknown): { items: Imported[]; skipped: string
  * where no other item has it (an item that's itself on its way back to its own doesn't count): this
  * is how a backlog imported again repairs what went wrong. One whose number is another item's, here
  * or on another of your computers, gets a new one (with a note), as does one the primary refuses. */
-export function importItems(book: Book, owner: string, items: Imported[], who: Who, primary: Primary, now = Date.now()): ImportOutcome {
+export async function importItems(book: Book, owner: string, items: Imported[], who: Who, primary: Primary, now = Date.now()): Promise<ImportOutcome> {
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   // Who holds each number here: the item numbered so, or one waiting for it (an import's, or one
   // asking for its own back).
@@ -255,8 +256,8 @@ export function importItems(book: Book, owner: string, items: Imported[], who: W
   }
   const restores = back.map(({ item }) => item.wanted!);
   const claimed = [...made.map(item => item.wanted!), ...restores];
-  const { granted } = claimNumbers(primary, claimed, { restores });
-  numberWaiting(book, primary, granted ? { granted, claimed: rangesOf(claimed) } : null, { now });
+  const { granted } = await numberDisk.run("claimNumbers", primary, claimed, { restores });
+  await numberWaitingLater(book, primary, granted ? { granted, claimed: rangesOf(claimed) } : null, { now });
   outcome.waiting = made.filter(item => item.number === undefined).length;
   // Those the primary refused at once (on the primary itself), and those whose number another had.
   const refused = made.filter(item => item.importedAs !== undefined).map(item => ({ from: item.importedAs!, item }));

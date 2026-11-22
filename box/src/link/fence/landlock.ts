@@ -416,13 +416,17 @@ export function triedNamespace(own: string): string | null | typeof UNFINISHED {
  * try. `UNFINISHED` where it didn't finish in time (`limit`, a test's own). */
 export function ownNamespaceLater(own: string, unshare = UNSHARE.find(each => fs.existsSync(each)), limit = TRY_FOR): Promise<string | null | typeof UNFINISHED> {
   if (!unshare) return Promise.resolve(null);
+  return tryLater(unshare, namespaceTry(unshare, own), limit).then(found => found === UNFINISHED ? found : found ? unshare : null);
+}
+
+function tryLater(unshare: string, args: string[], limit: number): Promise<boolean | typeof UNFINISHED> {
   return new Promise(resolve => {
-    const child = spawn(unshare, namespaceTry(unshare, own), { cwd: "/", stdio: "ignore" });
+    const child = spawn(unshare, args, { cwd: "/", stdio: "ignore" });
     let late = false;
     const cut = setTimeout(() => { late = true; child.kill("SIGKILL"); }, limit);
     cut.unref?.();
-    child.once("error", error => { clearTimeout(cut); resolve(didntFinish({ status: null, error }) ? UNFINISHED : null); });
-    child.once("exit", (status, signal) => { clearTimeout(cut); resolve(late || didntFinish({ status, signal }) ? UNFINISHED : status === 0 ? unshare : null); });
+    child.once("error", error => { clearTimeout(cut); resolve(didntFinish({ status: null, error }) ? UNFINISHED : false); });
+    child.once("exit", (status, signal) => { clearTimeout(cut); resolve(late || didntFinish({ status, signal }) ? UNFINISHED : status === 0); });
   });
 }
 
@@ -430,10 +434,8 @@ export function ownNamespaceLater(own: string, unshare = UNSHARE.find(each => fs
  * own files (a bind from within it, then its remount by its path), tried on `at` (the box's own empty folder, on the disk your
  * home is on): where it can't, each command in a repository refuses, and the box says so (`gaps`:
  * `git`). `UNFINISHED` where the try didn't finish. */
-export function readOnlyHere(unshare: string, at: string): boolean | typeof UNFINISHED {
-  const tried = spawnSync(unshare, ["-Urm", "/bin/sh", "-c", `cd -P "$0" 2>/dev/null && mount -c --bind . . 2>/dev/null && mount -c -o remount,bind,ro "$0" 2>/dev/null`, at], { cwd: "/", stdio: "ignore", timeout: TRY_FOR });
-  if (didntFinish(tried)) return UNFINISHED;
-  return tried.status === 0;
+export function readOnlyHere(unshare: string, at: string): Promise<boolean | typeof UNFINISHED> {
+  return tryLater(unshare, ["-Urm", "/bin/sh", "-c", `cd -P "$0" 2>/dev/null && mount -c --bind . . 2>/dev/null && mount -c -o remount,bind,ro "$0" 2>/dev/null`, at], TRY_FOR);
 }
 
 const TRY_FOR = 10_000;

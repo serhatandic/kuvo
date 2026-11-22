@@ -4,9 +4,10 @@
 import { parsed } from "../../shared/json";
 import { IS_MAC } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
-import { forgetHistory, iconOf, readHistory } from "./history";
+import { iconOf } from "./history";
 import { changeBrowserSettings, changeNeverSite, readBrowserSettings } from "./settings";
-import { browserSites, removeSiteData, siteOf } from "./sites";
+import { siteOf } from "./sites";
+import { browserDisk } from "../server/disk-worker";
 
 /** The routes this file answers: the history (a site's in it), a site's icon, the sites with data
  * (one of them), the settings. */
@@ -46,19 +47,19 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
   const which = one === undefined ? null : part(one);
   if (one !== undefined && !which) return yield* json(400, { message: "Name the site as its address has it." });
   if (list === "history") {
-    if (method === "GET" && which === null) return yield* json(200, readHistory());
+    if (method === "GET" && which === null) return yield* json(200, await browserDisk.run("readHistory"));
     if (method !== "DELETE") return yield* json(405, {});
-    forgetHistory(which);
-    return yield* json(200, readHistory());
+    await browserDisk.run("forgetHistory", which);
+    return yield* json(200, await browserDisk.run("readHistory"));
   }
-  if (method === "GET" && which === null) return yield* json(200, await browserSites());
+  if (method === "GET" && which === null) return yield* json(200, await browserDisk.run("browserSites"));
   if (method !== "DELETE") return yield* json(405, {});
   // A site as the list names it (`example.com`, `localhost`, an address), never a part of one (`com`).
   const site = which?.toLowerCase() ?? null;
   if (site !== null && (siteOf(site) !== site || !(site.includes(".") || site === "localhost"))) return yield* json(400, { message: "Name a site as the list of sites names it." });
-  if (!(await removeSiteData(site === null ? "all" : [site]))) return yield* json(503, { message: "The browser is busy starting. Try again in a moment." });
+  if (!(await browserDisk.run("removeSiteData", site === null ? "all" : [site]))) return yield* json(503, { message: "The browser is busy starting. Try again in a moment." });
   // (What Chrome still clears of it, a moment later, isn't listed.)
-  const { sites } = await browserSites();
+  const { sites } = await browserDisk.run("browserSites");
   return yield* json(200, { sites: site === null ? [] : sites.filter(each => each.site !== site) });
 }
 

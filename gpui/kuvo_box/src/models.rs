@@ -186,6 +186,26 @@ pub struct Provider {
     /// Its account's own label (a coding agent's second sign-in, "Work").
     #[serde(default)]
     pub label: Option<String>,
+    /// Which of your accounts with a coding agent it is (`models.offered.accounts`).
+    #[serde(default)]
+    pub account: Option<ProviderAccount>,
+}
+
+/// A coding agent's account, as the box names it for a picker (`models.offered.accounts`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccount {
+    /// Its agent (`claude`).
+    pub agent: String,
+    /// `default` for the agent's own sign-in, else the one you added's.
+    pub id: String,
+    /// Its agent's name ("Claude Code").
+    pub agent_name: String,
+    /// The account's name to show ("Work", "sam@example.com").
+    pub name: String,
+    /// Its plan ("Max"), where the box has read it.
+    #[serde(default)]
+    pub plan: Option<String>,
 }
 
 /// A starred model: its provider and id (`models.starred`).

@@ -12,6 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
+import { writeDurablePrivate } from "../../shared/files";
+import { ToolCallPending, toolProgress } from "../server/tool-call";
 import { pause } from "../../shared/wait";
 import { bridgeTarget, peerTargets, readEngineFile } from "../engine/client";
 import { messageID } from "../engine/sessions";
@@ -27,7 +29,7 @@ import { droppedMark, fenceBefore, watchCall } from "../relay/dropped";
 import { relaySend } from "../relay/frames";
 import { macLink, readLink } from "../state";
 import { homesOf, noteHomes } from "../work/homes";
-import { rowsBox, rowsOf, startedOn } from "../work/elsewhere";
+import { noteStartedOn, rowsBox, rowsOf, startedOn } from "../work/elsewhere";
 import { ALLOW_LIFE, answerAskTool, compactSessionTool, liveRows, stopSessionTool } from "../work/tools";
 import { otherComputersAllowed } from "../work/approval";
 import { AWAY_WORDS, keepJournal, noteLineHomes, START_FIELDS, OPEN_TOOLS, readHere, readJournal, START_FEATURE, startAsOfMail, startsRunning, stopLineWork, takeStart } from "./start-call";
@@ -137,6 +139,7 @@ export function sendCall(host: Pick<LinkHost, "send">, id: string, file: string,
   if (!isObject(call.call) || !isCallTool(call.call.tool) || typeof call.from !== "string") return void fs.rmSync(file, { force: true });
   const made = typeof call.at === "number" ? call.at : now;
   if (now - made > callLife(call.call)) {
+    if (!call.sentTo) recordToolStartAnswer(id, call.peer, { failed: "The other computer did not accept the start before it expired." });
     fs.rmSync(file, { force: true });
     letterTries.delete(id);
     if (call.quiet || waitedFor(call.call.tool)) return;
@@ -174,6 +177,7 @@ export function sendCall(host: Pick<LinkHost, "send">, id: string, file: string,
   const bytes = mailFor(peer, { call: mailed, at: now }, link);
   if (!bytes) {
     fs.rmSync(file, { force: true });
+    recordToolStartAnswer(id, call.peer, { failed: "It's too long to send." });
     if (call.wait) reply(id, "It's too long to send.");
     return;
   }
@@ -250,12 +254,66 @@ export type CallOutcome =
   | { older: true }
   | { offline: true; kept: boolean };
 
+type OfferedStart = { peer: string; name: string; from: string; at: number; call: OutboxCall["call"]; outcome?: CallOutcome };
+const startOffer = (id: string) => toolProgress<OfferedStart>(id);
+const toolStartID = (operation: string) => `cal_tool_${operation.slice(0, 32)}`;
+const isToolStartID = (id: string) => /^cal_tool_[A-Za-z0-9_-]{32}$/.test(id);
+
+export function recordToolStartAnswer(id: string, peer: string, outcome: CallOutcome): boolean {
+  if (!isToolStartID(id)) return false;
+  const log = startOffer(id);
+  const offered = log.read();
+  if (!offered || offered.peer !== peer) return false;
+  if (!offered.outcome) log.keep({ ...offered, outcome });
+  return true;
+}
+
+async function offerToolStart(id: string, offered: OfferedStart, most: number): Promise<CallOutcome> {
+  if (offered.outcome) return offered.outcome;
+  const left = path.join(SENDING, id + ".json");
+  if (!fs.existsSync(left)) {
+    writeDurablePrivate(left, JSON.stringify({ ...offered, to: "", wait: false } satisfies OutboxCall));
+    if (IS_MAC) macSendOutbox();
+    else outboxSoon.send();
+  }
+  const until = Date.now() + most;
+  while (Date.now() < until) {
+    const outcome = startOffer(id).read()?.outcome;
+    if (outcome) return outcome;
+    await pause(250);
+  }
+  throw new ToolCallPending("Waiting for the other computer's session start receipt.");
+}
+
+export function resumeOfferedStart(operation: string, most: number): Promise<ToolAnswer> | undefined {
+  const id = toolStartID(operation);
+  const offered = startOffer(id).read();
+  return offered && offerToolStart(id, offered, most).then(outcome => {
+    if ("failed" in outcome) return { text: `On ${offered.name}: ${outcome.failed}`, isError: true };
+    if (!("answer" in outcome)) throw new ToolCallPending("Waiting for the other computer's session start receipt.");
+    const session = /\(address (ses_[A-Za-z0-9]+)\)/.exec(outcome.answer.text)?.[1];
+    if (session) {
+      noteHomes([session], offered.peer);
+      noteStartedOn(offered.from, offered.peer);
+    }
+    return { ...outcome.answer, text: outcome.answer.text.startsWith("[On ") ? outcome.answer.text : `[On ${offered.name}] ${outcome.answer.text}` };
+  });
+}
+
 /** `tool` for `lead` on the box `peer`, waiting `most` ms at most for its answer, less once the
  * relay says that box isn't there. With `keep`, one that can't be answered now is kept for when
  * it's back. */
-export async function callPeer(peer: Peer, tool: CallTool, args: Record<string, unknown>, lead: Lead, place: Pick<ToolPlace, "signal" | "step">, { keep, quiet = false, most = CALL_WAIT, start }: { keep: boolean; quiet?: boolean; most?: number; start?: StartAs }): Promise<CallOutcome> {
+export async function callPeer(peer: Peer, tool: CallTool, args: Record<string, unknown>, lead: Lead, place: Pick<ToolPlace, "signal" | "step">, { keep, quiet = false, most = CALL_WAIT, start, operation }: { keep: boolean; quiet?: boolean; most?: number; start?: StartAs; operation?: string }): Promise<CallOutcome> {
   if (!(readPeerAgents()[peer.key]?.features ?? []).includes(isOpenTool(tool) || tool === "stop_work" ? START_FEATURE : CALLS_FEATURE)) return { older: true };
   const call: OutboxCall["call"] = { tool, args, as: { ...callAs(lead), ...(start ? { start } : {}) } };
+  if (operation && tool === "start_session") {
+    const id = toolStartID(operation);
+    const log = startOffer(id);
+    const existing = log.read();
+    const offered = existing ?? { peer: peer.key, name: computerName(peer), from: lead.session, at: Date.now(), call };
+    if (!existing) log.keep(offered);
+    return offerToolStart(id, offered, most);
+  }
   if (offRelay()) {
     if (keep) leaveCall(peer.key, lead.session, call, { wait: false, quiet });
     return { offline: true, kept: keep };
@@ -454,6 +512,14 @@ export async function takeCall(sender: LetterSender & { name?: string }, given: 
   const { from, tool, made } = given as { from: string; tool: CallTool; made: number };
   const args = given.args as Record<string, unknown>;
   if (running.has(id) || startsRunning.has(id)) return;
+  const prior = tool === "start_session" && isToolStartID(id) ? readJournal(id) : null;
+  if (prior && (prior.sender !== sender.key || prior.from !== from)) return no("This call id already belongs to another conversation.");
+  if (prior?.done) {
+    const done = prior.done;
+    answer(answerIdOf(id), { to: from, text: done.text, peer: sender.key, answers: id, words: done.text, refused: done.refused, list: false });
+    return send(sender, { delivered: { id, ok: true } });
+  }
+  if (prior) return send(sender, { delivered: { id, ok: true } }); // The receiver's resume loop owns it.
   if (id in lettersSeen(now) || `note:${id}` in lettersSeen(now)) return send(sender, { delivered: { id, ok: true } });
   // Work started here from your other computers only while you let them (this box's switch).
   if (isOpenTool(tool) && !otherComputersAllowed()) return no(takesNoWork());

@@ -21,7 +21,7 @@ import type { Target } from "../../shared/records";
 export async function stopBotWork(bot: string, targets: Target[], signal?: AbortSignal, { tell = true }: { tell?: boolean } = {}): Promise<number> {
   // A due reset must not start the owner while we're still stopping its children.
   const startingOwner = tell ? botHere(bot)?.session : undefined;
-  if (startingOwner) pauseForUser(startingOwner, { ifLimited: true });
+  if (startingOwner) await pauseForUser(startingOwner, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
   // Those working (what they left running too), those waiting on an answer (which may not count as
@@ -40,7 +40,7 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
   }
   const own = botHere(bot)?.session;
   if (own) {
-    if (told.some(each => each.starter === own)) pauseForUser(own);
+    if (told.some(each => each.starter === own)) await pauseForUser(own);
     forgetWakes(own);
     if (working.has(own)) {
       for (const target of targets) if (await stopWork(target, own, turns.has(own)).then(() => true, () => false)) break;

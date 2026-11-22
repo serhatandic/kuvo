@@ -16,16 +16,16 @@ test("references follow the shared Work Queue rule and preserve UTF-16 offsets",
 });
 
 test("mentions from descriptions and notes, and a stored relationship read from both ends", async () => {
-  const make = (title: string, number: number) => {
-    const added = addHere({ title }, false, randomUUID());
+  const make = async (title: string, number: number) => {
+    const added = await addHere({ title }, false, randomUUID());
     expect(added.status).toBe(200);
     const item = allItems().find(each => each.title === title)!;
     changeQueues(book => { book.items().find(each => each.id === item.id)!.number = number; });
     return item.id;
   };
-  const a = make("Picker UX", 8101);
-  const b = make("Preview release", 8102);
-  const c = make("QA checklist", 8103);
+  const a = await make("Picker UX", 8101);
+  const b = await make("Preview release", 8102);
+  const c = await make("QA checklist", 8103);
   const change = (id: string, given: Record<string, unknown>) => actHere({ method: "PATCH", ref: { id }, targets: [], given });
   const read = async (id: string) => {
     const read = await actHere({ method: "GET", ref: { id }, targets: [] });
@@ -62,7 +62,7 @@ test("mentions from descriptions and notes, and a stored relationship read from 
 test("inline attachment anchors follow the stored files and their collision-safe names", async () => {
   const file = { name: "Login [wide].png", uri: "data:image/png;base64,YWJj" };
   const marker = (index: number) => `![Attachment](kuvo-attachment:draft/${index}/Login%20%5Bwide%5D.png)`;
-  const result = addHere({ title: "Two captures", body: `Before\n${marker(1)}\nBetween\n${marker(0)}\nAfter`, files: [file, file] }, false, randomUUID());
+  const result = await addHere({ title: "Two captures", body: `Before\n${marker(1)}\nBetween\n${marker(0)}\nAfter`, files: [file, file] }, false, randomUUID());
   expect(result.status).toBe(200);
   const saved = allItems().find(item => item.title === "Two captures")!;
   const [first, second] = saved.files;
@@ -102,8 +102,8 @@ const read = async (id: string) => {
     itemRelations: { id: string; kind: string }[];
   } }).item;
 };
-const add = (title: string, given = {}) => {
-  const answer = addHere({ title, ...given }, false, randomUUID());
+const add = async (title: string, given = {}) => {
+  const answer = await addHere({ title, ...given }, false, randomUUID());
   expect(answer.status).toBe(200);
   return (answer.value as { item: { id: string } }).item.id;
 };
@@ -111,8 +111,8 @@ const png = (name: string, bytes: string) => ({ name, uri: "data:image/png;base6
 const marker = (index: number) => `![Attachment](kuvo-attachment:draft/${index}/photo.png)`;
 
 test("a typed note returns the same stable mention and offsets as its backlink", async () => {
-  const target = add("Note destination");
-  const source = add("Note source");
+  const target = await add("Note destination");
+  const source = await add("Note source");
   changeQueues(book => {
     book.find({ id: target })!.number = 749210;
     book.find({ id: source })!.notes.push({ text: "🎨 See #749210", by: { user: true }, at: Date.now() });
@@ -121,9 +121,9 @@ test("a typed note returns the same stable mention and offsets as its backlink",
   expect((await read(target)).itemRelations).toEqual([expect.objectContaining({ id: source, kind: "mentioned-in" })]);
 });
 
-test("a saved attachment read rejects symlink replacements for the file and the item folder", () => {
-  const id = add("Attachment containment", { files: [png("photo.png", "legitimate")] });
-  expect(fileOf({ id }, "photo.png")?.bytes.toString()).toBe("legitimate");
+test("a saved attachment read rejects symlink replacements for the file and the item folder", async () => {
+  const id = await add("Attachment containment", { files: [png("photo.png", "legitimate")] });
+  expect((await fileOf({ id }, "photo.png"))?.bytes.toString()).toBe("legitimate");
   const outside = fs.mkdtempSync(path.join(WORK_QUEUE, "outside-attachments-"));
   const file = path.join(outside, "photo.png");
   fs.writeFileSync(file, "outside");
@@ -131,11 +131,11 @@ test("a saved attachment read rejects symlink replacements for the file and the 
     const saved = path.join(filesOf(id), "photo.png");
     fs.unlinkSync(saved);
     fs.symlinkSync(file, saved);
-    expect(fileOf({ id }, "photo.png")).toBeNull();
+    expect(await fileOf({ id }, "photo.png")).toBeNull();
     fs.unlinkSync(saved);
     fs.rmdirSync(filesOf(id));
     fs.symlinkSync(outside, filesOf(id), "dir");
-    expect(fileOf({ id }, "photo.png")).toBeNull();
+    expect(await fileOf({ id }, "photo.png")).toBeNull();
   } finally {
     fs.rmSync(filesOf(id), { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
@@ -143,7 +143,7 @@ test("a saved attachment read rejects symlink replacements for the file and the 
 });
 
 test("case collisions and names occupied on disk keep both anchors on their own bytes", async () => {
-  const id = add("Case collisions", { body: marker(0), files: [png("Photo.png", "first")] });
+  const id = await add("Case collisions", { body: marker(0), files: [png("Photo.png", "first")] });
   const occupied = path.join(filesOf(id), "photo 2.png");
   fs.writeFileSync(occupied, "already there", { flag: "wx" });
   const before = find(id);
@@ -151,12 +151,12 @@ test("case collisions and names occupied on disk keep both anchors on their own 
   const saved = find(id);
   expect(saved.files.map(file => file.name)).toEqual(["Photo.png", "photo 3.png"]);
   expect(fs.readFileSync(occupied, "utf8")).toBe("already there");
-  const byAnchor = new Map(saved.files.map(file => [file.anchor, fileOf({ id }, file.name)?.bytes.toString()]));
+  const byAnchor = new Map(await Promise.all(saved.files.map(async file => [file.anchor, (await fileOf({ id }, file.name))?.bytes.toString()] as const)));
   expect([...saved.body.matchAll(/kuvo-attachment:file\/([a-f0-9]+)/g)].map(match => byAnchor.get(match[1]))).toEqual(["first", "second"]);
 });
 
 test("removing a picture marker preserves the latest description and other attachments", async () => {
-  const id = add("Keep the later edit", { body: "Earlier " + marker(0) + " / " + marker(1), files: [png("a.png", "a"), png("b.png", "b")] });
+  const id = await add("Keep the later edit", { body: "Earlier " + marker(0) + " / " + marker(1), files: [png("a.png", "a"), png("b.png", "b")] });
   const snapshot = await read(id);
   const first = snapshot.files[0], second = snapshot.files[1];
   const url = `kuvo-attachment:file/${first.anchor}`;
@@ -169,11 +169,11 @@ test("removing a picture marker preserves the latest description and other attac
   expect(removed.value).toMatchObject({ inlineImagesApplied: true });
   expect((await patch(id, request)).status).toBe(200);
   expect((await read(id)).body).toBe(`The bot edited the text. Earlier  / ![b.png](kuvo-attachment:file/${second.anchor})\n\n${code}`);
-  expect(fileOf({ id }, second.name)?.bytes.toString()).toBe("b");
+  expect((await fileOf({ id }, second.name))?.bytes.toString()).toBe("b");
 });
 
 test("soft deletion hides a manual link at both ends and purging prunes its stored edge", async () => {
-  const [holder, target] = [add("Purge link first"), add("Purge link second")].sort();
+  const [holder, target] = [await add("Purge link first"), await add("Purge link second")].sort();
   expect((await patch(holder, { itemRelation: { item: target, kind: "blocks" } })).status).toBe(200);
   expect((await actHere({ method: "DELETE", ref: { id: holder }, targets: [] })).status).toBe(200);
   expect((await read(holder)).itemRelations).toEqual([]);
@@ -186,9 +186,9 @@ test("soft deletion hides a manual link at both ends and purging prunes its stor
 });
 
 test("unrelated writes keep the saved mention index and recovery rebuilds only a missing index", async () => {
-  const target = add("Indexed target");
-  const source = add("Indexed source");
-  const unrelated = add("Unrelated change");
+  const target = await add("Indexed target");
+  const source = await add("Indexed source");
+  const unrelated = await add("Unrelated change");
   changeQueues(book => { book.find({ id: target })!.number = 749211; });
   await patch(source, { body: "See #749211" });
   const index = find(source).mentionIndex;
@@ -210,3 +210,27 @@ test("unrelated writes keep the saved mention index and recovery rebuilds only a
   await patch(unrelated, { priority: "low" });
   expect(JSON.parse(fs.readFileSync(file, "utf8")).items.find((item: { id: string }) => item.id === source).mentionIndex).toEqual(index);
 });
+
+test("a held Work Queue writer lock leaves resident dispatch responsive", async () => {
+  const { QUEUES_LOCK } = await import("../src/link/work-queue/migrate");
+  const { createBoxDispatcher } = await import("../src/link/server/router");
+  const { collected } = await import("../src/link/server/sent-once");
+  const marker = path.join(QUEUES_LOCK, `owner-${process.pid}-ee00ee00ee00ee00`);
+  fs.mkdirSync(QUEUES_LOCK, { recursive: true });
+  fs.writeFileSync(marker, "");
+  const started = performance.now();
+  const sending = (async () => addHere({ title: "Held writer fixture" }, false, randomUUID()))();
+  void sending.catch(() => {});
+  try {
+    const dispatch = createBoxDispatcher().entry();
+    const pong = await collected(dispatch({ method: "GET", path: "kuvo/nonexistent", headers: {}, fromApp: true }, {}));
+    const elapsed = performance.now() - started;
+    if (process.env.DELIVERY_TIMINGS) console.info(`Work Queue lock contention: ${elapsed.toFixed(1)} ms`);
+    expect(pong.status).toBe(404);
+    expect(elapsed).toBeLessThan(100);
+  } finally {
+    fs.unlinkSync(marker);
+    fs.rmdirSync(QUEUES_LOCK);
+    await sending.catch(() => {});
+  }
+}, 15_000);

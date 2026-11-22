@@ -4,7 +4,7 @@
 //! shows none, hundreds of models open and search, and the composer's picks sit on one line with
 //! the paperclip and Send. Clicks and keys go through the window as AppKit hands them on.
 
-use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
+use gpui::{Bounds, Entity, Focusable, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
 use kuvo_box::BoxClient;
@@ -293,4 +293,130 @@ fn a_star_set_and_taken_away_at_once_ends_as_shown(cx: &mut TestAppContext) {
     assert!(stand_in.starred().is_empty());
     click(cx, "model-rail-starred");
     assert!(shown(cx, "model-picker-empty"), "none starred, as the box has it");
+}
+
+// Your accounts with a coding agent (#833): a provider with two or more lists its models once,
+// under a switch between the accounts (by name and plan, as the box names them); a model picked
+// there runs on the account shown.
+
+/// The app with no conversation open: a new one starts from its composer.
+fn landing(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let client = BoxClient::new(stand_in);
+    let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(1000.)));
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.set_now(NOW, cx);
+        workspace.read_at_once(cx);
+    });
+    cx.run_until_parked();
+    (workspace, cx)
+}
+
+#[gpui::test]
+fn two_accounts_list_the_models_once_under_a_switch_and_a_new_session_runs_on_the_account_picked(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]);
+    let (workspace, cx) = landing(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-claude");
+    assert!(shown(cx, "model-account-switch"));
+    // The first account's four, once: not the second's beside them.
+    assert!(shown(cx, "model-row-claude-code/sonnet") && shown(cx, "model-row-claude-code/haiku"));
+    assert!(!shown(cx, "model-row-claude-code@account1/sonnet"));
+    click(cx, "model-account-switch");
+    assert!(shown(cx, "model-account-list"));
+    click(cx, "model-account-claude-code@account1");
+    assert!(!shown(cx, "model-account-list"), "choosing an account closes the list");
+    assert!(shown(cx, "model-picker"), "and isn't picking a model");
+    assert!(shown(cx, "model-row-claude-code@account1/sonnet") && !shown(cx, "model-row-claude-code/sonnet"));
+    // ⌘3 is the third model, as with one account: Opus, on Work.
+    cx.simulate_keystrokes("cmd-3");
+    cx.run_until_parked();
+    assert!(!shown(cx, "model-picker"));
+    let field = workspace.read_with(cx, |workspace, cx| workspace.landing().read(cx).field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_input("Add a health check route");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let started = stand_in.seen_at("POST", "kuvo/sessions");
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].body.as_ref().unwrap()["model"]["providerID"], json!("claude-code@account1"));
+    assert_eq!(started[0].body.as_ref().unwrap()["model"]["id"], json!("opus"));
+}
+
+#[gpui::test]
+fn one_account_shows_no_switch(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.claude_accounts(&[("sam@example.com", Some("Max"))]);
+    let (_, cx) = landing(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-claude");
+    assert!(shown(cx, "model-row-claude-code/sonnet"));
+    assert!(!shown(cx, "model-account-switch"));
+}
+
+#[gpui::test]
+fn a_search_finds_each_accounts_model_and_hides_the_switch(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]);
+    let (_, cx) = landing(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-claude");
+    cx.simulate_input("opus 5.5");
+    cx.run_until_parked();
+    assert!(shown(cx, "model-row-claude-code/opus") && shown(cx, "model-row-claude-code@account1/opus"));
+    assert!(!shown(cx, "model-account-switch"));
+    // By its account's name too.
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("haiku work");
+    cx.run_until_parked();
+    assert!(shown(cx, "model-row-claude-code@account1/haiku") && !shown(cx, "model-row-claude-code/haiku"));
+}
+
+#[gpui::test]
+fn ten_accounts_are_filtered_and_chosen_from_the_keyboard(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let names = ["sam@example.com", "Work", "Personal", "Client A", "Client B", "design@example.com", "ops@example.com", "Research", "Side project", "qa@example.com"];
+    let accounts: Vec<(&str, Option<&str>)> = names.iter().map(|name| (*name, Some("Pro"))).collect();
+    stand_in.claude_accounts(&accounts);
+    let (_, cx) = landing(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-claude");
+    click(cx, "model-account-switch");
+    // What's typed filters the accounts (not the models), and Return takes the one found.
+    cx.simulate_input("client b");
+    cx.run_until_parked();
+    assert!(shown(cx, "model-account-claude-code@account4") && !shown(cx, "model-account-claude-code@account3"));
+    assert!(shown(cx, "model-row-claude-code/sonnet"), "the models' search is untouched");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(!shown(cx, "model-account-list") && shown(cx, "model-picker"));
+    assert!(shown(cx, "model-row-claude-code@account4/sonnet"));
+    // Escape closes the list first, then the picker.
+    click(cx, "model-account-switch");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "model-account-list") && shown(cx, "model-picker"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "model-picker"));
+}
+
+/// The switch lines up with the rows' highlight under it: the same left and right edges.
+#[gpui::test]
+fn the_switch_lines_up_with_the_rows(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]);
+    let (_, cx) = landing(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-claude");
+    let switch = bounds(cx, "model-account-switch").unwrap();
+    let row = bounds(cx, "model-row-claude-code/sonnet").unwrap();
+    assert!((switch.left() - row.left()).abs() < px(0.5) && (switch.right() - row.right()).abs() < px(0.5), "{switch:?} against {row:?}");
 }

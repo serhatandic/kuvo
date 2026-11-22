@@ -54,9 +54,9 @@ import { isChatsFolder } from "../engine/chats";
 import type { EngineSession } from "../engine/sessions";
 import { CHATS, engineWait, MOST_BUNDLE, NotTaken, TooBig, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, pack, toTrash, unpack } from "./bundle";
 import type { Contents } from "./bundle";
-import { Refusal as QueueRefusal } from "../work-queue/store";
+import { queueMoveDisk } from "../server/disk-worker";
+import { noteQueuesChanged, Refusal as QueueRefusal } from "../work-queue/store";
 import { attachmentMappings, carriedSessionRecords, checkedSessionPayloads, requireAttachmentReferences, installSessionPayloads, removeSessionPayloads, verifySessionPayloads, verifySourceSessionPayloads } from "./session-files";
-import { clearQueuePlacement, forgetWorkQueues, packWorkQueues, placeWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
 import { AGENT_NAMES, CARRIED_AGENTS } from "../../shared/carry";
 import { forgetQuiet, tellMoving } from "./elsewhere";
 import { dropOwnServers } from "../bots/own-keys";
@@ -703,8 +703,9 @@ async function carryOn(id: string): Promise<void> {
       throw error;
     }) as Contents["group"];
     // Its Work Queue, which its seats keep.
-    const workQueue = packWorkQueues([record.thing]);
-    if (workQueue) contents.workQueue = workQueue;
+    const packed = await queueMoveDisk.run("packQueuesForMove", [record.thing]);
+    if (packed.refused !== undefined) throw new QueueRefusal(packed.refused);
+    if (packed.queues) contents.workQueue = packed.queues;
     const members = isObject(contents.group?.group) && Array.isArray(contents.group.group.members) ? contents.group.group.members : [];
     record.members = members.filter((member): member is string => typeof member === "string");
   } else {
@@ -763,11 +764,12 @@ async function carryOn(id: string): Promise<void> {
     const decided = decidedOf(record.sessions);
     if (Object.keys(decided).length) contents.decided = decided;
     // Its conversations' Work Queues.
-    contents.sessionNotes = packSessionNotes(record.sessions);
+    contents.sessionNotes = await packSessionNotes(record.sessions);
     if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
       throw new Refused("Update the destination computer before moving these ordinary session notes.");
-    const workQueue = packWorkQueues(record.sessions);
-    if (workQueue) contents.workQueue = workQueue;
+    const packed = await queueMoveDisk.run("packQueuesForMove", record.sessions);
+    if (packed.refused !== undefined) throw new QueueRefusal(packed.refused);
+    if (packed.queues) contents.workQueue = packed.queues;
     if (record.folder) contents.folder = path.basename(record.folder);
     if (record.kind === "bot") {
       // A goal started as it was asked to move (goals stay where they started): it stays.
@@ -922,7 +924,7 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
     const before = outgoing.get(record.id)?.exports;
     // Taken back meanwhile (its copy there couldn't be set up, or it took too long): nothing more.
     if (!still()) return;
-    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), packSessionNotes(record.sessions)) !== before) {
+    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), await packSessionNotes(record.sessions)) !== before) {
       if (record.tries >= 2) throw new Refused(say.busy(record.name));
       // (Getting it ready again from now: what `keepMoving` counts its half hour from.)
       changeMove(record.id, each => { each.tries += 1; each.stage = "holding"; each.step = undefined; each.holdSince = Date.now(); });
@@ -935,7 +937,7 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
   if (payloads) {
     try {
       verifySourceSessionPayloads(payloads.sessions);
-      verifyQueuePayloads(payloads.queue);
+      await queueMoveDisk.run("verifyQueuePayloads", payloads.queue);
     } catch (error) {
       throw new Refused(error instanceof Error ? error.message : "The source files changed during the move.");
     }
@@ -981,7 +983,8 @@ async function finish(id: string, verifiedPayloads = false): Promise<void> {
     noteMovedAway([...new Set([record.thing, ...record.sessions])], record.to);
     if (record.kind === "group") {
       await groupAction(readBridgeFile(), record.thing, "release");
-      forgetWorkQueues([record.thing]);
+      await queueMoveDisk.run("forgetWorkQueues", [record.thing]);
+      noteQueuesChanged();
     } else {
       const engine = record.lane ? readBridgeFile() : readEngineFile();
       const place = record.folder ?? path.join(K, `moved-${record.thing}`);
@@ -1002,8 +1005,9 @@ async function finish(id: string, verifiedPayloads = false): Promise<void> {
         forgetDecided(session);
       }
       for (const session of record.sessions) forgetQueue(session);
-      forgetWorkQueues(record.sessions);
-      forgetSessionNotes(record.sessions);
+      await queueMoveDisk.run("forgetWorkQueues", record.sessions);
+      noteQueuesChanged();
+      await forgetSessionNotes(record.sessions);
       const trash = await toTrash(place);
       noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...(record.lane ? { lane: true } : {}), ...(trash ? { trash } : {}), ...(record.leftOf?.length ? { left: record.leftOf } : {}) });
     }
@@ -1299,10 +1303,10 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     if (answer.status !== 200) throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
     changeMove(record.id, each => { each.placed = true; });
     changeMove(record.id, each => { each.payloads = { sessions: [], queue: [] }; });
-    placeWorkQueues(contents.workQueue, [record.thing], opened, record.verifyPayloads, {
-      id: record.id,
-      beforePlacement: (queue, placement) => changeMove(record.id, each => { each.payloads = { sessions: [], queue }; each.queuePlacement = placement; }),
-    });
+    if (contents.workQueue !== undefined) {
+      await queueMoveDisk.run("placeMoveWorkQueues", record.id, contents.workQueue, [record.thing], opened, record.verifyPayloads, []);
+      noteQueuesChanged();
+    }
     if (evidence) placeForwardEvidence(evidence);
     return [];
   }
@@ -1388,16 +1392,16 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   }
   if (goOn.length) changeMove(record.id, each => { each.queuesGoOn = goOn; });
   if (contents.sessionNotes !== undefined) {
-    try { placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
+    try { await placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
     catch (error) { throw new NotTaken((error as Error).message); }
   }
   // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
   keepDecided(contents.decided, sessions);
   // Its conversations' Work Queues, with their files.
-  placeWorkQueues(contents.workQueue, sessions, opened, record.verifyPayloads, {
-    id: record.id,
-    beforePlacement: (queue, placement) => changeMove(record.id, each => { each.payloads = { sessions: payloads, queue }; each.queuePlacement = placement; }),
-  });
+  if (contents.workQueue !== undefined) {
+    await queueMoveDisk.run("placeMoveWorkQueues", record.id, contents.workQueue, sessions, opened, record.verifyPayloads, payloads);
+    noteQueuesChanged();
+  }
   for (const info of infos) {
     if (isAutopilot(info)) await tellAutopilot(engine, info.id, true, signal).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
   }
@@ -1569,7 +1573,7 @@ async function completeActivation(id: string): Promise<void> {
     if (record.verifyPayloads && !record.payloads) throw new Error("The move’s file inventory is unavailable.");
     if (record.payloads) {
       verifySessionPayloads(record.payloads.sessions);
-      verifyQueuePayloads(record.payloads.queue);
+      await queueMoveDisk.run("verifyQueuePayloads", record.payloads.queue);
     }
     // Seal the journal if its rename was visible after an interrupted directory sync.
     const pending = changeMove(id, each => { each.sentAt = Date.now(); });
@@ -1580,7 +1584,7 @@ async function completeActivation(id: string): Promise<void> {
     await switchHere(record);
     noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record), record.verifyPayloads ? record.payloads : undefined);
   }
-  if (record.payloads) clearQueuePlacement(record.payloads.queue, id);
+  if (record.payloads) await queueMoveDisk.run("clearQueuePlacement", record.payloads.queue, id);
   forgetMove(id);
   if (record.kind === "bot") noteBotsChanged();
   // Publish the live copy before the source hears the switch acknowledgement.
@@ -1630,7 +1634,10 @@ async function clearCopy(record: MoveRecord): Promise<void> {
   incoming.delete(record.id);
   if (record.payloads) {
     removeSessionPayloads(record.payloads.sessions);
-    if (record.queuePlacement) clearQueuePlacement(record.payloads.queue, record.id, record.queuePlacement);
+    if (record.queuePlacement) {
+      await queueMoveDisk.run("clearQueuePlacement", record.payloads.queue, record.id, record.queuePlacement);
+      noteQueuesChanged();
+    }
   }
   if (record.kind === "group") {
     if (record.importingGroup) {
@@ -1639,7 +1646,10 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
       if (existing.status !== 404) throw new Error("The group copy has no import ownership receipt");
     }
-    if (record.placed && !record.payloads) forgetWorkQueues([record.thing]);
+    if (record.placed && !record.payloads) {
+      await queueMoveDisk.run("forgetWorkQueues", [record.thing]);
+      noteQueuesChanged();
+    }
   } else {
     const created = new Set(record.createdSessions);
     if (record.lane) {
@@ -1664,8 +1674,11 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       forgetDecided(session);
       forgetQueue(session);
     }
-    forgetSessionNotes(record.sessions, importReceipt(record));
-    if (created.size && !record.payloads) forgetWorkQueues([...created]);
+    await forgetSessionNotes(record.sessions, importReceipt(record));
+    if (created.size && !record.payloads) {
+      await queueMoveDisk.run("forgetWorkQueues", [...created]);
+      noteQueuesChanged();
+    }
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.
     if (place && record.placed && moveHold(pausedText(place)) === record.id) await toTrash(place);
@@ -1781,7 +1794,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
         try {
           if (mine.payloads) {
             verifySessionPayloads(mine.payloads.sessions);
-            verifyQueuePayloads(mine.payloads.queue);
+            await queueMoveDisk.run("verifyQueuePayloads", mine.payloads.queue);
           }
         } catch { return void failed(); }
         return tellArrived(mine, identity);

@@ -154,7 +154,7 @@ test("a former owner cannot recreate a handed-off item from a replayed creation"
   upgradeKuvoFolder(K);
   const id = newItemID();
   noteDeparture(id, { queue: "ses_new_home", computer: "destination" });
-  const result = editQueue({
+  const result = await editQueue({
     ref: { kind: "queueItems", id, queue: "ses_old_home" }, operation: "create",
     create: true, baseRevision: null, fields: { title: "A replay" },
   }, () => true);

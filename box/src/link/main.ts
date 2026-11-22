@@ -1,5 +1,5 @@
 import { updateUnderWay } from "../shared/updating";
-import { locked } from "../shared/files";
+import { locked, writeSecret } from "../shared/files";
 import { once } from "node:events";
 import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
@@ -115,6 +115,7 @@ import { clearStaging } from "./work-queue/ops";
 import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
+import { isDiskWorker } from "./server/disk-worker";
 import { isReceiptWorker, refreshReceipts } from "./ownership/receipt-worker";
 import { macCompatibilityFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
@@ -535,7 +536,7 @@ async function run(owner?: ClientOwner): Promise<void> {
   keepEngineDefaults();
   // Agents' commands, in the sandbox wherever it can run (fence/state.ts), set up before the vault
   // goes by it.
-  keepFence();
+  await keepFence();
   // Conversations' approval kept to what it comes to as the sandbox starts or stops.
   keepApprovals();
   // What its group chats go by, worked out here and given to the bridge that runs them.
@@ -659,7 +660,7 @@ async function run(owner?: ClientOwner): Promise<void> {
       lastSetup = stamp;
       report("setup position", position);
     }
-    try { pushNumbers(current); } catch {}
+    void pushNumbers(current).catch(() => {});
     if (current?.welcomed) pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else try { handUpkeepSoon(readLink()); } catch {}
     // (Once: what was being worked on when the Work Queue's items moved over to statuses.)
@@ -795,6 +796,8 @@ async function box(command: string, [flag, internalPath]: string[], useSshPipe: 
   };
   const say = (value: unknown): void => console.log(JSON.stringify(value));
   switch (command) {
+    case "tool-command-worker":
+      return (await import("./tool-command")).toolCommandWorker(flag, input);
     case "backups": {
       // The owner already has OS access to this Box's private files. This is a
       // separate command, with no way to forward its authority through box route.
@@ -1189,7 +1192,7 @@ async function serve(owner?: ClientOwner): Promise<void> {
   // this server too, there before it says where it is (holdVault, below, makes it too).
   try { socketKey(); } catch {}
   fenceOwnPort(port);
-  keepFence();
+  await keepFence();
   keepApprovals();
   keepGroupSettings();
   keepEngineDefaults();
@@ -1204,7 +1207,10 @@ async function serve(owner?: ClientOwner): Promise<void> {
       process.exit(0);
     }
   }
-  if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
+  if (APP_FOLDER) {
+    writeSecret(path.join(RUN, "tool-http.json"), JSON.stringify({ port, password }));
+    if (typeof Bun !== "undefined") keepAppServices();
+  }
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
@@ -1654,7 +1660,10 @@ const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpath
 if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   const { serveInsightsDB } = await import("../usage/insights-db-worker");
   serveInsightsDB();
-} else if (main && !isReceiptWorker) {
+} else if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
+  // The worker only publishes its own receipt and must outlive the installed bundle it began with.
+  await box("tool-command-worker", process.argv.slice(4), false);
+} else if (main && !isReceiptWorker && !isDiskWorker) {
   const [mode, argument, ...commandArgs] = process.argv.slice(2);
   const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";
   const useSshPipe = mode === "box" && (argument === "route" || argument === "route-to") && !updateProbe && sshPipeSelected();

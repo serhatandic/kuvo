@@ -125,13 +125,16 @@ const SUBAGENTS: [&str; 9] = ["Explore the codebase", "Run the tests", "Check th
     "Search the history", "Read the logs", "Draft the fix", "Verify the build"];
 
 /// What the stand-in has to say: a month of work, a first week, nothing at all, or that it
-/// couldn't read its usage.
+/// couldn't read its usage; that it's still reading it; or a month of work as it last read it, a
+/// minute ago, while it reads it afresh (`asOf`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sample {
     Full,
     Little,
     Nothing,
     Failing,
+    Reading,
+    Kept,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -210,8 +213,16 @@ pub fn answer(method: &str, route: &str, query: impl Fn(&str) -> Option<String>,
     if (method, tail) == ("POST", "/refresh") { return Some((202, json!({"data": {"scanning": true}}))); }
     if method != "GET" { return None; }
     if sample == Sample::Failing { return Some((500, json!({ "message": "Insights couldn\u{2019}t read its usage." }))); }
+    if sample == Sample::Reading {
+        return Some((200, json!({ "data": { "state": "loading", "totals": { "cost": 0, "tokens": 0, "cacheRate": null }, "change": null, "trend": [], "lists": [], "standouts": [] } })));
+    }
+    if sample == Sample::Kept {
+        let (status, mut value) = answer(method, route, query, now, Sample::Full)?;
+        value["data"]["asOf"] = json!(now - 60_000.);
+        return Some((status, value));
+    }
     let days = query("period").and_then(|days| days.parse::<usize>().ok()).unwrap_or(30);
-    let sessions = match sample { Sample::Full => FULL, Sample::Little => LITTLE, Sample::Nothing | Sample::Failing => &[] };
+    let sessions = match sample { Sample::Full => FULL, Sample::Little => LITTLE, Sample::Nothing | Sample::Failing | Sample::Reading | Sample::Kept => &[] };
     // (A week is the month's last seven days; a quarter, this month's work and two more like it.)
     let (scale, first) = match days { 7 => (1., 23), 90 => (2.75, 0), _ => (1., 0) };
     let narrowed = |name: &str| query(name).filter(|value| !value.is_empty());

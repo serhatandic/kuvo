@@ -21,9 +21,9 @@ import { addLabel, changeLabel, labelNamed, labels, removeLabel } from "./labels
 import { isClosed, PRIORITIES, priorityName, statusName, statusNamed, STATUSES } from "./statuses";
 import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
-import { numberWaiting, primaryOf } from "./numbers";
+import { numberWaitingLater, primaryOf } from "./numbers";
 import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, stageClientFiles, stageFiles, startWork, stopWork, typeOf, TooBig, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
-import { allItems, byUser, changeQueues, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
+import { allItems, byUser, changeQueuesLater, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
 import { changedThere, itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
@@ -272,14 +272,14 @@ function editsItem(name: string): name is QueueAgent["tool"] {
 }
 
 /** File paths are opened using the caller's grants on the sending box. Only the bytes travel. */
-function filesForPeer(given: unknown, caller: QueueCaller, computer: string): unknown {
+async function filesForPeer(given: unknown, caller: QueueCaller, computer: string): Promise<unknown> {
   if (given === undefined) return undefined;
-  const { staged, clear } = stageFiles(given, caller.files);
+  const { staged, clear } = await stageFiles(given, caller.files);
   try {
     if (staged.reduce((sum, file) => sum + file.size, 0) > MOST_HANDED_FILES) throw new TooBig(`These files are too big to send to ${computer} with one change (${MOST_HANDED_FILES / 1_000_000} MB in all at most).`);
-    return staged.map(file => ({ name: file.name, uri: `data:${typeOf(file.name)};base64,${fs.readFileSync(file.staged).toString("base64")}` }));
+    return await Promise.all(staged.map(async file => ({ name: file.name, uri: `data:${typeOf(file.name)};base64,${(await fs.promises.readFile(file.staged)).toString("base64")}` })));
   } finally {
-    clear();
+    await clear();
   }
 }
 
@@ -290,7 +290,7 @@ async function changeThere(name: QueueAgent["tool"], args: Record<string, unknow
     return refused(`${nameOf(item)} is on ${item.computer.name}. Update Kuvo there so it can record which agent made the change.`);
   }
   const { item: _, files, ...fields } = args;
-  const carried = name === "queue_update" ? filesForPeer(files, caller, item.computer.name) : undefined;
+  const carried = name === "queue_update" ? await filesForPeer(files, caller, item.computer.name) : undefined;
   const result = await forwardAct(item.computer, nameOf(item), {
     area: "queue-agent", method, ...(action === "restore" ? { action } : {}), item: item.id,
     body: { ...fields, ...(carried === undefined ? {} : { files: carried }) },
@@ -347,17 +347,6 @@ export async function callQueueTool(name: unknown, args: Record<string, unknown>
   }
 }
 
-// A change to the queues, then what waits for a number numbered (once nothing can refuse it, so
-// a refused change takes none).
-const change = <T>(work: (book: Book) => T): T => {
-  const primary = primaryOf();
-  return changeQueues(book => {
-    const done = work(book);
-    numberWaiting(book, primary, null);
-    return done;
-  });
-};
-
 /** Compare editable fields without storing a copy of large bodies or attachments in each event. */
 function editFields(item: Item): Record<string, string | undefined> {
   const { title, body, priority, labels, assignee, due, progress, source, files, links, sessions } = item;
@@ -378,11 +367,11 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
   // it was taken.)
   if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   // Commit the first answer with the item itself, after numbering it and before the queue file is published.
-  const edit = (work: (book: Book) => Item, answer: (item: Item) => ToolAnswer): ToolAnswer => {
+  const edit = (work: (book: Book) => Item | Promise<Item>, answer: (item: Item) => ToolAnswer): Promise<ToolAnswer> => {
     const primary = primaryOf();
-    return changeQueues(book => {
-      const item = work(book);
-      numberWaiting(book, primary, null);
+    return changeQueuesLater(async book => {
+      const item = await work(book);
+      await numberWaitingLater(book, primary, null);
       const reply = answer(item);
       if (operation) (item.toolReplies ??= {})[operation] = reply;
       return reply;
@@ -400,13 +389,13 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
       const starting = args.working === true && !caller.seat && args.status === undefined;
       const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
-      return withFiles(args, caller, acting, () => edit(book => {
+      return withFiles(args, caller, acting, () => edit(async book => {
         refuseQueueOwner(caller.owner);
         if (issue) refuseTaken(book.items(), issue.at, caller, undefined, issue.read.id);
-        const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
+        const made = await addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
         if (issue) made.body = issue.body.slice(0, MOST_BODY);
         if (args.working === true && !caller.seat && !isClosed(made.status)) startWork(book, made, caller.session, acting, { keep: args.status !== undefined });
-        applyFileOps(acting);
+        await applyFileOps(acting);
         return made;
       }, item => {
         const where = statusName(item.status);
@@ -429,7 +418,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         issue = await issueFor(args.issue, caller, before.id);
       }
       const linkedFrom = { number: undefined as number | undefined };
-      return withFiles(args, caller, acting, () => edit(book => {
+      return withFiles(args, caller, acting, () => edit(async book => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
@@ -451,7 +440,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         }
         if (args.working === false) stopWork(item, caller.session, acting);
         unlinkSessions(item, named(args.unlink), now, caller.who);
-        applyFileOps(acting);
+        await applyFileOps(acting);
         const after = editFields(item);
         const fields = Object.keys(before).filter(key => before[key] !== after[key] && (key !== "sessions" || item.events === events));
         if (fields.length) noteEvent(item, { at: now, by: caller.who, kind: "edited", fields });
@@ -527,7 +516,8 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = change(book => {
+      const outcome = await changeQueuesLater(book => {
+        refuseMoving([caller.owner]);
         refuseQueueOwner(caller.owner);
         return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
       });
@@ -578,14 +568,14 @@ function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, except?: s
 
 // `work`, with the files the call names read first (outside the queue's lock), and what's left of
 // them cleared after.
-function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => T): T {
+async function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => Promise<T>): Promise<T> {
   if (args.files === undefined) return work();
-  const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files);
+  const { staged, clear } = await (caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files));
   acting.staged = staged;
   try {
-    return work();
+    return await work();
   } finally {
-    clear();
+    await clear();
   }
 }
 

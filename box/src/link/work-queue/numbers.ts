@@ -22,7 +22,8 @@ import { followedSetup } from "../setup/record";
 import { primaryFenced, relayLease } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
 import { readLink, updateLink } from "../state";
-import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
+import { allItems, changeQueues, noteQueuesChanged, OWNER, WORK_QUEUE } from "./store";
+import { numberDisk, numberUpkeepDisk } from "../server/disk-worker";
 import type { Book, Item } from "./store";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
@@ -388,35 +389,59 @@ export function movePast(top: number, { file = NUMBERS_FILE }: { file?: string }
   }, file);
 }
 
+type NumberOptions = { file?: string; now?: number; link?: LinkState | null };
+
 /** Take the next local number, or leave the item waiting for a block. */
-export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: { file?: string; now?: number; link?: LinkState | null } = {}): number | null {
+export function takeNumber(primary: Primary, options?: NumberOptions): number | null {
+  return allocateNumbers(primary, 1, [], options)[0] ?? null;
+}
+
+/** Spend a block in one ledger write, with the same authority checks as taking one number. */
+export function allocateNumbers(primary: Primary, count: number, used: number[], { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: NumberOptions = {}): number[] {
+  if (!count && !used.length) return [];
   return changeNumbers(kept => {
-    const current = currentNumberAuthority(link, file);
-    if (current?.setupMerge) return null;
-    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
-    notePrimary(kept, primary, current, now);
-    if ("self" in primary && !kept.leases.length) {
-      const ceiling = numberCeiling(kept, current, file);
-      if (ceiling !== null) {
-        const from = counterOf(kept);
-        const to = Math.min(from + BLOCK - 1, ceiling);
-        if (from <= to) {
-          kept.next = to + 1;
-          kept.leases = [[from, to]];
-        }
+    if (used.length) kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES);
+    const allocated: number[] = [];
+    for (let at = 0; at < count; at++) {
+      const number = takeNumberFrom(kept, primary, file, now, link);
+      if (number === null) break;
+      allocated.push(number);
+    }
+    return allocated;
+  }, file);
+}
+
+function takeNumberFrom(kept: Numbers, primary: Primary, file: string, now: number, link: LinkState | null): number | null {
+  const current = currentNumberAuthority(link, file);
+  if (current?.setupMerge) return null;
+  if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
+  notePrimary(kept, primary, current, now);
+  if ("self" in primary && !kept.leases.length) {
+    const ceiling = numberCeiling(kept, current, file);
+    if (ceiling !== null) {
+      const from = counterOf(kept);
+      const to = Math.min(from + BLOCK - 1, ceiling);
+      if (from <= to) {
+        kept.next = to + 1;
+        kept.leases = [[from, to]];
       }
     }
-    const lease = kept.leases[0];
-    let number: number | null = null;
-    if (lease) {
-      number = lease[0];
-      if (lease[0] === lease[1]) kept.leases.shift();
-      else lease[0]++;
-      kept.used = joined(kept.used ?? [], [[number, number]]).slice(-MOST_RANGES);
-    }
-    if (number === null || !("self" in primary) && leftIn(kept.leases) <= LOW) kept.asking ??= { id: askID(), count: BLOCK, since: now };
-    return number;
-  }, file);
+  }
+  const lease = kept.leases[0];
+  let number: number | null = null;
+  if (lease) {
+    number = lease[0];
+    if (lease[0] === lease[1]) kept.leases.shift();
+    else lease[0]++;
+    kept.used = joined(kept.used ?? [], [[number, number]]).slice(-MOST_RANGES);
+  }
+  if (number === null || !("self" in primary) && leftIn(kept.leases) <= LOW) kept.asking ??= { id: askID(), count: BLOCK, since: now };
+  return number;
+}
+
+export async function takeNumberLater(primary: Primary): Promise<number | null> {
+  const [number] = await numberDisk.run("allocateNumbers", primary, 1, []);
+  return number ?? null;
 }
 
 /** The highest number the computer `key` told it used or holds: its `top`, or its items'. */
@@ -612,7 +637,19 @@ export function takeBlock(give: unknown, { file = NUMBERS_FILE }: { file?: strin
  * are decided, the others wait for theirs. Then every one without a number takes the next, oldest
  * first. The numbers items took are noted as used here. */
 export function numberWaiting(book: Book, primary: Primary, answer: Granting | null, options: { file?: string; now?: number } = {}): void {
-  const now = options.now ?? Date.now();
+  const { waiting, used } = waitingForNumbers(book, answer, options.now ?? Date.now());
+  const allocated = allocateNumbers(primary, waiting.length, used, options);
+  allocated.forEach((number, at) => { waiting[at]!.number = number; });
+}
+
+export async function numberWaitingLater(book: Book, primary: Primary, answer: Granting | null, options: { file?: string; now?: number } = {}): Promise<void> {
+  const { waiting, used } = waitingForNumbers(book, answer, options.now ?? Date.now());
+  if (!waiting.length && !used.length) return;
+  const allocated = await numberDisk.run("allocateNumbers", primary, waiting.length, used, options);
+  allocated.forEach((number, at) => { waiting[at]!.number = number; });
+}
+
+function waitingForNumbers(book: Book, answer: Granting | null, now: number) {
   const used: number[] = [];
   const link = readLink();
   const moves = liveMoves();
@@ -640,15 +677,8 @@ export function numberWaiting(book: Book, primary: Primary, answer: Granting | n
     }
   }
   used.push(...restoreNumbers(book, now));
-  if (used.length) changeNumbers(kept => { kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES); }, options.file);
-  // (Not an outside source's item, named by its ref; nor one in a queue of a kind a newer box keeps,
-  // left as it is.)
   const waiting = book.items().filter(item => item.number === undefined && item.wanted === undefined && mayNumber(item)).sort((a, b) => a.created.at - b.created.at);
-  for (const item of waiting) {
-    const number = takeNumber(primary, options);
-    if (number === null) return;
-    item.number = number;
-  }
+  return { waiting, used };
 }
 
 // An item asking for its own number back that keeps the one it has, for good (`why`, its note).
@@ -730,50 +760,62 @@ export function reclaimWaiting(primary: Primary = primaryOf(), options: { file?:
   return true;
 }
 
-// When this box last looked for items waiting with nothing under way: once a minute.
+// Run these ledger and queue writes together on the upkeep worker. It can wait for the
+// queue writer lock while the separate ledger worker still serves that writer.
 let lookedForWaiting = 0;
-
-/** Send a waiting ask to the main, or fulfill it locally when this box holds the lease. */
-export function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink()): void {
+export function numbersToSend(link: LinkState | null, welcomed: boolean) {
+  let changed = false;
   if (Date.now() - lookedForWaiting > 60_000) {
     lookedForWaiting = Date.now();
     try { notePrimaryNow(link); } catch {}
-    try { reclaimWaiting(primaryOf(link)); } catch {}
+    try { changed = reclaimWaiting(primaryOf(link)); } catch {}
   }
   const primary = primaryOf(link);
   const kept = readNumbers();
   if ("self" in primary) {
     if (link?.setup && kept.asking) {
       const block = giveBlock(link.setup.primary, { ...kept.asking, own: true });
-      if (block) blockArrived(block, primary);
+      if (block) changed = blockArrived(block, primary) || changed;
     }
-    return;
+    return { changed };
   }
-  if (!host?.welcomed || !link || !kept.asking) return;
-  if (!("peer" in primary)) return;
+  if (!welcomed || !link || !kept.asking || !("peer" in primary)) return { changed };
   const ask = askToSend({ retry: 2_000 });
-  if (!ask) return;
-  const bytes = mailFor(primary.peer, { workQueue: { ask }, at: Date.now() }, link);
-  if (bytes) try { host.send(bytes); } catch {}
+  return { changed, ...(ask ? { peer: primary.peer, ask } : {}) };
 }
 
-/** Numbers' mail from another box (`{workQueue: …}`): an ask, answered by the primary with its
- * block; a block from the main is kept and used for the items that are waiting here. */
-export function takeNumbersMail(sender: MailSender, given: unknown, host: Pick<LinkHost, "send"> | null | undefined): void {
-  if (!isObject(given)) return;
+let pushingNumbers = false;
+/** Send a waiting ask to the main, or fulfill it locally when this box holds the lease. */
+export async function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink()): Promise<void> {
+  if (pushingNumbers) return;
+  pushingNumbers = true;
+  try {
+    const { changed, peer, ask } = await numberUpkeepDisk.run("numbersToSend", link, Boolean(host?.welcomed));
+    if (changed) noteQueuesChanged();
+    if (!host?.welcomed || !link || !peer || !ask) return;
+    const bytes = mailFor(peer, { workQueue: { ask }, at: Date.now() }, link);
+    if (bytes) try { host.send(bytes); } catch {}
+  } finally { pushingNumbers = false; }
+}
+
+export function receiveNumbers(key: string, given: Record<string, unknown>) {
   const link = readLink();
   const primary = primaryOf(link);
-  const send = (to: MailSender | Peer, payload: unknown) => {
-    const bytes = link && "address" in to && to.address ? mailFor(to, { workQueue: payload, at: Date.now() }, link) : null;
-    if (bytes) try { host?.send(bytes); } catch {}
-  };
-  if (isObject(given.ask) && "self" in primary && given.to === undefined && given.for === undefined) {
-    const block = giveBlock(sender.key, given.ask);
-    // Older ranked members still look for this field when accepting a grant.
-    if (block) send(sender, { give: block, quorumGrant: true });
-  } else if (isObject(given.give) && given.for === undefined && "peer" in primary && primary.peer.key === sender.key) {
-    blockArrived(given.give, primary);
-  }
+  if (isObject(given.ask) && "self" in primary && given.to === undefined && given.for === undefined)
+    return { link, block: giveBlock(key, given.ask) };
+  if (isObject(given.give) && given.for === undefined && "peer" in primary && primary.peer.key === key)
+    return { changed: blockArrived(given.give, primary) };
+  return {};
+}
+
+/** Numbers' mail from another box: reply to the ask, or use the granted block. */
+export async function takeNumbersMail(sender: MailSender, given: Record<string, unknown>, host: Pick<LinkHost, "send"> | null | undefined): Promise<void> {
+  const { changed, block, link } = await numberUpkeepDisk.run("receiveNumbers", sender.key, given);
+  if (changed) noteQueuesChanged();
+  // Older ranked members still look for quorumGrant when accepting a grant.
+  const bytes = block && link && "address" in sender && sender.address
+    ? mailFor(sender, { workQueue: { give: block, quorumGrant: true }, at: Date.now() }, link) : null;
+  if (bytes) try { host?.send(bytes); } catch {}
 }
 
 /** A block from the primary, kept, and what waits here numbered with it (imports' wanted numbers

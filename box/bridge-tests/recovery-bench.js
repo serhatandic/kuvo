@@ -14,11 +14,26 @@ export function recoveryEngine(root, owner, session) {
   const file = box => path.join(root, box, "engine-session.json");
   put(file(owner), JSON.stringify({ info: { id: session, title: "Recovery conversation", directory: path.join(root, owner, "chats") }, messages }));
   const imports = [], wakes = [];
+  const streams = new Map();
+  const tell = (box, type) => {
+    for (const stream of streams.get(box) ?? []) {
+      stream.write(`data: ${JSON.stringify({ type, data: { sessionID: session } })}\n\n`);
+    }
+  };
   return { file, messages, imports, wakes, async handle(request, response) {
     const authorization = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString();
     const box = authorization.split(":")[1];
     if (!["pc2", "pc4", "pc5"].includes(box)) return false;
     const url = new URL(request.url, "http://localhost");
+    if (url.pathname === "/api/event") {
+      const listeners = streams.get(box) ?? new Set();
+      streams.set(box, listeners);
+      listeners.add(response);
+      response.on("close", () => listeners.delete(response));
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.flushHeaders();
+      return true;
+    }
     const send = (status, data) => {
       response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
       return true;
@@ -37,6 +52,7 @@ export function recoveryEngine(root, owner, session) {
       imports.push(box);
       if (copy) return send(409, null);
       put(file(box), JSON.stringify({ info: { ...given.info, directory: given.location.directory }, messages: given.messages }));
+      tell(box, "session.created");
       return send(200, given.info);
     }
     if (url.pathname === `/api/experimental/session/${session}/export`) return copy ? send(200, copy) : send(404, null);
@@ -50,6 +66,7 @@ export function recoveryEngine(root, owner, session) {
     }
     if (request.method === "DELETE") {
       fs.unlinkSync(file(box));
+      tell(box, "session.deleted");
       return send(200, true);
     }
     return send(200, copy.info);

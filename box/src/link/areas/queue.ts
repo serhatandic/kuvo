@@ -191,7 +191,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       // What the box is sending meanwhile reaches the engine first, and is held with the rest.)
       const given = parsed(request.body);
       const items = isObject(given) && Array.isArray(given.items) ? given.items.filter((id): id is string => typeof id === "string") : [];
-      holdArriving(session, items);
+      await holdArriving(session, items);
       await sendsSettled(session);
       return yield* json(200, shownQueue(await stopConversation(place.target, { ...place.data, id: session }, items)));
     }
@@ -221,7 +221,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     // (You set it going: if it was stopped, what comes of it is news again, and what Stop named as
     // on its way goes as it was sent when it comes.)
     forgetStopped(session);
-    forgetArriving(session);
+    await forgetArriving(session);
     if (step === "resume") return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
     const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : waitForSendNow(sendNow(place.target, session, decodeURIComponent(item)));
     if (!(await go)) return yield* json(404, { message: "That message isn't waiting any more." });

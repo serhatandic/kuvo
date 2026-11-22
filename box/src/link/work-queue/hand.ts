@@ -12,7 +12,7 @@ import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
-import { locked, writeDurablePrivate } from "../files";
+import { lockedWhile, writeDurablePrivateLater } from "../../shared/files";
 import { HERE } from "../home";
 import { boxOf } from "../letters/calls";
 import { placeOfSession } from "../letters/letter";
@@ -32,11 +32,11 @@ import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession, noteEvent, placeLocalHand } from "./ops";
 import {
-  allItems, changeQueues, deletionFor, FILE_NAME, filesOf, isLiveItem, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, changeQueuesLater, deletionFor, FILE_NAME, filesOf, isLiveItem, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
-import { LOST_FOR, numberWaiting, primaryOf } from "./numbers";
+import { LOST_FOR, numberWaitingLater, primaryOf } from "./numbers";
 import { nameOf, titlesHere } from "./view";
 import { itemElsewhere, itemsElsewhere, type ItemElsewhere } from "./across";
 import { sameSource } from "./sources";
@@ -77,13 +77,14 @@ const sent = new Map<string, { at: number; key: string }>();
 
 // What goes for `item`: it whole (without where it's going), its files' bytes, and the labels it
 // has.
-function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Record<string, unknown> {
+async function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Promise<Record<string, unknown>> {
   const { handing, relations: _local, ...rest } = item;
   if (handing!.released) return { hand: { id: handing!.id, to: handing!.to, release: handing!.released } };
-  const files = item.files.flatMap(file => {
-    const bytes = readAttachment(item.id, file.name);
-    return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
-  });
+  const files: { name: string; data: string }[] = [];
+  for (const file of item.files) {
+    const bytes = await readAttachment(item.id, file.name);
+    if (bytes !== null) files.push({ name: file.name, data: bytes.toString("base64") });
+  }
 
   const has = labels().filter(each => item.labels.includes(each.id));
   return { [evidence ? "evidenceHand" : "hand"]: { ...(evidence ? { evidence } : {}), id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
@@ -106,11 +107,11 @@ function handingNow(): Item[] {
  * once it's been so three days (a computer can be missing from the list a while: one that couldn't
  * be set up just now); any other after 30 days. On every round, with the relay or without. What's
  * on its way still. */
-export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
+export async function handUpkeep(link: LinkState | null, now = Date.now()): Promise<Item[]> {
   if (!link?.key) return [];
   const own = ownKey(link);
   const pending = handingNow();
-  for (const item of pending) if (item.handing!.key === own) finishLocalHand(item);
+  for (const item of pending) if (item.handing!.key === own) await finishLocalHand(item);
   const handing = pending.filter(item => item.handing!.key !== own);
   if (!handing.length) return [];
   const peers = peersOf(link);
@@ -123,7 +124,7 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   const lost = missing.filter(item => !committed(item) && item.handing!.missing !== undefined && now - item.handing!.missing > LOST_FOR);
   // Since when each is missing, kept with it; one back again, no longer.
   const noted = new Map([...missing.filter(item => item.handing!.missing === undefined).map(item => [item.handing!.id, now] as const), ...handing.filter(item => there(item) && item.handing!.missing !== undefined).map(item => [item.handing!.id, undefined] as const)]);
-  if (noted.size) changeQueues(book => {
+  if (noted.size) await changeQueuesLater(book => {
     for (const item of book.items()) {
       if (!item.handing || !noted.has(item.handing.id)) continue;
       const since = noted.get(item.handing.id);
@@ -131,15 +132,15 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
       else item.handing.missing = since;
     }
   }, now, { onItsOwn: true });
-  if (late.length) giveBack(late.map(item => item.handing!.id), "it couldn't be reached for 30 days", now);
-  if (left.length) giveBack(left.map(item => item.handing!.id), "you removed that computer", now);
-  if (lost.length) giveBack(lost.map(item => item.handing!.id), "that computer hasn't been one of yours for 3 days", now);
+  if (late.length) await giveBack(late.map(item => item.handing!.id), "it couldn't be reached for 30 days", now);
+  if (left.length) await giveBack(left.map(item => item.handing!.id), "you removed that computer", now);
+  if (lost.length) await giveBack(lost.map(item => item.handing!.id), "that computer hasn't been one of yours for 3 days", now);
   return handing.filter(item => !late.includes(item) && !left.includes(item) && !missing.includes(item));
 }
 
 /** Complete local intents left by the previous release. */
-function finishLocalHand(item: Item): void {
-  changeQueues(book => {
+async function finishLocalHand(item: Item): Promise<void> {
+  await changeQueuesLater(book => {
     const current = book.find({ id: item.id });
     const hand = current?.handing;
     if (current && hand && hand.id === item.handing?.id)
@@ -154,18 +155,26 @@ let lookedAfter = 0;
 export function handUpkeepSoon(link: LinkState | null, now = Date.now()): void {
   if (now - lookedAfter < 60_000) return;
   lookedAfter = now;
-  handUpkeep(link, now);
+  void handUpkeep(link, now).catch(error => console.error("Work Queue handoffs:", error));
 }
 
 /** The items on their way to another computer, sent (`across.ts`' rounds): to the box their
  * conversation lives on now, again each minute until it says it has them (`handUpkeep` first).
  * Nothing goes to a box that isn't answering. */
-export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | null, targets: Target[], now = Date.now()): void {
+let sendingHandings: Promise<void> | undefined;
+export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | null, targets: Target[], now = Date.now()): Promise<void> {
   void targets;
-  const handing = handUpkeep(link, now);
+  return sendingHandings ??= sendCurrentHandings(host, link, now).finally(() => { sendingHandings = undefined; });
+}
+
+async function sendCurrentHandings(host: Pick<LinkHost, "send">, link: LinkState | null, now: number): Promise<void> {
+  const handing = await handUpkeep(link, now);
   if (!link?.key || !handing.length) return;
   const peers = peersOf(link);
-  for (const item of handing) {
+  const current = new Map(handingNow().map(item => [item.handing!.id, item]));
+  for (const candidate of handing) {
+    const item = current.get(candidate.handing!.id);
+    if (!item) continue;
     const last = sent.get(item.handing!.id);
     if (last && now - last.at < 60_000) continue;
     // Where it lives now (it may have moved since), else where it was.
@@ -175,9 +184,9 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
     if (!peer || awaySince(peer.key) !== null) continue;
     const evidence = hand.released ? undefined : packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE)) continue;
-    const mails = mailsFor(peer, handPayload(item, evidence), link, now);
+    const mails = mailsFor(peer, await handPayload(item, evidence), link, now);
     if (!mails) {
-      giveBack([item.handing!.id], "it's too big to send", now);
+      await giveBack([item.handing!.id], "it's too big to send", now);
       continue;
     }
     try {
@@ -231,10 +240,10 @@ export function refuseLiveElsewhere(item: Item, items?: Item[], titled?: (owner:
 }
 
 /** Hand-offs that won't go, back as they were, each with a note of why. */
-function giveBack(ids: string[], why: string, now: number): void {
+async function giveBack(ids: string[], why: string, now: number): Promise<void> {
   const gone = new Set(ids);
   const link = readLink();
-  changeQueues(book => {
+  await changeQueuesLater(book => {
     for (const item of book.items()) {
       if (!item.handing || !gone.has(item.handing.id) || item.handing.released || acceptedHandoff(item, link)) continue;
       const { id, name, to, by } = item.handing;
@@ -248,7 +257,7 @@ function giveBack(ids: string[], why: string, now: number): void {
 /** The box an item went to says how it went (`{handed: {id, ok, why?, retry?}}`), only from where it
  * was sent: had, it's gone from here, files and all; refused for good, it's back as it was, with a
  * note of why; `retry`, it goes again. */
-export function handedBack(sender: MailSender, given: unknown, now = Date.now()): void {
+export async function handedBack(sender: MailSender, given: unknown, now = Date.now()): Promise<void> {
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id)) return;
   const item = allItems().find(each => each.handing?.id === given.id);
   if (!item) return;
@@ -256,7 +265,7 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   if (went !== sender.key) return;
   if (typeof given.prepared === "string" && /^[A-Za-z0-9_-]{43}$/.test(given.prepared)) {
     const proof = given.prepared;
-    changeQueues(book => {
+    await changeQueuesLater(book => {
       const hand = book.find({ id: item.id })?.handing;
       if (!hand || hand.id !== given.id || hand.released) return;
       hand.released = proof;
@@ -271,7 +280,7 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   sent.delete(given.id);
   const link = readLink();
   if (followedSetup(link)?.checkpointed && !item.handing?.released && !acceptedHandoff(item, link)) return;
-  changeQueues(book => {
+  await changeQueuesLater(book => {
     const found = book.find({ id: item.id });
     const handing = found?.handing;
     if (!found || !handing || handing.id !== given.id) return;
@@ -284,10 +293,10 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
 
 // Hand-offs taken here, by id. Layout 7 keeps their compact receipts so a late replay
 // cannot restore a copy after this box has handed the item onward.
-function seenHand(id: string, now: number, note = false): boolean {
+async function seenHand(id: string, now: number, note = false): Promise<boolean> {
   try {
     fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
-    return locked(SEEN_LOCK, () => {
+    return await lockedWhile(SEEN_LOCK, async () => {
       let seen: Record<string, unknown> = {};
       try { seen = handFormat.read(JSON.parse(fs.readFileSync(SEEN, "utf8"))); } catch (error) {
         if (error instanceof UnsupportedFormatVersion) throw error;
@@ -297,7 +306,7 @@ function seenHand(id: string, now: number, note = false): boolean {
         for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
       }
       seen[id] = now;
-      writeDurablePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
+      await writeDurablePrivateLater(SEEN, JSON.stringify(handFormat.write(seen)));
       return true;
     });
   } catch (error) {
@@ -317,7 +326,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   const answer = (ok: boolean, why?: string, retry = false) => reply({ handed: { id, ok, ...(why ? { why } : {}), ...(retry ? { retry: true } : {}) } });
   const link = readLink();
   if (!peersOf(link).some(peer => peer.key === sender.key)) return;
-  if (seenHand(id, now)) return answer(true);
+  if (await seenHand(id, now)) return answer(true);
   if (release !== undefined) {
     const staged = readRecord<{ proof: string; payload: typeof given; carriesEvidence?: true }>("queue-handoffs", pending);
     if (!staged || staged.proof !== release) return;
@@ -372,7 +381,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   let twinHere: Item | null = null;
   let again = false;
   const primary = primaryOf();
-  const place = (apply: boolean) => changeQueues((book: Book) => {
+  const place = (apply: boolean) => changeQueuesLater(async (book: Book) => {
     let here = book.find({ id: item.id });
     if (deletionFor(item.id)) {
       refused = "That Work Queue item has been deleted.";
@@ -412,14 +421,13 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     noteEvent(item, { at: now, by, kind: "handed", to: owner });
     if (owner.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, owner, now, by);
     item.updated = { at: now, by };
-    fs.rmSync(filesOf(item.id), { recursive: true, force: true });
+    await fs.promises.rm(filesOf(item.id), { recursive: true, force: true });
     for (const file of files) {
-      fs.mkdirSync(filesOf(item.id), { recursive: true, mode: 0o700 });
       if (item.files.some(entry => entry.name === file.name))
-        writeDurablePrivate(path.join(filesOf(item.id), file.name), file.bytes);
+        await writeDurablePrivateLater(path.join(filesOf(item.id), file.name), file.bytes);
     }
     // (One that came without a number takes one here, as one added here would.)
-    if (item.number === undefined) numberWaiting(book, primary, null);
+    if (item.number === undefined) await numberWaitingLater(book, primary, null);
     const own = link && ownKey(link);
     if (checkpointed && own) noteMovedAway([item.id], own, now, { arrived: true, queue: owner });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
@@ -437,7 +445,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   if (link?.setup?.checkpointed || evidence) {
     // Validate while it is still held at the source. The replacement can see the
     // accepted owner before this box exposes the live item or acknowledges arrival.
-    place(false);
+    await place(false);
     if (await rejected()) return;
   }
   if (evidence) {
@@ -452,12 +460,12 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     if (!staged) keepRecord("queue-handoffs", pending, { proof, payload: given, ...(carriesEvidence ? { carriesEvidence: true } : {}) });
     return reply({ handed: { id, prepared: proof, retry: true } });
   }
-  place(true);
+  await place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {
     return answer(false, "The destination changed while the item was on its way. The handoff is still pending.", true);
   }
   if (await rejected()) return;
-  if (!seenHand(id, now, true)) return;
+  if (!await seenHand(id, now, true)) return;
   if (checkpointed) removeRecord("queue-handoffs", pending);
   answer(true);
 }

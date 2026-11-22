@@ -9,11 +9,11 @@ import { readAttachment } from "./attachment-file";
 import { ownName } from "../letters/start";
 import { callOffHanding, refuseLiveElsewhere, twinOf } from "./hand";
 import { readSeen } from "./github";
-import { numberWaiting, primaryOf } from "./numbers";
+import { numberWaitingLater, primaryOf } from "./numbers";
 import { addItem, applyFileOps, stageClientFiles, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, type Acting, type Fields } from "./ops";
 import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
-import { allItems, changeQueues, deletionFor, departureFor, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
+import { allItems, changeQueuesLater, deletionFor, departureFor, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
 import { itemsElsewhere, tellQueuesAgain } from "./across";
 import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, visibleItem, wholeOf, type ItemSummary } from "./view";
 import type { Act, Acted } from "./forward";
@@ -26,18 +26,20 @@ export const GITHUB_WAIT = 3_000;
 const YOU = { user: true } as const;
 // An item a client named that isn't here.
 class Missing extends Refusal {}
+class NotAdmitted extends Error { constructor(readonly answer: Acted) { super("Work Queue admission closed"); } }
 
 /** A summary with what a client may do to it here (`canOf`): nothing while its conversation moves. */
 export const withCan = <S extends ItemSummary>(summary: S, moving: Set<string> = frozen()): S => ({ ...summary, can: canOf(summary, { moving: moving.has(summary.owner) }) });
 
 // What a client's own change says: the item as it is now, or why not.
-function changed(work: () => Item): Acted {
+async function changed(work: () => Promise<Item>): Promise<Acted> {
   try {
-    const item = work();
+    const item = await work();
     // Your other computers hear of it at their next round, not after the usual wait.
     tellQueuesAgain();
     return { status: 200, value: { item: { ...withCan(summaryOf(item, new Set(), new Map(), assignable())), mentionTargets: item.mentionIndex?.targets ?? [] } } };
   } catch (error) {
+    if (error instanceof NotAdmitted) return error.answer;
     if (error instanceof Refusal) return { status: error instanceof Missing ? 404 : 400, value: { message: error.message } };
     throw error;
   }
@@ -49,7 +51,7 @@ const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before
 /** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
  * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
  * your own (`usr_you`). Todo and Normal unless said. */
-export function addHere(given: Record<string, unknown>, local: boolean, operation: string): Acted {
+export async function addHere(given: Record<string, unknown>, local: boolean, operation: string): Promise<Acted> {
   const now = Date.now();
   const primary = primaryOf();
   const id = `wqi_${operation.slice(0, 20)}`;
@@ -57,9 +59,9 @@ export function addHere(given: Record<string, unknown>, local: boolean, operatio
   const itemAnswer = (item: Item): Acted => ({ status: 200, value: {
     item: { ...withCan(summaryOf(item, new Set(), new Map(), assignable())), mentionTargets: item.mentionIndex?.targets ?? [] },
   } });
-  let staged: ReturnType<typeof stageClientFiles> | undefined;
+  let staged: Awaited<ReturnType<typeof stageClientFiles>> | undefined;
   try {
-    const result = changeQueues(book => {
+    const result = await changeQueuesLater(async book => {
       const existing = book.find({ id });
       const deletion = deletionFor(id);
       const departure = departureFor(id);
@@ -72,12 +74,12 @@ export function addHere(given: Record<string, unknown>, local: boolean, operatio
       const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
       refuseQueueOwner(owner);
       refuseMoving([owner]);
-      staged = stageClientFiles(given.files, local);
+      staged = await stageClientFiles(given.files, local);
       const { before: _, after: __, ...fields } = fieldsOf(given);
       const acting: Acting = { who: YOU, now, staged: staged.staged, fileOps: [] };
-      const item = addItem(book, owner, fields, acting, primary, undefined, id);
-      applyFileOps(acting);
-      numberWaiting(book, primary, null);
+      const item = await addItem(book, owner, fields, acting, primary, undefined, id);
+      await applyFileOps(acting);
+      await numberWaitingLater(book, primary, null);
       book.recordCreation(item, () => ({ operation, digest, answer: itemAnswer(item) }));
       return { item };
     }, now, { durable: true });
@@ -87,7 +89,7 @@ export function addHere(given: Record<string, unknown>, local: boolean, operatio
   } catch (error) {
     if (error instanceof Refusal) return { status: 400, value: { message: error.message } };
     throw error;
-  } finally { staged?.clear(); }
+  } finally { await staged?.clear(); }
 }
 
 /** What a client does to an item this box keeps (`ref`), as the route answers it: read whole, delete,
@@ -111,14 +113,16 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   }
   const now = Date.now();
   const primary = primaryOf();
-  const inBook = (work: (item: Item, book: Book) => void, { handing = false } = {}) => () => changeQueues(book => {
+  const inBook = (work: (item: Item, book: Book) => void | Promise<void>, { handing = false } = {}) => () => changeQueuesLater(async book => {
+    const denied = admit?.();
+    if (denied) throw new NotAdmitted(denied);
     const item = find(book.items());
     if (!item) throw new Missing("There's no item like that.");
     refuseQueueOwner(item.owner, item.id);
     refuseMoving([item.owner]);
     if (!handing) refuseHanding(item);
-    work(item, book);
-    numberWaiting(book, primary, null);
+    await work(item, book);
+    await numberWaitingLater(book, primary, null);
     return item;
   });
   // (Deleting one on its way to another computer calls its hand-off off: one stuck going to a
@@ -146,7 +150,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   }
   if (given.itemRelation !== undefined) {
     const relation = given.itemRelation;
-    const applied = changed(inBook((item, book) => {
+    const applied = await changed(inBook((item, book) => {
       if (item.removed || !isObject(relation) || typeof relation.item !== "string") throw new Refusal("Choose two items that are still in the Work Queue.");
       const other = book.items().find(each => each.id === relation.item && !each.removed);
       if (!other) throw new Refusal("Choose an item kept on the same computer and try again.");
@@ -157,11 +161,11 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
     if (applied.status === 200 && isObject(applied.value)) applied.value.itemRelationApplied = true;
     return applied;
   }
-  let staged: ReturnType<typeof stageClientFiles> | undefined;
+  let staged: Awaited<ReturnType<typeof stageClientFiles>> | undefined;
   try {
-    const applied = changed(() => {
-      staged = stageClientFiles(given.files, local);
-      return inBook((item, book) => {
+    const applied = await changed(async () => {
+      staged = await stageClientFiles(given.files, local);
+      return inBook(async (item, book) => {
         if (item.removed) throw new Refusal("It's deleted: bring it back first.");
         const fields = fieldsOf(given);
         if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
@@ -178,20 +182,20 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
           refuseMoving([to]);
           handItem(book, item, to, YOU, now);
         }
-        applyFileOps(acting);
+        await applyFileOps(acting);
       })();
     });
     if (given.removeInlineImages !== undefined && applied.status === 200 && isObject(applied.value)) applied.value.inlineImagesApplied = true;
     return applied;
-  } finally { staged?.clear(); }
+  } finally { await staged?.clear(); }
 }
 
 /** The bytes of a file kept with an item here, by its name, or null when there's no such file. */
-export function fileOf(ref: ItemRef, name: string): { type: string; bytes: Buffer } | null {
+export async function fileOf(ref: ItemRef, name: string): Promise<{ type: string; bytes: Buffer } | null> {
   const item = matching(allItems(), ref).find(each => visibleItem(each, { owner: "all", deleted: true }));
   const kept = item?.files.find(each => each.name === name);
   if (!item || !kept) return null;
-  const bytes = readAttachment(item.id, name);
+  const bytes = await readAttachment(item.id, name);
   return bytes === null ? null : { type: kept.type, bytes };
 }
 
@@ -205,7 +209,7 @@ export async function actForPeer(act: Act, targets: Target[]): Promise<Acted> {
   const gone: Acted = { status: 404, value: { message: `It's no longer on ${here}: it may have moved. Look again in a moment.` } };
   if (!ref || !matching(allItems(), ref)[0]) return gone;
   if (act.action === "file") {
-    const file = fileOf(ref, act.name ?? "");
+    const file = await fileOf(ref, act.name ?? "");
     if (!file) return { status: 404, value: { message: "There's no such file." } };
     // (Its size rounded up to a tenth, so it never reads as the most it may be.)
     if (file.bytes.length > MOST_FORWARDED_FILE) return { status: 413, value: { message: `${act.name} is ${(Math.ceil(file.bytes.length / 100_000) / 10).toFixed(1)} MB: too big to bring from ${here} (${MOST_FORWARDED_FILE / 1_000_000} MB at most). Open it there.` } };

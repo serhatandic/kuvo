@@ -212,7 +212,9 @@ test("T1: main prepares with two online members, commits first, and the off memb
   const pack = release({ layout: 24, origin: hosted.origin });
   hosted.serve(pack);
   const { nodes: [main, first, second, off], tell } = fleet([OLD, OLD, OLD, OLD]);
-  json(path.join(main.run, "peer-reach.json"), { [off.peer.key]: CLOCK });
+  // (Found away three minutes ago: past the two minutes a computer that just went quiet keeps
+  // what it last told, as one restarting does.)
+  json(path.join(main.run, "peer-reach.json"), { [off.peer.key]: CLOCK - 3 * 60_000 });
   assert.equal((await share(main, pack)).status, 202);
   for (const node of [main, first, second]) await usesBox(node);
   assert.equal((await prepare(main, pack)).result, "waiting");
@@ -450,7 +452,7 @@ test("each computer's row says in the box's words how its update stands, and whe
     [{ kuvo: "0.8.0-beta.42" }, false, { words: "beta.42 · Up to date", tone: "done" }, false],
     [{ kuvo: OLD, staged: { version: NEXT, sha256: sha } }, false, { words: "Ready for beta.41", tone: "done" }, false],
     [{ kuvo: OLD }, false, { words: "Getting beta.41 ready…", tone: "working" }, false],
-    [{ kuvo: OLD }, true, { words: "beta.40 · Off: updates when it’s back", tone: "off" }, false],
+    [{ kuvo: OLD }, true, { words: "beta.40 · Can’t be reached: updates when it’s back", tone: "off" }, false],
     [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: room, fixable: true } }, false, { words: `beta.40 · ${room}`, tone: "warning", short: "Can’t update" }, true],
     [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: "beta.41 doesn’t run here.", fixable: false } }, false, { words: "beta.40 · beta.41 doesn’t run here. · Updates with the next release", tone: "blocked" }, false],
   ];

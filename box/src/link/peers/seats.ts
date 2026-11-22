@@ -18,6 +18,7 @@ import { DOC_PART, MOST_PARTS } from "../documents/format";
 import { assemble } from "../documents/parts";
 import { readBridgeFile } from "../engine/client";
 import { listOf, writePrivate } from "../files";
+import { LETTER_MEMORY } from "../letters/lifetime";
 import { LETTER_ID, SENDING, letterTries } from "../letters/letter";
 import { IS_MAC, RUN } from "../home";
 import { macLink, readLink } from "../state";
@@ -129,10 +130,11 @@ function askForMail(ask: BridgeAsk, kind: unknown): BridgeAsk {
   return ask === bridgeAsk && usageMail(kind) && readServices(RUN) ? usagePeerAsk : ask;
 }
 
-// A group chat's letter is given up after two days (LETTER_MEMORY) of this link online without a
-// word from its computer. Only time online counts: while this computer sleeps, or has no relay, nobody could have
+// A group chat's letter is given up after two days of this link online without a word from its
+// computer. Only time online counts: while this computer sleeps, or has no relay, nobody could have
 // answered, so a laptop closed over the weekend doesn't give up what it sent on Friday. From one
 // round of the outbox to the next counts ONLINE_STEP at most: a longer gap is this computer asleep.
+export const SEAT_LETTER_LIFE = LETTER_MEMORY;
 export const ONLINE_STEP = 5 * 60_000;
 // Each letter's last round, as counted (none yet since the link started: its first round doesn't count).
 export const seatRounds = new Map<string, number>();

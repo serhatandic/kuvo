@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { locked, syncDurableFile, writeDurablePrivate } from "../../shared/files";
+import { exclusiveWhile, syncDurableFileLater, writeDurablePrivateLater } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { KEY } from "../peers/known";
 import { K, RUN } from "../home";
@@ -62,111 +62,125 @@ function checked(value: unknown): Notes {
   return { ...notes, notes: Object.assign(Object.create(null), notes.notes) };
 }
 
-function read(session: string): Notes | undefined {
-  try { return checked(JSON.parse(fs.readFileSync(fileOf(session), "utf8"))); }
+async function read(session: string): Promise<Notes | undefined> {
+  try { return checked(JSON.parse(await fs.promises.readFile(fileOf(session), "utf8"))); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return undefined;
   }
 }
 
-function underLock<T>(session: string, work: () => T): T {
+function underLock<T>(session: string, work: () => Promise<T>): Promise<T> {
   if (!NOTE_SESSION.test(session)) throw new Refusal("Name a session for these notes.");
-  fs.mkdirSync(ROOT, { recursive: true, mode: 0o700 });
-  return locked(fileOf(session) + ".lock", work, { exclusive: true });
+  return exclusiveWhile(fileOf(session) + ".lock", work, {
+    wait: 3_000, busy: "Kuvo Code is updating its link. Try again in a moment.",
+  });
 }
 
-function save(session: string, notes: Notes, allowTombstones = false): void {
+function encodedNotes(notes: Notes, allowTombstones = false): string {
   const text = JSON.stringify(notes);
   if (Buffer.byteLength(text) > (allowTombstones ? 2 * MAX_STORE : MAX_STORE)) throw new Refusal("This session has reached its ordinary note storage limit.");
-  writeDurablePrivate(fileOf(session), text, K);
+  return text;
+}
+
+function save(session: string, notes: Notes, allowTombstones = false): Promise<void> {
+  return writeDurablePrivateLater(fileOf(session), encodedNotes(notes, allowTombstones), K);
 }
 
 const record = (ref: EditTarget) => `${ref.id}/${ref.note}`;
 const noNote = (ref: EditTarget) => observe(undefined, record(ref), {});
 const passage = (field: string) => field === "text";
 
-export function sessionNoteView(ref: EditTarget) {
-  const notes = read(ref.id!)?.notes;
+export async function sessionNoteView(ref: EditTarget) {
+  const notes = (await read(ref.id!))?.notes;
   if (ref.note) return editView(notes?.[ref.note] ?? noNote(ref));
   const ids = Object.entries(notes ?? {}).filter(([, history]) => !editView(history).deleted).map(([id]) => id).sort();
   return editView(observe(undefined, ref.id!, { ids }));
 }
 
-export function editSessionNote(edit: OfflineEdit, owns: () => boolean, authorize: () => boolean) {
+type NoteDecision = ReturnType<typeof rememberEdit> | false | undefined;
+
+function decideNote(edit: OfflineEdit, saved: Notes, authorize: () => boolean): { decision: NoteDecision; write?: true } {
   const { ref, operation } = edit;
-  return underLock(ref.id!, () => {
+  const existing = saved.notes[ref.note!];
+  let history = existing ?? noNote(ref);
+  const digest = fingerprint(edit);
+  const earlier = replay(history, operation, digest);
+  if (Object.entries(saved.notes).some(([id, note]) => id !== ref.note && replay(note, operation, digest) !== undefined))
+    return { decision: false };
+  if (earlier !== undefined) return { decision: earlier };
+  if (!authorize()) return { decision: undefined };
+  if (edit.create && existing && !editView(history).deleted) return { decision: false };
+  if (!existing && !edit.create) return { decision: { operation, status: "refresh", revision: editView(history).revision, choices: [] } };
+  if (edit.fields && (Object.keys(edit.fields).length !== 1 || typeof edit.fields.text !== "string"
+    || !edit.fields.text.trim() || edit.fields.text.length > MOST_NOTE))
+    throw new Refusal("Send the ordinary note's text.");
+  if (!existing) {
+    if (!edit.fields) throw new Refusal("Send the ordinary note's text.");
+    history = observe(undefined, record(ref), { text: edit.fields.text });
+  } else if (edit.create) {
+    // A note ID is never reused, even when the original was deleted.
+    return { decision: { operation, status: "deleted", revision: editView(history).revision, choices: [] } };
+  }
+  const merged = existing ? mergeEdit(history, edit, passage, true) : undefined;
+  if (merged?.status === "committed" || merged?.status === "choice") {
+    const fields = edit.delete ? {} : { ...editView(history).fields, ...merged.changes };
+    if (typeof fields.text === "string" && fields.text.length > MOST_NOTE)
+      throw new Refusal("The combined note would exceed its text limit.");
+    const after = observe({ ...history, choices: merged.choices }, record(ref), fields, Boolean(edit.delete), undefined, passage, merged.passages);
+    if (after.choices.some(choice => !history.choices.includes(choice)
+      && typeof choice.proposed === "string" && choice.proposed.length > MOST_NOTE))
+      throw new Refusal("The combined alternative would exceed the note's text limit.");
+    if (edit.delete) after.versions = after.versions.slice(-1);
+    history = after;
+  }
+  const decision = rememberEdit(history, operation, digest, merged?.status ?? "committed", merged?.added ?? []);
+  saved.notes[ref.note!] = history;
+  return { decision, write: true };
+}
+
+export async function editSessionNote(edit: OfflineEdit, owns: () => boolean, authorize: () => boolean): Promise<NoteDecision> {
+  const session = edit.ref.id!;
+  return underLock(session, async () => {
+    const saved = await read(session) ?? blank();
     if (!owns()) return;
-    const saved = read(ref.id!) ?? blank();
-    const existing = saved.notes[ref.note!];
-    let history = existing ?? noNote(ref);
-    const digest = fingerprint(edit);
-    const earlier = replay(history, operation, digest);
-    if (Object.entries(saved.notes).some(([id, note]) => id !== ref.note && replay(note, operation, digest) !== undefined))
-      return false;
-    if (earlier !== undefined) return earlier;
-    if (!authorize()) return;
-    if (edit.create && existing && !editView(history).deleted) return false;
-    if (!existing && !edit.create) return { operation, status: "refresh" as const, revision: editView(history).revision, choices: [] };
-    if (edit.fields && (Object.keys(edit.fields).length !== 1 || typeof edit.fields.text !== "string"
-      || !edit.fields.text.trim() || edit.fields.text.length > MOST_NOTE))
-      throw new Refusal("Send the ordinary note's text.");
-    if (!existing) {
-      if (!edit.fields) throw new Refusal("Send the ordinary note's text.");
-      history = observe(undefined, record(ref), { text: edit.fields.text });
-    } else if (edit.create) {
-      // A note ID is never reused, even when the original was deleted.
-      return { operation, status: "deleted" as const, revision: editView(history).revision, choices: [] };
-    }
-    const merged = existing ? mergeEdit(history, edit, passage, true) : undefined;
-    if (merged?.status === "committed" || merged?.status === "choice") {
-      const fields = edit.delete ? {} : { ...editView(history).fields, ...merged.changes };
-      if (typeof fields.text === "string" && fields.text.length > MOST_NOTE)
-        throw new Refusal("The combined note would exceed its text limit.");
-      const after = observe({ ...history, choices: merged.choices }, record(ref), fields, Boolean(edit.delete), undefined, passage, merged.passages);
-      if (after.choices.some(choice => !history.choices.includes(choice)
-        && typeof choice.proposed === "string" && choice.proposed.length > MOST_NOTE))
-        throw new Refusal("The combined alternative would exceed the note's text limit.");
-      if (edit.delete) after.versions = after.versions.slice(-1);
-      history = after;
-    }
-    const decision = rememberEdit(history, operation, digest, merged?.status ?? "committed", merged?.added ?? []);
-    saved.notes[ref.note!] = history;
-    save(ref.id!, saved, Boolean(edit.delete));
+    const { decision, write } = decideNote(edit, saved, authorize);
+    if (write) await save(session, saved, Boolean(edit.delete));
     return decision;
   });
 }
 
-export function packSessionNotes(sessions: readonly string[]): Record<string, Notes> | undefined {
-  const entries = sessions.filter(session => NOTE_SESSION.test(session)).flatMap(session => {
-    const notes = underLock(session, () => read(session));
-    return notes ? [[session, notes] as const] : [];
-  });
+export async function packSessionNotes(sessions: readonly string[]): Promise<Record<string, Notes> | undefined> {
+  const entries: [string, Notes][] = [];
+  for (const session of sessions.filter(session => NOTE_SESSION.test(session))) {
+    const notes = await underLock(session, () => read(session));
+    if (notes) entries.push([session, notes]);
+  }
   return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
-export function placeSessionNotes(value: unknown, sessions: readonly string[], move: string): void {
+export async function placeSessionNotes(value: unknown, sessions: readonly string[], move: string): Promise<void> {
   if (value === undefined) return;
   if (!isObject(value)) throw new Refusal("The ordinary session notes did not come through.");
   const entries = Object.entries(value).map(([session, notes]) => {
     if (!sessions.includes(session)) throw new Refusal("The move includes notes for another session.");
     return [session, checked(notes)] as const;
   });
-  for (const [session, notes] of entries) underLock(session, () => {
-    const prior = read(session);
+  for (const [session, notes] of entries) await underLock(session, async () => {
+    const prior = await read(session);
     if (prior && prior.move !== move) throw new Refusal("Ordinary notes for that session already exist at the destination.");
-    save(session, { ...notes, move }, true);
+    await save(session, { ...notes, move }, true);
   });
 }
 
-export function forgetSessionNotes(sessions: readonly string[], move?: string): void {
+export async function forgetSessionNotes(sessions: readonly string[], move?: string): Promise<void> {
   for (const session of sessions) {
     if (!hasSessionNotes(session)) continue;
     const file = fileOf(session);
-    underLock(session, () => {
-      if (move && read(session)?.move !== move) return;
-      fs.rmSync(file, { force: true });
-      syncDurableFile(ROOT);
+    await underLock(session, async () => {
+      if (move && (await read(session))?.move !== move) return;
+      await fs.promises.rm(file, { force: true });
+      await syncDurableFileLater(ROOT);
     });
   }
 }

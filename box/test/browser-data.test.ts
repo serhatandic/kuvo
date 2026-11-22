@@ -9,7 +9,9 @@ import { takeInAppBrowserData } from "../src/link/browser/from-app"
 import { forgetHistory, HISTORY_LIMIT, iconOf, readHistory } from "../src/link/browser/history"
 import { changeBrowserSettings, changeNeverSite, hasSettings, readBrowserSettings } from "../src/link/browser/settings"
 import { browserSites, removeSiteData, siteSignInsHere, siteOf } from "../src/link/browser/sites"
-import { offShape } from "./route-answer"
+import { ask, offShape } from "./route-answer"
+import { BROWSER_FOLDER } from "../src/link/browser/history"
+import { createBoxDispatcher } from "../src/link/server/router"
 
 // The browser's data on a box (PROTOCOL.md, "The browser's data"), on a box's `browser` folder of the
 // test's own, with Chrome stopped (no keeper runs: its `run` folder is the test's too). Chrome is
@@ -36,6 +38,24 @@ const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000
 function noted(...lines: object[]) {
   writeFileSync(join(folder, "visits.jsonl"), lines.map(line => JSON.stringify(line) + "\n").join(""), { flag: "a" })
 }
+
+test("history routes fold a visit and delete it through the disk worker", async () => {
+  const host = "history-worker.example.test"
+  const dispatcher = createBoxDispatcher({
+    readEngine: () => { throw new Error("No engine in this fixture") },
+    readBridge: () => { throw new Error("No bridge in this fixture") },
+  }).entry()
+  mkdirSync(BROWSER_FOLDER, { recursive: true })
+  writeFileSync(join(BROWSER_FOLDER, "visits.jsonl"), JSON.stringify({
+    url: `https://${host}/guide`, title: "Guide", at: Date.now(),
+  }) + "\n", { flag: "a" })
+  const get = await ask(dispatcher, "GET", "kuvo/browser/history")
+  expect(get.status).toBe(200)
+  expect(get.json.sites).toContainEqual(expect.objectContaining({ host }))
+  const removed = await ask(dispatcher, "DELETE", `kuvo/browser/history/${host}`)
+  expect(removed.status).toBe(200)
+  expect(removed.json.sites.some((site: { host: string }) => site.host === host)).toBe(false)
+})
 
 test("pages that loaded are kept as sites, front pages naming them, most suggested first, at most a few hundred", () => {
   const now = Date.UTC(2026, 10, 14)

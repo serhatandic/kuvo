@@ -4,17 +4,17 @@ import { editView, fingerprint, mergeEdit, observe, rememberEdit, replay, unavai
 import type { EditTarget, OfflineEdit } from "../ownership/edit-types";
 import { assigneeFor, botSession } from "./assignees";
 import { tellQueuesAgain } from "./across";
-import { numberWaiting, primaryOf } from "./numbers";
+import { numberWaitingLater, primaryOf } from "./numbers";
 import { addItem, applyFileOps, changeItem, handItem, labelsFor, priorityFor, refuseClosedThere, refuseMoving, removeItem, stageClientFiles, statusFor, type Acting, type Fields } from "./ops";
 import { queueField, queuePassage, observeQueueItem } from "./offline-fields";
-import { changeQueues, dayOf, deletionFor, departureFor, MOST_BODY, MOST_NOTE, MOST_NOTES, MOST_TITLE, Refusal, YOURS } from "./store";
+import { changeQueuesLater, dayOf, deletionFor, departureFor, MOST_BODY, MOST_NOTE, MOST_NOTES, MOST_TITLE, Refusal, YOURS } from "./store";
 
 const YOU = { user: true } as const;
 const empty = (ref: EditTarget, deleted: boolean) => observe(undefined, ref.id!, {}, deleted);
 const absent = (ref: EditTarget) => editView(empty(ref, Boolean(deletionFor(ref.id!))));
 
 export function queueEditView(ref: EditTarget, owns: (ref: EditTarget) => boolean) {
-  return changeQueues(book => {
+  return changeQueuesLater(book => {
     const item = book.find({ id: ref.id! });
     if (!item) return owns({ ...ref, queue: deletionFor(ref.id!)?.queue ?? ref.queue }) ? absent(ref) : null;
     return owns({ ...ref, queue: item.owner }) ? editView(observeQueueItem(item)) : null;
@@ -60,14 +60,14 @@ function normalizedFields(edit: OfflineEdit): Values {
   return fields;
 }
 
-export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true,
+export async function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true,
   identity?: { operation: string; legacy: string[] }) {
   const edit = identity ? { ...given, operation: identity.operation } : given;
   const { ref, operation } = edit;
   const digest = fingerprint(edit);
   const now = Date.now();
   const primary = primaryOf();
-  const result = changeQueues(book => {
+  const result = await changeQueuesLater(async book => {
     let item = book.find({ id: ref.id! });
     const target = { ...ref, queue: item?.owner ?? deletionFor(ref.id!)?.queue ?? ref.queue };
     if (!owns(target) || item?.handing) return;
@@ -127,7 +127,7 @@ export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean
     append("note", edit.notes ?? [], notes);
     append("attachment", edit.attachments ?? [], attachments);
     if ((item?.notes.length ?? 0) + notes.length > MOST_NOTES) throw new Refusal("This item has reached its note limit.");
-    const files = attachments.length ? stageClientFiles(attachments.map(each => each.file), false) : undefined;
+    const files = attachments.length ? await stageClientFiles(attachments.map(each => each.file), false) : undefined;
     try {
       const fields = queueFields(merged.changes);
       if (files) {
@@ -135,7 +135,7 @@ export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean
         files.staged.forEach((file, index) => { file.id = attachments[index]!.id; });
       }
       const acting: Acting = { who: YOU, now, staged: files?.staged, fileOps: [] };
-      if (!item) item = addItem(book, target.queue!, fields, acting, primary, undefined, ref.id);
+      if (!item) item = await addItem(book, target.queue!, fields, acting, primary, undefined, ref.id);
       else if (edit.delete) removeItem(item, YOU, now);
       else if (Object.keys(merged.changes).length || files) {
         refuseClosedThere(item);
@@ -161,11 +161,11 @@ export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean
       if (history.choices.some(choice => !previous.includes(choice) && typeof choice.proposed === "string"
         && choice.proposed.length > (choice.field.startsWith("note:") ? MOST_NOTE : choice.field === "body" ? MOST_BODY : Infinity)))
         throw new Refusal("The combined alternative would exceed its text limit.");
-      applyFileOps(acting);
-      numberWaiting(book, primary, null);
+      await applyFileOps(acting);
+      await numberWaitingLater(book, primary, null);
       history.additions = additions;
       return keepLegacy(rememberEdit(history, operation, digest, merged.status, merged.added));
-    } finally { files?.clear(); }
+    } finally { await files?.clear(); }
   }, now, { durable: true });
   if (result && (result.status === "committed" || result.status === "choice")) tellQueuesAgain();
   return result;

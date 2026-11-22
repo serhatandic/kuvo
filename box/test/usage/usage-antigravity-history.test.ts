@@ -14,6 +14,7 @@ import { Catalog, Pricing, PricingStore, supplementFrom } from "../../src/usage/
 const base = realpathSync(mkdtempSync(join(tmpdir(), "antigravity-history-test-")))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
 const fixture = JSON.parse(readFileSync(join(import.meta.dir, "../fixtures/usage/antigravity-blobs.json"), "utf8"))
+const schemas = JSON.parse(readFileSync(join(import.meta.dir, "../fixtures/usage/antigravity-conversation-schemas.json"), "utf8"))
 const data = (hex: string) => Buffer.from(hex, "hex")
 const pricing = new Pricing(supplementFrom({ pricing: {}, alias_rules: [] }), new Catalog(new Map([["gemini-3.6-flash", { input: 1, output: 4, cacheWrite: 1, cacheRead: 0.25, cacheReadIsExplicit: true, longContextThreshold: 200_000, fast: 1 }]])), new Catalog())
 function store(options: { steps?: boolean; wal?: boolean } = {}) {
@@ -28,7 +29,7 @@ function store(options: { steps?: boolean; wal?: boolean } = {}) {
   return { home, folder, path, db }
 }
 function insert(db: Database, index: number, each = fixture.cases[0]) {
-  db.query("INSERT INTO gen_metadata VALUES (?,?)").run(index, data(each.hex))
+  db.query("INSERT INTO gen_metadata(idx, data) VALUES (?,?)").run(index, data(each.hex))
   if (each.stepHex) db.query("INSERT INTO steps VALUES (?,?)").run(index, data(each.stepHex))
 }
 
@@ -102,17 +103,42 @@ describe("Antigravity's bounded local history", () => {
     expect(await history.scan(home, 0)).toHaveLength(1)
     expect(logged).toHaveLength(1)
     expect(logged[0]).toContain(realpathSync(broken))
-    // A database without gen_metadata, and a link to one that's gone, are left out the same way.
-    new Database(join(home, "antigravity", "conversations", "other.db")).close()
+    // A dangling database link is still a read failure.
     symlinkSync(join(home, "absent.db"), join(home, "antigravity", "conversations", "dangling.db"))
     expect(await history.scan(home, 0)).toHaveLength(1)
-    expect(logged).toHaveLength(3)
-    expect(logged.slice(1).join("\n")).toContain("other.db")
+    expect(logged).toHaveLength(2)
     expect(logged.slice(1).join("\n")).toContain("dangling.db")
     // Repaired, it counts.
     rmSync(broken)
     const copy = new Database(broken); copy.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)"); insert(copy, 0); copy.close()
     expect(await history.scan(home, 0)).toHaveLength(2)
+  })
+  test("ACP databases count, and empty stores and stores without generation metadata are skipped quietly", async () => {
+    const home = mkdtempSync(join(base, "profile-"))
+    const folder = join(home, "antigravity-acp", "conversations")
+    mkdirSync(folder, { recursive: true })
+    const active = new Database(join(folder, "active.db"))
+    active.exec(schemas.acp)
+    insert(active, 0)
+    active.close()
+    writeFileSync(join(folder, "empty.db"), "")
+    const path = join(folder, "initializing.db")
+    const initializing = new Database(path)
+    initializing.exec(schemas.withoutGenerations)
+    initializing.close()
+    const logged: string[] = []
+    let failures = 0
+    const history = new AntigravityHistory(undefined, undefined, message => logged.push(message))
+    const observe = { owns: () => true, take: () => {}, problem: () => { failures++ } }
+    expect(await history.scan(home, 0, observe)).toHaveLength(1)
+    expect(await history.scan(home, 0, observe)).toHaveLength(1)
+    expect(logged).toEqual([])
+    expect(failures).toBe(0)
+    const initialized = new Database(path)
+    initialized.exec("CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)")
+    insert(initialized, 0)
+    initialized.close()
+    expect(await history.scan(home, 0, observe)).toHaveLength(2)
   })
   test("a conversations folder that can't be listed is logged once and left out while the others count", async () => {
     const { home, db } = store()

@@ -14,7 +14,7 @@ import { observeQueueItem } from "./offline-fields";
 
 import { OWNER } from "../../shared/work-queue-owner";
 import { UnsupportedFormatVersion } from "../../shared/format-version";
-import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
+import { exclusiveWhile, syncDurableFile, syncDurableFileLater, writeDurablePrivate, writePrivateLater } from "../../shared/files";
 import { mentionIndexOf, mentionLinkOf, mentionSnapshot, pruneRelations, relationOf, syncMentions, type MentionIndex, type MentionLink, type MentionSnapshot, type Relation } from "./relations";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -516,7 +516,7 @@ export class Book {
 
   /** What changed, written: the queues that gained items first, so a write cut off between two
    * leaves an item in both (read once, see `items`) rather than in neither. */
-  save(durable = false): boolean {
+  private *writes(durable: boolean) {
     const items = this.items();
     const live = new Set(items.map(item => item.id));
     const gone = new Set([...this.mentionsBefore.keys()].filter(id => !live.has(id)));
@@ -524,7 +524,6 @@ export class Book {
     if (offlineEditsReady()) for (const item of items) if (item.offlineEdits) observeQueueItem(item);
     syncMentions(items, this.mentionsBefore);
     for (const [item, receipt] of this.creations) item.creationReceipt = receipt();
-    let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
     const gained = (owner: string, queue: Queue) => {
       const had = new Set((JSON.parse(this.before.get(owner) ?? "[]") as Item[]).map(item => item.id));
@@ -532,57 +531,97 @@ export class Book {
     };
     changed.sort(([a, queueA], [b, queueB]) => Number(gained(b, queueB)) - Number(gained(a, queueA)));
     for (const [owner, queue] of changed) {
-      any = true;
       if (!queue.items.length) {
-        fs.rmSync(fileOf(owner), { force: true });
-        if (durable) syncDurableFile(QUEUES, WORK_QUEUE);
+        yield { file: fileOf(owner), remove: true as const, durable };
       } else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
         const previous = new Map((JSON.parse(this.before.get(owner) ?? "[]") as Item[]).map(item => [item.id, item.number]));
-        if (durable || queue.items.some(item => item.offlineEdits || item.handing || item.number !== undefined && item.number !== previous.get(item.id)))
-          writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
-        else writePrivate(fileOf(owner), data);
+        const seal = durable || queue.items.some(item => item.offlineEdits || item.handing || item.number !== undefined && item.number !== previous.get(item.id));
+        yield { file: fileOf(owner), data, durable: seal };
       }
       this.before.set(owner, JSON.stringify(queue.items));
+    }
+  }
+
+  save(durable = false): boolean {
+    let any = false;
+    for (const write of this.writes(durable)) {
+      if (write.remove) {
+        fs.rmSync(write.file, { force: true });
+        if (write.durable) syncDurableFile(QUEUES, WORK_QUEUE);
+      } else if (write.durable) {
+        writeDurablePrivate(write.file, write.data, path.dirname(WORK_QUEUE));
+      } else writePrivate(write.file, write.data);
+      any = true;
+    }
+    return any;
+  }
+
+  async saveLater(durable = false): Promise<boolean> {
+    let any = false;
+    for (const write of this.writes(durable)) {
+      if (write.remove) {
+        await fs.promises.rm(write.file, { force: true });
+        if (write.durable) await syncDurableFileLater(QUEUES, WORK_QUEUE);
+      } else {
+        await writePrivateLater(write.file, write.data, write.durable ? path.dirname(WORK_QUEUE) : undefined);
+      }
+      any = true;
     }
     return any;
   }
 }
 
-/** `work` done on the queues here, one process at a time; what it changed written, and those
- * following told. Deleted items past their 30 days go first (and their files). */
-export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false, durable = false }: { onItsOwn?: boolean; durable?: boolean } = {}): T {
+type Changes = { onItsOwn?: boolean; durable?: boolean };
+
+function queueChanges<T>(work: (book: Book) => T, now: number, { onItsOwn, durable }: Changes) {
+  let book: Book;
+  try {
+    book = new Book();
+  } catch (error) {
+    if (!(error instanceof UnreadableQueue)) throw error;
+    const refused = refusedOver(error, now);
+    if (!onItsOwn || !error.aside) throw refused;
+    console.error(`Work Queue: ${refused.message}`);
+    book = new Book();
+  }
+  const purged: string[] = [];
+  for (const queue of owners().map(owner => book.queue(owner))) {
+    const gone = queue.items.filter(item => item.removed && now - item.removed.at > KEPT_REMOVED);
+    if (!gone.length) continue;
+    queue.items = queue.items.filter(item => !gone.includes(item));
+    for (const item of gone) {
+      if (offlineEditsReady()) keepDeletion({ id: item.id, queue: item.owner, at: item.removed!.at, creationReceipt: item.creationReceipt });
+      purged.push(item.id);
+    }
+  }
+  return { book, purged, value: work(book), durable: durable || (purged.length > 0 && offlineEditsReady()) };
+}
+
+export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), options: Changes = {}): T {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
-  const keepDurably = durable || offlineEditsReady();
   const { value, changed } = locked(QUEUES_LOCK, () => {
-    let book: Book;
-    try {
-      book = new Book();
-    } catch (error) {
-      if (!(error instanceof UnreadableQueue)) throw error;
-      const refused = refusedOver(error, now);
-      // What runs on its own carries on, the bad file set aside (it said so in the box's log).
-      if (!onItsOwn || !error.aside) throw refused;
-      console.error(`Work Queue: ${refused.message}`);
-      book = new Book();
-    }
-    const purged: string[] = [];
-    for (const queue of owners().map(owner => book.queue(owner))) {
-      const gone = queue.items.filter(item => item.removed && now - item.removed.at > KEPT_REMOVED);
-      if (!gone.length) continue;
-      queue.items = queue.items.filter(item => !gone.includes(item));
-      for (const item of gone) {
-        if (offlineEditsReady()) keepDeletion({ id: item.id, queue: item.owner, at: item.removed!.at, creationReceipt: item.creationReceipt });
-        purged.push(item.id);
-      }
-    }
-    const value = work(book);
-    const changed = book.save(durable || (purged.length > 0 && keepDurably));
-    // (Their files only once the queues no longer list them: a refused change leaves both.)
-    for (const id of purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });
-    return { value, changed };
+    const change = queueChanges(work, now, options);
+    const changed = change.book.save(change.durable);
+    for (const id of change.purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });
+    return { value: change.value, changed };
   }, { exclusive: true });
+  if (changed) noteQueuesChanged();
+  return value;
+}
+
+/** Take the existing exclusive writer lock without parking the resident loop. */
+export async function changeQueuesLater<T>(work: (book: Book) => T | Promise<T>, now = Date.now(), options: Changes = {}): Promise<T> {
+  await fs.promises.mkdir(WORK_QUEUE, { recursive: true, mode: 0o700 });
+  migratedToChange();
+  const { value, changed } = await exclusiveWhile(QUEUES_LOCK, async () => {
+    const change = queueChanges(work, now, options);
+    const value = await change.value;
+    const changed = await change.book.saveLater(change.durable);
+    for (const id of change.purged) await fs.promises.rm(path.join(FILES, id), { recursive: true, force: true });
+    return { value, changed };
+  }, { wait: 3_000, busy: "Kuvo Code is updating its link. Try again in a moment." });
   if (changed) noteQueuesChanged();
   return value;
 }

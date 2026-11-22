@@ -22,7 +22,7 @@ import { errorOf, resetOf, type TurnError } from "./unanswering";
 import { pause } from "../../shared/wait";
 import { botHere } from "../bots/here";
 import { asked, bridgeTarget, call } from "../engine/client";
-import { changeQueue, keepWaiting, queueOf, readQueues, resumeQueue, sendInto, stopSession } from "../engine/queue";
+import { changeQueueLater, keepWaitingLater, queueOf, readQueues, resumeQueue, sendInto, stopSession } from "../engine/queue";
 import { PAUSED_BY_YOU } from "../../shared/goals";
 import { boxNote } from "../../shared/queues";
 import { messageID } from "../engine/sessions";
@@ -791,7 +791,7 @@ async function followGoal(session: string, goal: Record<string, unknown> | null,
   } else if (held && goal?.state === "working") {
     await letGoForGoal(session, targets, file);
   } else if (held && goal?.state !== "paused") {
-    forgetHold(session, file);
+    await forgetHold(session, file);
   }
 }
 
@@ -799,7 +799,7 @@ async function holdForGoal(session: string, targets: () => Target[], file: strin
   const place = await placeOfSession(session, targets()).catch(() => null);
   if (place) {
     await stopSession(place.target, session).catch(() => {});
-    changeQueue(session, current => ({ ...current, paused: true, heldFor: "goal" }));
+    await changeQueueLater(session, current => ({ ...current, paused: true, heldFor: "goal" }));
   }
   const goal = changeKept(all => {
     const kept = all.find(each => each.session === session && each.state === "running" && botHere(each.bot));
@@ -818,15 +818,15 @@ async function holdForGoal(session: string, targets: () => Target[], file: strin
 async function letGoForGoal(session: string, targets: () => Target[], file: string): Promise<void> {
   const place = await placeOfSession(session, targets()).catch(() => null);
   if (place) await resumeQueue(place.target, session).catch(() => {});
-  const goal = forgetHold(session, file);
+  const goal = await forgetHold(session, file);
   if (!goal) return;
   await tellBot(goal, "[Goal resumed] The user resumed the goal you paused. Carry on from where it stopped: goal_progress shows the plan as it stands, and a session of it that stopped as it paused needs telling to carry on. Once it's all done, end with finish_goal.", "Goal resumed", targets);
 }
 
 // The hold's marks taken off, the conversation left as it is (still paused, unless it went on):
 // the bot's goal it held, if any.
-function forgetHold(session: string, file: string): KeptGoal | null {
-  changeQueue(session, ({ heldFor: _, ...rest }) => rest);
+async function forgetHold(session: string, file: string): Promise<KeptGoal | null> {
+  await changeQueueLater(session, ({ heldFor: _, ...rest }) => rest);
   const goal = changeKept(all => {
     const kept = all.find(each => each.session === session && each.state === "running" && each.heldByYou);
     if (kept) delete kept.heldByYou;
@@ -866,11 +866,11 @@ export async function askGoal(session: string, words: string, targets: () => Tar
   const place = await placeOfSession(session, targets()).catch(() => null);
   if (!place) return { refused: { status: 404, message: "There's no such conversation here." } };
   // You asked for it now: as a message of yours to go now, the queue goes on.
-  changeQueue(session, state => ({ ...state, paused: false }));
+  await changeQueueLater(session, state => ({ ...state, paused: false }));
   const asking = [said, "", "<sent-with>", GOAL_HEADING, "/goal", ...GOAL_PLANNING, "</sent-with>"].join("\n");
   const message = { id: messageID(), text: asking, delivery: "queue" as const, metadata: withParts(undefined, partsOf(asking)) };
   // (Its engine being changed: it waits on the box, and goes once the new one runs.)
-  const sent = keepWaiting(session, message, {}, undefined, place.target)
+  const sent = await keepWaitingLater(session, message, {}, undefined, place.target)
     || await asked(place.target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message).then(() => true, () => false);
   return sent ? { text: "Asked for a plan." } : { refused: { status: 404, message: "The conversation can't be reached now." } };
 }

@@ -1,3 +1,4 @@
+import { backlogDisk } from "../server/disk-worker";
 import { mayActivate } from "../ownership/resolve";
 import { submitterAuthority } from "../ownership/authority";
 import { forwardGrant } from "../work-queue/forward-grant";
@@ -25,7 +26,7 @@ import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
 import { previewLabelRestore } from "../work-queue/label-preview";
 import { frozen } from "../moves/records";
-import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
+import { importItems, importWords } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
 import { carriedFiles, Refusal, refuseMoving, TooBig } from "../work-queue/ops";
@@ -34,7 +35,7 @@ import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import type { QueueCounts } from "../../shared/routes/work-queue";
-import { itemNumberOf, allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
+import { itemNumberOf, allItems, changeQueuesLater, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, nameOf, overseenBy, ownersOf, refOf, summaryOf, visibleItem, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
@@ -316,7 +317,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     const nonce = mutationNonce(request, given);
     if (!nonce) return yield* json(400, { message: "Send a valid operation id." });
     const setup = followedSetup(readLink());
-    return yield* answered(addHere(given, fromLocalApp(request), mutationKey(setup?.id ?? "", nonce)), json);
+    return yield* answered(await addHere(given, fromLocalApp(request), mutationKey(setup?.id ?? "", nonce)), json);
   }
 
   if (part === "import") {
@@ -329,12 +330,12 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     } catch (error) {
       return yield* json(409, { message: (error as Error).message });
     }
-    const read = readBacklogFiles(given.files);
+    const read = await backlogDisk.run("readBacklogFiles", given.files);
     if ("refused" in read) return yield* json(400, { message: read.refused });
-    const { items, skipped } = parseBacklog(read.texts);
-    let outcome: ReturnType<typeof importItems>;
+    const { items, skipped } = read;
+    let outcome: Awaited<ReturnType<typeof importItems>>;
     try {
-      outcome = changeQueues(book => importItems(book, owner, items, YOU, primaryOf()));
+      outcome = await changeQueuesLater(book => importItems(book, owner, items, YOU, primaryOf()));
     } catch (error) {
       if (error instanceof Refusal) return yield* json(400, { message: error.message });
       throw error;
@@ -416,7 +417,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (sought && "refuse" in sought) return yield* json(503, sought.refuse);
       far = sought?.far ?? null;
     }
-    let file = far ? null : fileOf(ref, name);
+    let file = far ? null : await fileOf(ref, name);
     if (far) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id, action: "file", name }, signal);
       if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
@@ -472,7 +473,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   const attaching = Array.isArray(given.files) && given.files.length > 0;
   if (attaching && !takesForwarded(far.computer.key, ATTACHMENTS)) return yield* json(409, { message: `${far.computer.name} needs an update before it can keep attached files. Update it and try again.`, computer: far.computer });
   let files: unknown;
-  try { files = attaching ? carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
+  try { files = attaching ? await carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
     if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
