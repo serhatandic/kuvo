@@ -19221,7 +19221,7 @@ ${trimmed}` : ""}` });
         if (summary)
           summary = false;
         else if (message.outcome !== "succeeded")
-          out.push({ role: "Stopped", text: message.error?.message ?? (message.outcome === "interrupted" ? "You stopped it." : "It stopped with an error.") });
+          out.push({ role: "Stopped", text: message.error?.message ?? (message.outcome === "interrupted" ? message.reason === "restart" ? "Kuvo Code restarted, and it stopped with it." : "You stopped it." : "It stopped with an error.") });
         break;
     }
   }
@@ -19697,7 +19697,7 @@ class Turn {
   toolStep(id) {
     return this.tools.get(id)?.step.id;
   }
-  finish(outcome, error) {
+  finish(outcome, error, reason) {
     if (this.ended)
       return;
     if (this.compaction)
@@ -19712,10 +19712,10 @@ class Turn {
     }
     this.ended = true;
     const type = outcome === "succeeded" ? "session.execution.succeeded" : outcome === "failed" ? "session.execution.failed" : "session.execution.interrupted";
-    const event = emit(type, { sessionID: this.sessionID, error }, this.directory);
+    const event = emit(type, { sessionID: this.sessionID, error, ...reason ? { reason } : {} }, this.directory);
     const record = this.store.get(this.sessionID);
     if (record) {
-      record.messages.push({ type: "idle", id: messageID(event.id), time: { created: event.created }, outcome, error });
+      record.messages.push({ type: "idle", id: messageID(event.id), time: { created: event.created }, outcome, error, ...reason ? { reason } : {} });
       const session = record.session;
       session.outcome = outcome;
       session.time.idle = event.created;
@@ -22745,9 +22745,22 @@ ${live.agentPrompt}` : ""
       live.go = false;
       live.own = undefined;
       const run = runOf(live.doing);
+      const waiting = this.store.get(id);
+      if (run && waiting) {
+        let kept = false;
+        for (const input of this.queue(waiting)) {
+          if (input.steerReceipt || live.steering.has(input.id) || input.compact)
+            continue;
+          input.held = true;
+          input.delivery = "steer";
+          kept = true;
+        }
+        if (kept)
+          this.store.save(id, true);
+      }
       run?.abort.abort();
       this.settleAsks(id, live);
-      run?.turn.finish("interrupted");
+      run?.turn.finish("interrupted", undefined, "restart");
       for (const child of live.subagents.values())
         child.finish("interrupted");
       live.subagents.clear();
@@ -31909,4 +31922,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 6d8a0225ba29fc74e6cfddf071461f5eb30ccba5fbaf100d84b4dae9b0d3199e
+// Built from Packages/Box/src/agents 3b23a63929f4cd401e652b90281cd6029077fdae7fd3d9a6885532db75442328

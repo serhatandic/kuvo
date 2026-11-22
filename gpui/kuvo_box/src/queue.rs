@@ -58,6 +58,12 @@ impl Item {
     pub fn is_on_box(&self) -> bool {
         self.on == "box"
     }
+
+    /// Handed to the agent for its next step (steered, in its engine or its coding agent's
+    /// bridge): clients draw it in the conversation, not in the queue over the composer.
+    pub fn is_for_next_step(&self) -> bool {
+        !self.is_queued() && !self.is_on_box() && !self.held
+    }
 }
 
 /// One taken back: its words as shown, the keyword it went with, what goes back in the composer as

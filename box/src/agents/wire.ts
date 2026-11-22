@@ -126,6 +126,9 @@ export interface IdleMessage {
   time: MessageTime
   outcome: "succeeded" | "failed" | "interrupted"
   error?: StructuredError
+  /** Why it was interrupted, when it wasn't a Stop: `restart`, the bridge stopped with it (an
+   * update, a restart, a quit). What waited in line goes on when it's back. */
+  reason?: "restart"
 }
 
 export interface ModelSwitchMessage {

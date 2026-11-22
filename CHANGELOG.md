@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
+- Messages waiting in a conversation's queue are no longer lost or paused when Kuvo Code's coding agents restart (an update, a restart): they go once, in order, when the agent is back.
+
 - The side panel is a strip of tabs that follows the conversation you're in: each conversation keeps its own tabs. **+** opens a New tab page where you can search the folder's files or open a side chat, a terminal or the folder's files. Files open in their own tabs, with the folder's files beside them and a filter. Changes shows each changed file's lines under its name. In a narrow window the panel slides over the conversation.
 - Click a file's name in the conversation to open it in the side panel, or a step's lines added and removed to open Changes. In the conversation's Outputs, a background process opens its output in a tab as it prints, with Stop; Subagents opens a tab listing those at work and those done, where you can read each one's conversation; side chats open in their own tabs, and /btw opens its answer there.
 - Terminals open as tabs in the side panel, in the conversation's folder on its computer.

@@ -43,6 +43,11 @@ const SLASH: &str = "SlashMenu";
 /// How long before what the box couldn't say of its models is asked again, at first and at most.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MOST: Duration = Duration::from_secs(30);
+/// How many times one whose answer didn't come (its computer restarting, the connection lost) is
+/// asked again under its id before it says so: about a minute and a half, backing off.
+const ASK_AGAIN_MOST: u32 = 6;
+/// What one says that its computer didn't answer for, after asking again (with Retry and Edit).
+const NOT_ANSWERED: &str = "Its computer isn't answering.";
 /// How long typing a mention pauses before the box is asked what it suggests.
 const MENTION_PAUSE: Duration = Duration::from_millis(150);
 /// How many of "/"'s offers show at once (the rest scroll).
@@ -119,8 +124,29 @@ pub struct Outgoing {
     /// The conversation has its copy, which came without its files: they show under it.
     pub arrived: bool,
     owner_receipt: Option<OwnerReceipt>,
+    /// Where its box's queue has it (`queue_has`): the box's row stands for it while it waits.
+    pub at_box: AtBox,
+    /// How many times it was asked again under its id, its answer not having come.
+    asked_again: u32,
+    /// Sent for after the run while there was something to wait for (a run, a queue): it goes to
+    /// the queue over the composer. (With nothing, its box sends it at once.)
+    for_queue: bool,
     /// What goes again on Retry, under the same id (the box takes one id once).
     draft: Draft,
+}
+
+/// Where a message sent from here is, as its box's queue says. It stays the client's to draw until
+/// the conversation has it: it never goes from the screen between the queue and the conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AtBox {
+    /// Its box's queue hasn't listed it (yet, or it never waits there).
+    #[default]
+    Unseen,
+    /// Its box's queue lists it: the box's row is drawn for it.
+    Waiting,
+    /// Its box's queue listed it and no longer does: handed to the agent, on its way into the
+    /// conversation.
+    Handed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,9 +156,15 @@ enum OwnerReceipt {
 }
 
 impl Outgoing {
-    /// Sent for after the run: its box puts it in the queue, not the agent's next step.
+    /// Sent for after the run and not handed to the agent yet: it's drawn in the queue over the
+    /// composer from the moment it's sent, not in the conversation.
     pub fn is_queued(&self) -> bool {
-        self.draft.delivery == Delivery::Queue
+        self.for_queue && self.at_box != AtBox::Handed
+    }
+
+    /// Sent for after the run (whether or not it's been handed to the agent since).
+    pub fn is_for_queue(&self) -> bool {
+        self.for_queue
     }
 
     pub fn has_owner_receipt(&self) -> bool {
@@ -525,7 +557,7 @@ impl Composer {
             // Shown in it at once, until its read has it.
             Ok(Sent::Message { id }) => {
                 let draft = Draft::new(id.clone(), written.to_owned());
-                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, owner_receipt: None, draft });
+                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, asked_again: 0, for_queue: false, draft });
                 cx.emit(ComposerEvent::Outgoing);
             }
             Ok(Sent::Pending { id, receipt }) => {
@@ -1051,7 +1083,7 @@ impl Composer {
                 }
                 if shows {
                     let words = if quotes.is_empty() { text.clone() } else { quoting::message(&quotes, &text) };
-                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, draft: draft.clone() });
+                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, asked_again: 0, for_queue: draft.delivery == Delivery::Queue && self.can_queue(), draft: draft.clone() });
                     cx.emit(ComposerEvent::Outgoing);
                 }
                 self.go(id, draft, text, files, quotes, shows, cx);
@@ -1114,6 +1146,7 @@ impl Composer {
         let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
         let kept_quotes = quotes.clone();
         let kept_draft = draft.clone();
+        let session_again = session.clone();
         let work = move || {
             let mut draft = draft;
             draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
@@ -1129,9 +1162,14 @@ impl Composer {
                     this.keep_owner_draft(kept_draft, files, OwnerReceipt::Pending, cx);
                     this.watch_draft_receipt(id, receipt.operation, cx);
                 }
+                // Its answer didn't come (its computer restarting, the connection lost): asked again
+                // under its id, which its box takes once and settles (sent, or sent now), drawn
+                // meanwhile as on its way; still unanswered, it says so once, with Retry.
                 Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) && !typed::asks_box(&text) && !kept_draft.side => {
-                    let warning = answer.error.unwrap_or_else(|| "Check the conversation before sending this draft again.".into());
-                    this.keep_owner_draft(kept_draft, files, OwnerReceipt::Interrupted(warning), cx);
+                    if !(shows && this.ask_again(&session_again, &id, cx)) {
+                        let warning = answer.error.unwrap_or_else(|| "Check the conversation before sending this draft again.".into());
+                        this.keep_owner_draft(kept_draft, files, OwnerReceipt::Interrupted(warning), cx);
+                    }
                 }
                 Ok(Sent::Message { .. }) if shows => this.mark(&id, |outgoing| outgoing.taken = true, cx),
                 Ok(sent) => {
@@ -1144,7 +1182,7 @@ impl Composer {
                     }
                     this.sent(sent, &text, files, cx);
                 }
-                Err(why) if shows => this.mark(&id, |outgoing| outgoing.failed = Some(why), cx),
+                Err(why) if shows => this.mark(&id, |outgoing| if outgoing.at_box == AtBox::Unseen { outgoing.failed = Some(why) }, cx),
                 Err(why) => {
                     this.attach(files, cx);
                     // (What it replied to goes back with it.)
@@ -1161,10 +1199,15 @@ impl Composer {
 
     fn keep_owner_draft(&mut self, draft: Draft, files: Vec<PathBuf>, receipt: OwnerReceipt, cx: &mut Context<Self>) {
         if let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == draft.id) {
+            // (One its box's queue has listed went: an answer lost on the way doesn't say otherwise.)
+            if outgoing.at_box != AtBox::Unseen {
+                outgoing.taken = true;
+                return;
+            }
             outgoing.owner_receipt = Some(receipt);
         } else {
             let words = draft.quote.as_ref().unwrap_or(&draft.text).clone();
-            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files, failed: None, taken: false, arrived: false, owner_receipt: Some(receipt), draft });
+            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files, failed: None, taken: false, arrived: false, owner_receipt: Some(receipt), at_box: AtBox::Unseen, asked_again: 0, for_queue: false, draft });
         }
         cx.emit(ComposerEvent::Outgoing);
     }
@@ -1235,6 +1278,75 @@ impl Composer {
         }
     }
 
+    /// What its box's queue lists now (`waiting`, by id). One it lists is drawn as the box's row;
+    /// one it listed and no longer does was handed to the agent, and stays drawn in the
+    /// conversation until the conversation has it (`arrived`): never let go between the two.
+    pub fn queue_has(&mut self, waiting: impl Fn(&str) -> bool, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for outgoing in &mut self.outgoing {
+            let now = match (waiting(&outgoing.id), outgoing.at_box) {
+                (true, _) => AtBox::Waiting,
+                (false, AtBox::Waiting) => AtBox::Handed,
+                (false, at) => at,
+            };
+            if now != outgoing.at_box {
+                outgoing.at_box = now;
+                // (Its box has had it: it went, whatever its answer said on the way.)
+                outgoing.taken = true;
+                outgoing.failed = None;
+                outgoing.owner_receipt = None;
+                changed = true;
+            }
+        }
+        if changed {
+            cx.emit(ComposerEvent::Outgoing);
+        }
+    }
+
+    /// Asks its box again for one whose answer didn't come, under its id, after a while (backing
+    /// off), unless its box has shown it meanwhile. False once it's been asked enough: it says so.
+    fn ask_again(&mut self, session: &str, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id) else { return true };
+        if outgoing.at_box != AtBox::Unseen {
+            outgoing.taken = true;
+            return true;
+        }
+        if outgoing.asked_again >= ASK_AGAIN_MOST {
+            outgoing.failed = Some(NOT_ANSWERED.into());
+            cx.emit(ComposerEvent::Outgoing);
+            return true;
+        }
+        outgoing.asked_again += 1;
+        let wait = (RETRY_FIRST * 2u32.pow(outgoing.asked_again - 1)).min(RETRY_MOST);
+        let (session, id) = (session.to_owned(), id.to_owned());
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            let mut wait = wait;
+            loop {
+                executor.timer(wait).await;
+                let asked = this.update(cx, |this, cx| {
+                    let Some(outgoing) = this.outgoing.iter().find(|outgoing| outgoing.id == id) else { return true };
+                    if outgoing.at_box != AtBox::Unseen || outgoing.failed.is_some() {
+                        return true;
+                    }
+                    // (One at a time: after the one on its way now.)
+                    if this.sending {
+                        return false;
+                    }
+                    let (draft, text, files) = (outgoing.draft.clone(), outgoing.draft.text.clone(), outgoing.files.clone());
+                    this.go(session.clone(), draft, text, files, Vec::new(), true, cx);
+                    cx.notify();
+                    true
+                });
+                if asked.unwrap_or(true) {
+                    break;
+                }
+                wait = RETRY_FIRST;
+            }
+        }));
+        true
+    }
+
     /// Sends one that couldn't go again, under its id; not while another's on its way.
     pub fn retry(&mut self, id: &str, cx: &mut Context<Self>) {
         let Target::Session { id: session, .. } = self.target.clone() else { return };
@@ -1243,6 +1355,7 @@ impl Composer {
         }
         let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
         outgoing.failed = None;
+        outgoing.asked_again = 0;
         let (draft, text, files) = (outgoing.draft.clone(), outgoing.draft.text.clone(), outgoing.files.clone());
         cx.emit(ComposerEvent::Outgoing);
         self.go(session, draft, text, files, Vec::new(), true, cx);
