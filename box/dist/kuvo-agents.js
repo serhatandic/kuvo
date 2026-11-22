@@ -9811,6 +9811,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
         db = open(path)
         db.exec("PRAGMA busy_timeout=2000")
         db.exec("BEGIN")
+        if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'").get()) continue
         const steps = db.query("SELECT 1 FROM pragma_table_info('steps') WHERE name='metadata'").values().length > 0
         const step = steps ? ", (SELECT CASE WHEN length(metadata) <= 1048576 THEN metadata ELSE NULL END FROM steps WHERE idx = g.idx) AS step, (SELECT length(metadata) FROM steps WHERE idx = g.idx) AS stepLength" : ", NULL AS step, NULL AS stepLength"
         const query = db.query("SELECT idx, CASE WHEN length(data) <= 1048576 THEN data ELSE NULL END AS data" + step + " FROM gen_metadata g WHERE idx > ? AND data IS NOT NULL ORDER BY idx LIMIT 8")
@@ -32504,4 +32505,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents e1aa73fef6b85c5a70999c3c7560e44c09812f0bb05fd3003b17c7ec6536c7eb
+// Built from Packages/Box/src/agents c4222a99f432ea70e1401f0288900716fcda778745bfac0785d2830fba13088e

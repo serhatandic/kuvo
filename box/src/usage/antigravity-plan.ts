@@ -14,7 +14,12 @@ const specs = [
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const text = (v: unknown): string | undefined => typeof v === "string" && v.trim() ? v.trim() : undefined
 const groupsOf = (body: any): any[] | undefined => Array.isArray(body?.response?.groups) ? body.response.groups : Array.isArray(body?.groups) ? body.groups : undefined
-const windowOf = (id: string, name: string, minutes: number, fraction: number, reset: unknown) => ({ id, name, minutes, used: Math.round((1 - Math.min(1, Math.max(0, fraction))) * 100) / 100, ...(isoTime(reset) !== undefined ? { resetsAt: isoTime(reset) } : {}) })
+const windowOf = (id: string, name: string, minutes: number, fraction: number, reset: unknown) => {
+  const used = 1 - Math.min(1, Math.max(0, fraction))
+  const resetsAt = isoTime(reset)
+  // Keep sub-percent usage distinguishable from a provider's exact zero.
+  return { id, name, minutes, used: Math.round(used * 100) / 100 || used, ...(resetsAt !== undefined ? { resetsAt } : {}) }
+}
 
 /** Faithful AntigravityUsageMapper summary merge: exact IDs, first usable wins, separate Argon. */
 export function antigravitySummary(bodies: any[]): LimitReading["windows"] | undefined {
@@ -214,9 +219,8 @@ export class AntigravityPlan {
   /**
    * Google's word, against what this box saw. A pool's window that Google has said is unused since
    * an earlier read, while this account's agent ran in that pool here after that read (and within
-   * the window's length, so the use would still count), is contradicted: Google isn't counting
-   * this use, and what's left isn't known. Said so as a problem (`unknown`), never as all of it
-   * left. A pool whose window Google says is in use, or with no use here since, is taken as said.
+   * the window's length), leaves that window's remaining quota unknown. Keep the other windows
+   * Google reported, even when this one can't be read with confidence.
    */
   private async checked(reading: LimitReading, now: number): Promise<LimitReading> {
     const unused = reading.windows.filter(window => window.used === 0 && window.minutes)
@@ -230,13 +234,19 @@ export class AntigravityPlan {
     let turns: AntigravityEvent[]
     // (Its conversations unreadable here: nothing seen contradicts Google.)
     try { turns = await this.turns(Math.min(...asked.map(each => each.from))) } catch { return reading }
-    const pools = [...new Set(asked.filter(({ window, from }) => turns.some(turn => {
+    const unknown = asked.filter(({ window, from }) => turns.some(turn => {
       const at = turn.timestampSeconds * 1000
       return at > from && at <= now - COUNTED_WITHIN && antigravityTurnPool(turn) === windowPool(window.id)
-    })).map(({ window }) => windowPool(window.id)))]
-    if (!pools.length) return reading
-    const names = pools.map(pool => POOL_NAMES[pool]).join(" and ")
-    throw new LimitsProblem("failed", `Google isn't counting your recent ${names} use, so how much is left isn't known right now.`, undefined, true, true)
+    })).map(({ window }) => window)
+    if (!unknown.length) return reading
+    const ids = unknown.map(window => window.id)
+    const names = unknown.map(window => window.name).join(" and ")
+    const pools = [...new Set(unknown.map(window => POOL_NAMES[windowPool(window.id)]))].join(" and ")
+    return {
+      ...reading,
+      windows: reading.windows.filter(window => !ids.includes(window.id)),
+      unknownWindows: { ids, message: `Google reports 0% used for ${names} despite recent ${pools} use here. The remaining quota for ${ids.length === 1 ? "that limit" : "those limits"} is unknown.` },
+    }
   }
   /** Signing out prunes only this account's box-owned derived refusal record. */
   signOut() {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 23b0c8f9a958
+// Kuvo folder layout 23 a3d2ceeec993
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1839,7 +1839,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "23b0c8f9a958";
+var BRIDGE_VERSION = "a3d2ceeec993";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -104242,7 +104242,9 @@ function limitDisplay(account, members, now, title) {
     computers.add(source.box);
     const share = Math.min(1, Math.max(0, used));
     const freshUntil = Math.min(readAt + FRESH_FOR, resetsAt ?? Infinity, source.box.awayAt ?? Infinity);
-    const freshForMs = source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now));
+    const problem = source.account.problem;
+    const failed = problem && !(problem.unknown && readAt === source.account.checked);
+    const freshForMs = source.box.away || failed ? 0 : Math.max(0, Math.floor(freshUntil - now));
     return {
       title,
       share,
@@ -104867,7 +104869,12 @@ class Limits {
     const before = new Map([...this.entries].map(([id, entry]) => [id, entry.checked]));
     this.refreshing = this.refresh().then(() => {
       const checked = [...this.entries].filter(([id, entry]) => entry.checked !== before.get(id));
-      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => entry.problem && entry.problem.kind !== "ended");
+      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => {
+        const problem = entry.problem;
+        if (!problem || problem.kind === "ended")
+          return false;
+        return !problem.unknown || !entry.windows.some((window2) => window2.read === entry.checked);
+      });
       if (!this.refreshFailed)
         this.refreshCompletedAt = this.now();
       this.peers?.refreshElsewhere(this.rows(), this.reads());
@@ -104994,11 +105001,13 @@ class Limits {
       entry.plan = reading.plan ?? entry.plan;
       entry.balance = reading.balance;
       entry.extras = reading.extras?.length ? reading.extras : undefined;
-      const missing = reading.partial ? entry.windows.filter((window2) => !reading.windows.some((each) => each.id === window2.id)) : [];
-      const heard = entry.windows.filter((window2) => reading.partial && !reading.windows.some((each) => each.id === window2.id) && (window2.resetsAt !== undefined ? at < window2.resetsAt : !entry.partialMissing?.includes(window2.id)) || window2.source === "turn" && (window2.read >= started || !reading.windows.some((each) => each.id === window2.id)));
+      const unknown = reading.unknownWindows;
+      const prior = unknown ? entry.windows.filter((window2) => !unknown.ids.includes(window2.id)) : entry.windows;
+      const missing = reading.partial ? prior.filter((window2) => !reading.windows.some((each) => each.id === window2.id)) : [];
+      const heard = prior.filter((window2) => reading.partial && !reading.windows.some((each) => each.id === window2.id) && (window2.resetsAt !== undefined ? at < window2.resetsAt : !entry.partialMissing?.includes(window2.id)) || window2.source === "turn" && (window2.read >= started || !reading.windows.some((each) => each.id === window2.id)));
       entry.partialMissing = reading.partial ? missing.map((window2) => window2.id) : undefined;
       entry.windows = [...reading.windows.filter((window2) => !heard.some((each) => each.id === window2.id)).map((window2) => ({ ...window2, used: clamp(window2.used), read: at, source: "usage" })), ...heard];
-      entry.problem = undefined;
+      entry.problem = unknown ? { kind: "failed", message: unknown.message, unknown: true } : undefined;
       entry.signIn = undefined;
       entry.refusals = 0;
       entry.failures = 0;
@@ -105014,14 +105023,7 @@ class Limits {
         this.identify(entry, source.identity?.());
       entry.checked = at;
       const problem = caught instanceof LimitsProblem ? caught : new LimitsProblem("failed", `Couldn't read its limits: ${caught instanceof Error ? caught.message : String(caught)}`);
-      entry.problem = { kind: problem.kind, message: problem.message, ...problem.until ? { until: problem.until } : {}, ...problem.unknown ? { unknown: true } : {} };
-      if (problem.unknown) {
-        entry.windows = [];
-        entry.partialMissing = undefined;
-        entry.failures = 0;
-        entry.next = at + source.every;
-        return problem.sent;
-      }
+      entry.problem = { kind: problem.kind, message: problem.message, ...problem.until ? { until: problem.until } : {} };
       switch (problem.kind) {
         case "rate-limited": {
           const refusals = (source.bucket ? this.refusals.get(source.bucket) ?? 0 : entry.refusals ?? 0) + 1;
@@ -105393,13 +105395,11 @@ var init_limits4 = __esm(() => {
     kind;
     until;
     sent;
-    unknown;
-    constructor(kind, message, until, sent = true, unknown = false) {
+    constructor(kind, message, until, sent = true) {
       super(message);
       this.kind = kind;
       this.until = until;
       this.sent = sent;
-      this.unknown = unknown;
     }
   };
   FIRST_HOLD = 60 * MINUTE3;
@@ -106580,6 +106580,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
         db = open(path)
         db.exec("PRAGMA busy_timeout=2000")
         db.exec("BEGIN")
+        if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'").get()) continue
         const steps = db.query("SELECT 1 FROM pragma_table_info('steps') WHERE name='metadata'").values().length > 0
         const step = steps ? ", (SELECT CASE WHEN length(metadata) <= 1048576 THEN metadata ELSE NULL END FROM steps WHERE idx = g.idx) AS step, (SELECT length(metadata) FROM steps WHERE idx = g.idx) AS stepLength" : ", NULL AS step, NULL AS stepLength"
         const query = db.query("SELECT idx, CASE WHEN length(data) <= 1048576 THEN data ELSE NULL END AS data" + step + " FROM gen_metadata g WHERE idx > ? AND data IS NOT NULL ORDER BY idx LIMIT 8")
@@ -111271,14 +111272,20 @@ class AntigravityPlan {
     } catch {
       return reading;
     }
-    const pools = [...new Set(asked.filter(({ window: window2, from }) => turns.some((turn) => {
+    const unknown = asked.filter(({ window: window2, from }) => turns.some((turn) => {
       const at = turn.timestampSeconds * 1000;
       return at > from && at <= now - COUNTED_WITHIN && antigravityTurnPool(turn) === windowPool(window2.id);
-    })).map(({ window: window2 }) => windowPool(window2.id)))];
-    if (!pools.length)
+    })).map(({ window: window2 }) => window2);
+    if (!unknown.length)
       return reading;
-    const names = pools.map((pool) => POOL_NAMES[pool]).join(" and ");
-    throw new LimitsProblem("failed", `Google isn't counting your recent ${names} use, so how much is left isn't known right now.`, undefined, true, true);
+    const ids = unknown.map((window2) => window2.id);
+    const names = unknown.map((window2) => window2.name).join(" and ");
+    const pools = [...new Set(unknown.map((window2) => POOL_NAMES[windowPool(window2.id)]))].join(" and ");
+    return {
+      ...reading,
+      windows: reading.windows.filter((window2) => !ids.includes(window2.id)),
+      unknownWindows: { ids, message: `Google reports 0% used for ${names} despite recent ${pools} use here. The remaining quota for ${ids.length === 1 ? "that limit" : "those limits"} is unknown.` }
+    };
   }
   signOut() {
     rmSync7(join23(this.stateFolder(), "refusals.json"), { force: true });
@@ -111566,7 +111573,11 @@ class AntigravityPlan {
     }
   }
 }
-var specs, finite = (v) => typeof v === "number" && Number.isFinite(v), text18 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, groupsOf = (body) => Array.isArray(body?.response?.groups) ? body.response.groups : Array.isArray(body?.groups) ? body.groups : undefined, windowOf = (id, name, minutes, fraction, reset) => ({ id, name, minutes, used: Math.round((1 - Math.min(1, Math.max(0, fraction))) * 100) / 100, ...isoTime(reset) !== undefined ? { resetsAt: isoTime(reset) } : {} }), blacklist, windowPool = (id) => id.startsWith("argon") ? "argon" : id.startsWith("gemini") ? "gemini" : "3p", POOL_NAMES, COUNTED_WITHIN, flagValue = (argv, flag) => {
+var specs, finite = (v) => typeof v === "number" && Number.isFinite(v), text18 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, groupsOf = (body) => Array.isArray(body?.response?.groups) ? body.response.groups : Array.isArray(body?.groups) ? body.groups : undefined, windowOf = (id, name, minutes, fraction, reset) => {
+  const used = 1 - Math.min(1, Math.max(0, fraction));
+  const resetsAt = isoTime(reset);
+  return { id, name, minutes, used: Math.round(used * 100) / 100 || used, ...resetsAt !== undefined ? { resetsAt } : {} };
+}, blacklist, windowPool = (id) => id.startsWith("argon") ? "argon" : id.startsWith("gemini") ? "gemini" : "3p", POOL_NAMES, COUNTED_WITHIN, flagValue = (argv, flag) => {
   const i = argv.indexOf(flag);
   return i >= 0 ? argv[i + 1] : argv.find((a) => a.startsWith(flag + "="))?.slice(flag.length + 1);
 }, port = (s) => s && /^\d+$/.test(s) && +s > 0 && +s < 65536 ? +s : undefined, regexEscape = (value) => value.split("").map((c) => "\\^$.*+?()[]{}|".includes(c) ? "\\" + c : c).join(""), antigravityGeneration = (credential) => fingerprint4(JSON.stringify([credential.access ?? null, credential.refresh ?? null])), antigravityTransport, antigravityOAuthDefaults, productionBases;
