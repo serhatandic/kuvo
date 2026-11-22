@@ -60,3 +60,5 @@ creation. Letters still have their own peer locator.
   The generated asset's historical Swift path stays in use by the build.
 
 Sparkle updates the installed desktop client. The fleet update runs on the boxes.
+
+See [Kuvo on Windows](windows.md) for the WSL, native box and desktop plan.
