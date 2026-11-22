@@ -37,7 +37,7 @@ bar) show what a box says and ask it to change things. Computers reach each othe
 - **Usage:** each box reads its own accounts and tells its peers, so every box lists them all. The menu bar shows the limits (`box/src/usage/`; `mac/helper/.../MenuBarItem.swift`).
 - **Insights:** each box keeps a SQLite index and swaps pages of usage metadata with its peers (`box/src/usage/insights*.ts`).
 - **Library:** each box keeps what was handed to you there, and the box you ask gathers the other computers' parts (`library/`).
-- **Delivery:** the desktop shows sends immediately and retries the same ID. The box settles interrupted sends and the agents bridge keeps queued messages across restarts. The shared event line and merged session lists are still pending. See [Message delivery](message-delivery.md).
+- **Delivery:** the desktop shows sends immediately and retries the same ID. The box settles interrupted sends and the agents bridge keeps queued messages across restarts. The shared event line carries merged session, waiting and queue lists for clients that subscribe to them. See [Message delivery](message-delivery.md).
 - **Side panel:** files, terminals, Changes and the browser. Each is a box route that the app draws (`files.ts`, `git.ts`, `areas/*`; `gpui/kuvo`).
 
 ## Remaining work

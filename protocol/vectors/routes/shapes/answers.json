@@ -11122,6 +11122,12 @@
             "literal": "line"
            },
            {
+            "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.setup-lists"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -12073,6 +12079,12 @@
            },
            {
             "literal": "line"
+           },
+           {
+            "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.setup-lists"
            },
            {
             "literal": "mcp.catalog"
@@ -23541,6 +23553,12 @@
         "null"
        ]
       },
+      "computer?": {
+       "object": {
+        "id": "string",
+        "name": "string"
+       }
+      },
       "got?": {
        "oneOf": [
         {
@@ -23582,16 +23600,31 @@
      }
     },
     "409": {
-     "object": {
-      "message": "string",
-      "reason": {
-       "oneOf": [
-        {
-         "literal": "fullAccessOff"
+     "oneOf": [
+      {
+       "object": {
+        "message": "string",
+        "reason": {
+         "oneOf": [
+          {
+           "literal": "fullAccessOff"
+          }
+         ]
         }
-       ]
+       }
+      },
+      {
+       "object": {
+        "message": "string",
+        "computer": {
+         "object": {
+          "id": "string",
+          "name": "string"
+         }
+        }
+       }
       }
-     }
+     ]
     },
     "429": {
      "object": {
@@ -24264,6 +24297,2134 @@
      }
     },
     "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/session",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": "any",
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/messages",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": "any",
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/events",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": "bytes",
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/asks",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": {
+     "object": {
+      "asks": {
+       "list": {
+        "oneOf": [
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "permission"
+           },
+           "session": "string",
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "command": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "files": {
+            "list": {
+             "object": {
+              "file": "string",
+              "patch": "string",
+              "additions": "number",
+              "deletions": "number",
+              "status": {
+               "oneOf": [
+                {
+                 "oneOf": [
+                  {
+                   "literal": "added"
+                  },
+                  {
+                   "literal": "deleted"
+                  },
+                  {
+                   "literal": "modified"
+                  }
+                 ]
+                },
+                "null"
+               ]
+              }
+             }
+            }
+           },
+           "resources": {
+            "list": "string"
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "question"
+           },
+           "session": "string",
+           "title": "string",
+           "questions": {
+            "list": {
+             "object": {
+              "key": "string",
+              "title": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "question": "string",
+              "options": {
+               "list": {
+                "object": {
+                 "value": "string",
+                 "label": "string",
+                 "description": {
+                  "oneOf": [
+                   "string",
+                   "null"
+                  ]
+                 }
+                }
+               }
+              },
+              "multiple": "bool",
+              "custom": "bool",
+              "required": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "sandbox"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "command": "string",
+           "stopped": {
+            "list": {
+             "object": {
+              "label": "string",
+              "detail": "string"
+             }
+            }
+           },
+           "error": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "asker": "string",
+           "why": "string",
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "vault"
+           },
+           "session": "string",
+           "need": {
+            "oneOf": [
+             {
+              "literal": "use"
+             },
+             {
+              "literal": "item"
+             }
+            ]
+           },
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "site": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "note": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "other"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "dismiss": "bool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "asks": {
+         "list": {
+          "oneOf": [
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "permission"
+             },
+             "session": "string",
+             "title": "string",
+             "message": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "command": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "files": {
+              "list": {
+               "object": {
+                "file": "string",
+                "patch": "string",
+                "additions": "number",
+                "deletions": "number",
+                "status": {
+                 "oneOf": [
+                  {
+                   "oneOf": [
+                    {
+                     "literal": "added"
+                    },
+                    {
+                     "literal": "deleted"
+                    },
+                    {
+                     "literal": "modified"
+                    }
+                   ]
+                  },
+                  "null"
+                 ]
+                }
+               }
+              }
+             },
+             "resources": {
+              "list": "string"
+             },
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "question"
+             },
+             "session": "string",
+             "title": "string",
+             "questions": {
+              "list": {
+               "object": {
+                "key": "string",
+                "title": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "question": "string",
+                "options": {
+                 "list": {
+                  "object": {
+                   "value": "string",
+                   "label": "string",
+                   "description": {
+                    "oneOf": [
+                     "string",
+                     "null"
+                    ]
+                   }
+                  }
+                 }
+                },
+                "multiple": "bool",
+                "custom": "bool",
+                "required": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "sandbox"
+             },
+             "session": "string",
+             "title": "string",
+             "message": "string",
+             "command": "string",
+             "stopped": {
+              "list": {
+               "object": {
+                "label": "string",
+                "detail": "string"
+               }
+              }
+             },
+             "error": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "asker": "string",
+             "why": "string",
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "vault"
+             },
+             "session": "string",
+             "need": {
+              "oneOf": [
+               {
+                "literal": "use"
+               },
+               {
+                "literal": "item"
+               }
+              ]
+             },
+             "title": "string",
+             "message": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "site": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "note": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "other"
+             },
+             "session": "string",
+             "title": "string",
+             "message": "string",
+             "dismiss": "bool"
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/asks/events",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": {
+     "object": {
+      "asks": {
+       "list": {
+        "oneOf": [
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "permission"
+           },
+           "session": "string",
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "command": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "files": {
+            "list": {
+             "object": {
+              "file": "string",
+              "patch": "string",
+              "additions": "number",
+              "deletions": "number",
+              "status": {
+               "oneOf": [
+                {
+                 "oneOf": [
+                  {
+                   "literal": "added"
+                  },
+                  {
+                   "literal": "deleted"
+                  },
+                  {
+                   "literal": "modified"
+                  }
+                 ]
+                },
+                "null"
+               ]
+              }
+             }
+            }
+           },
+           "resources": {
+            "list": "string"
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "question"
+           },
+           "session": "string",
+           "title": "string",
+           "questions": {
+            "list": {
+             "object": {
+              "key": "string",
+              "title": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "question": "string",
+              "options": {
+               "list": {
+                "object": {
+                 "value": "string",
+                 "label": "string",
+                 "description": {
+                  "oneOf": [
+                   "string",
+                   "null"
+                  ]
+                 }
+                }
+               }
+              },
+              "multiple": "bool",
+              "custom": "bool",
+              "required": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "sandbox"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "command": "string",
+           "stopped": {
+            "list": {
+             "object": {
+              "label": "string",
+              "detail": "string"
+             }
+            }
+           },
+           "error": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "asker": "string",
+           "why": "string",
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "vault"
+           },
+           "session": "string",
+           "need": {
+            "oneOf": [
+             {
+              "literal": "use"
+             },
+             {
+              "literal": "item"
+             }
+            ]
+           },
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "site": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "note": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "other"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "dismiss": "bool"
+          }
+         }
+        ]
+       }
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "asks": {
+         "list": {
+          "oneOf": [
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "permission"
+             },
+             "session": "string",
+             "title": "string",
+             "message": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "command": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "files": {
+              "list": {
+               "object": {
+                "file": "string",
+                "patch": "string",
+                "additions": "number",
+                "deletions": "number",
+                "status": {
+                 "oneOf": [
+                  {
+                   "oneOf": [
+                    {
+                     "literal": "added"
+                    },
+                    {
+                     "literal": "deleted"
+                    },
+                    {
+                     "literal": "modified"
+                    }
+                   ]
+                  },
+                  "null"
+                 ]
+                }
+               }
+              }
+             },
+             "resources": {
+              "list": "string"
+             },
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "question"
+             },
+             "session": "string",
+             "title": "string",
+             "questions": {
+              "list": {
+               "object": {
+                "key": "string",
+                "title": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "question": "string",
+                "options": {
+                 "list": {
+                  "object": {
+                   "value": "string",
+                   "label": "string",
+                   "description": {
+                    "oneOf": [
+                     "string",
+                     "null"
+                    ]
+                   }
+                  }
+                 }
+                },
+                "multiple": "bool",
+                "custom": "bool",
+                "required": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "sandbox"
+             },
+             "session": "string",
+             "title": "string",
+             "message": "string",
+             "command": "string",
+             "stopped": {
+              "list": {
+               "object": {
+                "label": "string",
+                "detail": "string"
+               }
+              }
+             },
+             "error": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "asker": "string",
+             "why": "string",
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "vault"
+             },
+             "session": "string",
+             "need": {
+              "oneOf": [
+               {
+                "literal": "use"
+               },
+               {
+                "literal": "item"
+               }
+              ]
+             },
+             "title": "string",
+             "message": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "site": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "note": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "choices": {
+              "list": {
+               "object": {
+                "answer": {
+                 "oneOf": [
+                  {
+                   "literal": "once"
+                  },
+                  {
+                   "literal": "always"
+                  },
+                  {
+                   "literal": "reject"
+                  },
+                  {
+                   "literal": "instead"
+                  }
+                 ]
+                },
+                "title": "string",
+                "named": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "placeholder": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "help": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "spoken": {
+                 "oneOf": [
+                  "string",
+                  "null"
+                 ]
+                },
+                "after?": "string",
+                "item?": "string",
+                "confirm?": "bool"
+               }
+              }
+             }
+            }
+           },
+           {
+            "object": {
+             "id": "string",
+             "kind": {
+              "literal": "other"
+             },
+             "session": "string",
+             "title": "string",
+             "message": "string",
+             "dismiss": "bool"
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/queue",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": {
+     "object": {
+      "paused": "bool",
+      "held": {
+       "list": "string"
+      },
+      "waiting?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "from?": "string",
+         "text": "string",
+         "files?": {
+          "list": "string"
+         },
+         "keyword?": "string",
+         "at": "number"
+        }
+       }
+      },
+      "line?": "string",
+      "items?": {
+       "oneOf": [
+        {
+         "list": {
+          "object": {
+           "id": "string",
+           "words": "string",
+           "files": {
+            "list": "string"
+           },
+           "keyword": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "from": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "on": {
+            "oneOf": [
+             {
+              "literal": "engine"
+             },
+             {
+              "literal": "box"
+             }
+            ]
+           },
+           "delivery": {
+            "oneOf": [
+             {
+              "literal": "steer"
+             },
+             {
+              "literal": "queue"
+             }
+            ]
+           },
+           "held": "bool"
+          }
+         }
+        },
+        "null"
+       ]
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/queue/events",
+   "feature": "line.peer-conversation",
+   "answers": {
+    "200": {
+     "object": {
+      "paused": "bool",
+      "held": {
+       "list": "string"
+      },
+      "waiting?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "from?": "string",
+         "text": "string",
+         "files?": {
+          "list": "string"
+         },
+         "keyword?": "string",
+         "at": "number"
+        }
+       }
+      },
+      "line?": "string",
+      "items": {
+       "oneOf": [
+        {
+         "list": {
+          "object": {
+           "id": "string",
+           "words": "string",
+           "files": {
+            "list": "string"
+           },
+           "keyword": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "from": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "on": {
+            "oneOf": [
+             {
+              "literal": "engine"
+             },
+             {
+              "literal": "box"
+             }
+            ]
+           },
+           "delivery": {
+            "oneOf": [
+             {
+              "literal": "steer"
+             },
+             {
+              "literal": "queue"
+             }
+            ]
+           },
+           "held": "bool"
+          }
+         }
+        },
+        "null"
+       ]
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/sessions/events",
+   "feature": "line.setup-lists",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": {
+       "list": {
+        "object": {
+         "id": "string",
+         "facts": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "project"
+             },
+             {
+              "literal": "chat"
+             },
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "seat"
+             },
+             {
+              "literal": "hidden"
+             },
+             {
+              "literal": "subagent"
+             }
+            ]
+           },
+           "project?": "string",
+           "directory": "string",
+           "title?": "string",
+           "created": "number",
+           "updated": "number",
+           "parent?": "string",
+           "subagents?": {
+            "list": "string"
+           },
+           "messages?": {
+            "object": {
+             "via": {
+              "oneOf": [
+               {
+                "literal": "direct"
+               },
+               {
+                "literal": "parent"
+               },
+               {
+                "literal": "none"
+               }
+              ]
+             },
+             "note?": "string"
+            }
+           },
+           "line?": {
+            "list": "string"
+           },
+           "reviewPart?": {
+            "literal": true
+           },
+           "childOnly?": {
+            "literal": true
+           },
+           "ownAsk?": {
+            "literal": true
+           },
+           "childAsk?": {
+            "literal": true
+           },
+           "pinned?": "bool",
+           "archived?": "bool",
+           "running?": "bool",
+           "wakeTurn?": {
+            "literal": true
+           },
+           "asked?": "number",
+           "away?": "bool",
+           "bot?": "string",
+           "thinking?": {
+            "literal": true
+           },
+           "blocked?": {
+            "oneOf": [
+             {
+              "literal": "error"
+             },
+             {
+              "literal": "limit"
+             }
+            ]
+           },
+           "retrying?": {
+            "literal": true
+           },
+           "unread?": "number"
+          }
+         },
+         "actions": {
+          "list": {
+           "oneOf": [
+            {
+             "literal": "open"
+            },
+            {
+             "literal": "manage"
+            }
+           ]
+          }
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "projects": {
+       "list": {
+        "object": {
+         "directory": "string",
+         "facts": {
+          "object": {
+           "name?": "string",
+           "updated?": "number",
+           "asking": "number",
+           "working": "number",
+           "shown?": {
+            "list": "string"
+           },
+           "total?": "number",
+           "more?": {
+            "object": {
+             "cursor": "string",
+             "count": "number"
+            }
+           }
+          }
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/waiting/events",
+   "feature": "line.setup-lists",
+   "answers": {
+    "200": {
+     "object": {
+      "waiting": {
+       "list": {
+        "object": {
+         "session": "string",
+         "since": "number",
+         "title?": "string",
+         "asks": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "permission"
+             },
+             {
+              "literal": "question"
+             },
+             {
+              "literal": "sandbox"
+             },
+             {
+              "literal": "vault"
+             },
+             {
+              "literal": "other"
+             }
+            ]
+           },
+           "summary": "string"
+          }
+         },
+         "actions": {
+          "list": {
+           "oneOf": [
+            {
+             "literal": "review"
+            }
+           ]
+          }
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/queues/events",
+   "feature": "line.setup-lists",
+   "answers": {
+    "200": {
+     "object": {
+      "queues": {
+       "list": {
+        "object": {
+         "session": "string",
+         "queue": {
+          "object": {
+           "paused": "bool",
+           "held": {
+            "list": "string"
+           },
+           "waiting?": {
+            "list": {
+             "object": {
+              "id": "string",
+              "from?": "string",
+              "text": "string",
+              "files?": {
+               "list": "string"
+              },
+              "keyword?": "string",
+              "at": "number"
+             }
+            }
+           },
+           "line?": "string"
+          }
+         },
+         "actions": {
+          "list": {
+           "oneOf": [
+            {
+             "literal": "open"
+            },
+            {
+             "literal": "pause"
+            },
+            {
+             "literal": "resume"
+            },
+            {
+             "literal": "messages"
+            }
+           ]
+          }
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/runs-on/events",
+   "feature": "line.setup-lists",
+   "answers": {
+    "200": {
+     "object": {
+      "computers": {
+       "list": {
+        "object": {
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "offered": {
+          "object": {
+           "models": {
+            "list": {
+             "object": {
+              "providerID": "string",
+              "id": "string",
+              "name": "string",
+              "side": {
+               "oneOf": [
+                {
+                 "literal": "engine"
+                },
+                {
+                 "literal": "agents"
+                }
+               ]
+              },
+              "efforts": {
+               "list": "string"
+              },
+              "aliases": {
+               "list": "string"
+              },
+              "retiring?": "bool",
+              "hidden?": "bool",
+              "free?": "bool"
+             }
+            }
+           },
+           "known": {
+            "object": {
+             "engine": "bool",
+             "agents": "bool"
+            }
+           },
+           "providers?": {
+            "list": {
+             "object": {
+              "id": "string",
+              "name": "string",
+              "label?": "string"
+             }
+            }
+           },
+           "starred?": {
+            "list": {
+             "object": {
+              "providerID": "string",
+              "id": "string"
+             }
+            }
+           },
+           "listing?": {
+            "list": "string"
+           },
+           "unavailable?": {
+            "list": {
+             "object": {
+              "id": "string"
+             }
+            }
+           },
+           "generations?": {
+            "map": "string"
+           },
+           "scoped?": "bool",
+           "note?": "string",
+           "starting?": {
+            "oneOf": [
+             {
+              "object": {
+               "providerID": "string",
+               "id": "string",
+               "variant?": "string"
+              }
+             },
+             "null"
+            ]
+           },
+           "startChoice?": {
+            "object": {
+             "label": "string",
+             "refusal": "string"
+            }
+           }
+          }
+         },
+         "agents": {
+          "list": {
+           "object": {
+            "id": "string",
+            "name": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
      "object": {
       "message": "string"
      }

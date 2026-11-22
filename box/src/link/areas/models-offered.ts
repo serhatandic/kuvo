@@ -165,7 +165,7 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     // Auto's lists too), so a client offers in place only its own side's; `efforts`, its variants;
     // `aliases`, other ids a conversation may name it by (Claude Code's `default`); `free`, it
     // needs no account (OpenCode Zen's free models).
-    models: offered.map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
+    models: offered.map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" as const : "engine" as const, efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
     // Each provider's name, as its side names it (`models.offered.providers`), so a picker names
     // where each model is from; and your starred models (`models.starred`).

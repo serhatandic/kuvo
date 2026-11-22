@@ -12,6 +12,7 @@ import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
 import { targetsOf } from "../letters/tools";
 import { placeOfSessionPatiently } from "../letters/letter";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
+import { peerSetupLists } from "../peers/lists";
 import { pairedPhone } from "../phones";
 import type { LinkHost } from "../relay/host";
 import type { RouteContext } from "../server/context";
@@ -170,7 +171,13 @@ export async function sendAddressedMessage(context: RouteContext) {
   const computer = query.get("computer");
   if (!id || !computer || !KEY.test(computer))
     return context.json(400, { message: "Name the conversation and its computer." });
-  const owner = ownerOf(messageRecord(id, computer), { name: context.info.name });
+  let owner = ownerOf(messageRecord(id, computer), { name: context.info.name });
+  if (!owner && session) {
+    // The merged list can name a session outside the bounded ownership announcement.
+    const listed = (await peerSetupLists()).find(({ saved, origin }) =>
+      origin.computer.id === computer && saved.sessions.some(row => row.id === id));
+    if (listed) owner = { key: computer, name: listed.origin.computer.name, scope: "session computer", local: false, reachable: !listed.origin.away };
+  }
   if (!owner || owner.local || owner.key !== computer)
     return context.json(409, { message: "Open the conversation on its current computer to send this message." });
   return queueOwnerMessage(context, id, owner);

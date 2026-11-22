@@ -152,6 +152,8 @@ export const FEATURES = [
   "limits.rings",
   "limits.titles",
   "line",
+  "line.peer-conversation",
+  "line.setup-lists",
   "mcp.catalog",
   "messages.commands",
   "messages.compaction-words",
