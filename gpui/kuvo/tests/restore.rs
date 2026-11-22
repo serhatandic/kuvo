@@ -158,46 +158,39 @@ fn what_is_gone_since_leaves_the_list_quietly(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn each_computer_opens_where_it_was_and_the_window_on_the_computer_it_showed(cx: &mut TestAppContext) {
+fn another_computers_conversation_opens_again_in_the_one_window(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
+    let sharing = || {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        stand_in.share_setup_lists();
+        stand_in
+    };
     {
-        let (home, cx) = open(cx, &path);
-        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_limits", window, cx));
-        // devbox, from the switcher, at one of its own conversations.
-        workspace(&home, cx).update(cx, |_, cx| cx.emit(kuvo::workspace::Switch::To("key_devbox".into())));
-        cx.run_until_parked();
-        assert_eq!(shown_key(&home, cx).as_deref(), Some("key_devbox"));
+        let (home, cx) = open_over(cx, &path, sharing(), |_, _| {});
+        // devbox's conversation, from its project in the one list.
         workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_releases", window, cx));
         cx.run_until_parked();
+        assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()));
     }
-    let (home, cx) = open(cx, &path);
-    assert_eq!(shown_key(&home, cx).as_deref(), Some("key_devbox"), "the computer it showed");
+    let (home, cx) = open_over(cx, &path, sharing(), |_, _| {});
+    assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()), "one window, whichever computer");
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_releases"));
-    assert!(shown(cx, "entry-msg_d2"));
-    // This computer's window, where it was on this one.
-    let back = home.read_with(cx, |home, _| home.boxes().nearest_key()).unwrap();
-    home.update_in(cx, |home, window, cx| assert!(home.switch_to(&back, window, cx)));
-    cx.run_until_parked();
-    assert_eq!(opened(&home, cx).as_deref(), Some("ses_limits"));
 }
 
 #[gpui::test]
-fn a_computer_not_reached_leaves_the_window_on_this_one(cx: &mut TestAppContext) {
+fn a_computer_kept_from_before_the_one_window_leaves_the_window_as_it_is(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // studio-mini is away: this app doesn't reach it.
+    // Kept by an app that still had the computer picker: studio-mini was picked.
     std::fs::write(&path, json!({ "place": { "computer": "key_studio" } }).to_string()).unwrap();
-    let mut waited = false;
+    let mut waited = true;
     let (home, cx) = open_meanwhile(cx, &path, |home, cx| {
-        // Before your computers are known: nothing drawn, not this computer's window first.
+        // Drawn at once: nothing waits for your computers to be known.
         waited = home.read_with(cx, |home, _| home.is_restoring());
     });
-    assert!(waited);
-    assert!(!home.read_with(cx, |home, _| home.is_restoring()));
+    assert!(!waited);
     assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()));
     assert!(!shown(cx, "window-restoring"));
-    // Still kept, for when it's reached again.
-    assert_eq!(file(&path)["place"]["computer"], "key_studio");
 }
 
 #[gpui::test]
@@ -255,13 +248,14 @@ fn an_archived_conversation_opens_again_as_it_is_still_there(cx: &mut TestAppCon
 fn a_link_to_another_computer_as_the_app_opens_shows_that_computers_session(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     // The menu bar's Kuvo Helper opened the app for devbox's session (`kuvo-code://open`, which
-    // goes where a notification clicked does), before your computers' list was read: shown once
-    // it's reached, not lost to this Mac's window.
-    let (home, cx) = open_meanwhile(cx, &path, |home, cx| {
+    // goes where a notification clicked does): shown in the one window, read through devbox.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.share_setup_lists();
+    let (home, cx) = open_over(cx, &path, stand_in, |home, cx| {
         let notifier = home.read_with(cx, |home, _| home.notifier().clone());
         notifier.update(cx, |notifier, cx| notifier.clicked("link|key_devbox|ses_releases", cx));
         cx.run_until_parked();
     });
-    assert_eq!(shown_key(&home, cx).as_deref(), Some("key_devbox"));
+    assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()));
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_releases"));
 }
