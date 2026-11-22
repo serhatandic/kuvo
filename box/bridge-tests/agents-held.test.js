@@ -204,7 +204,8 @@ const make = agentId => ({
       await say("Child finished.");
     }
     const ending = (async () => {
-      while (!fs.existsSync(path.join(folder, "cursor-release"))) await new Promise(resolve => setTimeout(resolve, 20));
+      const key = text.match(/turn-liveness-\d+$/)?.[0] ?? "cursor-release";
+      while (!fs.existsSync(path.join(folder, key))) await new Promise(resolve => setTimeout(resolve, 20));
       await say(" After.");
       return { status: "finished" };
     })();
@@ -219,6 +220,7 @@ export const Agent = { create: async () => make("cursor-live"), resume: async id
 const ANTIGRAVITY = GROK
   .replace('if (!args.includes("stdio")) process.exit(1);', '')
   .replace('"grok.log"', '"antigravity.log"')
+  .replace('send({ id: prompt, result: { stopReason: "end_turn" } });', 'if (!fs.existsSync(path.join(folder, "antigravity-disk-end"))) send({ id: prompt, result: { stopReason: "end_turn" } });')
   .replace('id: "xai.api_key"', 'id: "oauth-personal"')
   .replace('modelId: "grok-test", name: "Grok Test"', 'modelId: "antigravity-test", name: "Antigravity Test"');
 
@@ -246,7 +248,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 
 /** A machine's box in folders of the test's own (`~/.kuvo-code` in a home of its own, for its
  * keeper), its bridge kept running as its launch keeps it. */
-async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor = false, programUpdate = false } = {}) {
+async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor = false, programUpdate = false, single = false, livenessEngine = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kh-")));
   removeAtEnd(root);
   const home = path.join(root, ".kuvo-code");
@@ -294,7 +296,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     }
   });
 
-  const engine = http.createServer((request, response) => {
+  const engine = livenessEngine ? await engineFixture(home, bun) : http.createServer((request, response) => {
     if (request.url.startsWith("/api/event") || request.url.startsWith("/event")) {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(": open\n\n");
@@ -303,8 +305,10 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     response.writeHead(404, { "content-type": "application/json" });
     response.end("{}");
   });
-  await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
-  atEnd(() => new Promise(resolve => { engine.closeAllConnections(); engine.close(resolve); }));
+  if (!livenessEngine) {
+    await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
+    atEnd(() => new Promise(resolve => { engine.closeAllConnections(); engine.close(resolve); }));
+  }
 
   const port = await freePort();
   const env = {
@@ -318,12 +322,13 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
   if (cursor) Object.assign(env, { CURSOR_API_KEY: "fixture-only", STAND_IN_FOLDER: fake });
   const direct = 'echo $$ >"$5"; exec "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1';
   const loop = 'while kill -0 "$1" 2>/dev/null; do "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null & echo $! >"$5"; wait $!; sleep 1; done';
-  const launch = spawn("sh", ["-c", liveTransfer ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
-  atEnd(() => new Promise(resolve => {
-    if (launch.exitCode !== null) return resolve();
+  const launch = spawn("sh", ["-c", liveTransfer || single ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
+  const shutdown = () => new Promise(resolve => {
+    if (launch.exitCode !== null || launch.signalCode !== null) return resolve();
     launch.on("exit", () => resolve());
     try { process.kill(-launch.pid, "SIGTERM"); } catch { resolve(); }
-  }));
+  });
+  atEnd(shutdown);
 
   if (liveTransfer) atEnd(() => spawnSync("sh", [keeper, "stop"], { env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 30_000 }));
   const record = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "run", "bridge.json"), "utf8")); } catch { return null; } };
@@ -355,7 +360,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     atEnd(() => { if (recovered.exitCode === null) recovered.kill(); });
     return recovered;
   };
-  return { root, home, api, up, log, held, holders, recover };
+  return { root, home, api, up, log, held, holders, recover, shutdown, engine };
 }
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
@@ -687,4 +692,173 @@ test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["interrupted"], "as a crash ended it before");
   await until(() => !alive(asked.pid), "it to be stopped");
   assert.equal(box.log("claude.log").filter(each => "answered" in each).length, 0);
+});
+
+// A real process with the engine's HTTP and event surface for these turns. It sends an inbox
+// receipt and stays at work until the test releases the turn or kills this process.
+async function engineFixture(home, bun) {
+  const folder = path.join(home, "fake");
+  const script = path.join(folder, "engine.js");
+  const port = await freePort();
+  fs.writeFileSync(script, String.raw`
+import { appendFileSync } from "node:fs";
+const [port, log] = process.argv.slice(2);
+const id = "ses_engine_fixture";
+const base = "/api/session/" + id;
+const clients = new Set();
+let running, idle, sequence = 0;
+const event = (type, data = {}) => {
+  const frame = new TextEncoder().encode("data: " + JSON.stringify({ id: ++sequence, type, data: { sessionID: id, ...data } }) + "\n\n");
+  for (const client of clients) client.enqueue(frame);
+};
+const reply = data => Response.json({ data });
+Bun.serve({ hostname: "127.0.0.1", port: Number(port), idleTimeout: 0, async fetch(request) {
+  const url = new URL(request.url).pathname;
+  if (url === "/api/event") {
+    let client;
+    return new Response(new ReadableStream({
+      start(controller) { clients.add(client = controller); controller.enqueue(new TextEncoder().encode(": open\n\n")); },
+      cancel() { clients.delete(client); },
+    }), { headers: { "content-type": "text/event-stream" } });
+  }
+  if (url === "/api/provider") return reply([{ id: "fixture-engine", name: "Fixture Engine" }]);
+  if (url === "/api/model") return reply([{ id: "fixture-test", providerID: "fixture-engine" }]);
+  if (url === "/api/session" && request.method === "POST") return reply({ id });
+  if (url === "/api/session/active") return reply(running ? { [id]: { type: "busy" } } : {});
+  if (url === base + "/prompt") {
+    const prompt = await request.json();
+    running = true;
+    appendFileSync(log, JSON.stringify({ pid: process.pid, text: prompt.text }) + "\n");
+    event("session.inbox.delivered", { inboxID: prompt.id });
+    event("session.execution.started");
+    event("session.text.delta", { ordinal: 0, delta: "Working." });
+  }
+  if (url === "/release" && running) {
+    running = false;
+    idle = Date.now();
+    event("session.execution.succeeded");
+    event("session.idle");
+  }
+  if (url === base && request.method === "GET") return reply({ id, outcome: idle ? "succeeded" : undefined, time: { idle } });
+  return reply({});
+} });
+`);
+  let child;
+  const kill = async (signal = "SIGTERM") => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.kill(signal);
+    await exited;
+  };
+  const start = async () => {
+    child = spawn(bun, [script, String(port), path.join(folder, "engine.log")], {
+      cwd: folder, env: { HOME: path.join(home, "home"), TMPDIR: path.join(home, "tmp"), BUN_BE_BUN: "1", PATH: "/usr/bin:/bin" },
+      stdio: "ignore",
+    });
+    const record = path.join(home, "run", "engine.json");
+    fs.writeFileSync(record + ".new", JSON.stringify({ port, password: "engine", pid: child.pid }));
+    fs.renameSync(record + ".new", record);
+    await until(() => fetch(`http://127.0.0.1:${port}/api/provider`).then(r => r.ok, () => false), "the fixture engine to listen", 6000);
+  };
+  atEnd(kill);
+  await start();
+  return { address: () => ({ port }), start, kill, release: () => fetch(`http://127.0.0.1:${port}/release`) };
+}
+
+for (const [provider, model, log] of [
+  ["claude-code", "claude-opus-5-5", "claude.log"],
+  ["codex-cli", "gpt-test", "log"],
+  ["antigravity", "antigravity-test", "antigravity.log"],
+  ["grok-cli", "grok-test", "grok.log"],
+  ["cursor", "cursor-test", "cursor.log"],
+  ["fixture-engine", "fixture-test", "engine.log"],
+]) test(`turn liveness for ${provider}: completion and process exit release the queue once`, { skip: bun ? false : NO_BUN }, async t => {
+  const engine = provider === "fixture-engine";
+  const cursor = provider === "cursor";
+  const antigravity = provider === "antigravity";
+  const box = await machine({ single: true, cursor, livenessEngine: engine });
+  t.after(async () => {
+    await box.shutdown();
+    if (engine) await box.engine.kill();
+  });
+  await box.up();
+  const made = await box.api("POST", "api/session", {
+    title: "Turn liveness",
+    location: { directory: path.join(box.home, "work") },
+    model: { providerID: provider, id: model },
+  });
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const session = made.json.data.id;
+  const route = `api/session/${session}`;
+  const id = i => `msg_turnliveness0000000${i}`;
+  const send = async (i, delivery) => {
+    const answer = await box.api("POST", `${route}/prompt`, { id: id(i), text: `turn-liveness-${i}`, delivery });
+    assert.equal(answer.status, 200, JSON.stringify(answer.json));
+  };
+  const apiData = async name => (await box.api("GET", `${route}/${name}`)).json?.data;
+  const messages = () => apiData("message?limit=100&order=asc");
+  const diagnostic = async () => `\n${JSON.stringify(await messages())?.slice(-2400)}\n${fs.readFileSync(path.join(box.home, "run", "agents.log"), "utf8").slice(-2400)}`;
+  const began = i => until(() => box.log(log).filter(row => engine || cursor || "asked" in row)[i - 1], `turn ${i} to reach its process`, 9000, diagnostic);
+  const release = async i => {
+    if (engine) assert.ok((await box.engine.release()).ok);
+    else if (cursor) fs.writeFileSync(path.join(box.home, "fake", `turn-liveness-${i}`), "");
+    else {
+      const ask = await until(async () => (await apiData("permission"))?.[0], "the turn's permission", 5000, diagnostic);
+      const answer = await box.api("POST", `${route}/permission/${ask.id}/reply`, { decision: "reject" });
+      assert.equal(answer.status, 200, JSON.stringify(answer.json));
+    }
+  };
+
+  // Antigravity's regression: the final text and durable transcript arrive but ACP never returns
+  // its prompt response. Other agents finish normally while their process remains available.
+  const marker = path.join(box.home, "fake", "antigravity-disk-end");
+  if (antigravity) fs.writeFileSync(marker, "");
+  await send(1, "steer");
+  const first = await began(1);
+  await send(2, "queue");
+  assert.deepEqual((await apiData("inbox"))?.map(item => item.id), [id(2)]);
+  await release(1);
+  if (antigravity) {
+    await until(() => box.log(log).some(row => "answered" in row), "Antigravity to stream its reply", 5000, diagnostic);
+    const logs = path.join(box.home, "agents", "antigravity", "profile", "antigravity-acp", "brain", "g1", ".system_generated", "logs");
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, "transcript.jsonl"), [
+      { step_index: 1, type: "USER_INPUT", status: "DONE" },
+      { step_index: 2, type: "PLANNER_RESPONSE", status: "DONE", content: "Ran it." },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  }
+  const second = await began(2);
+  if (antigravity) fs.unlinkSync(marker);
+  else assert.equal(second.pid, first.pid, "the next turn can use the live process");
+  await send(3, "queue");
+  await send(4, "queue");
+  assert.deepEqual((await apiData("inbox"))?.map(item => item.id), [id(3), id(4)]);
+  if (engine) {
+    await box.engine.kill("SIGKILL");
+    await until(async () => {
+      const page = await messages();
+      const active = (await box.api("GET", "api/session/active")).json?.data;
+      return page?.at(-1)?.reason === "agent-exit" && !active?.[session];
+    }, "the dead engine's turn to end before its replacement starts", 6000, diagnostic);
+    assert.deepEqual((await apiData("inbox"))?.map(item => item.id), [id(3), id(4)]);
+    await box.engine.start();
+  } else {
+    assert.ok(box.held().some(holder => holder.child === second.pid), "kill only this fixture's agent");
+    process.kill(second.pid, "SIGKILL");
+  }
+  const third = await began(3);
+  assert.notEqual(third.pid, second.pid);
+  await release(3);
+  await began(4);
+  await release(4);
+
+  const page = await until(async () => {
+    const page = await messages();
+    return page?.filter(item => item.type === "idle").length === 4 ? page : undefined;
+  }, "all four turns to end", 9000, diagnostic);
+  assert.deepEqual(page.filter(item => item.type === "user").map(item => item.id), [1, 2, 3, 4].map(id));
+  assert.deepEqual(page.filter(item => item.type === "idle").map(({ outcome, reason }) => [outcome, reason]), [
+    ["succeeded", undefined], ["interrupted", "agent-exit"], ["succeeded", undefined], ["succeeded", undefined],
+  ]);
+  assert.deepEqual(await apiData("inbox"), []);
 });

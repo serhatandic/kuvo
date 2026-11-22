@@ -257,6 +257,7 @@ export function releaseHolders(): Promise<void> {
 export function heldSessions(): Set<string> {
   const found = new Set<string>()
   for (const held of live) {
+    if (!held.isOpen) continue
     if (typeof held.meta.session === "string") found.add(held.meta.session)
     for (const note of Object.values((held.meta.turns ?? {}) as Record<string, { session?: unknown }>)) if (typeof note?.session === "string") found.add(note.session)
   }
@@ -349,7 +350,7 @@ export class Held {
         console.error("Holder socket closed", { id, holder, child: this.pid, generation: this.generation, attached, fenced: this.fenced, socketError })
       }
       if (attached && !this.fenced && !this.heardEnd && !this.letGo) this.stopHolder("socket lost")
-      exit({ code: null, signal: this.fenced ? "fenced" : "lost" })
+      exit({ code: null, signal: this.fenced ? "fenced" : this.letGo ? "detached" : "lost" })
       close()
     })
     socket.on("data", (chunk: string) => {
@@ -450,8 +451,6 @@ export class Held {
     return true
   }
 
-  get isProvisional() { return this.provisional }
-
   own() {
     this.provisional = false
     if (this.heardEnd) this.send({ bye: true })
@@ -459,6 +458,10 @@ export class Held {
 
   get isOpen() {
     return !this.ended && !this.fenced
+  }
+
+  get relinquished() {
+    return this.fenced || this.letGo
   }
 
   /** A line to the agent's stdin (a newline is added). */
@@ -600,7 +603,7 @@ export function heldProcess(holding: Held | Promise<Held>, fallback?: () => Chil
       void each.exited.then((exit) => {
         stdout.end()
         process_.exitCode = exit.code
-        process_.signalCode = exit.signal && exit.signal !== "fenced" && exit.signal !== "lost" ? (exit.signal as NodeJS.Signals) : null
+        process_.signalCode = exit.signal && exit.signal !== "fenced" && exit.signal !== "lost" && exit.signal !== "detached" ? (exit.signal as NodeJS.Signals) : null
         events.emit("exit", exit.code, process_.signalCode)
         // (As a child process says once its output is in: all of it came before its end.)
         events.emit("close", exit.code, process_.signalCode)

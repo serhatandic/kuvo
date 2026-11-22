@@ -10,7 +10,7 @@ import { failure, lostWorkNote } from "./agent"
 import { resetsIn, resetTime, type Limit } from "./auto"
 import { fileDiff } from "./diff"
 import { emit } from "./events"
-import { RPC, RPCError } from "./rpc"
+import { RPC, RPCClosed, RPCError } from "./rpc"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "./fence"
 import { isKuvoTool, kuvoToolName, kuvoTools, loadKuvoTools, toolServerName } from "./kuvotools"
 import { computerServers, type ComputerServers } from "./servers"
@@ -152,6 +152,7 @@ export interface BackgroundTask {
 interface TurnFollower {
   stop(): void
   transferState?(): unknown
+  watchPrompt?(answer: () => { tail: string; length: number } | undefined, finish: () => void, sentAt?: number): void
 }
 
 interface Active {
@@ -172,6 +173,7 @@ interface Active {
   heard?: boolean
   /** What it said since its last tool: how its answer ends. */
   said?: string
+  saidLength?: number
   /** What the turn runs with, to start the agent again partway (its sign-in renewed). */
   input?: RunInput
   renewed?: boolean
@@ -313,6 +315,7 @@ export class AcpThread implements Thread {
       // (From here, as `this.rpc`, in the same breath.)
       if (holdIn && !whole) this.startingOutside--
     }
+    let fatalError = false
     const rpc: RPC = new RPC(held ?? argv, {
       cwd,
       env,
@@ -330,6 +333,7 @@ export class AcpThread implements Thread {
         }
         const fatal = flavor.fatalLine?.(line)
         if (fatal) {
+          fatalError = true
           // What's waiting on it fails with this, rather than what it last wrote.
           setTimeout(() => {
             rpc.stderr = fatal
@@ -366,7 +370,7 @@ export class AcpThread implements Thread {
         void this.renew(active, active.input)
         return
       }
-      this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+      this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`, undefined, rpc.agentExited && !asksSignIn && !fatalError)
     }
     this.rpc = rpc
     this.spawnedWith = startedWith
@@ -568,6 +572,7 @@ export class AcpThread implements Thread {
       this.active = active
       turn.startStep()
       active.follower = flavor.follow?.(taken.thread, turn, hooks, taken.state)
+      if (taken.note.sentAt !== undefined) this.watchPrompt(active, taken.note.sentAt)
       taken.gate.onOpen(() => rpc.start())
       taken.gate.ready(taken.thread)
     })
@@ -593,7 +598,7 @@ export class AcpThread implements Thread {
       }
       if (lost.length) this.onWorkLost?.(lost)
       const active = this.active
-      if (active && !active.ended && active.rpc === rpc) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+      if (active && !active.ended && active.rpc === rpc) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`, undefined, rpc.agentExited)
     }
     this.rpc = rpc
     this.fenced = meta.fenced === true
@@ -688,6 +693,10 @@ export class AcpThread implements Thread {
   /** Sends a prompt of the turn's; its answer ends the turn, unless a newer one went meanwhile. */
   private prompt(active: Active, sessionId: string, prompt: any[]) {
     const number = ++active.prompt
+    const sentAt = Date.now()
+    active.said = undefined
+    active.saidLength = 0
+    this.watchPrompt(active)
     const meta = this.flavor.promptMeta?.()
     active.promptID = typeof meta?.promptId === "string" ? meta.promptId : undefined
     const sentOn = active.rpc
@@ -696,7 +705,7 @@ export class AcpThread implements Thread {
     const held = sentOn.holder
     if (held && !active.input?.compact) {
       const noted = (held.meta.turns as Record<string, { from: number }> | undefined)?.[sessionId]
-      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID })
+      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID, sentAt })
     }
     active.rpc.request("session/prompt", { sessionId, prompt, ...(meta ? { _meta: meta } : {}) }).then(
       (result: any) => {
@@ -708,9 +717,21 @@ export class AcpThread implements Thread {
       (error) => {
         if (number !== active.prompt || active.replaced === sentOn) return
         const limited = (error instanceof RPCError && error.code === -32003) || limitWords.test(errorText(error))
-        this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined)
+        this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined, error instanceof RPCClosed && sentOn.agentExited)
       },
     )
+  }
+
+  private watchPrompt(active: Active, sentAt?: number) {
+    const rpc = active.rpc
+    const prompt = active.prompt
+    active.follower?.watchPrompt?.(() => active.said && active.saidLength ? { tail: active.said, length: active.saidLength } : undefined, () => {
+      if (this.active !== active || active.rpc !== rpc || active.prompt !== prompt || active.hooks.signal.aborted) return
+      // This prompt never replied over ACP. Reload the conversation before its next prompt.
+      this.stale = rpc
+      active.answered = true
+      this.end(active, "succeeded")
+    }, sentAt)
   }
 
   /**
@@ -732,7 +753,7 @@ export class AcpThread implements Thread {
     return { scope: this.flavor.limitScope ?? "provider", message, ...(resetsAt ? { resetsAt } : {}) }
   }
 
-  private end(active: Active, outcome: RunResult["outcome"], message?: string, limit?: Limit) {
+  private end(active: Active, outcome: RunResult["outcome"], message?: string, limit?: Limit, agentExited = false) {
     if (active.ended) return
     // Done, having run nothing, with an answer that only says its plan is at its limit: that limit.
     if (outcome === "succeeded" && !active.own && !active.tools.size && active.said && this.flavor.limitReply?.(active.said)) {
@@ -778,7 +799,7 @@ export class AcpThread implements Thread {
         limit, taken: active.heard || active.answered,
       })
     }
-    else active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered } : { outcome })
+    else active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered, agentExited } : { outcome })
   }
 
   private context(): AcpContext {
@@ -866,11 +887,14 @@ export class AcpThread implements Thread {
     active.heard = true
     const turn = active.turn
     switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(contentText(update.content)).slice(-2_000)
+      case "agent_message_chunk": {
+        const text = contentText(update.content)
+        active.saidLength = (active.toolsSinceText ? 0 : (active.saidLength ?? 0)) + text.length
+        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(text).slice(-2_000)
         this.words(active)
         this.content(active, turn, update.content, "text")
         return
+      }
       case "agent_thought_chunk":
         this.words(active)
         this.content(active, turn, update.content, "reasoning")

@@ -5,7 +5,7 @@
 import { emit } from "./events"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
-import type { AssistantMessage, CompactionMessage, Content, Message, ModelRef, NoticeMessage, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
+import type { AssistantMessage, CompactionMessage, Content, InterruptionReason, Message, ModelRef, NoticeMessage, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
 import { noTokens } from "./wire"
 import { workOrder } from "../shared/work-order"
 
@@ -472,8 +472,7 @@ export class Turn {
   // MARK: The end
 
   /** Ends the run: open steps close, tools still running are stopped, and the idle marker goes in. */
-  /** `reason`: `restart` for a run the bridge's stopping cut short (not a Stop): what waits goes on. */
-  finish(outcome: Outcome, error?: StructuredError, reason?: "restart") {
+  finish(outcome: Outcome, error?: StructuredError, reason?: InterruptionReason) {
     if (this.ended) return
     // A summary under way when it stopped or failed: it didn't finish.
     if (this.compaction) this.compacted(false)

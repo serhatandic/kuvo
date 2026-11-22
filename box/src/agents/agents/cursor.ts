@@ -21,6 +21,7 @@ import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } fro
 import { computerServers } from "../servers"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
+import { RPCClosed } from "../rpc"
 import { CursorWorker, cursorWorker, type CursorRun } from "./cursor-worker"
 import { agentHoldFolder, CURSOR_SDK, type HeldMeta } from "../hold/adopt"
 import { hold, type Held } from "../hold/client"
@@ -542,6 +543,7 @@ class CursorThread implements Thread {
     } catch (error: any) {
       if (active.sawText || active.output.size) instructionsTaken()
       if (hooks.signal.aborted) return { outcome: "interrupted" }
+      if (error instanceof RPCClosed) return { outcome: "failed", error: failure(error), agentExited: true }
       const message = errorWords(error) ?? "Cursor stopped with an error."
       const limit = limitOf(message, error)
       if (limit) return { outcome: "failed", error: { type: "limit", message }, limit }

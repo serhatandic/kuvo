@@ -1369,7 +1369,7 @@ export function queueWatcher(target: Target, { after = DRAIN_AFTER, schedule = s
         ended(session, drains, () => drain(target, session).catch(() => drain(target, session)));
         break;
       case "session.execution.interrupted": {
-        if (event.data?.reason === "superseded" || event.data?.reason === "inactivity") {
+        if (event.data?.reason === "superseded" || event.data?.reason === "inactivity" || event.data?.reason === "agent-exit") {
           ended(session, drains, () => drain(target, session));
           break;
         }
@@ -1396,7 +1396,13 @@ export function queueWatcher(target: Target, { after = DRAIN_AFTER, schedule = s
         const known = found?.get(session);
         found?.delete(session);
         if (end) look(session, end, true);
-        else if (known !== undefined) later(drains, session, async () => { if (!(await isRunning(target, session))) await settleFound(target, session, known); });
+        else later(drains, session, async () => {
+          if (await isRunning(target, session)) return;
+          if (known !== undefined) await settleFound(target, session, known);
+          else if (queueOf(session).waiting?.length || (await inboxOf(target, session)).length) {
+            if (!(await queueEnd(target, session)).failed) await drain(target, session);
+          }
+        });
         break;
       }
       case "session.execution.failed": {
@@ -1462,38 +1468,37 @@ const SCANNED_FILE = path.join(RUN, "queues-scanned.json");
 
 // Whether `session`'s last run was stopped or failed, as its newest message says (the run's end,
 // as the engine and the bridge mark it, or an answer that ended in an error); unknown, it was.
-async function queueEnd(target: Target, session: string): Promise<{ failed: boolean; restarted?: boolean; limitStop?: QueueLimitStop; at?: number }> {
+async function queueEnd(target: Target, session: string): Promise<{ failed: boolean; resumable?: boolean; open?: boolean; limitStop?: QueueLimitStop; at?: number }> {
   const page = await asked(target, "GET", `api/session/${address(session)}/message?limit=1&order=desc`).catch(() => null) as { data?: { type?: string; outcome?: unknown; reason?: unknown; error?: unknown; time?: { created?: number } }[] } | null;
   if (!Array.isArray(page?.data)) return { failed: true };
   const last = page.data[0];
-  // (Cut short by its bridge stopping, not a Stop: what waits goes on.)
-  if (last?.type === "idle" && last.outcome === "interrupted" && last.reason === "restart") return { failed: false, restarted: true, at: last.time?.created };
+  // (The process went away: what waits goes on.)
+  if (last?.type === "idle" && last.outcome === "interrupted" && (last.reason === "restart" || last.reason === "agent-exit")) return { failed: false, resumable: true, at: last.time?.created };
   const failed = last?.type === "idle" ? last.outcome !== "succeeded" : last?.type === "assistant" && isObject(last.error);
   const at = last?.time?.created;
-  return { failed, at, ...(failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {}) };
+  const open = last?.type === "user" || last?.type === "assistant";
+  const resumable = last?.type === "idle" && last.outcome === "succeeded";
+  return { failed, open, resumable, at, ...(failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {}) };
 }
 
 /** Sessions with messages waiting that `scanQueues` found at work: whether it knew their engine
  * (else it started anew), for the watcher to settle each once it's free. */
 export type ScanFound = Map<string, boolean>;
 
-// A queue found as an engine was found: one the same engine left (`known`) goes on unless its run
-// stopped or failed; else held and paused, as Stop holds them.
+// A queue continues after a reported process exit or an open turn left by a replaced engine.
+// Explicit stops and failures still hold it.
 async function settleFound(target: Target, session: string, known: boolean): Promise<void> {
   const end = await queueEnd(target, session);
   if (end.limitStop?.resetsAt !== undefined && end.limitStop.resetsAt <= Date.now()) {
     const saved = queueOf(session).limitStop?.resetsAt;
     if (saved !== undefined) await releaseLimit(target, session, saved);
     else await drain(target, session);
-  } else if ((known || end.restarted) && !end.failed) await drain(target, session);
+  } else if ((known || end.resumable || end.open) && !end.failed) await drain(target, session);
   else await holdQueue(target, session, end.limitStop ? end.at : undefined, [], end.limitStop);
 }
 
-/** Once for each engine started anew (its process changed): each of its latest sessions with
- * messages waiting and nothing running held and paused, as Stop holds them. The same engine (the
- * box started again, or its stream dropped and came back): their queues go on, as after a run
- * that ended while it couldn't hear; held and paused as above if it was stopped or failed. One at
- * work then goes in `found`, for the watcher. */
+/** After reconnecting, settle waiting messages from the last end or the transcript of the turn
+ * the process left open. Sessions still at work go in `found`, for the watcher. */
 export async function scanQueues(target: Target & { pid?: number }, found?: ScanFound): Promise<void> {
   const seen = await lockedWhile(FILES.lock, async () => {
     let scanned: Record<string, unknown> = {};

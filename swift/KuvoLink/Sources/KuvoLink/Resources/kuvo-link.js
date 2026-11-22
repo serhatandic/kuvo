@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 170104fff2e1
+// Kuvo folder layout 23 22bc5f1e3f99
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1839,7 +1839,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "170104fff2e1";
+var BRIDGE_VERSION = "22bc5f1e3f99";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -12853,7 +12853,7 @@ function queueWatcher(target, { after = DRAIN_AFTER, schedule = setTimeout, canc
         ended(session, drains, () => drain(target, session).catch(() => drain(target, session)));
         break;
       case "session.execution.interrupted": {
-        if (event.data?.reason === "superseded" || event.data?.reason === "inactivity") {
+        if (event.data?.reason === "superseded" || event.data?.reason === "inactivity" || event.data?.reason === "agent-exit") {
           ended(session, drains, () => drain(target, session));
           break;
         }
@@ -12875,10 +12875,16 @@ function queueWatcher(target, { after = DRAIN_AFTER, schedule = setTimeout, canc
         found?.delete(session);
         if (end)
           look(session, end, true);
-        else if (known !== undefined)
+        else
           later(drains, session, async () => {
-            if (!await isRunning(target, session))
+            if (await isRunning(target, session))
+              return;
+            if (known !== undefined)
               await settleFound(target, session, known);
+            else if (queueOf(session).waiting?.length || (await inboxOf(target, session)).length) {
+              if (!(await queueEnd(target, session)).failed)
+                await drain(target, session);
+            }
           });
         break;
       }
@@ -12939,11 +12945,13 @@ async function queueEnd(target, session) {
   if (!Array.isArray(page?.data))
     return { failed: true };
   const last = page.data[0];
-  if (last?.type === "idle" && last.outcome === "interrupted" && last.reason === "restart")
-    return { failed: false, restarted: true, at: last.time?.created };
+  if (last?.type === "idle" && last.outcome === "interrupted" && (last.reason === "restart" || last.reason === "agent-exit"))
+    return { failed: false, resumable: true, at: last.time?.created };
   const failed = last?.type === "idle" ? last.outcome !== "succeeded" : last?.type === "assistant" && isObject(last.error);
   const at = last?.time?.created;
-  return { failed, at, ...failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {} };
+  const open = last?.type === "user" || last?.type === "assistant";
+  const resumable = last?.type === "idle" && last.outcome === "succeeded";
+  return { failed, open, resumable, at, ...failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {} };
 }
 async function settleFound(target, session, known) {
   const end = await queueEnd(target, session);
@@ -12953,7 +12961,7 @@ async function settleFound(target, session, known) {
       await releaseLimit(target, session, saved);
     else
       await drain(target, session);
-  } else if ((known || end.restarted) && !end.failed)
+  } else if ((known || end.resumable || end.open) && !end.failed)
     await drain(target, session);
   else
     await holdQueue(target, session, end.limitStop ? end.at : undefined, [], end.limitStop);

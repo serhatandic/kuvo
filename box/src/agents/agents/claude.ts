@@ -1529,7 +1529,10 @@ class ClaudeThread implements Thread {
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
     this.adopted = Boolean(taken)
-    this.query = sdk.query({
+    let query: any
+    let agentExited = false
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
+    query = this.query = sdk.query({
       prompt: this.input,
       options: {
         pathToClaudeCodeExecutable: this.agent.executable(),
@@ -1561,11 +1564,25 @@ class ClaudeThread implements Thread {
         // Its own sandbox off while the box's is on (yours, or a project's settings, may turn it
         // on): one sandbox can't run inside another on a Mac, and every command would fail.
         ...(whole ? { sandbox: { enabled: false } } : {}),
-        ...(spawning ? { spawnClaudeCodeProcess: spawning } : {}),
+        ...(spawning ? { spawnClaudeCodeProcess: (options: SpawnOptions) => {
+          const child = spawning(options)
+          child.once("exit", () => {
+            agentExited = !(taken?.held ?? this.held)?.relinquished
+            // The SDK can still have a result buffered. A descendant holding a pipe open
+            // shouldn't leave the turn waiting for the iterator forever.
+            exitTimer = setTimeout(() => {
+              if (this.query !== query) return
+              void this.queryEnded(query, undefined, agentExited)
+              try { query.close?.() } catch {}
+            }, 500)
+            exitTimer.unref?.()
+          })
+          return child
+        } } : {}),
         stderr: () => {},
       },
     })
-    void this.read(this.query, taken)
+    void this.read(query, taken, () => { clearTimeout(exitTimer); return agentExited })
   }
 
   /**
@@ -1735,17 +1752,22 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any, taken?: TakenUp) {
+  private async read(query: any, taken: TakenUp | undefined, processExited: () => boolean) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
       for await (const message of query) {
         if (taken?.gate?.preparing) await taken.gate.activated
+        if (this.query !== query) break
         this.handle(message, usage)
       }
     } catch (error) {
       ended = error
     }
+    await this.queryEnded(query, ended, processExited())
+  }
+
+  private async queryEnded(query: any, ended: unknown, agentExited: boolean) {
     if (this.query === query) {
       // Ended by itself between turns (killed, or crashed) with work going that would have woken
       // it as it ended: that went with it, and nothing will (no turn here to fail and say so).
@@ -1771,7 +1793,7 @@ class ClaudeThread implements Thread {
     else {
       if (!active.problem) await this.heard(ended, active.hooks.signal)
       if (active.hooks.signal.aborted) return active.resolve({ outcome: "interrupted" })
-      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")) })
+      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited })
     }
   }
 

@@ -473,8 +473,7 @@ export class CodexAgent implements Agent {
       // A title or commit text it was writing won't come.
       for (const oneOff of this.oneOffs.values()) if (oneOff.rpc === rpc) oneOff.fail(new Error("Codex stopped."))
       // Stopped on purpose: the threads were told then (they may be on a newer one by now).
-      if (slot.server !== rpc) return
-      slot.server = undefined
+      if (slot.server === rpc) slot.server = undefined
       for (const each of this.threads.values()) each.serverStopped(rpc)
     }
   }
@@ -1205,7 +1204,9 @@ class CodexThread implements Thread {
     const active = this.active
     if (!active) return
     this.active = undefined
-    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : { outcome: "failed", error: failure(active.problem ?? "Codex stopped.") })
+    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : {
+      outcome: "failed", error: failure(active.problem ?? "Codex stopped."), agentExited: server.agentExited,
+    })
   }
 
   private policy(hooks: TurnHooks, plan: boolean, rpc: RPC) {

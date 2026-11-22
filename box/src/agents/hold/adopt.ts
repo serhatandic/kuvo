@@ -58,6 +58,8 @@ export interface HeldTurnNote {
   from: number
   /** The request that the turn's end answers (an ACP agent's `session/prompt`). */
   request?: number | string
+  /** When this ACP prompt was sent, to distinguish its transcript from earlier prompts. */
+  sentAt?: number
   /** What a bridge taking the turn up needs that only the one before knew (Antigravity's place in its
    * transcript), written as that one made way (`Thread.handOver`). */
   state?: unknown
@@ -192,7 +194,7 @@ export interface Adopted {
  * This box's held agents, as a bridge starts (the one before made way, or crashed): each attached,
  * the next generation. One with turns under way from where the oldest of them began, each taken up
  * again in its session; one between turns as it is, for its next turn. Only one this bridge can't
- * take up is stopped (its kind or version isn't one it speaks to, its agent ended, or what it said
+ * take up is stopped (its kind or version isn't one it speaks to, or what it said
  * since its turn began is no longer all there). `skip`: those a bridge handover attached already.
  */
 export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefined, skip: ReadonlySet<string> = new Set()): Promise<Adopted> {
@@ -206,7 +208,7 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
     // Antigravity's turn goes on only from its place in its transcript, which the bridge before
     // wrote as it made way: after a crash (none written), session repair ends that turn instead of
     // guessing what was shown.
-    if (!meta.provider || !adoptable(meta) || (meta.kind === "antigravity" && turns.some(([, note]) => note.state === undefined)) || record.exited) {
+    if (!meta.provider || !adoptable(meta) || (meta.kind === "antigravity" && turns.some(([, note]) => note.state === undefined)) || (record.exited && (!turns.length || meta.kind === "claude"))) {
       stopHolder(record)
       continue
     }

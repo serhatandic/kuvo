@@ -119,6 +119,8 @@ interface PendingPermission {
 }
 
 interface Live {
+  continueAfterExit?: boolean
+  resumeQueue?: { provider?: string; ready: Promise<void> }
   /** Each agent's conversation in this session, by provider. */
   threads: Map<string, Thread>
   doing: Doing
@@ -1160,7 +1162,7 @@ export class Sessions {
     if ((lastUser >= 0 && !record.messages.slice(lastUser).some((message) => message.type === "idle")) || openStep) {
       const last = record.messages[record.messages.length - 1]
       const at = last?.time.completed ?? last?.time.created ?? Date.now()
-      record.messages.push({ type: "idle", id: newID("msg"), time: { created: at }, outcome: "interrupted" })
+      record.messages.push({ type: "idle", id: newID("msg"), time: { created: at }, outcome: "interrupted", reason: "restart" })
       record.session.outcome = "interrupted"
       record.session.time.idle = at
       changed = true
@@ -2004,7 +2006,7 @@ export class Sessions {
     if (live.doing.kind === "idle" && !live.steering.size) live.go = next
     if (!taken) {
       if (handing.cancelled) this.cancelInput(id, input.id)
-      else if (next) this.advance(id, live)
+      else if (next || live.continueAfterExit) this.advance(id, live)
       else {
         this.setDelivery(id, input.id, "queue")
         this.relayHeld(live, input.id, false)
@@ -2021,6 +2023,7 @@ export class Sessions {
     }
     this.recordInput(record, input, order, nativeProvider)
     if (!nativeProvider) this.store.save(id, true)
+    if (live.continueAfterExit) this.advance(id, live)
   }
 
   private checkSteersSoon(id: string) {
@@ -2070,7 +2073,7 @@ export class Sessions {
       }
     }
     if (this.queue(record).some(input => input.steerReceipt)) this.checkSteersSoon(id)
-    if (live.doing.kind === "idle" && (retry || live.go)) this.advance(id, live, retry ? record.session.outcome : undefined)
+    if (live.doing.kind === "idle" && (retry || live.go || live.continueAfterExit)) this.advance(id, live, retry ? record.session.outcome : undefined)
   }
 
   /** Steer (it goes next, and now if nothing runs) or queue (it waits its turn) a waiting message. */
@@ -2114,6 +2117,8 @@ export class Sessions {
     this.store.save(id, true)
     emit("session.inbox.cancelled", { sessionID: id, inboxID: inputID }, record.session.location.directory)
     this.relayHeld(this.live.get(id), inputID, true)
+    const live = this.live.get(id)
+    if (live?.continueAfterExit) this.advance(id, live)
     return "removed"
   }
 
@@ -2138,6 +2143,7 @@ export class Sessions {
   private advance(id: string, live: Live, ended?: Outcome) {
     const record = this.store.get(id)
     if (live.doing.kind !== "idle" || !record) return
+    if (live.resumeQueue && live.resumeQueue.provider === record.session.model?.providerID) return
     const own = live.own
     live.own = undefined
     if (own) {
@@ -2149,8 +2155,15 @@ export class Sessions {
     // One being handed to the turn that just ended is settled by that (sent, or back here).
     const notHanded = (input: Input) => !input.steerReceipt && !live.steering.has(input.id)
     let index = -1
-    if (ended === "succeeded" || live.go) index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input))
-    if (ended === "succeeded" && index < 0) index = queue.findIndex(notHanded)
+    if (live.continueAfterExit) {
+      // An uncertain steer must be reconciled before the next message in line is sent.
+      if (queue[0] && !notHanded(queue[0])) return
+      if (queue.length) index = 0
+      live.continueAfterExit = false
+    } else {
+      if (ended === "succeeded" || live.go) index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input))
+      if (ended === "succeeded" && index < 0) index = queue.findIndex(notHanded)
+    }
     // (With nothing to start but one being handed, Send Now waits for it.)
     if (index >= 0 || !live.steering.size) live.go = false
     if (index < 0) return
@@ -2177,8 +2190,9 @@ export class Sessions {
    * idle, `session.idle` says so: a run's end comes before its files are kept, and a box's queue
    * goes on only once the session's free.
    */
-  private free(id: string, live: Live, ended?: Outcome) {
+  private free(id: string, live: Live, ended?: Outcome, agentExited = false) {
     live.doing = { kind: "idle" }
+    if (agentExited) live.continueAfterExit = true
     this.advance(id, live, ended)
     for (const waiting of live.waiting.splice(0)) waiting()
     if (live.doing.kind !== "idle") return
@@ -2344,10 +2358,11 @@ export class Sessions {
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
-    const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
+    const agentExited = !abort.signal.aborted && result.agentExited === true
+    const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     if (outcome !== "succeeded") this.dropCompaction(id, record, turn)
     const before = record.messages[record.messages.length - 1]?.id
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
     this.settleRelays(live, run)
     // Subagents still at work end with it, but those it sent off in the background, which go on
     // in their sessions (when it went through: stopped or failed, their agent stops them too, and
@@ -2365,7 +2380,8 @@ export class Sessions {
     // The agent that ended the turn knows how it ended: that's not news to hand it later.
     if (run.last && run.last.seen === before) run.last.seen = record.messages[record.messages.length - 1]?.id
     this.settleAsks(id, live)
-    await this.turnEnded(id, live, run, outcome, note)
+    if (agentExited && result.resumeQueue) this.waitToResumeQueue(id, live, result.resumeQueue)
+    await this.turnEnded(id, live, run, outcome, note, agentExited)
   }
 
   /**
@@ -2397,12 +2413,13 @@ export class Sessions {
       held.gate.release(held.thread)
       await held.gate.activated
     }
-    const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
+    const agentExited = !abort.signal.aborted && result.agentExited === true
+    const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
     this.transferred.delete(id)
     if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded) continue
       const subagent = live.runs.get(child)
@@ -2413,11 +2430,22 @@ export class Sessions {
     }
     if (run.last && run.last.seen === before) run.last.seen = record.messages[record.messages.length - 1]?.id
     this.settleAsks(id, live)
-    await this.turnEnded(id, live, run, outcome, note)
+    if (agentExited && result.resumeQueue) this.waitToResumeQueue(id, live, result.resumeQueue)
+    await this.turnEnded(id, live, run, outcome, note, agentExited)
+  }
+
+  private waitToResumeQueue(id: string, live: Live, ready: Promise<void>) {
+    const wait = { provider: this.store.get(id)?.session.model?.providerID, ready }
+    live.resumeQueue = wait
+    void ready.then(() => {
+      if (this.live.get(id) !== live || live.resumeQueue !== wait) return
+      live.resumeQueue = undefined
+      this.advance(id, live)
+    })
   }
 
   /** After a turn: what it changed is read for Undo (the session waits for that), and the session is free. */
-  private async turnEnded(id: string, live: Live, run: Run, outcome: Outcome, note: SnapshotNote | undefined) {
+  private async turnEnded(id: string, live: Live, run: Run, outcome: Outcome, note: SnapshotNote | undefined, agentExited: boolean) {
     const directory = this.store.get(id)?.session.location.directory ?? ""
     // Deleted meanwhile: nothing more for it.
     if (runOf(live.doing) !== run) return
@@ -2437,7 +2465,7 @@ export class Sessions {
       if (this.store.get(id)) this.store.save(id)
       if (live.doing !== keeping) return
     }
-    this.free(id, live, outcome)
+    this.free(id, live, outcome, agentExited)
   }
 
   /**
@@ -2469,18 +2497,20 @@ export class Sessions {
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
-    const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
+    const agentExited = !abort.signal.aborted && result.agentExited === true
+    const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     message.status = outcome === "succeeded" ? "completed" : "failed"
     message.time.completed = Date.now()
     emit(outcome === "succeeded" ? "session.compaction.ended" : "session.compaction.failed", { sessionID: id }, directory)
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
     // How the conversation ended stays as it was: a summary is no turn of its work.
     session.outcome = before
     this.store.save(id, true)
     this.settleAsks(id, live)
     // Deleted meanwhile: nothing more for it.
     if (runOf(live.doing) !== run) return
-    this.free(id, live, !held && outcome !== "failed" ? outcome : undefined)
+    if (agentExited && !held && result.resumeQueue) this.waitToResumeQueue(id, live, result.resumeQueue)
+    this.free(id, live, !held && outcome !== "failed" ? outcome : undefined, agentExited && !held)
   }
 
   /** A while after its last turn, a session's agents stop running: they go on where they left off next time. */
@@ -2749,7 +2779,7 @@ export class Sessions {
         if (signal.aborted) throw error
         last = { outcome: "failed", error: failure(error) }
       }
-      if (last.outcome !== "failed" || signal.aborted) return last
+      if (last.outcome !== "failed" || last.agentExited || signal.aborted) return last
       if (!last.limit) {
         // An error (its sign-in ended, its model is gone, it crashed): the next model carries on,
         // as at a limit, from what this one did, which the handover tells it (what was under way
@@ -2954,6 +2984,7 @@ export class Sessions {
       this.wake(id)
       return false
     }
+    if (live) live.continueAfterExit = false
     return (await this.stopSubagents(id)) || turnedAway
   }
 
