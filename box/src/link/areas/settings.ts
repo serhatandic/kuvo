@@ -1,3 +1,4 @@
+import { settingsDisk } from "../server/disk-worker";
 // This box's own settings, its MCP catalog and its integrations' keys (PROTOCOL.md, "Settings per
 // box").
 
@@ -6,8 +7,7 @@ import type { Body } from "../../shared/json";
 import type { Config } from "../../shared/routes/settings";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
-import { applyFrom, applyResult, recordConfigChange, saveChangeSet } from "./apply-from";
-import { applySettings } from "./apply";
+import { applyFrom, recordConfigChange } from "./apply-from";
 import { followSettings as followed } from "./approval";
 import { answerKeys } from "./box-keys";
 import { changeSettings, ownsSettings, readSettings } from "./config";
@@ -42,7 +42,7 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
   const method = request.method.toUpperCase();
   if (route.startsWith("kuvo/config/apply/")) {
     if (method !== "GET") return yield* json(405, {});
-    const { status, value } = applyResult(route.slice("kuvo/config/apply/".length));
+    const { status, value } = await settingsDisk.run("applyResult", route.slice("kuvo/config/apply/".length));
     if (isObject(value) && value.status === "applied") await followSettings(context);
     return yield* json(status, value);
   }
@@ -52,7 +52,7 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
   if (route === "kuvo/config/change-sets") {
     if (method !== "POST") return yield* json(405, {});
     try {
-      const { status, value } = saveChangeSet(parsed(request.body));
+      const { status, value } = await settingsDisk.run("saveChangeSet", parsed(request.body));
       return yield* json(status, value);
     } catch { return yield* json(503, { status: "unavailable" }); }
   }
@@ -71,7 +71,8 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
       return yield* (problem ? json(409, { message: `The engine's settings file can't be changed from here: ${problem}`, problem }) : json(200, settings! satisfies Config));
     }
     if (method === "PATCH") {
-      const changed = changeSettings((parsed(request.body) as Body<"changes">)?.changes, undefined, undefined, (context.configChanges || includeReceipts) ? recordConfigChange(changes) : undefined);
+      const { changed, receipts } = await settingsDisk.run("patchConfig", (parsed(request.body) as Body<"changes">)?.changes, Boolean(context.configChanges || includeReceipts));
+      changes.push(...receipts);
       if (changed.status === 200) await followSettings(context);
       return yield* withReceipts(changed);
     }
@@ -85,7 +86,7 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
       if (isObject(value) && value.status === "applied") await followSettings(context);
       return yield* json(status, value);
     }
-    const { status, ...answer } = applySettings(body);
+    const { status, ...answer } = await settingsDisk.run("applySettings", body);
     if (status === 200 && body?.dry !== true) await followSettings(context);
     return yield* json(status, answer);
   }
@@ -97,8 +98,9 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
   if (adding && method === "POST") {
     let id: string;
     try { id = decodeURIComponent(adding[1]); } catch { return yield* json(400, {}); }
-    return yield* withReceipts(addFromCatalog(id, undefined, undefined, undefined, undefined,
-      (context.configChanges || includeReceipts) ? recordConfigChange(changes, id) : undefined));
+    const { changed, receipts } = await settingsDisk.run("installConfigCatalog", id, Boolean(context.configChanges || includeReceipts));
+    changes.push(...receipts);
+    return yield* withReceipts(changed);
   }
   // Its integrations' keys, where it keeps them (a machine's files, this Mac's Keychain through
   // its app): a bot's own aren't among them.
@@ -107,4 +109,16 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
     return yield* json(status, value);
   }
   return yield* json(404, {});
+}
+
+export function patchConfig(changes: unknown, records: boolean) {
+  const receipts: string[] = [];
+  const changed = changeSettings(changes, undefined, undefined, records ? recordConfigChange(receipts) : undefined);
+  return { changed, receipts };
+}
+
+export function installConfigCatalog(id: string, records: boolean) {
+  const receipts: string[] = [];
+  const changed = addFromCatalog(id, undefined, undefined, undefined, undefined, records ? recordConfigChange(receipts, id) : undefined);
+  return { changed, receipts };
 }

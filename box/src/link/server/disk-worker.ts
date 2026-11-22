@@ -1,16 +1,32 @@
 // These filesystem operations have synchronous transactions and can take a long time.
 // Each domain has its own worker so an archive never holds up permission reads.
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+import type { applySettings } from "../areas/apply";
+import type { applyResult, confirmConfig, previewConfig, readConfigPlan, saveChangeSet } from "../areas/apply-from";
+import type { installConfigCatalog, patchConfig } from "../areas/settings";
+import type { listFolders, makeFolder } from "../areas/folders";
 import type { captureBackup } from "../backup/engine";
 import type { authenticate, openArchive } from "../backup/archive";
 import type { noWorkers, placeRecovered, sameFile } from "../backup/restore";
 import type { restoreProjects } from "../backup/projects";
 import type { restoreEngineDatabase } from "../backup/session-files";
 import type { mergeInsightsDatabase, prepareEngineBootstrap } from "../backup/sqlite";
+import type { scanSourceGeneration } from "../setup/removal-generation";
 import type { readPermissionSettings } from "../permissions";
 
 type Operations = {
+  applySettings: typeof applySettings;
+  applyResult: typeof applyResult;
+  confirmConfig: typeof confirmConfig;
+  previewConfig: typeof previewConfig;
+  readConfigPlan: typeof readConfigPlan;
+  saveChangeSet: typeof saveChangeSet;
+  installConfigCatalog: typeof installConfigCatalog;
+  patchConfig: typeof patchConfig;
+  listFolders: typeof listFolders;
+  makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
+  scanSourceGeneration: typeof scanSourceGeneration;
   authenticate: (file: string, key: string, context: Buffer) => ReturnType<typeof authenticate>;
   openArchive: typeof openArchive;
   noWorkers: typeof noWorkers;
@@ -35,6 +51,17 @@ if (isDiskWorker) {
     try {
       let value: unknown;
       switch (operation) {
+        case "applySettings": value = (await import("../areas/apply")).applySettings(...args); break;
+        case "applyResult": value = (await import("../areas/apply-from")).applyResult(...args); break;
+        case "confirmConfig": value = (await import("../areas/apply-from")).confirmConfig(...args); break;
+        case "previewConfig": value = (await import("../areas/apply-from")).previewConfig(...args); break;
+        case "readConfigPlan": value = (await import("../areas/apply-from")).readConfigPlan(...args); break;
+        case "saveChangeSet": value = (await import("../areas/apply-from")).saveChangeSet(...args); break;
+        case "installConfigCatalog": value = (await import("../areas/settings")).installConfigCatalog(...args); break;
+        case "patchConfig": value = (await import("../areas/settings")).patchConfig(...args); break;
+        case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
+        case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;
+        case "scanSourceGeneration": value = (await import("../setup/removal-generation")).scanSourceGeneration(...args); break;
         case "captureBackup": value = (await import("../backup/engine")).captureBackup(...args); break;
         case "authenticate": {
           const [file, key, context] = args;
@@ -106,3 +133,7 @@ class DiskWorker {
 
 export const backupDisk = new DiskWorker();
 export const permissionDisk = new DiskWorker();
+
+export const removalDisk = new DiskWorker();
+export const folderDisk = new DiskWorker();
+export const settingsDisk = new DiskWorker();

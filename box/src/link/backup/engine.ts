@@ -265,12 +265,12 @@ export function captureBackup(file: string, key: string, source: string, id: str
   return manifest;
 }
 
-type ExportBoundary = { attachmentHashes: ReadonlyMap<string, string>; checkSource: () => void };
+type ExportBoundary = { attachmentHashes: ReadonlyMap<string, string>; checkSource: () => void | Promise<void> };
 
 async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, source: string, key: string, id: string,
   now: number, projects: string[], scratch: string, insideUpdate = false, boundary?: ExportBoundary): Promise<RestorePoint> {
   const file = path.join(scratch, "archive");
-  boundary?.checkSource();
+  await boundary?.checkSource();
   const { version, setup } = await backupDisk.run("captureBackup", file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
   if (store.setup !== undefined && store.setup !== setup) throw new Error("Backup membership changed during capture.");
   await store.put(id, file);

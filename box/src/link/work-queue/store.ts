@@ -612,14 +612,15 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), optio
 }
 
 /** Take the existing exclusive writer lock without parking the resident loop. */
-export async function changeQueuesLater<T>(work: (book: Book) => T, now = Date.now(), options: Changes = {}): Promise<T> {
+export async function changeQueuesLater<T>(work: (book: Book) => T | Promise<T>, now = Date.now(), options: Changes = {}): Promise<T> {
   await fs.promises.mkdir(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
   const { value, changed } = await exclusiveWhile(QUEUES_LOCK, async () => {
     const change = queueChanges(work, now, options);
+    const value = await change.value;
     const changed = await change.book.saveLater(change.durable);
     for (const id of change.purged) await fs.promises.rm(path.join(FILES, id), { recursive: true, force: true });
-    return { value: change.value, changed };
+    return { value, changed };
   }, { wait: 3_000, busy: "Kuvo Code is updating its link. Try again in a moment." });
   if (changed) noteQueuesChanged();
   return value;

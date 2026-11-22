@@ -260,7 +260,7 @@ test.each([false, true])("2,293-character disjoint note edits merge across hando
     await placeSessionNotes(packed, [session], `move-${note}`);
   } finally { assign(local.peer.key); }
   changeQueues(book => handItem(book, book.find({ id })!, session, { user: true }, Date.now()));
-  handUpkeep(readLink());
+  await handUpkeep(readLink());
   for (let attempt = 0; attempt < 50 && allItems().find(item => item.id === id)?.owner !== session; attempt++) await Bun.sleep(10);
   expect(allItems().find(item => item.id === id)?.owner).toBe(session);
 
@@ -378,7 +378,7 @@ test("session notes follow ownership, queue notes follow handoff, and a revoked 
   await deliver("held-note", draft, false);
   expect(rejected.at(-1)).toEqual(prior);
   changeQueues(book => handItem(book, book.find({ id })!, session, { user: true }, Date.now()));
-  handUpkeep(readLink());
+  await handUpkeep(readLink());
   for (let attempt = 0; attempt < 50 && allItems().find(item => item.id === id)?.owner !== session; attempt++) await Bun.sleep(10);
   expect(allItems().find(item => item.id === id)?.owner).toBe(session);
   const queueDraft = { ref: queueRef, baseRevision: queue.revision, fields: { [field]: "Start. Moved." } };
