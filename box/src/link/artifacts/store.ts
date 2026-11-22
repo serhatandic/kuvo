@@ -53,7 +53,7 @@ export interface Version {
   turn?: { session: string; message?: string }
   group?: { id: string; message?: string }
   trigger?: Trigger
-  /** How: edit, write, apply_patch, shell, show_file, generate_image, download, mark_final, restore… */
+  /** How: edit, write, apply_patch, shell, read, show_file, generate_image, download, mark_final, restore… */
   via: string[]
   status: "added" | "modified" | "deleted"
   /** How many changes this turn made to it. */

@@ -10193,14 +10193,17 @@ a machine, `box/artifacts` in this Mac's app folder), and the box passes `kuvo/a
 the bridge as it answers (`503 {"message"}` while it isn't running).
 
 - **What fills it**: the tool calls of every conversation on the engine and the bridge (their
-  `metadata.files`, a write's path, the pictures a tool that makes them made), Kuvo Code's own
-  tools (`show_file` and `show_in_panel` mark it shown; `mark_final` pins it), and as each turn
-  ends, files it changed that no tool call named (a command's): in a git repository as `git
-  status` lists them, elsewhere by a walk of the folder; a bot's folder is also watched, so your
-  own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from its folder, its
-  `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from its `kuvo.seat`;
-  a chat's part, given to a bot's own conversation, is the chat's too (`trigger: "group"`); a
-  wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn. The engine's
+  `metadata.files`, a write's path, the pictures a tool that makes them made, and a picture a read
+  brought back, which shows in the conversation, `via: ["read"]`: a screenshot the agent took and
+  then looked at, Claude Code's `Read` of a picture; never anything else it only read), Kuvo
+  Code's own tools (`show_file`, of any file, and `show_in_panel` mark it shown; `mark_final` pins
+  it), and as each turn ends, files it changed that no tool call named (a command's): in a git
+  repository as `git status` lists them, elsewhere by a walk of the folder; a bot's folder is also
+  watched, so your own edits there count (`by: {kind: "outside"}`). A conversation's bot comes from
+  its folder, its `kuvo.bot` metadata or the bots' folders; a group chat seat's bot and chat from
+  its `kuvo.seat`; a chat's part, given to a bot's own conversation, is the chat's too (`trigger:
+  "group"`); a wake-up's turn is `trigger: "wake"`; a subagent's work counts as its parent's turn.
+  The engine's
   conversations run for the bridge's (`kuvo.engineFor`) aren't recorded twice. What the agent's
   browser downloads is that conversation's too (`kind: "download"`, `via: ["download"]`): the box's
   own browser, or this Mac's app for the browser in its panel, tells the bridge (`POST
@@ -10244,9 +10247,9 @@ An artifact:
 folder or the project it was made in), so a client offers Restore only then.
 
 A version: `{n, at, by: {kind: "agent|you|outside", session?, bot?, agent?}, turn?: {session,
-message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "show_file",
-"restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size, hash, kept,
-reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
+message?}, group?: {id}, trigger?: "group|wake", via: ["edit", "write", "shell", "read",
+"show_file", "restore", …], status: "added|modified|deleted", edits, lines?: {added, removed}, size,
+hash, kept, reason?: "secret|ignored|git|too-big|low-disk|cleared", patch?, before?, handoff?: {from: "bot_…"},
 restored?: <n>}`. `turn.message` is the message that started the turn; `handoff`, another bot in
 the same chat made the version before; `restored`, it put back version `n`.
 

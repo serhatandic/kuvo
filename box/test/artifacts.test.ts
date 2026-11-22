@@ -10,6 +10,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { unified } from "../src/agents/diff"
+import { kuvoTool } from "../src/agents/agents/claude"
+import { pictureData, pictureFile } from "../src/agents/pictures"
 import { EngineLink } from "../src/agents/engine"
 import { record } from "../src/link/artifacts/record"
 import { Recorder, type Event, type Source } from "../src/link/artifacts/recorder"
@@ -1207,13 +1209,6 @@ describe("as events really come", () => {
     expect(value.versions.map((version: any) => [version.n, version.turn?.message ?? null, version.via])).toEqual([[1, "msg_1", ["write"]], [2, "msg_2", ["write"]]])
   })
 
-  test("a picture an agent only looked at isn't something it made", async () => {
-    session("ses_code", project)
-    const picture = join(project, "screenshot.png")
-    writeFileSync(picture, Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]))
-    await hear(turn("ses_code", "m1", tool("ses_code", "c1", "read", { path: picture }, { content: [{ type: "file", uri: pathToFileURL(picture).href, mime: "image/png" }] })))
-    expect((await route("GET", "kuvo/artifacts?session=ses_code")).value.artifacts).toEqual([])
-  })
 
   test("no 'before' is made up from a file that changed again since the edit", async () => {
     session("ses_code", project)
@@ -1273,6 +1268,78 @@ describe("as events really come", () => {
       before = value.next
     } while (before)
     expect(seen.sort()).toEqual(names)
+  })
+})
+
+describe("a conversation's outputs", () => {
+  /** Claude Code's sessions, as the coding agents' bridge tells their events. */
+  const claude: Source = {
+    name: "bridge",
+    session: async (id) => (await link.request<any>("GET", `/api/session/${encodeURIComponent(id)}`))?.data,
+    agent: () => "claude",
+  }
+  /** A Claude Code tool call as the bridge tells it: its name and input as Kuvo Code knows them, and what came back. */
+  function claudeTool(sessionID: string, id: string, name: string, input: Record<string, unknown>, content: unknown[] = [{ type: "text", text: "" }], metadata: unknown = {}): Event[] {
+    const tool = kuvoTool(name, input)
+    return [
+      { type: "session.tool.input.started", data: { sessionID, assistantMessageID: "msg_a", id, name: tool.name } },
+      { type: "session.tool.called", data: { sessionID, assistantMessageID: "msg_a", id, input: tool.input } },
+      { type: "session.tool.success", data: { sessionID, assistantMessageID: "msg_a", id, content, metadata } },
+    ]
+  }
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+  const outputs = async (session: string) => (await route("GET", `kuvo/artifacts?session=${session}`)).value.artifacts
+
+  test("a screenshot a Claude Code session took, then read (which shows it in the conversation), is one of its outputs; a file it only read isn't", async () => {
+    session("ses_claude", project)
+    mkdirSync(join(project, "shots"))
+    const shot = join(project, "shots", "popover-dark.png")
+    const notes = join(project, "notes.md")
+    writeFileSync(notes, "# Notes\n")
+    const events = (path: string) => {
+      writeFileSync(shot, png)
+      return [
+        ...claudeTool("ses_claude", "t1", "Bash", { command: `screencapture ${path}` }),
+        // Claude Code's Read of a picture brings it back as data: the bridge shows it with the step.
+        ...claudeTool("ses_claude", "t2", "Read", { file_path: path }, [{ type: "text", text: "" }, pictureData(png.toString("base64"), "image/png")]),
+        ...claudeTool("ses_claude", "t3", "Read", { file_path: notes }, [{ type: "text", text: "1\t# Notes" }]),
+      ]
+    }
+    for (const event of turn("ses_claude", "m1", events(shot))) await recorder.heard(claude, event)
+    const listed = await outputs("ses_claude")
+    expect(listed.map((each: any) => [each.name, each.kind, each.latest.via])).toEqual([["popover-dark.png", "image", ["read"]]])
+    expect(listed[0].latest.by).toMatchObject({ kind: "agent", agent: "claude" })
+    // Its picture, as the popover opens it.
+    expect((await route("GET", `kuvo/artifacts/${listed[0].id}/versions/${listed[0].latest.n}?preview=1`)).status).toBe(200)
+  })
+
+  test("a picture a read brings back as its file (Codex's, the engine's) is the conversation's; the picture of a read that brought none back isn't", async () => {
+    session("ses_code", project)
+    const seen = join(project, "mock.png")
+    const unseen = join(project, "logo.png")
+    writeFileSync(seen, png)
+    writeFileSync(unseen, png.subarray(0, 9))
+    await hear(turn("ses_code", "m1", [
+      ...tool("ses_code", "c1", "read", { path: seen }, { content: [pictureFile(seen)] }),
+      ...tool("ses_code", "c2", "read", { filePath: unseen }, { content: [{ type: "text", text: "It's a binary file." }] }),
+    ]))
+    expect((await outputs("ses_code")).map((each: any) => each.name)).toEqual(["mock.png"])
+  })
+
+  test("what show_file puts in a Claude Code conversation is one of its outputs, a picture or any other file", async () => {
+    session("ses_claude", project)
+    const chart = join(project, "chart.png")
+    const report = join(project, "report.pdf")
+    writeFileSync(chart, png)
+    writeFileSync(report, "%PDF-1.4\n")
+    const events = [
+      ...claudeTool("ses_claude", "t1", "mcp__kuvo-browser__show_file", { path: chart, caption: "This week" }, [{ type: "text", text: "Shown." }]),
+      ...claudeTool("ses_claude", "t2", "mcp__kuvo-browser__show_file", { path: report }, [{ type: "text", text: "Shown." }]),
+    ]
+    for (const event of turn("ses_claude", "m1", events)) await recorder.heard(claude, event)
+    const listed = await outputs("ses_claude")
+    expect(listed.map((each: any) => [each.name, each.kind]).sort()).toEqual([["chart.png", "image"], ["report.pdf", "document"]])
+    for (const each of listed) expect(each.shown).toBeNumber()
   })
 })
 
