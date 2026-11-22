@@ -16,6 +16,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - **Show more** in a long project now adds a page at a time: 10 more, then 20, then 40. Sessions that are working or waiting on you come first, then the most recent.
 
 - Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
+- With only one computer, you can change setup-wide settings (personalities, your time zone, labels) while Kuvo's relay can't be reached. They no longer wait for "the current owner".
 - A conversation of any age on another of your computers is found from every computer, so an agent's tools, the Work Queue and a client still pointed at the old computer reach it there.
 - You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.
 - Insights is rebuilt as one calm page: the period's cost, tokens and cache rate with the change from the period before, one trend line, and a ranked list by bot, provider, model or computer. A bot's row includes every session it oversees, subagents included, and opens to show them. Click any row to narrow the whole page to it, and the crumbs at the top take you back. Up to three sessions that stand out are listed with the reason. Each model now shows under one name.

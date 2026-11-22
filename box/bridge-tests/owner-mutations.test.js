@@ -130,6 +130,23 @@ test("a holder retry returns its original setup receipt after a later save", () 
   assert.equal((await save({ ...body, value: { ...body.value, imported: false } })).status, 409);
 `));
 
+test("a computer on its own saves setup-wide settings without the relay", () => isolated(`
+  const save = async (operation, zone) => {
+    const revision = (await ask("GET", "kuvo/data/edits?kind=setupTimeZone", {})).value.revision;
+    return ask("POST", "kuvo/data/edits", { ref: { kind: "setupTimeZone" }, operation, baseRevision: revision, fields: { zone } });
+  };
+  // No relay lease was ever heard. Alone in its setup, nothing else could take over.
+  const together = readLink();
+  writeLink({ ...together, shared: { ...together.shared, membershipAndAccess: { sequence: 2, value: { left: [], boxes: [peer(own)] } } } });
+  const alone = await save("alone-zone", "Europe/Istanbul");
+  assert.equal(alone.status, 200);
+  assert.equal(alone.value.status, "committed");
+  // With another computer, it waits for the relay as before.
+  writeLink(together);
+  const waiting = await save("together-zone", "Europe/Paris");
+  assert.equal(waiting.value.status, "pending");
+`));
+
 test("an older conversation on another computer is found there, not run here", () => isolated(`
   import { takeAgents } from ${url("peers/directory")};
   import { LIST_FILE } from ${url("lists/sessions")};
