@@ -1431,6 +1431,9 @@ class EngineLink {
   url;
   authorization;
   generation = 0;
+  pid;
+  replacement;
+  stream;
   listeners = new Map;
   watchers = new Set;
   children = new Map;
@@ -1445,21 +1448,36 @@ class EngineLink {
       return Promise.resolve();
     return new Promise((resolve) => this.waiting.push(resolve));
   }
-  configure(url, password) {
+  processEnded() {
+    this.replacement ??= Promise.withResolvers();
+    for (const set of this.listeners.values())
+      for (const listener of set)
+        listener.exited?.(this.replacement.promise);
+  }
+  configure(url, password, pid) {
     const authorization = password ? "Basic " + Buffer.from(`opencode:${password}`).toString("base64") : undefined;
-    if (url === this.url && authorization === this.authorization)
+    const address = url?.replace(/\/$/, "");
+    const processID = pid !== undefined && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+    if (address === this.url && authorization === this.authorization && processID === this.pid)
       return;
-    this.url = url?.replace(/\/$/, "");
+    const replaced = this.url !== undefined && (this.pid !== undefined && processID !== undefined ? this.pid !== processID : this.url !== address);
+    this.pid = processID;
+    this.url = address;
     this.authorization = authorization;
     this.names.clear();
     this.catalog = undefined;
     this.reads.clear();
     const generation = ++this.generation;
+    this.stream?.abort();
+    this.stream = new AbortController;
     if (this.url)
-      this.feed(generation);
-    for (const set of this.listeners.values())
-      for (const listener of set)
-        listener.reconnected();
+      this.feed(generation, this.stream.signal);
+    if (replaced)
+      this.processEnded();
+    else
+      for (const set of this.listeners.values())
+        for (const listener of set)
+          listener.reconnected();
     if (this.url)
       for (const resolve of this.waiting.splice(0))
         resolve();
@@ -1665,13 +1683,19 @@ ${directory}`;
     for (const listener of this.listeners.get(sessionID) ?? [])
       listener.event(event);
   }
-  async feed(generation) {
+  async feed(generation, signal) {
     let first = true;
     while (generation === this.generation && this.url) {
       try {
-        const response = await fetch(this.url + "/api/event", { headers: { Authorization: this.authorization ?? "", Accept: "text/event-stream" } });
+        const response = await fetch(this.url + "/api/event", { headers: { Authorization: this.authorization ?? "", Accept: "text/event-stream" }, signal });
         if (!response.ok || !response.body)
           throw new Error(`feed ${response.status}`);
+        if (generation !== this.generation) {
+          await response.body.cancel().catch(() => {});
+          return;
+        }
+        this.replacement?.resolve();
+        this.replacement = undefined;
         if (!first)
           for (const set of this.listeners.values())
             for (const listener of set)
@@ -1682,7 +1706,7 @@ ${directory}`;
         let buffer = "";
         while (generation === this.generation) {
           const read = await Promise.race([reader.read(), new Promise((done) => setTimeout(() => done("quiet"), 45000))]);
-          if (read === "quiet" || read.done)
+          if (signal.aborted || read === "quiet" || read.done)
             break;
           buffer += decoder.decode(read.value, { stream: true });
           let end;
@@ -1702,9 +1726,23 @@ ${directory}`;
           }
         }
         await reader.cancel().catch(() => {});
-      } catch {}
+      } catch (error) {
+        const failure = error;
+        const refused = (code) => code === "ECONNREFUSED" || code === "ConnectionRefused";
+        if (!signal.aborted && this.pid === undefined && (refused(failure?.code) || refused(failure?.cause?.code)))
+          this.processEnded();
+      }
       if (generation !== this.generation)
         return;
+      if (this.pid !== undefined) {
+        try {
+          process.kill(this.pid, 0);
+        } catch (error) {
+          if (error.code === "ESRCH") {
+            this.processEnded();
+          }
+        }
+      }
       first = false;
       await Bun.sleep(1000);
     }
@@ -1937,6 +1975,8 @@ class EngineThread {
       shells.set(tool, setInterval(read, 1000));
     };
     const onEvent = (event) => {
+      if (done)
+        return;
       const data = event.data;
       const ownSession = data.sessionID === id;
       switch (event.type) {
@@ -1950,7 +1990,7 @@ class EngineThread {
       }
       if (!ownSession)
         return;
-      if (input.compact && !event.type.startsWith("session.execution."))
+      if (input.compact && !event.type.startsWith("session.execution.") && event.type !== "session.idle")
         return;
       switch (event.type) {
         case "session.inbox.delivered":
@@ -2024,9 +2064,14 @@ class EngineThread {
           }
           return;
         }
+        case "session.idle":
+          onReconnected();
+          return;
         case "session.execution.succeeded":
           if (delivered)
             finish({ outcome: "succeeded" });
+          else
+            onReconnected();
           return;
         case "session.execution.interrupted":
           if (delivered || limit)
@@ -2045,34 +2090,47 @@ class EngineThread {
       const active = await this.link.request("GET", "/api/session/active").catch(() => {
         return;
       });
-      if (active?.data?.[id])
+      if (!active || (Array.isArray(active.data) ? active.data.includes(id) : active.data?.[id]))
         return;
       const session = await this.link.request("GET", path).catch(() => {
         return;
       });
-      const outcome = session?.data?.outcome;
+      if (!session?.data)
+        return;
+      const outcome = session.data.outcome;
       const idle = Number(session?.data?.time?.idle ?? 0);
-      finish(outcome === "succeeded" && idle >= sentAt ? { outcome } : { outcome: "failed", error: { type: "engine", message: "The engine restarted during this message." } });
+      if (idle < sentAt)
+        return;
+      if (outcome === "succeeded" || outcome === "interrupted")
+        finish({ outcome });
+      else if (outcome === "failed")
+        finish({ outcome, error: { type: "engine", message: "The engine stopped with an error." } });
     };
-    const unlisten = this.link.listen(id, { event: onEvent, reconnected: () => void onReconnected() });
+    const unlisten = this.link.listen(id, {
+      event: onEvent,
+      reconnected: () => void onReconnected(),
+      exited: (resumeQueue) => finish({ outcome: "interrupted", agentExited: true, taken: delivered, resumeQueue })
+    });
     const abort = () => void interrupt();
     hooks.signal.addEventListener("abort", abort);
     try {
-      if (input.compact) {
+      if (input.compact)
         delivered = true;
-        await this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" });
-      } else
-        await this.link.request("POST", `${path}/prompt`, {
-          id: inputID,
-          text: input.text,
-          files: input.files.length ? input.files.map((file) => ({ uri: file.uri, name: file.name })) : undefined,
-          delivery: "steer"
-        });
-      if (hooks.signal.aborted)
-        interrupt();
-      return await settled;
+      const submitted = input.compact ? this.link.request("POST", `${path}/compact`, { id: inputID, delivery: "steer" }) : this.link.request("POST", `${path}/prompt`, {
+        id: inputID,
+        text: input.text,
+        files: input.files.length ? input.files.map((file) => ({ uri: file.uri, name: file.name })) : undefined,
+        delivery: "steer"
+      });
+      return await Promise.race([settled, submitted.then(() => {
+        if (hooks.signal.aborted)
+          interrupt();
+        else if (!delivered && !done)
+          onReconnected();
+        return settled;
+      })]);
     } catch (error) {
-      return { outcome: "failed", error: failure(error, "engine") };
+      return done ? await settled : { outcome: "failed", error: failure(error, "engine") };
     } finally {
       hooks.signal.removeEventListener("abort", abort);
       unlisten();
@@ -4845,10 +4903,11 @@ const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
 const { KUVO_TOOL_RELAY: url, KUVO_TOOL_RELAY_KEY: key, KUVO_TOOL_TIMEOUT: timeout } = process.env;
 const calls = new Map();
+let session;
 const write = message => process.stdout.write(JSON.stringify(message) + "\n");
 const send = (body, signal) => fetch(url, {
   method: "POST",
-  headers: { "Content-Type": "application/json", Authorization: "Bearer " + key, "X-Kuvo-Tool-Forwarder": "1" },
+  headers: { "Content-Type": "application/json", Authorization: key, "X-Kuvo-Tool-Forwarder": "1", ...(session ? { "Mcp-Session-Id": session } : {}) },
   body, signal, redirect: "error",
 });
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -4857,6 +4916,10 @@ input.on("line", async line => {
   try { message = JSON.parse(line); }
   catch { return write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
   if (message.id == null) {
+    if (message.method === "notifications/initialized") {
+      const response = await send(line, AbortSignal.timeout(5000)).catch(() => null);
+      await response?.body?.cancel();
+    }
     if (message.method === "notifications/cancelled") {
       const call = calls.get(message.params?.requestId);
       if (call) {
@@ -4887,6 +4950,7 @@ input.on("line", async line => {
             throw new Error("Kuvo Code's tools said HTTP " + response.status + ".");
           }
           const answer = await response.json();
+          if (message.method === "initialize") session = response.headers.get("mcp-session-id");
           if (!answer.error?.data?.kuvoRelayRestart || !replay) return write(answer);
         } else {
           await response.body?.cancel();
@@ -5301,7 +5365,7 @@ function relayedTools(sessionID, holder) {
 }
 function forwardedTools(sessionID, holder) {
   const tools = relayedTools(sessionID, holder);
-  if (!tools || !onMachine)
+  if (!tools || !onMachine && !compatibilityRun)
     return tools;
   return {
     kind: "stdio",
@@ -5318,6 +5382,13 @@ function forwardedTools(sessionID, holder) {
       KUVO_TOOL_TIMEOUT: String(tools.timeout)
     }
   };
+}
+function agentToolsFor(sessionID, holder, fenced) {
+  return fenced || compatibilityRun ? forwardedTools(sessionID, holder) : kuvoTools(sessionID);
+}
+function setToolRelayRun(folder) {
+  if (!onMachine)
+    compatibilityRun = folder;
 }
 function relayedServers(sessionID, holder, directory, found, options = {}) {
   if (options.brief)
@@ -5427,11 +5498,16 @@ async function answers(entry, sessionID, directory) {
     return false;
   }
 }
+function relayRecord() {
+  const run = compatibilityRun ?? (machineHome && join10(machineHome, "run"));
+  return run && join10(run, "agents", "relay.json");
+}
 function keepRelay() {
-  if (!relayRecord || !server2)
+  const record = relayRecord();
+  if (!record || !server2)
     return;
   try {
-    writeSecret(relayRecord, JSON.stringify({ port: server2.port, keys: Object.fromEntries(keys) }));
+    writeSecret(record, JSON.stringify({ port: server2.port, keys: Object.fromEntries(keys) }));
   } catch (error) {
     console.error("The tools relay's record couldn't be written:", error?.message);
   }
@@ -5439,7 +5515,8 @@ function keepRelay() {
 function listen() {
   let kept;
   try {
-    kept = relayRecord ? JSON.parse(readFileSync9(relayRecord, "utf8")) : undefined;
+    const record = relayRecord();
+    kept = record ? JSON.parse(readFileSync9(record, "utf8")) : undefined;
   } catch {}
   for (const [sessionID, key] of Object.entries(kept?.keys ?? {})) {
     if (typeof key !== "string" || keys.has(sessionID))
@@ -5524,6 +5601,11 @@ async function answer2(request) {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
     }
   }
+  if (tools.kind === "http" && compatibilityRun && body?.method === "tools/call") {
+    const fromBox = await compatibilityCall(body, sessionID, compatibilityRun, request.signal, tools.timeout);
+    if (fromBox)
+      return fromBox;
+  }
   if (tools.kind === "http")
     return forward(request, tools.url, tools.headers, tools.timeout, body === undefined ? undefined : JSON.stringify(body), "Kuvo Code's tools didn't answer.");
   if (request.method !== "POST")
@@ -5538,6 +5620,42 @@ async function answer2(request) {
   const starts = messages.some((message) => message?.method === "initialize");
   const connection = starts ? randomBytes3(12).toString("hex") : request.headers.get("mcp-session-id") ?? "";
   return sendAll(program, body, tools.timeout, connection, starts);
+}
+async function compatibilityCall(message, session, run, cancelled, timeout) {
+  if (message.id == null)
+    return;
+  const name = message.params?.name;
+  if (typeof name !== "string")
+    return;
+  const route = boxToolNames.has(name) ? "agent-tools" : name.startsWith("queue_") ? "work-queue/tools" : name.startsWith("vault_") ? "vault/tools" : name === "sandbox_ask" ? "sandbox/tools" : undefined;
+  if (!route)
+    return;
+  const retry = () => new Response(null, { status: 503 });
+  try {
+    const { port, password } = JSON.parse(readFileSync9(join10(run, "tool-http.json"), "utf8"));
+    if (!Number.isInteger(port) || typeof password !== "string")
+      return retry();
+    const response = await fetch(`http://127.0.0.1:${port}/kuvo/${route}`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        Authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64"),
+        "Content-Type": "application/json",
+        "X-Kuvo-From": "app"
+      },
+      body: JSON.stringify({ name, arguments: message.params?.arguments, session, operation: message.params?._meta?.["kuvo.operation"] }),
+      signal: AbortSignal.any([cancelled, AbortSignal.timeout(timeout)])
+    });
+    if (response.status === 401 || response.status === 502 || response.status === 503) {
+      await response.body?.cancel();
+      return retry();
+    }
+    const answer = await response.json();
+    const isError = !response.ok || answer.isError === true;
+    return Response.json({ jsonrpc: "2.0", id: message.id, result: { isError, content: [{ type: "text", text: answer.text ?? answer.message ?? "Kuvo Code could not answer this tool call." }] } });
+  } catch {
+    return retry();
+  }
 }
 async function forward(request, url, headers, timeout, body, failed) {
   const sent = { ...headers, Accept: request.headers.get("accept") ?? "application/json, text/event-stream" };
@@ -6044,13 +6162,13 @@ class Program {
       then();
   }
 }
-var server2, keys, sessionsByKey, programs, holders, served, running, standIns, STAND_IN = "unavailable-", refusals, setRight, checks, checkedLater, brief2, relayTiming, IDLE, usesToolRelay = (sessionID) => keys.has(sessionID), setupOf = (server) => JSON.stringify(server.kind === "remote" ? [server.url, server.headers] : [server.command, server.env, server.cwd]), relayRecord, relayPort = () => {
+var server2, keys, sessionsByKey, programs, holders, served, running, standIns, STAND_IN = "unavailable-", refusals, setRight, checks, checkedLater, brief2, relayTiming, IDLE, usesToolRelay = (sessionID) => keys.has(sessionID), compatibilityRun, setupOf = (server) => JSON.stringify(server.kind === "remote" ? [server.url, server.headers] : [server.command, server.env, server.cwd]), relayPort = () => {
   if (!server2) {
     server2 = listen();
     keepRelay();
   }
   return server2.port;
-}, refused = (status) => status === 401 || status === 403, failing = (status) => refused(status) || status >= 300 && status < 400 || status >= 500, jsonOf = (text) => {
+}, boxToolNames, refused = (status) => status === 401 || status === 403, failing = (status) => refused(status) || status >= 300 && status < 400 || status >= 500, jsonOf = (text) => {
   try {
     return JSON.parse(text);
   } catch {
@@ -6083,7 +6201,31 @@ var init_toolrelay = __esm(() => {
       if (Date.now() - program.used > IDLE)
         program.stop();
   }, 5 * 60000).unref();
-  relayRecord = machineHome ? join10(machineHome, "run", "agents", "relay.json") : undefined;
+  boxToolNames = new Set([
+    "send_message",
+    "read_conversation",
+    "list_agents",
+    "start_session",
+    "list_sessions",
+    "stop_session",
+    "compact_session",
+    "answer_ask",
+    "list_models",
+    "make_project",
+    "list_projects",
+    "propose_goal",
+    "goal_progress",
+    "may_spend",
+    "finish_goal",
+    "notify_user",
+    "plan_limits",
+    "use_limit_reset",
+    "schedule_wake_up",
+    "watch_for_change",
+    "list_wake_ups",
+    "cancel_wake_up",
+    "set_job"
+  ]);
 });
 
 // box/src/agents/diff.ts
@@ -7231,6 +7373,8 @@ function releaseHolders() {
 function heldSessions() {
   const found = new Set;
   for (const held of live) {
+    if (!held.isOpen)
+      continue;
     if (typeof held.meta.session === "string")
       found.add(held.meta.session);
     for (const note of Object.values(held.meta.turns ?? {}))
@@ -7307,7 +7451,7 @@ class Held {
       }
       if (attached && !this.fenced && !this.heardEnd && !this.letGo)
         this.stopHolder("socket lost");
-      exit({ code: null, signal: this.fenced ? "fenced" : "lost" });
+      exit({ code: null, signal: this.fenced ? "fenced" : this.letGo ? "detached" : "lost" });
       close();
     });
     socket.on("data", (chunk) => {
@@ -7413,9 +7557,6 @@ class Held {
 `);
     return true;
   }
-  get isProvisional() {
-    return this.provisional;
-  }
   own() {
     this.provisional = false;
     if (this.heardEnd)
@@ -7423,6 +7564,9 @@ class Held {
   }
   get isOpen() {
     return !this.ended && !this.fenced;
+  }
+  get relinquished() {
+    return this.fenced || this.letGo;
   }
   write(line) {
     if (this.fenced)
@@ -7557,7 +7701,7 @@ function heldProcess(holding, fallback) {
     each.exited.then((exit) => {
       stdout.end();
       process_.exitCode = exit.code;
-      process_.signalCode = exit.signal && exit.signal !== "fenced" && exit.signal !== "lost" ? exit.signal : null;
+      process_.signalCode = exit.signal && exit.signal !== "fenced" && exit.signal !== "lost" && exit.signal !== "detached" ? exit.signal : null;
       events.emit("exit", exit.code, process_.signalCode);
       events.emit("close", exit.code, process_.signalCode);
     });
@@ -7723,7 +7867,7 @@ async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefi
       continue;
     const meta = record.meta;
     const turns = Object.entries(meta.turns ?? {});
-    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" && turns.some(([, note]) => note.state === undefined) || record.exited) {
+    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" && turns.some(([, note]) => note.state === undefined) || record.exited && (!turns.length || meta.kind === "claude")) {
       stopHolder(record);
       continue;
     }
@@ -7809,6 +7953,7 @@ class RPC {
   child;
   held;
   closed = false;
+  agentExited = false;
   stderr = "";
   onNotification = () => {};
   onRequest = async (method) => {
@@ -7824,8 +7969,9 @@ class RPC {
     this.filter = options.filter;
     const ended = (code, signal) => {
       this.closed = true;
+      this.agentExited = signal !== "fenced" && signal !== "detached";
       for (const { reject } of this.pending.values())
-        reject(new Error(this.stderr.trim().split(`
+        reject(new RPCClosed(this.stderr.trim().split(`
 `).slice(-3).join(`
 `) || `The agent stopped (exit code ${code}).`));
       this.pending.clear();
@@ -7846,16 +7992,23 @@ class RPC {
         read();
         started.resolve();
       };
-      const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited;
-      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1), exit.signal));
+      const exit = started.promise.then(() => held.exited);
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" || exit.signal === "detached" ? -1 : 1), exit.signal));
       this.errorsRead = this.exited.then(() => {});
       return;
     }
     const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
     const child = this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    this.exited = child.exited.then((code) => ended(code, child.signalCode));
-    this.read(child);
+    const output = this.read(child).catch(() => {});
     this.errorsRead = this.readErrors(child).catch(() => {});
+    this.exited = child.exited.then(async (code) => {
+      let timer;
+      await Promise.race([Promise.all([output, this.errorsRead]), new Promise((resolve) => {
+        timer = setTimeout(resolve, 500);
+      })]);
+      clearTimeout(timer);
+      return ended(code, child.signalCode);
+    });
   }
   begin;
   lineSeq = 0;
@@ -7901,6 +8054,8 @@ class RPC {
     }
   }
   receive(line) {
+    if (this.closed)
+      return;
     let message;
     try {
       message = JSON.parse(line);
@@ -7945,7 +8100,7 @@ class RPC {
   }
   request(method, params, timeout) {
     if (this.closed)
-      return Promise.reject(new Error(this.stderr.trim().split(`
+      return Promise.reject(new RPCClosed(this.stderr.trim().split(`
 `).slice(-3).join(`
 `) || "The agent isn't running."));
     const id = this.next++;
@@ -7976,9 +8131,11 @@ class RPC {
     this.child.kill();
   }
 }
-var RPCError;
+var RPCClosed, RPCError;
 var init_rpc = __esm(() => {
   init_agent();
+  RPCClosed = class RPCClosed extends Error {
+  };
   RPCError = class RPCError extends Error {
     code;
     data;
@@ -8124,6 +8281,7 @@ class AcpThread {
       if (holdIn && !whole)
         this.startingOutside--;
     }
+    let fatalError = false;
     const rpc = new RPC(held ?? argv, {
       cwd,
       env,
@@ -8141,6 +8299,7 @@ class AcpThread {
         }
         const fatal = flavor.fatalLine?.(line);
         if (fatal) {
+          fatalError = true;
           setTimeout(() => {
             rpc.stderr = fatal;
             rpc.kill();
@@ -8177,7 +8336,7 @@ class AcpThread {
       }
       this.end(active, "failed", rpc.stderr.trim().split(`
 `).slice(-3).join(`
-`) || `${this.name} stopped.`);
+`) || `${this.name} stopped.`, undefined, rpc.agentExited && !asksSignIn && !fatalError);
     };
     this.rpc = rpc;
     this.spawnedWith = startedWith;
@@ -8271,7 +8430,7 @@ class AcpThread {
       homes: whole.homes(started),
       state: whole.state,
       kept: whole.kept,
-      read: [...onMachine ? [process.execPath] : [], ...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
+      read: [process.execPath, ...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -8284,7 +8443,7 @@ class AcpThread {
     const http = Boolean(init?.agentCapabilities?.mcpCapabilities?.http);
     const listed = (headers) => Object.entries(headers).map(([name, value]) => ({ name, value }));
     const servers = [];
-    const tools = this.fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, this.fenced);
     if (tools && (tools.kind === "stdio" || http)) {
       loadKuvoTools();
       if (tools.kind === "stdio")
@@ -8360,6 +8519,8 @@ class AcpThread {
       this.active = active;
       turn.startStep();
       active.follower = flavor.follow?.(taken.thread, turn, hooks, taken.state);
+      if (taken.note.sentAt !== undefined)
+        this.watchPrompt(active, taken.note.sentAt);
       taken.gate.onOpen(() => rpc.start());
       taken.gate.ready(taken.thread);
     });
@@ -8383,7 +8544,7 @@ class AcpThread {
       if (active && !active.ended && active.rpc === rpc)
         this.end(active, "failed", rpc.stderr.trim().split(`
 `).slice(-3).join(`
-`) || `${this.name} stopped.`);
+`) || `${this.name} stopped.`, undefined, rpc.agentExited);
     };
     this.rpc = rpc;
     this.fenced = meta.fenced === true;
@@ -8480,13 +8641,17 @@ ${text}`;
   }
   prompt(active, sessionId, prompt) {
     const number = ++active.prompt;
+    const sentAt = Date.now();
+    active.said = undefined;
+    active.saidLength = 0;
+    this.watchPrompt(active);
     const meta = this.flavor.promptMeta?.();
     active.promptID = typeof meta?.promptId === "string" ? meta.promptId : undefined;
     const sentOn = active.rpc;
     const held = sentOn.holder;
     if (held && !active.input?.compact) {
       const noted = held.meta.turns?.[sessionId];
-      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID });
+      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID, sentAt });
     }
     active.rpc.request("session/prompt", { sessionId, prompt, ...meta ? { _meta: meta } : {} }).then((result) => {
       if (number !== active.prompt)
@@ -8500,8 +8665,19 @@ ${text}`;
       if (number !== active.prompt || active.replaced === sentOn)
         return;
       const limited = error instanceof RPCError && error.code === -32003 || limitWords.test(errorText(error));
-      this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined);
+      this.end(active, "failed", limited ? `You've reached your ${this.name} usage limit for now.` : errorText(error), limited ? this.limit(errorText(error)) : undefined, error instanceof RPCClosed && sentOn.agentExited);
     });
+  }
+  watchPrompt(active, sentAt) {
+    const rpc = active.rpc;
+    const prompt = active.prompt;
+    active.follower?.watchPrompt?.(() => active.said && active.saidLength ? { tail: active.said, length: active.saidLength } : undefined, () => {
+      if (this.active !== active || active.rpc !== rpc || active.prompt !== prompt || active.hooks.signal.aborted)
+        return;
+      this.stale = rpc;
+      active.answered = true;
+      this.end(active, "succeeded");
+    }, sentAt);
   }
   carryOn(active) {
     const refused = active.refused;
@@ -8516,7 +8692,7 @@ ${text}`;
     const resetsAt = resetsIn(message?.replace(/[#*_>`]/g, " ").replace(/\s+/g, " "));
     return { scope: this.flavor.limitScope ?? "provider", message, ...resetsAt ? { resetsAt } : {} };
   }
-  end(active, outcome, message, limit) {
+  end(active, outcome, message, limit, agentExited = false) {
     if (active.ended)
       return;
     if (outcome === "succeeded" && !active.own && !active.tools.size && active.said && this.flavor.limitReply?.(active.said)) {
@@ -8565,7 +8741,7 @@ ${text}`;
         taken: active.heard || active.answered
       });
     } else
-      active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered } : { outcome });
+      active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered, agentExited } : { outcome });
   }
   context() {
     const active = this.active;
@@ -8656,11 +8832,14 @@ ${text}`;
     active.heard = true;
     const turn = active.turn;
     switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(contentText(update.content)).slice(-2000);
+      case "agent_message_chunk": {
+        const text = contentText(update.content);
+        active.saidLength = (active.toolsSinceText ? 0 : active.saidLength ?? 0) + text.length;
+        active.said = ((active.toolsSinceText ? "" : active.said) ?? "").concat(text).slice(-2000);
         this.words(active);
         this.content(active, turn, update.content, "text");
         return;
+      }
       case "agent_thought_chunk":
         this.words(active);
         this.content(active, turn, update.content, "reasoning");
@@ -9285,7 +9464,6 @@ var init_acp = __esm(() => {
   init_events();
   init_rpc();
   init_fence();
-  init_machine();
   init_kuvotools();
   init_servers();
   init_toolrelay();
@@ -9611,6 +9789,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
         db = open(path)
         db.exec("PRAGMA busy_timeout=2000")
         db.exec("BEGIN")
+        if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'").get()) continue
         const steps = db.query("SELECT 1 FROM pragma_table_info('steps') WHERE name='metadata'").values().length > 0
         const step = steps ? ", (SELECT CASE WHEN length(metadata) <= 1048576 THEN metadata ELSE NULL END FROM steps WHERE idx = g.idx) AS step, (SELECT length(metadata) FROM steps WHERE idx = g.idx) AS stepLength" : ", NULL AS step, NULL AS stepLength"
         const query = db.query("SELECT idx, CASE WHEN length(data) <= 1048576 THEN data ELSE NULL END AS data" + step + " FROM gen_metadata g WHERE idx > ? AND data IS NOT NULL ORDER BY idx LIMIT 8")
@@ -10817,6 +10996,7 @@ class AntigravityFollower {
   turn;
   hooks;
   usedSubagents = false;
+  prompt;
   constructor(brain, sessionId, every = 1000, restored) {
     this.brain = brain;
     this.sessionId = sessionId;
@@ -10839,7 +11019,12 @@ class AntigravityFollower {
       return false;
     return [...this.seen];
   }
+  watchPrompt(answer, finish, sentAt) {
+    const from = sentAt === undefined ? this.steps(this.sessionId).reduce((last, step) => Math.max(last, step.step_index), -1) : -1;
+    this.prompt = { from, sentAt, answer, finish };
+  }
   stop() {
+    this.prompt = undefined;
     clearInterval(this.timer);
     this.timer = undefined;
     this.read();
@@ -10847,9 +11032,9 @@ class AntigravityFollower {
       if (!child.ended && this.isDone(child))
         this.end(child);
   }
-  steps(conversation) {
+  steps(conversation, full = false) {
     try {
-      return readFileSync17(join17(this.brain, conversation, ".system_generated", "logs", "transcript.jsonl"), "utf8").split(`
+      return readFileSync17(join17(this.brain, conversation, ".system_generated", "logs", full ? "transcript_full.jsonl" : "transcript.jsonl"), "utf8").split(`
 `).flatMap((line) => {
         try {
           const step = JSON.parse(line);
@@ -10865,7 +11050,8 @@ class AntigravityFollower {
   read() {
     if (!this.turn || this.turn.isEnded)
       return;
-    for (const step of this.steps(this.sessionId)) {
+    const steps = this.steps(this.sessionId);
+    for (const step of steps) {
       if (this.seen.has(step.step_index) || step.status === "RUNNING")
         continue;
       this.seen.add(step.step_index);
@@ -10881,6 +11067,26 @@ class AntigravityFollower {
     }
     for (const child of this.children.values())
       this.readChild(child);
+    this.readPromptEnd(steps);
+  }
+  readPromptEnd(steps) {
+    const prompt = this.prompt;
+    const answer = prompt?.answer();
+    if (!prompt || !answer)
+      return;
+    const latest = steps.reduce((last, step) => !last || step.step_index > last.step_index ? step : last, undefined);
+    const input = steps.findLast((step) => step.type === "USER_INPUT" && step.step_index > prompt.from);
+    const current = input && (prompt.sentAt === undefined || Date.parse(input.created_at ?? "") >= Math.floor(prompt.sentAt / 1000) * 1000);
+    let terminal = current && latest && latest.step_index > input.step_index && latest.type === "PLANNER_RESPONSE" && latest.status === "DONE" && !latest.tool_calls?.length ? latest : undefined;
+    if (terminal?.truncated_fields?.includes("content")) {
+      const index = terminal.step_index;
+      terminal = this.steps(this.sessionId, true).find((step) => step.step_index === index);
+    }
+    const candidate = terminal?.content?.length === answer.length && terminal.content.endsWith(answer.tail) ? terminal.step_index : undefined;
+    if (candidate !== undefined && candidate === prompt.candidate)
+      prompt.finish();
+    else
+      prompt.candidate = candidate;
   }
   start(id) {
     this.usedSubagents = true;
@@ -12330,7 +12536,7 @@ class ClaudeThread {
     const modelID = input.model.id;
     const effort = input.model.variant;
     const append = hooks.instructions();
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenceOn());
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)));
     const fence = fenceKey() + fullAccessMark(this.session.id);
     this.subagents = await subagentsFor(this.session.location.directory);
@@ -12360,7 +12566,7 @@ class ClaudeThread {
     }
     if (this.query && (opening || this.servers !== serversNow)) {
       const entries = {};
-      const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+      const tools = agentToolsFor(this.session.id, this, fenceOn());
       if (tools)
         entries[tools.name] = tools.kind === "http" ? { type: "http", url: tools.url, headers: tools.headers, timeout: tools.timeout } : { type: "stdio", command: tools.command, args: tools.args, env: tools.env, timeout: tools.timeout };
       for (const server of servers)
@@ -12703,11 +12909,14 @@ ${input.text}` } : input, this.copies());
     const named = botMemory(this.session);
     const ownMemory = named && existsSync13(named) ? named : undefined;
     this.input = new Queue;
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenceOn());
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() };
     this.adopted = Boolean(taken);
-    this.query = sdk.query({
+    let query;
+    let agentExited = false;
+    let exitTimer;
+    query = this.query = sdk.query({
       prompt: this.input,
       options: {
         pathToClaudeCodeExecutable: this.agent.executable(),
@@ -12730,11 +12939,29 @@ ${input.text}` } : input, this.copies());
         ...ownMemory ? { settings: { autoMemoryDirectory: ownMemory } } : {},
         env: { ...this.agent.env(), OPENCODE_SESSION_ID: this.session.id, ...subagents.model ? { CLAUDE_CODE_SUBAGENT_MODEL: subagents.model } : {}, ...whole?.env },
         ...whole ? { sandbox: { enabled: false } } : {},
-        ...spawning ? { spawnClaudeCodeProcess: spawning } : {},
+        ...spawning ? { spawnClaudeCodeProcess: (options) => {
+          const child = spawning(options);
+          child.once("exit", () => {
+            agentExited = !(taken?.held ?? this.held)?.relinquished;
+            exitTimer = setTimeout(() => {
+              if (this.query !== query)
+                return;
+              this.queryEnded(query, undefined, agentExited);
+              try {
+                query.close?.();
+              } catch {}
+            }, 500);
+            exitTimer.unref?.();
+          });
+          return child;
+        } } : {},
         stderr: () => {}
       }
     });
-    this.read(this.query, taken);
+    this.read(query, taken, () => {
+      clearTimeout(exitTimer);
+      return agentExited;
+    });
   }
   whole(skills, conversation) {
     this.sandboxedNow = fenceOn() || undefined;
@@ -12750,7 +12977,7 @@ ${input.text}` } : input, this.copies());
       homes: [settings],
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
+      read: [process.execPath, ...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -12859,18 +13086,23 @@ ${input.text}` } : input, this.copies());
   get outside() {
     return Boolean(this.query) && this.sandboxedNow === undefined;
   }
-  async read(query, taken) {
+  async read(query, taken, processExited) {
     let ended;
     const usage = this.usageGeneration;
     try {
       for await (const message of query) {
         if (taken?.gate?.preparing)
           await taken.gate.activated;
+        if (this.query !== query)
+          break;
         this.handle(message, usage);
       }
     } catch (error) {
       ended = error;
     }
+    await this.queryEnded(query, ended, processExited());
+  }
+  async queryEnded(query, ended, agentExited) {
     if (this.query === query) {
       const lost = this.active ? [] : this.wakingWork;
       this.query = undefined;
@@ -12898,7 +13130,7 @@ ${input.text}` } : input, this.copies());
         await this.heard(ended, active.hooks.signal);
       if (active.hooks.signal.aborted)
         return active.resolve({ outcome: "interrupted" });
-      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told2(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")) });
+      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told2(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited });
     }
   }
   lastEnd;
@@ -13870,7 +14102,6 @@ var init_claude = __esm(() => {
   init_queue();
   init_files();
   init_signin();
-  init_kuvotools();
   init_toolrelay();
   init_servers();
   init_skills();
@@ -14984,7 +15215,7 @@ class CodexAgent {
       homes,
       state: STATE_IN_HOME2,
       kept: KEPT_IN_HOME2,
-      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
+      read: [process.execPath, ...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
       port: relayPort(),
       session: sessionID,
       bot
@@ -15062,9 +15293,8 @@ class CodexAgent {
       for (const oneOff of this.oneOffs.values())
         if (oneOff.rpc === rpc)
           oneOff.fail(new Error("Codex stopped."));
-      if (slot.server !== rpc)
-        return;
-      slot.server = undefined;
+      if (slot.server === rpc)
+        slot.server = undefined;
       for (const each of this.threads.values())
         each.serverStopped(rpc);
     };
@@ -15616,7 +15846,11 @@ class CodexThread {
     if (!active)
       return;
     this.active = undefined;
-    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : { outcome: "failed", error: failure(active.problem ?? "Codex stopped.") });
+    active.resolve(active.hooks.signal.aborted ? { outcome: "interrupted" } : {
+      outcome: "failed",
+      error: failure(active.problem ?? "Codex stopped."),
+      agentExited: server.agentExited
+    });
   }
   policy(hooks, plan, rpc) {
     if (this.agent.isFenced(rpc)) {
@@ -15648,7 +15882,7 @@ class CodexThread {
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join(`
 
 `);
-    const tools = fenced ? forwardedTools(this.session.id, this.agent) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this.agent, fenced);
     const directory = this.session.location.directory;
     const own = this.agent.ownSkillFolders(directory);
     const off = turnedOff(hooks);
@@ -17384,7 +17618,7 @@ class CursorWorker {
 `) || "Cursor stopped.";
       for (const [id, run] of this.runs) {
         this.runs.delete(id);
-        run.ended({ error: { message: error } });
+        run.ended({ error: this.rpc.agentExited ? new RPCClosed(error) : { message: error } });
       }
       options.ended?.();
     };
@@ -17400,7 +17634,7 @@ class CursorWorker {
       ended: (params) => {
         if (this.rpc.holder)
           noteTurn(this.rpc.holder, agentId, undefined);
-        told.then(() => params.error ? reject(revived(params.error)) : resolve(params.result));
+        told.then(() => params.error ? reject(params.error instanceof RPCClosed ? params.error : revived(params.error)) : resolve(params.result));
       }
     }));
     ended.catch(() => {});
@@ -17431,7 +17665,7 @@ class CursorWorker {
     resume: (id, options) => this.agent(options, id)
   };
   async agent(options, resume) {
-    const { agentId } = await this.rpc.request("create", { options, resume }).catch((error) => Promise.reject(revived(error)));
+    const { agentId } = await this.rpc.request("create", { options, resume }).catch((error) => Promise.reject(error instanceof RPCClosed && this.rpc.agentExited ? error : revived(error)));
     if (!agentId)
       return;
     return this.attached(agentId);
@@ -17454,7 +17688,7 @@ class CursorWorker {
           worker.runs.delete(run);
           if (held)
             noteTurn(held, agentId, undefined);
-          throw revived(error);
+          throw error instanceof RPCClosed && rpc.agentExited ? error : revived(error);
         }
         return active;
       }
@@ -17801,7 +18035,7 @@ class CursorThread {
     const cwd = this.session.location.directory;
     const skills = skillsFolder(await skillsFor(cwd, this.owner.ownSkillFolders(cwd), turnedOff(hooks)));
     const fenced = Boolean(fenceRules());
-    const tools = fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenced);
     const computer = await computerServers(cwd);
     await serversKey(this.session.id, computer);
     const servers = relayedServers(this.session.id, this, cwd, computer);
@@ -17983,6 +18217,8 @@ ${text}`;
         instructionsTaken();
       if (hooks.signal.aborted)
         return { outcome: "interrupted" };
+      if (error instanceof RPCClosed)
+        return { outcome: "failed", error: failure(error), agentExited: true };
       const message = errorWords(error) ?? "Cursor stopped with an error.";
       const limit = limitOf2(message, error);
       if (limit)
@@ -18357,6 +18593,7 @@ var init_cursor = __esm(() => {
   init_subagents2();
   init_toolrelay();
   init_servers();
+  init_rpc();
   init_cursor_worker();
   init_adopt();
   init_client();
@@ -20802,7 +21039,7 @@ class Sessions {
     if (lastUser >= 0 && !record.messages.slice(lastUser).some((message) => message.type === "idle") || openStep) {
       const last = record.messages[record.messages.length - 1];
       const at = last?.time.completed ?? last?.time.created ?? Date.now();
-      record.messages.push({ type: "idle", id: newID("msg"), time: { created: at }, outcome: "interrupted" });
+      record.messages.push({ type: "idle", id: newID("msg"), time: { created: at }, outcome: "interrupted", reason: "restart" });
       record.session.outcome = "interrupted";
       record.session.time.idle = at;
       changed = true;
@@ -21603,7 +21840,7 @@ ${others.join(`
     if (!taken) {
       if (handing.cancelled)
         this.cancelInput(id, input.id);
-      else if (next)
+      else if (next || live.continueAfterExit)
         this.advance(id, live);
       else {
         this.setDelivery(id, input.id, "queue");
@@ -21621,6 +21858,8 @@ ${others.join(`
     this.recordInput(record, input, order, nativeProvider);
     if (!nativeProvider)
       this.store.save(id, true);
+    if (live.continueAfterExit)
+      this.advance(id, live);
   }
   checkSteersSoon(id) {
     if (this.steerChecks.has(id))
@@ -21680,7 +21919,7 @@ ${others.join(`
     }
     if (this.queue(record).some((input) => input.steerReceipt))
       this.checkSteersSoon(id);
-    if (live.doing.kind === "idle" && (retry || live.go))
+    if (live.doing.kind === "idle" && (retry || live.go || live.continueAfterExit))
       this.advance(id, live, retry ? record.session.outcome : undefined);
   }
   setDelivery(id, inputID, delivery, into = false) {
@@ -21727,6 +21966,9 @@ ${others.join(`
     this.store.save(id, true);
     emit("session.inbox.cancelled", { sessionID: id, inboxID: inputID }, record.session.location.directory);
     this.relayHeld(this.live.get(id), inputID, true);
+    const live = this.live.get(id);
+    if (live?.continueAfterExit)
+      this.advance(id, live);
     return "removed";
   }
   wake(id) {
@@ -21742,6 +21984,8 @@ ${others.join(`
     const record = this.store.get(id);
     if (live.doing.kind !== "idle" || !record)
       return;
+    if (live.resumeQueue && live.resumeQueue.provider === record.session.model?.providerID)
+      return;
     const own = live.own;
     live.own = undefined;
     if (own) {
@@ -21753,10 +21997,18 @@ ${others.join(`
     const queue = this.queue(record);
     const notHanded = (input) => !input.steerReceipt && !live.steering.has(input.id);
     let index = -1;
-    if (ended === "succeeded" || live.go)
-      index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input));
-    if (ended === "succeeded" && index < 0)
-      index = queue.findIndex(notHanded);
+    if (live.continueAfterExit) {
+      if (queue[0] && !notHanded(queue[0]))
+        return;
+      if (queue.length)
+        index = 0;
+      live.continueAfterExit = false;
+    } else {
+      if (ended === "succeeded" || live.go)
+        index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input));
+      if (ended === "succeeded" && index < 0)
+        index = queue.findIndex(notHanded);
+    }
     if (index >= 0 || !live.steering.size)
       live.go = false;
     if (index < 0)
@@ -21775,8 +22027,10 @@ ${others.join(`
     queue.splice(index, 1);
     this.start(id, live, input);
   }
-  free(id, live, ended) {
+  free(id, live, ended, agentExited = false) {
     live.doing = { kind: "idle" };
+    if (agentExited)
+      live.continueAfterExit = true;
     this.advance(id, live, ended);
     for (const waiting of live.waiting.splice(0))
       waiting();
@@ -21942,11 +22196,12 @@ ${text.slice(0, 4000)}
     } catch (error) {
       result = { outcome: "failed", error: failure(error) };
     }
-    const outcome = abort.signal.aborted ? "interrupted" : result.outcome;
+    const agentExited = !abort.signal.aborted && result.agentExited === true;
+    const outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome;
     if (outcome !== "succeeded")
       this.dropCompaction(id, record, turn);
     const before = record.messages[record.messages.length - 1]?.id;
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
     this.settleRelays(live, run);
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded)
@@ -21966,7 +22221,9 @@ ${text.slice(0, 4000)}
     if (run.last && run.last.seen === before)
       run.last.seen = record.messages[record.messages.length - 1]?.id;
     this.settleAsks(id, live);
-    await this.turnEnded(id, live, run, outcome, note);
+    if (agentExited && result.resumeQueue)
+      this.waitToResumeQueue(id, live, result.resumeQueue);
+    await this.turnEnded(id, live, run, outcome, note, agentExited);
   }
   async runResumed(id, live, record, run, input, held) {
     const { turn, abort } = run;
@@ -21999,12 +22256,13 @@ ${text.slice(0, 4000)}
       held.gate.release(held.thread);
       await held.gate.activated;
     }
-    const outcome = abort.signal.aborted ? "interrupted" : result.outcome;
+    const agentExited = !abort.signal.aborted && result.agentExited === true;
+    const outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome;
     this.transferred.delete(id);
     if (!run.heldTaken)
       this.closeTools(record);
     const before = record.messages[record.messages.length - 1]?.id;
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded)
         continue;
@@ -22019,9 +22277,21 @@ ${text.slice(0, 4000)}
     if (run.last && run.last.seen === before)
       run.last.seen = record.messages[record.messages.length - 1]?.id;
     this.settleAsks(id, live);
-    await this.turnEnded(id, live, run, outcome, note);
+    if (agentExited && result.resumeQueue)
+      this.waitToResumeQueue(id, live, result.resumeQueue);
+    await this.turnEnded(id, live, run, outcome, note, agentExited);
   }
-  async turnEnded(id, live, run, outcome, note) {
+  waitToResumeQueue(id, live, ready) {
+    const wait = { provider: this.store.get(id)?.session.model?.providerID, ready };
+    live.resumeQueue = wait;
+    ready.then(() => {
+      if (this.live.get(id) !== live || live.resumeQueue !== wait)
+        return;
+      live.resumeQueue = undefined;
+      this.advance(id, live);
+    });
+  }
+  async turnEnded(id, live, run, outcome, note, agentExited) {
     const directory = this.store.get(id)?.session.location.directory ?? "";
     if (runOf(live.doing) !== run)
       return;
@@ -22045,7 +22315,7 @@ ${text.slice(0, 4000)}
       if (live.doing !== keeping)
         return;
     }
-    this.free(id, live, outcome);
+    this.free(id, live, outcome, agentExited);
   }
   async runCompaction(id, live, record, run, input) {
     const { turn, abort } = run;
@@ -22071,17 +22341,20 @@ ${text.slice(0, 4000)}
     } catch (error) {
       result = { outcome: "failed", error: failure(error) };
     }
-    const outcome = abort.signal.aborted ? "interrupted" : result.outcome;
+    const agentExited = !abort.signal.aborted && result.agentExited === true;
+    const outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome;
     message.status = outcome === "succeeded" ? "completed" : "failed";
     message.time.completed = Date.now();
     emit(outcome === "succeeded" ? "session.compaction.ended" : "session.compaction.failed", { sessionID: id }, directory);
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error);
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined);
     session.outcome = before;
     this.store.save(id, true);
     this.settleAsks(id, live);
     if (runOf(live.doing) !== run)
       return;
-    this.free(id, live, !held && outcome !== "failed" ? outcome : undefined);
+    if (agentExited && !held && result.resumeQueue)
+      this.waitToResumeQueue(id, live, result.resumeQueue);
+    this.free(id, live, !held && outcome !== "failed" ? outcome : undefined, agentExited && !held);
   }
   closeWhenIdle(id, live) {
     clearTimeout(live.idle);
@@ -22313,7 +22586,7 @@ ${text.slice(0, 4000)}
           throw error;
         last = { outcome: "failed", error: failure(error) };
       }
-      if (last.outcome !== "failed" || signal.aborted)
+      if (last.outcome !== "failed" || last.agentExited || signal.aborted)
         return last;
       if (!last.limit) {
         const agent = this.agent(entry.providerID);
@@ -22494,6 +22767,8 @@ ${text.slice(0, 4000)}
       this.wake(id);
       return false;
     }
+    if (live)
+      live.continueAfterExit = false;
     return await this.stopSubagents(id) || turnedAway;
   }
   async stop(id, live, run) {
@@ -25102,6 +25377,9 @@ function readQueues(files, strict = false) {
     if (strict && error.code !== "ENOENT")
       throw error;
   }
+  return decodedQueues(all, strict);
+}
+function decodedQueues(all, strict) {
   if (!isObject(all)) {
     if (strict)
       throw new Error("The queue index could not be read");
@@ -25115,41 +25393,46 @@ function readQueues(files, strict = false) {
     return [session, keptState(state)];
   }));
 }
+function indexQueue(all, session, before, next, reseal) {
+  const state = keptState(next);
+  state.held = [...new Set(state.held)];
+  if (state.cameHeld)
+    state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
+  if (!state.cameHeld?.length)
+    delete state.cameHeld;
+  const made = JSON.stringify(state) !== JSON.stringify(before);
+  if (!made && !reseal)
+    return { state, made, data: undefined };
+  all[session] = state;
+  for (const [id, each] of Object.entries(all)) {
+    if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
+      delete each.resumed;
+    if (each.arriving) {
+      for (const [message, until] of Object.entries(each.arriving))
+        if (until <= Date.now())
+          delete each.arriving[message];
+      if (!Object.keys(each.arriving).length)
+        delete each.arriving;
+    }
+    if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt)
+      delete all[id];
+  }
+  const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+  return { state, made, data: JSON.stringify(indexed) };
+}
 function changeQueue(files, session, change, changed, reseal = false) {
-  let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files, true);
-    const before = all[session] ?? { paused: false, held: [] };
-    const state = keptState(change(before));
-    state.held = [...new Set(state.held)];
-    if (state.cameHeld)
-      state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
-    if (!state.cameHeld?.length)
-      delete state.cameHeld;
-    made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !(typeof reseal === "function" ? reseal() : reseal))
-      return state;
-    all[session] = state;
-    for (const [id, each] of Object.entries(all)) {
-      if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
-        delete each.resumed;
-      if (each.arriving) {
-        for (const [message, until] of Object.entries(each.arriving))
-          if (until <= Date.now())
-            delete each.arriving[message];
-        if (!Object.keys(each.arriving).length)
-          delete each.arriving;
-      }
-      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt)
-        delete all[id];
-    }
-    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
-    writeDurablePrivate(files.file, JSON.stringify(indexed));
-    return state;
+    const before = all[session] ?? emptyQueue();
+    const next = change(before);
+    const result = indexQueue(all, session, before, next, typeof reseal === "function" ? reseal() : reseal);
+    if (result.data !== undefined)
+      writeDurablePrivate(files.file, result.data);
+    return result;
   }, { required: true });
-  if (made)
+  if (after.made)
     changed?.();
-  return after;
+  return after.state;
 }
 function readWaitingFile(file) {
   try {
@@ -25165,19 +25448,22 @@ function writeWaitingFile(file, message, root) {
   readWaitingFile(file);
   writeDurablePrivate(file, JSON.stringify(payloadFormat.write(message)), root);
 }
-function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2, holds = false) {
+function waitingEntry(message, { from, words }) {
+  const names = fileNames(message.files);
+  const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
+  const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
+  return { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
+}
+function keepWaiting(files, session, message, shown = {}, changed, place = last2, holds = false) {
   let kept = false;
   changeQueue(files, session, (state) => {
     if (!state.paused && !state.limitStop?.releasing && !holds)
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
-    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path9.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), shown.kept === undefined ? message : { ...message, text: shown.kept }, path9.dirname(files.file));
     kept = true;
-    const names = fileNames(message.files);
-    const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
-    const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
-    const waiting = { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
+    const waiting = waitingEntry(message, shown);
     return place({ ...state, waiting: (state.waiting ?? []).filter((each) => each.id !== message.id) }, waiting);
   }, changed, () => kept);
   return kept;
@@ -25223,7 +25509,7 @@ var queueFiles = (run) => ({
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
-}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, waitingFile = (files, id) => path9.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
+}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, emptyQueue = () => ({ paused: false, held: [] }), waitingFile = (files, id) => path9.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
   if (!isObject(file))
     return [];
   if (typeof file.name === "string" && file.name)
@@ -31823,7 +32109,7 @@ var init_main = __esm(async () => {
   launchEnv = kept3 ? { ...process.env } : undefined;
   original = kept3 && build ? readFileSync35(script) : undefined;
   hasOriginal = original && buildOf(original.toString("utf8")) === build;
-  machineEngine2 = onMachine ? machineEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined;
+  machineEngine2 = onMachine ? machineEngine() ?? (process.env.KUVO_ENGINE_PORT ? { pid: Number(process.env.KUVO_ENGINE_PID) || undefined, url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined;
   port = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0;
   if (onMachine) {
     setToolProgram(process.env.OPENCODE_CONFIG_CONTENT);
@@ -31876,12 +32162,12 @@ var init_main = __esm(async () => {
   auto = new Auto(home3);
   link4 = new EngineLink;
   if (machineEngine2)
-    link4.configure(machineEngine2.url, machineEngine2.password);
+    link4.configure(machineEngine2.url, machineEngine2.password, machineEngine2.pid);
   if (onMachine) {
     setInterval(() => {
       const now = machineEngine();
       if (now)
-        link4.configure(now.url, now.password);
+        link4.configure(now.url, now.password, now.pid);
     }, 2000).unref?.();
   }
   setSkillSource(link4, home3);
@@ -31918,6 +32204,7 @@ var init_main = __esm(async () => {
   peers = { post, directory };
   agentsFile = onMachine ? join35(machineHome, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined;
   runFolder = onMachine ? join35(machineHome, "run") : process.env.KUVO_RUN || undefined;
+  setToolRelayRun(runFolder);
   boxServices = new BoxServicesClient(runFolder);
   notesBeside(runFolder);
   if (runFolder)
@@ -32171,4 +32458,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents c91fbefed93acbcc229ee4b5c233a7d08526e9228dba6a5443b83f9b8f861d9b
+// Built from Packages/Box/src/agents 5b47ab51322b1032569d29e0096a46bd937edfc3110f4392268f894136562e22
