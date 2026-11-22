@@ -3,6 +3,7 @@
 // with a task by any client.
 
 import { isObject, parsed } from "../../shared/json";
+import { listComputer } from "../lists/computer";
 import { startSession } from "../letters/start";
 import { AGENT_TOOLS, agentTool, everyone, isAgentTool, rootOf, targetsOf } from "../letters/tools";
 import { isCalling } from "../vault/who";
@@ -46,6 +47,12 @@ export async function* startRoute(context: RouteContext): AsyncGenerator<AnswerP
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
   if (!isObject(given)) return yield* json(400, { message: "Send {task}, and title, folder, startedBy, wait." });
+  // The client addresses the destination over its normal transport. The chosen computer also
+  // goes in the request, so sending it to the wrong box can never start a session there.
+  const addressed = typeof given.computer === "string" && given.computer !== "" && given.computer !== "here";
+  const computer = addressed ? listComputer() : null;
+  if (computer && computer.id !== given.computer)
+    return yield* json(409, { message: "Send the start request to the computer you chose.", computer });
   let by = null;
   if (given.startedBy !== undefined && given.startedBy !== null) {
     const root = typeof given.startedBy === "string" && ADDRESS.test(given.startedBy) ? await rootOf(given.startedBy, targetsOf({ readEngine, bridge })) : null;
@@ -53,10 +60,10 @@ export async function* startRoute(context: RouteContext): AsyncGenerator<AnswerP
     const all = await everyone({ readEngine });
     by = { ...root, name: all.agents.find(agent => agent.session === root.session)?.name ?? "another agent" };
   }
-  const outcome = await startSession(given, by, { readEngine, bridge, signal: signal ?? undefined });
+  const outcome = await startSession(computer ? { ...given, computer: "here" } : given, by, { readEngine, bridge, signal: signal ?? undefined });
   if ("refused" in outcome) {
     const { status, ...refusal } = outcome.refused;
     return yield* json(status, refusal);
   }
-  return yield* json(200, outcome.started);
+  return yield* json(200, computer ? { ...outcome.started, computer } : outcome.started);
 }

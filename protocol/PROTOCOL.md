@@ -230,6 +230,56 @@ Feature `line`. A client opens one stream to each box, and everything it follows
 - **Once.** A box reached in a way that can't keep a stream (a one-shot `box route`) is asked with `once=1`. It answers the hello and each topic's state now, then ends. Ask again every few seconds.
 - **Offline.** A client counts a computer as away only once its line has been silent for 30 s. With nothing heard for 15 s, it reopens the line. A slow or failed request never makes a computer away, and a dropped stream is never shown: each view keeps the last state it received.
 
+
+#### Setup-wide list topics
+
+Feature `line.setup-lists`. Follow these routes on the nearest box's `kuvo/line`. Each topic
+sends a whole replacement snapshot. An older box can still be read on its original per-computer
+routes.
+
+| Topic route | State |
+| --- | --- |
+| `kuvo/setup/sessions/events` | `{sessions, projects}`. Sessions have `id` and the usual session-list `facts`. Projects have `directory` and the usual listed project `facts`. Project paths and pages belong to the project's computer. |
+| `kuvo/setup/waiting/events` | `{waiting}`. Each row gives `session`, `since` (ms), optional `title` and `asks: {kind, summary}` for the conversation's oldest ask. Its complete cards and replies use the owning box's `kuvo/sessions/<id>/asks` routes. |
+| `kuvo/setup/queues/events` | `{queues}`. Each row gives `session` and its `queue`, the same held or paused queue overview as `kuvo/sessions/queues/events`. |
+| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). Away computers are omitted. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
+
+Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
+public box key in `computer.id` to address its routes. The local box uses `here` while it has
+no peer identity. Key rows by computer and row ID. An away row includes `lastSeen`, the time
+in milliseconds when the receiving box last received its snapshot.
+
+Session, waiting and queue rows carry `actions` with available controls. Away rows have empty
+actions. On sessions, `open` opens the conversation and `manage` opens its owner-provided
+`…/actions` menu. On waiting rows, `review` opens the owner's asks. Queue rows offer `open`
+to open the conversation, `pause` or `resume` for the box's `…/queue/hold` or `…/queue/resume`,
+and `messages` for the per-session queue. The owning box validates each action when asked.
+
+For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
+relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start
+fields. A successful response echoes the destination as `computer: {id, name}`. The wrong
+box returns `409` before creating anything. A local start can omit `computer` or use `here`.
+
+
+#### Opening a conversation through another box
+
+Feature `line.peer-conversation`. A bot's existing `session` is the ID of its conversation.
+On the nearest box, use `kuvo/peer-session/<computer>/<session>/<resource>` as a GET or a line
+topic, where the computer is the owning box's ID. Use the bot's home computer or the session
+row's `computer.id`.
+
+- `session` and `messages` return the owner's session and message page. The page takes the
+  usual message query.
+- `events` streams that conversation's live events. The owner chooses the runtime and filters
+  the feed by session. The line's usual gap rule applies after a source drops.
+- `queue` and `asks` give their current state. Follow `queue/events` and `asks/events` on the
+  same line. Queue and ask actions use the owning box's existing addressed routes.
+
+Send ordinary messages through the nearest box with
+`POST kuvo/data/messages?session=<session>&computer=<computer>` and the usual stable message ID.
+The nearest box keeps its receipt and the owner delivers it. The setup list can identify the
+owner even when its agents announcement omitted the session.
+
 ## Mail
 
 Pushes and other messages for a device that may not be connected use
@@ -898,6 +948,23 @@ them for review. Tracked legacy held-bot fields combine only when their submitti
 A revoked held-bot action can retain its draft and refusal in the Box's held list.
 
 ### Peers
+
+With `line.setup-lists`, peers mail `{setupLists: {at, sessions, projects, waiting, queues, catalog}}`
+using the same authenticated envelope as their agents' lists. Each box publishes its own rows.
+A large snapshot is split into `setupLists.part` envelopes using the same part framing as documents.
+A receiver takes only a complete, newer snapshot from a current peer, records when it arrived, and
+keeps the last copy under `run/peers/<key>/lists-v1.json`. The publisher resends periodically to
+recover dropped mail. A relay unreachable notice or prolonged silence marks the peer away. The
+receiving box stamps the computer, reachability, last-seen time and available actions when it
+merges the rows. The copies are runtime data and are excluded from backup and restore.
+
+A live conversation read uses authenticated peer mail `sessionFollow` with a subscription `id`.
+`open` gives the allowlisted session read `resource` and its `client` (the requesting computer
+or the original device pairing). The owner rechecks membership and pairing during the stream.
+It answers with numbered `part` envelopes carrying a response head, body bytes (base64), a
+heartbeat or an end. The subscriber renews the lease with `keep: true` and closes it with
+`stop: true`. A missing part ends that opening so the line can reopen it. This channel grants
+read access to that conversation's listed resources. Mutations use the existing owner routes.
 
 Your computers talk to each other over the relay, Mac or not. A Mac connects to
 the relay when the phone link is on or it has at least one machine; a Mac on its own makes no

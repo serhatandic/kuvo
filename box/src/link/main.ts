@@ -107,6 +107,7 @@ import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
+import { shareSetupLists } from "./lists/setup";
 import { pushQueues } from "./work-queue/across";
 import { FORWARDS, forwardsSoon, sendForwards } from "./work-queue/forward";
 import { reachAgainSoon, sendReachAgain } from "./peers/reach-again";
@@ -651,6 +652,7 @@ async function run(owner?: ClientOwner): Promise<void> {
     deliverLeftAnswers().catch(() => {});
     // The rows of sessions here whose lead lives on another computer, told to it as they change.
     if (current?.welcomed) {
+      void shareSetupLists(current).catch(() => {});
       pushRows(current, readLink(), peerTargets()).catch(() => {});
       try { pushActivity(current, readLink(), localActivity()); } catch {}
     }

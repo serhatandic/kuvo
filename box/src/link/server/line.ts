@@ -6,6 +6,7 @@
 // its topics keep running a while after its stream drops, so a reconnect misses nothing.
 // Platform: the same on macOS and Linux.
 
+import { StringDecoder } from "node:string_decoder";
 import { randomBytes } from "node:crypto";
 import { isObject, parsed } from "../../shared/json";
 import type { AnswerPiece, AnyPiece, Asker, LinkRequest, RouteContext } from "./context";
@@ -130,6 +131,7 @@ async function runTopic(line: Line, name: string, topic: Topic) {
     let events = false;
     let refusal = "";
     let rest = "";
+    const decoder = new StringDecoder("utf8");
     let data: string[] = [];
     const take = (text: string) => {
       if (signal.aborted) return;
@@ -187,7 +189,7 @@ async function runTopic(line: Line, name: string, topic: Topic) {
             continue;
           }
           heard();
-          rest += piece.body.toString("utf8");
+          rest += decoder.write(piece.body);
           let at: number;
           while ((at = rest.indexOf("\n")) >= 0) {
             take(rest.slice(0, at).replace(/\r$/, ""));
@@ -195,6 +197,7 @@ async function runTopic(line: Line, name: string, topic: Topic) {
           }
         }
       }
+      rest += decoder.end();
       if (rest) take(rest.replace(/\r$/, ""));
       if (events) take("");
     } catch {
