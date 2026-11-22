@@ -302,17 +302,44 @@ class TestGrok extends GrokAgent {
   }
 }
 
-/** Antigravity, with the fake in place of Google's agent, as if downloaded. */
+/**
+ * Google's `agy`, as a program: `agy acp --login` prints Google's page and takes the code it ends
+ * on (`good-code` signs in, as Google's would); `agy acp` is the fake ACP agent.
+ */
+function agyProgram(script: string, path: string): string {
+  writeFileSync(path, `#!/bin/sh
+case " $* " in *" --login "*)
+  echo "Open this link in a browser to log in with Google:"
+  echo
+  echo "  https://accounts.google.com/o/oauth2/auth?response_type=code&state=s"
+  echo
+  printf "Then paste the authorization code, or the full URL of the page you land on, and press Enter: "
+  read code
+  [ "$code" = "good-code" ] && exit 0
+  echo "invalid code"
+  exit 1;;
+esac
+export BUN_BE_BUN=1
+exec "${process.execPath}" "${script}" "$@"
+`)
+  chmodSync(path, 0o755)
+  return path
+}
+
+/** Antigravity, with the fake as Google's `agy` (its program in a folder of its own), signed in unless `signedIn` is false. */
 class TestAntigravity extends AntigravityAgent {
-  constructor(script: string, home: string) {
+  readonly agy: string
+  constructor(script: string, home: string, { signedIn = true } = {}) {
     super({ home, temporary: join(home, "temporary"), deps: {} as any })
-    const folder = (this as any).folder as string
-    mkdirSync(folder, { recursive: true })
-    program(script, join(folder, "agy_acp_server.par"))
-    writeFileSync(join(folder, ".complete"), "{}")
+    mkdirSync(join(home, "agy-bin"), { recursive: true })
+    this.agy = agyProgram(script, join(home, "agy-bin", "agy"))
+    if (signedIn) {
+      mkdirSync(join(this.profile, "antigravity-acp"), { recursive: true })
+      writeFileSync(join(this.profile, "antigravity-acp", "kuvo-sign-in.json"), JSON.stringify({ id: "agy_test" }))
+    }
   }
-  override async account() {
-    return { installed: true, signedIn: true }
+  override executable() {
+    return this.agy
   }
 }
 
@@ -1506,10 +1533,10 @@ describe.skipIf(!canFence)("Antigravity in the box's sandbox", () => {
   /** Antigravity whose prompts try `tries` where it runs (`places`: its home and program, once made). */
   const trying = (tries: (places: { profile: string; program: string }) => Record<string, [string, string]>) => {
     const agent = new TestAntigravity(fakeAcp([], [], undefined, { tries: {} }), home)
-    const places = { profile: agent.profile, program: (agent as any).folder as string }
+    const places = { profile: agent.profile, program: dirname(agent.agy) }
     mkdirSync(join(places.profile, "conversations"), { recursive: true })
     // (Made again, now with what it tries, in the same place.)
-    program(fakeAcp([], [], undefined, { tries: tries(places) }), join(places.program, "agy_acp_server.par"))
+    agyProgram(fakeAcp([], [], undefined, { tries: tries(places) }), agent.agy)
     return agent
   }
 
@@ -1517,8 +1544,8 @@ describe.skipIf(!canFence)("Antigravity in the box's sandbox", () => {
     const id = await run(trying(({ profile, program }) => ({
       project: ["write", join(root, "made.txt")],
       conversation: ["write", join(profile, "conversations", "c.json")],
-      signin: ["write", join(profile, "antigravity-acp", "acp_token.json")],
-      program: ["write", join(program, "agy_acp_server.par")],
+      signin: ["write", join(profile, "antigravity-acp", "antigravity-oauth-token")],
+      program: ["write", join(program, "agy")],
       elsewhere: ["write", join(elsewhere, "e.txt")],
       kuvo: ["read", join(kuvo, "secret")],
     })))
@@ -1528,16 +1555,17 @@ describe.skipIf(!canFence)("Antigravity in the box's sandbox", () => {
     expect(initialize.params.clientCapabilities.fs).toEqual({ readTextFile: false, writeTextFile: false })
   })
 
-  /** How signing in ends, once it has (Google's page answered at once, as the fake does). */
+  /** How signing in ends, once Google's page's code is pasted back. */
   const signedIn = async (agent: TestAntigravity) => {
     const attempt = await agent.signIn()
+    await attempt.complete!("good-code")
     await until(() => attempt.status().status !== "pending")
     return attempt.status()
   }
 
   test("signing in starts it where it can read its own folder, with the bridge's folders inside Kuvo Code's, as on a Mac", async () => {
     // (The bridge's home and temporary folder are inside Kuvo Code's, which the sandbox hides.)
-    const agent = new TestAntigravity(fakeAcp([], [], undefined, { readsItsFolder: true }), join(kuvo, "agents"))
+    const agent = new TestAntigravity(fakeAcp([], [], undefined, { readsItsFolder: true }), join(kuvo, "agents"), { signedIn: false })
     expect(await signedIn(agent)).toEqual({ status: "complete" })
     // Nothing left of where it ran, once it's gone.
     await until(() => readdirSync(join(kuvo, "agents", "temporary", "antigravity")).length === 0)
@@ -1549,14 +1577,14 @@ describe.skipIf(!canFence)("Antigravity in the box's sandbox", () => {
     const log = console.error
     console.error = (...said: unknown[]) => void logged.push(said.join(" "))
     try {
-      const ended = await signedIn(new TestAntigravity(fakeAcp([], [], undefined, { fails: traceback }), home))
+      const ended = await signedIn(new TestAntigravity(fakeAcp([], [], undefined, { fails: traceback }), home, { signedIn: false }))
       expect(ended.status).toBe("failed")
       expect(ended.message).not.toContain("Traceback")
       expect(ended.message).not.toContain("\n")
       expect(ended.message).toContain("wasn't allowed")
       expect(logged.join("\n")).toContain(traceback)
       // Google's own refusal, said as it stops, still reads as one.
-      const refused = await signedIn(new TestAntigravity(fakeAcp([], [], undefined, { fails: "google.auth.Error: SUBSCRIPTION_REQUIRED" }), home))
+      const refused = await signedIn(new TestAntigravity(fakeAcp([], [], undefined, { fails: "google.auth.Error: SUBSCRIPTION_REQUIRED" }), home, { signedIn: false }))
       expect(refused.message).toBe("Google says this account needs an Antigravity subscription.")
     } finally {
       console.error = log

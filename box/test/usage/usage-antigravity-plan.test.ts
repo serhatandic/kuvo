@@ -164,6 +164,49 @@ describe("Antigravity discovery", () => {
   })
 })
 
+describe("Antigravity 1.5 (agy), its sign-in in the keyring", () => {
+  test("with no token file, its quotas come from its own running server, and no credential is sent anywhere", async () => {
+    const root = temp()
+    const asked: string[] = []
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      expect(request.headers.get("authorization")).toBeNull()
+      const method = new URL(request.url).pathname.split("/").at(-1)!
+      asked.push(method)
+      return Response.json(method === "GetUserStatus" ? { userStatus: { userTier: { name: "Google AI Ultra" } } } : summary(0.6))
+    } })
+    let cloudCalls = 0
+    const cloud = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { cloudCalls++; return new Response(null, { status: 500 }) } })
+    try {
+      const plan = new AntigravityPlan(() => join(root, "profile"), () => join(root, "state"), undefined, async () => [{ scheme: "http", port: server.port!, csrf: "" }], [cloud.url.origin])
+      const reading = await plan.limits.read!(1000)
+      expect(reading?.windows.map(window => [window.name, window.used])).toEqual([["Gemini · 5-hour", 0.4], ["Gemini · Weekly", 0.4], ["Claude and GPT · 5-hour", 0.4], ["Claude and GPT · Weekly", 0.4]])
+      expect(reading?.plan).toBe("Ultra")
+      expect(asked).toEqual(["RetrieveUserQuotaSummary", "GetUserStatus"])
+      expect(cloudCalls).toBe(0)
+    } finally {
+      server.stop(true)
+      cloud.stop(true)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("with no token file and it isn't running, it says its usage shows while it runs, and asks no one", async () => {
+    const root = temp()
+    let cloudCalls = 0
+    const cloud = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { cloudCalls++; return new Response(null, { status: 500 }) } })
+    try {
+      const plan = new AntigravityPlan(() => join(root, "profile"), () => join(root, "state"), undefined, async () => [], [cloud.url.origin])
+      const problem = await plan.limits.read!(1000).catch(error => error)
+      expect(problem).toBeInstanceOf(LimitsProblem)
+      expect([problem.kind, problem.message]).toEqual(["failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it."])
+      expect(cloudCalls).toBe(0)
+    } finally {
+      cloud.stop(true)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("Antigravity own-account stand-in service", () => {
   test("the overview shows heavy use of the tightest available pool without mixing pools", async () => {
     const now = Date.UTC(2026, 10, 20)

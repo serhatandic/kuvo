@@ -4069,7 +4069,7 @@ new version without cutting a turn:
   client reconnects for events. The keeper starts the saved previous build if the replacement
   exits or fails to publish within a minute. Only the active bridge writes the store.
 
-  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity ACP 1.3.0, and
+  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity (`agy`, or ACP 1.3.0), and
   Cursor with the same worker SDK can transfer when their journal is complete. Antigravity's ACP
   server keeps its native session and answers the original prompt request after an approval.
   Cursor's worker keeps its SDK run alive and sends updates with that run's ID. Open forms,
@@ -4802,7 +4802,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     say just now whether it's signed in (its check failed or took too long, on a busy computer);
     the account and its models are as it last said, and its connection's message says so when
     nothing was known yet. Only the agent's own word that it's signed out is a sign-out.
-  - Installing and updating an agent's program (Claude Code, Codex, Grok), on the computer the
+  - Installing and updating an agent's program (Claude Code, Codex, Grok, Antigravity's `agy`), on the computer the
     bridge is on: `metadata.installed` false, with `metadata.install` the maker's installer
     command; `POST kuvo/agents/api/integration/<provider>/install` runs it (a few minutes at most)
     → `{data: {installed, version?, message?}}` (`message`: why not, in the installer's words).
@@ -4845,7 +4845,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
     …/connect/oauth/<attempt>` → its status (`pending`, with `url`, `instructions`, `userCode` and
-    `message` as they come, for an agent downloaded first, Antigravity;
+    `message` as they come;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
     {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
     `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With

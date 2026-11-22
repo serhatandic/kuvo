@@ -1,14 +1,16 @@
-// Antigravity, as T3 Code runs it: Google's own Antigravity agent (`agy_acp_server`), downloaded
-// from Google the first time you sign in, signed in with your Google account, speaking ACP. All of
-// it (the agent, your sign-in, its conversations) stays in the bridge's `antigravity` folder.
+// Antigravity, as T3 Code runs it: Google's `agy` CLI (`agy acp`), installed with Google's own
+// installer and updated with `agy update`, signed in with your Google account (`agy acp --login`,
+// the code its page ends on pasted back), speaking ACP. Each account has a home of Kuvo Code's own
+// (GEMINI_HOME, never your `~/.gemini`), the first one too: `agy` keeps one keyring sign-in for
+// every home otherwise. An account signed in before `agy` keeps running on Google's earlier agent
+// (1.3.0, downloaded then) until it's signed in again (docs/architecture/agent-accounts.md).
 //
 // While the box's sandbox is on, it runs whole in it (acp.ts `whole`), for its sessions and its
 // sign-in alike, so nothing it does runs outside: its home (Kuvo Code's own, never one of yours)
 // and its temporary folder written whole, its program and the bridge's browser catcher only read.
 // It writes files itself then, with its own tools (the bridge's would write outside).
 
-import { createHash } from "node:crypto"
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { providerID, type AgentAccount } from "../accounts"
@@ -24,9 +26,11 @@ import { newID } from "../ids"
 import { antigravityCredential, antigravityGeneration } from "../../usage/antigravity-plan"
 import { fingerprint } from "../../usage/limits"
 import { placeWhole } from "../../shared/files"
-import { run, which } from "../proc"
 import { RPC, RPCError } from "../rpc"
-import { catcher } from "../signin"
+import { catcher, commandSignIn } from "../signin"
+import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
+import { agyProgram } from "../../shared/agent-programs"
+import { agentsUpdateThemselves } from "../../shared/agent-updates"
 import { copySkillsInto, skillsFor, turnedOff } from "../skills"
 import { antigravityCustomAgents, subagentsFor } from "../subagents"
 import type { Turn } from "../turn"
@@ -48,28 +52,40 @@ export function forgetOldAntigravity(home: string, holders = agentHoldFolder("an
   }
 }
 
-const releases: Record<string, { url: string; sha256: string; bytes: number }> = {
-  "darwin-arm64": {
-    url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-arm64.zip",
-    sha256: "7cd97045f7b4fe81175a107cdf16f9c51484e3c78a5162cae415338bb6aa5b88",
-    bytes: 111456962,
-  },
-  "darwin-x64": {
-    url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-x86_64.zip",
-    sha256: "bb23956b89984bf5d354af2c3725e6c57f0cc1b7228e77a0e91c9c2bc1d47646",
-    bytes: 117245544,
-  },
-  "linux-x64": {
-    url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-x86_64.zip",
-    sha256: "9fb60956af0a9d76220a4db91ca9ac88e2a2372ad68f985ab5fceace6b825b96",
-    bytes: 333727150,
-  },
-  "linux-arm64": {
-    url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.3.0-linux-arm64.zip",
-    sha256: "500b0bc0fb858e88f4df404d4cedf80bf9298c178291e39e383d6c50b111cbdf",
-    bytes: 321690363,
-  },
+/** Google's release feed for `agy`, which its installer and updater read (a test names its own). */
+export const antigravityFeed = { base: "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests" }
+let newestKept: { at: number; value?: string } | undefined
+
+/** Its feed's name for this computer, as Google's installer works it out: `darwin_arm64`, `linux_amd64_musl`. */
+function agyTarget(): string | undefined {
+  const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : undefined
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : undefined
+  if (!os || !arch) return undefined
+  const musl = os === "linux" && (existsSync("/lib/libc.musl-x86_64.so.1") || existsSync("/lib/libc.musl-aarch64.so.1"))
+  return `${os}_${arch}${musl ? "_musl" : ""}`
 }
+
+/** The newest `agy` on Google's feed, asked at most every six hours unless `fresh`. */
+async function agyNewest(fresh: boolean): Promise<string | undefined> {
+  if (!fresh && newestKept && Date.now() - newestKept.at < 6 * 60 * 60_000) return newestKept.value
+  const target = agyTarget()
+  if (!target) return undefined
+  try {
+    const response = await fetch(`${antigravityFeed.base}/${target}.json`, { signal: AbortSignal.timeout(10_000) })
+    const version = response.ok ? (((await response.json()) as { version?: unknown }).version) : undefined
+    newestKept = { at: Date.now(), value: typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version) ? version : undefined }
+    return newestKept.value
+  } catch {
+    return newestKept?.value
+  }
+}
+
+/** A model's name as the model picker shows it: Antigravity's Claude and GPT models named apart
+ * from Claude Code's and Codex's own ("Claude Opus 5.5 (Antigravity)"); Gemini's as they are. */
+export function antigravityModelName(name: string): string {
+  return /gemini/i.test(name) || /\(Antigravity\)$/.test(name) ? name : `${name} (Antigravity)`
+}
+
 const executableName = "agy_acp_server.par"
 const harnessName = "localharness_external"
 /** What it says on stdout when it wants you to sign in (not ACP). */
@@ -93,7 +109,7 @@ const scrubbed = [
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_GENAI_USE_VERTEXAI", "GCLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT", "AGY_ACP_CCPA_PROJECT",
   "AGY_ACP_ENABLE_OAUTH", "GEMINI_HOME", "AGY_ACP_FORCE_FILE_STORAGE", "ANTIGRAVITY_HARNESS_PATH", "BROWSER", "PYTHONUNBUFFERED",
-  "ELECTRON_RUN_AS_NODE",
+  "ELECTRON_RUN_AS_NODE", "AGY_CLI_DISABLE_AUTO_UPDATE", "SSH_CONNECTION", "KUVO_AGY_PROGRAM", "CHROME_CRASHPAD_PIPE_NAME",
 ]
 
 /** The subagents an invoke_subagent call starts: {Subagents: [{Role, TypeName, Prompt, Model}]}, as an object or as JSON. */
@@ -437,9 +453,8 @@ export class AntigravityAgent implements Agent {
   get name() {
     return accountName("Antigravity", this.instance)
   }
-  private installing?: Promise<void>
-  /** How far the download has got, while it runs. */
-  private downloaded?: { bytes: number; total: number }
+  /** Google's installer, as its docs give it (it puts `agy` in `~/.local/bin`). */
+  install = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
 
   constructor(
     readonly context: AgentContext,
@@ -452,32 +467,68 @@ export class AntigravityAgent implements Agent {
     return join(this.context.home, "antigravity")
   }
 
+  /** Google's earlier agent (1.3.0), downloaded for an account signed in before `agy`. */
   private get folder() {
     return join(this.root, version)
   }
 
-  /** Its home (GEMINI_HOME): your sign-in, its settings and conversations; an added account's in its own folder. */
+  /** Its home (GEMINI_HOME): Kuvo Code's own, never your `~/.gemini`, as T3 Code keeps one: its
+   * sign-in, settings and conversations; an added account's in its own folder. */
   get profile() {
     return this.instance.home ? join(this.instance.home, "profile") : join(this.root, "profile")
   }
 
+  /** The earlier agent's sign-in (Google's 1.3 kept it in a file). */
   private get tokenFile() {
     return join(this.profile, "antigravity-acp", "acp_token.json")
+  }
+
+  /** `agy`'s sign-in here, once `agy` itself said it's signed in (Google keeps the secret itself). */
+  private get signInFile() {
+    return join(this.profile, "antigravity-acp", "kuvo-sign-in.json")
   }
 
   private get modelsFile() {
     return join(this.profile, "kuvo-models.json")
   }
 
+  executable(): string | undefined {
+    return agyProgram()
+  }
+
+  /** `agy`'s sign-in here: an id of Kuvo Code's own for it (never a secret), when it has one. */
+  private agySignIn(): { id: string } | undefined {
+    try {
+      const kept = JSON.parse(readFileSync(this.signInFile, "utf8"))
+      return typeof kept?.id === "string" && kept.id ? { id: kept.id } : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Signed in before `agy`, on Google's earlier agent, which still runs it until you sign in again. */
+  private earlier(): boolean {
+    return !this.agySignIn() && existsSync(this.tokenFile) && existsSync(join(this.folder, ".complete"))
+  }
+
+  /** Which runs it: `agy` (signed in there, or not signed in at all), or Google's earlier agent. */
+  private runtime(): "agy" | "earlier" {
+    return this.earlier() ? "earlier" : "agy"
+  }
+
   usageSignIn(): string | undefined {
+    const agy = this.agySignIn()
+    if (agy) return fingerprint(agy.id)
     try {
       const credential = antigravityCredential(JSON.parse(readFileSync(this.tokenFile, "utf8")))
       return credential ? antigravityGeneration(credential) : undefined
     } catch { return undefined }
   }
 
-  /** A refresh token stays with the sign-in when Google renews its access token. */
+  /** The sign-in its saved model list belongs to: a new sign-in is someone else until it lists its own. */
   private modelCredential(): string | undefined {
+    const agy = this.agySignIn()
+    if (agy) return fingerprint(agy.id)
     try {
       const credential = antigravityCredential(JSON.parse(readFileSync(this.tokenFile, "utf8")))
       return fingerprint(credential?.refresh ?? credential?.access)
@@ -486,97 +537,67 @@ export class AntigravityAgent implements Agent {
     }
   }
 
-  private get isInstalled() {
-    return existsSync(join(this.folder, ".complete"))
-  }
-
   methods() {
     return [{ type: "oauth" as const, id: "oauth-personal", label: "Sign in with Google" }]
   }
 
-  /** Its sign-in file as it was when Google ended the sign-in (its agent asked for a new one): until it's new. */
+  /** Its sign-in's file as it was when Google ended the sign-in: until it's new. */
   private endedSignIn?: number
+
+  private signInMark(): number | undefined {
+    try {
+      return statSync(this.runtime() === "earlier" ? this.tokenFile : this.signInFile).mtimeMs
+    } catch {
+      return undefined
+    }
+  }
 
   /** Google ended the sign-in: shown, and skipped by Custom Auto, until you sign in again. */
   signInEnded() {
-    try {
-      this.endedSignIn = statSync(this.tokenFile).mtimeMs
-    } catch {}
+    this.endedSignIn = this.signInMark()
     emit("integration.updated", { integrationID: this.providerID })
   }
 
   async account(): Promise<Account> {
-    const release = releases[`${process.platform}-${process.arch}`]
-    if (!release) return { installed: false, signedIn: false, message: "Google doesn't make Antigravity's agent for this computer." }
     if (this.endedSignIn !== undefined) {
-      let now: number | undefined
-      try {
-        now = statSync(this.tokenFile).mtimeMs
-      } catch {}
-      if (now === this.endedSignIn) return { installed: this.isInstalled, signedIn: false, ended: true, message: "Google ended this sign-in. Sign in again." }
+      if (this.signInMark() === this.endedSignIn) return { installed: Boolean(this.executable()) || this.earlier(), signedIn: false, ended: true, message: "Google ended this sign-in. Sign in again." }
       this.endedSignIn = undefined
     }
-    if (!existsSync(this.tokenFile)) {
-      return {
-        installed: this.isInstalled,
-        signedIn: false,
-        message: this.isInstalled ? "Sign in with your Google account." : `Sign in with your Google account. Kuvo Code downloads Google's Antigravity agent (about ${Math.round(release.bytes / 1_000_000)} MB) first.`,
-      }
-    }
-    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true, identity: this.modelCredential() }
+    // Signed in before `agy`: it keeps running on Google's earlier agent, until you sign in again.
+    if (this.earlier()) return { installed: true, signedIn: true, label: "Google account", what: true, identity: this.modelCredential(), message: "Sign in again to update Antigravity." }
+    if (!this.executable()) return { installed: false, signedIn: false, message: "Install Antigravity's CLI, then sign in here." }
+    if (!this.agySignIn()) return { installed: true, signedIn: false, message: "Sign in with your Google account." }
+    return { installed: true, signedIn: true, label: "Google account", what: true, identity: this.modelCredential() }
   }
 
-  /** Downloads and checks Google's agent, once. */
-  private ensureInstalled(): Promise<void> {
-    if (this.isInstalled) return Promise.resolve()
-    this.installing ??= this.download().finally(() => (this.installing = undefined))
-    return this.installing
+  /** Google's own updater (`agy update`), and its release feed for the newest. */
+  private get definition(): MaintenanceDefinition | undefined {
+    const executable = this.executable()
+    if (!executable) return undefined
+    return { name: "Antigravity's CLI", executable, newest: agyNewest, nativeUpdate: { args: ["update"], isNative: () => true } }
   }
 
-  private async download() {
-    const release = releases[`${process.platform}-${process.arch}`]
-    if (!release) throw new Error("Google doesn't make Antigravity's agent for this computer.")
-    const staging = join(this.root, `.install-${newID("att")}`)
-    mkdirSync(staging, { recursive: true })
-    try {
-      const archive = join(staging, "download.zip")
-      const response = await fetch(release.url)
-      if (!response.ok || !response.body) throw new Error(`Couldn't download Antigravity's agent (HTTP ${response.status}).`)
-      const hash = createHash("sha256")
-      const writer = Bun.file(archive).writer()
-      let bytes = 0
-      this.downloaded = { bytes, total: release.bytes }
-      for await (const chunk of response.body) {
-        hash.update(chunk)
-        writer.write(chunk)
-        bytes += chunk.byteLength
-        this.downloaded = { bytes, total: release.bytes }
-      }
-      await writer.end()
-      if (bytes !== release.bytes || hash.digest("hex") !== release.sha256) throw new Error("Antigravity's agent didn't download whole. Try again.")
-      const zip = unzipper()
-      const listed = await run(zip.program, zip.list(archive))
-      const entries = listed.stdout.split("\n").filter(Boolean).sort()
-      if (entries.join(",") !== [executableName, harnessName].sort().join(",")) throw new Error("Antigravity's agent wasn't what Kuvo Code expected.")
-      const unzipped = await run(zip.program, zip.extract(archive, staging))
-      if (unzipped.code !== 0) throw new Error(`Couldn't unpack Antigravity's agent: ${unzipped.stderr.trim()}`)
-      rmSync(archive, { force: true })
-      for (const name of [executableName, harnessName]) chmodSync(join(staging, name), 0o755)
-      writeFileSync(join(staging, ".complete"), JSON.stringify({ version, sha256: release.sha256 }))
-      // Another account can finish staging the same release first.
-      if (this.isInstalled) return
-      if (existsSync(this.folder)) {
-        if (heldVersions().some(using => using === undefined || using === version)) {
-          throw new Error("Antigravity is still using this version. Try again once its agent stops.")
-        }
-        rmSync(this.folder, { recursive: true, force: true })
-      }
-      renameSync(staging, this.folder)
-      forgetOldAntigravity(this.context.home)
-    } finally {
-      this.downloaded = undefined
-      rmSync(staging, { recursive: true, force: true })
-    }
+  async maintenance(fresh = false) {
+    const definition = this.definition
+    return definition ? maintenance(definition, fresh) : {}
+  }
+
+  async update(attempt?: string) {
+    const definition = this.definition
+    if (!definition) return { updated: false, message: "Antigravity's CLI isn't installed." }
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt })
+  }
+
+  /** Its program, with Google's installer. */
+  async installProgram() {
+    return install("Antigravity's CLI", this.install, this.context.temporary, () => this.executable())
+  }
+
+  /** Counts updates of `agy`: a session's agent started before the last one starts again. */
+  program = 0
+
+  programUpdated() {
+    this.program++
   }
 
   /** Where it reads skills itself: its home's (the CLI's) and a project's `.agents/skills` and `.gemini/skills`. */
@@ -595,11 +616,16 @@ export class AntigravityAgent implements Agent {
 
   /** What it only reads there: its program, and what hands the bridge the pages it opens (`BROWSER`). */
   reads(env: Record<string, string | undefined>): string[] {
-    return [env.ANTIGRAVITY_HARNESS_PATH, env.BROWSER].filter((place): place is string => Boolean(place)).map((place) => dirname(place))
+    return [env.ANTIGRAVITY_HARNESS_PATH ?? env.KUVO_AGY_PROGRAM, env.BROWSER].filter((place): place is string => Boolean(place)).map((place) => dirname(place))
   }
 
-  /** How it's started: its own home, its own temporary folder (it unpacks itself there, about 1 GB), and nothing of your other Google keys. */
-  private launch(): { argv: string[]; env: Record<string, string | undefined>; cleanEnv: boolean; onExit: () => void; signInFile: string; temporary: string } {
+  /**
+   * How it's started: its own home and temporary folder (it unpacks itself there, about 1 GB), and
+   * nothing of your other Google keys. `agy` keeps its sign-in in a file of its home rather than
+   * the system keyring (which it shares between every home) when it thinks it runs over SSH, as
+   * T3 Code starts it; and doesn't update itself unless you said agents may.
+   */
+  private launch(runtime = this.runtime()): { argv: string[]; env: Record<string, string | undefined>; cleanEnv: boolean; onExit: () => void; signInFile: string; temporary: string } {
     mkdirSync(join(this.profile, "antigravity-acp", "tmp"), { recursive: true, mode: 0o700 })
     const settings = join(this.profile, "antigravity-acp", "settings.json")
     if (!existsSync(settings)) writeFileSync(settings, JSON.stringify({ auth: { type: "oauth-personal" } }))
@@ -609,113 +635,131 @@ export class AntigravityAgent implements Agent {
     for (const [key, value] of Object.entries(process.env)) if (!scrubbed.includes(key.toUpperCase())) env[key] = value
     // On a machine, its commands find the machine's own settings (`gh`, git's).
     env = withOwnFolders(env)
-    Object.assign(env, {
-      GEMINI_HOME: this.profile,
-      AGY_ACP_FORCE_FILE_STORAGE: "1",
-      BROWSER: catcher(this.context.temporary),
-      KUVO_URL_FILE: join(temporary, "url"),
-      PYTHONUNBUFFERED: "1",
-      TMPDIR: temporary,
-      ANTIGRAVITY_HARNESS_PATH: join(this.folder, harnessName),
-    })
-    // (Not its start-up syslog, which leaves a marker folder in /tmp, whatever TMPDIR says.)
-    const argv = [join(this.folder, executableName), "--nosyslog_on_start", ...(process.platform === "linux" ? ["--uid="] : [])]
-    return { argv, env, cleanEnv: true, onExit: () => rmSync(temporary, { recursive: true, force: true }), signInFile: join(temporary, "url"), temporary }
+    Object.assign(env, { GEMINI_HOME: this.profile, BROWSER: catcher(this.context.temporary), KUVO_URL_FILE: join(temporary, "url"), TMPDIR: temporary })
+    const onExit = () => rmSync(temporary, { recursive: true, force: true })
+    if (runtime === "earlier") {
+      Object.assign(env, { AGY_ACP_FORCE_FILE_STORAGE: "1", PYTHONUNBUFFERED: "1", ANTIGRAVITY_HARNESS_PATH: join(this.folder, harnessName) })
+      // (Not its start-up syslog, which leaves a marker folder in /tmp, whatever TMPDIR says.)
+      const argv = [join(this.folder, executableName), "--nosyslog_on_start", ...(process.platform === "linux" ? ["--uid="] : [])]
+      return { argv, env, cleanEnv: true, onExit, signInFile: join(temporary, "url"), temporary }
+    }
+    const agy = this.executable()
+    if (!agy) {
+      onExit()
+      throw new Error(`Install Antigravity's CLI first: ${this.install}`)
+    }
+    let real = agy
+    try {
+      real = realpathSync(agy)
+    } catch {}
+    Object.assign(env, { SSH_CONNECTION: "127.0.0.1 0 127.0.0.1 0", KUVO_AGY_PROGRAM: real, ...(agentsUpdateThemselves() ? {} : { AGY_CLI_DISABLE_AUTO_UPDATE: "1" }) })
+    return { argv: [agy, "acp", "--gemini-dir", this.profile, "--app-data-dir", "antigravity-acp"], env, cleanEnv: true, onExit, signInFile: join(temporary, "url"), temporary }
   }
 
-  /**
-   * Google's page comes back to `localhost` on the computer it runs on: opened on another device
-   * (a phone), that device hands the address it was sent back to the computer
-   * (`kuvo/sign-in/return`), which loads it there for Google's agent.
-   */
+  /** Its sign-in page's code is pasted back here, from any device. */
   readonly signsInRemotely = true
 
+  /**
+   * Signs in with `agy acp --login` in its home: it prints Google's page, and takes the code that
+   * page ends on. Once it says it worked, `agy` itself is asked to use the sign-in (and lists the
+   * models this account has): only then is it signed in here.
+   */
   async signIn(): Promise<SignInAttempt> {
-    // It answers at once: the download (the first time) and Google's page come with its status,
-    // which the app shows and opens as they come.
-    let status: OAuthStatus = { status: "pending" }
-    let link = ""
-    let rpc: RPC | undefined
-    let cancelled = false
-    const found = (url: string) => {
-      if (!link && url.startsWith("https://")) link = url
+    const agy = this.executable()
+    if (!agy) throw new Error(`Install Antigravity's CLI first: ${this.install}`)
+    const launch = this.launch("agy")
+    let exit: number | undefined
+    let checked: Promise<boolean> | undefined
+    let why: string | undefined
+    const verify = () => (checked ??= this.verifySignIn().then(() => true, (error) => {
+      // (Google's own refusals, by what it said, stopped or not; what it said goes to the log.)
+      const said = String(error instanceof AgentStopped ? error.said : (error?.message ?? error))
+      why = /SUBSCRIPTION_REQUIRED/i.test(said)
+        ? "Google says this account needs an Antigravity subscription."
+        : error instanceof AgentStopped
+          ? error.message
+          : `Antigravity didn't take the sign-in: ${failure(error).message}`
+      return false
+    }))
+    // (Your other Google keys left out, as in its sessions; and no display, so it prints its page
+    // rather than opening a browser here.)
+    const unset = Object.fromEntries([...Object.keys(process.env).filter((key) => scrubbed.includes(key.toUpperCase())), "DISPLAY", "WAYLAND_DISPLAY"].map((key) => [key, undefined]))
+    return commandSignIn({
+      command: launch.argv[0],
+      args: [...launch.argv.slice(1), "--login"],
+      env: { ...unset, ...launch.env },
+      home: this.context.home,
+      temporary: this.context.temporary,
+      instructions: "Sign in with Google on its page, then paste the code it gives you here.",
+      // (Before it ends, a sign-in from before isn't this one.)
+      signedIn: async () => (exit === undefined ? false : exit === 0 && (await verify())),
+      codePrompt: /paste the authorization code[^\n]*press Enter:\s*/gi,
+      printedPage: true,
+      whyNot: () => why,
+      onEnd: (code) => {
+        exit = code
+        launch.onExit()
+      },
+      onComplete: () => {
+        this.endedSignIn = undefined
+        this.programUpdated()
+        emit("model.updated", {})
+      },
+    })
+  }
+
+  /** Asks `agy` to use its sign-in, and to list this account's models; noted as signed in only then. */
+  private async verifySignIn() {
+    const { rpc, cwd, initialize } = this.modelConnection(() => rpc.kill(), "agy")
+    try {
+      await initialize(120_000)
+      await rpc.request("authenticate", { methodId: "oauth-personal" }, 120_000)
+      const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 120_000)
+      if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
+      const id = newID("agy")
+      placeWhole(this.signInFile, JSON.stringify({ id, at: Date.now() }))
+      // (Google's earlier agent's sign-in is behind it now.)
+      rmSync(this.tokenFile, { force: true })
+      this.saveModels(setup, fingerprint(id))
+    } catch (error) {
+      // Stopped (not refused): what it said (a traceback, most often) is for the log, not the sheet.
+      if (rpc.isClosed && !(error instanceof RPCError)) {
+        await rpc.errorsRead
+        console.error(`Google's Antigravity agent stopped while signing in:\n${rpc.stderr.trim()}`)
+        throw new AgentStopped(rpc.stderr)
+      }
+      throw error
+    } finally {
+      rpc.kill()
     }
-    const flow = async () => {
-      await this.ensureInstalled()
-      if (cancelled) return
-      const connection = this.modelConnection(found)
-      rpc = connection.rpc
-      const { cwd, launch, initialize } = connection
-      // It hands the page to its "browser", which writes it down (or says it on a line of its own).
-      const watch = setInterval(() => {
-        try {
-          found(readFileSync(launch.env.KUVO_URL_FILE!, "utf8").split("\n")[0].trim())
-        } catch {}
-      }, 300)
+  }
+
+  /** `agy` forgets its sign-in itself (its ACP `logout`), then what Kuvo Code kept of it goes. */
+  private async forget() {
+    if (this.agySignIn() && this.executable()) {
+      const { rpc, initialize } = this.modelConnection(() => rpc.kill(), "agy")
       try {
-        await initialize(120_000)
-        await rpc.request("authenticate", { methodId: "oauth-personal" }, 600_000)
-        const credential = this.modelCredential()
-        // Signed in: a session to check it works, and to learn your models; then it goes.
-        const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 120_000)
-        this.saveModels(setup, credential)
-        if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
-        if (!cancelled) status = { status: "complete" }
+        const init: any = await initialize(60_000)
+        if (init?.agentCapabilities?.auth?.logout) await rpc.request("logout", {}, 90_000)
       } catch (error) {
-        // Stopped (not refused): what it said (a traceback, most often) is for the log, not the sheet.
-        if (rpc.isClosed && !cancelled && !(error instanceof RPCError)) {
-          await rpc.errorsRead
-          console.error(`Google's Antigravity agent stopped while signing in:\n${rpc.stderr.trim()}`)
-          throw new AgentStopped(rpc.stderr)
-        }
-        throw error
+        console.error(`Antigravity couldn't sign out: ${failure(error).message}`)
       } finally {
-        clearInterval(watch)
         rpc.kill()
       }
     }
-    flow().catch((error) => {
-      if (status.status !== "pending") return
-      // (Google's own refusals, by what it said, stopped or not.)
-      const message = String(error instanceof AgentStopped ? error.said : (error?.message ?? error))
-      status = {
-        status: "failed",
-        message: cancelled
-          ? "Cancelled."
-          : /SUBSCRIPTION_REQUIRED/i.test(message)
-            ? "Google says this account needs an Antigravity subscription."
-            : /access_denied/i.test(message)
-              ? "Google sign-in wasn't approved."
-              : error instanceof AgentStopped
-                ? error.message
-                : failure(error).message,
-      }
-    })
-    return {
-      url: "",
-      instructions: "Finish signing in with Google in your browser.",
-      mode: "auto",
-      status: () => {
-        if (status.status !== "pending") return status
-        const downloading = this.downloaded
-        if (downloading) {
-          const percent = Math.floor((downloading.bytes / downloading.total) * 100)
-          return { status: "pending", message: `Downloading Google's Antigravity agent… ${percent}%` }
-        }
-        if (!link) return { status: "pending", message: "Starting Google's Antigravity agent…" }
-        return { status: "pending", url: link, message: "Finish signing in with Google in your browser." }
-      },
-      cancel: () => {
-        cancelled = true
-        if (status.status === "pending") status = { status: "failed", message: "Cancelled." }
-        rpc?.kill()
-      },
-    }
+    rmSync(this.signInFile, { force: true })
+    rmSync(this.tokenFile, { force: true })
+    rmSync(this.modelsFile, { force: true })
+    this.listedHere = undefined
   }
 
   async signOut() {
-    rmSync(this.tokenFile, { force: true })
-    rmSync(this.modelsFile, { force: true })
+    await this.forget()
+  }
+
+  /** An added account signs out as it goes: `agy` forgets the sign-in in its home, before the home goes. */
+  async removeAccount() {
+    await this.forget()
   }
 
   private saveModels(setup: any, credential: string | undefined) {
@@ -756,8 +800,8 @@ export class AntigravityAgent implements Agent {
     if (existsSync(brain) && realpathSync(brain) === brain) rmSync(join(brain, sessionID), { recursive: true, force: true })
   }
 
-  private modelConnection(found: (url: string) => void) {
-    const launch = this.launch()
+  private modelConnection(found: (url: string) => void, runtime = this.runtime()) {
+    const launch = this.launch(runtime)
     // It starts in an empty folder in its own temporary one (not where it unpacks itself), one of
     // its own places in the sandbox: it reads the folder it starts in, and the bridge's temporary
     // folder may be inside one the sandbox hides (on a Mac, the app's own temporary folder).
@@ -799,6 +843,11 @@ export class AntigravityAgent implements Agent {
     return { rpc, cwd, launch, initialize }
   }
 
+  /** Whether it can run: `agy` signed in, or the earlier agent an account still runs on. */
+  private canRun() {
+    return this.earlier() || Boolean(this.executable() && this.agySignIn())
+  }
+
   private async discoverModels() {
     const credential = this.modelCredential()
     const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill())
@@ -819,18 +868,17 @@ export class AntigravityAgent implements Agent {
   }
 
   async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
-    if (options.refresh && this.isInstalled) await this.discoverModels()
+    if (options.refresh && this.canRun()) await this.discoverModels()
     const credential = this.modelCredential()
     const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { credential?: string; current?: string; models: { value: string; name: string }[] }
     if (!credential || saved?.credential !== credential || !Array.isArray(saved.models) || saved.models.some(info => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
       throw new Error("Antigravity’s model list couldn’t be read.")
     }
-    return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
+    return saved.models.map((info, index) => model(this.providerID, info.value, antigravityModelName(info.name), { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
   }
 
   /** How much each model holds, as Antigravity says in a turn (its models aren't all Gemini's 1M). */
   private windows = new ContextWindows()
-
   thread(session: Session, state: Record<string, unknown>): Thread {
     const agent = this
     const credentials = new WeakMap<RPC, string>()
@@ -840,7 +888,8 @@ export class AntigravityAgent implements Agent {
         noteContext(model, size) {
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
-        held: { kind: "antigravity", provider: agent.providerID, version },
+        // (`agy`, or Google's earlier agent pinned to its version.)
+        held: { kind: "antigravity", provider: agent.providerID, version: agent.runtime() === "agy" ? "agy" : version },
         fileSystem: true,
         whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
         authenticatesFirst: true,
@@ -859,7 +908,7 @@ export class AntigravityAgent implements Agent {
         madeFiles: (call, sessionId, since) => (/\bgenerate_image\b/.test(String(call?.title ?? "")) ? generatedImages(join(agent.profile, "antigravity-acp", "brain", sessionId), call?.rawInput ?? {}, since) : []),
         authMethod: () => "oauth-personal",
         async command() {
-          if (!agent.isInstalled) throw new Error("Sign in to Antigravity in Settings › Accounts first.")
+          if (!agent.canRun()) throw new Error("Sign in to Antigravity in Settings › Accounts first.")
           const credential = agent.modelCredential()
           return { ...agent.launch(), onOpen: (rpc: RPC) => { if (credential) credentials.set(rpc, credential) } }
         },
@@ -876,6 +925,9 @@ export class AntigravityAgent implements Agent {
         // Its access lasts an hour, renewed from the sign-in it keeps: one that asks for a new
         // sign-in partway is started again, which renews it.
         asksSignIn: (line) => line.includes(signInLine),
+        // `agy` asked to use a sign-in it no longer has: "Authentication required", or no browser
+        // to sign in again with (it thinks it runs over SSH).
+        signInRefused: (error) => error instanceof RPCError && (error.code === -32000 || /No browser is available here|Authentication required/i.test(error.message)),
         // "Usage Limit Reached. You have reached your current quota for this period. Your limit
         // will reset in 6 days, 19 hours.", as its whole answer.
         limitReply: (text) => {
@@ -920,17 +972,3 @@ export class AntigravityAgent implements Agent {
 }
 
 
-/**
- * What unpacks a zip here: `unzip` (every Mac has it), or Python's zipfile on a machine without it.
- */
-function unzipper(): { program: string; list: (archive: string) => string[]; extract: (archive: string, folder: string) => string[] } {
-  const unzip = which("unzip", ["/usr/bin"])
-  if (unzip) return { program: unzip, list: (archive) => ["-Z1", archive], extract: (archive, folder) => ["-q", "-o", archive, "-d", folder] }
-  const python = which("python3", ["/usr/bin"])
-  if (!python) throw new Error("Unpacking Antigravity's agent needs unzip or Python 3 on this machine.")
-  return {
-    program: python,
-    list: (archive) => ["-I", "-c", "import sys, zipfile; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))", archive],
-    extract: (archive, folder) => ["-I", "-c", "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, folder],
-  }
-}

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 fa1c99701f64
+// Kuvo folder layout 23 6b00658ed29d
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fa1c99701f64";
+var BRIDGE_VERSION = "6b00658ed29d";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -100399,14 +100399,17 @@ async function commandSignIn(options) {
   };
   child.exited.then(async (code) => {
     rmSync2(own, { recursive: true, force: true });
-    options.onEnd?.();
+    options.onEnd?.(code);
     if (status.status !== "pending")
       return;
     const signedIn = await options.signedIn().catch(() => false);
     if (status.status !== "pending")
       return;
+    const why = signedIn ? undefined : options.whyNot?.();
     if (signedIn && (code === 0 || signedInBefore === false))
       succeed();
+    else if (why)
+      status = { status: "failed", message: why };
     else if (pasted)
       status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." };
     else {
@@ -109583,11 +109586,12 @@ var init_maintenance = __esm(() => {
 // box/src/shared/agent-programs.ts
 import { homedir as homedir2 } from "node:os";
 import { join as join25 } from "node:path";
-var claudePlaces2, codexPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
+var claudePlaces2, codexPlaces, agyPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
 var init_agent_programs = __esm(() => {
   init_proc();
   claudePlaces2 = [join25(homedir2(), ".local/bin"), join25(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
   codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join25(homedir2(), ".local/bin"), join25(homedir2(), ".codex/bin")];
+  agyPlaces = [join25(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
   grokPlaces = [join25(homedir2(), ".grok/bin"), join25(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 });
 
@@ -110396,13 +110400,21 @@ class AntigravityPlan {
     } catch {}
     return this.lastCredential;
   }
+  agySignIn() {
+    try {
+      const id = JSON.parse(readFileSync21(join26(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id;
+      return typeof id === "string" && id ? fingerprint4(id) : undefined;
+    } catch {
+      return;
+    }
+  }
   signIn() {
     this.credential();
-    return this.lastSignIn;
+    return this.lastSignIn ?? this.agySignIn();
   }
   account() {
     this.credential();
-    return this.lastAccount;
+    return this.lastAccount ?? this.agySignIn();
   }
   async request(url, init, now, allowMissing = false) {
     let response;
@@ -110435,18 +110447,17 @@ class AntigravityPlan {
     if (!antigravityTransport.live && this.bases === productionBases)
       return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo’s data folder.", undefined, false));
     const raw = this.raw();
-    if (!raw)
-      throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false);
     let c;
-    try {
-      c = antigravityCredential(JSON.parse(raw));
-    } catch {}
-    if (!c)
-      throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    if (raw) {
+      try {
+        c = antigravityCredential(JSON.parse(raw));
+      } catch {}
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    }
     this.loadRefusals();
     this.saveRefusals();
-    const signIn = antigravityGeneration(c);
-    if (this.denied.has(signIn))
+    if (c && this.denied.has(antigravityGeneration(c)))
       throw new LimitsProblem("expired", "Antigravity refused this sign-in. Sign in again.", undefined, false);
     try {
       const endpoints = await this.discover(this.profile());
@@ -110481,7 +110492,7 @@ class AntigravityPlan {
               }
               console.warn("Antigravity optional plan status is unavailable; quota windows are kept.");
             }
-          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
+          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c?.identity };
         }
         if (this.holding(local("GetUserStatus"), now))
           continue;
@@ -110493,7 +110504,7 @@ class AntigravityPlan {
             legacy = antigravityLegacy(configs?.clientModelConfigs ?? []);
           }
           if (legacy.length)
-            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c.identity };
+            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c?.identity };
         } catch (error) {
           if (error instanceof LimitsProblem && error.kind === "rate-limited")
             throw error;
@@ -110501,6 +110512,8 @@ class AntigravityPlan {
             e.csrf && this.refuse(this.deniedCSRF, fingerprint4(e.csrf));
         }
       }
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false);
       const cached = this.access && this.access.credential === this.account() && this.access.expires > now + 60000 ? this.access : undefined;
       let access = cached?.token ?? c.access;
       if (access && this.deniedAccess.has(fingerprint4(access)))
@@ -110632,8 +110645,8 @@ class AntigravityPlan {
       const plan = status && ({ "g1-pro-tier": "Pro", "g1-ultra-tier": "Ultra", "g1-ultra-lite-tier": "Ultra Lite" }[status?.paidTier?.id] ?? antigravityPlanName(status?.paidTier?.name ?? status?.currentTier?.name));
       return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
     } catch (e) {
-      if (e instanceof LimitsProblem && e.kind === "expired")
-        this.refuse(this.denied, signIn);
+      if (e instanceof LimitsProblem && e.kind === "expired" && c)
+        this.refuse(this.denied, antigravityGeneration(c));
       throw e;
     }
   }
