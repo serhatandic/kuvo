@@ -528,7 +528,10 @@ export class Limits {
    */
   list(borrowed = true): AccountLimits[] {
     const listed: AccountLimits[] = []
-    for (const account of this.accounts()) {
+    const accounts = this.accounts()
+    const kept = this.settled() ? [] : this.unconfirmed().filter(account =>
+      !accounts.some(each => each.provider === account.provider) && !!this.entries.get(account.provider)?.identity)
+    for (const account of [...accounts, ...kept]) {
       // Every account signed in here is listed (what lists them says which are: Accounts' word for
       // the coding agents'), read or not yet: nothing read is no windows, never another's.
       const entry = this.entries.get(account.provider) ?? { windows: [], next: 0 }
@@ -682,6 +685,14 @@ export class Limits {
 
   /** Services read here whether or not one is signed in now (each coding agent's, signed in or out). */
   covers: () => LimitsService[] = () => []
+
+  /**
+   * Accounts whose sign-in isn't confirmed yet (just after this box started, before the coding
+   * agents' bridge says): listed as last read while what lists the accounts hasn't said them all,
+   * where one was read here before, so a client's rings don't blink out while the box restarts.
+   * Never read, nor counted as this box's, until they're confirmed.
+   */
+  unconfirmed: () => LimitedAccount[] = () => []
 
   /**
    * Reads now each account read longer ago than a minute, unless its maker said to wait or it was

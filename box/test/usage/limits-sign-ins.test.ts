@@ -279,3 +279,35 @@ test("an agent that never says how its sign-in stands holds up no reading: the o
   await limits.tick()
   expect((await rows(limits)).map((row) => row.title)).toEqual(["Grok"])
 })
+
+test("started again, the box lists what it last read of an account still signed in here until its agent says, so the ring doesn't blink out; one signed out meanwhile isn't", async () => {
+  cursor.keys.set("key_free", "auth0|user_free")
+  const home = mkdtempSync(join(base, "box-"))
+  const file = join(home, "limits.json")
+  const agent = cursorAgent(home, "key_free")
+  let limits = limitsOf([agent], new SignIns(), file)
+  await limits.tick()
+  limits.stop()
+
+  // As service.ts has it: an agent with a sign-in its bridge hasn't confirmed yet.
+  const restart = () => {
+    const record = new SignIns()
+    const restarted = limitsOf([agent], record, file)
+    restarted.unconfirmed = () => agentAccounts([agent].filter((each) => !!each.limits?.signIn?.() && record.signedIn(each.providerID) === undefined))
+    return { record, restarted }
+  }
+  const ring = async (limits: Limits) => (await rows(limits)).map((row) => [row.title, row.windows.length > 0])
+  let { record, restarted } = restart()
+  expect(await ring(restarted)).toEqual([["Cursor", true]])
+  // Its agent says it's signed in: the same ring, now read here again.
+  await record.ask(agent)
+  await restarted.tick()
+  expect(await ring(restarted)).toEqual([["Cursor", true]])
+  restarted.stop()
+
+  // Signed out while the box was off: nothing of it is listed.
+  await agent.signOut()
+  ;({ restarted } = restart())
+  expect(await rows(restarted)).toEqual([])
+  restarted.stop()
+})

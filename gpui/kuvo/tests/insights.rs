@@ -138,6 +138,46 @@ fn the_lists_switch_and_a_period_reads_again(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn another_period_never_shows_the_last_ones_figures_as_its_own(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, cx) = insights(cx, stand_in.clone());
+    assert!(shown(cx, "insights-total-cost") && !shown(cx, "insights-updating-mark"));
+
+    // 7d chosen while the box is still reading it: the month's figures stay in place, faded and
+    // marked as updating, never as the week's; the page doesn't go blank.
+    stand_in.set_insights(Sample::Reading);
+    click(cx, "insights-period-7d");
+    assert!(shown(cx, "insights-on-7d"));
+    assert!(shown(cx, "insights-updating") && shown(cx, "insights-updating-mark"));
+    assert!(!shown(cx, "insights-said"), "no blank \u{201c}Reading usage\u{2026}\u{201d} page");
+
+    // The box has read it: the week's figures, as they are.
+    stand_in.set_insights(Sample::Full);
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(last_asked(&stand_in).starts_with(&format!("{SUMMARY}?period=7")));
+    assert!(shown(cx, "insights-total-cost") && !shown(cx, "insights-updating") && !shown(cx, "insights-updating-mark"));
+
+    // Back to 30d while the box reads it again: its last figures at once, as its own.
+    stand_in.set_insights(Sample::Reading);
+    click(cx, "insights-period-30d");
+    assert!(shown(cx, "insights-total-cost") && !shown(cx, "insights-updating") && !shown(cx, "insights-updating-mark"));
+}
+
+#[gpui::test]
+fn insights_opens_at_once_on_the_boxs_last_summary_marked_as_updating(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_insights(Sample::Kept);
+    let (_, cx) = insights(cx, stand_in.clone());
+    // Its figures as they are (this period's), with a quiet mark while the box reads them afresh.
+    assert!(shown(cx, "insights-total-cost") && shown(cx, "insights-updating-mark") && !shown(cx, "insights-updating"));
+    stand_in.set_insights(Sample::Full);
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(shown(cx, "insights-total-cost") && !shown(cx, "insights-updating-mark"));
+}
+
+#[gpui::test]
 fn a_usage_ring_opens_insights_narrowed_to_its_account(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

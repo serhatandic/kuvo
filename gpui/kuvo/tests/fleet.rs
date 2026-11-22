@@ -175,7 +175,7 @@ fn an_off_computer_has_no_retry_action(cx: &mut TestAppContext) {
     assert!(!shown(cx, "fleet-update-key_studio"));
     let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let off = rows.iter().find(|row| row.key == "key_studio").expect("studio-mini is listed");
-    assert_eq!(kuvo::fleet::words(&off.standing.line), "beta.35 · Off: updates when it’s back");
+    assert_eq!(kuvo::fleet::words(&off.standing.line), "beta.35 · Can’t be reached: updates when it’s back");
 }
 
 /// Each row's words, by key, as the notifier and the Computers page draw them.
@@ -200,7 +200,7 @@ fn states_that_need_nothing_offer_nothing(cx: &mut TestAppContext) {
             // (Ahead of the release: up to date, on what it runs.)
             ("key_stand_in", json!({ "current": "0.8.0-beta.40", "target": target, "state": "up-to-date", "canRetry": false, "line": { "words": "beta.40 · Up to date", "tone": "done" } })),
             ("key_devbox", json!({ "current": old, "target": target, "state": "getting-ready", "canRetry": false, "line": { "words": "Getting beta.38 ready…", "tone": "working" } })),
-            ("key_studio", json!({ "current": old, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Off: updates when it’s back", "tone": "off" } })),
+            ("key_studio", json!({ "current": old, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Can’t be reached: updates when it’s back", "tone": "off" } })),
             ("key_more_0", json!({ "current": old, "target": target, "state": "cannot", "reason": "beta.38 doesn’t run here.", "fixable": false, "canRetry": false, "line": { "words": "beta.35 · beta.38 doesn’t run here. · Updates with the next release", "tone": "blocked" } })),
         ],
     );
@@ -212,7 +212,7 @@ fn states_that_need_nothing_offer_nothing(cx: &mut TestAppContext) {
     let lines = lines(&home, cx);
     assert_eq!(line_of(&lines, "key_stand_in"), ("beta.40 · Up to date".into(), None::<String>), "never an older version as available");
     assert_eq!(line_of(&lines, "key_devbox"), ("Getting beta.38 ready…".into(), None));
-    assert_eq!(line_of(&lines, "key_studio"), ("beta.35 · Off: updates when it’s back".into(), None));
+    assert_eq!(line_of(&lines, "key_studio"), ("beta.35 · Can’t be reached: updates when it’s back".into(), None));
     assert_eq!(line_of(&lines, "key_more_0"), ("beta.35 · beta.38 doesn’t run here. · Updates with the next release".into(), None));
     for key in ["key_stand_in", "key_devbox", "key_studio", "key_more_0"] {
         assert!(!shown(cx, &format!("fleet-card-update-{key}")), "{key}: nothing to press");

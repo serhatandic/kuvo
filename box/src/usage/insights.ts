@@ -5,6 +5,7 @@ import { dayIn, knownZone, ownZone } from "./history"
 import { InsightsDB, type Filter, type Scope } from "./insights-db"
 import { insightKey, type InsightRecord } from "./insight-records"
 import { providerName } from "./insights-names"
+import type { KeptSummaries } from "./insights-kept"
 import type { InsightsScan } from "./insights-scan"
 import { cacheRate, MOST, type Conversation, type Sums } from "./insights-summary"
 import type { PricingStore } from "./pricing"
@@ -48,6 +49,8 @@ function recordFrom(value: InsightRecord): InsightRecord | undefined {
 }
 
 export class Insights {
+  /** The summaries last served, served at once while they're read afresh (insights-kept.ts). */
+  kept?: KeptSummaries
   private scan?: Promise<void>
   private timer?: ReturnType<typeof setInterval>
   private refreshed?: number
@@ -381,7 +384,8 @@ export async function insightsRoutes(insights: Insights | undefined, method: str
   }
   if (method !== "GET") return json({ message: "Not found." }, 404)
   if (path.length === 1 && path[0] === "summary") {
-    const data = await insights.summary(params)
+    // (What the box last read for it at once, while it's read afresh: insights-kept.ts.)
+    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params)) : await insights.summary(params)
     return data ? json({ data }) : json({ message: "Choose a 7, 30 or 90 day period." }, 400)
   }
   const route = path.length === 0 ? (params.has("session") ? "detail" : "overview") :

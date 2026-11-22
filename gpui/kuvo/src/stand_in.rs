@@ -560,7 +560,7 @@ impl StandIn {
         let current = "0.8.0-beta.35";
         let up = json!({ "current": target, "target": target, "state": "up-to-date", "canRetry": false, "line": { "words": "beta.38 · Up to date", "tone": "done" } });
         let ready = json!({ "current": current, "target": target, "state": "ready", "canRetry": false, "line": { "words": "Ready for beta.38", "tone": "done" } });
-        let off = json!({ "current": current, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Off: updates when it’s back", "tone": "off" } });
+        let off = json!({ "current": current, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Can’t be reached: updates when it’s back", "tone": "off" } });
         let reason = "There isn’t room to prepare the release.";
         let devbox = if failed {
             json!({ "current": current, "target": target, "state": "cannot", "reason": reason, "fixable": true, "canRetry": true, "line": { "words": format!("beta.35 · {reason}"), "tone": "warning", "short": "Can’t update" } })

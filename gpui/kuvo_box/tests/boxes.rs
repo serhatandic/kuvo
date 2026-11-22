@@ -454,6 +454,45 @@ fn an_old_nearest_box_bootstraps_the_list_then_uses_the_updated_peers_fleet_stat
 }
 
 #[test]
+fn the_setup_update_stays_drawn_while_a_box_restarts_and_says_it_again() {
+    // This computer's box follows the setup's update to beta.42: lokum (the Mac mini here) is
+    // switching to it.
+    let setup = Setup::new();
+    let mut list = setup.list();
+    list["computers"][1]["fleetUpdate"] = json!({
+        "current": "0.8.0-beta.41", "target": "0.8.0-beta.42", "state": "updating", "stage": "switching", "canRetry": false, "line": { "words": "Switching to beta.42…", "tone": "working" }
+    });
+    list["fleetUpdate"] = json!({
+        "target": "0.8.0-beta.42", "stage": "switching", "done": 2, "behind": 0, "updating": 0, "failed": 0, "dismissed": false, "failures": [],
+        "shown": true, "title": "Updating to beta.42 · 2 of 3 ready"
+    });
+    *setup.macbook.computers.lock().unwrap() = list.clone();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    let title = |boxes: &Boxes| boxes.fleet_update().and_then(|summary| summary.title);
+    let line = |boxes: &Boxes| boxes.rows().into_iter().find(|row| row.computer.name == "Mac mini").and_then(|row| row.computer.fleet_update).and_then(|update| update.line).map(|line| line.words);
+    assert_eq!(title(&boxes).as_deref(), Some("Updating to beta.42 · 2 of 3 ready"));
+
+    // Just restarted, the box doesn't know its target yet: its list says no update at all. The
+    // notifier and the computer's line stay as last received; they don't blink out.
+    *setup.macbook.computers.lock().unwrap() = setup.list();
+    boxes.read_list().unwrap();
+    assert_eq!(title(&boxes).as_deref(), Some("Updating to beta.42 · 2 of 3 ready"));
+    assert_eq!(line(&boxes).as_deref(), Some("Switching to beta.42…"));
+
+    // Then it says it again, done: that's what's drawn.
+    list["computers"][1]["fleetUpdate"] = json!({
+        "current": "0.8.0-beta.42", "target": "0.8.0-beta.42", "state": "up-to-date", "canRetry": false, "line": { "words": "beta.42 · Up to date", "tone": "done" }
+    });
+    list["fleetUpdate"]["shown"] = json!(false);
+    list["fleetUpdate"]["stage"] = json!("finished");
+    *setup.macbook.computers.lock().unwrap() = list;
+    boxes.read_list().unwrap();
+    assert_eq!(boxes.fleet_update().and_then(|summary| summary.shown), Some(false));
+    assert_eq!(line(&boxes).as_deref(), Some("beta.42 · Up to date"));
+}
+
+#[test]
 fn the_kept_list_opens_the_app_with_your_computers_and_holds_nothing_secret() {
     let setup = Setup::new();
     let boxes = setup.boxes();
