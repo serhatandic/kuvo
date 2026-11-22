@@ -8,6 +8,8 @@ import { test } from "node:test";
 import { removeAtEnd } from "./at-end.js";
 
 const url = name => JSON.stringify(new URL("../src/link/" + name + ".ts", import.meta.url).href);
+// The main renews its relay lease every 10 s; a test of what the main saves starts with a fresh one.
+const leaseHelper = JSON.stringify(new URL("../test/relay-lease.ts", import.meta.url).href);
 const bun = process.env.KUVO_TEST_BUN || "bun";
 
 function isolated(code) {
@@ -100,21 +102,25 @@ test("ordinary revision-aware queue edits and the offline route replay the same 
   assert.deepEqual(await ask("POST", "kuvo/data/edits", { ref, operation: "change-with-revision", baseRevision: direct.value.revision, fields: { title: "Updated" } }), changed);
 `));
 
-test("only the current primary can publish an ownership assignment", () => isolated(`
+test("only the current main saves a setup-wide value", () => isolated(`
   import { stageShared } from ${url("setup/shared")};
-  const assignments = { "session computer:ses_a": { computer: own } };
+  import { grantRelayLease } from ${leaseHelper};
+  grantRelayLease(readLink());
+  const display = { units: {}, imported: true };
   const state = readLink();
   const former = { ...state, setup: { ...state.setup, role: "member", primary: other } };
-  assert.equal(stageShared(former, "ownershipAssignments", assignments), null);
-  assert.equal(former.shared.ownershipAssignments, undefined);
-  const proposal = stageShared(state, "ownershipAssignments", assignments);
+  assert.equal(stageShared(former, "setupUsageDisplay", display), null);
+  assert.equal(former.shared.setupUsageDisplay, undefined);
+  const proposal = stageShared(state, "setupUsageDisplay", display);
   assert.equal(proposal.status, "committed");
-  assert.deepEqual(state.shared.ownershipAssignments.value, assignments);
+  assert.deepEqual(state.shared.setupUsageDisplay.value, display);
 `));
 
 test("a holder retry returns its original setup receipt after a later save", () => isolated(`
   import { stageShared } from ${url("setup/shared")};
   import { saveLocalSetup } from ${url("areas/setup")};
+  import { grantRelayLease } from ${leaseHelper};
+  grantRelayLease(readLink());
   const json = (status, value) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }];
   const body = { id, epoch: 1, sequence: 0, operation: "A".repeat(22), kind: "setupUsageDisplay", value: { units: {}, imported: true } };
   const save = async data => {
@@ -256,7 +262,8 @@ test("owner read observations survive out-of-order replies without resurrecting 
 test("a setup draft above the owner capacity reaches a terminal receipt and stays recoverable", () => isolated(`
   import { MAX_SHARED_BYTES } from ${url("setup/shared")};
   import { readRecord } from ${url("ownership/store")};
-  import { writeLink, readLink } from ${url("state")};
+  import { grantRelayLease } from ${leaseHelper};
+  grantRelayLease(readLink());
   const link = readLink();
   link.shared.ownershipAssignments = { sequence: 1, value: "x".repeat(MAX_SHARED_BYTES) };
   writeLink(link);

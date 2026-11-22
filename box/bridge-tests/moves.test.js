@@ -563,7 +563,7 @@ test("a chat you stopped moves stopped, with what waits for it in the same order
   assert.deepEqual((await askMachine("GET", "kuvo/sessions/ses_stop/queue")).json.waiting.map(each => each.id), ["msg_wait2"]);
 });
 
-test("a chat stopped with messages the engine held moves with them, in their order, and the files of what waits go along", { timeout: 90_000 }, async t => {
+test("a chat stopped with messages the engine held moves with them, in their order, and the files of what waits go along; one whose file is gone holds the move", { timeout: 90_000 }, async t => {
   signal = t.signal;
   // Two sent while it worked, still in the engine's inbox as you press Stop: the one for its next
   // step goes first.
@@ -576,8 +576,18 @@ test("a chat stopped with messages the engine held moves with them, in their ord
   const notes = path.join(support, "notes.txt");
   fs.writeFileSync(notes, "Ship on Friday.");
   await ask("POST", "kuvo/sessions/ses_held/queue/add", { id: "msg_wait4", text: "Then the docs.", files: [{ uri: `file://${notes}`, name: "notes.txt" }] });
-  // And one whose file is gone by now: it goes, without it.
+  // And one whose file is gone by now: the move stops rather than send it without its file.
   await ask("POST", "kuvo/sessions/ses_held/queue/add", { id: "msg_wait5", text: "And the tag.", files: [{ uri: `file://${path.join(support, "gone.txt")}`, name: "gone.txt" }] });
+  const held = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_held", to: lab.key });
+  assert.equal(held.status, 409, JSON.stringify(held.json));
+  assert.match(held.json.message, /A message waiting for “Held” couldn’t be read\. The move stopped\./);
+  // Nothing's lost: it's still here, stopped, the engine holding its two and the box its own two.
+  const here = (await ask("GET", "kuvo/sessions/ses_held/queue")).json;
+  assert.equal(here.paused, true);
+  assert.deepEqual(here.waiting?.map(each => each.id), ["msg_wait4", "msg_wait5"]);
+  assert.deepEqual(macEngine.sessions.get("ses_held").inbox.map(each => each.id), ["msg_held1", "msg_held2"]);
+  // You take that one away, and it moves.
+  assert.equal((await ask("DELETE", "kuvo/sessions/ses_held/queue/msg_wait5")).status, 200);
   const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_held", to: lab.key });
   assert.equal(moved.status, 200, JSON.stringify(moved.json));
   // There: stopped, all three waiting in the order they had here, shown as here.
@@ -587,11 +597,10 @@ test("a chat stopped with messages the engine held moves with them, in their ord
     ["msg_held2", "Ada", "The build is green.", null],
     ["msg_held1", null, "Also run the tests.", ["log.txt"]],
     ["msg_wait4", null, "Then the docs.", ["notes.txt"]],
-    ["msg_wait5", null, "And the tag.", null],
   ]);
   assert.deepEqual(labEngine.prompts.filter(each => each.session === "ses_held"), [], "nothing went to the agent");
   // Each goes whole as Resume sends it, a file with what's in it.
-  for (const step of [1, 2, 3, 4]) {
+  for (const step of [1, 2, 3]) {
     assert.equal((await askMachine("POST", "kuvo/sessions/ses_held/queue/resume")).status, 200);
     await eventually(() => labEngine.prompts.filter(each => each.session === "ses_held").length >= step);
   }
@@ -599,7 +608,6 @@ test("a chat stopped with messages the engine held moves with them, in their ord
     ["[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nThe build is green.", null],
     ["Also run the tests.", [{ name: "log.txt", uri: "data:text/plain;base64,b2s=" }]],
     ["Then the docs.", [{ name: "notes.txt", uri: `data:text/plain;base64,${Buffer.from("Ship on Friday.").toString("base64")}` }]],
-    ["And the tag.", null],
   ]);
 });
 
