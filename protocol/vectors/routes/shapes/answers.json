@@ -485,7 +485,8 @@
          }
         }
        }
-      }
+      },
+      "parent?": "string"
      }
     },
     "404": {
@@ -606,7 +607,8 @@
          }
         }
        }
-      }
+      },
+      "parent?": "string"
      }
     },
     "400": {
@@ -10579,6 +10581,9 @@
             "literal": "messages.session-news"
            },
            {
+            "literal": "messages.tool-failures"
+           },
+           {
             "literal": "messages.tool-titles"
            },
            {
@@ -10745,6 +10750,9 @@
            },
            {
             "literal": "sessions.list"
+           },
+           {
+            "literal": "sessions.list.pages"
            },
            {
             "literal": "sessions.list.start"
@@ -11483,6 +11491,9 @@
             "literal": "messages.session-news"
            },
            {
+            "literal": "messages.tool-failures"
+           },
+           {
             "literal": "messages.tool-titles"
            },
            {
@@ -11649,6 +11660,9 @@
            },
            {
             "literal": "sessions.list"
+           },
+           {
+            "literal": "sessions.list.pages"
            },
            {
             "literal": "sessions.list.start"
@@ -22763,6 +22777,27 @@
          "created": "number",
          "updated": "number",
          "parent?": "string",
+         "subagents?": {
+          "list": "string"
+         },
+         "messages?": {
+          "object": {
+           "via": {
+            "oneOf": [
+             {
+              "literal": "direct"
+             },
+             {
+              "literal": "parent"
+             },
+             {
+              "literal": "none"
+             }
+            ]
+           },
+           "note?": "string"
+          }
+         },
          "line?": {
           "list": "string"
          },
@@ -22816,7 +22851,17 @@
          "name?": "string",
          "updated?": "number",
          "asking": "number",
-         "working": "number"
+         "working": "number",
+         "shown?": {
+          "list": "string"
+         },
+         "total?": "number",
+         "more?": {
+          "object": {
+           "cursor": "string",
+           "count": "number"
+          }
+         }
         }
        }
       },
@@ -22940,6 +22985,27 @@
          "created": "number",
          "updated": "number",
          "parent?": "string",
+         "subagents?": {
+          "list": "string"
+         },
+         "messages?": {
+          "object": {
+           "via": {
+            "oneOf": [
+             {
+              "literal": "direct"
+             },
+             {
+              "literal": "parent"
+             },
+             {
+              "literal": "none"
+             }
+            ]
+           },
+           "note?": "string"
+          }
+         },
          "line?": {
           "list": "string"
          },
@@ -22993,7 +23059,17 @@
          "name?": "string",
          "updated?": "number",
          "asking": "number",
-         "working": "number"
+         "working": "number",
+         "shown?": {
+          "list": "string"
+         },
+         "total?": "number",
+         "more?": {
+          "object": {
+           "cursor": "string",
+           "count": "number"
+          }
+         }
         }
        }
       },
@@ -23064,6 +23140,47 @@
       "pending?": {
        "list": "string"
       }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/page",
+   "feature": "sessions.list.pages",
+   "answers": {
+    "200": {
+     "object": {
+      "project": "string",
+      "sessions": {
+       "list": "string"
+      },
+      "total": "number",
+      "more": {
+       "oneOf": [
+        {
+         "object": {
+          "cursor": "string",
+          "count": "number"
+         }
+        },
+        "null"
+       ]
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
      }
     },
     "405": {
@@ -23155,6 +23272,9 @@
             "literal": "gone"
            }
           ]
+         },
+         "fixed?": {
+          "literal": true
          },
          "account?": {
           "object": {
