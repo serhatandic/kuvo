@@ -10,6 +10,8 @@ import path from "node:path";
 import { locked, textOf, writePrivate } from "../files";
 import { REAL_BOX, RUN, UPDATES } from "../home";
 import { watchFolders } from "../follow";
+import { releaseDisk } from "../server/disk-worker";
+import { keepsList } from "../server/resident-state";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
 import { requestFleetRetry } from "./progress";
@@ -56,6 +58,34 @@ export interface Held {
 /** The pack held, checked against its signed SHA-256 once for each file there (its size and time). */
 const packChecked = new Map<string, { stamp: string; sha: string; ok: boolean }>();
 
+const packChecking = new Map<string, string>();
+const packVerified = new Set<() => void>();
+const packStamp = (pack: string, stat: fs.Stats) => `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs} ${stat.ctimeMs}`;
+
+export async function verifyHeldPack(pack: string, stamp: string, sha: string): Promise<boolean | null> {
+  const hash = crypto.createHash("sha256");
+  try {
+    const before = await fs.promises.stat(pack);
+    if (packStamp(pack, before) !== stamp) return null;
+    if (!before.isFile() || before.size > MOST_PACK) return false;
+    for await (const chunk of fs.createReadStream(pack)) hash.update(chunk);
+    return packStamp(pack, await fs.promises.stat(pack)) === stamp ? hash.digest("hex") === sha : null;
+  } catch { return null; }
+}
+
+function verifyPackLater(folder: string, pack: string, stamp: string, sha: string): void {
+  const key = JSON.stringify([stamp, sha]);
+  if (packChecking.get(folder) === key) return;
+  packChecking.set(folder, key);
+  void releaseDisk.run("verifyHeldPack", pack, stamp, sha).then(ok => {
+    if (ok === null || packChecking.get(folder) !== key) return;
+    packChecked.set(folder, { stamp, sha, ok });
+    for (const tell of packVerified) tell();
+  }).catch(() => {}).finally(() => {
+    if (packChecking.get(folder) === key) packChecking.delete(folder);
+  });
+}
+
 export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, folder = HELD): Held | null {
   try {
     const boxes = fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
@@ -65,9 +95,13 @@ export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, fold
     if ((manifest as { spreads?: unknown }).spreads !== true) return null;
     const pack = path.join(folder, packName(manifest));
     const stat = fs.statSync(pack);
-    const stamp = `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs}`;
+    const stamp = packStamp(pack, stat);
     let checked = packChecked.get(folder);
     if (checked?.stamp !== stamp || checked.sha !== manifest.pack.sha256) {
+      if (keepsList()) {
+        verifyPackLater(folder, pack, stamp, manifest.pack.sha256);
+        return null;
+      }
       checked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
       packChecked.set(folder, checked);
     }
@@ -146,8 +180,10 @@ export function watchHeld(changed: () => void): { close: () => void } {
     changed();
   };
   // (A moment's gather: the folder's renamed in, in more than one step.)
-  const watch = watchFolders([UPDATES], () => { soon ??= setTimeout(look, 50); }, { recursive: false });
-  return { close: () => { watch.close(); if (soon) clearTimeout(soon); } };
+  const schedule = () => { soon ??= setTimeout(look, 50); };
+  const watch = watchFolders([UPDATES], schedule, { recursive: false });
+  packVerified.add(schedule);
+  return { close: () => { packVerified.delete(schedule); watch.close(); if (soon) clearTimeout(soon); } };
 }
 
 export function isUpdateMain(): boolean {

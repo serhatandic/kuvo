@@ -216,6 +216,14 @@ export async function pack(id: string, contents: Contents): Promise<{ file: stri
   }
 }
 
+export async function packForTransfer(id: string, contents: Contents) {
+  try { return { bundle: await pack(id, contents) }; }
+  catch (error) {
+    if (error instanceof TooBig) return { tooBig: true as const };
+    throw error;
+  }
+}
+
 /** The bundle that came for move `id`, opened: what it holds, and the folder it brought (in the
  * move's own folder, until it's put in place). */
 export async function unpack(id: string): Promise<{ contents: Contents; folder: string | null; carry: string | null; opened: string }> {
@@ -357,4 +365,13 @@ export async function groupAction(bridge: Target, group: string, action: "hold" 
   if (answer.status === 404 && action === "release") return null;
   if (answer.status !== 200) throw Object.assign(new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`), { status: answer.status });
   return answer.value?.data ?? null;
+}
+
+
+export async function unpackForTransfer(id: string) {
+  try { return { openedBundle: await unpack(id) }; }
+  catch (error) {
+    if (error instanceof NotTaken) return { refused: error.message };
+    throw error;
+  }
 }

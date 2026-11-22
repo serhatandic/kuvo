@@ -6,6 +6,7 @@
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import { locked, textOf, writePrivate } from "../files";
+import { settingsDisk } from "../server/disk-worker";
 import { BOX } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -80,5 +81,5 @@ export async function* modelsStarredRoute({ request, json }: RouteContext): Asyn
   if (!isStarred(given) || typeof (given as { starred?: unknown }).starred !== "boolean") {
     return yield* json(400, { message: "Say which model (providerID, id) and whether it's starred (starred, true or false)." });
   }
-  return yield* json(200, { starred: setStarred(given, (given as unknown as { starred: boolean }).starred) });
+  return yield* json(200, { starred: await settingsDisk.run("setStarred", given, (given as unknown as { starred: boolean }).starred) });
 }

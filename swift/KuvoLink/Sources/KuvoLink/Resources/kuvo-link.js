@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 a3d2ceeec993
+// Kuvo folder layout 23 add7fc2a7323
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -111,6 +111,9 @@ function checkCommandLines() {
   });
 }
 function processRunsKnown(pid, name) {
+  return observeProcess(pid, name, true) ?? false;
+}
+function observeProcess(pid, name, assumeOnError = false) {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || !alive(pid))
     return false;
   if (process.platform !== "darwin")
@@ -125,7 +128,7 @@ function processRunsKnown(pid, name) {
       setImmediate(checkCommandLines).unref();
     }
   }
-  return kept?.line?.includes(name) ?? kept !== undefined;
+  return kept?.line?.includes(name) ?? (kept && assumeOnError ? true : undefined);
 }
 function commandLine(pid) {
   const now = performance.now();
@@ -519,14 +522,32 @@ async function writePrivateLater(file, text, durableThrough) {
   if (durableThrough !== undefined)
     await syncDurableFileLater(folder, durableThrough);
 }
+async function syncPathLater(file) {
+  const handle = await fs3.promises.open(file, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function syncDurableTreeLater(folder, through = path3.dirname(folder)) {
+  async function syncEntry(entry) {
+    const stat = await fs3.promises.lstat(entry);
+    if (stat.isSymbolicLink())
+      return;
+    if (stat.isDirectory()) {
+      for (const child of await fs3.promises.readdir(entry))
+        await syncEntry(path3.join(entry, child));
+    } else if (!stat.isFile())
+      throw new Error("An imported entry is not a file or folder");
+    await syncPathLater(entry);
+  }
+  await syncEntry(folder);
+  await syncDurableFileLater(path3.dirname(folder), through);
+}
 async function syncDurableFileLater(file, through = path3.dirname(file)) {
   for (let entry = file;; entry = path3.dirname(entry)) {
-    const handle = await fs3.promises.open(entry, "r");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await syncPathLater(entry);
     if (entry === through)
       return;
     if (path3.dirname(entry) === entry)
@@ -1839,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a3d2ceeec993";
+var BRIDGE_VERSION = "add7fc2a7323";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -47042,6 +47063,27 @@ var init_session_notes2 = __esm(() => {
 });
 
 // box/src/link/moves/bundle.ts
+var exports_bundle = {};
+__export(exports_bundle, {
+  CHATS: () => CHATS,
+  MOST_BUNDLE: () => MOST_BUNDLE,
+  NotTaken: () => NotTaken,
+  conversationHash: () => conversationHash,
+  deleteSession: () => deleteSession,
+  directoryOf: () => directoryOf,
+  engineWait: () => engineWait,
+  exportAll: () => exportAll,
+  folderOf: () => folderOf3,
+  groupAction: () => groupAction,
+  hashOf: () => hashOf,
+  idsOf: () => idsOf,
+  importConversation: () => importConversation,
+  notPlainIn: () => notPlainIn,
+  ownTree: () => ownTree,
+  packForTransfer: () => packForTransfer,
+  toTrash: () => toTrash,
+  unpackForTransfer: () => unpackForTransfer
+});
 import { spawn as spawn11 } from "node:child_process";
 import crypto43 from "node:crypto";
 import fs129 from "node:fs";
@@ -47187,6 +47229,15 @@ async function pack(id, contents) {
     fs129.rmSync(staging, { recursive: true, force: true });
     if (carried)
       fs129.rmSync(carried, { recursive: true, force: true });
+  }
+}
+async function packForTransfer(id, contents) {
+  try {
+    return { bundle: await pack(id, contents) };
+  } catch (error) {
+    if (error instanceof TooBig2)
+      return { tooBig: true };
+    throw error;
   }
 }
 async function unpack(id) {
@@ -47350,6 +47401,15 @@ async function groupAction(bridge, group, action, moveImport) {
   if (answer.status !== 200)
     throw Object.assign(new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`), { status: answer.status });
   return answer.value?.data ?? null;
+}
+async function unpackForTransfer(id) {
+  try {
+    return { openedBundle: await unpack(id) };
+  } catch (error) {
+    if (error instanceof NotTaken)
+      return { refused: error.message };
+    throw error;
+  }
 }
 var MOST_BUNDLE = 1e9, ENGINE_WAIT, EXPORT_WAIT, engineWait = (signal, most = ENGINE_WAIT) => signal ? AbortSignal.any([signal, AbortSignal.timeout(most)]) : AbortSignal.timeout(most), bundleFormat, folderOf3 = (kind, thing) => kind === "bot" ? path130.join(BOTS, thing) : kind === "chat" ? path130.join(SESSION_WAKES, thing) : null, directoryOf = (kind, thing) => kind === "bot" ? path130.join(BOTS, thing, "workspace") : CHATS, NotTaken, idsOf = (exports) => exports.flatMap((each) => {
   const id = isObject(each) && isObject(each.info) ? each.info.id : null;
@@ -47759,7 +47819,7 @@ async function integrationsAnswer(method, requestPath, body, engine, signal, fil
     if (added && now === undefined)
       return { status: 409, value: { message: `${entry.title} was removed meanwhile.` } };
     const value = now ?? entry.settings;
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value }]);
+    const { changed } = await settingsDisk.run("patchConfig", [{ path: [...SERVERS, entry.id], value, was: now ?? null }], false);
     if (changed.status !== 200)
       return { status: changed.status, value: { message: changed.message } };
     if (newKeys)
@@ -47793,7 +47853,7 @@ async function integrationsAnswer(method, requestPath, body, engine, signal, fil
       const servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => []);
       signIn = (Array.isArray(servers) ? servers : []).find((each) => each?.name === entry.id)?.integrationID;
     }
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value: null }]);
+    const { changed } = await settingsDisk.run("patchConfig", [{ path: [...SERVERS, entry.id], value: null }], false);
     if (changed.status !== 200)
       return { status: changed.status, value: { message: changed.message } };
     if (engine && signIn) {
@@ -47804,7 +47864,7 @@ async function integrationsAnswer(method, requestPath, body, engine, signal, fil
       }
     }
     for (const name of [entry.id, `${entry.id}.json`])
-      fs131.rmSync(path132.join(INTEGRATION_DATA, name), { recursive: true, force: true });
+      await fs131.promises.rm(path132.join(INTEGRATION_DATA, name), { recursive: true, force: true });
     try {
       await keyWork(async () => {
         for (const variable of Object.values(entry.variables ?? {}))
@@ -48730,9 +48790,12 @@ async function carryOn(id) {
     throw new Refused("Update the destination computer before moving these forwarded decisions.");
   if (takenBack())
     return;
-  const bundle = await pack(id, contents).catch((error) => {
-    throw error instanceof TooBig2 ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
+  const prepared = await moveBundleDisk.run("packForTransfer", id, contents).catch((error) => {
+    throw new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
   });
+  if (!prepared.bundle)
+    throw new Refused(say.tooBig(record.name));
+  const bundle = prepared.bundle;
   if (bundle.size > MOST_BUNDLE)
     throw new Refused(say.tooBig(record.name));
   if (takenBack())
@@ -49282,7 +49345,10 @@ function checkedForwardEvidence(record, contents, sessions) {
   }
 }
 async function bringIn(record, signal) {
-  const { contents, folder, carry: carried, opened } = await unpack(record.id);
+  const unpacked = await moveBundleDisk.run("unpackForTransfer", record.id);
+  if (!unpacked.openedBundle)
+    throw new NotTaken(unpacked.refused);
+  const { contents, folder, carry: carried, opened } = unpacked.openedBundle;
   if (contents.sessionNotes !== undefined && (record.kind === "group" || !offlineEditsReady()))
     throw new NotTaken("The ordinary session notes cannot be placed here.");
   if (record.verifyPayloads && !Array.isArray(contents.sessionFiles))
@@ -49436,8 +49502,8 @@ async function bringIn(record, signal) {
   if (record.kind === "bot" && place)
     dropOwnServers(place);
   if (folder)
-    syncDurableTree(place, path135.dirname(path135.dirname(place)));
-  fs134.rmSync(path135.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
+    await syncDurableTreeLater(place, path135.dirname(path135.dirname(place)));
+  await fs134.promises.rm(path135.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
   if (evidence)
     placeForwardEvidence(evidence);
   return sessions;
@@ -68056,11 +68122,11 @@ async function deleteConfirm(deleting, context, signal, { count = deleting.lengt
   ].filter(Boolean);
   return { title: count === 1 ? `Delete “${deleting[0]?.title || UNTITLED}”?` : `Delete ${count} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
 }
-function forgetWakes2(session) {
+async function forgetWakes2(session) {
   if (!/^ses_[A-Za-z0-9]+$/.test(session))
     return;
   try {
-    fs171.rmSync(path173.join(SESSION_WAKES, session), { recursive: true, force: true });
+    await fs171.promises.rm(path173.join(SESSION_WAKES, session), { recursive: true, force: true });
   } catch {}
 }
 async function* sessionActionRoute(context, match) {
@@ -68161,7 +68227,7 @@ async function* sessionActionRoute(context, match) {
         return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String(error?.message ?? error)}` });
     }
-    forgetWakes2(id);
+    await forgetWakes2(id);
     return yield* json(200, { session: id });
   }
   if (action === "rename") {
@@ -69797,6 +69863,14 @@ var init_settings_skills = __esm(() => {
 });
 
 // box/src/link/areas/models-starred.ts
+var exports_models_starred = {};
+__export(exports_models_starred, {
+  MODELS_STARRED_ROUTE: () => MODELS_STARRED_ROUTE,
+  modelsStarredRoute: () => modelsStarredRoute,
+  setStarred: () => setStarred,
+  starredFromKeys: () => starredFromKeys,
+  starredModels: () => starredModels
+});
 import path178 from "node:path";
 function starredModels(file = MODELS_FILE) {
   try {
@@ -69850,11 +69924,12 @@ async function* modelsStarredRoute({ request, json }) {
   if (!isStarred(given) || typeof given.starred !== "boolean") {
     return yield* json(400, { message: "Say which model (providerID, id) and whether it's starred (starred, true or false)." });
   }
-  return yield* json(200, { starred: setStarred(given, given.starred) });
+  return yield* json(200, { starred: await settingsDisk.run("setStarred", given, given.starred) });
 }
 var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST4 = 200, LONGEST2 = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST2 && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST2, same6 = (a, b) => a.providerID === b.providerID && a.id === b.id;
 var init_models_starred = __esm(() => {
   init_files2();
+  init_disk_worker();
   init_home();
   MODELS_FILE = path178.join(BOX, "models.json");
 });
@@ -73034,9 +73109,70 @@ var init_progress = __esm(() => {
 });
 
 // box/src/link/updates/fleet.ts
+var exports_fleet = {};
+__export(exports_fleet, {
+  HELD: () => HELD3,
+  PREVIOUS_CHOICE: () => PREVIOUS_CHOICE,
+  RUNNING: () => RUNNING2,
+  STAGE_WAIT: () => STAGE_WAIT,
+  activationAllowed: () => activationAllowed,
+  askMainToCheck: () => askMainToCheck,
+  askPeerToRetry: () => askPeerToRetry,
+  clearIncoming: () => clearIncoming,
+  consumeFleetCheck: () => consumeFleetCheck,
+  fleetFacts: () => fleetFacts,
+  fleetTarget: () => fleetTarget,
+  fleetWith: () => fleetWith,
+  followOver: () => followOver,
+  followPeers: () => followPeers,
+  forgetFleet: () => forgetFleet,
+  heldKeys: () => heldKeys,
+  heldRelease: () => heldRelease,
+  isUpdateMain: () => isUpdateMain,
+  keepRelease: () => keepRelease,
+  newestHeld: () => newestHeld,
+  pullUnderWay: () => pullUnderWay,
+  repairPackSha: () => repairPackSha,
+  retryTransfer: () => retryTransfer,
+  runningKept: () => runningKept,
+  takeReleaseMail: () => takeReleaseMail,
+  verifyHeldPack: () => verifyHeldPack,
+  watchHeld: () => watchHeld
+});
 import crypto63 from "node:crypto";
 import fs183 from "node:fs";
 import path190 from "node:path";
+async function verifyHeldPack(pack, stamp, sha) {
+  const hash = crypto63.createHash("sha256");
+  try {
+    const before = await fs183.promises.stat(pack);
+    if (packStamp(pack, before) !== stamp)
+      return null;
+    if (!before.isFile() || before.size > MOST_PACK)
+      return false;
+    for await (const chunk of fs183.createReadStream(pack))
+      hash.update(chunk);
+    return packStamp(pack, await fs183.promises.stat(pack)) === stamp ? hash.digest("hex") === sha : null;
+  } catch {
+    return null;
+  }
+}
+function verifyPackLater(folder, pack, stamp, sha) {
+  const key = JSON.stringify([stamp, sha]);
+  if (packChecking.get(folder) === key)
+    return;
+  packChecking.set(folder, key);
+  releaseDisk.run("verifyHeldPack", pack, stamp, sha).then((ok) => {
+    if (ok === null || packChecking.get(folder) !== key)
+      return;
+    packChecked.set(folder, { stamp, sha, ok });
+    for (const tell of packVerified)
+      tell();
+  }).catch(() => {}).finally(() => {
+    if (packChecking.get(folder) === key)
+      packChecking.delete(folder);
+  });
+}
 function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
   try {
     const boxes = fs183.readFileSync(path190.join(folder, "boxes.json"), "utf8");
@@ -73045,9 +73181,13 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
       return null;
     const pack = path190.join(folder, packName(manifest));
     const stat = fs183.statSync(pack);
-    const stamp = `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs}`;
+    const stamp = packStamp(pack, stat);
     let checked = packChecked.get(folder);
     if (checked?.stamp !== stamp || checked.sha !== manifest.pack.sha256) {
+      if (keepsList()) {
+        verifyPackLater(folder, pack, stamp, manifest.pack.sha256);
+        return null;
+      }
       checked = { stamp, sha: manifest.pack.sha256, ok: crypto63.createHash("sha256").update(fs183.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
       packChecked.set(folder, checked);
     }
@@ -73119,10 +73259,13 @@ function watchHeld(changed) {
     was = now;
     changed();
   };
-  const watch = watchFolders([UPDATES], () => {
+  const schedule = () => {
     soon ??= setTimeout(look, 50);
-  }, { recursive: false });
+  };
+  const watch = watchFolders([UPDATES], schedule, { recursive: false });
+  packVerified.add(schedule);
   return { close: () => {
+    packVerified.delete(schedule);
     watch.close();
     if (soon)
       clearTimeout(soon);
@@ -73596,7 +73739,7 @@ function forgetFleet() {
 function clearIncoming() {
   endPull();
 }
-var HELD3, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`), CHECK_FILE, CHECK_KEPT, shortName3 = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
+var HELD3, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, packChecking, packVerified, packStamp = (pack, stat) => `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs} ${stat.ctimeMs}`, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`), CHECK_FILE, CHECK_KEPT, shortName3 = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
 var init_fleet = __esm(() => {
   init_choice();
   init_facts();
@@ -73605,6 +73748,7 @@ var init_fleet = __esm(() => {
   init_files2();
   init_home();
   init_follow();
+  init_disk_worker();
   init_directory();
   init_known();
   init_progress();
@@ -73617,6 +73761,8 @@ var init_fleet = __esm(() => {
   INCOMING = path190.join(UPDATES, "incoming");
   GIVE_UP = 5 * 60000;
   packChecked = new Map;
+  packChecking = new Map;
+  packVerified = new Set;
   heldFolders = [HELD3, RUNNING2, PREVIOUS_CHOICE];
   STAGE_WAIT = 5 * 60000;
   STAGE_CLOCK = path190.join(RUN, "fleet-stage-clock.json");
@@ -90393,7 +90539,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
     }
     const watch = typeof given.watch === "string" ? watches.find((each) => each.letters === given.watch) : undefined;
     if (watch && LETTERS.test(watch.letters)) {
-      fs217.rmSync(path228.join(folder, "watches", watch.letters), { recursive: true, force: true });
+      await fs217.promises.rm(path228.join(folder, "watches", watch.letters), { recursive: true, force: true });
       return yield* changed(200, {});
     }
     return yield* json(404, {});
@@ -94870,7 +95016,7 @@ class DiskWorker {
     return worker;
   }
 }
-var role = "kuvo-disk-worker", isDiskWorker, backupDisk, permissionDisk, removalDisk, folderDisk, settingsDisk, releaseDisk, numberDisk, browserDisk, wakeDisk, backlogDisk, queueMoveDisk, numberUpkeepDisk;
+var role = "kuvo-disk-worker", isDiskWorker, backupDisk, permissionDisk, removalDisk, folderDisk, settingsDisk, releaseDisk, numberDisk, browserDisk, wakeDisk, backlogDisk, queueMoveDisk, numberUpkeepDisk, moveBundleDisk;
 var init_disk_worker = __esm(() => {
   isDiskWorker = !isMainThread2 && workerData2 === role;
   if (isDiskWorker) {
@@ -94900,6 +95046,9 @@ var init_disk_worker = __esm(() => {
             break;
           case "installConfigCatalog":
             value = (await Promise.resolve().then(() => (init_settings5(), exports_settings))).installConfigCatalog(...args);
+            break;
+          case "setStarred":
+            value = (await Promise.resolve().then(() => (init_models_starred(), exports_models_starred))).setStarred(...args);
             break;
           case "patchConfig":
             value = (await Promise.resolve().then(() => (init_settings5(), exports_settings))).patchConfig(...args);
@@ -94983,6 +95132,12 @@ var init_disk_worker = __esm(() => {
           case "placeMoveWorkQueues":
             value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).placeMoveWorkQueues(...args);
             break;
+          case "packForTransfer":
+            value = await (await Promise.resolve().then(() => (init_bundle(), exports_bundle))).packForTransfer(...args);
+            break;
+          case "unpackForTransfer":
+            value = await (await Promise.resolve().then(() => (init_bundle(), exports_bundle))).unpackForTransfer(...args);
+            break;
           case "packQueuesForMove":
             value = (await Promise.resolve().then(() => (init_moves(), exports_moves))).packQueuesForMove(...args);
             break;
@@ -95000,6 +95155,9 @@ var init_disk_worker = __esm(() => {
             break;
           case "allocateNumbers":
             value = (await Promise.resolve().then(() => (init_numbers(), exports_numbers))).allocateNumbers(...args);
+            break;
+          case "verifyHeldPack":
+            value = await (await Promise.resolve().then(() => (init_fleet(), exports_fleet))).verifyHeldPack(...args);
             break;
           case "receiveRelease":
             value = (await Promise.resolve().then(() => (init_update(), exports_update))).receiveRelease(...args);
@@ -95026,6 +95184,7 @@ var init_disk_worker = __esm(() => {
   backlogDisk = new DiskWorker;
   queueMoveDisk = new DiskWorker;
   numberUpkeepDisk = new DiskWorker;
+  moveBundleDisk = new DiskWorker;
 });
 
 // box/src/link/fence/state.ts
@@ -95161,7 +95320,12 @@ function bridgeSays() {
   try {
     bridge = JSON.parse(fs230.readFileSync(BRIDGE_FILE, "utf8"));
   } catch {}
-  if (!bridge?.pid || !processRuns(bridge.pid, "kuvo-agents"))
+  if (!bridge?.pid)
+    return "none";
+  const running = observeProcess(bridge.pid, "kuvo-agents");
+  if (running === undefined)
+    return;
+  if (!running)
     return "none";
   try {
     const said = JSON.parse(fs230.readFileSync(path241.join(FOLDER2, "agents"), "utf8"));

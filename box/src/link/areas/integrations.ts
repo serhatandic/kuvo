@@ -14,12 +14,12 @@ import { CONFIG_LOCK, INTEGRATION_DATA, IS_MAC, K, OWN_HOME_MAC, OWN_RUNTIME, SC
 import { answeringOnce } from "../once";
 import { KeysUnavailable, siteSignIns } from "../host-interface";
 import type { SignInCookie } from "../browser/sites";
-import { browserDisk } from "../server/disk-worker";
+import { browserDisk, settingsDisk } from "../server/disk-worker";
 import { deleteKey, keyNames, keyWork, STORED_KEY, writeKey } from "../keys";
 import type { AnswerPiece, JSONAnswer, RouteContext } from "../server/context";
 import { updateOnTrial } from "../updates/update";
 import { CATALOG_FILE } from "./mcp-catalog";
-import { changeSettings, CONFIG_FILE, olderKeysNamedHere, ownsSettings, readSettings, SERVERS, valueAt, writeSettings } from "./config";
+import { CONFIG_FILE, olderKeysNamedHere, ownsSettings, readSettings, SERVERS, valueAt, writeSettings } from "./config";
 import type { SettingChange, Settings } from "./config";
 import type { EngineCredential } from "./accounts";
 
@@ -358,7 +358,7 @@ async function integrationsAnswer(method: string, requestPath: string, body: Bod
     const now = valueAt(readSettings().settings ?? {}, [...SERVERS, entry.id]);
     if (added && now === undefined) return { status: 409, value: { message: `${entry.title} was removed meanwhile.` } };
     const value = now ?? entry.settings;
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value }]);
+    const { changed } = await settingsDisk.run("patchConfig", [{ path: [...SERVERS, entry.id], value, was: now ?? null }], false);
     if (changed.status !== 200) return { status: changed.status, value: { message: changed.message } };
     // The engine reads its keys as it reads its settings again: its server connects again a
     // moment later, with the new ones, in every folder the engine has open.
@@ -393,7 +393,7 @@ async function integrationsAnswer(method: string, requestPath: string, body: Bod
       const servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => []);
       signIn = (Array.isArray(servers) ? servers as EngineServer[] : []).find(each => each?.name === entry.id)?.integrationID;
     }
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value: null }]);
+    const { changed } = await settingsDisk.run("patchConfig", [{ path: [...SERVERS, entry.id], value: null }], false);
     if (changed.status !== 200) return { status: changed.status, value: { message: changed.message } };
     if (engine && signIn) {
       const credentials = await call(engine, "GET", "/api/credential", undefined, signal).catch(() => []);
@@ -402,7 +402,7 @@ async function integrationsAnswer(method: string, requestPath: string, body: Bod
       }
     }
     // What its server kept: its own folder (and the file it once kept).
-    for (const name of [entry.id, `${entry.id}.json`]) fs.rmSync(path.join(INTEGRATION_DATA, name), { recursive: true, force: true });
+    for (const name of [entry.id, `${entry.id}.json`]) await fs.promises.rm(path.join(INTEGRATION_DATA, name), { recursive: true, force: true });
     try {
       await keyWork(async () => {
         for (const variable of Object.values(entry.variables ?? {})) if (STORED_KEY.test(variable)) await deleteKey(variable);

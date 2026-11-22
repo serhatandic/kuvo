@@ -67,6 +67,11 @@ function checkCommandLines(): void {
 /** A liveness read for a dispatcher: on a Mac a missing observation is queued for a shared ps.
  * The process must still be alive even when its command line is cached. */
 export function processRunsKnown(pid: unknown, name: string): boolean {
+  return observeProcess(pid, name, true) ?? false;
+}
+
+/** Undefined until the process name is known. Callers that make safety decisions can wait. */
+export function observeProcess(pid: unknown, name: string, assumeOnError = false): boolean | undefined {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || !alive(pid)) return false;
   if (process.platform !== "darwin") return processRuns(pid, name);
   if (process.env.KUVO_BOX === "mac" || (process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)) return true;
@@ -78,7 +83,7 @@ export function processRunsKnown(pid: unknown, name: string): boolean {
       setImmediate(checkCommandLines).unref();
     }
   }
-  return kept?.line?.includes(name) ?? (kept !== undefined);
+  return kept?.line?.includes(name) ?? (kept && assumeOnError ? true : undefined);
 }
 
 /** `pid`'s command line as `ps` says (undefined: it couldn't be asked, in a sandbox, say). */

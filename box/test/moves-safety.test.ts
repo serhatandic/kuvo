@@ -763,12 +763,16 @@ test.each(["switch", "drop"] as const)("ordinary note history survives receiver 
 test("moving a bot cannot report arrival until its nested wake-up files have synced", async () => {
   const incoming = await incomingBot()
   let sawNested = false
-  const restore = interceptSync(file => {
-    if (file !== nested) return false
-    sawNested = true
-    return true
+  const open = fs.promises.open
+  const restore = spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+    const handle = await open(...args)
+    if (args[0] === nested) handle.sync = async () => {
+      sawNested = true
+      throw new Error("Injected sync failure")
+    }
+    return handle
   })
-  try { await incoming.part() } finally { restore() }
+  try { await incoming.part() } finally { restore.mockRestore() }
   expect(sawNested).toBe(true)
   expect(mail.some(item => item.op === "arrived")).toBe(false)
   await incoming.activate()

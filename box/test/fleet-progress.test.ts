@@ -1,5 +1,10 @@
 import "./safety"
 import { expect, test } from "bun:test"
+import crypto from "node:crypto"
+import fs from "node:fs"
+import path from "node:path"
+import { fleetWith, heldRelease, HELD, watchHeld } from "../src/link/updates/fleet"
+import { keepList } from "../src/link/lists/sessions"
 
 // How one of your computers' update reads while it switches to the setup's release (PROTOCOL.md,
 // "Updates", Request API): a computer restarting into the release reads as switching, never off;
@@ -78,4 +83,34 @@ test("the update notifier stays up, counting the switching computer, while it re
   expect(trial).toMatchObject({ shown: true, stage: "switching", title: "Updating to beta.42 · 3 of 3 ready" })
   const done = fleetSummary(rows(switched, false, Infinity), target)!
   expect(done).toMatchObject({ shown: true, title: "Updating to beta.42 · 3 of 3 ready" })
+})
+
+test("the resident announces a kept release after its pack has been verified", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519")
+  const key = keys.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64")
+  const pack = Buffer.from("A signed release payload")
+  const sha256 = crypto.createHash("sha256").update(pack).digest("hex")
+  const version = "0.8.0-beta.43"
+  const manifest = Buffer.from(JSON.stringify({
+    kuvo: "box/1", version, engine: "1.0.0", spreads: true,
+    pack: { url: "https://example.invalid/box.tar.gz", sha256 },
+  }))
+  const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), keys.privateKey).toString("base64")
+  fs.mkdirSync(HELD, { recursive: true })
+  fs.writeFileSync(path.join(HELD, "box.tar.gz"), pack)
+  fs.writeFileSync(path.join(HELD, "boxes.json"), JSON.stringify({ manifest: manifest.toString("base64"), key, signature }))
+  fleetWith({ keys: [key] })
+  const stop = keepList()
+  const heard = Promise.withResolvers<void>()
+  const watcher = watchHeld(heard.resolve)
+  try {
+    expect(heldRelease()).toBeNull()
+    await heard.promise
+    expect(heldRelease()).toMatchObject({ version, sha256, size: pack.length })
+  } finally {
+    watcher.close()
+    stop()
+    fleetWith({})
+    fs.rmSync(HELD, { recursive: true, force: true })
+  }
 })
