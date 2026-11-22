@@ -750,12 +750,64 @@ fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outp
 }
 
 #[gpui::test]
+fn a_side_chat_asks_on_the_model_picked_with_a_file_attached_and_leaves_the_conversations_model(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.answer_side_questions(&["The debounce is 30 seconds."]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "tile-side-chat");
+    // The conversation's composer's paperclip and chips: on the conversation's own model and effort.
+    assert!(bounds(cx, "side-chat-attach").is_some());
+    assert!(bounds(cx, "side-chat-effort").is_some());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).side_chat()).unwrap();
+    assert_eq!(view.read_with(cx, |view, _| view.chip_label()).as_deref(), Some("Claude Opus 5.5"));
+
+    // Another model, picked in the conversation's picker.
+    click(cx, "side-chat-model");
+    click(cx, "model-row-anthropic/claude-sonnet-5-5");
+    assert_eq!(view.read_with(cx, |view, _| view.chip_label()).as_deref(), Some("Claude Sonnet 5.5"));
+
+    // A file dropped on it, shown above the field.
+    let folder = tempfile::tempdir().unwrap();
+    let notes = folder.path().join("notes.md");
+    std::fs::write(&notes, "Debounce: 30s").unwrap();
+    {
+        use gpui::{ExternalPaths, FileDropEvent, InputEvent as _};
+        let position = bounds(cx, "side-chat-composer").unwrap().center();
+        cx.update(|window, cx| { window.dispatch_event(FileDropEvent::Entered { position, paths: ExternalPaths([notes.clone()].into_iter().collect()) }.to_platform_input(), cx); });
+        cx.run_until_parked();
+        cx.update(|window, cx| { window.dispatch_event(FileDropEvent::Submit { position }.to_platform_input(), cx); });
+        cx.run_until_parked();
+    }
+    assert!(bounds(cx, "attachments").is_some_and(|strip| strip.top() >= bounds(cx, "side-chat-composer").unwrap().top()), "in the side chat's composer");
+
+    let field = view.read_with(cx, |view, _| view.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_input("Which delay?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    // The model and the file go to the box with the question.
+    let asked = sent(&stand_in, "kuvo/agents/api/kuvo/btw/ses_signup");
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0]["question"], json!("Which delay?"));
+    assert_eq!(asked[0]["model"]["providerID"], json!("anthropic"));
+    assert_eq!(asked[0]["model"]["id"], json!("claude-sonnet-5-5"));
+    assert_eq!(asked[0]["files"].as_array().map(Vec::len), Some(1));
+    assert_eq!(asked[0]["files"][0]["name"], json!("notes.md"));
+    // Shown with its file, the composer emptied; the conversation stays on its own model.
+    assert!(bounds(cx, "side-file-btw_1-0").is_some());
+    assert!(view.read_with(cx, |view, _| view.attached().is_empty()));
+    assert!(stand_in.seen_at("POST", "api/session/ses_signup/model").is_empty());
+}
+
+#[gpui::test]
 fn a_bots_conversation_opens_the_panel_from_the_title_bar_and_its_side_chats_open_there(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.answer_side_questions(&["It reads the queue first."]);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
     // A side chat asked in the bot's conversation before.
-    BoxClient::new(stand_in.clone()).ask_aside("ses_mira", "What do you check first?", None).unwrap();
+    BoxClient::new(stand_in.clone()).ask_aside("ses_mira", "What do you check first?", None, None, &[]).unwrap();
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.show_area(kuvo::area::Area::Bots, window, cx);
         workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);

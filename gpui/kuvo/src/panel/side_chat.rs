@@ -1,13 +1,26 @@
 //! A side chat tab: one side thread of questions asked about the conversation without interrupting
 //! it (`/btw`), answered from what it knows and kept out of it, as the box keeps and groups them
 //! (`kuvo/agents/api/kuvo/btw/<session>/threads`, followed). A new side chat starts its thread
-//! with its first question; each one after follows up in it.
+//! with its first question; each one after follows up in it. Its composer is the conversation's,
+//! as a side question can use it: files to attach, and a model with its effort (the conversation's
+//! own until another's picked), which go to the box with the question. No mode: a side question
+//! runs nothing.
+
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
+    PathPromptOptions, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::follow::{Follow, Followed};
+use kuvo_box::models::{ModelState, Offered, OfferedModel};
+use kuvo_box::typed::ModelRef;
+use kuvo_ui::menu::PopoverMenuHandle;
+use kuvo_ui::small::Chip;
+
+use crate::model_picker::{Catalog, ModelPicker, RefreshModels};
 use kuvo_box::side_chats::{Answering, SideThread, SideThreads};
 use kuvo_box::BoxClient;
 use kuvo_ui::markdown::Markdown;
@@ -33,6 +46,15 @@ pub struct SideChatView {
     field: Entity<TextField>,
     asking: bool,
     failed: Option<String>,
+    /// Files to go with the next question.
+    attached: Vec<PathBuf>,
+    /// What the box offers, and what it says of the conversation's model: the one a question's
+    /// asked on until another's picked (`picked`).
+    offered: Option<Offered>,
+    own: Option<ModelState>,
+    picked: Option<ModelRef>,
+    model_menu: PopoverMenuHandle,
+    _picking: Vec<Task<()>>,
     on_screen: bool,
     scroll: ScrollHandle,
     _field: Subscription,
@@ -53,7 +75,120 @@ impl SideChatView {
             }
             _ => {}
         });
-        SideChatView { client, live, session, thread, threads: Load::Loading, field, asking: false, failed: None, on_screen: false, scroll: ScrollHandle::new(), _field: watch, _follow: None, _task: None }
+        SideChatView {
+            client, live, session, thread, threads: Load::Loading, field, asking: false, failed: None,
+            attached: Vec::new(), offered: None, own: None, picked: None, model_menu: PopoverMenuHandle::default(), _picking: Vec::new(),
+            on_screen: false, scroll: ScrollHandle::new(), _field: watch, _follow: None, _task: None,
+        }
+    }
+
+    /// The model the next question's asked on: the one picked, else the conversation's own.
+    pub fn model(&self) -> Option<ModelRef> {
+        self.picked.clone().or_else(|| self.own.as_ref().and_then(|own| own.model.clone()))
+    }
+
+    pub fn attached(&self) -> &[PathBuf] {
+        &self.attached
+    }
+
+    /// Reads what the box offers and the conversation's model, for the chips.
+    fn read_models(&mut self, cx: &mut Context<Self>) {
+        let (client, session, before) = (self.client.clone(), self.session.clone(), self.offered.clone());
+        run(self, self.live, cx, move || {
+            let offered = client.offered_models_for_session(None, None, Some(&session)).ok().map(|offered| offered.keeping(before.as_ref()));
+            let own = client.session_models(&[session.as_str()]).ok().and_then(|mut all| all.remove(&session));
+            (offered, own)
+        }, |this, (offered, own), cx| {
+            if offered.is_some() {
+                this.offered = offered;
+            }
+            if own.is_some() {
+                this.own = own;
+            }
+            cx.notify();
+        });
+    }
+
+    /// The models it can be asked on: those of the conversation's own side (its engine, or its
+    /// coding agents), as the box answers a side question on them.
+    fn offerable(&self, model: &OfferedModel) -> bool {
+        let own = self.own.as_ref().and_then(|own| own.model.as_ref());
+        let models = self.offered.as_ref().map(|offered| offered.models.as_slice()).unwrap_or_default();
+        let side = own.and_then(|own| models.iter().find(|each| each.is(own))).map(|each| each.side);
+        self.offered.as_ref().is_some_and(|offered| offered.scoped) || side.is_none_or(|side| model.side == side)
+    }
+
+    /// What the model chip says: the model's name, as the box lists it.
+    pub fn chip_label(&self) -> Option<String> {
+        let model = self.model()?;
+        let listed = self.offered.as_ref().and_then(|offered| offered.models.iter().find(|each| each.is(&model))).map(|each| each.name.clone());
+        let own = self.picked.is_none().then(|| self.own.as_ref().and_then(|own| own.name.clone())).flatten();
+        Some(own.or(listed).unwrap_or(model.id))
+    }
+
+    fn efforts(&self) -> Vec<String> {
+        let Some(model) = self.model() else { return Vec::new() };
+        self.offered.as_ref().and_then(|offered| offered.models.iter().find(|each| each.is(&model))).map(|each| each.efforts.clone()).unwrap_or_default()
+    }
+
+    /// Picks the model (and effort) side questions here are asked on; the conversation's own model
+    /// stays as it is.
+    pub fn pick(&mut self, model: ModelRef, cx: &mut Context<Self>) {
+        let own = self.own.as_ref().and_then(|own| own.model.as_ref());
+        self.picked = (own != Some(&model)).then_some(model);
+        cx.notify();
+    }
+
+    fn model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ModelPicker> {
+        let catalog = Arc::new(self.offered.as_ref().map(|offered| Catalog::new(offered, |model| self.offerable(model))).unwrap_or_default());
+        let starred = self.offered.as_ref().and_then(|offered| offered.starred.clone());
+        let this = cx.entity().downgrade();
+        let (current, client, before, session) = (self.model(), self.client.clone(), self.offered.clone(), self.session.clone());
+        cx.new(|cx| {
+            ModelPicker::new(
+                catalog,
+                starred,
+                current,
+                Some(client),
+                Rc::new(move |picked, _, cx| {
+                    if let Some(picked) = picked {
+                        this.update(cx, |this, cx| this.pick(picked, cx)).ok();
+                    }
+                }),
+                window,
+                cx,
+            )
+            .refresh_when_opened(before, RefreshModels::Offered { folder: None, session: Some(session), side: None }, window, cx)
+            .note(Some("A side question is answered on the model picked here. The conversation stays on its own.".into()))
+        })
+    }
+
+    /// Files and pictures to go with the next question.
+    pub fn attach(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            if !path.is_dir() && !self.attached.contains(&path) {
+                self.attached.push(path);
+            }
+        }
+        self.failed = None;
+        cx.notify();
+    }
+
+    fn detach(&mut self, at: usize, cx: &mut Context<Self>) {
+        if at < self.attached.len() {
+            self.attached.remove(at);
+            cx.notify();
+        }
+    }
+
+    fn pick_files(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
+        self._picking.retain(|task| !task.is_ready());
+        self._picking.push(cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                this.update(cx, |this, cx| this.attach(paths, cx)).ok();
+            }
+        }));
     }
 
     pub fn field(&self) -> &Entity<TextField> {
@@ -77,6 +212,9 @@ impl SideChatView {
         self._task = None;
         if !on_screen {
             return;
+        }
+        if self.offered.is_none() || self.own.is_none() {
+            self.read_models(cx);
         }
         if !self.live {
             self.read_again(cx);
@@ -122,12 +260,18 @@ impl SideChatView {
         }
         self.asking = true;
         self.failed = None;
-        let (client, session, thread) = (self.client.clone(), self.session.clone(), self.thread.clone());
-        run(self, self.live, cx, move || client.ask_aside(&session, &question, thread.as_deref()), |this, asked, cx| {
+        let (client, session, thread, model, paths) = (self.client.clone(), self.session.clone(), self.thread.clone(), self.picked.clone(), self.attached.clone());
+        let (here, pasted) = (client.here(), crate::pasted::folder(cx));
+        run(self, self.live, cx, move || {
+            // (Its files read first, as a message's are: one that can't go asks nothing.)
+            let files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
+            client.ask_aside(&session, &question, thread.as_deref(), model.as_ref(), &files).map_err(|error| error.to_string())
+        }, |this, asked, cx| {
             this.asking = false;
             match asked {
                 Ok(question) => {
                     this.field.update(cx, |field, cx| field.set_text("", cx));
+                    this.attached.clear();
                     if this.thread.is_none() {
                         let thread = question.thread.clone().unwrap_or_else(|| question.id.clone());
                         this.thread = Some(thread.clone());
@@ -139,7 +283,7 @@ impl SideChatView {
                         this.read_again(cx);
                     }
                 }
-                Err(error) => this.failed = Some(error.to_string()),
+                Err(error) => this.failed = Some(error),
             }
             cx.notify();
         });
@@ -195,16 +339,28 @@ impl SideChatView {
                                 .child(question.question.clone()),
                         ),
                     )
+                    // What went with it, by name.
+                    .when(!question.files.is_empty(), |row| {
+                        let qid = question.id.clone();
+                        row.child(div().flex().flex_wrap().justify_end().gap(space::S1_5).children(question.files.iter().enumerate().map(|(at, name)| {
+                            Chip::new(SharedString::from(format!("side-file-{qid}-{at}")), name.clone()).icon(IconName::File).into_any_element()
+                        })))
+                    })
                     .child(answer)
             }))
             .into_any_element()
     }
 
-    /// The conversation's own composer, as it draws it (its card, field and Send), with what a
-    /// side question takes: its words. Its bottom lines up with the conversation's.
+    /// The conversation's own composer, as it draws it (its card, attachments, field, paperclip,
+    /// model and effort chips and Send), with what a side question takes; no mode, since it runs
+    /// nothing. Its bottom lines up with the conversation's.
     fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
         let written = !self.field.read(cx).text().trim().is_empty();
+        let strip = crate::composer::attachment_strip(&self.attached, &self.client, self.field.focus_handle(cx), |this: &mut SideChatView, at, cx| this.detach(at, cx), cx);
+        let held = self.client.gate().is_held();
+        let model = self.chip_label().map(|name| div().debug_selector(|| "side-chat-model".into()).child(crate::composer::model_chip(name, held, &self.model_menu, |this: &mut SideChatView, window, cx| this.model_picker(window, cx), cx)));
+        let efforts = self.efforts();
+        let effort = self.model().filter(|_| !efforts.is_empty()).map(|model| div().debug_selector(|| "side-chat-effort".into()).child(crate::composer::effort_chip(model, efforts, held, |this: &mut SideChatView, picked, cx| this.pick(picked, cx), cx)));
         div()
             .flex_none()
             .px(space::S4)
@@ -212,10 +368,16 @@ impl SideChatView {
             .child(
                 crate::composer::card(cx)
                     .debug_selector(|| "side-chat-composer".into())
+                    .children(strip)
                     .child(crate::composer::field_room(self.field.clone()))
                     .children(self.failed.clone().map(|why| kuvo_ui::Notice::inline("side-chat-failed", kuvo_ui::Tone::Error, "It couldn’t be asked").detail(why)))
                     .child(
-                        crate::composer::controls().child(div().flex_1()).child(
+                        crate::composer::controls()
+                            .child(div().debug_selector(|| "side-chat-attach".into()).child(crate::composer::attach_button().on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
+                            .children(model)
+                            .children(effort)
+                            .child(div().flex_1())
+                            .child(
                             Button::icon_only("side-chat-send", IconName::ArrowUp, if written { "Ask" } else { "Type to ask" })
                                 .accent()
                                 .pill()
@@ -237,6 +399,13 @@ impl Focusable for SideChatView {
 
 impl Render for SideChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().flex().flex_col().child(self.transcript(cx)).child(self.composer(cx))
+        div()
+            .id("side-chat")
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx)))
+            .child(self.transcript(cx))
+            .child(self.composer(cx))
     }
 }
