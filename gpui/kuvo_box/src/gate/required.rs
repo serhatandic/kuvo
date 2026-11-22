@@ -89,4 +89,5 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.counts",
     "work-queue.edit",
     "work.background.items",
+    "work.background.output",
 ];

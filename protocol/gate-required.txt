@@ -87,3 +87,4 @@ work-queue.attachments
 work-queue.counts
 work-queue.edit
 work.background.items
+work.background.output

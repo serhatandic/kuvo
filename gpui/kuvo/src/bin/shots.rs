@@ -620,7 +620,10 @@ fn bot_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
 fn activity_output(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     conversation_activity(workspace, window, cx);
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
-    activity.update(cx, |activity, cx| activity.open_process_output("sh_dev", cx));
+    let command = activity.read(cx).background().commands.iter().find(|command| command.id == "sh_dev").cloned();
+    if let Some(command) = command {
+        workspace.arrive(kuvo::panel::Arrival::Process { session: "ses_signup".into(), command }, cx);
+    }
 }
 /// Full Access picked the first time on this computer: asked in the composer.
 fn full_access_question(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {

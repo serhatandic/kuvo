@@ -1671,8 +1671,13 @@ impl Workspace {
                 }
             }).ok();
         });
+        let workspace = cx.entity().downgrade();
+        let panel: crate::work_bars::PanelOpener = std::rc::Rc::new(move |arrival: panel::Arrival, _: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.arrive(arrival, cx)).ok();
+        });
         view.read(cx).bars().clone().update(cx, |bars, cx| {
             bars.set_opener(opener);
+            bars.set_panel_opener(panel);
             bars.set_bot_look(bot_look);
             bars.set_bot(bot, cx);
         });
@@ -1972,6 +1977,14 @@ impl Workspace {
     pub fn show_panel(&mut self, kind: Kind, cx: &mut Context<Self>) {
         // (Opened first: what's asked for is what it starts on.)
         self.panel.update(cx, |panel, cx| panel.open(kind, cx));
+        if !self.panel_open {
+            self.toggle_panel(cx);
+        }
+    }
+
+    /// Opens the side panel on what the conversation sent you to (from its Outputs).
+    pub fn arrive(&mut self, arrival: panel::Arrival, cx: &mut Context<Self>) {
+        self.panel.update(cx, |panel, cx| panel.arrive(arrival, cx));
         if !self.panel_open {
             self.toggle_panel(cx);
         }

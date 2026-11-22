@@ -11,7 +11,7 @@ use gpui::{
 };
 use kuvo_box::areas::Look;
 use kuvo_box::artifacts::{Artifact, Outputs, Version};
-use kuvo_box::background::{Activity, ActivitySession, Background, Command, Output};
+use kuvo_box::background::{Activity, ActivitySession, Background};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, Follow, Timing};
@@ -26,17 +26,12 @@ use kuvo_ui::{
 
 use crate::wakes::{self, WakeSchedule};
 
-const OUTPUT_AGAIN: Duration = Duration::from_millis(1500);
-
 /// Opens a session's conversation (the workspace's, handed in).
 pub type Opener = Rc<dyn Fn(&str, Option<&str>, &mut Window, &mut App)>;
+/// Opens what the side panel shows for this conversation: a process's output, its subagents, a side
+/// chat (the workspace's, handed in).
+pub type PanelOpener = Rc<dyn Fn(crate::panel::Arrival, &mut Window, &mut App)>;
 pub(crate) type BotLook = Rc<dyn Fn(&str, &App) -> Option<(String, Look)>>;
-
-/// What a command's Output shows: the command, and what was read of it last.
-struct Shown {
-    command: Command,
-    read: Option<Output>,
-}
 
 pub struct WorkBars {
     client: BoxClient,
@@ -67,6 +62,7 @@ pub struct WorkBars {
     background_reads: u64,
     work_reads: u64,
     opener: Option<Opener>,
+    panel: Option<PanelOpener>,
     bot_look: Option<BotLook>,
     _background_follow: Option<Follow<Followed<Background>>>,
     _work_follow: Option<Follow<Followed<WorkChanged>>>,
@@ -106,6 +102,7 @@ impl WorkBars {
             background_reads: 0,
             work_reads: 0,
             opener: None,
+            panel: None,
             bot_look: None,
             _background_follow: None,
             _work_follow: None,
@@ -138,6 +135,14 @@ impl WorkBars {
     }
 
     /// How a row opens its conversation.
+    pub fn set_panel_opener(&mut self, opener: PanelOpener) {
+        self.panel = Some(opener);
+    }
+
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
     pub fn set_opener(&mut self, opener: Opener) {
         self.opener = Some(opener);
     }
@@ -751,13 +756,6 @@ impl WorkBars {
     }
 
     #[cfg(feature = "stand-in")]
-    pub fn open_process_output(&self, id: &str, cx: &mut Context<Self>) {
-        let Some(card) = self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()) else { return };
-        let Some(command) = self.background.commands.iter().find(|command| command.id == id).cloned() else { return };
-        card.update(cx, |card, cx| card.show_output(command, self.client.clone(), self.live, cx));
-    }
-
-    #[cfg(feature = "stand-in")]
     pub(crate) fn open_activity_with_wakes(&mut self, force_wakes: bool, window: &mut Window, cx: &mut Context<Self>) {
         // Build from the data here: the WorkBars entity is being updated by the caller.
         let bars = cx.entity();
@@ -787,8 +785,6 @@ enum Preview {
 struct ActivityCard {
     activity: WeakEntity<WorkBars>,
     focus: FocusHandle,
-    output: Option<Shown>,
-    reading_output: Option<Task<()>>,
     /// When there are more than `INLINE_ACTIVE_SESSIONS` live sessions, whether the rest are shown.
     all_active: bool,
     drilldown: Option<Drilldown>,
@@ -851,8 +847,6 @@ impl ActivityCard {
         let mut card = Self {
             activity: activity.downgrade(),
             focus: cx.focus_handle(),
-            output: None,
-            reading_output: None,
             all_active: false,
             drilldown: None,
             finished_filter: FinishedFilter::All,
@@ -876,11 +870,7 @@ impl ActivityCard {
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
                 let (client, live, sessions, recent) = (bars.client.clone(), bars.live, bars.active_rows.clone(), bars.recent_rows.clone());
-                let command_gone = this.output.as_ref().is_some_and(|output| !bars.background.commands.iter().any(|command| command.id == output.command.id));
                 let wake_source = (this.wake_schedule.is_none() && bars.wake_label().is_some()).then(|| bars.wake_source());
-                if command_gone {
-                    this.close_output(cx);
-                }
                 if let Some(source) = wake_source {
                     this.wake_schedule = Some(cx.new(|cx| WakeSchedule::embedded(source, cx)));
                 }
@@ -1194,7 +1184,6 @@ impl ActivityCard {
         let Some(activity) = self.activity.upgrade() else { return };
         let client = activity.read(cx).client.clone();
         let artifact = artifact.clone();
-        self.close_output(cx);
         window.focus(&self.focus, cx);
         self.preview = Some((artifact.name.clone(), Preview::Loading));
         let task = cx.background_executor().spawn(async move { read_preview(&client, &artifact) });
@@ -1212,69 +1201,6 @@ impl ActivityCard {
 
     fn dismiss(&self, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
-    }
-
-    fn close_output(&mut self, cx: &mut Context<Self>) {
-        if self.output.take().is_some() {
-            self.reading_output = None;
-            cx.notify();
-        }
-    }
-
-    /// Shows what a command has printed, read again every moment while it shows until it ends;
-    /// again, it's put away.
-    fn toggle_output(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.output.as_ref().is_some_and(|shown| shown.command.id == id) {
-            self.close_output(cx);
-            return;
-        }
-        let Some(activity) = self.activity.upgrade() else { return };
-        let bars = activity.read(cx);
-        let Some(command) = bars.background.commands.iter().find(|command| command.id == id).cloned() else { return };
-        self.show_output(command, bars.client.clone(), bars.live, cx);
-    }
-
-    fn show_output(&mut self, command: Command, client: BoxClient, live: bool, cx: &mut Context<Self>) {
-        self.output = Some(Shown { command: command.clone(), read: None });
-        cx.notify();
-        if !live {
-            if let Some(shown) = self.output.as_mut() {
-                shown.read = Some(client.command_output(&command));
-            }
-            return;
-        }
-        self.reading_output = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let (client, asked) = (client.clone(), command.clone());
-                let read = cx.background_executor().spawn(async move { client.command_output(&asked) }).await;
-                let ended = read == Output::Ended;
-                let shown = this.update(cx, |this, cx| {
-                    let Some(shown) = this.output.as_mut().filter(|shown| shown.command.id == command.id) else { return false };
-                    // Keep the last successful read through a temporary failure.
-                    if read != Output::Unread || !matches!(shown.read, Some(Output::Printed(_))) {
-                        shown.read = Some(read);
-                    }
-                    cx.notify();
-                    true
-                });
-                if !matches!(shown, Ok(true)) || ended {
-                    break;
-                }
-                cx.background_executor().timer(OUTPUT_AGAIN).await;
-            }
-        }));
-    }
-
-    /// Output's words for what's been read.
-    fn output_words(&self) -> Option<(String, bool)> {
-        let shown = self.output.as_ref()?;
-        Some(match &shown.read {
-            Some(Output::Printed(text)) if !text.is_empty() => (text.clone(), true),
-            Some(Output::Printed(_)) => ("Nothing printed yet.".into(), false),
-            Some(Output::Ended) => ("This command has ended. What it printed is no longer kept.".into(), false),
-            Some(Output::Unread) => ("Couldn’t read what it printed. Its computer may be away; this tries again on its own.".into(), false),
-            None => ("Reading what it printed…".into(), false),
-        })
     }
 
     fn outputs(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -1993,6 +1919,14 @@ impl ActivityCard {
             .into_any_element()
     }
 
+    /// Shows `arrival` in the conversation's side panel.
+    fn open_in_panel(&self, arrival: crate::panel::Arrival, window: &mut Window, cx: &mut App) {
+        let opener = self.activity.upgrade().and_then(|bars| bars.read(cx).panel.clone());
+        if let Some(opener) = opener {
+            opener(arrival, window, cx);
+        }
+    }
+
     fn sessions(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
         let sessions = &bars.active_rows;
         let recent = &bars.recent_rows;
@@ -2158,8 +2092,6 @@ impl ActivityCard {
                 )
                 .children(bars.background.commands.iter().map(|command| {
                     let id = command.id.clone();
-                    let toggle = id.clone();
-                    let selected = self.output.as_ref().is_some_and(|shown| shown.command.id == id);
                     let uptime = format_uptime(command.started, now);
                     let mut row = TextRow::truncated(
                         format!("activity-process-{id}"),
@@ -2172,31 +2104,13 @@ impl ActivityCard {
                         row = row.trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(uptime));
                     }
                     row = row.trailing(status_dot(c.success));
-                    div().w_full().min_w_0().flex().flex_col()
-                        .child(
-                            popover_row(row, cx)
-                            .when(selected, |d| d.bg(c.hover))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_output(&toggle, cx);
-                            })),
-                        )
-                        .children(selected.then(|| {
-                            let (words, printed) = self.output_words().unwrap_or_default();
-                            // Its last lines, so the popover scrolls as one; the rest is in the
-                            // Activity panel's own view of it.
-                            let (words, cut) = last_lines(&words, OUTPUT_LINES);
-                            let stopping = bars.stopping.contains(&id);
-                            div().id("command-output").debug_selector(|| "command-output".into())
-                                .flex().flex_col().gap(space::S1).p(space::S2).rounded(radius::NAV).bg(c.sunken)
-                                .children(cut.then(|| div().debug_selector(|| "command-output-cut".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("Last {OUTPUT_LINES} lines"))))
-                                .child(div().id("command-output-words").debug_selector(|| "command-output-words".into())
-                                    .text_mono(TypeSize::Caption).text_color(if printed { c.text } else { c.text_muted }).child(words))
-                                .child(div().self_end().debug_selector(|| "activity-stop-process".into())
-                                    .child(Button::new("activity-stop-process", "Stop").ghost().quiet().size(ButtonSize::Small).disabled(stopping)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.activity.update(cx, |bars, cx| bars.stop_command(&id, cx)).ok();
-                                        }))))
-                        }))
+                    // Its output, as it prints, in its own tab in the side panel.
+                    let (session, opened) = (bars.session.clone(), command.clone());
+                    popover_row(row, cx).on_click(cx.listener(move |this, _, window, cx| {
+                        this.dismiss(cx);
+                        let arrival = crate::panel::Arrival::Process { session: session.clone(), command: opened.clone() };
+                        this.open_in_panel(arrival, window, cx);
+                    }))
                 }))
                 .into_any_element(),
         )
@@ -2356,18 +2270,6 @@ impl Render for ActivityCard {
             .child(content)
             .into_any_element()
     }
-}
-
-/// How many of a command's last lines the Outputs popover shows.
-const OUTPUT_LINES: usize = 12;
-
-/// The last `count` lines of `text`, and whether any came before them.
-fn last_lines(text: &str, count: usize) -> (String, bool) {
-    let lines: Vec<&str> = text.trim_end_matches('\n').lines().collect();
-    if lines.len() <= count {
-        return (text.to_owned(), false);
-    }
-    (lines[lines.len() - count..].join("\n"), true)
 }
 
 fn popover_row(row: TextRow, cx: &App) -> gpui::Stateful<gpui::Div> {

@@ -13,6 +13,7 @@ pub mod changes;
 pub mod file;
 pub mod files;
 mod new_tab;
+pub mod process;
 pub mod tabs;
 
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ pub use branches::BranchesView;
 pub use changes::ChangesView;
 pub use file::FileView;
 pub use files::FilesView;
+pub use process::ProcessView;
 pub use tabs::{Kind, Strip, Tab};
 
 /// The panel's width when it first opens, and the narrowest and widest it's dragged to.
@@ -87,6 +89,13 @@ pub(crate) fn run<V: 'static, T: Send + 'static>(
     }
 }
 
+/// Where the conversation sends you in the panel, from its Outputs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Arrival {
+    /// What a command it left running prints.
+    Process { session: String, command: kuvo_box::background::Command },
+}
+
 /// What the panel asks of the window around it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelEvent {
@@ -134,6 +143,7 @@ pub(crate) fn glass(cx: &App) -> Glass {
 #[derive(Clone)]
 enum View {
     File(Entity<FileView>),
+    Process(Entity<ProcessView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -160,6 +170,8 @@ pub struct SidePanel {
     shown: bool,
     /// The last tab number given.
     next: u64,
+    /// Commands as the Outputs popover had them, for their tabs (by their ids).
+    commands: HashMap<String, kuvo_box::background::Command>,
     /// The New tab page's search, and what the box found for it.
     search: Entity<TextField>,
     found: Option<(String, Load<kuvo_box::find::Found>)>,
@@ -181,6 +193,7 @@ impl SidePanel {
             key: None,
             shown: false,
             next: 0,
+            commands: HashMap::new(),
             search,
             found: None,
             focus_search: false,
@@ -338,6 +351,26 @@ impl SidePanel {
         self.after_move(cx);
     }
 
+    /// Shows what the conversation sent you to.
+    pub fn arrive(&mut self, arrival: Arrival, cx: &mut Context<Self>) {
+        match arrival {
+            Arrival::Process { session, command } => {
+                let id = command.id.clone();
+                self.commands.insert(id.clone(), command);
+                self.open(Kind::Process { session, command: id }, cx);
+            }
+        }
+    }
+
+    /// The process tab showing.
+    pub fn process(&self) -> Option<Entity<ProcessView>> {
+        let conversation = self.current()?;
+        match conversation.views.get(&conversation.strip.active().id) {
+            Some(View::Process(view)) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// Opens the New tab page.
     pub fn open_new(&mut self, cx: &mut Context<Self>) {
         let next = &mut self.next;
@@ -378,6 +411,7 @@ impl SidePanel {
     /// Makes the showing tab's view, where it has none yet.
     fn ensure_view(&mut self, cx: &mut Context<Self>) {
         let (client, live) = (self.client.clone(), self.live);
+        let commands = self.commands.clone();
         let Some(conversation) = self.conversations.get_mut(&self.key) else { return };
         let tab = conversation.strip.active().clone();
         if matches!(tab.kind, Kind::Files | Kind::File(_)) && conversation.files.is_none() {
@@ -397,6 +431,12 @@ impl SidePanel {
             Kind::File(path) if !conversation.views.contains_key(&tab.id) => {
                 let tree = conversation.files.clone().expect("made above");
                 conversation.views.insert(tab.id, View::File(cx.new(|cx| FileView::new(client, live, path, tree, cx))));
+            }
+            Kind::Process { session, command } if !conversation.views.contains_key(&tab.id) => {
+                let known = commands.get(&command).cloned();
+                let view = cx.new(|cx| ProcessView::new(client, live, session, command, known, cx));
+                conversation.subscriptions.push(cx.observe(&view, |_, _, cx| cx.notify()));
+                conversation.views.insert(tab.id, View::Process(view));
             }
             Kind::Changes if !conversation.views.contains_key(&tab.id) => {
                 let view = cx.new(|cx| ChangesView::new(client, live, cx));
@@ -424,6 +464,7 @@ impl SidePanel {
                 let on = here && *id == active.id;
                 match view {
                     View::File(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
+                    View::Process(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -479,7 +520,14 @@ impl SidePanel {
     }
 
     /// A tab's title: the file's name, the command, or what the tool's called.
-    fn title(&self, tab: &Tab) -> SharedString {
+    fn title(conversation: &Conversation, tab: &Tab, cx: &App) -> SharedString {
+        match (&tab.kind, conversation.views.get(&tab.id)) {
+            (_, Some(View::Process(view))) => view.read(cx).title(),
+            _ => Self::named(tab),
+        }
+    }
+
+    fn named(tab: &Tab) -> SharedString {
         match &tab.kind {
             Kind::New => "New tab".into(),
             Kind::Files => "Files".into(),
@@ -509,7 +557,8 @@ impl SidePanel {
     }
 
     /// The strip: each tab (the showing one a soft glass pill), `+`, and the panel's ×.
-    fn strip_bar(&self, strip: &Strip, cx: &mut Context<Self>) -> AnyElement {
+    fn strip_bar(&self, conversation: &Conversation, cx: &mut Context<Self>) -> AnyElement {
+        let strip = &conversation.strip;
         let c = cx.theme().colors.clone();
         let glass = glass(cx);
         let fresh = strip.is_fresh();
@@ -545,7 +594,11 @@ impl SidePanel {
                         this.close(id, cx);
                     }
                 }))
-                .child(Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }))
+                .child(match conversation.views.get(&tab.id) {
+                    // A process still running: a calm dot in its icon's place.
+                    Some(View::Process(view)) if view.read(cx).running() => div().w(px(12.)).flex_none().flex().items_center().justify_center().child(kuvo_ui::small::status_dot(c.success)).into_any_element(),
+                    _ => Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }).into_any_element(),
+                })
                 .child(
                     div()
                         .flex_1()
@@ -554,7 +607,7 @@ impl SidePanel {
                         .text_ui(TypeSize::Caption)
                         .when(selected, |d| d.medium())
                         .text_color(if selected { c.text } else { c.text_muted })
-                        .child(self.title(tab)),
+                        .child(Self::title(conversation, tab, cx)),
                 )
                 .when(closes, |d| {
                     d.child(
@@ -629,6 +682,7 @@ impl SidePanel {
                 _ => no_folder(cx),
             },
             (_, Some(View::File(view))) => view.clone().into_any_element(),
+            (_, Some(View::Process(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),
@@ -656,7 +710,7 @@ impl Render for SidePanel {
         }
         let c = cx.theme().colors.clone();
         let conversation = self.conversations.remove(&self.key).expect("made above");
-        let strip = self.strip_bar(&conversation.strip, cx);
+        let strip = self.strip_bar(&conversation, cx);
         let body = self.body(&conversation, window, cx);
         self.conversations.insert(self.key.clone(), conversation);
         div()
