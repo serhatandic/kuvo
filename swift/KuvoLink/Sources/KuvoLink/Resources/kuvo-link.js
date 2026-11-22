@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 4d2a87465e73
+// Kuvo folder layout 23 c81113108106
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4d2a87465e73";
+var BRIDGE_VERSION = "c81113108106";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24697,6 +24697,7 @@ var init_features = __esm(() => {
     "agents.accounts",
     "agents.start",
     "agents.updates",
+    "agents.updates.notices",
     "agents.voice",
     "approval",
     "approval.default",
@@ -24994,12 +24995,23 @@ var init_mac = __esm(() => {
 });
 
 // box/src/shared/routes/box.ts
-var PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING2, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED2, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var UPDATE_NOTICE, PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING2, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED2, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
   init_features();
   init_shape();
   init_mac();
   init_setup_save();
+  UPDATE_NOTICE = object({
+    id: string,
+    program: string,
+    provider: string,
+    kind: words("available", "updated"),
+    version: string,
+    title: string,
+    body: string,
+    at: number,
+    "action?": object({ id: literal("update"), label: string })
+  });
   PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
   COMPATIBILITY = oneOf(object({ state: literal("open") }), object({ state: words("behind", "held"), missing: list(string) }));
   INFO = oneOf(object({
@@ -25457,6 +25469,8 @@ var init_box = __esm(() => {
     { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
     { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
     { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
+    { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
+    { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
     { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
     { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } }
   ];
@@ -31848,7 +31862,9 @@ function accountState(account, offered, { agents = false, ended, computer }) {
         if (agents && meta.unchecked === true && !inUse.who)
           return "Couldn’t check just now";
         const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
-        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        const needs = agents ? text3(meta.message).replace(/\.$/, "") : "";
+        const line = said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        return needs ? `${line} · ${needs}` : line;
       }
       case "signedOut":
         if (agents)
@@ -93443,6 +93459,17 @@ function groupNotice(event) {
     return { ...about, subtitle: `${data.who} finished its part`, body: oneSentence(data.text) };
   return null;
 }
+function updateNotice(served) {
+  if (!isObject(served) || typeof served.id !== "string" || typeof served.title !== "string" || typeof served.program !== "string")
+    return null;
+  return {
+    category: "update",
+    title: served.title,
+    ...typeof served.body === "string" && served.body ? { body: served.body } : {},
+    thread: `update:${served.program}`,
+    data: { notice: served.id }
+  };
+}
 var offersAlways = (request) => {
   const strings = (value) => (Array.isArray(value) ? value : []).filter((each) => typeof each === "string");
   const shown = strings(request.resources);
@@ -104345,14 +104372,17 @@ async function commandSignIn(options) {
   };
   child.exited.then(async (code) => {
     rmSync7(own, { recursive: true, force: true });
-    options.onEnd?.();
+    options.onEnd?.(code);
     if (status.status !== "pending")
       return;
     const signedIn = await options.signedIn().catch(() => false);
     if (status.status !== "pending")
       return;
+    const why = signedIn ? undefined : options.whyNot?.();
     if (signedIn && (code === 0 || signedInBefore === false))
       succeed();
+    else if (why)
+      status = { status: "failed", message: why };
     else if (pasted)
       status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." };
     else {
@@ -105879,6 +105909,20 @@ class Insights {
     });
     return this.scan;
   }
+  async recount() {
+    let timer;
+    const waited = new Promise((resolve) => {
+      timer = setTimeout(resolve, RECOUNT_WAIT);
+      timer.unref?.();
+    });
+    const counted = (async () => {
+      if (this.scan)
+        await this.scan;
+      await this.refresh(true);
+    })();
+    await Promise.race([counted, waited]);
+    clearTimeout(timer);
+  }
   async round() {
     const now = this.now();
     const pricing = this.pricing.current();
@@ -106086,6 +106130,7 @@ class Insights {
       state: !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty",
       period,
       zone,
+      ...local ? { countedAt: local.scanned } : {},
       totals: measures(totals),
       change,
       trend: facts.trend,
@@ -106162,7 +106207,11 @@ async function insightsRoutes(insights, method, path, params) {
   if (method !== "GET")
     return json7({ message: "Not found." }, 404);
   if (path.length === 1 && path[0] === "summary") {
-    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params)) : await insights.summary(params);
+    const refresh = params.get("refresh") === "1";
+    params.delete("refresh");
+    if (refresh && [7, 30, 90].includes(Number(params.get("period") ?? 30)))
+      await insights.recount();
+    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params), refresh) : await insights.summary(params);
     return data ? json7({ data }) : json7({ message: "Choose a 7, 30 or 90 day period." }, 400);
   }
   const route = path.length === 0 ? params.has("session") ? "detail" : "overview" : path[0] === "sessions" && path.length === 1 ? "sessions" : path[0] === "sessions" && path.length === 2 ? "detail" : undefined;
@@ -106173,7 +106222,7 @@ async function insightsRoutes(insights, method, path, params) {
   const data = await insights.view(params, route);
   return data ? json7({ data }) : json7({ message: "Choose a 7, 30, 90 or 365 day period and a valid page." }, 400);
 }
-var DAY7 = 86400000, SCAN_EVERY, MAX_PAGE = 100, isInsightsMail = (value) => value?.kind === "insights", optionalText = (value) => typeof value === "string" && value.length > 0 ? value.slice(0, 512) : undefined, small = (v) => typeof v === "string" && v.length > 0 && v.length <= 512, validAt = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0, json7 = (body, status = 200) => Response.json(body, { status });
+var DAY7 = 86400000, SCAN_EVERY, RECOUNT_WAIT = 60000, MAX_PAGE = 100, isInsightsMail = (value) => value?.kind === "insights", optionalText = (value) => typeof value === "string" && value.length > 0 ? value.slice(0, 512) : undefined, small = (v) => typeof v === "string" && v.length > 0 && v.length <= 512, validAt = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0, json7 = (body, status = 200) => Response.json(body, { status });
 var init_insights = __esm(() => {
   init_history2();
   init_insight_records();
@@ -113403,11 +113452,12 @@ var init_maintenance = __esm(() => {
 // box/src/shared/agent-programs.ts
 import { homedir as homedir2 } from "node:os";
 import { join as join34 } from "node:path";
-var claudePlaces2, codexPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
+var claudePlaces2, codexPlaces, agyPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
 var init_agent_programs = __esm(() => {
   init_proc();
   claudePlaces2 = [join34(homedir2(), ".local/bin"), join34(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
   codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join34(homedir2(), ".local/bin"), join34(homedir2(), ".codex/bin")];
+  agyPlaces = [join34(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
   grokPlaces = [join34(homedir2(), ".grok/bin"), join34(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 });
 
@@ -114216,13 +114266,21 @@ class AntigravityPlan {
     } catch {}
     return this.lastCredential;
   }
+  agySignIn() {
+    try {
+      const id = JSON.parse(readFileSync28(join35(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id;
+      return typeof id === "string" && id ? fingerprint4(id) : undefined;
+    } catch {
+      return;
+    }
+  }
   signIn() {
     this.credential();
-    return this.lastSignIn;
+    return this.lastSignIn ?? this.agySignIn();
   }
   account() {
     this.credential();
-    return this.lastAccount;
+    return this.lastAccount ?? this.agySignIn();
   }
   async request(url, init, now, allowMissing = false) {
     let response;
@@ -114255,18 +114313,17 @@ class AntigravityPlan {
     if (!antigravityTransport.live && this.bases === productionBases)
       return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo’s data folder.", undefined, false));
     const raw = this.raw();
-    if (!raw)
-      throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false);
     let c;
-    try {
-      c = antigravityCredential(JSON.parse(raw));
-    } catch {}
-    if (!c)
-      throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    if (raw) {
+      try {
+        c = antigravityCredential(JSON.parse(raw));
+      } catch {}
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    }
     this.loadRefusals();
     this.saveRefusals();
-    const signIn = antigravityGeneration(c);
-    if (this.denied.has(signIn))
+    if (c && this.denied.has(antigravityGeneration(c)))
       throw new LimitsProblem("expired", "Antigravity refused this sign-in. Sign in again.", undefined, false);
     try {
       const endpoints = await this.discover(this.profile());
@@ -114301,7 +114358,7 @@ class AntigravityPlan {
               }
               console.warn("Antigravity optional plan status is unavailable; quota windows are kept.");
             }
-          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
+          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c?.identity };
         }
         if (this.holding(local("GetUserStatus"), now))
           continue;
@@ -114313,7 +114370,7 @@ class AntigravityPlan {
             legacy = antigravityLegacy(configs?.clientModelConfigs ?? []);
           }
           if (legacy.length)
-            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c.identity };
+            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c?.identity };
         } catch (error) {
           if (error instanceof LimitsProblem && error.kind === "rate-limited")
             throw error;
@@ -114321,6 +114378,8 @@ class AntigravityPlan {
             e.csrf && this.refuse(this.deniedCSRF, fingerprint4(e.csrf));
         }
       }
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false);
       const cached = this.access && this.access.credential === this.account() && this.access.expires > now + 60000 ? this.access : undefined;
       let access = cached?.token ?? c.access;
       if (access && this.deniedAccess.has(fingerprint4(access)))
@@ -114452,8 +114511,8 @@ class AntigravityPlan {
       const plan = status && ({ "g1-pro-tier": "Pro", "g1-ultra-tier": "Ultra", "g1-ultra-lite-tier": "Ultra Lite" }[status?.paidTier?.id] ?? antigravityPlanName(status?.paidTier?.name ?? status?.currentTier?.name));
       return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
     } catch (e) {
-      if (e instanceof LimitsProblem && e.kind === "expired")
-        this.refuse(this.denied, signIn);
+      if (e instanceof LimitsProblem && e.kind === "expired" && c)
+        this.refuse(this.denied, antigravityGeneration(c));
       throw e;
     }
   }
@@ -115042,21 +115101,24 @@ class KeptSummaries {
       }
     } catch {}
   }
-  async answer(params, read) {
+  async answer(params, read, fresh = false) {
     const key = keptKey(params);
     const kept = this.kept.get(key);
-    if (kept && this.now() - kept.at < FRESH2 && kept.at <= this.now())
+    if (!fresh && kept && this.now() - kept.at < FRESH2 && kept.at <= this.now())
       return kept.data;
-    let reading = this.reading.get(key);
+    let reading = fresh ? undefined : this.reading.get(key);
     if (!reading) {
       reading = read().then((data) => {
         if (data && data.state !== "loading")
           this.keep(key, data);
         return data;
-      }).finally(() => this.reading.delete(key));
+      }).finally(() => {
+        if (this.reading.get(key) === reading)
+          this.reading.delete(key);
+      });
       this.reading.set(key, reading);
     }
-    if (!kept)
+    if (!kept || fresh)
       return reading;
     reading.catch(() => {});
     return { ...kept.data, asOf: kept.at };
@@ -117920,6 +117982,12 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
           usageRevision++;
         if (!notices)
           continue;
+        if (event.type === "kuvo.updates.notice") {
+          const notice = updateNotice(event.data?.notice);
+          if (notice)
+            tell(notice);
+          continue;
+        }
         if (ANSWERED3.has(event.type))
           answered(event.data?.requestID ?? event.data?.id);
         if (RUN_ENDS.has(event.type) && hold && typeof event.data?.sessionID === "string")
