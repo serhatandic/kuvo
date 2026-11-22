@@ -1,6 +1,6 @@
 import "../safety"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sideQuestionRoutes, SideQuestions } from "../../src/agents/btw"
@@ -240,10 +240,35 @@ describe("a side question", () => {
     expect(engine.checks[0].prompt).toContain('<file name="notes.md">\nDebounce: 30s\n</file>')
     expect(engine.checks[0].prompt).toContain('<file name="log.txt">\nretry after 2s\n</file>')
     expect(told()).toBe(0)
-    const picture = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's this?", files: [{ uri: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }] }))
-    expect(picture.status).toBe(400)
-    expect(((await picture.json()) as any).message).toContain("not pictures")
+    const archive = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's this?", files: [{ uri: "data:application/zip;base64,UEsDBAA=", name: "logs.zip" }] }))
+    expect(archive.status).toBe(400)
+    expect(((await archive.json()) as any).message).toContain("isn't text")
     expect(questions.list("ses_work")).toHaveLength(1)
+  })
+
+  test("asked with a picture, is answered in a turn of its own that sees it, with the conversation, and nothing of it kept", async () => {
+    const questions = new SideQuestions(join(root, "btw.json"), places())
+    questions.onAnswered = beat
+    engine.answers = ["The error shows under the wrong field."]
+    const picture = "data:image/png;base64,iVBORw0KGgo="
+    const answer = await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "What's wrong here?", files: [{ uri: picture, name: "shot.png" }] }))
+    expect(answer.status).toBe(200)
+    expect(((await answer.json()) as any).data).toMatchObject({ files: ["shot.png"], state: "answering" })
+    await until(() => questions.list("ses_work")[0]?.state === "answered")
+    expect(questions.list("ses_work")[0]!.answer).toBe("The error shows under the wrong field.")
+    // On the conversation's own model, the picture with the question and the conversation as a record.
+    expect(engine.checks).toHaveLength(1)
+    const [check] = engine.checks
+    const made = engine.made.find((each) => each.id === check!.session)
+    expect(made).toMatchObject({ model: { providerID: "p", id: "m" }, metadata: { kuvo: { engineFor: "ses_work" } } })
+    expect(check!.files).toEqual([{ uri: picture, name: "shot.png" }])
+    expect(check!.prompt).toContain("Person: Make the timer pause on blur.")
+    expect(check!.prompt).toContain("<question>\nWhat's wrong here?\n</question>")
+    // Its session gone after, the conversation told nothing, and the picture not kept once answered.
+    expect(engine.deleted).toContain(check!.session!)
+    expect(told()).toBe(0)
+    expect(readFileSync(join(root, "btw.json"), "utf8")).not.toContain("iVBORw0KGgo")
+    questions.stopAll()
   })
 
   test("about a coding agent's conversation is answered with the conversation in the question", async () => {

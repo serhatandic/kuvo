@@ -75,7 +75,7 @@ const ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITIN
 
 /** What `DELETE …/queue/<item>` took away, whole, for Undo to add back (`queue/add` with `kept`),
  * where it was: ahead of `before`, what came after it (none: it was last). */
-const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any });
+const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any, "attached?": list(object({ uri: string, "name?": string })) });
 
 export type SessionQueue = Infer<typeof QUEUE>;
 

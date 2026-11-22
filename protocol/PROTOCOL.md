@@ -1840,7 +1840,10 @@ the same for every client and with none connected, and keeps them in `run/queues
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
   composer: its words alone, without the keyword or command an older one went with;
-  `before`, what came after it, left out when it was last; `queue.removed.keyword`). A successful
+  `before`, what came after it, left out when it was last; `queue.removed.keyword`; `attached`,
+  everything it went with for Edit to put back, `{uri, name?}` as a send takes them: the files it
+  carries, then those the box kept for the agent to open, which its note names and `files`
+  doesn't carry, as `file://` on the box. Undo keeps to `files`). A successful
   removal can include `removed.receipt`. A client can supply `?receipt=<operation-id>` in the
   message ID format and save it before asking to remove the item. Repeating that DELETE recovers
   the same payload until the client uses or discards it and sends `POST …/queue/<item>/ack` with
@@ -8174,10 +8177,14 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
     at most 10). A model other than the conversation's own is answered on that model (its effort
     as `variant`) with the conversation in the prompt, the conversation staying on its own; with
     the coding agents it must be one of the conversation's own agent's (`400` otherwise). Files
-    must be text: they go in the prompt (200,000 characters together at most); a picture, or
-    anything that isn't text, is refused with `400` saying so, since the routes a side question
-    is answered by take no pictures. The question then has `model` (where it isn't the
-    conversation's) and `files`, their names; their words aren't sent back.
+    must be text or pictures. Text goes in the prompt (200,000 characters together at most). A
+    question with a picture (20 MB at most each) is answered in a one-off turn on the engine, in a
+    hidden session of its own (`kuvo.engineFor`, allowed nothing, deleted after), on the model asked
+    for or the conversation's, with the conversation as a record in the prompt, since the engine's
+    text routes take no pictures; its bytes aren't kept once it's answered. `400` says why for a
+    model the engine lists as not seeing pictures, for a coding agent's conversation (text only,
+    for now), and for anything that's neither text nor a picture. The question then has `model`
+    (where it isn't the conversation's) and `files`, their names; their words aren't sent back.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
     `kuvo.btw.removed` `{sessionID, id?}` (a thread's, one for each of its questions).
 - **Handoffs** (`handoff`): a conversation carried on in a fresh one.
