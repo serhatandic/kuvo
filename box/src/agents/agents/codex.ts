@@ -19,9 +19,10 @@ import { computerServers } from "../servers"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { elicitationField } from "../forms"
 import { newID } from "../ids"
-import { onMachine, ownFoldersConfig, yourHomes } from "../machine"
+import { onMachine, ownFoldersConfig } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { which } from "../proc"
+import { codexProgram } from "../../shared/agent-programs"
+import { run } from "../proc"
 import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } from "../../usage/limits"
 import { CodexCredentials } from "../../usage/codex-credentials"
 import { RPC, RPCError } from "../rpc"
@@ -35,7 +36,6 @@ import type { Turn } from "../turn"
 import type { FileDiff, FormField, Model, ModelRef, OAuthStatus, Session } from "../wire"
 import { BACKGROUND_WORK_LIMIT, workOrder, type WorkOrder } from "../../shared/work-order"
 
-const places = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local/bin"), join(homedir(), ".codex/bin")]
 const outputLimit = 30_000
 /**
  * While the box's sandbox is on, Codex runs whole in it, with its commands and all it starts (its
@@ -202,7 +202,15 @@ export class CodexAgent implements Agent {
   }
 
   executable(): string | undefined {
-    return which("codex", places)
+    return codexProgram()
+  }
+
+  /** An added account signs out as it goes: Codex forgets the sign-in tied to its folder, the
+   * Keychain's or keyring's item too where it keeps it there, before the folder goes. */
+  async removeAccount() {
+    const executable = this.executable()
+    this.shutdown("account removed")
+    if (executable && this.instance.home) await run(executable, ["logout"], { timeout: 20_000, env: { ...process.env, CODEX_HOME: this.instance.home } }).catch(() => {})
   }
 
   /** Its own installer puts it in `~/.codex`: `codex update`. */
@@ -378,7 +386,7 @@ export class CodexAgent implements Agent {
     // And the files of your subagents' instructions (only read).
     const subagents = subagentsRoot()
     if (subagents) mkdirSync(subagents, { recursive: true, mode: 0o700 })
-    const homes = [this.home, ...(this.instance.home && yourHomes ? [this.yourCodex] : [])]
+    const homes = [this.home, ...(this.instance.home ? [this.yourCodex] : [])]
     // The files you attach in the session, copied where only the box writes (`fenceCopy`).
     const attached = sessionID ? fenceAttachments(directory) : undefined
     return fenceAgent(this.executable()!, directory, {
@@ -397,7 +405,7 @@ export class CodexAgent implements Agent {
     if (!executable) throw new Error(`Install Codex first: ${this.install}`)
     // An added account's own CODEX_HOME, with your Codex settings in it: only its sign-in is its
     // own. (On a machine, nothing of the machine's own Codex; a Mac's box in a home of its own is yours.)
-    if (this.instance.home && yourHomes) shadowHome(this.instance.home, this.yourCodex)
+    if (this.instance.home) shadowHome(this.instance.home, this.yourCodex)
     // While the box's sandbox is on, Codex runs whole in it: a session's in its folder, your
     // account's in its home.
     const directory = key === ACCOUNT ? this.accountFolder() : (thread?.session.location.directory ?? this.home)

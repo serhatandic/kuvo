@@ -13,13 +13,13 @@ import { fingerprint, xaiIdentity, type LimitsSource } from "../../usage/limits"
 import { AcpThread, questionFields } from "../acp"
 import { withOwnFolders } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { plain, run, which } from "../proc"
+import { plain, run } from "../proc"
+import { grokProgram } from "../../shared/agent-programs"
 import { commandSignIn } from "../signin"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { grokSubagents, subagentsFor } from "../subagents"
 import type { Model, Session } from "../wire"
 
-const places = [join(homedir(), ".grok/bin"), join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
 
 /**
  * Run whole in the box's sandbox (acp.ts `whole`), Grok writes of its home (GROK_HOME) only its
@@ -110,7 +110,13 @@ export class GrokAgent implements Agent {
   }
 
   executable(): string | undefined {
-    return which("grok", places)
+    return grokProgram()
+  }
+
+  /** An added account signs out as it goes: Grok forgets the sign-in in its folder, before the folder goes. */
+  async removeAccount() {
+    const executable = this.executable()
+    if (executable && this.instance.home) await run(executable, ["logout"], { timeout: 20_000, env: this.env(), cwd: this.context.temporary }).catch(() => {})
   }
 
   /** Its own installer puts it in `~/.grok`: `grok update`. */

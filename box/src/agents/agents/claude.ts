@@ -425,7 +425,8 @@ export class ClaudeAgent implements Agent {
     every: 15 * 60_000,
     signIn: () => fingerprint(this.limitsSignIn()?.token),
     identity: () => {
-      if (!this.byToken) return this.instance.home ? claudeIdentity(this.instance.home) : undefined
+      // (Claude Code keeps who you are in `.claude.json`: in its folder when it's given one, else in your home.)
+      if (!this.byToken) return claudeIdentity(this.instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? homedir())
       const token = this.token()
       return token ? claudeIdentity(this.configHome, token) : undefined
     },
@@ -433,14 +434,14 @@ export class ClaudeAgent implements Agent {
 
   /**
    * The sign-in its limits are read with: on a Mac Kuvo Code's own token; on Linux Claude Code's own
-   * file in Kuvo Code's folder for it (`instance.home`), never one in your home.
+   * file in the account's folder (the first account's is Claude Code's own, `~/.claude`).
    */
   limitsSignIn(): ClaudeSignIn | undefined {
     if (this.byToken) {
       const token = this.token()
       return token ? { token } : undefined
     }
-    return this.instance.home ? credentialsIn(this.instance.home) : undefined
+    return credentialsIn(this.configHome)
   }
 
   /** Kuvo Code's own token, on a Mac, while it has one. */

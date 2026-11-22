@@ -2,147 +2,130 @@
 
 22 November 2026. The user's decision: "lets do it the t3 way … its okay for users to bring their
 subscriptions." Research: `.claude/notes/signin-research-1122.md`. Code: `box/src/agents/accounts.ts`,
-`roster.ts`, `signin.ts`, `agents/*.ts`; `box/src/usage/accounts.ts`.
+`roster.ts`, `signin.ts`, `agents/*.ts`; `box/src/usage/accounts.ts`, `native-usage.ts`.
 
 ## The model
 
 **An account is one coding agent, pointed at one folder, on one box.** Every account has the same
-record (`kind`, `id`, `label`, `folder`), the same controls (add, sign in, sign in again, remove) and
-the same paths for running, renewing and reading usage. The box owns the list; clients draw it
-(`GET kuvo/agents/accounts`, the account picker).
+controls (add, sign in, sign in again, remove) and the same paths for running, renewing and
+reading usage. The box owns the list; clients draw it (the account picker, first run).
 
-- **The first account is the agent's own sign-in**, in its normal folder: the one Terminal uses.
-  The agent renews it itself. Kuvo never copies, refreshes or rewrites a credential.
+- **The first account is the agent's own sign-in, in its own folder**, the one Terminal uses, on
+  every box: a Mac, a Linux machine, a hosted sandbox. The agent renews it itself. Kuvo never copies,
+  refreshes or rewrites a credential.
 - **Each added account is the same agent pointed at a folder of its own**
-  (`agents/<kind>/accounts/<id>`), through the agent's supported switch. You sign in there with
-  the agent's own sign-in.
-- The first account keeps the provider ID `<base>`, so existing sessions, bots and model choices
-  keep it. Added accounts are `<base>@<id>`.
-- **Remove** forgets the account. A folder Kuvo made goes with it. The agent's normal folder is never
-  deleted: removing the first account only signs it out through the agent's own `logout`, after the
-  app says that this also signs out Terminal.
+  (`agents/<kind>/accounts/<id>`), through the agent's supported switch. You sign in there with the
+  agent's own sign-in.
+- The first account keeps the provider ID `<base>`, so sessions, bots and model choices keep it.
+  Added accounts are `<base>@<id>`.
+- **Removing an added account** first signs it out through the agent, in its folder (`codex logout`,
+  `grok logout`, `claude auth logout`), as OpenBot does. The Keychain or keyring entry tied to that
+  folder goes too, and then the folder. The first account isn't removed: signing out of it signs out
+  Terminal too, and the app says so.
 
-| Agent | The switch | First account's folder | Sign-in (local / another device) |
+| Agent | The switch | First account's folder | Sign-in (here / from another device) |
 |---|---|---|---|
 | Codex | `CODEX_HOME` | `$CODEX_HOME` or `~/.codex` | app-server `account/login/start`: browser / device code |
 | Grok | `GROK_HOME` | `$GROK_HOME` or `~/.grok` | `grok login` / `grok login --device-auth` |
 | Claude | `CLAUDE_CONFIG_DIR` (also names the Mac Keychain item) | `$CLAUDE_CONFIG_DIR` or `~/.claude` | `claude auth login`: browser / code paste-back |
 | Cursor | the SDK's key store, one per account | `agents/cursor` (the SDK has no Terminal sign-in) | SDK browser login, or a pasted key |
-| Antigravity | `GEMINI_HOME` | a private folder (T3: 1.5 shares one keyring entry across folders) | `agy acp --login`: browser code paste-back |
+| Antigravity | `GEMINI_HOME` | a private folder, like T3 (`agy` shares one keyring entry across folders) | `agy acp --login`: browser code paste-back |
 
-**Linux machines (decision for the user).** On Linux the box's sandbox (Landlock) grants an
-agent's home *whole*: it can't let Codex rename a new `auth.json` into `~/.codex` without also
-letting it write `~/.codex/config.toml`, which your own Terminal Codex then runs outside any
-sandbox. Seatbelt on a Mac can (state only, settings read-only). And the footprint rule keeps a
-machine's sign-ins in `~/.kuvo-code/agents`. So on a Linux box the first account's folder stays
-`agents/<kind>/home`: the agent's own sign-in for that box, signed in with its own device code,
-renewed by the agent. **Recommended: keep it so.** Sharing `~/.codex` with Terminal on Linux
-needs the user's word on the footprint rule and a sandbox that holds settings read-only first.
+**Linux is the same as a Mac** (the user, 11-22). Linux boxes used to keep the first account in
+Kuvo's folder (`agents/<kind>/home`). That was for the footprint rule and to keep the sandbox
+from writing `~/.codex/config.toml`. The user decided the sandbox is for accidents, not hostile
+agents, so the agent's own folder is fine there too. The old folders move over on update (below).
 
 ## Where Kuvo differs from T3 Code and OpenBot
 
-1. **The sandbox stays.** T3 runs agents as plain processes. Kuvo runs them whole in the box's
-   sandbox, and gives each agent only its own sign-in: on a Mac, the Keychain item its folder
-   names; on Linux, the folder's files (see Sandbox access below).
-2. **Kuvo's own sign-in screen stays.** It works from another computer too, but it only drives the
-   agent's *native* login (browser, device code or code paste-back). It never makes a token.
-3. **One sign-in path per agent.** Codex gets no "Connect with ChatGPT" managed-renewal path beside
-   `codex login`.
-4. **Antigravity**, like T3, uses a private `GEMINI_HOME` from the first account, because `agy`
-   shares one keyring entry across folders.
-5. **Removing an account** first signs out through the agent (`claude auth logout`, `codex logout`,
-   `grok logout` with its folder), as OpenBot does. The Keychain or keyring entry tied to that
-   folder goes with it, so nothing is left behind.
-6. **Hosted sandboxes and machines** have only their own accounts. There is no Terminal sign-in to
-   share there.
+1. **Kuvo's own sign-in screen stays.** It works from another computer too, but it only drives the
+   agent's *native* login. It never makes a token.
+2. **One sign-in path per agent.** Codex gets no "Connect with ChatGPT" managed-renewal path.
+3. **Antigravity** uses a private `GEMINI_HOME` from the first account, as T3 does.
+4. **The sandbox (Auto mode only):** the agent's own folder is opened to it, read and write. Full
+   Access sessions run outside the sandbox anyway.
 
-## Sign-in on local, remote and headless boxes
+## Sign-in, renewal and usage
 
-Sign-in always runs on the box that owns the account, through `commandSignIn` or the agent's own
-RPC. The client opens the page. On a box with no browser, or when the page is opened on another
-device, the box asks for the agent's device code (Codex, Grok) or a code to paste back (Claude,
-Antigravity), and the client shows it (`signsInRemotely`). Nothing is carried between boxes. Each
-box signs in on its own, so no two boxes share one rotating refresh token.
+Sign-in runs on the box that owns the account. The client opens the page, or shows the agent's
+device code or a field to paste a code back into. Each box signs in on its own, and nothing is
+carried between boxes. The agent renews its sign-in as it runs. A sign-in that has ended shows
+**Sign in again**.
 
-## Renewal
+The usage reader asks the agent itself, in the account's folder. It only fingerprints a sign-in to
+notice when it changes, and never sends a token anywhere:
+- **Codex:** a short `codex app-server`: `account/rateLimits/read` gives the windows, credits,
+  reset credits and account. `account/rateLimitResetCredit/consume` spends a reset, with the box
+  journal's request as Codex's idempotency key.
+- **Grok:** a short `grok agent stdio`: ACP `_x.ai/billing`, after `authenticate` with its kept sign-in.
+- **Claude:** the Agent SDK's usage call with `skipBehaviors`, on the account's sign-in (step 4).
+- **Cursor:** as today, with the account's SDK key. **Antigravity:** its quota reader (step 5).
 
-The agent renews its own sign-in as it runs. Kuvo starts the agent with its folder and nothing
-else: no `CLAUDE_CODE_OAUTH_TOKEN`, no token files of its own, no refresh calls. A sign-in that
-has ended shows **Sign in again** on its account.
+## Install, updates and notices
 
-## Usage, through each agent's own channel
+Each agent runs from **its own normal install**. Where it isn't installed, **Install** runs the
+maker's installer. Antigravity is the exception today: Kuvo downloads Google's standalone ACP server
+pinned to 1.3.0, which never updates. That's why its updates were missing. It moves to Google's
+`agy` CLI (`agy acp`).
 
-The usage reader (`box/src/usage/accounts.ts`) asks the agent itself, as the account's folder
-says, and never reads a credential:
+**"Update coding agents automatically"** is a box setting, **off by default**.
+- **Off:** Kuvo starts each agent with its own updater turned off where it can. Settings shows the
+  installed and newest version, with **Update**. As soon as a newer version is out, the box raises
+  "Codex 0.x is available", with an Update action.
+- **On:** agents update themselves. Afterwards the box says "Codex updated to 0.x".
+- One notice per version, cleared once it's updated or seen. The box checks and words them; the
+  app's notifications bell and macOS notifications draw them.
+- Using an agent in Terminal can still update a shared install. Kuvo then notices the new version.
 
-- **Codex:** a short `codex app-server`, `account/rateLimits/read` (windows, credits, reset
-  credits, account ID); reset credits are spent with `account/rateLimitResetCredit/consume`.
-- **Grok:** a short `grok agent stdio`, ACP `_x.ai/billing` (the billing period) and
-  `_x.ai/auth/info` (who it is).
-- **Claude:** the Agent SDK's usage call with `skipBehaviors`, on the account's own sign-in.
-- **Cursor:** as today, with the account's SDK key.
-- **Antigravity:** its quota reader, on the account's folder.
+Planned per agent (not built yet; each row is confirmed when it's built):
 
-The agent may renew its sign-in during the read: that's its own renewal, written where it keeps it.
-Identity for counting one account once across boxes comes from the same answer.
+| Agent | Turn its updater off | Newest version from |
+|---|---|---|
+| Claude Code | yes: `DISABLE_AUTOUPDATER=1` | `claude update` channel (npm `@anthropic-ai/claude-code`) |
+| Codex | yes: `check_for_update_on_startup=false` | npm `@openai/codex` / GitHub releases |
+| Grok | yes: `GROK_DISABLE_AUTOUPDATER=1` (already set) | npm `@xai-official/grok` |
+| Antigravity (`agy`) | to check on 1.5 | Google's release feed, to confirm on 1.5 |
+| Cursor SDK | n/a: a library inside Kuvo | updates with Kuvo's releases; no notice |
 
-## Sandbox access (the minimum per agent)
+**Two pinned libraries, in plain words.** Two of the agents are reached through a code library that
+ships *inside* Kuvo rather than a program you install:
+- **Cursor's SDK** (`@cursor/sdk`): Kuvo talks to Cursor through it. It has no Terminal program of
+  its own to update.
+- **The Claude Agent SDK**: Kuvo's way of talking to Claude Code. It always runs *your* installed
+  `claude`, never a copy of its own.
 
-The agent's process runs whole in the box's sandbox with its account's folder (`fence.ts`
-`fenceAgent`): on a Mac, the folder is read, and only its state written (sign-in, sessions, logs,
-locks); settings stay read-only. On Linux, the folder is written whole, so it must be Kuvo's own.
+They're part of Kuvo's own code, tested with it, and they update when Kuvo updates. Your agents
+themselves aren't pinned.
 
-- **Codex, Grok:** their sign-in is a file in the folder (`auth.json`, renamed into place):
-  state write, nothing more. Codex in `keyring` mode also needs its Keychain item: reading
-  `Codex Auth` is allowed. Writing it is not yet, so a keyring-mode account renews outside the sandbox (as today).
-- **Claude (Mac):** its sign-in is the Keychain item `Claude Code-credentials[-<hash>]`. Renewing
-  it means writing through `securityd`, which the sandbox's children would inherit. Step 4 proves
-  what the minimum is under the real fence. If no grant is safe for the commands Claude runs,
-  `setup-token` doesn't come back: the account says plainly that it can't renew inside the sandbox.
-- **Cursor:** the SDK key is read by the bridge, outside the agent's reach.
-- **Antigravity:** its folder (`GEMINI_HOME`); on a Mac its Keychain entry, like Claude's (step 5).
+## First run
 
-## Install and update
-
-Each agent runs from **its own normal install, which updates itself** (`claude update`,
-`codex update`, `grok update`, `agy`'s updater). Where it isn't installed, **Install** runs the
-maker's installer. Kuvo shows each agent's installed version in Settings › Agents and offers
-**Update** where the agent doesn't update itself (`maintenance.ts`). Antigravity is the exception
-today: Kuvo downloads Google's standalone ACP server pinned to 1.3.0 (`agents/antigravity.ts`),
-which never updates. That's why its updates were missing. It moves to Google's `agy` CLI
-(`agy acp`). Pinned copies that remain, and why:
-- **Cursor's SDK** (`@cursor/sdk`): the integration *is* the library the bridge loads; Cursor's CLI
-  is a different product with its own sign-in. It updates with Kuvo's releases.
-- **The Claude Agent SDK**: a library that runs whichever `claude` is installed, never its own copy.
+With the agent's own sign-in as the first account, there's nothing to carry over. The box reports
+an agent already signed in natively as added, with its account name or email and plan, and first
+run shows it as ready. Agents not signed in get the in-place sign-in, which drives the native login.
+The box's path that copied a sign-in into Kuvo's folder goes, along with any first-run step for it.
 
 ## Existing sign-ins on update (once, automatic, per box)
 
-- **Codex, Grok on a Mac:** already the native folder. Nothing moves.
-- **Codex, Grok, Claude on Linux:** `agents/<kind>/home` stays the first account's folder.
-- **Claude on a Mac:** a `setup-token` token (`agents/claude/tokens/<id>.json`) or Kuvo's Console
-  folder (`agents/claude/console`):
-  - native `~/.claude` signed in: the first account uses it, and the old token is deleted;
-  - not signed in: the old token keeps running the first account, labelled "Sign in again to see
-    your plan's usage", until you sign in; then it's deleted;
-  - Kuvo's Console folder: becomes an added account with that folder (label "Anthropic Console").
-  - Added Claude accounts are already `CLAUDE_CONFIG_DIR` folders: only their tokens go, the same way.
-- **Cursor:** unchanged. Its folder already holds the account's key.
-- **Antigravity 1.3 to 1.5:** Google moved the sign-in into the OS keyring, which can't be filled
-  from 1.3's file. An account keeps running on 1.3 until it's signed in on 1.5, and shows
-  **Sign in again to update Antigravity**. This is the one step a user must take, because Google's change requires it.
+- **Codex, Grok on a Mac:** already the agent's own folder. Nothing moves.
+- **Codex, Grok, Claude on Linux** (`agents/<kind>/home`, built, `adoptOwnFolders`): the
+  conversations move into the agent's own folder, so sessions go on with their threads.
+  - If the agent's own folder has no sign-in, the old sign-in moves there (moved, not copied).
+  - If it has one, yours stays the first account and the old one becomes an added account,
+    "Earlier sign-in".
+- **Claude on a Mac:** a `setup-token` token or Kuvo's Console folder (step 4):
+  - if `~/.claude` is signed in, it's used and the token is deleted;
+  - if not, the token keeps working, marked "Sign in again to see your plan's usage";
+  - the Console folder becomes an added account.
+- **Cursor:** unchanged. **Antigravity 1.3 to 1.5:** Google moved the sign-in into the keyring.
+  An account keeps running on 1.3 and shows **Sign in again to update Antigravity**: the one step
+  Google's change forces.
 
 ## What gets removed
 
-- Codex: Kuvo's own reads of ChatGPT's usage and reset-credit endpoints with the agent's token,
-  and of its Keychain item (`usage/codex-credentials.ts`) for usage. The engine's `openai` provider keeps
-  its own.
-- Grok: the direct billing request with the raw key from `auth.json`, and the "sign-in has
-  lapsed" special case: Grok renews during the read.
-- Claude (Mac): `claude setup-token`, `agents/claude/tokens`, Kuvo's Console folder, the
-  `CLAUDE_CODE_OAUTH_TOKEN` it set, the token-based `/api/oauth/usage` probe and its terminal-screen
-  scraping in `signin.ts` (`terminal`, `codeMask`, `onLine`).
-- Antigravity: the pinned 1.3.0 download, `AGY_ACP_FORCE_FILE_STORAGE`, the browser catcher's
-  ACP token file.
-- Accounts: the split between "the agent's own" and "managed defaults" (`managedDefaults`,
-  `yourHomes` in `accounts.ts` and `usage/accounts.ts`). It becomes one rule for the first
-  account's folder.
+- Done: Kuvo's own ChatGPT usage and reset-credit requests for Codex accounts (the engine's `openai`
+  sign-in keeps its own). The direct xAI billing request and "sign-in has lapsed" case for Grok
+  accounts. The machine-only first-account folders (`managedDefaults`, `yourHomes`).
+- Next: Claude on a Mac: `setup-token`, `agents/claude/tokens`, the Console folder, the
+  `CLAUDE_CODE_OAUTH_TOKEN` it set, the token-based usage probe and the terminal-screen scraping in
+  `signin.ts`. Antigravity: the pinned 1.3.0 download, `AGY_ACP_FORCE_FILE_STORAGE`, and the ACP
+  token file. Onboarding's sign-in copy.
