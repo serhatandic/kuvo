@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve, sep } from "node:path"
+import { marketplaceScope, MARKETPLACE_SKILL_MARKER } from "../shared/marketplace"
 import type { TurnHooks } from "./agent"
 import type { EngineLink } from "./engine"
 
@@ -103,7 +104,10 @@ export function within(path: string, folders: string[]): boolean {
 export async function skillsFor(directory: string, own: string[], off: (name: string) => boolean): Promise<Skill[]> {
   const seen = new Set<string>()
   const skills: Skill[] = []
+  const scope = marketplaceScope(directory)
   for (const skill of await engineSkills(directory)) {
+    if (scope && existsSync(join(skill.folder, MARKETPLACE_SKILL_MARKER)) && !scope.skills.includes(skill.name)) continue
+    if (!existsSync(join(skill.folder, "SKILL.md"))) continue
     if (seen.has(skill.name) || off(skill.name) || within(skill.folder, own)) continue
     seen.add(skill.name)
     skills.push(skill)

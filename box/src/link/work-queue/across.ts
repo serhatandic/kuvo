@@ -338,6 +338,11 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       case "devices": return deviceAct(sender, act);
       case "setup": return setupAct(sender, act);
       case "queue-agent": return queueToolForPeer(act, places().targets);
+      case "marketplace": {
+        const { marketplaceForPeer } = await import("../areas/marketplace");
+        const { readEngineFile, bridgeTarget } = await import("../engine/client");
+        return marketplaceForPeer(act, { readEngine: readEngineFile, bridge: bridgeTarget });
+      }
       case "library": return (await import("../areas/library")).libraryForPeer(act);
       default: return actForPeer(act, places().targets);
     }

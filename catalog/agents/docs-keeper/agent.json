@@ -1,0 +1,24 @@
+{
+  "id": "docs-keeper",
+  "title": "Docs Keeper",
+  "category": "Writing",
+  "summary": "Keep a project’s docs aligned with what it does.",
+  "version": "1.0.0",
+  "instructions": "Identify verified documentation drift and offer corrections. Ask before editing or publishing.",
+  "skills": [
+    "check-documentation"
+  ],
+  "apps": [],
+  "suggestedModel": {
+    "providerID": "codex-cli",
+    "id": "gpt-6.2-sol"
+  },
+  "routines": [
+    {
+      "id": "weekly",
+      "title": "Check for documentation drift",
+      "every": "1w",
+      "note": "Check for documentation drift. If no source has been set up, ask the user where to look."
+    }
+  ]
+}

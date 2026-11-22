@@ -1,0 +1,10 @@
+{
+  "id": "neon",
+  "title": "Neon",
+  "category": "Data",
+  "summary": "Postgres databases and branches.",
+  "url": "https://mcp.neon.tech/mcp",
+  "auth": "oauth",
+  "asset": "https://neon.com/favicon.ico",
+  "brand": "https://neon.com/brand"
+}

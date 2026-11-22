@@ -54,6 +54,8 @@ import { reconnectEverywhere, upgradeBeforeEngine, upgradeIntegrations } from ".
 import { readApart } from "./github/graphql";
 import "./work-queue/github";
 import "./glance/github";
+import { keepMarketplaceProjection } from "./areas/marketplace";
+import { startMarketplaceRelay } from "./marketplace/connections";
 import { keepSkillTrashClear } from "./areas/skills";
 import { sendWakes } from "./areas/wakes";
 import { finishDeletes } from "./bots/edit";
@@ -574,6 +576,8 @@ async function run(owner?: ClientOwner): Promise<void> {
   keepMachinesUp(automaticSshUpdate);
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
+  keepMarketplaceProjection();
+  startMarketplaceRelay().catch(() => console.error("Marketplace connections could not start."));
   // What a Work Queue change left half read as the box stopped.
   clearStaging();
   setInterval(() => {
@@ -1301,6 +1305,10 @@ async function serve(owner?: ClientOwner): Promise<void> {
   }
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
+  if (IS_MAC) {
+    keepMarketplaceProjection();
+    startMarketplaceRelay().catch(() => console.error("Marketplace connections could not start."));
+  }
   // What a Work Queue change left half read as the box stopped.
   clearStaging();
   // Its bots' jobs kept in their folders, taken once from where they were before, once its app

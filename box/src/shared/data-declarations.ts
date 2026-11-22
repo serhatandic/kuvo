@@ -165,6 +165,7 @@ export const DATA_DECLARATIONS = {
   libraryIndex: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["library/log.jsonl"], families: ["Artifacts"] },
   libraryThumbnails: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Artifacts"] },
 
+  marketplaceInstallations: { shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, backupVia: "accepted setup", restore: "portable", families: ["Signed documents"] },
   setupPersonalities: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["bots/personalities.json"], families: ["Personalities", "Signed documents"] },
   setupTimeZone: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/time-zone.json"], families: ["Time zone"] },
   setupUsageDisplay: { shared: { seed: "member copies", publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["agents/usage/settings.json"], families: ["Usage settings"] },

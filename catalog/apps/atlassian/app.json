@@ -1,0 +1,10 @@
+{
+  "id": "atlassian",
+  "title": "Atlassian",
+  "category": "Work",
+  "summary": "Jira issues and Confluence pages.",
+  "url": "https://mcp.atlassian.com/v2/mcp",
+  "auth": "oauth",
+  "asset": "https://www.atlassian.com/favicon.ico",
+  "brand": "https://atlassian.design/foundations/logos"
+}

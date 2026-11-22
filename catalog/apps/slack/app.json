@@ -1,0 +1,10 @@
+{
+  "id": "slack",
+  "title": "Slack",
+  "category": "Work",
+  "summary": "Search conversations and channels.",
+  "url": "https://mcp.slack.com/mcp",
+  "auth": "broker",
+  "asset": "https://a.slack-edge.com/80588/marketing/img/meta/favicon-32.png",
+  "brand": "https://slack.com/media-kit"
+}
