@@ -54,8 +54,6 @@ pub struct Areas {
     /// and each computer's progress by key (one not given reports none, as an older Kuvo).
     pub fleet: Option<Value>,
     pub fleet_rows: Vec<(String, Value)>,
-    /// Its own key among them (none: the stand-in Mac's), which Update Now updates.
-    pub fleet_here: Option<String>,
     /// What Check for Updates (`POST kuvo/update {now}`) answers, where a test says (none: as
     /// before, unanswered here).
     pub check_says: Option<(u16, Value)>,
@@ -80,6 +78,8 @@ pub struct Areas {
     /// Your setup, where the stand-in is in one (`kuvo/setup`): its main computer by key, and its
     /// epoch; its computers are those listed.
     pub roles: Option<Roles>,
+    /// What Try Again for a computer is refused with (`409`), as a box whose release moved on says.
+    pub retry_refused: Option<String>,
     /// What renaming named each computer, by key.
     pub renamed: Vec<(String, String)>,
 }
@@ -550,6 +550,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()) {
                     computer["fleetUpdate"] = json!({
                         "current": null, "target": target, "state": "behind", "canRetry": false,
+                        "line": { "words": "Getting beta.38 ready…", "tone": "working" },
                     });
                 }
             }
@@ -843,15 +844,21 @@ pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
     if method != "POST" || route != "kuvo/update/retry" {
         return None;
     }
-    let here = areas.fleet_here.clone().unwrap_or_else(|| "key_stand_in".into());
+    // (The computer named, else this one; passed on to it, as the box that lists them does.)
+    let asked = body["key"].as_str().unwrap_or("key_stand_in").to_owned();
     let summary = areas.fleet.as_ref()?;
     if body["target"] != summary["target"] {
         return Some((409, json!({ "message": "The setup’s target version changed." })));
     }
-    let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == here).map(|(_, row)| row);
+    if let Some(refused) = areas.retry_refused.clone() {
+        return Some((409, json!({ "message": refused })));
+    }
+    let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == asked).map(|(_, row)| row);
     match row {
         Some(row) if row["canRetry"] == json!(true) => {
-            *row = json!({ "current": row["current"], "target": row["target"], "state": "getting-ready", "canRetry": false });
+            let target = row["target"].as_str().unwrap_or_default().to_owned();
+            let short = target.split_once('-').map_or(target.as_str(), |(_, pre)| pre).to_owned();
+            *row = json!({ "current": row["current"], "target": target, "state": "getting-ready", "canRetry": false, "line": { "words": format!("Getting {short} ready…"), "tone": "working" } });
             Some((202, row.clone()))
         }
         _ => Some((409, json!({ "message": "This computer has no update to retry." }))),

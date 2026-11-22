@@ -371,9 +371,18 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
 export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
-/** A computer's progress towards its setup's accepted release. Timestamps are in ms. */
+/** What a computer's row in the setup's update shows, all the box's: its words, its tone (`done`:
+ * up to date or ready; `working`: getting ready; `warning`: it can't update for a reason you can
+ * fix; `blocked`: it can't until the next release; `off`) and, where it's `warning`, the few words a
+ * narrow place shows (`short`). */
+export const FLEET_LINE = object({ words: string, tone: words("done", "working", "warning", "blocked", "off"), "short?": string });
+export type FleetLine = Infer<typeof FLEET_LINE>;
+
+/** A computer's progress towards its setup's accepted release. Timestamps are in ms. `canRetry`:
+ * Try Again is offered on its row (`POST kuvo/update/retry` with its `key`). */
 const FLEET_PROGRESS = {
   current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
+  "line?": FLEET_LINE,
 } as const;
 export const FLEET_UPDATE = oneOf(
   object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),
@@ -532,7 +541,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+  { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string, "key?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },

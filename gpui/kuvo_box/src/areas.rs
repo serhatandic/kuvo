@@ -627,8 +627,25 @@ pub struct FleetUpdate {
     pub next_retry_at: Option<u64>,
     pub failed_at: Option<u64>,
     pub last_failure_at: Option<u64>,
+    /// Try Again is offered on its row (`POST kuvo/update/retry` with its key, asked of the box
+    /// that lists your computers).
     pub can_retry: bool,
     pub fixable: Option<bool>,
+    /// What its row shows, in the box's words: none from a box from before it said them.
+    #[serde(default)]
+    pub line: Option<FleetLine>,
+}
+
+/// What a computer's row in the setup's update shows, all the box's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FleetLine {
+    pub words: String,
+    /// `done`, `working`, `warning` (it can't update for a reason you can fix), `blocked` (it can't
+    /// until the next release) or `off`.
+    pub tone: String,
+    /// Where it's `warning`, the few words a narrow place shows.
+    #[serde(default)]
+    pub short: Option<String>,
 }
 
 /// Progress across the setup, included in every Computers snapshot.
@@ -905,14 +922,10 @@ impl BoxClient {
         self.get("kuvo/computers")
     }
 
-    /// Retries the named accepted release on the computer this client reaches.
-    pub fn retry_fleet_update(&self, target: &str) -> Result<FleetUpdate> {
-        self.retry_fleet_release(target, None)
-    }
-
-    /// Retries only if the specified pack is still the accepted release.
-    pub fn retry_fleet_release(&self, target: &str, sha256: Option<&str>) -> Result<FleetUpdate> {
-        let mut body = serde_json::json!({ "target": target });
+    /// Try Again for one of your computers (`key`), asked of the box that lists them, which passes
+    /// it on to that computer; only while `sha256`'s pack is still the accepted release.
+    pub fn retry_fleet_release(&self, key: &str, target: &str, sha256: Option<&str>) -> Result<FleetUpdate> {
+        let mut body = serde_json::json!({ "target": target, "key": key });
         if let Some(hash) = sha256 {
             body["targetSha256"] = hash.into();
         }

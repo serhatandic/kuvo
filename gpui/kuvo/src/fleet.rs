@@ -11,17 +11,24 @@ use kuvo_ui::{
 #[cfg(feature = "stand-in")]
 pub const FEATURE: &str = "update.fleet";
 
-pub fn short(version: &str) -> &str {
-    version.split_once('-').map_or(version, |(_, pre)| pre)
+/// How a row looks, as the box says it (`tone`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Done,
+    Working,
+    /// It can't update for a reason you can fix.
+    Warning,
+    /// It can't until the next release.
+    Blocked,
+    Off,
 }
 
+/// A computer's row in the setup's update, in the box's words.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Line {
-    UpToDate { version: String },
-    Ready { target: String },
-    GettingReady { target: String },
-    Off { current: Option<String> },
-    Cannot { current: Option<String>, reason: String, fixable: bool },
+pub struct Line {
+    pub words: String,
+    pub tone: Tone,
+    pub short: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,50 +36,36 @@ pub struct Standing {
     pub line: Line,
     pub target: String,
     pub target_sha256: Option<String>,
+    /// Try Again is offered, as the box says (`canRetry`).
     pub can_update: bool,
 }
 
-pub fn standing(computer: &Computer, _now: f64) -> Option<Standing> {
+/// How a computer's update stands, as the box says it; none where it says nothing to draw.
+pub fn standing(computer: &Computer) -> Option<Standing> {
     let update = computer.fleet_update.as_ref()?;
-    let line = match update.state.as_str() {
-        "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
-        "ready" => Line::Ready { target: update.target.clone() },
-        "getting-ready" | "updating" | "behind" => Line::GettingReady { target: update.target.clone() },
-        "off" => Line::Off { current: update.current.clone() },
-        "cannot" => Line::Cannot {
-            current: update.current.clone(),
-            reason: update.reason.clone().unwrap_or_default(),
-            fixable: update.fixable == Some(true),
-        },
+    let line = update.line.as_ref()?;
+    let tone = match line.tone.as_str() {
+        "done" => Tone::Done,
+        "working" => Tone::Working,
+        "warning" => Tone::Warning,
+        "blocked" => Tone::Blocked,
+        "off" => Tone::Off,
         _ => return None,
     };
     Some(Standing {
-        can_update: matches!(line, Line::Cannot { fixable: true, .. }) && update.can_retry,
-        line,
+        line: Line { words: line.words.clone(), tone, short: line.short.clone() },
+        can_update: update.can_retry,
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
     })
 }
 
-fn with_version(version: Option<&str>, words: &str) -> String {
-    version.map_or_else(|| words.to_owned(), |version| format!("{} · {words}", short(version)))
-}
-
 pub fn words(line: &Line) -> String {
-    match line {
-        Line::UpToDate { version } => format!("{} · Up to date", short(version)),
-        Line::Ready { target } => format!("Ready for {}", short(target)),
-        Line::GettingReady { target } => format!("Getting {} ready…", short(target)),
-        Line::Off { current } => with_version(current.as_deref(), "Off: updates when it’s back"),
-        Line::Cannot { current, reason, fixable } => {
-            let words = with_version(current.as_deref(), reason);
-            if *fixable { words } else { format!("{words} · Updates with the next release") }
-        }
-    }
+    line.words.clone()
 }
 
-pub fn short_words(line: &Line) -> Option<&'static str> {
-    matches!(line, Line::Cannot { fixable: true, .. }).then_some("Can’t update")
+pub fn short_words(line: &Line) -> Option<&str> {
+    line.short.as_deref()
 }
 
 pub fn color(line: &Line, cx: &App) -> Hsla {
@@ -81,16 +74,16 @@ pub fn color(line: &Line, cx: &App) -> Hsla {
 }
 
 pub fn dot(line: &Line, cx: &App) -> Option<Hsla> {
-    matches!(line, Line::Cannot { fixable: true, .. }).then(|| cx.theme().colors.warning)
+    (line.tone == Tone::Warning).then(|| cx.theme().colors.warning)
 }
 
 pub fn status_line(id: &str, line: &Line, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    let leading: AnyElement = match line {
-        Line::UpToDate { .. } | Line::Ready { .. } => Icon::new(IconName::Check).size(IconSize::XSmall).color(c.success).into_any_element(),
-        Line::GettingReady { .. } => spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, c.accent).into_any_element(),
-        Line::Cannot { fixable: true, .. } => Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element(),
-        _ => div().pt(px(2.)).child(status_dot(c.border_strong)).into_any_element(),
+    let leading: AnyElement = match line.tone {
+        Tone::Done => Icon::new(IconName::Check).size(IconSize::XSmall).color(c.success).into_any_element(),
+        Tone::Working => spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, c.accent).into_any_element(),
+        Tone::Warning => Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element(),
+        Tone::Blocked | Tone::Off => div().pt(px(2.)).child(status_dot(c.border_strong)).into_any_element(),
     };
     let selector = format!("fleet-line-{id}");
     div()

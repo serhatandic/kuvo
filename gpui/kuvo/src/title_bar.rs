@@ -536,17 +536,17 @@ fn fleet_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyEleme
 
 /// Each computer’s update progress, with Try Again only where the box says it can be fixed.
 fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSummary, cx: &Context<Workspace>) -> AnyElement {
-    use crate::fleet::Line;
+    use crate::fleet::Tone;
     let theme = cx.theme().clone();
     let c = &theme.colors;
     let rows = workspace.fleet_rows();
     let retrying = workspace.fleet_retrying().map(str::to_owned);
     let segments = rows.iter().map(|row| {
-        let color = match row.standing.line {
-            Line::UpToDate { .. } | Line::Ready { .. } => c.success,
-            Line::GettingReady { .. } => c.accent,
-            Line::Cannot { .. } => c.warning,
-            Line::Off { .. } => c.border_strong,
+        let color = match row.standing.line.tone {
+            Tone::Done => c.success,
+            Tone::Working => c.accent,
+            Tone::Warning | Tone::Blocked => c.warning,
+            Tone::Off => c.border_strong,
         };
         div().flex_1().rounded(radius::PILL).bg(color)
     });

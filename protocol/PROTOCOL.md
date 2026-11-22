@@ -3720,7 +3720,12 @@ did: the box keeps working as itself ("For released Macs").
     `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
     `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
     computer that has not reported its progress can still be shown behind.
-    - A row has `{current, target, state, canRetry, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
+    - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
+      `line` `{words, tone, short?}` is what the row shows, all the box's: `words` ("Ready for
+      beta.41", "beta.40 · Off: updates when it’s back"), `tone` (`done`, `working`, `warning`
+      where it can't update for a reason you can fix, `blocked` where it can't until the next
+      release, `off`), and on `warning` the few words a narrow place shows (`short`). `canRetry`
+      says Try Again is offered on the row. A client draws these and decides neither.
       `requiresUpdate` is optional and tells clients when to hold new work. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
       and `failed` (`reason, rolledBackTo, nextRetryAt, failedAt`). Times are Unix milliseconds.
@@ -3729,8 +3734,12 @@ did: the box keeps working as itself ("For released Macs").
       `finished`. Show an active update while `!dismissed && stage !== "finished"`.
       `failures` is a list of opaque failure identifiers clients can retain with a dismissal
       when their stream switches computer.
-    - `POST kuvo/update/retry {target, targetSha256?}` to the affected computer returns `202` with its update
-      state or `409 {message}` when the target changed or `canRetry` is false. A computer can
+    - `POST kuvo/update/retry {target, targetSha256?, key?}` returns `202` with the row's update
+      state or `409 {message}` when the target changed or `canRetry` is false. Without `key`, or
+      with this computer's, it's this computer's own Try Again. With another computer's `key`, the
+      box passes it on to that computer by peer mail (`{release: {retry: {version, sha256}}}`), which
+      retries as its own Try Again does: `404` for a key that isn't one of your computers, `503`
+      where that computer can't be reached now. Clients ask the box that lists your computers. A computer can
       retry after failure or five minutes without progress. Its relay owner consumes the request
       and starts the same no-cut path used by automatic updates. In a setup with an accepted
       release, `POST kuvo/update {now: true}` uses the same eligibility rule.

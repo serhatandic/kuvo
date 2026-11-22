@@ -298,14 +298,32 @@ test("T3: a fixable prepare failure can retry and the five-minute deadline exclu
   tell(slow, main, await facts(main));
   assert.equal(selected(slow), OLD);
   fs.unlinkSync(disk);
+  // The main's list says what slow's row shows and that Try Again is offered there; Try Again,
+  // asked of the main with slow's key, is passed on to slow, which retries.
+  const asked = await call(main, `
+    const row = (await box.listComputers("Node", null)).find(row => row.key === input.key);
+    const sent = [];
+    box.fleetWith({ ...opts, send(peer, mail) { sent.push({ peer, mail }); return true; } });
+    const route = box.engineHandler(() => ({}), { name: "Fixture" }, () => null);
+    const ask = async body => {
+      const pieces = [];
+      for await (const piece of route({ method: "POST", path: "kuvo/update/retry", fromApp: true, served: true, headers: {}, body: Buffer.from(JSON.stringify(body)) })) pieces.push(piece);
+      return pieces.find(piece => piece.head).head.status;
+    };
+    const status = await ask({ target: input.ref.version, targetSha256: input.ref.sha256, key: input.key });
+    const unknown = await ask({ target: input.ref.version, key: input.stranger });
+    return { line: row.fleetUpdate.line, canRetry: row.fleetUpdate.canRetry, status, unknown, sent };
+  `, { ref: pack.ref, key: slow.peer.key, stranger: b64(crypto.randomBytes(32)) });
+  assert.deepEqual(asked.line, { words: `beta.40 · ${failed.cannot.reason}`, tone: "warning", short: "Can’t update" });
+  assert.deepEqual([asked.canRetry, asked.status, asked.unknown], [true, 202, 404]);
+  assert.deepEqual(asked.sent, [{ peer: slow.peer.key, mail: { retry: pack.ref } }]);
   const retry = await call(slow, `
-    const scheduled = box.requestFleetRetry(input.ref.version, input.ref.sha256);
-    if (scheduled.status !== 202) return scheduled;
+    box.takeReleaseMail({ key: input.main }, input.mail);
     let staging;
     box.fleetWith({ ...opts, start(options) { staging = options; return true; } });
     box.consumeFleetRetry();
     return await box.update({ ...staging, ...opts });
-  `, { ref: pack.ref });
+  `, { main: main.peer.key, mail: asked.sent[0].mail });
   assert.equal(retry.result, "waiting", retry.message);
   assert.equal((await facts(slow)).cannot, undefined);
   assert.equal((await activate(slow, pack)).result, "updated");
@@ -421,6 +439,23 @@ test("the setup's update is said in the box's words: shown only while computers 
     assert.equal(quiet.warning, false);
     assert.equal(quiet.detail, undefined);
   }
+});
+
+test("each computer's row says in the box's words how its update stands, and whether Try Again is offered", requiresBun, async () => {
+  const { nodes: [main] } = fleet([OLD]);
+  const sha = "a".repeat(64);
+  const room = "There isn’t room on it to keep its data while it updates.";
+  const cases = [
+    [{ kuvo: NEXT }, false, { words: "beta.41 · Up to date", tone: "done" }, false],
+    [{ kuvo: "0.8.0-beta.42" }, false, { words: "beta.42 · Up to date", tone: "done" }, false],
+    [{ kuvo: OLD, staged: { version: NEXT, sha256: sha } }, false, { words: "Ready for beta.41", tone: "done" }, false],
+    [{ kuvo: OLD }, false, { words: "Getting beta.41 ready…", tone: "working" }, false],
+    [{ kuvo: OLD }, true, { words: "beta.40 · Off: updates when it’s back", tone: "off" }, false],
+    [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: room, fixable: true } }, false, { words: `beta.40 · ${room}`, tone: "warning", short: "Can’t update" }, true],
+    [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: "beta.41 doesn’t run here.", fixable: false } }, false, { words: "beta.40 · beta.41 doesn’t run here. · Updates with the next release", tone: "blocked" }, false],
+  ];
+  const rows = await call(main, "return input.cases.map(([facts, away]) => box.peerFleetUpdate({ version: input.target, sha256: input.sha }, facts, away))", { cases, target: NEXT, sha });
+  rows.forEach((row, ix) => assert.deepEqual([row.line, row.canRetry], [cases[ix][2], cases[ix][3]], JSON.stringify(cases[ix][0])));
 });
 
 test("Check for Updates on a member asks its main to look at the feed, at once or once it's back", requiresBun, async () => {

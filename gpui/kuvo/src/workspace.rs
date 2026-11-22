@@ -265,9 +265,6 @@ pub struct Workspace {
     gate_seen: kuvo_box::gate::Gate,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
-    /// Your boxes, where this window is over them (none: a workspace by itself): what Update Now
-    /// and Dismiss in the update notifier ask.
-    boxes: Option<kuvo_box::boxes::Boxes>,
     fleet_card: FleetCard,
     /// Its box is being reached again, on your word (Try Again).
     reaching_again: bool,
@@ -527,7 +524,6 @@ impl Workspace {
             lister: None,
             gate_seen: kuvo_box::gate::Gate::Unknown,
             update_card: UpdateCard::default(),
-            boxes: None,
             fleet_card: FleetCard::default(),
             live,
             info: None,
@@ -1097,29 +1093,30 @@ impl Workspace {
         if !held && !self.info.as_ref().is_some_and(|info| info.compatibility.is_older()) {
             return None;
         }
-        let update = self.older_update()?;
         if held {
-            return Some(update);
+            return Some(self.listed_update().unwrap_or_else(|| self.held_fallback()));
         }
         // Only behind: it's in use, so never said to wait; and with nothing to press from here,
         // nothing's said at all.
-        if update.action.is_none() && !update.updating {
-            return None;
-        }
-        // (The gate's own words say it can't be used: for one in use, what's true instead.)
-        let gates_words = update.detail == held_words(None, true).1 || update.detail.ends_with(HELD_ELSEWHERE);
-        Some(if gates_words { HeldUpdate { detail: behind_words().to_owned(), ..update } } else { update })
+        self.listed_update().filter(|update| update.action.is_some() || update.updating)
     }
 
-    /// What brings the computer this window shows up to date, held or behind.
-    fn older_update(&self) -> Option<HeldUpdate> {
-        let row = self.switching.as_ref().and_then(|switching| switching.shown.as_deref().and_then(|shown| switching.rows.iter().find(|row| row.key() == shown)));
-        if let Some(offer) = row.and_then(Self::offer_for) {
-            return Some(offer);
-        }
+    /// The computer this window shows, as your computers' list has it.
+    fn shown_listed(&self) -> Option<&kuvo_box::boxes::Row> {
+        self.switching.as_ref().and_then(|switching| switching.shown.as_deref().and_then(|shown| switching.rows.iter().find(|row| row.key() == shown)))
+    }
+
+    /// What brings the computer this window shows up to date, in the words of the box that lists
+    /// your computers (its row's `update`): none where it says nothing.
+    fn listed_update(&self) -> Option<HeldUpdate> {
+        self.shown_listed().and_then(Self::offer_for)
+    }
+
+    /// What's said of a held computer whose list says nothing of its update: that it's older.
+    fn held_fallback(&self) -> HeldUpdate {
         let name = self.info.as_ref().map(|_| self.box_name().to_string());
         let (title, detail) = held_words(name.as_deref(), self.client.here());
-        Some(HeldUpdate { key: row.map(|row| row.key().to_owned()), title, detail, updating: false, attention: false, action: None, does: None, own: self.client.here() })
+        HeldUpdate { key: self.shown_listed().map(|row| row.key().to_owned()), title, detail, updating: false, attention: false, action: None, does: None, own: self.client.here() }
     }
 
     /// The update offer from the box that lists this computer.
@@ -1171,11 +1168,10 @@ impl Workspace {
             .filter(|row| row.computer.fleet_update.is_some())
             .map(|row| (row.key().to_owned(), row.computer.clone()))
             .collect();
-        let boxes = self.boxes.clone();
         let now = self.now();
         page.update(cx, |page, cx| {
             page.set_offers(offers, lister, cx);
-            page.set_fleet(rows, boxes, now, cx);
+            page.set_fleet(rows, now, cx);
         });
     }
 
@@ -1200,11 +1196,6 @@ impl Workspace {
         self.lister = lister;
     }
 
-    /// Your boxes, which the update notifier can ask to retry.
-    pub fn set_boxes(&mut self, boxes: kuvo_box::boxes::Boxes) {
-        self.boxes = Some(boxes);
-    }
-
     /// The update summary supplied by the box that lists your computers.
     pub fn fleet(&self) -> Option<&kuvo_box::areas::FleetUpdateSummary> {
         self.switching.as_ref()?.fleet.as_ref()
@@ -1218,9 +1209,8 @@ impl Workspace {
     /// Each of your computers and how its update stands, in the list's order.
     pub fn fleet_rows(&self) -> Vec<FleetRow> {
         let Some(switching) = &self.switching else { return Vec::new() };
-        let now = self.now();
         switching.rows.iter().filter_map(|row| {
-            let standing = crate::fleet::standing(&row.computer, now)?;
+            let standing = crate::fleet::standing(&row.computer)?;
             Some(FleetRow { key: row.key().to_owned(), name: row.computer.name.clone(), standing })
         }).collect()
     }
@@ -1256,25 +1246,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The client of the computer with this key, as your boxes reach it.
-    fn fleet_client(&self, key: &str) -> Option<BoxClient> {
-        self.boxes.as_ref().and_then(|boxes| boxes.client(key))
-    }
-
-    /// Try Again from the notifier asks that computer’s
-    /// own box (`POST kuvo/update/retry`); a refusal (it can't retry now, the release changed) is
-    /// said in the box's words.
+    /// Try Again from the notifier asks the box that lists your computers, naming this one (`POST
+    /// kuvo/update/retry {key}`), which passes it on; a refusal (it can't retry now, the release
+    /// changed, it can't be reached) is said in the box's words.
     pub fn fleet_retry(&mut self, key: &str, cx: &mut Context<Self>) {
         if self.fleet_card.retrying.is_some() {
             return;
         }
         let Some(row) = self.fleet_rows().into_iter().find(|row| row.key == key) else { return };
-        let Some(client) = self.fleet_client(key) else {
-            self.fleet_card.error = Some(format!("This app can’t reach {} right now. Try again once it’s connected.", row.name));
+        let Some(lister) = self.lister.clone() else {
+            self.fleet_card.error = Some("Your computers’ list isn’t reachable right now. Try again in a moment.".into());
             return cx.notify();
         };
-        let (target, sha256) = (row.standing.target.clone(), row.standing.target_sha256.clone());
-        let work = move || client.retry_fleet_release(&target, sha256.as_deref()).map(|_| ());
+        let (asked, target, sha256) = (row.key.clone(), row.standing.target.clone(), row.standing.target_sha256.clone());
+        let work = move || lister.retry_fleet_release(&asked, &target, sha256.as_deref()).map(|_| ());
         self.fleet_card.retrying = Some(key.to_owned());
         self.fleet_card.error = None;
         self.fleet_run(work, cx);
@@ -1458,10 +1443,9 @@ impl Workspace {
             let computer = if name == "This Mac" { "this Mac" } else { name.as_str() };
             let title = format!("Kuvo on {computer} needs to update to show {page}");
             let fallback_detail = format!("Update Kuvo on {computer} to see {shows} here.");
-            let (detail, busy, attention, action) = if let Some(update) = self.older_update() {
+            let (detail, busy, attention, action) = if let Some(update) = self.listed_update() {
                 let action = update.action.as_ref().filter(|action| action.why.is_none() && update.does.is_some()).map(|action| (action.label.clone(), BlockedDo::Update));
-                let gates_words = update.detail == held_words(None, true).1 || update.detail.ends_with(HELD_ELSEWHERE) || update.detail.is_empty();
-                let detail = if gates_words { fallback_detail } else { update.detail };
+                let detail = if update.detail.is_empty() { fallback_detail } else { update.detail };
                 (detail, update.updating || self.update_card.sending, update.attention, action)
             } else {
                 (fallback_detail, self.update_card.sending, false, None)
