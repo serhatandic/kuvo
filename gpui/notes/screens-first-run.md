@@ -13,13 +13,13 @@ shown once, remembered in its own store.
 
 ## What Kuvo takes, and where we differ
 
-- **In the window's place, shown once**, as Zed's. Remembered on the box, not in the app
-  (`welcomed` in `kuvo/setup`, set with `POST kuvo/setup/welcomed`), so every client agrees and an
-  app installed again doesn't ask again. Until the box has said, the window waits ("Starting…",
-  or why the box can't be reached) rather than show the app and take it away.
-- **One step at a time in a card** (Capy's, the user's pick) rather than Zed's one page: Welcome,
-  Agents and plans, Where to work, three dots under the card, Back and the way on (Return) in its
-  foot; Escape goes back. No rail, sidebar or app keys until it's done.
+- **Shown once on this device.** The desktop's saved `welcomed` flag comes first.
+  A compatibility read from the initial box can carry forward an older welcome.
+  Switching computers skips first run. When the initial box is still being
+  read, the window shows its startup or reach status.
+- **One card at a time.** Welcome, Agents and plans, then Where to work.
+  Back returns to the preceding card. Return takes the primary action and
+  Escape goes back. Welcome can skip the account card when the box is ready.
 - **Each row is the box's** (`kuvo/sign-in/accounts`): its mark, name, line, and its first action
   that signs in or installs, in the box's words. `plan` keeps plans in the list and keys behind
   "Use an API Key Instead…"; `added` leaves an account added beside an agent's own to Settings, so

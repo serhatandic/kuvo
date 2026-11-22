@@ -36,10 +36,8 @@ what any of them is. MCP Servers is the first section built on it.
   finish there), `done`, `failed` (`line` says why, in the box's words).
 - Started by an action (Sign In…). The box starts it, keeps it (`run/settings-flows.json`, so any
   of its processes states it), and asks the engine how it's going each time the page is read.
-- The client that pressed the action opens `opens` itself, once; any other client (the phone, a
-  second window) draws Open Sign-In Page, an action with `opens`.
-- `code: {title, placeholder}`: where the page you finish on can't reach the box's computer (a
-  phone, another Mac), you paste the address it ended on: `POST …/<row>/<action> {was, values:
+- The client that pressed the action opens `opens` itself, once; another window or desktop draws Open Sign-In Page, an action with `opens`.
+- `code: {title, placeholder}`: where the page you finish on can't reach the box's computer (another desktop on a different computer), you paste the address it ended on: `POST …/<row>/<action> {was, values:
   {code}}` with the flow's action that takes it (`finish`).
 - Its `actions`: `cancel` while waiting; `dismiss` once done or failed; `again` once failed.
 - Done: the box does what follows (connects the server again everywhere its engine runs one).
@@ -76,13 +74,12 @@ the engine (a server's status, a sign-in's progress).
   the name; Remove with confirm. No flow.
 - Engine: rows + forms for its key-value pieces (`pairs`).
 - Accounts/Models: list items with badge + actions; Sign In… as a flow (the same `flow`, with
-  `code` for device codes: `line` carries the code); a key as a form with a `secret`-like field
-  (add a `secret` field kind then: the one kind still to add).
+  `code` for device codes: `line` carries the code); a key as a form with a `secret` field.
 - Vault: list + forms; reveal/copy stay in the client's own sheet (an approval flow if it's moved).
-- Phone pairing: a flow whose `line` and `opens` carry the pairing code / QR address.
+- Historical phone pairing used a pairing code and QR address. Its wire support is retained for installed clients.
 - Usage: rows (`meter`, switches): no forms.
 
-## How to build the next section (for Codex)
+## How maintainers build a section
 1. A module `box/src/link/areas/settings-<id>.ts` exporting a `Section & { listed }` (copy
    settings-mcp.ts's shape), listed in settings-pages.ts (`SECTIONS` and `PAGES`). Helpers are in
    settings-kit.ts: `row`, `item`, `asked`, `refusal`, `STALE`, `staleOrRefusal`, `unreadPage`.
@@ -104,18 +101,14 @@ the engine (a server's status, a sign-in's progress).
    shots light and dark.
 7. One line in FEATURES only if the section needs a new kind; else none.
 
-## Where I am (2026-11-16)
-Done: the kinds (box shapes, route, PROTOCOL.md), MCP Servers on the box (Mac and Linux tests),
-the desktop app drawing them generically (tests, shots `gpui/shots/screens-settings-mcp-*`), the
-review's findings fixed (form revisions; stale form stays open; only http(s) sign-in pages; a pasted
-address turned down is said; checks don't follow flows; flow actions out of the revision).
-Open: the phone draws no `kuvo/settings` pages yet (none of them), so MCP Servers isn't on the phone;
-`settings.flows` is in the gate lists as the brief asked, which holds an older box for clients that
-require it. Left for later: the stand-in copies some MCP behaviour in Rust (keep later sections' to
-fixed pages); a declarative way to keep status actions out of the revision; the flows file isn't
-locked between the box's processes (a double reconnect at worst); a check reads the page and the
-facts twice; the notice isn't selectable; the segmented pick isn't reachable by keyboard; brand marks
-on popular servers; the engine lists no server's tools.
+## Status
+
+The box owns MCP Servers and its form checks. GPUI draws its described pages
+for reachable boxes, including sign-in, field errors and stale form handling.
+The retired clients remain compatibility readers. A box's feature and
+compatibility facts decide which controls can be drawn. See
+[Settings](../../gpui/notes/screens-settings.md) and the
+[protocol](../../protocol/PROTOCOL.md).
 
 ## Repeated sections (2026-11-16)
 Skills, Commands and Custom Auto repeat the list/forms pattern, using existing kinds only.

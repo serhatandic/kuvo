@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens queue](../../../gpui/notes/screens-queue.md), kept for its findings.
+
 # #674 Work Queue: statuses, priorities, labels (handover notes)
 
 Branch `kuvo/674-work-queue-statuses-priority-labels` (the lead's brief calls it kuvo/674-work-queue-model),

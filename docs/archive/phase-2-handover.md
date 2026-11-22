@@ -1,3 +1,5 @@
+> Historical, superseded by [Readme](../../gpui/README.md), kept for its findings.
+
 # Phase 2 handover
 
 ## Done
@@ -17,7 +19,7 @@
   message ran one without guessing by time, as the Mac's `CommandMessages` does. The box should keep
   `{words, keyword: "/<name>"}` on it. Until then the app shows the engine's words.
 - **Machines**: the app shows this Mac's box only; following a machine live is
-  `notes/kuvo-box-machines.md` (option 2 wants a PROTOCOL.md line and the lead's yes).
+  [kuvo-box-machines.md](kuvo-box-machines.md) (option 2 wants a PROTOCOL.md line and the lead's yes).
 - **Paging**: what was under "Loading earlier messages…" moves up by that row's height as the page
   goes above (GPUI's list anchors by item, and the new rows aren't measured yet).
 - The live follows' wiring (a follow's thread → the view) has no app-level test: the scenarios hand

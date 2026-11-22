@@ -1,3 +1,5 @@
+> Historical, superseded by [One client process](../../../docs/architecture/one-client-process.md), kept for its findings.
+
 # #636 Add a Machine over SSH, in the box
 
 Written 2026-11-15, from reading `swift/KuvoCode/Views/MachineForm.swift`,

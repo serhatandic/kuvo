@@ -1,3 +1,5 @@
+> Historical, superseded by [One client process](../../../docs/architecture/one-client-process.md), kept for its findings.
+
 # Updates that never cut work: a design (handover)
 
 Status: design only, 2026-11-16. Nothing here is built. Line numbers are at HEAD `5d9b7b8db`

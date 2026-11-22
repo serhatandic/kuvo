@@ -1,3 +1,5 @@
+> Historical, superseded by [How kuvo works](../architecture/how-kuvo-works.md), kept for its findings.
+
 # Computers: handover
 
 ## Done

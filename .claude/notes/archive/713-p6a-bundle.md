@@ -1,6 +1,8 @@
+> Historical, superseded by [Releases](../../../docs/releases.md), kept for its findings.
+
 # #713 piece 6a: the desktop app as a bundle, built locally (2026-11-16)
 
-The part of piece 6 ("Packaging the desktop app", `713-desktop-app-runs-the-box.md` §8) that needs
+The part of piece 6 ("Packaging the desktop app", [713-desktop-app-runs-the-box.md](713-desktop-app-runs-the-box.md) §8) that needs
 no identity: a real `Kuvo.app`, signed ad hoc, for rehearsing the update from 0.7 in the rehearsal
 account. Signing for release, notarization, Sparkle, the disk image and the feed are not here
 ("What the release's step adds", below).

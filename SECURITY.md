@@ -7,7 +7,9 @@ Please do not open a public issue for a vulnerability. Use GitHub's
 so the report, reproduction steps, and any proposed fix remain private. If you
 can't use it, email [info@kuvo.run](mailto:info@kuvo.run) instead.
 
-Include the affected version and macOS version, the impact, and the smallest
+Include the affected desktop version and macOS version, and the affected box
+version, platform and connection type (local, SSH or relay) as applicable.
+Describe the impact and the smallest
 reproduction you can provide. Kuvo Code's sessions and logs can contain your
 prompts, code, file paths and account names, so remove anything identifying
 from logs and screenshots before you share them.
@@ -19,25 +21,23 @@ be coordinated privately until a fix and release are available.
 
 Reports are especially welcome about:
 
-- the engine download: the pinned opencode build, its checksum and the code
-  signature check before it runs;
-- the private engine server, its password, and who else on the Mac can reach
-  it;
-- the browser tools Kuvo Code serves to the agent on `127.0.0.1`, and their
-  token;
-- what a web page in the panel's browser can reach, including the agent's
-  browsing;
-- how the app asks for and answers the engine's permission requests, so the
-  agent never runs something you didn't allow;
-- where sign-ins and API keys are stored, and the logins of other tools the
-  usage tracker reads and renews;
-- attachments and review comments, and what they send to the model.
+- signed releases, engine downloads and checks before activation
+- box discovery, private local HTTP, paired SSH and encrypted relay access
+- browser tools, the keeper socket, and what pages and clients can reach
+- box-owned approvals, sandbox rules and agent permission delivery on macOS
+  and Linux
+- vault storage, sign-ins, API keys and usage credentials
+- attachments and the context a box passes to a model
 
 Vulnerabilities in opencode itself should go to the
 [opencode project](https://github.com/anomalyco/opencode). Tell us too if Kuvo
 Code's setup makes one easier to exploit.
 
+Kuvo Code does not accept outside pull requests or code contributions. For
+non-security bugs and ideas, use [GitHub issues](https://github.com/serhatandic/kuvo-code/issues).
+
 ## Supported versions
 
-Kuvo Code is pre-1.0. Security fixes are made on `main` and released in the
-newest build; older builds are not maintained separately.
+Kuvo Code is pre-1.0. Security fixes go to `main`. The first GPUI release is
+still in [release verification](docs/releases.md). Older builds are not
+maintained separately.

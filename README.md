@@ -5,26 +5,25 @@
 <p align="center"><strong>Your bots. Your computers. Any model.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/serhatandic/kuvo-code/actions/workflows/ci.yml"><img src="https://github.com/serhatandic/kuvo-code/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/serhatandic/kuvo-code/releases"><img src="https://img.shields.io/github/v/release/serhatandic/kuvo-code?label=release" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg" alt="License: PolyForm Noncommercial 1.0.0"></a>
 </p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-dark.webp">
-  <img src="docs/images/screenshot-light.webp" alt="Kuvo Code with bots, a group chat, chats and a project in the sidebar, and a finished session beside the changes it made, with a review comment on one of the lines" width="100%">
+  <img src="docs/images/screenshot-light.webp" alt="Kuvo Code with bots, a group chat, chats and a project in the sidebar, and a finished session beside the changes it made" width="100%">
 </picture>
 
 Kuvo Code is a native macOS harness for coding agents that works with any
 model. Its engine is [opencode](https://github.com/anomalyco/opencode),
 unmodified. The GPUI desktop app in `gpui/` brings together sessions by
-project, changes you review and comment on like a pull request, and a side
+project, Git changes you can inspect, and a side
 panel with files, terminals and a browser the agent can use too.
 
 Use any model. Sign in with a subscription you already have, add an API key,
 or start with free models that need no account.
 
-[Download for macOS](https://github.com/serhatandic/kuvo-code/releases/latest/download/KuvoCode.dmg)
+[Releases](https://github.com/serhatandic/kuvo-code/releases)
 · [Docs](https://kuvo.run/code/docs/)
 · [Report a bug](https://github.com/serhatandic/kuvo-code/issues/new/choose)
 · [Contact](mailto:info@kuvo.run)
@@ -41,20 +40,18 @@ or start with free models that need no account.
 - **Any model.** Claude, GPT, Gemini, open models through OpenRouter,
   and the rest of opencode's providers. Pick the model and effort for
   each message.
-- **Review like a pull request.** The Changes tab shows the project's
-  uncommitted changes from git, with unchanged lines folded and pictures shown
-  before and after. Comment on a line, and the comment goes to the agent with
-  your next message.
+- **Changes.** See changed lines under each file in the Changes tab. Stage,
+  unstage, discard or commit changes through the box.
 - **Files, terminals and a browser.** The side panel holds them as tabs: the
   project's files with code highlighted and Markdown rendered, your shell in
   the project folder, and a web browser.
 - **Browsing for the agent, with any model.** The agent opens pages in the
   panel's browser, reads them, clicks, types and scrolls, and you see every
   step.
-- **Sessions on your servers.** Open projects on another Mac or a Linux machine
-  you reach with SSH, like a Mac mini or a VPS, next to your Mac's. Their sessions,
-  changes, files, terminals and the agent's browser run there, and the panel
-  shows that browser live.
+- **Sessions on your computers.** Add another Mac or Linux machine over SSH
+  or with an installer code. Switch to its sessions, bots and settings from the
+  desktop. Files and Changes follow the conversation's computer. The browser
+  view and interactive terminals need a socket-capable connection.
 - **Attach anything.** Drop, paste or pick files of any kind.
 - **Plans and spend in the menu bar.** Limits with pace and reset times, and
   spend, for the accounts you connect: GitHub Copilot, ChatGPT (Codex),
@@ -65,10 +62,10 @@ or start with free models that need no account.
 
 Kuvo Code needs a Mac with Apple silicon and macOS 26 or later.
 
-1. [Download KuvoCode.dmg](https://github.com/serhatandic/kuvo-code/releases/latest/download/KuvoCode.dmg),
-   open it, and drag Kuvo Code onto the Applications folder.
-2. Open it. The first launch downloads the opencode engine and checks it
-   before it runs.
+1. Use the current maintainer build or [build from source](#build-from-source).
+   The first GPUI release is still in [release verification](docs/releases.md).
+2. Open the packaged app. It installs the local box and verifies the engine
+   download before it runs.
 3. Open **Accounts** (⇧⌘K) to sign in or add an API key, or start with the
    free models.
 4. Open a project folder (⌘O) and tell the agent what to build. It can read,
@@ -88,58 +85,30 @@ side panel and the usage menu.
   with a random password. Kuvo Helper starts the local box, whose keeper runs the
   engine and the coding agents' bridge even when the app is closed. The desktop
   app connects to the box and follows its event stream to show live transcripts.
-- **Its data is kept apart** from any opencode you've installed. Sessions,
-  accounts and settings live in
-  `~/Library/Application Support/run.kuvo.code/opencode`. The commands the
-  agent runs still get your own folders (`~/.config` and the like) back,
-  through a small plugin in the engine's `plugins` folder, so tools such as
-  `gh` find their sign-ins.
-- **The coding agents you already have** (Claude Code, Codex, Cursor, Grok,
-  Antigravity) run beside the engine, each as its maker built it and signed in
-  as you: a small bridge of Kuvo Code's own (`box/src/agents`, run by the engine's
-  Bun) drives them through the Claude Agent SDK and your `claude`, Codex's
-  app-server, Cursor's SDK, and the Agent Client Protocol for Grok and
-  Antigravity, and answers the app in the engine's own API. A session there can
-  move between agents (the next one gets the conversation as a handover) and
-  run the engine's models, and Custom Auto runs down your own lists of models as
-  each reaches its limit or fails. What it keeps is in
-  `~/Library/Application Support/run.kuvo.code/agents`. Each machine runs the
-  same bridge beside its engine, with the agents installed and signed in there
-  (in `~/.kuvo-code/agents`), and there it also runs the group chats whose bots
-  all live on that machine (in `~/.kuvo-code/groups`).
-- **On a machine you add**, Kuvo Code reaches it with `ssh` and your keys. It
-  sends the same engine version's build for it, downloaded and checked on the
-  Mac, to `~/.kuvo-code` there, runs it on the machine's localhost only, and
-  talks to it through an SSH tunnel, which closes with the app however it ends.
-  The engine runs on its own, with or without
-  the app, so a task, a bot's wake-ups and group chats carry on while the Mac is
-  off, and it starts again by itself after a crash; after the machine restarts,
-  a line in your crontab there starts it again as the app last started it. Each
-  machine keeps its own settings and integrations' keys, in files only you can
-  read, never in its environment. Your Mac and machines reach each other
-  through Kuvo Code's relay, end to end encrypted, so agents on one write to
-  agents on another with the Mac off too.
-- **The agent's browser tools** are served by the app on `127.0.0.1`, with a
-  new port and token each launch. They read a page the way
-  [browser-use](https://github.com/browser-use/browser-use) does, as numbered
-  interactive elements, and every step happens in the browser you see.
-- **On a machine, the browser** is Chrome for Testing, run headless, which the
-  machine's box downloads itself from Google into `~/.kuvo-code/browser`, on
-  Linux with every library and font it needs (Enterprise Linux 8 builds from
-  Rocky Linux), each file pinned with its checksum by
-  `scripts/browser-runtime.py` and checked before it's unpacked, so nothing is
-  installed on the system and no Mac has to send it. A
-  helper the engine's own runtime runs (`kuvo-browser.js`) keeps it going,
-  drives it over a pipe rather than a port, gives the engine the same tools,
-  and streams the page to the panel over SSH.
-- **Updates** come through [Sparkle](https://sparkle-project.org), signed,
-  from this repository's releases, and its betas (prereleases) to copies with
-  Get beta updates on. Releases are signed with a Developer ID and notarized by
-  Apple.
+- **Every computer runs the same box.** Its engine versions, sessions,
+  settings, agents and browser live in `~/.kuvo-code`. On macOS, Kuvo
+  Helper provides Keychain access. Linux keeps vault secrets encrypted in
+  the box home. The legacy Application Support box is a 0.7 import source.
+- **Claude Code, Codex, Cursor, Grok and Antigravity** run beside opencode
+  through the box's agents bridge. Sign in on the computer where they run.
+  A conversation can hand over to another agent, and Custom Auto can use
+  your model lists.
+- **Remote access** uses paired relay or addressed SSH. Boxes exchange
+  end-to-end encrypted peer messages without the desktop. Their sessions,
+  scheduled wake-ups and group chats keep running with the desktop closed.
+- **The agent's browser** is Chrome for Testing on its box. The box installs
+  and verifies the browser and its dependencies. Agents can read and interact
+  with pages using its tools. The panel can show the live page over local or
+  paired-relay connections.
+- **Updates.** Sparkle updates the installed desktop app. The main computer
+  selects a signed box release for the setup. The boxes stage it while you
+  work, then follow the main's running release. A failed switch can roll back.
 - **The usage menu** shows what the box reads from the accounts you connect. Codex usage
   comes from the Codex app’s sign-in on your Mac. The box renews sign-ins when they expire, as those tools would.
 
 ## Build from source
+
+Local builds are for self-use and maintainer work.
 
 You need Rust and Xcode 27 or later.
 
@@ -152,14 +121,14 @@ cd gpui
 
 See [gpui/README.md](gpui/README.md) for Rust setup and desktop app builds,
 and [box/README.md](box/README.md) for the box. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for tests and contributing.
+[CONTRIBUTING.md](CONTRIBUTING.md) for maintainer build and test instructions.
+See [How Kuvo works](docs/architecture/how-kuvo-works.md) for the architecture.
 
 ## Contributing and security
 
-Bug reports and focused pull requests are welcome; read
-[CONTRIBUTING.md](CONTRIBUTING.md) first. Please report vulnerabilities
-privately, as described in the [security policy](SECURITY.md). For anything
-else, write to [info@kuvo.run](mailto:info@kuvo.run).
+Kuvo Code does not accept outside pull requests or code contributions.
+Bug reports and ideas are welcome as [GitHub issues](https://github.com/serhatandic/kuvo-code/issues).
+Report vulnerabilities privately as described in the [security policy](SECURITY.md).
 
 ## License
 
@@ -170,10 +139,6 @@ including monetizing a fork or derivative, requires a separate written license
 from the copyright holder: write to [info@kuvo.run](mailto:info@kuvo.run). See [NOTICE](NOTICE) for the required copyright
 notice and [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) for the
 licenses of included dependencies.
-
-Contributions are welcome under the terms in [CONTRIBUTING.md](CONTRIBUTING.md)
-and the [Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md).
-Those terms let the project owner continue to offer commercial licenses.
 
 Kuvo Code is an independent project. It isn't affiliated with opencode or with
 the companies whose models and tools it works with.

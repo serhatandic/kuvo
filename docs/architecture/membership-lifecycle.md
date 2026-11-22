@@ -11,7 +11,7 @@ account started, changed, or entered another enrollment after discovery.
   fallback. Older retained rows whose provenance has already been lost stay
   as local, exact-generation denials. They are never published as a new setup's
   revocations. A fresh pairing ID can authorize the same device again.
-- New phone documents carry their setup ID in the signed body. A known issuer
+- Signed device documents (wire name `phones`) carry their setup ID in the signed body. A known issuer
   changing setup IDs must explicitly scope subsequent lists. Legacy documents
   from issuers with an unambiguous scope continue to work. Verified denials for
   the former setup remain effective when a member rejoins it. Relay closes an
@@ -79,22 +79,19 @@ environment. A refused, expired, or locally edited claim can produce a
 receipt. Run `kuvo-link.js installer-recovery apply` on the setup’s current
 main computer and paste the receipt at the prompt. Apply archived receipts
 one line at a time. The command contacts the authenticated local Box and
-reports retirement after the membership save commits. The new primary still
-needs the authority and standby required for ordinary roster writes. An entry
-awaiting installer activation cannot be selected as standby and its absence
-cannot block an eligible computer from taking that role. An adopted member
+reports retirement after the membership save commits. The current main commits with its normal roster-write authority,
+using the relay lease or the sole-computer exception. An unactivated applicant
+is ineligible for main authority. An adopted member
 keeps its installer retry journal without carrying an enrollment fence into
 a later promotion. The original deadline controls the unadopted applicant’s
 fence, and a later enrollment keeps an abandoned receipt in the local journal
 without extending it.
 
-When the standby can read layout 23 companions, the membership save includes
-the commitment in the accepted ownership assignments map. The preceding Box
-used in the recovery bench retains that map across takeover. A standby below
-that layout can still accept new commitments in the older roster field.
-A current Box migrates those commitments on the next compatible membership
-save. A current applicant keeps its activation retry pending if a rolled-back
-issuer acknowledges adoption without confirming the portable seal.
+The accepted membership snapshot carries the cancellation commitment in the
+ownership assignments map. Layout-23 predecessor setups could carry it in
+the companion map with standby acknowledgement, or in an older roster field.
+The current box migrates those fields on a compatible save. A current applicant
+keeps activation pending if a rolled-back issuer cannot confirm the portable seal.
 Older claims with no surviving
 commitment require the usual administrative removal. Issuer loss before the
 portable activation save leaves a commitment on the roster. The adopted Box
@@ -104,10 +101,10 @@ claim journal as sensitive until activation or retirement commits.
 
 An older helper needs an update before it can rotate retired keys. Rolling
 back to a helper that predates the atomic identity format holds link access
-until a compatible helper runs. Moving the Box back to the old app expands the
+until a compatible helper runs. A historical move back to the 0.7 app expanded the
 identity into its three historical Keychain items.
 
-## Native evidence for audit package 9
+## Historical native evidence for audit package 9
 
 The current helper’s repository fixture passed three checks using a disposable
 macOS Keychain, an ad hoc helper with the test bundle ID, and a stand-in

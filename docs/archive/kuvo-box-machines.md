@@ -1,3 +1,5 @@
+> Historical, superseded by [One client process](../architecture/one-client-process.md), kept for its findings.
+
 # Following a machine as it changes (phase 2)
 
 `kuvo_box` reaches a machine's box over SSH through `kuvo-link.js box route`, which answers each

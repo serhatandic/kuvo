@@ -1,8 +1,10 @@
+> Historical, superseded by [How kuvo works](../architecture/how-kuvo-works.md), kept for its findings.
+
 # Whole-system review at 6edef250d
 
 Read-only review of `main` at `6edef250df8c6c5f529d080dda494ea4f1758c42` (21 November 2026). It
 includes the update unlock, the `bin` switch, rule 57, the #668 leftovers, the Computers page
-(scr1) and the installer fix `1219637d4`. Step 2 of `simple-updates.md` (the fleet rule) is not
+(scr1) and the installer fix `1219637d4`. Step 2 of [simple-updates.md](simple-updates.md) (the fleet rule) is not
 on main yet. Line numbers are at this commit. Short box paths start at `box/src/link/`.
 
 ## In plain words
@@ -155,7 +157,7 @@ ratings didn't separate. Rule 25 moves from X to P now that Rename is wired.
 | 38 | KEEP | C | Carried. |
 | 39 | KEEP | C | Re-rated from P. The user accepted the bounded fallback (decisions, 11-21). |
 | 40 | KEEP | C | Carried. |
-| 41 | KEEP | X | Re-rated from P. "Shows as awaiting a number" turns permanent once fewer than a majority of the original voters remain. That's one of two in a two-computer setup (`work-queue/number-quorum.ts:116`, `setup/checkpoint.ts:192-211`; `numbering-proof.md`: "Electorate reconfiguration is not implemented"). |
+| 41 | KEEP | X | Re-rated from P. "Shows as awaiting a number" turns permanent once fewer than a majority of the original voters remain. That's one of two in a two-computer setup (`work-queue/number-quorum.ts:116`, `setup/checkpoint.ts:192-211`; the retired quorum proof: "Electorate reconfiguration is not implemented"). |
 | 42 | KEEP | C | Carried. |
 | 43 | KEEP | C | Carried. |
 | 44 | KEEP | P | Carried. |
@@ -332,7 +334,7 @@ path.**
   `work-queue/number-quorum.ts:116`) of the computers that were members when ranking started
   (`setup/checkpoint.ts:192-211`, `:243-245`). The design note says plainly: "Electorate
   reconfiguration is not implemented. If fewer than a majority of the original voters remain in
-  the setup, new numbers wait" (`docs/architecture/numbering-proof.md`). Beside it run Mac-ranked
+  the setup, new numbers wait" (the retired quorum proof). Beside it run Mac-ranked
   numbering with a 3-day "lost" rule (`work-queue/numbers.ts:169-226`) and the
   standby-confirmed ledger (`work-queue/numbers.ts:688-720`).
 - *What users see:* with two computers, both must be on for each new block of 50. Remove or lose
@@ -394,7 +396,7 @@ behind.**
 - *Likelihood:* certain whenever a newer release exists than the choice.
 - *Simplest fix:* in the fleet rule, Update Now on the main checks the feed now and takes the
   newest signed release, with no 3-day wait. A computer at or above the main's version is up to
-  date. A main behind a member takes that member's version (trim step 1). `simple-updates.md`
+  date. A main behind a member takes that member's version (trim step 1). [simple-updates.md](simple-updates.md)
   assumes Update Now already "looks at the feed now", which isn't true at this commit.
 
 **12. Members can only get a release pack from the main or the standby, in 30 KB mails through
@@ -473,7 +475,7 @@ result, and so bypasses the main.**
   second way versions change, against rule 13 and N4. A failed install shows nothing.
 - *Likelihood:* certain on every Sparkle update of the app.
 - *Fix:* in trim step 1, the app hands its bundled release to its box, and the box keeps and
-  announces it (`simple-updates.md`, "Where releases come from"). The main then takes it within
+  announces it ([simple-updates.md](simple-updates.md), "Where releases come from"). The main then takes it within
   seconds. Run the installer only when the box can't start.
 
 **20. Update notifier state is decided in the app.**
@@ -526,7 +528,7 @@ stream backoff.
 - **E4. Proof and evidence layers built against a lying computer.** Issuer addresses and
   forward evidence that follow messages through moves, a SQLite receipt index, and
   re-authorising a revoked device's queued work (`ownership/forward-evidence.ts`,
-  `ownership/receipt-index.ts`, `ownership/submissions.ts`, `queued-device-authority.md`). With
+  `ownership/receipt-index.ts`, `ownership/submissions.ts`, [queued-device-authority.md](queued-device-authority.md)). With
   trusted computers (N5), operation IDs with owner-side dedupe cover the user case: a message is
   delivered once, and "delivered" appears only after the owner accepts it. Simplify only when
   the code next needs changing; it doesn't block anyone today.

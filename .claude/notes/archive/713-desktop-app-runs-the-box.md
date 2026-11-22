@@ -1,9 +1,11 @@
+> Historical, superseded by [Releases](../../../docs/releases.md), kept for its findings.
+
 # #713 The desktop app and this Mac's box: design
 
 Status: design only, written 2026-11-14 against main at `98adca21f` (after the layout move, before
 #712), revised after one reviewer pass (§10). Nothing here is built. Read with
 `333-own-box-independent.md` and `333-piece-0-results.md` (main checkout's `.claude/notes`,
-untracked), `693-own-box-browser.md`, and `protocol/PROTOCOL.md` ("Updates" :2203, "The update
+untracked), [693-own-box-browser.md](693-own-box-browser.md), and `protocol/PROTOCOL.md` ("Updates" :2203, "The update
 gate" :2428, "The keeper" :6057, "A home of its own" :6156, "Moving this Mac's box" :6199, "This
 Mac's box: its helper" :6655, "For released Macs" :8579). Swift paths are under `swift/`, which
 stays in the repo as read-only reference (the lead, 11-14).
@@ -1102,7 +1104,7 @@ and, for a machine an old list marks as another Mac's, Make This Mac Its Home, w
 `scripts/build-desktop-app.sh` makes `build/Kuvo.app`, signed ad hoc, with the release, Kuvo
 Helper and `kuvo-keys` where piece 5 looks for them; `scripts/check-desktop-app.sh` checks it and
 dry-runs a copy. What's inside, how to build, and what piece 6's rest (the release's step) adds:
-`.claude/notes/713-p6a-bundle.md`.
+[713-p6a-bundle.md](713-p6a-bundle.md).
 
 ## 8i. Piece 4b design (2026-11-16): putting `two` together
 

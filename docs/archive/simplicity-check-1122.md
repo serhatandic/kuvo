@@ -1,3 +1,5 @@
+> Historical, superseded by [How kuvo works](../architecture/how-kuvo-works.md), kept for its findings.
+
 # Simplicity check, 22 November 2026
 
 Read-only check of `5ae7178f3` against the user's goal: one page, one mechanism per concern,

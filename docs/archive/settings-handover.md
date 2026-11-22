@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens settings](../../gpui/notes/screens-settings.md), kept for its findings.
+
 # Settings split: handover
 
 The desktop app's Settings as the user picked it (draft A of #727, 2026-11-15): your settings and a

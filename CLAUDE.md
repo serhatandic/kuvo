@@ -8,6 +8,9 @@ Kuvo Code 1.0 is the desktop app in `gpui/`. The box keeps its compatibility pat
 
 ## The architecture: equal boxes, and clients (strict)
 
+Start with [How Kuvo works](docs/architecture/how-kuvo-works.md). Every setup has
+one main computer for setup-wide saves. Each box owns and runs its own work.
+
 Kuvo Code is a small distributed system. Build every feature for that system, never for the Mac alone.
 
 - **Every computer is an equal box, the Mac included**: the engine with its sessions, bots, coding agents, group chats, wake-ups and the agent's browser. Each box keeps its own settings and keys, and works with no client connected.
@@ -69,7 +72,7 @@ On 2026-11-07 one `pkill` took down two other sessions, the box's link, Kuvo Cod
 
 Kuvo Code never spreads files across the user's Mac or machines: everything is packaged, kept in its own folders, organized inside them, and gone when they're deleted.
 
-- **On the Mac**, only its own places (`~/Library/Application Support/run.kuvo.code`, its Caches, Logs, WebKit and HTTPStorages folders, preferences, keychain items); temporary files in the app's temporary folder. **On a machine**, only `~/.kuvo-code`: no system packages, `sudo`, dotfiles, `/tmp` leftovers, crontabs or services, beyond the listed exceptions. Tests and demo copies use folders of their own and clean up.
+- **On the Mac**, the active box lives in `~/.kuvo-code`. The app uses its own Application Support, Caches, Logs, WebKit and HTTPStorages folders, preferences and Keychain items. The old `~/Library/Application Support/run.kuvo.code` box paths are retained for 0.7 import and compatibility. Keep temporary files in the app's temporary folder. **On a machine**, only `~/.kuvo-code`: no system packages, `sudo`, dotfiles, `/tmp` leftovers, crontabs or services, beyond the listed exceptions. Tests and demo copies use folders of their own and clean up.
 - Anything new keeps `uninstall.md` and `privacy.md` (kuvo-web) complete. After a change, list what's new in the machine's home folder and `/tmp`.
 - The exceptions (SSH sockets, the `@reboot` line and login agent, the coding agents' own installers) and the details: `docs/footprint.md`.
 

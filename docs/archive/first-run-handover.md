@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens first run](../../gpui/notes/screens-first-run.md), kept for its findings.
+
 # The first run: handover
 
 ## Done
@@ -43,7 +45,7 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
    its own computer's. Picking a machine in Where to work says "Working on <name> isn't in the
    desktop app yet". It also needs the app to show another computer's box (the title bar's switcher,
    `BoxClient::machine`), which isn't built.
-3. **Adding a machine from a box** (#636, already listed in `computers-handover.md`): the first run
+3. **Adding a machine from a box** (#636, already listed in [computers-handover.md](computers-handover.md)): the first run
    leaves "Add a Machine…" out until a box can do it.
 4. **A name and mark for the free models' provider** (optional): the row says "Free models" with a
    plain icon and the models' names, since the app doesn't know whose they are.

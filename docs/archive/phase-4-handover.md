@@ -1,3 +1,5 @@
+> Historical, superseded by [Readme](../../gpui/README.md), kept for its findings.
+
 # Phase 4 handover
 
 ## Done

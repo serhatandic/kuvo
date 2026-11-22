@@ -28,10 +28,10 @@ Read: `crates/git_ui/src/git_panel.rs` (its sections, `GitHeaderEntry`, `StageIn
   what the box listed, scope included: the client decides nothing about git.
 - Followed live (`kuvo/git/files/events`): the box asks git every 3 seconds and within a second of
   its index or HEAD changing. After an action the list is read again at once.
-- A click opens the file's diff in the panel (`kuvo/git/changes` with `path`, in the scope the box
-  listed), the whole file with its long unchanged stretches folded to "N unchanged lines" (three
-  kept around each change), each fold opening on a click; with its actions in the header and a way
-  back. Too big or binary files say so.
+- Changed lines appear under each file's name. Click a file to open its
+  diff (`kuvo/git/changes` with its path and scope), with unchanged stretches
+  folded and file actions in the header. Binary or oversized files have a
+  status instead of a text diff.
 - Discard asks in the foot's place, worded as Zed's by what happens (a new file goes to the Trash).
 - The foot: the message, what a commit takes (the staged files, else everything, as the box's
   commit does), Push, and Commit (⌘↩). A push that didn't go through after the commit landed says
@@ -39,9 +39,6 @@ Read: `crates/git_ui/src/git_panel.rs` (its sections, `GitHeaderEntry`, `StageIn
 
 ## Where we differ, and why
 
-- The Mac's panel shows every file's diff in one long list with a scope menu (Uncommitted,
-  Unstaged, Staged, Branch); Zed's panel lists and a diff opens elsewhere. In a 380 px panel a list
-  that opens to one file's diff reads better; the scope menu, This Session, review comments and
-  Review aren't built yet.
+- GPUI currently supports diff inspection and Git actions. Inline review comments, image before/after, scope switching and This Session belong to the older review UI.
 - No Stage All yet: Commit takes everything when nothing is staged, as the box's commit does.
 - No "Suggest a Message" yet (the box has `kuvo/git/commit-diff` with `prompt`).

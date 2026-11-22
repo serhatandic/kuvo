@@ -1,3 +1,5 @@
+> Historical, superseded by [Screens settings](../../../gpui/notes/screens-settings.md), kept for its findings.
+
 # #762 Settings audit: Codex, Claude Code desktop, Zed, OpenBot vs Kuvo (2026-11-16)
 
 Research only, no code changes. The question: does Kuvo give users every setting they need before they move to the desktop app? The answer is the gap list in §2, each gap with a recommendation to pick from.

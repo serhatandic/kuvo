@@ -51,11 +51,12 @@ entire engine or bridge session is a separate operation. If its backend cannot
 confirm that session, its note route holds the edit for the owner.
 
 The session note file is selected by the backup inventory under the session's
-ownership fence. A notes-bearing Move to Computer bundle uses manifest version 2.
+ownership fence. A notes-bearing Move to Computer bundle requires manifest version 2 or later.
 The receiver keeps it held until the existing ownership switch, and rollback
 removes only note files installed for that exact move bundle. The source compares
 note state before switching and retires its own copy after the destination has
-acknowledged. A bundle without session notes keeps version 1.
+acknowledged. A bundle with neither notes nor evidence can use version 1.
+A bundle carrying replay evidence uses [version 3](receipt-ownership-and-versions.md).
 
 Ordinary proposals carry plain text and use the paired-client boundary. Engine
 metadata and permissions continue through the session writer and local approval
