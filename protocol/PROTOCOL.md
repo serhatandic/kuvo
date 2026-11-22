@@ -2845,6 +2845,14 @@ start on a model by the same rule.
   come, named as its side names its account (`label`: the account's own, a coding agent's second
   sign-in, "Work"); Custom Auto's lists as "Custom Auto"; one its side doesn't name, by its id. A
   picker names where each model is from by them, and draws the providers' marks by `id`.
+  A coding agent's says which of your accounts with it it is (`account`, `models.offered.accounts`):
+  `{agent, id, agentName, name, plan?}`: its agent (`claude`, `codex`, `cursor`, `grok`,
+  `antigravity`), the account's id with it (`default` for the agent's own sign-in, else the one you
+  added's, as in its provider's `<agent's provider>@<id>`), its agent's name ("Claude Code"), the
+  account's name to show (what you called it, else who's signed in, else its agent's), and its plan
+  as the box's usage reader last read it ("Max"; left out where it hasn't, or doesn't answer at
+  once). A picker shows an agent with two or more accounts as one, with a switch between them by
+  `name` and `plan`; a model picked under one runs on that account (its provider's).
 - `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
   (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
   are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET

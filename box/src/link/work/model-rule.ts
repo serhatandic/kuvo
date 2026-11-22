@@ -37,7 +37,12 @@ export interface Listed {
 /** An account as a place lists it (`api/integration`): its ways to sign in, whether it's signed
  * in, and for a coding agent's, whether its program is installed and whether its list is every
  * model it runs (`metadata.modelsComplete`, from a bridge that says so: one missing from it is gone). */
-interface Account { id: string; name: string; label?: string; methods: string[][]; signedIn: boolean; installed: boolean; complete: boolean }
+interface Account {
+  id: string; name: string; label?: string; methods: string[][]; signedIn: boolean; installed: boolean; complete: boolean;
+  /** A coding agent's: which agent (`claude`), which of your accounts with it (`default`, or the
+   * id of one you added), and who's signed in to it, as its maker says ("sam@example.com"). */
+  agent?: { kind: string; id: string; signedInAs?: string };
+}
 
 /** The engine's providers whose plan Kuvo Code signs in to through a coding agent instead (a ChatGPT
  * plan through Codex, a SuperGrok plan through Grok): Accounts offers the engine only their key, so
@@ -282,6 +287,10 @@ function accountsIn(listed: unknown): Map<string, Account> | null {
       id: each.id, name: typeof each.name === "string" && each.name.trim() ? each.name.trim() : each.id, ...(label ? { label } : {}),
       methods, signedIn: Array.isArray(each.connections) && each.connections.length > 0, installed: metadata.installed !== false,
       complete: metadata.modelsComplete === true,
+      ...(metadata.source === "agent" && typeof metadata.agent === "string" ? { agent: {
+        kind: metadata.agent, id: typeof metadata.accountID === "string" && metadata.accountID ? metadata.accountID : "default",
+        ...(typeof metadata.account === "string" && metadata.account.trim() ? { signedInAs: metadata.account.trim() } : {}),
+      } } : {}),
     });
   }
   return accounts;

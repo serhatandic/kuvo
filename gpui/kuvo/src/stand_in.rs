@@ -128,6 +128,8 @@ struct State {
     starred: Vec<Value>,
     /// More models besides, from other providers (a box with hundreds: shots and timings).
     more_models: usize,
+    /// Your Claude Code accounts (name, plan), the agent's own sign-in first; none: as before.
+    claude_accounts: Vec<(String, Option<String>)>,
     /// It keeps no stars (a box before `models.starred`).
     no_stars: bool,
     /// Its sessions' models can't be read now (`503`).
@@ -1180,6 +1182,12 @@ impl StandIn {
         self.state().more_models = count;
     }
 
+    /// Your accounts with Claude Code from now on, by name and plan, its own sign-in first: each
+    /// lists Claude Code's models, as `claude-code` and `claude-code@account<N>`.
+    pub fn claude_accounts(&self, accounts: &[(&str, Option<&str>)]) {
+        self.state().claude_accounts = accounts.iter().map(|(name, plan)| ((*name).to_owned(), plan.map(str::to_owned))).collect();
+    }
+
     /// It keeps no stars, as a box before `models.starred`.
     pub fn keeps_no_stars(&self) {
         self.state().no_stars = true;
@@ -1976,6 +1984,26 @@ fn more_models(count: usize) -> Vec<(Value, Vec<&'static str>)> {
         .collect()
 }
 
+/// Claude Code's models, as each account lists them.
+const CLAUDE_MODELS: &[(&str, &str)] = &[("sonnet", "Sonnet 5.5"), ("fable", "Fable 5.2"), ("opus", "Opus 5.5"), ("haiku", "Haiku 5.5")];
+
+/// Each Claude Code account's provider, and the provider as the box says it (`models.offered.accounts`).
+fn claude_accounts(accounts: &[(String, Option<String>)]) -> Vec<(String, Value)> {
+    accounts
+        .iter()
+        .enumerate()
+        .map(|(ix, (name, plan))| {
+            let (provider, id) = if ix == 0 { ("claude-code".to_owned(), "default".to_owned()) } else { (format!("claude-code@account{ix}"), format!("account{ix}")) };
+            let mut account = json!({ "agent": "claude", "id": id, "agentName": "Claude Code", "name": name });
+            if let Some(plan) = plan {
+                account["plan"] = json!(plan);
+            }
+            let title = if ix == 0 { "Claude Code".to_owned() } else { format!("Claude Code · {name}") };
+            (provider.clone(), json!({ "id": provider, "name": title, "account": account }))
+        })
+        .collect()
+}
+
 /// The coding agents' models, as their bridge lists them.
 fn agents_models() -> Vec<(Value, Vec<&'static str>)> {
     vec![(json!({ "providerID": "claude-code", "id": "opus", "name": "Claude Code · Opus", "aliases": ["default"] }), vec!["low", "medium", "high"])]
@@ -2368,8 +2396,12 @@ impl StandIn {
                     listed.extend(first_run::free_models().into_iter().map(|model| with("engine", model)));
                 }
                 listed.extend(more_models(state.more_models).into_iter().map(|model| with("engine", model)));
-                if !state.agents_unknown {
+                if !state.agents_unknown && state.claude_accounts.is_empty() {
                     listed.extend(agents_models().into_iter().map(|model| with("agents", model)));
+                }
+                let accounts = claude_accounts(&state.claude_accounts);
+                if !state.agents_unknown {
+                    listed.extend(accounts.iter().flat_map(|(provider, _)| CLAUDE_MODELS.iter().map(move |(id, name)| (json!({ "providerID": provider, "id": id, "name": name }), vec!["low", "medium", "high"]))).map(|model| with("agents", model)));
                 }
                 let mut said = json!({ "models": listed, "known": { "engine": true, "agents": !state.agents_unknown }, "starting": { "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" } });
                 if query(path, "session").map(decoded).is_some_and(|id| state.bots.bots.iter().any(|bot| bot["session"].as_str() == Some(id.as_str()))) {
@@ -2383,7 +2415,9 @@ impl StandIn {
                 }
                 if !state.no_stars {
                     said["starred"] = json!(state.starred);
-                    said["providers"] = json!(PROVIDERS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>());
+                    let mut providers: Vec<Value> = PROVIDERS.iter().filter(|(id, _)| accounts.is_empty() || *id != "claude-code").map(|(id, name)| json!({ "id": id, "name": name })).collect();
+                    providers.extend(accounts.into_iter().map(|(_, provider)| provider));
+                    said["providers"] = json!(providers);
                 }
                 answer(200, said)
             }
