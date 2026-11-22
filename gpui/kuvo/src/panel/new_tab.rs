@@ -67,7 +67,7 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
                         .border_color(glass.tile_edge)
                         .cursor_pointer()
                         .hover(move |s| s.bg(glass.tile_hover))
-                        .on_click(cx.listener(move |this, _, window, cx| this.replace_active(kind.clone(), window, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.replace_active(kind.clone(), cx)))
                         .flex()
                         .flex_col()
                         .justify_between()
@@ -99,10 +99,50 @@ pub(super) fn render(panel: &SidePanel, place: Option<&Place>, _window: &mut Win
                 .flex()
                 .flex_col()
                 .child(search)
-                .when(!rows.is_empty(), |d| {
+                .children(found(panel, cx))
+                .when(panel.found().is_none() && !rows.is_empty(), |d| {
                     d.child(div().mt(space::S6).mb(space::S2).text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Open"))
                         .child(div().flex().flex_col().gap(space::S2).children(rows))
                 }),
         )
         .into_any_element()
+}
+
+/// What the search found: each file with the folder it's in, best first; or that it found none, or
+/// couldn't search.
+fn found(panel: &SidePanel, cx: &mut Context<SidePanel>) -> Option<AnyElement> {
+    let (query, found) = panel.found()?.clone();
+    let c = cx.theme().colors.clone();
+    let note = |text: String| div().mt(space::S4).px(space::S2).text_ui(TypeSize::Small).text_color(c.text_faint).child(text).into_any_element();
+    Some(match found {
+        super::Load::Loading => div().mt(space::S4).px(space::S2).child(kuvo_ui::small::LoadingLabel::new("new-tab-finding", "Finding…").compact()).into_any_element(),
+        super::Load::Failed(why) => note(format!("Couldn’t search: {why}")),
+        super::Load::Ready(found) if found.files.is_empty() => note(format!("No files match “{query}”.")),
+        super::Load::Ready(found) => div()
+            .debug_selector(|| "new-tab-found".into())
+            .mt(space::S3)
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(found.files.iter().take(12).map(|file| {
+                let path = file.path.clone();
+                let selector = format!("new-tab-found-{}", file.path);
+                div()
+                    .id(SharedString::from(format!("new-tab-found-{}", file.path)))
+                    .debug_selector(move || selector)
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .h(px(32.))
+                    .px(space::S2)
+                    .rounded(radius::NAV)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(c.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| this.replace_active(Kind::File(path.clone()), cx)))
+                    .child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint))
+                    .child(div().flex_none().max_w(px(220.)).truncate().text_ui(TypeSize::Small).child(file.name.clone()))
+                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(file.folder.clone()))
+            }))
+            .into_any_element(),
+    })
 }

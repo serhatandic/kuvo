@@ -1229,13 +1229,13 @@ fn sessions_out(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
     workspace.rail_pressed(Area::Sessions, window, cx);
 }
 
-fn changes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Kind::Changes, window, cx);
+fn changes(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, cx);
 }
 
 /// The sign-up form's staged changes, opened.
-fn diff(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Kind::Changes, window, cx);
+fn diff(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, cx);
     let Some(view) = workspace.panel().read(cx).changes() else { return };
     view.update(cx, |view, cx| {
         let file = view.files().ready().and_then(|files| files.files.iter().find(|file| file.group == Group::Staged).cloned());
@@ -1246,8 +1246,8 @@ fn diff(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 }
 
 /// Discarding the validation's changes, asked first.
-fn discard(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Kind::Changes, window, cx);
+fn discard(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, cx);
     let Some(view) = workspace.panel().read(cx).changes() else { return };
     view.update(cx, |view, cx| {
         let file = view.files().ready().and_then(|files| files.files.iter().find(|file| file.path.ends_with("validate.ts")).cloned());
@@ -1258,8 +1258,8 @@ fn discard(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Work
 }
 
 /// The website's folders, a few open, one that can't be read.
-fn tree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Kind::Files, window, cx);
+fn tree(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Files, cx);
     let Some(view) = workspace.panel().read(cx).files() else { return };
     let root = kuvo::stand_in::git::website();
     view.update(cx, |view, cx| {
@@ -1276,8 +1276,8 @@ fn file(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
     workspace.preview_file(&path, window, cx);
 }
 
-fn branches(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Kind::Branches, window, cx);
+fn branches(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Branches, cx);
 }
 
 /// Create Pull Request, the box's draft in it.

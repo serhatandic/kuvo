@@ -10,6 +10,7 @@
 
 pub mod branches;
 pub mod changes;
+pub mod file;
 pub mod files;
 mod new_tab;
 pub mod tabs;
@@ -26,6 +27,7 @@ use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, StyledType, TextField, Type
 
 pub use branches::BranchesView;
 pub use changes::ChangesView;
+pub use file::FileView;
 pub use files::FilesView;
 pub use tabs::{Kind, Strip, Tab};
 
@@ -131,6 +133,7 @@ pub(crate) fn glass(cx: &App) -> Glass {
 /// A tab's own view, kept while the tab's open.
 #[derive(Clone)]
 enum View {
+    File(Entity<FileView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -138,10 +141,13 @@ enum View {
 /// One conversation's side of the panel: its tabs, its folder, and their views.
 struct Conversation {
     strip: Strip,
+    /// Its panel has shown, or been asked for something.
+    started: bool,
     place: Option<Place>,
     /// The folder's files, shared by its Files and file tabs.
     files: Option<Entity<FilesView>>,
     views: HashMap<u64, View>,
+    subscriptions: Vec<Subscription>,
 }
 
 pub struct SidePanel {
@@ -154,8 +160,10 @@ pub struct SidePanel {
     shown: bool,
     /// The last tab number given.
     next: u64,
-    /// The New tab page's search.
+    /// The New tab page's search, and what the box found for it.
     search: Entity<TextField>,
+    found: Option<(String, Load<kuvo_box::find::Found>)>,
+    focus_search: bool,
     focus: FocusHandle,
     _search: Subscription,
 }
@@ -174,6 +182,8 @@ impl SidePanel {
             shown: false,
             next: 0,
             search,
+            found: None,
+            focus_search: false,
             focus: cx.focus_handle(),
             _search: watch,
         };
@@ -183,24 +193,38 @@ impl SidePanel {
 
     /// The conversation in view's strip, made as the panel first shows it: on the New tab page,
     /// or on the tab Your settings › Panel starts each with.
-    fn conversation(&mut self, cx: &mut Context<Self>) -> &mut Conversation {
+    fn conversation(&mut self, _cx: &mut Context<Self>) -> &mut Conversation {
         if !self.conversations.contains_key(&self.key) {
-            let mut strip = Strip::new(&mut self.next);
-            match crate::yours::now(cx).panel.starts_with {
-                crate::yours::PanelStart::NewTab => {}
-                crate::yours::PanelStart::Changes => {
-                    strip.open(Kind::Changes, &mut self.next);
-                }
-                crate::yours::PanelStart::Files => {
-                    strip.open(Kind::Files, &mut self.next);
-                }
-                crate::yours::PanelStart::Branches => {
-                    strip.open(Kind::Branches, &mut self.next);
-                }
-            }
-            self.conversations.insert(self.key.clone(), Conversation { strip, place: None, files: None, views: HashMap::new() });
+            let strip = Strip::new(&mut self.next);
+            self.conversations.insert(self.key.clone(), Conversation { strip, started: false, place: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
         }
         self.conversations.get_mut(&self.key).expect("made above")
+    }
+
+    /// The conversation in view's panel showing for the first time, nothing asked for: it starts on
+    /// the tab Your settings › Panel starts each with.
+    fn start(&mut self, cx: &mut Context<Self>) {
+        if !self.shown {
+            return;
+        }
+        let start = crate::yours::now(cx).panel.starts_with;
+        let next = &mut self.next;
+        let conversation = self.conversations.entry(self.key.clone()).or_insert_with(|| Conversation { strip: Strip::new(next), started: false, place: None, files: None, views: HashMap::new(), subscriptions: Vec::new() });
+        if std::mem::replace(&mut conversation.started, true) || !conversation.strip.is_fresh() {
+            return;
+        }
+        let kind = match start {
+            crate::yours::PanelStart::NewTab => return,
+            crate::yours::PanelStart::Changes => Kind::Changes,
+            crate::yours::PanelStart::Files => Kind::Files,
+            crate::yours::PanelStart::Branches => Kind::Branches,
+        };
+        conversation.strip.open(kind, &mut self.next);
+    }
+
+    /// Marks the conversation in view's panel as asked for: what you open is what it starts on.
+    fn asked(&mut self, cx: &mut Context<Self>) {
+        self.conversation(cx).started = true;
     }
 
     fn current(&self) -> Option<&Conversation> {
@@ -247,13 +271,38 @@ impl SidePanel {
         self.current()?.files.clone()
     }
 
+    /// The file tab showing.
+    pub fn file(&self) -> Option<Entity<FileView>> {
+        let conversation = self.current()?;
+        match conversation.views.get(&conversation.strip.active().id) {
+            Some(View::File(view)) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
+    /// What the New tab page's search found.
+    pub fn found(&self) -> Option<&(String, Load<kuvo_box::find::Found>)> {
+        self.found.as_ref()
+    }
+
+    pub fn search(&self) -> &Entity<TextField> {
+        &self.search
+    }
+
     /// The conversation in view, and its folder (none: a session with no folder, or none open).
     pub fn set_conversation(&mut self, key: Option<String>, place: Option<Place>, cx: &mut Context<Self>) {
         if self.key == key && self.place() == place.as_ref() {
             return;
         }
         self.key = key;
+        let words = if place.is_some() { "Search files or enter a URL" } else { "Search files" };
         self.conversation(cx).place = place;
+        self.search.update(cx, |field, cx| {
+            field.set_placeholder(words);
+            field.set_text("", cx);
+        });
+        self.found = None;
+        self.start(cx);
         self.tell(cx);
         cx.notify();
     }
@@ -264,20 +313,21 @@ impl SidePanel {
             return;
         }
         self.shown = shown;
+        self.start(cx);
         self.tell(cx);
         cx.notify();
     }
 
     /// Shows `kind` in the conversation in view: its tab, or a new one.
-    pub fn open(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
-        self.conversation(cx);
+    pub fn open(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.asked(cx);
         let next = &mut self.next;
         self.conversations.get_mut(&self.key).expect("made above").strip.open(kind, next);
-        self.after_move(window, cx);
+        self.after_move(cx);
     }
 
     /// Puts `kind` in the showing tab's place (a tile on the New tab page, a file picked in Files).
-    pub fn replace_active(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn replace_active(&mut self, kind: Kind, cx: &mut Context<Self>) {
         let next = &mut self.next;
         let conversation = self.conversations.get_mut(&self.key).expect("a strip shows");
         let was = conversation.strip.active().id;
@@ -285,25 +335,25 @@ impl SidePanel {
         if conversation.strip.active().id != was {
             conversation.views.remove(&was);
         }
-        self.after_move(window, cx);
+        self.after_move(cx);
     }
 
     /// Opens the New tab page.
-    pub fn open_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_new(&mut self, cx: &mut Context<Self>) {
         let next = &mut self.next;
         self.conversations.get_mut(&self.key).expect("a strip shows").strip.open_new(next);
-        self.after_move(window, cx);
+        self.after_move(cx);
     }
 
     /// Shows the tab numbered `id`.
-    pub fn select(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn select(&mut self, id: u64, cx: &mut Context<Self>) {
         if self.conversations.get_mut(&self.key).is_some_and(|conversation| conversation.strip.select(id)) {
-            self.after_move(window, cx);
+            self.after_move(cx);
         }
     }
 
     /// Closes the tab numbered `id`, and what it had open.
-    pub fn close(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close(&mut self, id: u64, cx: &mut Context<Self>) {
         let next = &mut self.next;
         let Some(conversation) = self.conversations.get_mut(&self.key) else { return };
         if conversation.strip.close(id, next).is_some() {
@@ -311,34 +361,17 @@ impl SidePanel {
             if !conversation.strip.tabs().iter().any(|tab| matches!(tab.kind, Kind::Files | Kind::File(_))) {
                 conversation.files = None;
             }
-            self.after_move(window, cx);
+            self.after_move(cx);
         }
     }
 
     /// The showing tab moved: its view made where it's new, each told whether it's on screen, and
     /// what it needs read.
-    fn after_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn after_move(&mut self, cx: &mut Context<Self>) {
         self.ensure_view(cx);
         self.tell(cx);
-        // A file tab shows its file in the folder's files (one viewer for now).
-        if let Some(conversation) = self.current()
-            && let Kind::File(path) = &conversation.strip.active().kind
-            && let Some(files) = conversation.files.clone()
-        {
-            let path = path.clone();
-            if files.read(cx).opened().map(|(at, _)| at) != Some(&path) {
-                files.update(cx, |files, cx| files.open_file(&path, window, cx));
-            }
-        } else if let Some(conversation) = self.current()
-            && conversation.strip.active().kind == Kind::Files
-            && let Some(files) = conversation.files.clone()
-            && files.read(cx).opened().is_some()
-        {
-            files.update(cx, |files, cx| files.close_file(window, cx));
-        }
-        if self.current().is_some_and(|conversation| conversation.strip.active().kind == Kind::New) {
-            window.focus(&self.search.focus_handle(cx), cx);
-        }
+        // The New tab page takes the keyboard as it shows (once drawn).
+        self.focus_search = self.current().is_some_and(|conversation| conversation.strip.active().kind == Kind::New);
         cx.notify();
     }
 
@@ -347,12 +380,30 @@ impl SidePanel {
         let (client, live) = (self.client.clone(), self.live);
         let Some(conversation) = self.conversations.get_mut(&self.key) else { return };
         let tab = conversation.strip.active().clone();
+        if matches!(tab.kind, Kind::Files | Kind::File(_)) && conversation.files.is_none() {
+            let tree = cx.new(|cx| FilesView::new(client.clone(), live, cx));
+            // A file picked: its own tab (in the Files tab's place, from there).
+            conversation.subscriptions.push(cx.subscribe(&tree, |this: &mut SidePanel, _, picked: &files::OpenFile, cx| {
+                let kind = Kind::File(picked.0.clone());
+                if this.active().is_some_and(|tab| tab.kind == Kind::Files) {
+                    this.replace_active(kind, cx);
+                } else {
+                    this.open(kind, cx);
+                }
+            }));
+            conversation.files = Some(tree);
+        }
         match tab.kind {
-            Kind::Files | Kind::File(_) if conversation.files.is_none() => {
-                conversation.files = Some(cx.new(|cx| FilesView::new(client, live, cx)));
+            Kind::File(path) if !conversation.views.contains_key(&tab.id) => {
+                let tree = conversation.files.clone().expect("made above");
+                conversation.views.insert(tab.id, View::File(cx.new(|cx| FileView::new(client, live, path, tree, cx))));
             }
             Kind::Changes if !conversation.views.contains_key(&tab.id) => {
-                conversation.views.insert(tab.id, View::Changes(cx.new(|cx| ChangesView::new(client, live, cx))));
+                let view = cx.new(|cx| ChangesView::new(client, live, cx));
+                conversation.subscriptions.push(cx.subscribe(&view, |this: &mut SidePanel, _, event: &changes::ChangesEvent, cx| match event {
+                    changes::ChangesEvent::ShowBranches => this.open(Kind::Branches, cx),
+                }));
+                conversation.views.insert(tab.id, View::Changes(view));
             }
             Kind::Branches if !conversation.views.contains_key(&tab.id) => {
                 conversation.views.insert(tab.id, View::Branches(cx.new(|cx| BranchesView::new(client, live, cx))));
@@ -372,6 +423,7 @@ impl SidePanel {
             for (id, view) in &conversation.views {
                 let on = here && *id == active.id;
                 match view {
+                    View::File(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -383,7 +435,46 @@ impl SidePanel {
         }
     }
 
-    fn searched(&mut self, _event: &kuvo_ui::text_field::TextFieldEvent, cx: &mut Context<Self>) {
+    /// The New tab page's search: the folder's files the box finds for it, and the page it reads
+    /// as; Enter opens the first.
+    fn searched(&mut self, event: &kuvo_ui::text_field::TextFieldEvent, cx: &mut Context<Self>) {
+        use kuvo_ui::text_field::TextFieldEvent;
+        match event {
+            TextFieldEvent::Changed => self.find(cx),
+            TextFieldEvent::Submit(_) => {
+                let first = self.found.as_ref().and_then(|(_, found)| found.ready()).and_then(|found| found.files.first()).map(|file| file.path.clone());
+                if let Some(path) = first {
+                    self.replace_active(Kind::File(path), cx);
+                }
+            }
+            TextFieldEvent::Cancel => self.search.update(cx, |field, cx| field.set_text("", cx)),
+        }
+    }
+
+    fn find(&mut self, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).text().trim().to_owned();
+        let place = self.place().cloned();
+        let (Some(place), false) = (place, query.is_empty()) else {
+            self.found = None;
+            cx.notify();
+            return;
+        };
+        if !self.client.gate().has(kuvo_box::find::FILES_FIND) {
+            return;
+        }
+        self.found = Some((query.clone(), Load::Loading));
+        let client = self.client.clone();
+        let asked = query.clone();
+        run(self, self.live, cx, move || client.find_files(&place.directory, &asked), move |this, found, cx| {
+            if this.found.as_ref().map(|(at, _)| at) != Some(&query) {
+                return;
+            }
+            this.found = Some((query, match found {
+                Ok(found) => Load::Ready(found),
+                Err(error) => Load::Failed(error.to_string()),
+            }));
+            cx.notify();
+        });
         cx.notify();
     }
 
@@ -448,10 +539,10 @@ impl SidePanel {
                 .when(!dense, |d| d.min_w(px(96.)).max_w(px(176.)).flex_shrink_1())
                 .when(selected, |d| d.bg(glass.pill).border_color(glass.pill_edge))
                 .when(!selected, |d| d.hover(|s| s.bg(c.hover)))
-                .on_click(cx.listener(move |this, _, window, cx| this.select(id, window, cx)))
-                .on_mouse_down(gpui::MouseButton::Middle, cx.listener(move |this, _, window, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
+                .on_mouse_down(gpui::MouseButton::Middle, cx.listener(move |this, _, _, cx| {
                     if closes {
-                        this.close(id, window, cx);
+                        this.close(id, cx);
                     }
                 }))
                 .child(Icon::new(Self::icon(&tab.kind)).size(IconSize::XSmall).color(if selected { c.icon_on } else { c.text_faint }))
@@ -480,9 +571,9 @@ impl SidePanel {
                             .when(!selected, |d| d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.)))
                             .hover(|s| s.bg(c.hover))
                             .tooltip(|_, cx| kuvo_ui::menu::Tooltip::new("Close Tab").build(cx))
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                this.close(id, window, cx);
+                                this.close(id, cx);
                             }))
                             .child(Icon::new(IconName::Close).size(IconSize::Indicator).color(c.text_faint)),
                     )
@@ -523,7 +614,7 @@ impl SidePanel {
                     .gap(px(2.))
                     .overflow_hidden()
                     .children(tabs)
-                    .when(!fresh, |d| d.child(button("panel-new-tab", IconName::Plus, IconSize::Nav, "New Tab").on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx))))),
+                    .when(!fresh, |d| d.child(button("panel-new-tab", IconName::Plus, IconSize::Nav, "New Tab").on_click(cx.listener(|this, _, _, cx| this.open_new(cx))))),
             )
             .child(button("panel-close", IconName::Close, IconSize::XSmall, "Close Panel").on_click(cx.listener(|_, _, _, cx| cx.emit(PanelEvent::Close))))
             .into_any_element()
@@ -533,10 +624,11 @@ impl SidePanel {
         let tab = conversation.strip.active();
         match (&tab.kind, conversation.views.get(&tab.id)) {
             (Kind::New, _) => new_tab::render(self, conversation.place.as_ref(), window, cx),
-            (Kind::Files | Kind::File(_), _) => match (&conversation.place, &conversation.files) {
+            (Kind::Files, _) => match (&conversation.place, &conversation.files) {
                 (Some(_), Some(files)) => files.clone().into_any_element(),
                 _ => no_folder(cx),
             },
+            (_, Some(View::File(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),
@@ -559,6 +651,9 @@ impl Focusable for SidePanel {
 impl Render for SidePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.conversation(cx);
+        if std::mem::take(&mut self.focus_search) {
+            window.focus(&self.search.focus_handle(cx), cx);
+        }
         let c = cx.theme().colors.clone();
         let conversation = self.conversations.remove(&self.key).expect("made above");
         let strip = self.strip_bar(&conversation.strip, cx);

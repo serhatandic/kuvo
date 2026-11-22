@@ -671,7 +671,7 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
     let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     changes.update(cx, |view, cx| view.take(client.git_files(WEBSITE), cx));
     cx.run_until_parked();
-    click(cx, "change-Unstaged:public/favicon.png");
+    // (The first file shows open, under its header.)
     assert!(shown(cx, "changes-open-image"));
     click(cx, "changes-open-image");
     assert!(shown(cx, "picture-viewer"));

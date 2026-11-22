@@ -21,6 +21,7 @@ pub mod boxes;
 pub mod client;
 pub mod connections;
 pub mod error;
+pub mod find;
 pub mod folders;
 pub mod follow;
 pub mod gate;

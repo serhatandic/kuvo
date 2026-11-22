@@ -27,6 +27,7 @@ pub const REQUIRED: &[&str] = &[
     "computers.words",
     "devices.pair",
     "file.text",
+    "files.find",
     "folders.suggested",
     "folders.tree",
     "git.branches",

@@ -1630,10 +1630,15 @@ impl Workspace {
         let preview = std::rc::Rc::new(move |path: &str, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| workspace.preview_file(path, window, cx)).ok();
         });
+        let workspace = cx.entity().downgrade();
+        let show_changes = std::rc::Rc::new(move |_: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.show_panel(Kind::Changes, cx)).ok();
+        });
         let now = self.now;
         view.update(cx, |view, cx| {
             view.set_computer_key(computer_key, cx);
             view.set_preview_file(preview);
+            view.set_show_changes(show_changes);
             if let Some(now) = now {
                 view.set_now(now);
             }
@@ -1964,16 +1969,17 @@ impl Workspace {
     }
 
     /// Opens the side panel on `kind`, in the conversation in view: its tab, or a new one.
-    pub fn show_panel(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn show_panel(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        // (Opened first: what's asked for is what it starts on.)
+        self.panel.update(cx, |panel, cx| panel.open(kind, cx));
         if !self.panel_open {
             self.toggle_panel(cx);
         }
-        self.panel.update(cx, |panel, cx| panel.open(kind, window, cx));
     }
 
     /// Opens `path` in its own tab in the side panel (a file the conversation names or shows).
-    pub fn preview_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_panel(Kind::File(path.to_owned()), window, cx);
+    pub fn preview_file(&mut self, path: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_panel(Kind::File(path.to_owned()), cx);
     }
 
     /// The conversation the panel follows, and the folder it shows: the open session's (its
@@ -3905,13 +3911,13 @@ impl Render for Workspace {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);
                 }
-                this.show_panel(Kind::Changes, window, cx);
+                this.show_panel(Kind::Changes, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowFiles, window, cx| {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);
                 }
-                this.show_panel(Kind::Files, window, cx);
+                this.show_panel(Kind::Files, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowSessions, window, cx| this.show_area(Area::Sessions, window, cx)))
             .on_action(cx.listener(|this, _: &ShowBots, window, cx| this.show_area(Area::Bots, window, cx)))

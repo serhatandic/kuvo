@@ -25,6 +25,7 @@ pub mod git;
 pub mod groups;
 pub mod moves;
 mod insights;
+pub mod panel;
 pub mod queue;
 pub mod settings;
 pub mod work_bars;
@@ -176,6 +177,8 @@ struct State {
     pending_compacts: HashSet<String>,
     /// Its modes, and what runs for each conversation besides its turn.
     work_bars: work_bars::WorkBars,
+    /// The side panel's own answers: files found, a command's output, subagents, side chats.
+    panel: panel::Panel,
     /// How each new session was asked to start: in a worktree, and its mode.
     starts: Vec<Value>,
 }
@@ -921,6 +924,22 @@ impl StandIn {
         state.work_bars.changed();
     }
 
+    /// `session`'s subagents that are done, newest first (as `kuvo/work/subagents/<session>` lists
+    /// them under `done`).
+    pub fn set_subagents_done(&self, session: &str, done: Vec<Value>) {
+        self.state().panel.done.insert(session.to_owned(), done);
+    }
+
+    /// What the next side questions are answered, in order (none left: they stay being answered).
+    pub fn answer_side_questions(&self, answers: &[&str]) {
+        self.state().panel.answers = answers.iter().map(|answer| (*answer).to_owned()).collect();
+    }
+
+    /// `session`'s side questions, as the box keeps them, oldest first.
+    pub fn side_questions(&self, session: &str) -> Vec<Value> {
+        self.state().panel.questions.get(session).cloned().unwrap_or_default()
+    }
+
     /// A bot's work changed (`kuvo/work/events`): its clients read it again.
     pub fn bot_work_changed(&self, bot: &str) {
         let mut state = self.state();
@@ -1314,7 +1333,7 @@ fn signup(now: f64) -> Vec<Value> {
         user("msg_s1", t, "Users say the sign-up form gets completely wiped if the email is already taken. Can you look?", None),
         json!({ "type": "assistant", "id": "msg_s2", "time": { "created": t + 1000.0, "completed": t + 25_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "finish": "stop", "content": [
             { "type": "reasoning", "text": "The form likely resets its state on any error from the server, not only on success.", "time": { "created": t + 1000.0, "completed": t + 3000.0 } },
-            tool("call_1", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
+            tool("call_1", "read", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" })),
             tool_with("call_2", "grep", "completed", json!({ "pattern": "reset\\(" }), json!({ "content": [{ "type": "text", "text": "Found 3 matches\nweb/src/signup/Form.tsx:\n  Line 48:     reset();\n  Line 71:   const { reset, setError } = useForm();\nweb/src/settings/Profile.tsx:\n  Line 33:     reset(profile);" }] })),
             { "type": "text", "text": "Found it. When the server answers **409** (the email is taken), the error path calls `reset()` before it shows the message, so every field is cleared:\n\n```tsx\n} catch (error) {\n  reset();\n  setError(error.message);\n}\n```\n\nMoving `reset()` into the success path keeps what was typed. Want me to do that, and put the error under the email field?" }
         ] }),
@@ -1333,8 +1352,8 @@ fn signup(now: f64) -> Vec<Value> {
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
             // Kuvo Code's own tool, by the title its box gives it.
             json!({ "type": "tool", "id": "call_k1", "name": "kuvo-browser_read_conversation", "title": "Read Check the other forms’s conversation", "doing": "Reading Check the other forms’s conversation", "state": { "status": "completed", "input": { "of": "Check the other forms" } } }),
-            tool("call_r2", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
-            tool_with("call_3", "edit", "completed", json!({ "filePath": "web/src/signup/Form.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
+            tool("call_r2", "read", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" })),
+            tool_with("call_3", "edit", "completed", json!({ "filePath": "/Users/sam/Projects/website/src/components/SignupForm.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
             tool_with("call_t1", "shell", "failed", json!({ "command": "npx tsc --noEmit" }), json!({ "error": "error TS2304: Cannot find name 'setFieldError'.\nFound 1 error." })),
             tool_with("call_4", "shell", "completed", json!({ "command": "npm test -- signup" }), json!({ "content": [{ "type": "text", "text": test_output() }], "metadata": { "exit": 0 } })),
             { "type": "text", "text": "Moved the reset into the success path, and the 409 now sets the error on the email field. The sign-up tests pass; checking the lint" },
@@ -1890,6 +1909,15 @@ impl StandIn {
                 return answer(status, value);
             }
             if let Some((status, value)) = state.permissions.answer(method, route, &body) {
+                return answer(status, value);
+            }
+        }
+        {
+            let now = state.made.unwrap_or_else(now_ms);
+            let body = request.body.clone().unwrap_or(Value::Null);
+            let state = &mut *state;
+            state.panel.now = now;
+            if let Some((status, value)) = state.panel.answer(method, route, |name| query(path, name).map(decoded), &body, &state.work_bars, state.git.as_ref()) {
                 return answer(status, value);
             }
         }

@@ -907,11 +907,37 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             // (What it brought back for itself shows once it's opened.)
             let opens = shown.is_some() || pictures::has_own(name, state);
             let opened = opens && open.contains(&fold);
-            let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, pres.target, pres.target_mono, busy, failed, cx);
+            // A file it read or changed opens in its own tab in the side panel, by its name.
+            let file = looks.file_actions.preview_file.clone().and_then(|preview| step_file(name, state).map(|path| (path, preview)));
+            let target = if file.is_some() { None } else { pres.target.clone() };
+            let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, target, pres.target_mono, busy, failed, cx);
+            if let (Some((path, preview)), Some(named)) = (file, pres.target.clone()) {
+                row = row.trailing(file_link(SharedString::from(format!("tool-file-{key}")), named, path, preview, cx));
+            }
             // One with something to show opens to it.
             if opens {
                 if let Some((added, removed)) = shown.as_ref().and_then(Details::counts) {
-                    row = row.trailing(counts(added, removed, cx));
+                    // What it changed, opening the folder's changes in the side panel.
+                    row = row.trailing(match looks.file_actions.show_changes.clone() {
+                        Some(show) => {
+                            let selector = format!("tool-changes-{key}");
+                            let hover = c.hover;
+                            div()
+                                .id(SharedString::from(format!("tool-changes-{key}")))
+                                .debug_selector(move || selector)
+                                .px(space::S1)
+                                .rounded(radius::SMALL)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    show(window, cx);
+                                })
+                                .child(counts(added, removed, cx))
+                                .into_any_element()
+                        }
+                        None => counts(added, removed, cx),
+                    });
                 }
                 row = row.trailing(chevron(opened));
             }
@@ -1601,6 +1627,37 @@ fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open:
                 .into_any_element()
         }
     }
+}
+
+/// The file a step read or changed, by its full path, as the engine's call names it.
+fn step_file(name: &str, state: &Value) -> Option<String> {
+    if !matches!(name, "read" | "edit" | "multiedit" | "patch" | "apply_patch" | "write") {
+        return None;
+    }
+    let input = state.get("input")?;
+    input.get("filePath").or_else(|| input.get("path")).and_then(Value::as_str).filter(|path| path.starts_with('/')).map(str::to_owned)
+}
+
+/// A file's name in a step, opening it in its own tab in the side panel.
+fn file_link(id: SharedString, name: SharedString, path: String, open: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let (faint, text) = (c.text_faint, c.text);
+    let selector = id.to_string();
+    div()
+        .id(id)
+        .debug_selector(move || selector)
+        .min_w_0()
+        .truncate()
+        .text_ui(TypeSize::Small)
+        .text_color(faint)
+        .cursor_pointer()
+        .hover(move |s| s.text_color(text).underline())
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            open(&path, window, cx);
+        })
+        .child(name)
+        .into_any_element()
 }
 
 /// A tool step or thinking, as one quiet line: its icon (or a spinner while it runs), what it did,

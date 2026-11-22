@@ -133,13 +133,13 @@ fn the_editor_picked_is_kept_and_names_files_open_button(cx: &mut TestAppContext
     let root = kuvo::stand_in::git::website();
     click(cx, &format!("tree-{root}/README.md"));
     assert!(shown(cx, "file-open-in"));
-    let named = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().unwrap().read(cx).editor().map(|editor| editor.name.clone()));
+    let named = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).file().unwrap().read(cx).editor().map(|editor| editor.name.clone()));
     // (TextEdit is on every Mac.)
     assert_eq!(named.as_deref(), Some("TextEdit"));
     // Back to each file's own app: the button opens with it.
     cx.update(|_, cx| yours::change(yours::Change::Editor(None), cx));
     cx.run_until_parked();
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().unwrap().read(cx).editor().cloned()), None);
+    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).file().unwrap().read(cx).editor().cloned()), None);
     assert!(shown(cx, "file-open-in"));
     assert_eq!(next_run(&path).general.editor, None);
 }
@@ -519,7 +519,7 @@ fn panel_start_is_kept_and_used_when_the_workspace_panel_opens(cx: &mut TestAppC
     let showing = |panel: &gpui::Entity<kuvo::panel::SidePanel>, cx: &mut gpui::VisualTestContext| panel.read_with(cx, |panel, _| panel.active().map(|tab| tab.kind.clone()));
     assert_eq!(showing(&panel, cx), Some(kuvo::panel::Kind::Files));
     // A tab picked in the panel stays picked across later opens and preference changes.
-    workspace.update_in(cx, |workspace, window, cx| workspace.show_panel(kuvo::panel::Kind::Changes, window, cx));
+    workspace.update(cx, |workspace, cx| workspace.show_panel(kuvo::panel::Kind::Changes, cx));
     cx.simulate_keystrokes("cmd-alt-0 cmd-alt-0");
     cx.run_until_parked();
     assert_eq!(showing(&panel, cx), Some(kuvo::panel::Kind::Changes));
