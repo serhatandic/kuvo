@@ -6605,7 +6605,27 @@
              }
             },
             "why?": "string",
-            "address?": "string"
+            "address?": "string",
+            "removal?": {
+             "object": {
+              "choices": {
+               "list": {
+                "oneOf": [
+                 {
+                  "literal": "unlink"
+                 },
+                 {
+                  "literal": "wipe"
+                 }
+                ]
+               }
+              },
+              "last?": {
+               "literal": true
+              },
+              "handOver?": "string"
+             }
+            }
            }
           }
          },
@@ -6668,7 +6688,27 @@
               }
              },
              "why?": "string",
-             "address?": "string"
+             "address?": "string",
+             "removal?": {
+              "object": {
+               "choices": {
+                "list": {
+                 "oneOf": [
+                  {
+                   "literal": "unlink"
+                  },
+                  {
+                   "literal": "wipe"
+                  }
+                 ]
+                }
+               },
+               "last?": {
+                "literal": true
+               },
+               "handOver?": "string"
+              }
+             }
             }
            }
           }
@@ -7100,7 +7140,27 @@
              }
             },
             "why?": "string",
-            "address?": "string"
+            "address?": "string",
+            "removal?": {
+             "object": {
+              "choices": {
+               "list": {
+                "oneOf": [
+                 {
+                  "literal": "unlink"
+                 },
+                 {
+                  "literal": "wipe"
+                 }
+                ]
+               }
+              },
+              "last?": {
+               "literal": true
+              },
+              "handOver?": "string"
+             }
+            }
            }
           }
          },
@@ -7163,7 +7223,27 @@
               }
              },
              "why?": "string",
-             "address?": "string"
+             "address?": "string",
+             "removal?": {
+              "object": {
+               "choices": {
+                "list": {
+                 "oneOf": [
+                  {
+                   "literal": "unlink"
+                  },
+                  {
+                   "literal": "wipe"
+                  }
+                 ]
+                }
+               },
+               "last?": {
+                "literal": true
+               },
+               "handOver?": "string"
+              }
+             }
             }
            }
           }

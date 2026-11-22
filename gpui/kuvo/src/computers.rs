@@ -850,6 +850,8 @@ impl ComputersView {
                 Some(match action.id.as_str() {
                     "rename" => (What::Rename.row(), "Name".to_owned(), opens, opened(What::Rename), why),
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
+                    // (Drawn where the box says which removals it allows, or why there are none now.)
+                    "remove" if action.removal.is_none() && why.is_none() => return None,
                     "remove" => (What::Remove.row(), "Remove from setup".to_owned(), opens, opened(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
                     "setup" => (What::SetUp.row(), "Kuvo there".to_owned(), label, act(What::SetUp), why),

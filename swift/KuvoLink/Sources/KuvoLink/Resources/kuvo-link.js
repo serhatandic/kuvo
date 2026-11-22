@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 5c4490ee1a71
+// Kuvo folder layout 23 7693ff623d11
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5c4490ee1a71";
+var BRIDGE_VERSION = "7693ff623d11";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -5603,7 +5603,7 @@ var init_box = __esm(() => {
     "connected?": list(string),
     "unread?": list(words("engine", "agents"))
   });
-  COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string });
+  COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string, "removal?": object({ choices: list(words("unlink", "wipe")), "last?": literal(true), "handOver?": string }) });
   COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
   FLEET_PROGRESS = {
     current: nullable(string),
@@ -65832,11 +65832,13 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
     if (last && wipeSupportedHere())
-      actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
+      actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" }, removal: { choices: ["wipe"], last: true } });
     else if (!last) {
       const next = computer.key === link?.setup?.primary ? nextMain(link, computer.key) : null;
       const first = next ? `${acceptedName(link, next, acceptedMembership(link)?.boxes.find((box) => box.key === next)?.name || "Another computer")} becomes the main computer first. Then your` : "Your";
-      actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `${first} other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
+      const message = `${first} other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`;
+      const removal = link?.setup ? { removal: { choices: ["unlink", "wipe"], ...next ? { handOver: message } : {} } } : {};
+      actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message, label: "Remove" } }, ...removal });
     }
   }
   return actions;

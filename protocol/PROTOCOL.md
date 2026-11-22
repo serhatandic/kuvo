@@ -2172,7 +2172,12 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     what it comes to, its button), all the box's; `why`, it can't be done now, in words a client
     shows beside it, its button not taken (asked anyway, it's refused with those words). `rename`
     changes the accepted name of a managed setup computer. `connect` retries an away peer, and
-    `remove` asks the primary to unlink a member. `update` (`computers.update`, below: Update
+    `remove` asks the primary to unlink a member. In a setup, `remove` carries `removal: {choices,
+    last?, handOver?}`, the removals the box allows: `choices` of `unlink` (`POST …/unlink`) and
+    `wipe` (`POST …/unlink-and-wipe`); `last: true` where it's the only computer of its setup, so
+    it can only be wiped (`choices: ["wipe"]`); `handOver`, on the main computer of more, the
+    box's words for who takes its role first. A client offers exactly those, and no removal where
+    `removal` is missing (a 0.7 Mac's record outside a setup). `update` (`computers.update`, below: Update
     Now, with its `confirm` while something may be at work there) on a machine this box keeps up to
     date. `update-here` (`computers.update.here`: Update Now, `POST kuvo/update {now: true}` of this
     box, with its `confirm` while sessions are at work) on this box's own row while a release Kuvo

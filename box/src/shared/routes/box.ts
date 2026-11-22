@@ -356,8 +356,12 @@ export type Found = Infer<typeof FOUND>;
  * client shows beside it. `setup` and
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
  * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
- * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string });
+ * whose Kuvo is older than its own up to date now (asked first while something is at work there).
+ * `removal`, on `remove` in a setup: the removals a client offers (`choices`: `unlink` is `POST
+ * …/unlink`, `wipe` is `POST …/unlink-and-wipe`), `last` where it's the only computer of its setup
+ * (it can only be wiped), and `handOver` where it's the main computer, the box's words for who
+ * takes its role first. A `remove` without it (no setup) isn't offered by a client. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string, "removal?": object({ choices: list(words("unlink", "wipe")), "last?": literal(true), "handOver?": string }) });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):

@@ -2075,6 +2075,7 @@ impl StandIn {
             let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
             // Your setup, where the stand-in is in one with others.
             if (method, route) == ("GET", "kuvo/setup")
+                && !state.first_run.setup_fails
                 && let Some(((status, value), _)) = areas::setup(&mut state.areas, method, route, &body)
             {
                 return answer(status, value);
