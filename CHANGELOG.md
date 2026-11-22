@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.
+- Side questions can include pictures. They're answered by the model you pick or the conversation's own, if it can see pictures. Side questions in a coding agent's conversation still take text files only.
 - Opening the Browser tab starts the computer’s browser when it’s stopped, including after a Kuvo update.
 - The context bar keeps the model's window after a restart, including when the next reply only reports tokens used.
 - Sessions in Git worktrees appear under their original project, including worktrees created outside Kuvo.

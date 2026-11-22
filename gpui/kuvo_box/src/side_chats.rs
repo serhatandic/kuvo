@@ -97,8 +97,8 @@ impl BoxClient {
     }
 
     /// Asks `question` aside about `session`: a follow-up in `thread`, or a new side thread; on
-    /// `model` (with its effort) where it's given, else the conversation's own; with `files` (text:
-    /// the box refuses pictures, saying so). Answers the question as the box keeps it (being
+    /// `model` (with its effort) where it's given, else the conversation's own; with `files` (text
+    /// and pictures; the box says why it refuses one it can't take). Answers the question as the box keeps it (being
     /// answered).
     pub fn ask_aside(&self, session: &str, question: &str, thread: Option<&str>, model: Option<&ModelRef>, files: &[File]) -> Result<SideQuestion> {
         #[derive(Deserialize)]

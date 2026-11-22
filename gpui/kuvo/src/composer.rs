@@ -1420,18 +1420,40 @@ impl Composer {
     }
 
     /// A message taken back from the queue to edit: what its box says goes back (`draft`: a
-    /// command with its arguments, say) ahead of anything written since, and its files (those on
-    /// this Mac's box; one sent inline can't come back as a file).
+    /// command with its arguments, say) ahead of anything written since, and every file it went
+    /// with, in the strip to keep, take off or add to (`attachable`). One that can't come back is
+    /// said, by name.
     pub fn restore(&mut self, words: &str, files: &[File], cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = files.iter().filter_map(|file| file.uri.strip_prefix("file://")).map(|path| PathBuf::from(percent_decoded(path))).collect();
-        self.attach(paths, cx);
         self.put_back(words, None, cx);
         cx.notify();
+        if files.is_empty() {
+            return;
+        }
+        let (client, here, folder, files) = (self.client.clone(), self.client.here(), crate::pasted::folder(cx), files.to_vec());
+        let generation = self.attachment_generation;
+        self.spawn(
+            cx,
+            move || files.iter().map(|file| attachable(file, &client, here, &folder).ok_or_else(|| file_name(file))).collect::<Vec<_>>(),
+            move |this, back, cx| {
+                // (A fresh draft meanwhile, sent or cleared: they aren't its.)
+                if this.attachment_generation != generation {
+                    return;
+                }
+                let (paths, lost): (Vec<_>, Vec<_>) = back.into_iter().partition(Result::is_ok);
+                this.attach(paths.into_iter().flatten(), cx);
+                let lost: Vec<String> = lost.into_iter().filter_map(Result::err).collect();
+                if !lost.is_empty() {
+                    let names = lost.iter().map(|name| format!("“{name}”")).collect::<Vec<_>>().join(", ");
+                    this.set_note(Note { text: format!("{names} couldn’t come back with it: attach {} again to send {}.", if lost.len() == 1 { "it" } else { "them" }, if lost.len() == 1 { "it" } else { "them" }).into(), warning: true }, cx);
+                }
+                cx.notify();
+            },
+        );
     }
 
     pub(crate) fn restore_queue_removal(&mut self, removed: &kuvo_box::queue::Removed, cx: &mut Context<Self>) {
         if removed.receipt.as_ref().is_none_or(|receipt| self.restored_queue_receipts.insert(receipt.clone())) {
-            self.restore(&removed.draft, &removed.files, cx);
+            self.restore(&removed.draft, removed.attached.as_deref().unwrap_or(&removed.files), cx);
         }
     }
 
@@ -2436,6 +2458,25 @@ fn mentioned(text: &str, name: &str) -> bool {
 }
 
 /// A `file://` path's escapes decoded.
+/// A file a message taken back to edit went with, as its box gives it back, as a file here to
+/// attach again: one on this Mac's own box where it is; one sent with its bytes, or kept on another
+/// computer's box (read from there), as a copy in the app's own folder, which goes again with its
+/// bytes. None for one that can't be read any more.
+fn attachable(file: &File, client: &BoxClient, here: bool, folder: &Path) -> Option<PathBuf> {
+    let name = file_name(file);
+    let bytes = match file.uri.strip_prefix("file://") {
+        Some(path) if here => return Some(PathBuf::from(percent_decoded(path))),
+        Some(_) => client.file_bytes(&file.uri, kuvo_box::shown_files::FILE_MOST).ok()?.0,
+        None => kuvo_box::parts::data_bytes(&file.uri)?,
+    };
+    crate::pasted::keep_bytes(&bytes, &name, folder, std::time::SystemTime::now()).ok()
+}
+
+/// What a file a message went with is called: its name, else its address's last part.
+fn file_name(file: &File) -> String {
+    file.name.clone().filter(|name| !name.trim().is_empty()).or_else(|| file.uri.strip_prefix("file://").and_then(|path| path.rsplit('/').next()).map(percent_decoded)).unwrap_or_else(|| "attachment".to_owned())
+}
+
 fn percent_decoded(path: &str) -> String {
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

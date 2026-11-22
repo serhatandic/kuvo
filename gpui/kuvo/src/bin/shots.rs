@@ -154,6 +154,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "model-picker-accounts-ten-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_open) },
     Screen { slug: "model-picker-accounts-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_search) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
+    Screen { slug: "composer-edited-attachments", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(composer_edited) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "compaction-running", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1411,6 +1412,20 @@ fn panel_subagents(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<W
 /// One subagent open, its conversation in the tab.
 fn panel_subagent_detail(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.arrive(kuvo::panel::Arrival::Subagents(Some("ses_limits".into())), cx);
+}
+
+/// A queued message taken back to edit (as its box gives it back): its words, and its picture
+/// (sent with its bytes) and file back in the strip.
+fn composer_edited(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    use base64::Engine as _;
+    let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+    // (Its picture kept, as Edit keeps one, in a folder of the shots' own.)
+    cx.set_global(kuvo::pasted::PastedFolder(std::env::temp_dir().join("kuvo-shots-pasted")));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_fn(96, 64, |x, y| if y < 20 { image::Rgba([220, 60, 60, 255]) } else if x % 24 < 12 { image::Rgba([240, 240, 245, 255]) } else { image::Rgba([200, 205, 215, 255]) }).write_to(&mut png, image::ImageFormat::Png).expect("a picture");
+    let picture = kuvo_box::parts::File { uri: format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner())), name: Some("Pasted Image 2026-11-23 at 10.12.04.png".into()) };
+    let file = kuvo_box::parts::File::at(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/stand_in/fixtures/SignupForm.tsx"));
+    composer.update(cx, |composer, cx| composer.restore("[Image 1] The error still shows under the password field: move it under the email one.", &[picture, file], cx));
 }
 
 /// A side chat with two questions answered.
