@@ -395,7 +395,8 @@ export type GlanceChecks = Infer<typeof GLANCE_CHECKS>;
  * its box's agents bridge keeps it: the side thread it's in (`thread`, its first question's id),
  * where it stands, its answer or why it couldn't be answered, and when it was asked and answered (ms). */
 export const SIDE_QUESTION = object({
-  id: string, session: string, "thread?": string, question: string, state: words("answering", "answered", "failed"),
+  id: string, session: string, "thread?": string, question: string, "model?": object({ providerID: string, id: string, "variant?": string }), "files?": list(string),
+  state: words("answering", "answered", "failed"),
   "answer?": string, "error?": string, asked: number, "answered?": number,
 });
 /** A conversation's side threads, each a side chat (`kuvo/agents/api/kuvo/btw/<session>/threads`),

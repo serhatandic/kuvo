@@ -1422,6 +1422,11 @@ fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<W
         field.update(cx, |field, cx| field.set_text(question, cx));
         view.update(cx, |view, cx| view.ask(cx));
     }
+    // The next one's composer: a file attached, on another model than the conversation's.
+    view.update(cx, |view, cx| {
+        view.attach([std::path::PathBuf::from(format!("{}/notes/signup-review.md", kuvo::stand_in::git::website()))], cx);
+        view.pick(kuvo_box::typed::ModelRef { provider_id: "anthropic".into(), id: "claude-sonnet-5-5".into(), variant: Some("medium".into()) }, cx);
+    });
 }
 
 /// A bot's conversation with the side panel opened from the title bar: the New tab page beside it.
@@ -2917,8 +2922,8 @@ fn main() -> anyhow::Result<()> {
                 }
                 let client = BoxClient::new(stand_in.clone());
                 stand_in.answer_side_questions(&["Yes, it's atomic.", "Three of them."]);
-                let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None);
-                let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None);
+                let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None, None, &[]);
+                let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None, None, &[]);
                 stand_in.set_queue("ses_signup", vec![]);
             }
             if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {

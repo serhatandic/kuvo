@@ -569,8 +569,9 @@ export function handler(context: Context, transferring?: () => boolean) {
             const prompt = String(input.prompt ?? "")
             if (!prompt.trim()) throw new BadRequest("Say what to write.")
             // `orAnother`: another agent you're signed in to may answer, where this one can't.
-            // `model`: on that model of the session's own maker (Auto's reviewer, on its small one).
-            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id } : undefined
+            // `model`: on that model of the session's own maker, with its effort (Auto's reviewer, on
+            // its small one; a side question asked on another).
+            const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id, ...(typeof input.model.variant === "string" && input.model.variant ? { variant: input.model.variant } : {}) } : undefined
             return json({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } })
           }
           case "interrupt":

@@ -1780,98 +1780,9 @@ impl Composer {
         }));
     }
 
-    /// What's attached, above the field: pictures as thumbnails (clicking opens the Stage viewer),
-    /// other files as chips, each with ×.
+    /// What's attached, above the field (`attachment_strip`).
     fn attachments(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.attached.is_empty() {
-            return None;
-        }
-        let c = cx.theme().colors.clone();
-        let picture_paths: Vec<PathBuf> = self.attached.iter().filter(|p| is_picture(p)).cloned().collect();
-        let items = self.attached.iter().enumerate().map(|(at, path)| {
-            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            let remove = cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.detach(at, cx);
-            });
-            if is_picture(path) {
-                let pic_index = picture_paths.iter().position(|p| p == path).unwrap_or(0);
-                let gallery_paths = picture_paths.clone();
-                let open_viewer = cx.listener(move |this, _, window, cx| {
-                    let client = this.client.clone();
-                    let items: Vec<crate::image_viewer::ViewerItem> = gallery_paths
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| {
-                            let title = p
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "Attachment".into());
-                            let load_path = p.clone();
-                            let load_client = client.clone();
-                            crate::image_viewer::ViewerItem {
-                                id: format!("attachment-{i}-{}", p.display()),
-                                name: title,
-                                caption: None,
-                                source_tag: "Attachment".into(),
-                                local_path: Some(p.clone()),
-                                read: crate::pictures::Read::Reading,
-                                loader: Some(std::sync::Arc::new(move || {
-                                    crate::pictures::read(
-                                        &load_client,
-                                        &kuvo_box::pictures::Source::Local(load_path.clone()),
-                                    )
-                                })),
-                            }
-                        })
-                        .collect();
-                    crate::image_viewer::open(
-                        crate::image_viewer::OpenRequest {
-                            items,
-                            active: pic_index,
-                            return_focus: Some(this.focus_handle(cx)),
-                            on_change: None,
-                        },
-                        window,
-                        cx,
-                    );
-                });
-                let selector = format!("attached-picture-{at}");
-                div()
-                    .id(("attached", at))
-                    .debug_selector(move || selector)
-                    .relative()
-                    .size(px(52.))
-                    .flex_none()
-                    .rounded(radius::NAV)
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(c.border)
-                    .bg(c.sunken)
-                    .cursor_pointer()
-                    .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(name.clone()).build(cx))
-                    .on_click(open_viewer)
-                    .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover).with_fallback(|| Icon::new(IconName::Image).size(IconSize::Card).into_any_element()))
-                    .child(
-                        div()
-                            .id(("detach", at))
-                            .absolute()
-                            .top(px(3.))
-                            .right(px(3.))
-                            .rounded(radius::PILL)
-                            .bg(c.elevated)
-                            .border_1()
-                            .border_color(c.border)
-                            .cursor_pointer()
-                            .on_click(remove)
-                            .child(Icon::new(IconName::Close).size(IconSize::Nav).color(c.text_muted)),
-                    )
-                    .into_any_element()
-            } else {
-                Chip::new(("attached", at), name).icon(IconName::File).on_remove(move |window, cx| remove(&gpui::ClickEvent::default(), window, cx)).into_any_element()
-            }
-        });
-        Some(div().debug_selector(|| "attachments".into()).flex().flex_wrap().items_center().gap(space::S1_5).children(items).into_any_element())
+        attachment_strip(&self.attached, &self.client, self.focus_handle(cx), |this: &mut Composer, at, cx| this.detach(at, cx), cx)
     }
 
     /// The mention being typed, if one is, and what the box suggests for it: read as it changes.
@@ -2159,15 +2070,7 @@ impl Composer {
         if self.model_fixed() {
             return Some(self.said_chip("model-chip", name, None, "This subagent’s agent picks its model.", cx));
         }
-        let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
-        let this = cx.entity().downgrade();
-        Some(
-            PopoverMenu::view("model-menu", trigger, move |window, cx| this.update(cx, |this, cx| this.model_picker(window, cx)).expect("the composer opens its picker"))
-                .with_handle(self.model_menu.clone())
-                .above()
-                .centered()
-                .into_any_element(),
-        )
+        Some(model_chip(name, self.client.gate().is_held(), &self.model_menu, |this: &mut Composer, window, cx| this.model_picker(window, cx), cx))
     }
 
     /// "Auto ⌄": how much the agent does on its own, and the menu of the four; a dot while it does
@@ -2308,32 +2211,149 @@ impl Composer {
         if efforts.is_empty() || self.needs_model() || !self.can_pick() || self.model_fixed() {
             return None;
         }
-        let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
-        let this = cx.entity().downgrade();
-        // (Its own pick beside the model's, of only the efforts that model offers.)
-        let trigger = div().debug_selector(|| "effort-chip".into()).child(Button::new("effort-chip", label).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).tooltip("Effort: how hard it thinks before it answers"));
-        Some(
-            PopoverMenu::new("effort-menu", trigger, move |_, cx| {
-                let (efforts, model, this) = (efforts.clone(), model.clone(), this.clone());
-                cx.new(|cx| {
-                    let mut menu = Menu::new(cx).width(px(180.)).header("Effort");
-                    for effort in efforts {
-                        let checked = model.variant.as_deref() == Some(effort.as_str());
-                        let picked = ModelRef { variant: Some(effort.clone()), ..model.clone() };
-                        let this = this.clone();
-                        menu = menu.entry(MenuEntry::new(effort_title(&effort)).checked(checked).on_select(move |_, cx| {
-                            this.update(cx, |this, cx| this.pick(picked.clone(), cx)).ok();
-                        }));
-                    }
-                    menu
-                })
-            })
-            .above()
-            .centered()
-            .into_any_element(),
-        )
+        Some(effort_chip(model, efforts, self.client.gate().is_held(), |this: &mut Composer, picked, cx| this.pick(picked, cx), cx))
     }
 }
+
+/// The model chip: the model's name, opening `picker` (`ModelPicker`) above it.
+pub fn model_chip<V: 'static>(name: String, disabled: bool, handle: &PopoverMenuHandle, picker: impl Fn(&mut V, &mut Window, &mut Context<V>) -> Entity<ModelPicker> + 'static, cx: &mut Context<V>) -> AnyElement {
+    let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(disabled).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
+    let this = cx.entity().downgrade();
+    PopoverMenu::view("model-menu", trigger, move |window, cx| this.update(cx, |this, cx| picker(this, window, cx)).expect("its view opens its picker"))
+        .with_handle(handle.clone())
+        .above()
+        .centered()
+        .into_any_element()
+}
+
+/// The paperclip: the system's file picker, for files to attach.
+pub fn attach_button() -> Button {
+    Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small)
+}
+
+/// "High ⌄": the effort picked beside a model, and the menu of the efforts that model offers
+/// (`pick` takes the model with the one picked).
+pub fn effort_chip<V: 'static>(model: ModelRef, efforts: Vec<String>, disabled: bool, pick: impl Fn(&mut V, ModelRef, &mut Context<V>) + Clone + 'static, cx: &mut Context<V>) -> AnyElement {
+    let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
+    let this = cx.entity().downgrade();
+    // (Its own pick beside the model's, of only the efforts that model offers.)
+    let trigger = div().debug_selector(|| "effort-chip".into()).child(Button::new("effort-chip", label).disabled(disabled).ghost().size(ButtonSize::Small).tooltip("Effort: how hard it thinks before it answers"));
+    PopoverMenu::new("effort-menu", trigger, move |_, cx| {
+        let (efforts, model, this, pick) = (efforts.clone(), model.clone(), this.clone(), pick.clone());
+        cx.new(|cx| {
+            let mut menu = Menu::new(cx).width(px(180.)).header("Effort");
+            for effort in efforts {
+                let checked = model.variant.as_deref() == Some(effort.as_str());
+                let picked = ModelRef { variant: Some(effort.clone()), ..model.clone() };
+                let (this, pick) = (this.clone(), pick.clone());
+                menu = menu.entry(MenuEntry::new(effort_title(&effort)).checked(checked).on_select(move |_, cx| {
+                    this.update(cx, |this, cx| pick(this, picked.clone(), cx)).ok();
+                }));
+            }
+            menu
+        })
+    })
+    .above()
+    .centered()
+    .into_any_element()
+}
+
+/// What's attached, above a composer's field: pictures as thumbnails (clicking opens the Stage
+/// viewer), other files as chips, each with × (`detach`). The conversation's composer and the side
+/// chat's draw theirs so.
+pub fn attachment_strip<V: 'static>(attached: &[PathBuf], client: &BoxClient, return_focus: FocusHandle, detach: impl Fn(&mut V, usize, &mut Context<V>) + Clone + 'static, cx: &mut Context<V>) -> Option<AnyElement> {
+    if attached.is_empty() {
+        return None;
+    }
+    let c = cx.theme().colors.clone();
+    let picture_paths: Vec<PathBuf> = attached.iter().filter(|p| is_picture(p)).cloned().collect();
+    let items = attached.iter().enumerate().map(|(at, path)| {
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let detach = detach.clone();
+        let remove = cx.listener(move |this: &mut V, _: &gpui::ClickEvent, _, cx| {
+            cx.stop_propagation();
+            detach(this, at, cx);
+        });
+        if is_picture(path) {
+            let pic_index = picture_paths.iter().position(|p| p == path).unwrap_or(0);
+            let gallery_paths = picture_paths.clone();
+            let (client, return_focus) = (client.clone(), return_focus.clone());
+            let open_viewer = cx.listener(move |_: &mut V, _: &gpui::ClickEvent, window, cx| {
+                let items: Vec<crate::image_viewer::ViewerItem> = gallery_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let title = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "Attachment".into());
+                        let load_path = p.clone();
+                        let load_client = client.clone();
+                        crate::image_viewer::ViewerItem {
+                            id: format!("attachment-{i}-{}", p.display()),
+                            name: title,
+                            caption: None,
+                            source_tag: "Attachment".into(),
+                            local_path: Some(p.clone()),
+                            read: crate::pictures::Read::Reading,
+                            loader: Some(std::sync::Arc::new(move || {
+                                crate::pictures::read(
+                                    &load_client,
+                                    &kuvo_box::pictures::Source::Local(load_path.clone()),
+                                )
+                            })),
+                        }
+                    })
+                    .collect();
+                crate::image_viewer::open(
+                    crate::image_viewer::OpenRequest {
+                        items,
+                        active: pic_index,
+                        return_focus: Some(return_focus.clone()),
+                        on_change: None,
+                    },
+                    window,
+                    cx,
+                );
+            });
+            let selector = format!("attached-picture-{at}");
+            div()
+                .id(("attached", at))
+                .debug_selector(move || selector)
+                .relative()
+                .size(px(52.))
+                .flex_none()
+                .rounded(radius::NAV)
+                .overflow_hidden()
+                .border_1()
+                .border_color(c.border)
+                .bg(c.sunken)
+                .cursor_pointer()
+                .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(name.clone()).build(cx))
+                .on_click(open_viewer)
+                .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover).with_fallback(|| Icon::new(IconName::Image).size(IconSize::Card).into_any_element()))
+                .child(
+                    div()
+                        .id(("detach", at))
+                        .absolute()
+                        .top(px(3.))
+                        .right(px(3.))
+                        .rounded(radius::PILL)
+                        .bg(c.elevated)
+                        .border_1()
+                        .border_color(c.border)
+                        .cursor_pointer()
+                        .on_click(remove)
+                        .child(Icon::new(IconName::Close).size(IconSize::Nav).color(c.text_muted)),
+                )
+                .into_any_element()
+        } else {
+            Chip::new(("attached", at), name).icon(IconName::File).on_remove(move |window, cx| remove(&gpui::ClickEvent::default(), window, cx)).into_any_element()
+        }
+    });
+    Some(div().debug_selector(|| "attachments".into()).flex().flex_wrap().items_center().gap(space::S1_5).children(items).into_any_element())
+}
+
 
 /// A mode's icon, as the Mac's menu shows it (a hand, a pencil, a shield, a bolt).
 fn approval_icon(approval: &Approval) -> IconName {
@@ -2586,7 +2606,7 @@ impl Render for Composer {
             .child(field_room(self.field.clone()))
             .child(
                 controls()
-                    .when(!group, |d| d.child(Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
+                    .when(!group, |d| d.child(attach_button().on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
                     .when(group, |d| d.children(self.member_faces(cx)))
                     .children(self.mode_chip(cx))
                     .children(self.model_chip(cx))
