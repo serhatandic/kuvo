@@ -152,6 +152,7 @@ export const FEATURES = [
   "messages.compaction-words",
   "messages.send",
   "messages.session-news",
+  "messages.tool-failures",
   "messages.tool-titles",
   "messages.wake-cards",
   "models.offered",

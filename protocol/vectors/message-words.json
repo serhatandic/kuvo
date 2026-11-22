@@ -1,5 +1,5 @@
 {
-  "about": "The box's words on a conversation's messages (PROTOCOL.md, \"Tool steps\" and \"Its sessions' news\"), as it adds them to every page of them it forwards: each case is a message as the engine keeps it (`message`) and as a client reads it (`read`), on a box whose engine has the MCP servers in `servers` (the settings' `mcp.servers` names). The box's test (message-words.test.ts) holds itself to these; a client draws `title`/`doing` and `metadata.kuvo.news` as they are.",
+  "about": "The box's words on a conversation's messages (PROTOCOL.md, \"Tool steps\" and \"Its sessions' news\"), as it adds them to every page of them it forwards: each case is a message as the engine keeps it (`message`) and as a client reads it (`read`), on a box whose engine has the MCP servers in `servers` (the settings' `mcp.servers` names). The box's test (message-words.test.ts) holds itself to these; a client draws `title`/`doing`, a failed step's `failure` and `metadata.kuvo.news` as they are.",
   "servers": [
     "kuvo-browser",
     "linear",
@@ -337,6 +337,110 @@
               "input": {
                 "command": "ls"
               }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a failed step: one short line in its own words, all it said kept for when it's opened",
+      "message": {
+        "type": "assistant",
+        "id": "msg_20",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_20",
+            "name": "shell",
+            "state": {
+              "status": "error",
+              "input": {
+                "command": "sleep 240; cd /Users/me/work && scripts/heavy.sh status"
+              },
+              "error": {
+                "type": "tool",
+                "message": "<tool_use_error>Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status. To wait for a condition, use Monitor with an until-loop. Do not chain shorter sleeps to work around this block.</tool_use_error>"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<tool_use_error>Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status. To wait for a condition, use Monitor with an until-loop. Do not chain shorter sleeps to work around this block.</tool_use_error>"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_20",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_20",
+            "name": "shell",
+            "state": {
+              "status": "error",
+              "input": {
+                "command": "sleep 240; cd /Users/me/work && scripts/heavy.sh status"
+              },
+              "error": {
+                "type": "tool",
+                "message": "<tool_use_error>Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status. To wait for a condition, use Monitor with an until-loop. Do not chain shorter sleeps to work around this block.</tool_use_error>"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<tool_use_error>Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status. To wait for a condition, use Monitor with an until-loop. Do not chain shorter sleeps to work around this block.</tool_use_error>"
+                }
+              ]
+            },
+            "failure": {
+              "line": "Ran 1 command · blocked",
+              "reason": "blocked",
+              "error": "Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status. To wait for a condition, use Monitor with an until-loop. Do not chain shorter sleeps to work around this block."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a failed step of a tool the box words: its title, and why",
+      "message": {
+        "type": "assistant",
+        "id": "msg_21",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_21",
+            "name": "linear_list_issues",
+            "state": {
+              "status": "error",
+              "input": {},
+              "error": "MCP error: Error: Request timed out"
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_21",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_21",
+            "name": "linear_list_issues",
+            "state": {
+              "status": "error",
+              "input": {},
+              "error": "MCP error: Error: Request timed out"
+            },
+            "title": "Linear · List issues",
+            "doing": "Linear · List issues",
+            "failure": {
+              "line": "Linear · List issues · timed out",
+              "reason": "timed out",
+              "error": "Request timed out"
             }
           }
         ]

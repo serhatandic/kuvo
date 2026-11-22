@@ -99,6 +99,46 @@ describe("tool steps", () => {
     expect((messageWordsPage({ data: { type: "assistant", id: "m2", content: [step("c5", "linear_list_issues", "completed", {})] } }, knownTools(settings)) as any).data.content[0].title).toBe("Linear · List issues")
   })
 
+  test("a failed step reads as one short line, whatever agent it came from, and keeps all it said", () => {
+    const failed = (id: string, name: string, input: Record<string, unknown>, error: unknown, extra: Record<string, unknown> = {}) =>
+      ({ type: "tool", id, name, state: { status: "error", input, error, ...extra } })
+    // Claude Code's harness refusing a command, as its bridge keeps it: tags, paths and advice.
+    const refused = "<tool_use_error>Blocked: sleep 240 followed by: cd /Users/me/work scripts/heavy.sh status tail -3 /private/tmp/claude-501/tasks/b6.output. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). Do not chain shorter sleeps to work around this block.</tool_use_error>"
+    const [blocked, declined, stopped, missing, exited, engine, mcp, printed, silent] = steps([
+      failed("c1", "shell", { command: "sleep 240; cd /Users/me/work" }, { type: "tool", message: refused }),
+      failed("c2", "edit", { filePath: "/Users/me/a.ts" }, { type: "tool", message: "The user doesn't want to proceed with this tool use. The tool use was rejected." }),
+      failed("c3", "shell", { command: "bun test" }, { type: "aborted", message: "Stopped." }),
+      failed("c4", "read", { filePath: "/Users/me/gone.ts" }, { type: "tool", message: "<tool_use_error>File does not exist. Note: your current working directory is /Users/me/work.</tool_use_error>" }),
+      failed("c5", "shell", { command: "false" }, { type: "tool", message: "Exit code 1\nnpm ERR! missing script: lint" }),
+      // The engine's own (opencode): an `Error:` string.
+      failed("c6", "grep", { pattern: "x" }, "Error: ripgrep failed to start"),
+      failed("c7", "linear_list_issues", {}, "MCP error: Error: Request timed out"),
+      // Codex and Gemini say it only in what they printed.
+      { type: "tool", id: "c8", name: "shell", state: { status: "failed", input: { command: "rm x" }, content: [{ type: "text", text: "rm: x: Permission denied" }] } },
+      failed("c9", "webfetch", { url: "https://a.example" }, { type: "tool", message: "" }),
+    ])
+    expect(blocked.failure).toEqual({
+      line: "Ran 1 command · blocked",
+      reason: "blocked",
+      error: refused.replace("<tool_use_error>", "").replace("</tool_use_error>", ""),
+    })
+    expect(declined.failure.line).toBe("Edited 1 file · declined")
+    expect(stopped.failure.line).toBe("Ran 1 command · stopped")
+    expect(missing.failure.line).toBe("Read 1 file · not found")
+    expect(exited.failure.line).toBe("Ran 1 command · exit code 1")
+    expect(engine.failure).toMatchObject({ line: "Searched once · failed", error: "ripgrep failed to start" })
+    expect(mcp.failure).toMatchObject({ line: "Linear · List issues · timed out", error: "Request timed out" })
+    expect(printed.failure.line).toBe("Ran 1 command · blocked")
+    expect(silent.failure).toEqual({ line: "Read 1 web page · failed", reason: "failed", error: "It failed without saying why." })
+    // Its line never carries a tag or a path, and the engine's words stay as they were.
+    for (const each of [blocked, declined, stopped, missing, exited, engine, mcp, printed, silent]) {
+      expect(each.failure.line).not.toMatch(/[<>/]/)
+      expect(each.state.status).toMatch(/error|failed/)
+    }
+    // A step that didn't fail has none.
+    expect(steps([step("c10", "shell", "completed", { command: "ls" })])[0].failure).toBeUndefined()
+  })
+
   test("every one of Kuvo Code's tools has its title and its words", () => {
     const listed = [...TOOLS, ...VAULT_TOOLS, ...SANDBOX_TOOLS, ...QUEUE_TOOLS] as { name: string; title?: string }[]
     for (const tool of listed) {

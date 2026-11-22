@@ -131,6 +131,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // #949: a failed step, closed (one short line) and opened (all it said).
+    Screen { slug: "conversation-failed-step", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "conversation-failed-step-open", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[("msg_fail_a", 1), ("msg_fail_b", 0)], search: None, walks: 0, attach: &[], panel: None },
     // While the agent works (#776): a message written, the way beside Send, and the queue with one
     // steered in, one queued and another agent's letter; then the menu beside Send open.
     Screen { slug: "send-while-working", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -2303,6 +2306,22 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "sidebar-narrow-bots" {
                 stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 60_000. }));
+            }
+            if screen.slug.starts_with("conversation-failed-step") {
+                let refused = "Blocked: sleep 240 followed by: cd /Users/sam/Projects/website scripts/build.sh status tail -3 /private/tmp/claude-501/-Users-sam-Projects-website/28e29ba5/tasks/bcj6wfy9b.output. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.";
+                let raw = format!("<tool_use_error>{refused}</tool_use_error>");
+                stand_in.add_message("ses_dark", serde_json::json!({ "type": "user", "id": "msg_fail_u", "time": { "created": NOW - 60_000. }, "text": "Wait for the build, then check the toggle." }));
+                stand_in.add_message("ses_dark", serde_json::json!({ "type": "assistant", "id": "msg_fail_a", "time": { "created": NOW - 59_000., "completed": NOW - 58_000. }, "agent": "build", "finish": "stop", "content": [
+                    { "type": "text", "text": "Waiting on the build before I check the toggle." },
+                    { "type": "tool", "id": "t_fail", "name": "shell", "state": { "status": "error", "input": { "command": "sleep 240; cd /Users/sam/Projects/website && scripts/build.sh status" }, "error": { "type": "tool", "message": raw }, "content": [{ "type": "text", "text": raw }] },
+                      "failure": { "line": "Ran 1 command · blocked", "reason": "blocked", "error": refused } },
+                    { "type": "text", "text": "The build will tell me when it's done." }
+                ] }));
+                stand_in.add_message("ses_dark", serde_json::json!({ "type": "assistant", "id": "msg_fail_b", "time": { "created": NOW - 57_000., "completed": NOW - 56_000. }, "agent": "build", "finish": "stop", "content": [
+                    { "type": "tool", "id": "t_fail2", "name": "read", "state": { "status": "error", "input": { "filePath": "/Users/sam/Projects/website/src/theme/toggle.tsx" }, "error": { "type": "tool", "message": "<tool_use_error>File does not exist. Note: your current working directory is /Users/sam/Projects/website.</tool_use_error>" } },
+                      "failure": { "line": "Read 1 file · not found", "reason": "not found", "error": "File does not exist. Note: your current working directory is /Users/sam/Projects/website." } },
+                    { "type": "text", "text": "The toggle lives in `src/settings/Theme.tsx`; checking it there." }
+                ] }));
             }
             if screen.slug == "sidebar-search-results" {
                 stand_in.set_facts("ses_signup", |facts| {

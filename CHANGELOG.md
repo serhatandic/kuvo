@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A step that failed now reads as one short line, like "Ran 1 command · blocked", with a small warning mark. Open the step to see everything the agent was told. This works for every agent.
+
 - Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
 - You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.
 - Insights is rebuilt as one calm page: the period's cost, tokens and cache rate with the change from the period before, one trend line, and a ranked list by bot, provider, model or computer. A bot's row includes every session it oversees, subagents included, and opens to show them. Click any row to narrow the whole page to it, and the crumbs at the top take you back. Up to three sessions that stand out are listed with the reason. Each model now shows under one name.

@@ -898,14 +898,31 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
                 );
             }
         }
-        Content::Tool { name, state, title, doing, .. } => {
+        Content::Tool { name, state, title, doing, failure, .. } => {
             let (busy, failed) = call_status(state);
-            let pres = call_presentation(name, title.as_deref(), doing.as_deref(), state, busy, step.time.created, now);
-            let shown = details(name, state);
-            let error = failed.then(|| tool_error(state)).flatten();
+            let mut pres = call_presentation(name, title.as_deref(), doing.as_deref(), state, busy, step.time.created, now);
+            let failure = failure.as_ref().filter(|_| failed);
+            // A failed step's row is its box's one short line; all it said shows once it's opened
+            // (a command's in its output, under the command).
+            if let Some(failure) = failure {
+                pres.label = failure.line.clone().into();
+                pres.target = None;
+            }
+            let shown = match failure {
+                Some(failure) if name == "shell" => Some(Details::Output {
+                    command: state.pointer("/input/command").and_then(Value::as_str).map(|command| command.trim().to_owned()),
+                    text: failure.error.clone(),
+                }),
+                _ => details(name, state),
+            };
+            let error = match failure {
+                Some(_) if name == "shell" => None,
+                Some(failure) => Some(failure.error.clone()).filter(|error| !error.trim().is_empty()),
+                None => failed.then(|| tool_error(state)).flatten(),
+            };
             let fold = Fold::Step(step.id.clone(), n);
-            // (What it brought back for itself shows once it's opened.)
-            let opens = shown.is_some() || pictures::has_own(name, state);
+            // (What it brought back for itself shows once it's opened, and so does why it failed.)
+            let opens = shown.is_some() || error.is_some() || pictures::has_own(name, state);
             let opened = opens && open.contains(&fold);
             let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, pres.target, pres.target_mono, busy, failed, cx);
             // One with something to show opens to it.
@@ -936,25 +953,23 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
                         .into_any_element(),
                 );
             }
-            // When closed (or when there's nothing else to open), show the plain error right under the row.
-            if !opened && let Some(error) = &error {
-                blocks.push(div().ml(UNDER).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(error)).into_any_element());
-            }
-            if let (true, Some(shown)) = (opened, shown) {
+            // Why it failed shows only once it's opened: closed, its row says it in a word.
+            if opened && (shown.is_some() || error.is_some()) {
                 let guide = div()
                     .ml(px(7.))
                     .pl(space::S3)
                     .border_l_1()
-                    .border_color(if failed { c.danger.opacity(0.45) } else { c.border })
+                    .border_color(c.border)
                     .flex()
                     .flex_col()
                     .gap(space::S1_5)
-                    .child(details_view(&key, step, n, at, shown, open, toggle, sel, cx))
+                    .children(shown.map(|shown| details_view(&key, step, n, at, shown, open, toggle, sel, cx)))
                     .children(error.map(|error| {
                         div()
+                            .debug_selector(|| "step-error".into())
                             .text_ui(TypeSize::Small)
-                            .text_color(c.danger)
-                            .child(error)
+                            .text_color(c.text_muted)
+                            .child(SelectableText::new(SharedString::from(format!("error-{key}")), error).selectable(Some(sel(&[at]).unit(&[1]))))
                             .into_any_element()
                     }));
                 blocks.push(guide.into_any_element());
@@ -1611,7 +1626,7 @@ fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Optio
     let leading: AnyElement = if busy {
         spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
     } else if failed {
-        Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger).into_any_element()
+        Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element()
     } else {
         Icon::new(icon).size(IconSize::Nav).color(c.text_faint).into_any_element()
     };
