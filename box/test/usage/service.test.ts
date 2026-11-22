@@ -61,7 +61,9 @@ test("the limits route reads and renders all six plans from their fixture creden
   keep(join(own, ".codex", "usage.json"), { "codex-first": codexWindows(12), "codex-second": codexWindows(67) })
   keep(join(own, ".grok", "billing.json"), { config: { currentPeriod: { start: at, end: week }, creditUsagePercent: 62 } })
   const programs = agentPrograms(join(box, "programs"))
-  keep(join(own, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "fixture-claude", scopes: ["user:profile"] } })
+  // Claude Code signed in in its own folder: who it is, and what it says of its plan (its `/usage`).
+  keep(join(own, ".claude.json"), { oauthAccount: { accountUuid: "00000000-0000-4000-8000-0000000000c1", organizationUuid: "org-c" } })
+  keep(join(own, ".claude", "usage.json"), { subscription_type: "max", rate_limits: { five_hour: { utilization: 32, resets_at: soon }, seven_day: { utilization: 45, resets_at: week } } })
   keep(join(own, ".grok", "auth.json"), { grok: { key: "fixture-grok", expires_at: week } })
   keep(join(home, "cursor", "auth.json"), { version: 1, backendUrl: "https://api2.cursor.sh", apiKey: "fixture-cursor" })
   keep(join(home, "antigravity", "profile", "antigravity-acp", "acp_token.json"), { access_token: "fixture-antigravity", expiry: week })
@@ -75,9 +77,6 @@ test("the limits route reads and renders all six plans from their fixture creden
     const using = request.headers.get("authorization")
     called.add(route)
     switch (route) {
-      case "/claude":
-        expect(using).toBe("Bearer fixture-claude")
-        return Response.json({ five_hour: { utilization: 32, resets_at: soon }, seven_day: { utilization: 45, resets_at: week } })
       case "/go":
         expect(using).toBe("Bearer fixture-go")
         return Response.json({ usage: { rolling: { percent: 17 }, weekly: { percent: 33 }, monthly: { percent: 79 } } })
@@ -95,7 +94,7 @@ test("the limits route reads and renders all six plans from their fixture creden
   const endpoints = { ...engineEndpoints }, claude = claudeUsage.url
   Object.assign(engineEndpoints, { opencodeGo: base + "/go" })
   claudeUsage.url = base + "/claude"
-  const accounts = new UsageAccounts(home, { claudeByToken: false, antigravity: { bases: [base] }, programs, codexKeychain: async () => undefined })
+  const accounts = new UsageAccounts(home, { claudeKeychain: false, antigravity: { bases: [base] }, programs, codexKeychain: async () => undefined })
   const reader = usageReader({ box, run, home, bots: join(box, "bots") }, {
     accounts: () => accounts.all(),
     engineCredentials: async () => [{ integrationID: "opencode-go", active: true, value: { type: "api", key: "fixture-go" } }],
@@ -120,6 +119,7 @@ test("the limits route reads and renders all six plans from their fixture creden
       claude: [0.32, 0.45], codex: [0.12, 0.4], antigravity: [0.25, 0.5], grok: [null, 0.62], cursor: [null, 0.65], opencode: [0.17, 0.79],
     })
     expect(called.has("/v1internal:retrieveUserQuotaSummary")).toBe(true)
+    expect(programs.asked().filter(each => each.method === "get_usage").map(each => each.home)).toEqual([join(own, ".claude")])
     expect(cursor.asked.some(request => request.path.endsWith("GetCurrentPeriodUsage"))).toBe(true)
     const first = accounts.all().find(account => account.providerID === "codex-cli")!.limits!.signIn!()
     codexAuth("codex-second")

@@ -164,3 +164,86 @@ export async function readGrokNative(program: GrokProgram, now: number): Promise
   }
   return grokBilling(body, now)
 }
+
+export interface ClaudeProgram {
+  executable: string
+  /** An added account's folder (CLAUDE_CONFIG_DIR); none for your own sign-in, where Claude Code keeps it. */
+  home?: string
+  /** Where it runs (a folder of the box's own, never a project). */
+  cwd: string
+}
+
+/**
+ * Claude Code's own `/usage`, asked as the Agent SDK asks it (its control request `get_usage`,
+ * without the scan of conversations: plan limits only), of a Claude Code started for that one
+ * answer with the account's sign-in. It renews that sign-in itself as it answers.
+ */
+async function askClaude(program: ClaudeProgram): Promise<any> {
+  const { spawn } = await import("node:child_process")
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: undefined, DISABLE_AUTOUPDATER: "1" }
+  if (program.home) env.CLAUDE_CONFIG_DIR = program.home
+  const child = spawn(program.executable, [
+    "--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
+    "--no-session-persistence", "--strict-mcp-config", "--settings", JSON.stringify({ disableAllHooks: true }),
+  ], { cwd: program.cwd, env: env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "ignore"] })
+  const waiting = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
+  let ended: Error | undefined
+  const end = (error: Error) => {
+    ended ??= error
+    for (const each of waiting.values()) each.reject(ended)
+    waiting.clear()
+  }
+  child.on("error", (error) => end(error))
+  child.on("exit", () => end(new Error("Claude Code stopped before it answered.")))
+  let buffer = ""
+  child.stdout!.setEncoding("utf8")
+  child.stdout!.on("data", (chunk: string) => {
+    buffer += chunk
+    let at
+    while ((at = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, at)
+      buffer = buffer.slice(at + 1)
+      let message: any
+      try { message = JSON.parse(line) } catch { continue }
+      if (message?.type !== "control_response") continue
+      const answer = message.response
+      const asked = waiting.get(answer?.request_id)
+      if (!asked) continue
+      waiting.delete(answer.request_id)
+      if (answer.subtype === "success") asked.resolve(answer.response)
+      else asked.reject(new ClaudeRefused(typeof answer.error === "string" ? answer.error : JSON.stringify(answer.error ?? "")))
+    }
+  })
+  let next = 0
+  const request = (body: Record<string, unknown>) => new Promise<any>((resolve, reject) => {
+    if (ended) return reject(ended)
+    const id = `kuvo-${++next}`
+    const timer = setTimeout(() => { waiting.delete(id); reject(new Error("Claude Code took too long to answer.")) }, ANSWER)
+    waiting.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value) }, reject: (error) => { clearTimeout(timer); reject(error) } })
+    child.stdin!.write(JSON.stringify({ type: "control_request", request_id: id, request: body }) + "\n")
+  })
+  try {
+    await request({ subtype: "initialize" })
+    return await request({ subtype: "get_usage", skip_behaviors: true })
+  } finally {
+    child.stdin!.end()
+    child.kill()
+  }
+}
+
+class ClaudeRefused extends Error {}
+
+/** The plan's usage, as Claude Code says it for this account: its `get_usage` answer (claude-limits.ts reads it). */
+export async function askClaudeUsage(program: ClaudeProgram): Promise<any> {
+  let answer: any
+  try {
+    answer = await askClaude(program)
+  } catch (error) {
+    if (error instanceof ClaudeRefused && /log ?in|sign ?in|auth|401|token/i.test(error.message)) throw new LimitsProblem("expired", "Claude Code isn't signed in here now. Sign in again.")
+    if (error instanceof ClaudeRefused) throw new LimitsProblem("failed", "This Claude Code can't say its plan's usage: update it.")
+    throw new LimitsProblem("failed", "Claude Code didn't answer about its plan.")
+  }
+  // An API key, Bedrock or Vertex: no plan, so no limits to show.
+  if (answer?.rate_limits_available === false) throw new LimitsProblem("none", "Not signed in to a Claude plan here.", undefined, false)
+  return answer
+}

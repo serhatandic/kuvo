@@ -5,18 +5,18 @@ import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from 
 // says what it would spend and gives a one-time confirmation; asked again with it, one reset is
 // spent, once, whatever happens between (a crash before the request goes, a lost answer), because
 // each spend is written to a journal first and goes to its maker as the same request every time.
-// A box whose sign-in can't spend it (a Mac's Claude token) passes it to the computer of yours that
-// can, and answers when that one does. Real bridge parts (limits, peers, resets, a Mac's and a
-// Linux Claude agent, the engine's ChatGPT sign-in); Anthropic and ChatGPT are stand-ins that count
-// what they spend by request id, as they do.
+// A box whose sign-in can't spend it (a Mac's Claude, whose Claude Code keeps its sign-in in the
+// Keychain) passes it to the computer of yours that can, and answers when that one does. Real
+// bridge parts (limits, peers, resets, a Mac's and a Linux Claude agent, the engine's ChatGPT
+// sign-in); Claude Code (support/agent-programs.ts), Anthropic and ChatGPT are stand-ins, the last
+// two counting what they spend by request id, as they do.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ClaudeAgent } from "../../src/agents/agents/claude"
-import { claudeUsage, MAC_TOKEN_CANT, sameClaudeAccount } from "../../src/usage/claude-limits"
+import { claudeUsage, KEYCHAIN_RESETS, sameClaudeAccount } from "../../src/usage/claude-limits"
 import { codexResetEndpoints } from "../../src/usage/codex-resets"
 import { EngineAccounts, engineEndpoints } from "../../src/usage/engine-limits"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
@@ -24,13 +24,11 @@ import type { Clock } from "../../src/agents/groups/peer"
 import { agentAccounts, identityOf, Limits, limitsRoutes, type LimitedAccount } from "../../src/usage/limits"
 import { LimitsPeers } from "../../src/usage/limits-peers"
 import { LimitResets } from "../../src/usage/limits-resets"
+import { agentPrograms, keepJSON } from "./support/agent-programs"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-limits-resets-"))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
-const keychain = ClaudeAgent.keychain
-afterEach(() => {
-  ClaudeAgent.keychain = keychain
-})
+const programs = agentPrograms(join(base, "programs"))
 
 let time = Date.parse("2026-11-13T09:00:00.000Z")
 const now = () => time
@@ -55,9 +53,9 @@ class Gate {
 }
 
 /**
- * Anthropic and ChatGPT: their usage, an account's reset grants (Anthropic) and reset credits
+ * Anthropic and ChatGPT: ChatGPT's usage, an account's reset grants (Anthropic) and reset credits
  * (ChatGPT), and what each spend did, by its request id: asked again with one it has, it answers
- * that it's done, and spends nothing more.
+ * that it's done, and spends nothing more. (Claude's windows are Claude Code's to read.)
  */
 class Makers {
   grants = { eligible: true, grants: [{ id: "promo_one", resets_left: 2, ends_at: new Date(time + 5 * DAY).toISOString(), clears: ["five_hour", "seven_day"] }], next_grant_id: "promo_one" }
@@ -80,8 +78,8 @@ class Makers {
   unconfirmedOnce = false
   /** ChatGPT holding reads of the plan off (a 429 for an hour). */
   holdUsage = false
-  /** Anthropic holding reads of the plan off (a 429 for an hour). */
-  holdClaude = false
+  /** Each request of Anthropic's, by its path. */
+  anthropic: string[] = []
   /** The next claim: spent, then answered with a failure (its answer lost). */
   claimFailsAfterSpending = false
   /** Who each token is for, where it isn't the account the tests sign in to. */
@@ -96,11 +94,12 @@ class Makers {
     fetch: async (request) => {
       const url = new URL(request.url)
       const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "")
+      if (url.pathname.startsWith("/api/")) this.anthropic.push(url.pathname)
+      // Its reset grants, as Claude Code reads them.
       if (url.pathname === "/api/oauth/usage") {
         if (!token.startsWith("claude-")) return new Response("{}", { status: 401 })
-        if (this.holdClaude) return new Response("{}", { status: 429, headers: { "retry-after": "3600" } })
         if (url.searchParams.get("cedar_ember") === "1") return Response.json({ cedar_ember: this.grants })
-        return Response.json({ five_hour: { utilization: this.fiveHour, resets_at: new Date(time + 3_600_000).toISOString() }, seven_day: { utilization: 40, resets_at: new Date(time + 3 * DAY).toISOString() }, extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 } })
+        return new Response("{}", { status: 404 })
       }
       // Who a token is for, as Anthropic says (its profile).
       if (url.pathname === "/api/oauth/profile") {
@@ -425,63 +424,73 @@ async function until(condition: () => boolean) {
   while (!condition()) await new Promise<void>((resolve) => wakes.add(function wake() { wakes.delete(wake); resolve() }))
 }
 
-/** Claude Code's record of who a Mac's token is for, as it keeps it while it runs (limits.test.ts' `policyRecord`). */
-function policyRecord(folder: string, token: string, account: string, organization: string) {
-  mkdirSync(folder, { recursive: true })
-  const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
-  const body = `sha256:${sha256(`policies of ${account}`)}`
-  writeFileSync(join(folder, "policy-limits.json.stamp.json"), JSON.stringify({ v: 1, identity: sha256(`token:${sha256(token).slice(0, 32)}`), kind: "token", sha: body }))
-  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
-  writeFileSync(join(folder, "policy-limits.json.signature.json"), JSON.stringify({ jws: `${part({ alg: "ES256" })}.${part({ aud: organization, sub: account, sha: body })}.c2ln` }))
+/** Claude Code's answer to `get_usage` (its `/usage`): the plan, its windows and its extra usage. */
+const claudeUsageAnswer = () => ({
+  subscription_type: "max",
+  rate_limits: {
+    five_hour: { utilization: 92, resets_at: new Date(time + 3_600_000).toISOString() },
+    seven_day: { utilization: 40, resets_at: new Date(time + 3 * DAY).toISOString() },
+    extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 },
+  },
+})
+
+/** Claude Code as the bridge has it, its limits as the usage reader has them: on Linux, its resets read and spent with its sign-in file. */
+class LinuxClaude extends ClaudeAgent {
+  override readonly limits = claudeProbe(this, "2.1.319", { claude: programs.claude, keychain: false })
 }
 
-class TestClaude extends ClaudeAgent {
-  override readonly limits = claudeProbe(this, "2.1.319")
+/** The same on a Mac, where Claude Code keeps its sign-in in the Keychain. */
+class MacClaude extends ClaudeAgent {
+  override readonly limits = claudeProbe(this, "2.1.319", { claude: programs.claude, keychain: true })
 }
 
 const ACCOUNT = "6f1e0c4a-0000-4000-8000-000000000001"
 const ORG = "0a1b2c3d-0000-4000-8000-0000000000aa"
 
-/** This Mac's Claude, on Kuvo Code's token: what its turns hear is all it has. */
+/** An account's folder: Claude Code signed in to the account there (`.claude.json`), its sign-in file, and what it answers for its usage. */
+function signedIn(home: string, token: string) {
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: time + 30 * DAY, scopes: ["user:inference", "user:profile"], subscriptionType: "max", rateLimitTier: "default_claude_max_5x" } }))
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: ACCOUNT, organizationUuid: ORG } }))
+  keepJSON(join(home, "usage.json"), claudeUsageAnswer())
+}
+
+/** This Mac's Claude: its windows and extra usage are what Claude Code says; its resets, kept in the Keychain, can't be read. */
 function macClaude(folder: string) {
-  ClaudeAgent.keychain = true
-  mkdirSync(join(folder, "claude", "tokens"), { recursive: true })
-  writeFileSync(join(folder, "claude", "tokens", "default.json"), JSON.stringify({ token: "mac-token", made: 1 }))
-  policyRecord(join(folder, "claude", "home"), "mac-token", ACCOUNT, ORG)
-  const agent = new TestClaude({ home: folder, temporary: folder, deps: {} as any }, { id: "default", home: join(folder, "claude", "home") })
-  ClaudeAgent.keychain = keychain
-  return agent
+  const home = join(folder, "claude", "home")
+  // (A sign-in file Claude Code left behind on a Mac: never used to spend.)
+  signedIn(home, "claude-mac")
+  return new MacClaude({ home: folder, temporary: folder, deps: {} as any }, { id: "default", home })
 }
 
 /** A Linux machine's Claude, signed in to Claude Code itself with the same account. */
 function linuxClaude(folder: string) {
-  ClaudeAgent.keychain = false
   const home = join(folder, "claude", "home")
-  mkdirSync(home, { recursive: true })
-  writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "claude-linux", expiresAt: time + 30 * DAY, scopes: ["user:inference", "user:profile"], subscriptionType: "max", rateLimitTier: "default_claude_max_5x" } }))
-  writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: ACCOUNT, organizationUuid: ORG } }))
-  const agent = new TestClaude({ home: folder, temporary: folder, deps: {} as any }, { id: "default", home })
-  ClaudeAgent.keychain = keychain
-  return agent
+  signedIn(home, "claude-linux")
+  return new LinuxClaude({ home: folder, temporary: folder, deps: {} as any }, { id: "default", home })
 }
 
-describe("a Mac's Claude token and your other computers", () => {
-  test("alone, a Mac's Claude row says its token can't read extra usage or resets, and asking for one says why", async () => {
+describe("a Mac's Claude and your other computers", () => {
+  test("alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why", async () => {
     const folder = mkdtempSync(join(base, "mac-alone-"))
     const claude = macClaude(folder)
     const limits = new Limits(() => agentAccounts([claude]), undefined, now)
     new LimitResets(limits, join(folder, "limits-resets.json"), now)
     await limits.tick()
-    claude.limits.heard!({ id: "five_hour", used: 0.4, minutes: 300 })
     const [row] = limits.rows()
-    expect(row!.extras).toEqual([{ id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: MAC_TOKEN_CANT }])
+    expect([row!.plan, row!.windows.map((window) => window.used)]).toEqual(["Max", [0.92, 0.4]])
+    expect(row!.extras).toEqual([
+      { id: "extra_usage", name: "Extra Usage", kind: "capped", amount: 12.4, limit: 50, unit: "usd" },
+      { id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: KEYCHAIN_RESETS },
+    ])
     const refused = await post(limits, { row: row!.id })
     expect(refused.status).toBe(409)
-    expect(refused.body.message).toBe(MAC_TOKEN_CANT)
-    expect(makers.claims).toEqual([])
+    expect(refused.body.message).toBe(KEYCHAIN_RESETS)
+    // Nothing asked of Anthropic: not its grants, not to spend one.
+    expect([makers.anthropic, makers.claims]).toEqual([[], []])
   })
 
-  test("with a machine signed in to the same account, the Mac's row has its extra usage and resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is", async () => {
+  test("with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is", async () => {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-"))
     const linuxFolder = mkdtempSync(join(base, "hetzner-"))
@@ -493,8 +502,7 @@ describe("a Mac's Claude token and your other computers", () => {
       await mac.meet([hetzner])
       await hetzner.meet([mac])
       await mac.limits.tick()
-      claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
-      // hetzner reads the account (and its grants), and tells the Mac.
+      // hetzner reads the account's grants, and tells the Mac.
       await hetzner.limits.tick()
       const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
       await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -537,7 +545,6 @@ describe("a Mac's Claude token and your other computers", () => {
       await mac.meet([hetzner])
       await hetzner.meet([mac])
       await mac.limits.tick()
-      claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
       await hetzner.limits.tick()
       const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
       await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -668,7 +675,6 @@ describe("the second review's cases", () => {
       await mac.meet([hetzner])
       await hetzner.meet([mac])
       await mac.limits.tick()
-      claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
       await hetzner.limits.tick()
       const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
       await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -803,7 +809,7 @@ describe("the third review's cases", () => {
 })
 
 describe("the fourth review's cases", () => {
-  /** This Mac (Kuvo Code's Claude token) and hetzner (Claude Code's own sign-in, the same account), on the relay. */
+  /** This Mac (Claude Code's sign-in in the Keychain) and hetzner (in a file, the same account), on the relay. */
   async function macAndHetzner(peerWait = 250, ahead = 0) {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-4-"))
@@ -815,7 +821,6 @@ describe("the fourth review's cases", () => {
     await mac.meet([hetzner])
     await hetzner.meet([mac])
     await mac.limits.tick()
-    claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
     await hetzner.limits.tick()
     const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
     await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -823,15 +828,15 @@ describe("the fourth review's cases", () => {
   }
   const journal = (folder: string) => JSON.parse(readFileSync(join(folder, "limits-resets.json"), "utf8"))
 
-  test("no answer came from the computer with the sign-in, then it's held off: the Mac's spend stays open, never 'nothing was used', and Retry goes again", async () => {
+  test("no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again", async () => {
     const two = await macAndHetzner()
     try {
       makers.claimFailsAfterSpending = true
       const offer = await post(two.mac.limits, { row: two.id })
       expect((await post(two.mac.limits, { row: two.id, confirm: offer.body.data.confirm })).body.data.outcome).toBe("unknown")
       await until(() => makers.claims.length === 1 && !!journal(two.hetznerFolder).spends.length)
-      // Anthropic holds hetzner off now.
-      makers.holdClaude = true
+      // Claude Code on hetzner can't read with its sign-in now.
+      rmSync(join(two.hetznerFolder, "claude", "home", "usage.json"))
       time += 16 * 60_000
       await two.hetzner.limits.tick()
       const again = await post(two.mac.limits, { row: two.id, confirm: offer.body.data.confirm })
@@ -962,7 +967,6 @@ describe("the fifth review's cases", () => {
     await mac.meet([hetzner])
     await hetzner.meet([mac])
     await mac.limits.tick()
-    claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
     await hetzner.limits.tick()
     const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
     await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -1075,7 +1079,6 @@ describe("the sixth review's cases", () => {
       await mac.meet([hetzner])
       await hetzner.meet([mac])
       await mac.limits.tick()
-      claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
       await hetzner.limits.tick()
       const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
       await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))
@@ -1223,7 +1226,6 @@ describe("peer membership changes", () => {
       await mac.meet([machine])
       await machine.meet([mac])
       await mac.limits.tick()
-      claudeMac.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
       await machine.limits.tick()
       const merged = () => mac.limits.rows().find((row) => row.boxes.length === 2)
       await until(() => !!merged()?.extras?.some((extra) => extra.kind === "resets"))

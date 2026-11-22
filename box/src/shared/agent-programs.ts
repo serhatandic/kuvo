@@ -4,8 +4,10 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { which } from "../agents/proc"
 
+export const claudePlaces = [join(homedir(), ".local/bin"), join(homedir(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"]
 export const codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local/bin"), join(homedir(), ".codex/bin")]
 export const grokPlaces = [join(homedir(), ".grok/bin"), join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
 
+export const claudeProgram = () => which("claude", claudePlaces)
 export const codexProgram = () => which("codex", codexPlaces)
 export const grokProgram = () => which("grok", grokPlaces)

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 c4a6eb0772f5
+// Kuvo folder layout 23 46512d68743c
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c4a6eb0772f5";
+var BRIDGE_VERSION = "46512d68743c";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -6124,15 +6124,21 @@ for (const where of [...policy.writable, work, git, ...allowed]) if (where) gran
 // A coding agent run whole in it: its homes (its sign-in and state), whole, and the folders it only
 // reads (the skills it's given). What macOS keeps from it in its homes (its settings, its other
 // folders) Landlock can't: what it grants a folder it grants all inside, and the agent makes its
-// own files at the top (its databases' journals, its sign-in written anew). Here its homes are Kuvo
-// Code's own copy of it (a machine's agents' homes are in Kuvo Code's folder), never the one you
-// use yourself. (What a command leaves there while it is on, Codex reads when the sandbox is off
-// too: you turn it off, and that's yours to judge.) Its sign-in in its first home is its own, though
-// one of your secrets anywhere else (your own Codex's, for an account you added), as on a Mac. Its tools' port needs no rule:
-// Landlock leaves connections to it open.
+// own files at the top (its databases' journals, its sign-in written anew). Its first account's
+// home is the agent's own (your ~/.claude, ~/.codex, ~/.grok, shared with Terminal): the sandbox
+// guards against accidents, and the agent writes its state and renews its sign-in there, as on a
+// Mac, though the policy keeps what runs later read-only for everything else. (What a command
+// leaves there while it is on, the agent reads when the sandbox is off too: you turn it off, and
+// that's yours to judge.) Its sign-in in its first home is its own, though one of your secrets
+// anywhere else (your own Codex's, for an account you added), as on a Mac.
+// Its tools' port needs no rule: Landlock leaves connections to it open.
 const lines = (text) => (text || "").split("\n").filter((line) => line.startsWith("/"));
 const secrets = new Set((policy.secrets || []).map(real));
-lines(process.env.KUVO_FENCE_OWN).slice(0, 4).forEach((where, at) => grantExcept(where, all, at ? kept : new Set([...kept].filter((each) => !(secrets.has(each) && inside(each, real(where)))))));
+const runsLater = new Set((policy.readOnly || []).map(real));
+lines(process.env.KUVO_FENCE_OWN).slice(0, 4).forEach((where, at) => {
+  const home = real(where);
+  grantExcept(where, all, new Set([...kept].filter((each) => !(runsLater.has(each) && !hidden.has(each) && inside(home, each)) && (at || !(secrets.has(each) && inside(each, home))))));
+});
 for (const where of lines(process.env.KUVO_FENCE_READ).slice(0, 4)) grant(where, READS);
 if (tmp) { fs.mkdirSync(tmp, { recursive: true }); grant(tmp, all); }
 // Its conversation's wake-ups and watches (kuvo-wake): read, and only its inbox written, which the box
@@ -101478,328 +101484,6 @@ var init_api = __esm(() => {
   init_notes2();
 });
 
-// box/src/agents/screen.ts
-class Screen {
-  cols;
-  height;
-  onLine;
-  rows = [[]];
-  wrapped = new Set;
-  row = 0;
-  col = 0;
-  pending = false;
-  saved = { row: 0, col: 0 };
-  top = 0;
-  main;
-  carry = "";
-  dirty = false;
-  constructor(cols, height, onLine) {
-    this.cols = cols;
-    this.height = height;
-    this.onLine = onLine;
-  }
-  write(input) {
-    const text = this.carry + input;
-    this.carry = "";
-    let at = 0;
-    while (at < text.length) {
-      const char = text[at];
-      if (char === "\x1B") {
-        const end = sequenceEnd(text, at);
-        if (end < 0) {
-          if (STRINGS.includes(text[at + 1]))
-            this.carry = text.slice(at, at + 2) + (text.length - at > 2 && text.endsWith("\x1B") ? "\x1B" : "");
-          else if (text.length - at <= MAX_SEQUENCE)
-            this.carry = text.slice(at);
-          return;
-        }
-        this.escape(text.slice(at, end));
-        at = end;
-        continue;
-      }
-      const code = text.codePointAt(at);
-      const size = code > 65535 ? 2 : 1;
-      at += size;
-      if (char === "\r")
-        this.moveTo(this.row, 0);
-      else if (char === `
-` || char === "\v" || char === "\f")
-        this.moveTo(this.row + 1, this.col, "line");
-      else if (char === "\b")
-        this.moveTo(this.row, Math.max(0, this.col - 1));
-      else if (char === "\t")
-        this.moveTo(this.row, Math.min(this.cols - 1, (Math.floor(this.col / 8) + 1) * 8));
-      else if (code >= 32 && code !== 127 && !(code >= 128 && code < 160))
-        this.put(String.fromCodePoint(code));
-    }
-  }
-  text() {
-    const lines = [];
-    for (let row = 0;row < this.rows.length; row++) {
-      const start = row;
-      while (this.continues(row))
-        row++;
-      lines.push(this.join(start, row));
-    }
-    return lines.join(`
-`).replace(/\n+$/, "");
-  }
-  current() {
-    return this.line(this.row).replace(/\n$/, "");
-  }
-  line(row) {
-    let start = row;
-    while (start > 0 && this.continues(start - 1))
-      start--;
-    let end = row;
-    while (this.continues(end))
-      end++;
-    const last = this.rows[end] ?? [];
-    const complete = !this.full(end) && (end === start || this.cells(last).trim() !== "");
-    return this.join(start, end) + (complete ? `
-` : "");
-  }
-  continues(row) {
-    return row + 1 < this.rows.length && (this.wrapped.has(row) || this.full(row));
-  }
-  full(row) {
-    const cells = this.rows[row] ?? [];
-    return cells.length >= this.cols && cells[this.cols - 1] !== undefined && cells[this.cols - 1] !== " ";
-  }
-  join(start, end) {
-    let text = "";
-    for (let row = start;row <= end; row++)
-      text += this.cells(this.rows[row] ?? []);
-    return text.trimEnd();
-  }
-  cells(row) {
-    let text = "";
-    for (let col = 0;col < row.length; col++)
-      text += row[col] ?? " ";
-    return text;
-  }
-  put(char) {
-    const width = Bun.stringWidth(char);
-    if (width === 0)
-      return;
-    if (this.pending || this.col + width > this.cols) {
-      this.wrapped.add(this.row);
-      this.moveTo(this.row + 1, 0, "wrap");
-    }
-    const cells = this.rowAt(this.row);
-    cells[this.col] = char;
-    if (width === 2)
-      cells[this.col + 1] = "";
-    this.dirty = true;
-    this.col += width;
-    if (this.col >= this.cols) {
-      this.col = this.cols - 1;
-      this.pending = true;
-    }
-  }
-  rowAt(row) {
-    while (this.rows.length <= row)
-      this.rows.push([]);
-    return this.rows[row];
-  }
-  moveTo(row, col, how = "jump") {
-    row = Math.max(this.top, how === "jump" ? Math.min(row, this.top + this.height - 1) : Math.min(row, this.row + 1));
-    if (row !== this.row) {
-      const wrapping = how === "wrap";
-      if (this.dirty && !wrapping)
-        this.left();
-      this.dirty &&= wrapping;
-      this.row = row;
-      this.rowAt(row);
-      if (row >= this.top + this.height)
-        this.scroll(row - this.height + 1);
-    }
-    this.col = Math.max(0, Math.min(this.cols - 1, col));
-    this.pending = false;
-  }
-  scroll(top) {
-    this.top = top;
-    const drop = this.top - MAX_SCROLLBACK;
-    if (drop < MAX_SCROLLBACK)
-      return;
-    this.rows.splice(0, drop);
-    this.wrapped = new Set([...this.wrapped].filter((row) => row >= drop).map((row) => row - drop));
-    this.row -= drop;
-    this.top -= drop;
-    this.saved = { row: Math.max(0, this.saved.row - drop), col: this.saved.col };
-  }
-  left() {
-    this.onLine?.(this.line(this.row));
-  }
-  erase(row, from, to) {
-    const cells = this.rows[row];
-    if (!cells)
-      return;
-    for (let col = from;col < Math.min(to, cells.length); col++)
-      cells[col] = " ";
-    this.wrapped.delete(row);
-    if (row === this.row)
-      this.dirty = true;
-  }
-  escape(sequence) {
-    const kind = sequence[1];
-    if (kind === "[")
-      return this.control(sequence);
-    if (kind === "7")
-      this.saved = { row: this.row, col: this.col };
-    else if (kind === "8")
-      this.moveTo(this.saved.row, this.saved.col);
-    else if (kind === "D")
-      this.moveTo(this.row + 1, this.col, "line");
-    else if (kind === "E")
-      this.moveTo(this.row + 1, 0, "line");
-    else if (kind === "M")
-      this.moveTo(this.row - 1, this.col);
-    else if (kind === "c") {
-      for (let row = this.top;row < this.rows.length; row++)
-        this.erase(row, 0, Infinity);
-      this.moveTo(this.top, 0);
-    }
-  }
-  control(sequence) {
-    const final = sequence[sequence.length - 1];
-    const body = sequence.slice(2, -1);
-    const mark = /^[<=>?]/.test(body) ? body[0] : "";
-    const params = (mark ? body.slice(1) : body).replace(/[ -/]+$/, "").split(";").map((each) => Number.parseInt(each, 10));
-    const n = Number.isFinite(params[0]) && params[0] > 0 ? params[0] : 1;
-    const raw = Number.isFinite(params[0]) ? params[0] : 0;
-    if (mark === "?") {
-      if ((final === "h" || final === "l") && params.some((each) => each === 1049 || each === 1047 || each === 47))
-        this.otherScreen(final === "h");
-      return;
-    }
-    if (mark)
-      return;
-    switch (final) {
-      case "A":
-        return this.moveTo(this.row - n, this.col);
-      case "B":
-      case "e":
-        return this.moveTo(this.row + n, this.col);
-      case "C":
-      case "a":
-        return this.moveTo(this.row, this.col + n);
-      case "D":
-        return this.moveTo(this.row, Math.max(0, this.col - n));
-      case "E":
-        return this.moveTo(this.row + n, 0);
-      case "F":
-        return this.moveTo(this.row - n, 0);
-      case "G":
-      case "`":
-        return this.moveTo(this.row, n - 1);
-      case "d":
-        return this.moveTo(this.top + n - 1, this.col);
-      case "H":
-      case "f": {
-        const col = Number.isFinite(params[1]) && params[1] > 0 ? params[1] : 1;
-        return this.moveTo(this.top + n - 1, col - 1);
-      }
-      case "K": {
-        if (raw === 0)
-          this.erase(this.row, this.col, Infinity);
-        else if (raw === 1)
-          this.erase(this.row, 0, this.col + 1);
-        else
-          this.erase(this.row, 0, Infinity);
-        return;
-      }
-      case "J": {
-        if (raw === 0) {
-          this.erase(this.row, this.col, Infinity);
-          for (let row = this.row + 1;row < this.rows.length; row++)
-            this.erase(row, 0, Infinity);
-        } else if (raw === 1) {
-          for (let row = this.top;row < this.row; row++)
-            this.erase(row, 0, Infinity);
-          this.erase(this.row, 0, this.col + 1);
-        } else {
-          for (let row = this.top;row < this.rows.length; row++)
-            this.erase(row, 0, Infinity);
-        }
-        return;
-      }
-      case "X":
-        return this.erase(this.row, this.col, this.col + n);
-      case "P": {
-        const cells = this.rowAt(this.row);
-        cells.splice(this.col, n);
-        this.dirty = true;
-        return;
-      }
-      case "@": {
-        const cells = this.rowAt(this.row);
-        if (cells.length > this.col)
-          cells.splice(this.col, 0, ...Array(Math.min(n, this.cols - this.col)).fill(" "));
-        cells.length = Math.min(cells.length, this.cols);
-        this.dirty = true;
-        return;
-      }
-      case "s":
-        if (!body)
-          this.saved = { row: this.row, col: this.col };
-        return;
-      case "u":
-        if (!body)
-          this.moveTo(this.saved.row, this.saved.col);
-        return;
-    }
-  }
-  otherScreen(on) {
-    if (on && !this.main) {
-      if (this.dirty)
-        this.left();
-      this.main = { rows: this.rows, wrapped: this.wrapped, row: this.row, col: this.col, top: this.top };
-      this.rows = [[]];
-      this.wrapped = new Set;
-      this.row = this.col = this.top = 0;
-    } else if (!on && this.main) {
-      if (this.dirty)
-        this.left();
-      ({ rows: this.rows, wrapped: this.wrapped, row: this.row, col: this.col, top: this.top } = this.main);
-      this.main = undefined;
-    }
-    this.dirty = false;
-    this.pending = false;
-  }
-}
-function sequenceEnd(text, at) {
-  const kind = text[at + 1];
-  if (kind === undefined)
-    return -1;
-  if (kind === "[") {
-    for (let index = at + 2;index < text.length; index++) {
-      const code = text.charCodeAt(index);
-      if (code >= 64 && code <= 126)
-        return index + 1;
-      if (code < 32 || code > 126)
-        return at + 2;
-    }
-    return -1;
-  }
-  if (STRINGS.includes(kind)) {
-    for (let index = at + 2;index < text.length; index++) {
-      if (text[index] === "\x07")
-        return index + 1;
-      if (text[index] === "\x1B")
-        return text[index + 1] === undefined ? -1 : text[index + 1] === "\\" ? index + 2 : index;
-    }
-    return -1;
-  }
-  let index = at + 1;
-  while (index < text.length && text.charCodeAt(index) >= 32 && text.charCodeAt(index) <= 47)
-    index++;
-  if (index >= text.length)
-    return -1;
-  return index + 1;
-}
-var STRINGS = "]P_^X", MAX_SEQUENCE = 4096, MAX_SCROLLBACK = 1000;
-
 // box/src/agents/signin.ts
 import { existsSync, lstatSync as lstatSync2, mkdtempSync, readdirSync as readdirSync3, readFileSync as readFileSync5, rmSync as rmSync2 } from "node:fs";
 import { join as join9 } from "node:path";
@@ -101848,79 +101532,28 @@ async function commandSignIn(options) {
       delete env[name];
   let printed = "";
   let output = "";
-  const refused = options.refusedCode ?? /invalid code/i;
-  let afterPaste = false;
-  let refusedLine = false;
-  let incompleteLine = false;
   let pastedAt = 0;
-  let lineFrom = 0;
-  const screen = options.terminal ? new Screen(TERMINAL.cols, TERMINAL.rows, (line) => {
-    if (afterPaste && refused.test(line))
-      refusedLine = true;
-    if (afterPaste && options.incompleteCode?.test(line))
-      incompleteLine = true;
-    said(line);
-  }) : undefined;
-  const said = (line) => {
-    if (!options.onLine || status.status !== "pending")
-      return;
-    options.onLine(line);
-    if (signedInBefore !== false)
-      return;
-    options.signedIn().then((signedIn) => {
-      if (!signedIn || status.status !== "pending")
-        return;
-      succeed();
-      child.kill();
-    }, () => {});
-  };
-  const turnedAway = () => screen ? refusedLine || refused.test(screen.current()) : refused.test(output.slice(pastedAt));
-  const incomplete = () => incompleteLine || options.incompleteCode?.test(output);
+  const turnedAway = () => /invalid code/i.test(output.slice(pastedAt));
   const take = (text) => {
-    if (screen) {
-      screen.write(text);
-      output = screen.text();
-    } else {
-      printed += text;
-      output = plain4(printed);
-      for (let end = output.indexOf(`
-`, lineFrom);end >= 0; end = output.indexOf(`
-`, lineFrom)) {
-        said(output.slice(lineFrom, end + 1));
-        lineFrom = end + 1;
-      }
-    }
-    if (options.refusedEnds && afterPaste && status.status === "pending" && turnedAway()) {
-      status = { status: "failed", message: options.refusedEnds };
-      child.kill();
-    }
+    printed += text;
+    output = plain4(printed);
   };
   let type;
   let child;
   try {
-    if (options.terminal) {
+    const spawned = Bun.spawn([options.command, ...options.args], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = spawned;
+    const read = async (stream) => {
       const decoder = new TextDecoder;
-      const spawned = Bun.spawn([options.command, ...options.args], {
-        env,
-        terminal: { ...TERMINAL, data: (_terminal, data) => take(decoder.decode(data, { stream: true })) }
-      });
-      child = spawned;
-      type = async (text) => void spawned.terminal.write(text.replace(/\n$/, "\r"));
-    } else {
-      const spawned = Bun.spawn([options.command, ...options.args], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-      child = spawned;
-      const read = async (stream) => {
-        const decoder = new TextDecoder;
-        for await (const chunk of stream)
-          take(decoder.decode(chunk, { stream: true }));
-      };
-      read(spawned.stdout);
-      read(spawned.stderr);
-      type = async (text) => {
-        spawned.stdin.write(text);
-        await spawned.stdin.flush();
-      };
-    }
+      for await (const chunk of stream)
+        take(decoder.decode(chunk, { stream: true }));
+    };
+    read(spawned.stdout);
+    read(spawned.stderr);
+    type = async (text) => {
+      spawned.stdin.write(text);
+      await spawned.stdin.flush();
+    };
   } catch {
     rmSync2(own, { recursive: true, force: true });
     throw new Error("The sign-in program couldn’t start. Try again.");
@@ -102004,15 +101637,6 @@ async function commandSignIn(options) {
     await Bun.sleep(200);
   }
   const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
-  const waitFor = async (ready, message) => {
-    const deadline = performance.now() + 1e4;
-    while (status.status === "pending" && !ready() && performance.now() < deadline)
-      await Bun.sleep(25);
-    if (status.status !== "pending")
-      throw new Error("That sign-in is over. Start it again.");
-    if (!ready())
-      throw new Error(message);
-  };
   return {
     url,
     userCode,
@@ -102024,41 +101648,20 @@ async function commandSignIn(options) {
         throw new Error("That sign-in is over. Start it again.");
       if (submitting)
         throw new Error("A code is already being submitted.");
-      if (screen && afterPaste && !incomplete())
-        throw new Error("A code was already submitted for this sign-in.");
       submitting = true;
       try {
         const text = code.trim();
-        if (screen) {
-          afterPaste = false;
-          if (!text || /[\x00-\x1f\x7f-\x9f]/.test(text))
-            throw new Error("Paste the code from the sign-in page.");
-          await waitFor(() => codePrompt.test(output), "The code prompt isn't ready. Try again.");
-          const before = output;
-          await type(`\x1B[200~${text}\x1B[201~`);
-          const mask = options.codeMask;
-          if (mask)
-            await waitFor(() => output !== before && mask.test(output), "The sign-in didn't take the paste. Start it again.");
-        }
         pasted = true;
         pastedAt = output.length;
-        afterPaste = true;
-        refusedLine = false;
-        incompleteLine = false;
-        await type(screen ? `
-` : text + `
+        await type(text + `
 `);
         for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
           await Bun.sleep(100);
-          if (incomplete() || !options.refusedEnds && turnedAway()) {
+          if (turnedAway()) {
             pasted = false;
-            afterPaste = false;
             throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
           }
         }
-        const now = status;
-        if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
-          throw new Error(options.refusedEnds);
       } finally {
         submitting = false;
       }
@@ -102076,12 +101679,11 @@ async function commandSignIn(options) {
     }
   };
 }
-var SIGN_IN_FOLDER, TERMINAL;
+var SIGN_IN_FOLDER;
 var init_signin = __esm(() => {
   init_files();
   init_proc();
   SIGN_IN_FOLDER = /^kuvo-signin-(\d+)-/;
-  TERMINAL = { cols: 1000, rows: 50 };
 });
 
 // box/src/usage/pricing/pricing_litellm_snapshot.json
@@ -104814,7 +104416,8 @@ function merged2(boxes) {
   const plan = newest.find((member) => member.plan)?.plan;
   const balance = newest.find((member) => member.balance)?.balance;
   const read = newest.find((member) => member.checked && !member.problem);
-  const extras = read ? read.extras : (newest.find((member) => member.extras?.some((extra) => extra.kind !== "unreadable")) ?? newest.find((member) => member.extras?.length))?.extras;
+  const chosen = read ? read.extras : (newest.find((member) => member.extras?.some((extra) => extra.kind !== "unreadable")) ?? newest.find((member) => member.extras?.length))?.extras;
+  const extras = chosen?.map((extra) => extra.kind === "unreadable" ? newest.map((member) => member.extras?.find((each) => each.id === extra.id && each.kind !== "unreadable")).find(Boolean) ?? extra : extra);
   const checked = Math.max(0, ...members.map((member) => member.checked ?? 0));
   const next = Math.min(...members.map((member) => member.next ?? Infinity));
   for (const key of ["plan", "balance", "extras", "checked", "next", "problem"])
@@ -109802,10 +109405,6 @@ function grokHome(instance) {
   const set = process.env.GROK_HOME?.trim();
   return set === "~" ? home : set?.startsWith("~/") ? join21(home, set.slice(2)) : set || join21(home, ".grok");
 }
-function claudeToken(file) {
-  const token = read11(file)?.token;
-  return typeof token === "string" && token ? token : undefined;
-}
 var init_agent_credentials = __esm(() => {
   init_account();
 });
@@ -109901,406 +109500,6 @@ var readMacKeychain = async (account) => {
 var init_codex_credentials = __esm(() => {
   init_agent_credentials();
   init_proc();
-});
-
-// box/src/usage/claude-limits.ts
-import { createHash as createHash20 } from "node:crypto";
-import { readFileSync as readFileSync19, statSync as statSync9 } from "node:fs";
-import { join as join23 } from "node:path";
-function credentialsIn(configHome) {
-  try {
-    const oauth = JSON.parse(readFileSync19(join23(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth;
-    if (typeof oauth?.accessToken !== "string" || !oauth.accessToken)
-      return;
-    return {
-      token: oauth.accessToken,
-      ...typeof oauth.subscriptionType === "string" ? { subscription: oauth.subscriptionType } : {},
-      ...typeof oauth.rateLimitTier === "string" ? { tier: oauth.rateLimitTier } : {},
-      ...typeof oauth.expiresAt === "number" ? { expiresAt: oauth.expiresAt } : {},
-      ...Array.isArray(oauth.scopes) ? { scopes: oauth.scopes.filter((scope) => typeof scope === "string") } : {}
-    };
-  } catch {
-    return;
-  }
-}
-function claudeIdentity(configHome, token) {
-  if (token !== undefined)
-    return tokenIdentity(configHome, token);
-  const file = join23(configHome, ".claude.json");
-  try {
-    const { mtimeMs, size } = statSync9(file);
-    const known = identities.get(file);
-    if (known && known.mtimeMs === mtimeMs && known.size === size)
-      return known.identity;
-    const identity = identityIn(readFileSync19(file, "utf8"));
-    identities.set(file, { mtimeMs, size, identity });
-    return identity;
-  } catch {
-    return;
-  }
-}
-function identityIn(text) {
-  try {
-    const account = JSON.parse(text)?.oauthAccount;
-    const uuid = typeof account?.accountUuid === "string" ? account.accountUuid.trim().toLowerCase() : "";
-    if (!uuid)
-      return;
-    const organization = typeof account.organizationUuid === "string" ? account.organizationUuid.trim().toLowerCase() : "";
-    return `anthropic:${uuid}|${organization}`;
-  } catch {
-    return;
-  }
-}
-function tokenIdentity(configHome, token) {
-  try {
-    return recordIdentity(configHome, readFileSync19(join23(configHome, "policy-limits.json.stamp.json"), "utf8"), readFileSync19(join23(configHome, "policy-limits.json.signature.json"), "utf8"), token);
-  } catch {
-    return;
-  }
-}
-function recordIdentity(configHome, stampText, signatureText, token) {
-  try {
-    const stamp = JSON.parse(stampText);
-    if (stamp?.v !== 1 || typeof stamp.identity !== "string")
-      return unread(configHome, "its policy note isn't one this version reads");
-    const principal = `token:${createHash20("sha256").update(token.trim()).digest("hex").slice(0, 32)}`;
-    if (stamp?.kind !== "token" || stamp.identity !== createHash20("sha256").update(principal).digest("hex"))
-      return;
-    const payload = String(JSON.parse(signatureText)?.jws ?? "").split(".")[1];
-    if (!payload)
-      return unread(configHome, "its policy record isn't one this version reads");
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (typeof stamp.sha !== "string" || claims?.sha !== stamp.sha)
-      return;
-    const account = typeof claims.sub === "string" ? claims.sub.trim().toLowerCase() : "";
-    const organization = typeof claims.aud === "string" ? claims.aud.trim().toLowerCase() : "";
-    return account && organization ? `anthropic:${account}|${organization}` : undefined;
-  } catch {
-    return;
-  }
-}
-function unread(configHome, why) {
-  if (!told3.has(configHome))
-    console.error(`Claude's account in ${configHome} can't be told: ${why}.`);
-  told3.add(configHome);
-  return;
-}
-function planName(subscription, tier) {
-  const base = subscription?.trim();
-  if (!base)
-    return;
-  const name = base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
-  const size = tier?.match(/\d+x/)?.[0];
-  return size ? `${name} ${size}` : name;
-}
-function claudeWindows(body) {
-  const windows = [];
-  const add = (id, value, minutes, model) => {
-    const used = Number(value?.utilization);
-    if (value == null || value.utilization == null || !Number.isFinite(used))
-      return;
-    const resets = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : NaN;
-    windows.push({ id, used: used / 100, minutes, ...Number.isFinite(resets) ? { resetsAt: resets } : {}, ...model ? { model } : {} });
-  };
-  add("five_hour", body?.five_hour, 300);
-  add("seven_day", body?.seven_day, 10080);
-  add("seven_day_sonnet", body?.seven_day_sonnet, 10080, "Sonnet");
-  add("seven_day_opus", body?.seven_day_opus, 10080, "Opus");
-  for (const limit of Array.isArray(body?.limits) ? body.limits : []) {
-    const model = limit?.scope?.model?.display_name;
-    if (limit?.kind !== "weekly_scoped" || typeof model !== "string" || !model)
-      continue;
-    const id = `seven_day_${model.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
-    if (windows.some((window2) => window2.id === id))
-      continue;
-    add(id, { utilization: limit.percent, resets_at: limit.resets_at }, 10080, model);
-  }
-  return windows;
-}
-async function readClaudeLimits(signIn, version, now = Date.now()) {
-  if (!signIn)
-    throw new LimitsProblem("none", "Not signed in to a Claude plan here.", undefined, false);
-  const plan = planName(signIn.subscription, signIn.tier);
-  if (signIn.expiresAt !== undefined && signIn.expiresAt <= now)
-    throw new LimitsProblem("expired", "Its sign-in has lapsed: Claude Code renews it the next time it runs here.", undefined, false);
-  if (signIn.scopes?.length && !signIn.scopes.includes("user:profile"))
-    throw new LimitsProblem("unreadable", "This sign-in runs Claude but can't read its plan's limits: sign in to Claude Code again here.", undefined, false);
-  let response;
-  try {
-    response = await fetch(claudeUsage.url, {
-      headers: {
-        Authorization: `Bearer ${signIn.token.trim()}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        ...version ? { "User-Agent": `claude-cli/${version} (external, cli)` } : {}
-      },
-      signal: AbortSignal.timeout(15000)
-    });
-  } catch (caught) {
-    throw new LimitsProblem("failed", `Couldn't reach Anthropic: ${caught instanceof Error ? caught.message : String(caught)}`);
-  }
-  if (response.status === 429)
-    throw new LimitsProblem("rate-limited", "Anthropic is turning away reads of the plan's limits for now.", retryAt(response.headers.get("retry-after"), now));
-  const text = await response.text().catch(() => "");
-  if (response.status === 401)
-    throw new LimitsProblem("expired", "Anthropic turned its sign-in away: Claude Code renews it the next time it runs here.");
-  if (response.status === 403) {
-    if (/scope/i.test(text))
-      throw new LimitsProblem("unreadable", "This sign-in runs Claude but can't read its plan's limits: sign in to Claude Code again here.");
-    throw new LimitsProblem("failed", "Anthropic didn't let this sign-in read its plan's limits.");
-  }
-  if (!response.ok)
-    throw new LimitsProblem("failed", `Anthropic answered ${response.status}.`);
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new LimitsProblem("failed", "Anthropic's answer wasn't what Kuvo Code reads.");
-  }
-  const extra = claudeExtraUsage(body?.extra_usage);
-  return { windows: claudeWindows(body), ...plan ? { plan } : {}, ...extra ? { extras: [extra] } : {} };
-}
-function claudeExtraUsage(value) {
-  if (!value || typeof value !== "object" || value.is_enabled !== true)
-    return;
-  const used = Number(value.used_credits);
-  if (!Number.isFinite(used))
-    return;
-  const limit = Number(value.monthly_limit);
-  const resets = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : NaN;
-  const resetsAt = Number.isFinite(resets) ? { resetsAt: resets } : {};
-  if (Number.isFinite(limit) && limit > 0)
-    return { id: "extra_usage", name: "Extra Usage", kind: "capped", amount: Math.max(0, used) / 100, limit: limit / 100, unit: "usd", ...resetsAt };
-  return { id: "extra_usage", name: "Extra Usage", kind: "spent", amount: Math.max(0, used) / 100, unit: "usd", ...resetsAt };
-}
-function claudeGrants(value) {
-  if (!value || typeof value !== "object")
-    return;
-  const grants = [];
-  for (const grant of Array.isArray(value.grants) ? value.grants : []) {
-    const left = Number(grant?.resets_left);
-    if (typeof grant?.id !== "string" || !grant.id || !Number.isFinite(left))
-      return;
-    const ends = typeof grant.ends_at === "string" ? Date.parse(grant.ends_at) : typeof grant.ends_at === "number" ? grant.ends_at * (grant.ends_at < 1000000000000 ? 1000 : 1) : NaN;
-    grants.push({ id: grant.id, left: Math.max(0, Math.floor(left)), ...Number.isFinite(ends) ? { endsAt: ends } : {}, clears: Array.isArray(grant.clears) ? grant.clears.filter((each) => typeof each === "string") : [] });
-  }
-  return { eligible: value.eligible === true, grants, ...typeof value.next_grant_id === "string" && value.next_grant_id ? { next: value.next_grant_id } : {} };
-}
-function claimableGrant(grants, now) {
-  if (!grants?.eligible || !grants.next)
-    return;
-  return grants.grants.find((grant) => grant.id === grants.next && grant.left > 0 && (grant.endsAt === undefined || grant.endsAt > now));
-}
-function grantsExtra(grants, now) {
-  let count = 0;
-  const expiries = [];
-  if (grants.eligible) {
-    for (const grant of grants.grants) {
-      if (grant.left < 1 || grant.endsAt !== undefined && grant.endsAt <= now)
-        continue;
-      count += grant.left;
-      if (grant.endsAt !== undefined)
-        expiries.push(...Array(Math.min(grant.left, 50)).fill(grant.endsAt));
-    }
-  }
-  const next = claimableGrant(grants, now);
-  return { id: "resets", name: "Rate Limit Resets", kind: "resets", count, ...expiries.length ? { expiries: expiries.sort((a, b) => a - b).slice(0, 50) } : {}, ...next?.clears.length ? { refills: next.clears } : {}, usable: !!next };
-}
-async function readClaudeGrants(signIn, version) {
-  const url = new URL(claudeUsage.url);
-  url.searchParams.set("cedar_ember", "1");
-  url.searchParams.set("skip_spend", "1");
-  const response = await fetch(url, { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
-  if (!response.ok)
-    throw new Error(`Anthropic answered ${response.status}.`);
-  return claudeGrants((await response.json())?.cedar_ember);
-}
-async function tokenAccount(signIn, version) {
-  try {
-    const response = await fetch(new URL("profile", claudeUsage.url), { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
-    if (!response.ok)
-      return;
-    const body = await response.json();
-    const account = typeof body?.account?.uuid === "string" ? body.account.uuid.trim().toLowerCase() : "";
-    const organization = typeof body?.organization?.uuid === "string" ? body.organization.uuid.trim().toLowerCase() : "";
-    return account ? `anthropic:${account}|${organization}` : undefined;
-  } catch {
-    return;
-  }
-}
-function sameClaudeAccount(a, b) {
-  const [accountA, organizationA = ""] = a.replace(/^anthropic:/, "").split("|");
-  const [accountB, organizationB = ""] = b.replace(/^anthropic:/, "").split("|");
-  return !!accountA && accountA === accountB && (!organizationA || !organizationB || organizationA === organizationB);
-}
-async function claudeOrganization(configHome, signIn, version) {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const kept = configHome ? claudeIdentity(configHome)?.split("|")[1] : undefined;
-  if (kept && uuid.test(kept))
-    return kept;
-  try {
-    const response = await fetch(new URL("profile", claudeUsage.url), { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
-    if (!response.ok)
-      return;
-    const organization = (await response.json())?.organization?.uuid;
-    return typeof organization === "string" && uuid.test(organization) ? organization : undefined;
-  } catch {
-    return;
-  }
-}
-async function claimClaudeGrant(signIn, version, organization, grant, attempt) {
-  const target = attempt.target ?? grant;
-  if (!signIn || !target)
-    return { outcome: "no-reset" };
-  if (!organization || !/^[a-z0-9_-]{1,40}$/.test(target) || !/^[A-Za-z0-9_-]{1,64}$/.test(attempt.request))
-    return { outcome: "failed" };
-  if (!attempt.target)
-    attempt.keep(target);
-  try {
-    const response = await fetch(new URL(`../organizations/${organization}/reset_rate_limits`, claudeUsage.url.replace(/\/oauth\/usage$/, "/oauth/")), {
-      method: "POST",
-      headers: claudeHeaders(signIn.token, version),
-      body: JSON.stringify({ program: "cedar_ember", grant_id: target, request_id: attempt.request }),
-      signal: AbortSignal.timeout(25000)
-    });
-    if (!response.ok)
-      return { outcome: response.status >= 500 || [401, 403, 429].includes(response.status) ? "unknown" : "failed" };
-    const body = await response.json().catch(() => {
-      return;
-    });
-    const cooldown = typeof body?.cooldown_until === "string" ? Date.parse(body.cooldown_until) : NaN;
-    const until = Number.isFinite(cooldown) ? { until: cooldown } : {};
-    const code = body?.result === "unavailable" ? body?.reason : body?.result;
-    switch (code) {
-      case "reset":
-        return { outcome: "reset" };
-      case "already_used":
-        return { outcome: "reset", already: true };
-      case "not_limited":
-        return { outcome: "nothing-to-reset" };
-      case "ineligible":
-      case "no_grant":
-      case "unknown_grant":
-      case "not_next_grant":
-        return { outcome: "no-reset" };
-      case "reset_unconfirmed":
-      case "stamp_indeterminate":
-        return { outcome: "unconfirmed" };
-      case "cooldown":
-      case "paused":
-      case "low_priority_active":
-        return { outcome: "not-now", ...until };
-      default:
-        return { outcome: "unknown" };
-    }
-  } catch {
-    return { outcome: "unknown" };
-  }
-}
-
-class ClaudePlan {
-  options;
-  constructor(options) {
-    this.options = options;
-    this.limits = this.source();
-  }
-  limits;
-  source() {
-    return this.options.byToken ? {
-      every: CLAUDE_LIMITS_EVERY,
-      signIn: () => fingerprint4(this.options.token()),
-      identity: () => {
-        const token = this.options.token();
-        return token ? claudeIdentity(this.options.configHome(), token) : undefined;
-      },
-      facts: () => [{ id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: MAC_TOKEN_CANT }]
-    } : {
-      every: CLAUDE_LIMITS_EVERY,
-      bucket: "anthropic",
-      read: async (now) => {
-        const signIn = this.options.signIn();
-        const version = signIn ? await this.options.version() : undefined;
-        const reading = await readClaudeLimits(signIn, version, now);
-        const resets = signIn ? await this.grantsExtra(signIn, version, now) : undefined;
-        return resets ? { ...reading, extras: [...reading.extras ?? [], resets] } : reading;
-      },
-      signIn: () => fingerprint4(this.options.signIn()?.token),
-      identity: () => this.options.home ? claudeIdentity(this.options.home) : undefined,
-      reset: async (attempt, now) => {
-        const signIn = attempt.signIn ?? this.options.signIn();
-        const version = signIn ? await this.options.version() : undefined;
-        if (signIn && !(this.grants && this.grants.as === fingerprint4(signIn.token)))
-          await this.grantsExtra(signIn, version, now);
-        const grants = this.grants && this.grants.as === fingerprint4(signIn?.token) ? this.grants.status : undefined;
-        const grant = claimableGrant(grants, now)?.id;
-        if (!signIn || !grant && !attempt.target)
-          return { outcome: "no-reset" };
-        return claimClaudeGrant(signIn, version, await claudeOrganization(this.options.home, signIn, version), grant, attempt);
-      },
-      afterReset: () => {
-        if (this.grants)
-          this.grants = { ...this.grants, at: -Infinity };
-      },
-      spender: async () => {
-        const signIn = this.options.signIn();
-        const recorded = this.options.home ? claudeIdentity(this.options.home) : undefined;
-        const token = signIn ? await tokenAccount(signIn, await this.options.version()) : undefined;
-        return recorded && token ? { same: sameClaudeAccount(recorded, token), signIn } : undefined;
-      }
-    };
-  }
-  grants;
-  async grantsExtra(signIn, version, now) {
-    const as = fingerprint4(signIn.token);
-    const kept = this.grants && this.grants.as === as ? this.grants : undefined;
-    if (!kept || now - kept.at >= CLAUDE_GRANTS_EVERY) {
-      try {
-        this.grants = { as, at: now, status: await readClaudeGrants(signIn, version) };
-      } catch {
-        this.grants = { as, at: now, status: kept?.status };
-      }
-    }
-    const status = this.grants && this.grants.as === as ? this.grants.status : undefined;
-    return status ? grantsExtra(status, now) : undefined;
-  }
-}
-var claudeUsage, CLAUDE_LIMITS_EVERY, CLAUDE_GRANTS_EVERY, MAC_TOKEN_CANT = "This Mac's Claude sign-in can only run Claude, so its extra usage and resets show only from a computer of yours signed in to Claude Code with the same account.", identities, told3, claudeHeaders = (token, version) => ({
-  Authorization: `Bearer ${token.trim()}`,
-  Accept: "application/json",
-  "Content-Type": "application/json",
-  "anthropic-beta": "oauth-2025-04-20",
-  ...version ? { "User-Agent": `claude-cli/${version} (external, cli)` } : {}
-});
-var init_claude_limits = __esm(() => {
-  init_limits4();
-  init_limits4();
-  claudeUsage = { url: "https://api.anthropic.com/api/oauth/usage" };
-  CLAUDE_LIMITS_EVERY = 15 * 60000;
-  CLAUDE_GRANTS_EVERY = 60 * 60000;
-  identities = new Map;
-  told3 = new Set;
-});
-
-// box/src/agents/maintenance.ts
-async function installedVersion(executable) {
-  const ran = await run7(executable, ["--version"], { timeout: 15000 }).catch(() => {
-    return;
-  });
-  return ran ? versionIn(plain4(ran.stdout + " " + ran.stderr)) : undefined;
-}
-function versionIn(text) {
-  return text.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\b/)?.[1];
-}
-var checked7, newest2, underWay4, INSTALL_TIMEOUT;
-var init_maintenance = __esm(() => {
-  init_files();
-  init_machine();
-  init_proc();
-  checked7 = new Map;
-  newest2 = new Map;
-  underWay4 = new Map;
-  INSTALL_TIMEOUT = 10 * 60000;
 });
 
 // box/src/agents/agent.ts
@@ -111122,20 +110321,439 @@ async function readGrokNative(program, now) {
   }
   return grokBilling(body, now);
 }
-var ANSWER2 = 30000, codexEnv = (home) => ({ CODEX_HOME: home, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code" }), title2 = (value) => typeof value === "string" && value.trim() ? value.trim().split(/[_\s]+/).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ") : undefined;
+async function askClaude(program) {
+  const { spawn } = await import("node:child_process");
+  const env = { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: undefined, DISABLE_AUTOUPDATER: "1" };
+  if (program.home)
+    env.CLAUDE_CONFIG_DIR = program.home;
+  const child = spawn(program.executable, [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--settings",
+    JSON.stringify({ disableAllHooks: true })
+  ], { cwd: program.cwd, env, stdio: ["pipe", "pipe", "ignore"] });
+  const waiting = new Map;
+  let ended;
+  const end = (error) => {
+    ended ??= error;
+    for (const each of waiting.values())
+      each.reject(ended);
+    waiting.clear();
+  };
+  child.on("error", (error) => end(error));
+  child.on("exit", () => end(new Error("Claude Code stopped before it answered.")));
+  let buffer = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    let at;
+    while ((at = buffer.indexOf(`
+`)) >= 0) {
+      const line = buffer.slice(0, at);
+      buffer = buffer.slice(at + 1);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (message?.type !== "control_response")
+        continue;
+      const answer = message.response;
+      const asked = waiting.get(answer?.request_id);
+      if (!asked)
+        continue;
+      waiting.delete(answer.request_id);
+      if (answer.subtype === "success")
+        asked.resolve(answer.response);
+      else
+        asked.reject(new ClaudeRefused(typeof answer.error === "string" ? answer.error : JSON.stringify(answer.error ?? "")));
+    }
+  });
+  let next = 0;
+  const request = (body) => new Promise((resolve, reject) => {
+    if (ended)
+      return reject(ended);
+    const id = `kuvo-${++next}`;
+    const timer = setTimeout(() => {
+      waiting.delete(id);
+      reject(new Error("Claude Code took too long to answer."));
+    }, ANSWER2);
+    waiting.set(id, { resolve: (value) => {
+      clearTimeout(timer);
+      resolve(value);
+    }, reject: (error) => {
+      clearTimeout(timer);
+      reject(error);
+    } });
+    child.stdin.write(JSON.stringify({ type: "control_request", request_id: id, request: body }) + `
+`);
+  });
+  try {
+    await request({ subtype: "initialize" });
+    return await request({ subtype: "get_usage", skip_behaviors: true });
+  } finally {
+    child.stdin.end();
+    child.kill();
+  }
+}
+async function askClaudeUsage(program) {
+  let answer;
+  try {
+    answer = await askClaude(program);
+  } catch (error) {
+    if (error instanceof ClaudeRefused && /log ?in|sign ?in|auth|401|token/i.test(error.message))
+      throw new LimitsProblem("expired", "Claude Code isn't signed in here now. Sign in again.");
+    if (error instanceof ClaudeRefused)
+      throw new LimitsProblem("failed", "This Claude Code can't say its plan's usage: update it.");
+    throw new LimitsProblem("failed", "Claude Code didn't answer about its plan.");
+  }
+  if (answer?.rate_limits_available === false)
+    throw new LimitsProblem("none", "Not signed in to a Claude plan here.", undefined, false);
+  return answer;
+}
+var ANSWER2 = 30000, codexEnv = (home) => ({ CODEX_HOME: home, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code" }), title2 = (value) => typeof value === "string" && value.trim() ? value.trim().split(/[_\s]+/).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ") : undefined, ClaudeRefused;
 var init_native_usage = __esm(() => {
   init_rpc();
   init_codex_resets();
   init_engine_limits();
   init_limits4();
+  ClaudeRefused = class ClaudeRefused extends Error {
+  };
+});
+
+// box/src/usage/claude-limits.ts
+import { readFileSync as readFileSync19, statSync as statSync9 } from "node:fs";
+import { join as join23 } from "node:path";
+function credentialsIn(configHome) {
+  try {
+    const oauth = JSON.parse(readFileSync19(join23(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth;
+    if (typeof oauth?.accessToken !== "string" || !oauth.accessToken)
+      return;
+    return {
+      token: oauth.accessToken,
+      ...typeof oauth.subscriptionType === "string" ? { subscription: oauth.subscriptionType } : {},
+      ...typeof oauth.rateLimitTier === "string" ? { tier: oauth.rateLimitTier } : {},
+      ...typeof oauth.expiresAt === "number" ? { expiresAt: oauth.expiresAt } : {},
+      ...Array.isArray(oauth.scopes) ? { scopes: oauth.scopes.filter((scope) => typeof scope === "string") } : {}
+    };
+  } catch {
+    return;
+  }
+}
+function claudeIdentity(recordHome) {
+  const file = join23(recordHome, ".claude.json");
+  try {
+    const { mtimeMs, size } = statSync9(file);
+    const known = identities.get(file);
+    if (known && known.mtimeMs === mtimeMs && known.size === size)
+      return known.identity;
+    const identity = identityIn(readFileSync19(file, "utf8"));
+    identities.set(file, { mtimeMs, size, identity });
+    return identity;
+  } catch {
+    return;
+  }
+}
+function claudeSignInMark(recordHome) {
+  return fingerprint4(claudeIdentity(recordHome));
+}
+function identityIn(text) {
+  try {
+    const account = JSON.parse(text)?.oauthAccount;
+    const uuid = typeof account?.accountUuid === "string" ? account.accountUuid.trim().toLowerCase() : "";
+    if (!uuid)
+      return;
+    const organization = typeof account.organizationUuid === "string" ? account.organizationUuid.trim().toLowerCase() : "";
+    return `anthropic:${uuid}|${organization}`;
+  } catch {
+    return;
+  }
+}
+function claudeWindows(body) {
+  const windows = [];
+  const add = (id, value, minutes, model) => {
+    const used = Number(value?.utilization);
+    if (value == null || value.utilization == null || !Number.isFinite(used))
+      return;
+    const resets = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : NaN;
+    windows.push({ id, used: used / 100, minutes, ...Number.isFinite(resets) ? { resetsAt: resets } : {}, ...model ? { model } : {} });
+  };
+  add("five_hour", body?.five_hour, 300);
+  add("seven_day", body?.seven_day, 10080);
+  add("seven_day_sonnet", body?.seven_day_sonnet, 10080, "Sonnet");
+  add("seven_day_opus", body?.seven_day_opus, 10080, "Opus");
+  for (const scoped of Array.isArray(body?.model_scoped) ? body.model_scoped : []) {
+    const model = scoped?.display_name;
+    if (typeof model !== "string" || !model)
+      continue;
+    const id = `seven_day_${model.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
+    if (windows.some((window2) => window2.id === id))
+      continue;
+    add(id, scoped, 10080, model);
+  }
+  return windows;
+}
+function claudeReading(answer) {
+  const plan = planOf2(answer?.subscription_type);
+  const extra = claudeExtraUsage(answer?.rate_limits?.extra_usage);
+  return { windows: claudeWindows(answer?.rate_limits), ...plan ? { plan } : {}, ...extra ? { extras: [extra] } : {} };
+}
+function claudeExtraUsage(value) {
+  if (!value || typeof value !== "object" || value.is_enabled !== true)
+    return;
+  const used = Number(value.used_credits);
+  if (!Number.isFinite(used))
+    return;
+  const limit = Number(value.monthly_limit);
+  const resets = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : NaN;
+  const resetsAt = Number.isFinite(resets) ? { resetsAt: resets } : {};
+  if (Number.isFinite(limit) && limit > 0)
+    return { id: "extra_usage", name: "Extra Usage", kind: "capped", amount: Math.max(0, used) / 100, limit: limit / 100, unit: "usd", ...resetsAt };
+  return { id: "extra_usage", name: "Extra Usage", kind: "spent", amount: Math.max(0, used) / 100, unit: "usd", ...resetsAt };
+}
+function claudeGrants(value) {
+  if (!value || typeof value !== "object")
+    return;
+  const grants = [];
+  for (const grant of Array.isArray(value.grants) ? value.grants : []) {
+    const left = Number(grant?.resets_left);
+    if (typeof grant?.id !== "string" || !grant.id || !Number.isFinite(left))
+      return;
+    const ends = typeof grant.ends_at === "string" ? Date.parse(grant.ends_at) : typeof grant.ends_at === "number" ? grant.ends_at * (grant.ends_at < 1000000000000 ? 1000 : 1) : NaN;
+    grants.push({ id: grant.id, left: Math.max(0, Math.floor(left)), ...Number.isFinite(ends) ? { endsAt: ends } : {}, clears: Array.isArray(grant.clears) ? grant.clears.filter((each) => typeof each === "string") : [] });
+  }
+  return { eligible: value.eligible === true, grants, ...typeof value.next_grant_id === "string" && value.next_grant_id ? { next: value.next_grant_id } : {} };
+}
+function claimableGrant(grants, now) {
+  if (!grants?.eligible || !grants.next)
+    return;
+  return grants.grants.find((grant) => grant.id === grants.next && grant.left > 0 && (grant.endsAt === undefined || grant.endsAt > now));
+}
+function grantsExtra(grants, now) {
+  let count = 0;
+  const expiries = [];
+  if (grants.eligible) {
+    for (const grant of grants.grants) {
+      if (grant.left < 1 || grant.endsAt !== undefined && grant.endsAt <= now)
+        continue;
+      count += grant.left;
+      if (grant.endsAt !== undefined)
+        expiries.push(...Array(Math.min(grant.left, 50)).fill(grant.endsAt));
+    }
+  }
+  const next = claimableGrant(grants, now);
+  return { id: "resets", name: "Rate Limit Resets", kind: "resets", count, ...expiries.length ? { expiries: expiries.sort((a, b) => a - b).slice(0, 50) } : {}, ...next?.clears.length ? { refills: next.clears } : {}, usable: !!next };
+}
+async function readClaudeGrants(signIn, version) {
+  const url = new URL(claudeUsage.url);
+  url.searchParams.set("cedar_ember", "1");
+  url.searchParams.set("skip_spend", "1");
+  const response = await fetch(url, { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
+  if (!response.ok)
+    throw new Error(`Anthropic answered ${response.status}.`);
+  return claudeGrants((await response.json())?.cedar_ember);
+}
+async function tokenAccount(signIn, version) {
+  try {
+    const response = await fetch(new URL("profile", claudeUsage.url), { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
+    if (!response.ok)
+      return;
+    const body = await response.json();
+    const account = typeof body?.account?.uuid === "string" ? body.account.uuid.trim().toLowerCase() : "";
+    const organization = typeof body?.organization?.uuid === "string" ? body.organization.uuid.trim().toLowerCase() : "";
+    return account ? `anthropic:${account}|${organization}` : undefined;
+  } catch {
+    return;
+  }
+}
+function sameClaudeAccount(a, b) {
+  const [accountA, organizationA = ""] = a.replace(/^anthropic:/, "").split("|");
+  const [accountB, organizationB = ""] = b.replace(/^anthropic:/, "").split("|");
+  return !!accountA && accountA === accountB && (!organizationA || !organizationB || organizationA === organizationB);
+}
+async function claudeOrganization(configHome, signIn, version) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const kept = configHome ? claudeIdentity(configHome)?.split("|")[1] : undefined;
+  if (kept && uuid.test(kept))
+    return kept;
+  try {
+    const response = await fetch(new URL("profile", claudeUsage.url), { headers: claudeHeaders(signIn.token, version), signal: AbortSignal.timeout(15000) });
+    if (!response.ok)
+      return;
+    const organization = (await response.json())?.organization?.uuid;
+    return typeof organization === "string" && uuid.test(organization) ? organization : undefined;
+  } catch {
+    return;
+  }
+}
+async function claimClaudeGrant(signIn, version, organization, grant, attempt) {
+  const target = attempt.target ?? grant;
+  if (!signIn || !target)
+    return { outcome: "no-reset" };
+  if (!organization || !/^[a-z0-9_-]{1,40}$/.test(target) || !/^[A-Za-z0-9_-]{1,64}$/.test(attempt.request))
+    return { outcome: "failed" };
+  if (!attempt.target)
+    attempt.keep(target);
+  try {
+    const response = await fetch(new URL(`../organizations/${organization}/reset_rate_limits`, claudeUsage.url.replace(/\/oauth\/usage$/, "/oauth/")), {
+      method: "POST",
+      headers: claudeHeaders(signIn.token, version),
+      body: JSON.stringify({ program: "cedar_ember", grant_id: target, request_id: attempt.request }),
+      signal: AbortSignal.timeout(25000)
+    });
+    if (!response.ok)
+      return { outcome: response.status >= 500 || [401, 403, 429].includes(response.status) ? "unknown" : "failed" };
+    const body = await response.json().catch(() => {
+      return;
+    });
+    const cooldown = typeof body?.cooldown_until === "string" ? Date.parse(body.cooldown_until) : NaN;
+    const until = Number.isFinite(cooldown) ? { until: cooldown } : {};
+    const code = body?.result === "unavailable" ? body?.reason : body?.result;
+    switch (code) {
+      case "reset":
+        return { outcome: "reset" };
+      case "already_used":
+        return { outcome: "reset", already: true };
+      case "not_limited":
+        return { outcome: "nothing-to-reset" };
+      case "ineligible":
+      case "no_grant":
+      case "unknown_grant":
+      case "not_next_grant":
+        return { outcome: "no-reset" };
+      case "reset_unconfirmed":
+      case "stamp_indeterminate":
+        return { outcome: "unconfirmed" };
+      case "cooldown":
+      case "paused":
+      case "low_priority_active":
+        return { outcome: "not-now", ...until };
+      default:
+        return { outcome: "unknown" };
+    }
+  } catch {
+    return { outcome: "unknown" };
+  }
+}
+
+class ClaudePlan {
+  options;
+  constructor(options) {
+    this.options = options;
+    this.limits = this.source();
+  }
+  limits;
+  source() {
+    const { recordHome } = this.options;
+    const files = !this.options.keychain;
+    return {
+      every: CLAUDE_LIMITS_EVERY,
+      bucket: "anthropic",
+      read: async (now) => {
+        const program = this.options.program();
+        if (!program)
+          throw new LimitsProblem("failed", "Claude Code isn't installed here.");
+        const reading = claudeReading(await askClaudeUsage(program));
+        const signIn = files ? this.options.signIn() : undefined;
+        const resets = signIn ? await this.grantsExtra(signIn, await this.options.version(), now) : files ? undefined : KEYCHAIN_RESETS_FACT;
+        return resets ? { ...reading, extras: [...reading.extras ?? [], resets] } : reading;
+      },
+      signIn: () => claudeSignInMark(recordHome),
+      identity: () => claudeIdentity(recordHome),
+      ...files ? {
+        reset: async (attempt, now) => {
+          const signIn = attempt.signIn ?? this.options.signIn();
+          const version = signIn ? await this.options.version() : undefined;
+          if (signIn && !(this.grants && this.grants.as === fingerprint4(signIn.token)))
+            await this.grantsExtra(signIn, version, now);
+          const grants = this.grants && this.grants.as === fingerprint4(signIn?.token) ? this.grants.status : undefined;
+          const grant = claimableGrant(grants, now)?.id;
+          if (!signIn || !grant && !attempt.target)
+            return { outcome: "no-reset" };
+          return claimClaudeGrant(signIn, version, await claudeOrganization(recordHome, signIn, version), grant, attempt);
+        },
+        afterReset: () => {
+          if (this.grants)
+            this.grants = { ...this.grants, at: -Infinity };
+        },
+        spender: async () => {
+          const signIn = this.options.signIn();
+          const recorded = claudeIdentity(recordHome);
+          const token = signIn ? await tokenAccount(signIn, await this.options.version()) : undefined;
+          return recorded && token ? { same: sameClaudeAccount(recorded, token), signIn } : undefined;
+        }
+      } : {
+        facts: () => [KEYCHAIN_RESETS_FACT]
+      }
+    };
+  }
+  grants;
+  async grantsExtra(signIn, version, now) {
+    const as = fingerprint4(signIn.token);
+    const kept = this.grants && this.grants.as === as ? this.grants : undefined;
+    if (!kept || now - kept.at >= CLAUDE_GRANTS_EVERY) {
+      try {
+        this.grants = { as, at: now, status: await readClaudeGrants(signIn, version) };
+      } catch {
+        this.grants = { as, at: now, status: kept?.status };
+      }
+    }
+    const status = this.grants && this.grants.as === as ? this.grants.status : undefined;
+    return status ? grantsExtra(status, now) : undefined;
+  }
+}
+var claudeUsage, CLAUDE_LIMITS_EVERY, CLAUDE_GRANTS_EVERY, KEYCHAIN_RESETS = "Claude Code keeps this Mac's sign-in in the Keychain, so its resets show only from a Linux computer of yours signed in to Claude Code with the same account.", KEYCHAIN_RESETS_FACT, identities, planOf2 = (subscription) => typeof subscription === "string" && subscription.trim() ? subscription.trim().charAt(0).toUpperCase() + subscription.trim().slice(1).toLowerCase() : undefined, claudeHeaders = (token, version) => ({
+  Authorization: `Bearer ${token.trim()}`,
+  Accept: "application/json",
+  "Content-Type": "application/json",
+  "anthropic-beta": "oauth-2025-04-20",
+  ...version ? { "User-Agent": `claude-cli/${version} (external, cli)` } : {}
+});
+var init_claude_limits = __esm(() => {
+  init_limits4();
+  init_native_usage();
+  init_limits4();
+  claudeUsage = { url: "https://api.anthropic.com/api/oauth/usage" };
+  CLAUDE_LIMITS_EVERY = 15 * 60000;
+  CLAUDE_GRANTS_EVERY = 60 * 60000;
+  KEYCHAIN_RESETS_FACT = { id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: KEYCHAIN_RESETS };
+  identities = new Map;
+});
+
+// box/src/agents/maintenance.ts
+async function installedVersion(executable) {
+  const ran = await run7(executable, ["--version"], { timeout: 15000 }).catch(() => {
+    return;
+  });
+  return ran ? versionIn(plain4(ran.stdout + " " + ran.stderr)) : undefined;
+}
+function versionIn(text) {
+  return text.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\b/)?.[1];
+}
+var checked7, newest2, underWay4, INSTALL_TIMEOUT;
+var init_maintenance = __esm(() => {
+  init_files();
+  init_machine();
+  init_proc();
+  checked7 = new Map;
+  newest2 = new Map;
+  underWay4 = new Map;
+  INSTALL_TIMEOUT = 10 * 60000;
 });
 
 // box/src/shared/agent-programs.ts
 import { homedir as homedir2 } from "node:os";
 import { join as join24 } from "node:path";
-var codexPlaces, grokPlaces, codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
+var claudePlaces2, codexPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
 var init_agent_programs = __esm(() => {
   init_proc();
+  claudePlaces2 = [join24(homedir2(), ".local/bin"), join24(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
   codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join24(homedir2(), ".local/bin"), join24(homedir2(), ".codex/bin")];
   grokPlaces = [join24(homedir2(), ".grok/bin"), join24(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 });
@@ -112250,28 +111868,30 @@ class UsageAccounts {
     const every = 10 * 60000;
     switch (kind) {
       case "claude": {
-        const byToken = this.options.claudeByToken ?? process.platform === "darwin";
-        const token = () => claudeToken(join26(this.root, "claude", "tokens", instance.id + ".json"));
-        const standard = process.env.CLAUDE_CONFIG_DIR ?? join26(home, ".claude");
-        const consoleHome = join26(this.root, "claude", "console");
-        const configHome = () => instance.home ?? (byToken && !token() ? consoleHome : standard);
-        const signIn = () => {
-          const own = byToken ? token() : undefined;
-          return own ? { token: own } : !byToken ? credentialsIn(configHome()) : undefined;
-        };
+        const configHome = instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? join26(home, ".claude");
+        const recordHome = instance.home ?? (process.env.CLAUDE_CONFIG_DIR?.trim() ? process.env.CLAUDE_CONFIG_DIR : home);
+        const executable = () => this.options.programs?.claude ?? claudeProgram();
         let version;
-        const recordHome = instance.home ?? (byToken ? undefined : process.env.CLAUDE_CONFIG_DIR ?? home);
-        const plan = new ClaudePlan({ byToken, home: recordHome, token, configHome, signIn, version: async () => {
-          if (version && Date.now() - version.at < 3600000)
-            return version.value;
-          const executable = which("claude", [join26(home, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]);
-          const value = executable ? await installedVersion(executable).catch(() => {
-            return;
-          }) : undefined;
-          version = { at: Date.now(), value };
-          return value;
-        } });
-        return { ...common, limits: plan.limits, conversationRoots: () => [...new Set([configHome(), ...!instance.home ? [consoleHome, standard] : []])].map((folder) => join26(folder, "projects")) };
+        const plan = new ClaudePlan({
+          recordHome,
+          keychain: this.options.claudeKeychain ?? process.platform === "darwin",
+          program: () => {
+            const path = executable();
+            return path ? { executable: path, home: instance.home, cwd: this.root } : undefined;
+          },
+          signIn: () => credentialsIn(configHome),
+          version: async () => {
+            if (version && Date.now() - version.at < 3600000)
+              return version.value;
+            const path = executable();
+            const value = path ? await installedVersion(path).catch(() => {
+              return;
+            }) : undefined;
+            version = { at: Date.now(), value };
+            return value;
+          }
+        });
+        return { ...common, limits: plan.limits, conversationRoots: () => [join26(configHome, "projects")] };
       }
       case "codex": {
         const folder = instance.home ?? process.env.CODEX_HOME ?? join26(home, ".codex");
@@ -112363,7 +111983,6 @@ var init_accounts4 = __esm(() => {
   init_accounts3();
   init_claude_limits();
   init_maintenance();
-  init_proc();
   init_account();
   init_limits4();
   init_native_usage();
@@ -114164,7 +113783,7 @@ function spelledIn(path, folders) {
 var init_paths3 = () => {};
 
 // box/src/link/artifacts/store.ts
-import { createHash as createHash21, createHmac, randomBytes as randomBytes8 } from "node:crypto";
+import { createHash as createHash20, createHmac, randomBytes as randomBytes8 } from "node:crypto";
 import { appendFileSync, closeSync as closeSync2, existsSync as existsSync7, fchmodSync, mkdirSync as mkdirSync16, openSync as openSync2, readdirSync as readdirSync11, readFileSync as readFileSync24, renameSync as renameSync15, rmSync as rmSync8, statSync as statSync10, writeFileSync as writeFileSync16 } from "node:fs";
 import { basename as basename7, join as join30, sep as sep7 } from "node:path";
 
@@ -114245,7 +113864,7 @@ class ArtifactStore {
     return key;
   }
   static idOf(path) {
-    return "art_" + createHash21("sha256").update(path).digest("hex").slice(0, 24);
+    return "art_" + createHash20("sha256").update(path).digest("hex").slice(0, 24);
   }
   get(id) {
     return this.artifacts.get(id);
@@ -114447,7 +114066,7 @@ class ArtifactStore {
     const kind = this.refine(kindOf5(path, { bots: this.options.bots }), bytes);
     if (!kindsKeptWhole.has(kind) && (kind === "code" && this.policy.inGit(path) || this.policy.lowOn(bytes.length)))
       return;
-    const hash = "sha256:" + createHash21("sha256").update(bytes).digest("hex");
+    const hash = "sha256:" + createHash20("sha256").update(bytes).digest("hex");
     const artifact = {
       id: ArtifactStore.idOf(path),
       path,
@@ -114550,7 +114169,7 @@ class ArtifactStore {
       return null;
     try {
       const bytes = readFileSync24(this.copyPath(version.hash));
-      return bytes.length === version.size && "sha256:" + createHash21("sha256").update(bytes).digest("hex") === version.hash ? bytes : null;
+      return bytes.length === version.size && "sha256:" + createHash20("sha256").update(bytes).digest("hex") === version.hash ? bytes : null;
     } catch {
       return null;
     }
@@ -114869,7 +114488,7 @@ class ArtifactStore {
       return { hash: `stat:${seen.size}:${seen.mtime}`, size: seen.size, ...privacy ? { private: privacy } : {} };
     if (privacy)
       return { hash: "keyed:" + createHmac("sha256", this.key).update(seen.bytes).digest("hex"), size: seen.size, private: privacy };
-    return { hash: "sha256:" + createHash21("sha256").update(seen.bytes).digest("hex"), size: seen.size, bytes: seen.bytes };
+    return { hash: "sha256:" + createHash20("sha256").update(seen.bytes).digest("hex"), size: seen.size, bytes: seen.bytes };
   }
   look(path) {
     let stat;
@@ -116332,7 +115951,7 @@ var init_library_format = __esm(() => {
 });
 
 // box/src/link/library/store.ts
-import { createHash as createHash22 } from "node:crypto";
+import { createHash as createHash21 } from "node:crypto";
 import { appendFileSync as appendFileSync2, closeSync as closeSync3, mkdirSync as mkdirSync17, openSync as openSync3, readFileSync as readFileSync27, readSync as readSync2, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync17 } from "node:fs";
 import { basename as basename8, extname as extname2, join as join33, sep as sep11 } from "node:path";
 function libraryKind(path) {
@@ -116393,7 +116012,7 @@ class LibraryStore {
     this.load();
   }
   static idOf(path) {
-    return "lib_" + createHash22("sha256").update(path).digest("hex").slice(0, 24);
+    return "lib_" + createHash21("sha256").update(path).digest("hex").slice(0, 24);
   }
   now() {
     return this.options.now?.() ?? new Date;
@@ -116535,7 +116154,7 @@ var init_store7 = __esm(() => {
 
 // box/src/link/library/thumbnails.ts
 import { execFile as execFile18 } from "node:child_process";
-import { createHash as createHash23 } from "node:crypto";
+import { createHash as createHash22 } from "node:crypto";
 import { mkdirSync as mkdirSync18, mkdtempSync as mkdtempSync2, readdirSync as readdirSync14, readFileSync as readFileSync28, renameSync as renameSync17, rmSync as rmSync10, statSync as statSync12 } from "node:fs";
 import { basename as basename9, join as join34 } from "node:path";
 
@@ -116573,7 +116192,7 @@ class Thumbnails {
         return null;
       }
     }
-    const key = `${item.id}-${createHash23("sha256").update(`${stat.size}:${stat.mtimeMs}:${stat.ino}`).digest("hex").slice(0, 16)}`;
+    const key = `${item.id}-${createHash22("sha256").update(`${stat.size}:${stat.mtimeMs}:${stat.ino}`).digest("hex").slice(0, 16)}`;
     const file = join34(this.folder, key + ".png");
     try {
       return { bytes: readFileSync28(file), type: "image/png" };

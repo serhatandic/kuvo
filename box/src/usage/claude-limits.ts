@@ -1,18 +1,16 @@
 import { fingerprint } from "./limits"
-// Claude's plan limits for one account (limits.ts), read as Claude Code reads them for its /usage:
-// `GET /api/oauth/usage` with the account's own sign-in, Kuvo Code's (on a Mac its token from
-// `claude setup-token`; on Linux Claude Code's own file in Kuvo Code's folder), never yours in
-// Terminal, and never renewed here: Claude Code renews its own as it runs. Only on Linux: a Mac's
-// token can only run Claude (`setup-token` grants no more), and Anthropic answered every read of
-// it with a 429 for hours. Anthropic limits these reads hard, for the whole computer rather than a
-// sign-in, so the box reads each account at most every 15 minutes, one at a time, and waits out a
-// 429 for as long as it says. What a turn hears (Claude Code's rate-limit events, each window as
-// every response's headers give it) keeps them current between reads, and is all a Mac has.
+// Claude's plan limits for one account (limits.ts), asked of Claude Code itself in the account's
+// folder (its own `/usage`, native-usage.ts): it reads and renews its own sign-in as it answers, on
+// a Mac from the Keychain, and Kuvo never sends its token anywhere. Anthropic limits these reads
+// hard, for the whole computer rather than a sign-in, so the box asks each account at most every
+// 15 minutes, one at a time. What a turn hears (Claude Code's rate-limit events) keeps them current
+// between reads. Its one-off resets have no ask of Claude Code's: they're read and spent as Claude
+// Code does only where it keeps its sign-in in a file (Linux).
 
-import { createHash } from "node:crypto"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { LimitsProblem, retryAt, type LimitExtra, type LimitsSource, type LimitReading, type LimitWindow, type ResetAttempt, type ResetOutcome } from "./limits"
+import { askClaudeUsage, type ClaudeProgram } from "./native-usage"
+import { LimitsProblem, type LimitExtra, type LimitsSource, type LimitReading, type LimitWindow, type ResetAttempt, type ResetOutcome } from "./limits"
 
 /** Where the reads go: Anthropic's, or a test's stand-in. */
 export const claudeUsage = { url: "https://api.anthropic.com/api/oauth/usage" }
@@ -23,8 +21,11 @@ export const CLAUDE_LIMITS_EVERY = 15 * 60_000
 /** An hour between two reads of an account's reset grants. */
 export const CLAUDE_GRANTS_EVERY = 60 * 60_000
 
-/** Why a Mac's Claude token shows no extra usage or resets. */
-export const MAC_TOKEN_CANT = "This Mac's Claude sign-in can only run Claude, so its extra usage and resets show only from a computer of yours signed in to Claude Code with the same account."
+/** Why a Mac's Claude account shows no resets. */
+export const KEYCHAIN_RESETS = "Claude Code keeps this Mac's sign-in in the Keychain, so its resets show only from a Linux computer of yours signed in to Claude Code with the same account."
+
+/** A Mac's Claude account's resets, as its row says them. */
+const KEYCHAIN_RESETS_FACT: LimitExtra = { id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: KEYCHAIN_RESETS }
 
 /** A sign-in to read with: its token, and what Claude Code kept of it beside. */
 export interface ClaudeSignIn {
@@ -39,7 +40,7 @@ export interface ClaudeSignIn {
   scopes?: string[]
 }
 
-/** Claude Code's own sign-in file in a settings folder (Linux; a Mac's is in the Keychain, never read here). */
+/** Claude Code's own sign-in file in a settings folder, for its resets (Linux; a Mac's is in the Keychain, never read here). */
 export function credentialsIn(configHome: string): ClaudeSignIn | undefined {
   try {
     const oauth = JSON.parse(readFileSync(join(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth
@@ -57,17 +58,13 @@ export function credentialsIn(configHome: string): ClaudeSignIn | undefined {
 }
 
 /**
- * Who a Claude Code sign-in is in a settings folder: the account and the organization whose plan it
- * uses (one account can have a personal plan and a team's, each with its own limits), as
- * `anthropic:<account>|<organization>`, the same however it's signed in.
- * - Claude Code's own sign-in (Linux): as it keeps it beside the sign-in (`.claude.json`'s `oauthAccount`).
- * - Kuvo Code's token (`token`, a Mac's, from `claude setup-token`), which says nothing of who it's
- *   for and leaves `oauthAccount` out: as Anthropic says in the policy record Claude Code fetches
- *   with it as it runs (`tokenIdentity`). None until it has run with this token.
+ * Who a Claude Code sign-in is, as it keeps it beside the sign-in (`.claude.json`'s `oauthAccount`,
+ * in `recordHome`: its folder when it's given one, else your home): the account and the organization
+ * whose plan it uses (one account can have a personal plan and a team's, each with its own limits),
+ * as `anthropic:<account>|<organization>`.
  */
-export function claudeIdentity(configHome: string, token?: string): string | undefined {
-  if (token !== undefined) return tokenIdentity(configHome, token)
-  const file = join(configHome, ".claude.json")
+export function claudeIdentity(recordHome: string): string | undefined {
+  const file = join(recordHome, ".claude.json")
   try {
     // (It keeps each project's state too, and can be large: read again only when it changed.)
     const { mtimeMs, size } = statSync(file)
@@ -79,6 +76,11 @@ export function claudeIdentity(configHome: string, token?: string): string | und
   } catch {
     return undefined
   }
+}
+
+/** Its sign-in, as a fingerprint of who it is (the same through Claude Code's renewals, which Kuvo never sees). */
+export function claudeSignInMark(recordHome: string): string | undefined {
+  return fingerprint(claudeIdentity(recordHome))
 }
 
 const identities = new Map<string, { mtimeMs: number; size: number; identity: string | undefined }>()
@@ -95,71 +97,6 @@ function identityIn(text: string): string | undefined {
   }
 }
 
-/**
- * Who Kuvo Code's token is for, from the record of the organization's policies Claude Code fetches
- * with it as it runs and keeps in its settings folder, signed by Anthropic for the sign-in that
- * asked (`policy-limits.json.signature.json`: a JSON Web Signature whose `aud` is the organization
- * and `sub` the account, as Claude Code itself reads them). Taken only where Claude Code's note
- * beside it (`policy-limits.json.stamp.json`) says that record was fetched with this very token
- * (its `identity`, a hash of the token's own, as Claude Code makes it) and is the one signed (its
- * `sha`): another sign-in using the folder (yours in Terminal, in `~/.claude`) or one before keeps a
- * record of its own there, which isn't this one's. The token itself is only hashed, as Claude Code
- * does, and nothing is checked with Anthropic.
- *
- * These are Claude Code's own files, as 2.1.319 writes them (version 1 of the note); where they
- * change, or a sign-in is stamped otherwise (`CLAUDE_CODE_ORGANIZATION_UUID` makes it the
- * organization's), it's none and the account's row is its computer's own, as before, said once in
- * the bridge's log. Another sign-in's record written over this one's in the instant between Claude
- * Code writing the note and the record could be taken for this one's until it's next read (a minute).
- */
-function tokenIdentity(configHome: string, token: string): string | undefined {
-  try {
-    // (Both are small: read each time, never kept.)
-    return recordIdentity(configHome, readFileSync(join(configHome, "policy-limits.json.stamp.json"), "utf8"), readFileSync(join(configHome, "policy-limits.json.signature.json"), "utf8"), token)
-  } catch {
-    return undefined
-  }
-}
-
-function recordIdentity(configHome: string, stampText: string, signatureText: string, token: string): string | undefined {
-  try {
-    const stamp = JSON.parse(stampText)
-    if (stamp?.v !== 1 || typeof stamp.identity !== "string") return unread(configHome, "its policy note isn't one this version reads")
-    // Claude Code's principal for a token: `token:` and the first half of its SHA-256; the stamp keeps
-    // that principal's SHA-256.
-    const principal = `token:${createHash("sha256").update(token.trim()).digest("hex").slice(0, 32)}`
-    if (stamp?.kind !== "token" || stamp.identity !== createHash("sha256").update(principal).digest("hex")) return undefined
-    const payload = String(JSON.parse(signatureText)?.jws ?? "").split(".")[1]
-    if (!payload) return unread(configHome, "its policy record isn't one this version reads")
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
-    if (typeof stamp.sha !== "string" || claims?.sha !== stamp.sha) return undefined
-    const account = typeof claims.sub === "string" ? claims.sub.trim().toLowerCase() : ""
-    const organization = typeof claims.aud === "string" ? claims.aud.trim().toLowerCase() : ""
-    return account && organization ? `anthropic:${account}|${organization}` : undefined
-  } catch {
-    // (Read as Claude Code writes it, say: read again in a minute.)
-    return undefined
-  }
-}
-
-/** Said once a folder, in the bridge's log: why its account can't be told (none). */
-function unread(configHome: string, why: string): undefined {
-  if (!told.has(configHome)) console.error(`Claude's account in ${configHome} can't be told: ${why}.`)
-  told.add(configHome)
-  return undefined
-}
-
-const told = new Set<string>()
-
-/** "Max 20x", "Pro": the plan, from what Claude Code kept of the sign-in. */
-export function planName(subscription?: string, tier?: string): string | undefined {
-  const base = subscription?.trim()
-  if (!base) return undefined
-  const name = base.charAt(0).toUpperCase() + base.slice(1).toLowerCase()
-  const size = tier?.match(/\d+x/)?.[0]
-  return size ? `${name} ${size}` : name
-}
-
 /** The windows Claude's answer has: the plan's five hours and week, and each model's own week. */
 export function claudeWindows(body: any): Omit<LimitWindow, "read" | "source">[] {
   const windows: Omit<LimitWindow, "read" | "source">[] = []
@@ -173,57 +110,26 @@ export function claudeWindows(body: any): Omit<LimitWindow, "read" | "source">[]
   add("seven_day", body?.seven_day, 10_080)
   add("seven_day_sonnet", body?.seven_day_sonnet, 10_080, "Sonnet")
   add("seven_day_opus", body?.seven_day_opus, 10_080, "Opus")
-  // Each model's own week, where Anthropic lists them now (`limits`, "weekly_scoped").
-  for (const limit of Array.isArray(body?.limits) ? body.limits : []) {
-    const model = limit?.scope?.model?.display_name
-    if (limit?.kind !== "weekly_scoped" || typeof model !== "string" || !model) continue
+  // Each model's own week, as Claude Code lists them (`model_scoped`).
+  for (const scoped of Array.isArray(body?.model_scoped) ? body.model_scoped : []) {
+    const model = scoped?.display_name
+    if (typeof model !== "string" || !model) continue
     const id = `seven_day_${model.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`
     if (windows.some((window) => window.id === id)) continue
-    add(id, { utilization: limit.percent, resets_at: limit.resets_at }, 10_080, model)
+    add(id, scoped, 10_080, model)
   }
   return windows
 }
 
-/**
- * Reads the account's limits now. `version`: Claude Code's here, for the user agent Anthropic
- * expects of its reads.
- */
-export async function readClaudeLimits(signIn: ClaudeSignIn | undefined, version: string | undefined, now = Date.now()): Promise<LimitReading> {
-  if (!signIn) throw new LimitsProblem("none", "Not signed in to a Claude plan here.", undefined, false)
-  const plan = planName(signIn.subscription, signIn.tier)
-  if (signIn.expiresAt !== undefined && signIn.expiresAt <= now) throw new LimitsProblem("expired", "Its sign-in has lapsed: Claude Code renews it the next time it runs here.", undefined, false)
-  if (signIn.scopes?.length && !signIn.scopes.includes("user:profile")) throw new LimitsProblem("unreadable", "This sign-in runs Claude but can't read its plan's limits: sign in to Claude Code again here.", undefined, false)
-  let response: Response
-  try {
-    response = await fetch(claudeUsage.url, {
-      headers: {
-        Authorization: `Bearer ${signIn.token.trim()}`,
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        ...(version ? { "User-Agent": `claude-cli/${version} (external, cli)` } : {}),
-      },
-      signal: AbortSignal.timeout(15_000),
-    })
-  } catch (caught) {
-    throw new LimitsProblem("failed", `Couldn't reach Anthropic: ${caught instanceof Error ? caught.message : String(caught)}`)
-  }
-  if (response.status === 429) throw new LimitsProblem("rate-limited", "Anthropic is turning away reads of the plan's limits for now.", retryAt(response.headers.get("retry-after"), now))
-  const text = await response.text().catch(() => "")
-  if (response.status === 401) throw new LimitsProblem("expired", "Anthropic turned its sign-in away: Claude Code renews it the next time it runs here.")
-  if (response.status === 403) {
-    if (/scope/i.test(text)) throw new LimitsProblem("unreadable", "This sign-in runs Claude but can't read its plan's limits: sign in to Claude Code again here.")
-    throw new LimitsProblem("failed", "Anthropic didn't let this sign-in read its plan's limits.")
-  }
-  if (!response.ok) throw new LimitsProblem("failed", `Anthropic answered ${response.status}.`)
-  let body: any
-  try {
-    body = JSON.parse(text)
-  } catch {
-    throw new LimitsProblem("failed", "Anthropic's answer wasn't what Kuvo Code reads.")
-  }
-  const extra = claudeExtraUsage(body?.extra_usage)
-  return { windows: claudeWindows(body), ...(plan ? { plan } : {}), ...(extra ? { extras: [extra] } : {}) }
+/** "Max", "Pro": the plan, as Claude Code says it. */
+const planOf = (subscription: unknown) =>
+  typeof subscription === "string" && subscription.trim() ? subscription.trim().charAt(0).toUpperCase() + subscription.trim().slice(1).toLowerCase() : undefined
+
+/** Claude Code's `/usage` answer (`get_usage`) as a reading: its plan's windows, each model's week, and its extra usage. */
+export function claudeReading(answer: any): LimitReading {
+  const plan = planOf(answer?.subscription_type)
+  const extra = claudeExtraUsage(answer?.rate_limits?.extra_usage)
+  return { windows: claudeWindows(answer?.rate_limits), ...(plan ? { plan } : {}), ...(extra ? { extras: [extra] } : {}) }
 }
 
 /**
@@ -473,44 +379,39 @@ const HEARD: Record<string, { id: string; minutes: number; model?: string }> = {
 
 export class ClaudePlan {
   constructor(private readonly options: {
-    byToken: boolean
-    home?: string
-    configHome(): string
-    token(): string | undefined
+    /** Where Claude Code keeps who's signed in (`.claude.json`). */
+    recordHome: string
+    /** Claude Code, with the account's folder, to ask (none: not installed). */
+    program(): ClaudeProgram | undefined
+    /** Its sign-in file, where Claude Code keeps it in one (Linux), for its resets. */
     signIn(): ClaudeSignIn | undefined
     version(): Promise<string | undefined>
+    /** Whether Claude Code keeps its sign-in in the Keychain here (a Mac): its resets can't be read. */
+    keychain: boolean
   }) { this.limits = this.source() }
 
   readonly limits: LimitsSource
 
   private source(): LimitsSource {
-    return this.options.byToken
-    ? {
-        every: CLAUDE_LIMITS_EVERY,
-        // (Signed in to another account since, what its turns told goes: limits.ts, `switched`.)
-        signIn: () => fingerprint(this.options.token()),
-        identity: () => {
-          const token = this.options.token()
-          return token ? claudeIdentity(this.options.configHome(), token) : undefined
-        },
-        // Its token can only run Claude: its extra usage and resets show from another computer
-        // signed in to Claude Code with the same account, where there's one (limits-rows.ts).
-        facts: () => [{ id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: MAC_TOKEN_CANT }],
-      }
-    : {
-        every: CLAUDE_LIMITS_EVERY,
-        bucket: "anthropic",
-        read: async (now) => {
-          const signIn = this.options.signIn()
-          const version = signIn ? await this.options.version() : undefined
-          const reading = await readClaudeLimits(signIn, version, now)
-          // Its resets, read after its windows, at most hourly (Anthropic limits this read hard).
-          const resets = signIn ? await this.grantsExtra(signIn, version, now) : undefined
-          return resets ? { ...reading, extras: [...(reading.extras ?? []), resets] } : reading
-        },
-        signIn: () => fingerprint(this.options.signIn()?.token),
-        identity: () => (this.options.home ? claudeIdentity(this.options.home) : undefined),
-        reset: async (attempt, now) => {
+    const { recordHome } = this.options
+    const files = !this.options.keychain
+    return {
+      every: CLAUDE_LIMITS_EVERY,
+      bucket: "anthropic",
+      read: async (now) => {
+        const program = this.options.program()
+        if (!program) throw new LimitsProblem("failed", "Claude Code isn't installed here.")
+        const reading = claudeReading(await askClaudeUsage(program))
+        // Its resets, read after its windows, at most hourly (Anthropic limits this read hard).
+        const signIn = files ? this.options.signIn() : undefined
+        // (Kept in the Keychain: why they don't show, beside what was read, which a fact alone would give way to.)
+        const resets = signIn ? await this.grantsExtra(signIn, await this.options.version(), now) : files ? undefined : KEYCHAIN_RESETS_FACT
+        return resets ? { ...reading, extras: [...(reading.extras ?? []), resets] } : reading
+      },
+      signIn: () => claudeSignInMark(recordHome),
+      identity: () => claudeIdentity(recordHome),
+      ...(files ? {
+        reset: async (attempt: ResetAttempt, now: number) => {
           // (The very sign-in Anthropic was asked about, where it was: one signed in since isn't spent with.)
           const signIn = (attempt.signIn as ClaudeSignIn | undefined) ?? this.options.signIn()
           const version = signIn ? await this.options.version() : undefined
@@ -519,24 +420,28 @@ export class ClaudePlan {
           if (signIn && !(this.grants && this.grants.as === fingerprint(signIn.token))) await this.grantsExtra(signIn, version, now)
           const grants = this.grants && this.grants.as === fingerprint(signIn?.token) ? this.grants.status : undefined
           const grant = claimableGrant(grants, now)?.id
-          if (!signIn || (!grant && !attempt.target)) return { outcome: "no-reset" }
-          return claimClaudeGrant(signIn, version, await claudeOrganization(this.options.home, signIn, version), grant, attempt)
+          if (!signIn || (!grant && !attempt.target)) return { outcome: "no-reset" as const }
+          return claimClaudeGrant(signIn, version, await claudeOrganization(recordHome, signIn, version), grant, attempt)
         },
         // Read again at the next read, what was read standing meanwhile (a read that fails then
         // keeps it, never none).
         afterReset: () => {
           if (this.grants) this.grants = { ...this.grants, at: -Infinity }
         },
-        // Whether its token is the account Claude Code's record says, as Anthropic says, right
+        // Whether its sign-in is the account Claude Code's record says, as Anthropic says, right
         // before a reset is spent with it.
         spender: async () => {
           const signIn = this.options.signIn()
-          const recorded = this.options.home ? claudeIdentity(this.options.home) : undefined
+          const recorded = claudeIdentity(recordHome)
           const token = signIn ? await tokenAccount(signIn, await this.options.version()) : undefined
           return recorded && token ? { same: sameClaudeAccount(recorded, token), signIn } : undefined
         },
-      }
-
+      } : {
+        // Kept in the Keychain, which Kuvo never reads: its resets show from a Linux computer
+        // signed in to the same account, where there's one (limits-rows.ts).
+        facts: () => [KEYCHAIN_RESETS_FACT],
+      }),
+    }
   }
 
   /** Its reset grants as last read, with which sign-in (a fingerprint), and when. */

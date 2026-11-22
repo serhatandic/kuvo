@@ -9682,6 +9682,15 @@ var init_notices = __esm(() => {
 
 // box/src/usage/limits.ts
 import { createHash as createHash5 } from "crypto";
+function retryAt(header, now = Date.now()) {
+  const raw = header?.trim();
+  if (!raw)
+    return;
+  if (/^\d+$/.test(raw))
+    return now + Number(raw) * 1000;
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(date, now) : undefined;
+}
 function fingerprint(secret) {
   return secret ? createHash5("sha256").update(secret).digest("hex").slice(0, 16) : undefined;
 }
@@ -9712,13 +9721,24 @@ function xaiIdentity(...tokens) {
   }
   return;
 }
-var MINUTE2 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, SHARED_SLACK, text2 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
+var LimitsProblem, MINUTE2 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, SHARED_SLACK, text2 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 var init_limits2 = __esm(() => {
   init_accounts();
   init_events();
   init_limits_resets();
   init_limits_rows();
   init_notices();
+  LimitsProblem = class LimitsProblem extends Error {
+    kind;
+    until;
+    sent;
+    constructor(kind, message, until, sent = true) {
+      super(message);
+      this.kind = kind;
+      this.until = until;
+      this.sent = sent;
+    }
+  };
   FIRST_HOLD = 60 * MINUTE2;
   LONGEST_HOLD = 6 * 60 * MINUTE2;
   FIRST_RETRY = 5 * MINUTE2;
@@ -9971,328 +9991,6 @@ var init_antigravity_plan = __esm(() => {
   COUNTED_WITHIN = 2 * 60000;
 });
 
-// box/src/agents/screen.ts
-class Screen {
-  cols;
-  height;
-  onLine;
-  rows = [[]];
-  wrapped = new Set;
-  row = 0;
-  col = 0;
-  pending = false;
-  saved = { row: 0, col: 0 };
-  top = 0;
-  main;
-  carry = "";
-  dirty = false;
-  constructor(cols, height, onLine) {
-    this.cols = cols;
-    this.height = height;
-    this.onLine = onLine;
-  }
-  write(input) {
-    const text = this.carry + input;
-    this.carry = "";
-    let at = 0;
-    while (at < text.length) {
-      const char = text[at];
-      if (char === "\x1B") {
-        const end = sequenceEnd(text, at);
-        if (end < 0) {
-          if (STRINGS.includes(text[at + 1]))
-            this.carry = text.slice(at, at + 2) + (text.length - at > 2 && text.endsWith("\x1B") ? "\x1B" : "");
-          else if (text.length - at <= MAX_SEQUENCE)
-            this.carry = text.slice(at);
-          return;
-        }
-        this.escape(text.slice(at, end));
-        at = end;
-        continue;
-      }
-      const code = text.codePointAt(at);
-      const size = code > 65535 ? 2 : 1;
-      at += size;
-      if (char === "\r")
-        this.moveTo(this.row, 0);
-      else if (char === `
-` || char === "\v" || char === "\f")
-        this.moveTo(this.row + 1, this.col, "line");
-      else if (char === "\b")
-        this.moveTo(this.row, Math.max(0, this.col - 1));
-      else if (char === "\t")
-        this.moveTo(this.row, Math.min(this.cols - 1, (Math.floor(this.col / 8) + 1) * 8));
-      else if (code >= 32 && code !== 127 && !(code >= 128 && code < 160))
-        this.put(String.fromCodePoint(code));
-    }
-  }
-  text() {
-    const lines = [];
-    for (let row = 0;row < this.rows.length; row++) {
-      const start = row;
-      while (this.continues(row))
-        row++;
-      lines.push(this.join(start, row));
-    }
-    return lines.join(`
-`).replace(/\n+$/, "");
-  }
-  current() {
-    return this.line(this.row).replace(/\n$/, "");
-  }
-  line(row) {
-    let start = row;
-    while (start > 0 && this.continues(start - 1))
-      start--;
-    let end = row;
-    while (this.continues(end))
-      end++;
-    const last = this.rows[end] ?? [];
-    const complete = !this.full(end) && (end === start || this.cells(last).trim() !== "");
-    return this.join(start, end) + (complete ? `
-` : "");
-  }
-  continues(row) {
-    return row + 1 < this.rows.length && (this.wrapped.has(row) || this.full(row));
-  }
-  full(row) {
-    const cells = this.rows[row] ?? [];
-    return cells.length >= this.cols && cells[this.cols - 1] !== undefined && cells[this.cols - 1] !== " ";
-  }
-  join(start, end) {
-    let text = "";
-    for (let row = start;row <= end; row++)
-      text += this.cells(this.rows[row] ?? []);
-    return text.trimEnd();
-  }
-  cells(row) {
-    let text = "";
-    for (let col = 0;col < row.length; col++)
-      text += row[col] ?? " ";
-    return text;
-  }
-  put(char) {
-    const width = Bun.stringWidth(char);
-    if (width === 0)
-      return;
-    if (this.pending || this.col + width > this.cols) {
-      this.wrapped.add(this.row);
-      this.moveTo(this.row + 1, 0, "wrap");
-    }
-    const cells = this.rowAt(this.row);
-    cells[this.col] = char;
-    if (width === 2)
-      cells[this.col + 1] = "";
-    this.dirty = true;
-    this.col += width;
-    if (this.col >= this.cols) {
-      this.col = this.cols - 1;
-      this.pending = true;
-    }
-  }
-  rowAt(row) {
-    while (this.rows.length <= row)
-      this.rows.push([]);
-    return this.rows[row];
-  }
-  moveTo(row, col, how = "jump") {
-    row = Math.max(this.top, how === "jump" ? Math.min(row, this.top + this.height - 1) : Math.min(row, this.row + 1));
-    if (row !== this.row) {
-      const wrapping = how === "wrap";
-      if (this.dirty && !wrapping)
-        this.left();
-      this.dirty &&= wrapping;
-      this.row = row;
-      this.rowAt(row);
-      if (row >= this.top + this.height)
-        this.scroll(row - this.height + 1);
-    }
-    this.col = Math.max(0, Math.min(this.cols - 1, col));
-    this.pending = false;
-  }
-  scroll(top) {
-    this.top = top;
-    const drop = this.top - MAX_SCROLLBACK;
-    if (drop < MAX_SCROLLBACK)
-      return;
-    this.rows.splice(0, drop);
-    this.wrapped = new Set([...this.wrapped].filter((row) => row >= drop).map((row) => row - drop));
-    this.row -= drop;
-    this.top -= drop;
-    this.saved = { row: Math.max(0, this.saved.row - drop), col: this.saved.col };
-  }
-  left() {
-    this.onLine?.(this.line(this.row));
-  }
-  erase(row, from, to) {
-    const cells = this.rows[row];
-    if (!cells)
-      return;
-    for (let col = from;col < Math.min(to, cells.length); col++)
-      cells[col] = " ";
-    this.wrapped.delete(row);
-    if (row === this.row)
-      this.dirty = true;
-  }
-  escape(sequence) {
-    const kind = sequence[1];
-    if (kind === "[")
-      return this.control(sequence);
-    if (kind === "7")
-      this.saved = { row: this.row, col: this.col };
-    else if (kind === "8")
-      this.moveTo(this.saved.row, this.saved.col);
-    else if (kind === "D")
-      this.moveTo(this.row + 1, this.col, "line");
-    else if (kind === "E")
-      this.moveTo(this.row + 1, 0, "line");
-    else if (kind === "M")
-      this.moveTo(this.row - 1, this.col);
-    else if (kind === "c") {
-      for (let row = this.top;row < this.rows.length; row++)
-        this.erase(row, 0, Infinity);
-      this.moveTo(this.top, 0);
-    }
-  }
-  control(sequence) {
-    const final = sequence[sequence.length - 1];
-    const body = sequence.slice(2, -1);
-    const mark = /^[<=>?]/.test(body) ? body[0] : "";
-    const params = (mark ? body.slice(1) : body).replace(/[ -/]+$/, "").split(";").map((each) => Number.parseInt(each, 10));
-    const n = Number.isFinite(params[0]) && params[0] > 0 ? params[0] : 1;
-    const raw = Number.isFinite(params[0]) ? params[0] : 0;
-    if (mark === "?") {
-      if ((final === "h" || final === "l") && params.some((each) => each === 1049 || each === 1047 || each === 47))
-        this.otherScreen(final === "h");
-      return;
-    }
-    if (mark)
-      return;
-    switch (final) {
-      case "A":
-        return this.moveTo(this.row - n, this.col);
-      case "B":
-      case "e":
-        return this.moveTo(this.row + n, this.col);
-      case "C":
-      case "a":
-        return this.moveTo(this.row, this.col + n);
-      case "D":
-        return this.moveTo(this.row, Math.max(0, this.col - n));
-      case "E":
-        return this.moveTo(this.row + n, 0);
-      case "F":
-        return this.moveTo(this.row - n, 0);
-      case "G":
-      case "`":
-        return this.moveTo(this.row, n - 1);
-      case "d":
-        return this.moveTo(this.top + n - 1, this.col);
-      case "H":
-      case "f": {
-        const col = Number.isFinite(params[1]) && params[1] > 0 ? params[1] : 1;
-        return this.moveTo(this.top + n - 1, col - 1);
-      }
-      case "K": {
-        if (raw === 0)
-          this.erase(this.row, this.col, Infinity);
-        else if (raw === 1)
-          this.erase(this.row, 0, this.col + 1);
-        else
-          this.erase(this.row, 0, Infinity);
-        return;
-      }
-      case "J": {
-        if (raw === 0) {
-          this.erase(this.row, this.col, Infinity);
-          for (let row = this.row + 1;row < this.rows.length; row++)
-            this.erase(row, 0, Infinity);
-        } else if (raw === 1) {
-          for (let row = this.top;row < this.row; row++)
-            this.erase(row, 0, Infinity);
-          this.erase(this.row, 0, this.col + 1);
-        } else {
-          for (let row = this.top;row < this.rows.length; row++)
-            this.erase(row, 0, Infinity);
-        }
-        return;
-      }
-      case "X":
-        return this.erase(this.row, this.col, this.col + n);
-      case "P": {
-        const cells = this.rowAt(this.row);
-        cells.splice(this.col, n);
-        this.dirty = true;
-        return;
-      }
-      case "@": {
-        const cells = this.rowAt(this.row);
-        if (cells.length > this.col)
-          cells.splice(this.col, 0, ...Array(Math.min(n, this.cols - this.col)).fill(" "));
-        cells.length = Math.min(cells.length, this.cols);
-        this.dirty = true;
-        return;
-      }
-      case "s":
-        if (!body)
-          this.saved = { row: this.row, col: this.col };
-        return;
-      case "u":
-        if (!body)
-          this.moveTo(this.saved.row, this.saved.col);
-        return;
-    }
-  }
-  otherScreen(on) {
-    if (on && !this.main) {
-      if (this.dirty)
-        this.left();
-      this.main = { rows: this.rows, wrapped: this.wrapped, row: this.row, col: this.col, top: this.top };
-      this.rows = [[]];
-      this.wrapped = new Set;
-      this.row = this.col = this.top = 0;
-    } else if (!on && this.main) {
-      if (this.dirty)
-        this.left();
-      ({ rows: this.rows, wrapped: this.wrapped, row: this.row, col: this.col, top: this.top } = this.main);
-      this.main = undefined;
-    }
-    this.dirty = false;
-    this.pending = false;
-  }
-}
-function sequenceEnd(text, at) {
-  const kind = text[at + 1];
-  if (kind === undefined)
-    return -1;
-  if (kind === "[") {
-    for (let index = at + 2;index < text.length; index++) {
-      const code = text.charCodeAt(index);
-      if (code >= 64 && code <= 126)
-        return index + 1;
-      if (code < 32 || code > 126)
-        return at + 2;
-    }
-    return -1;
-  }
-  if (STRINGS.includes(kind)) {
-    for (let index = at + 2;index < text.length; index++) {
-      if (text[index] === "\x07")
-        return index + 1;
-      if (text[index] === "\x1B")
-        return text[index + 1] === undefined ? -1 : text[index + 1] === "\\" ? index + 2 : index;
-    }
-    return -1;
-  }
-  let index = at + 1;
-  while (index < text.length && text.charCodeAt(index) >= 32 && text.charCodeAt(index) <= 47)
-    index++;
-  if (index >= text.length)
-    return -1;
-  return index + 1;
-}
-var STRINGS = "]P_^X", MAX_SEQUENCE = 4096, MAX_SCROLLBACK = 1000;
-
 // box/src/agents/signin.ts
 import { existsSync as existsSync9, lstatSync as lstatSync6, mkdtempSync, readdirSync as readdirSync7, readFileSync as readFileSync16, rmSync as rmSync8 } from "fs";
 import { join as join16 } from "path";
@@ -10341,79 +10039,28 @@ async function commandSignIn(options) {
       delete env[name];
   let printed = "";
   let output = "";
-  const refused = options.refusedCode ?? /invalid code/i;
-  let afterPaste = false;
-  let refusedLine = false;
-  let incompleteLine = false;
   let pastedAt = 0;
-  let lineFrom = 0;
-  const screen = options.terminal ? new Screen(TERMINAL.cols, TERMINAL.rows, (line) => {
-    if (afterPaste && refused.test(line))
-      refusedLine = true;
-    if (afterPaste && options.incompleteCode?.test(line))
-      incompleteLine = true;
-    said(line);
-  }) : undefined;
-  const said = (line) => {
-    if (!options.onLine || status.status !== "pending")
-      return;
-    options.onLine(line);
-    if (signedInBefore !== false)
-      return;
-    options.signedIn().then((signedIn) => {
-      if (!signedIn || status.status !== "pending")
-        return;
-      succeed();
-      child.kill();
-    }, () => {});
-  };
-  const turnedAway = () => screen ? refusedLine || refused.test(screen.current()) : refused.test(output.slice(pastedAt));
-  const incomplete = () => incompleteLine || options.incompleteCode?.test(output);
+  const turnedAway = () => /invalid code/i.test(output.slice(pastedAt));
   const take = (text) => {
-    if (screen) {
-      screen.write(text);
-      output = screen.text();
-    } else {
-      printed += text;
-      output = plain2(printed);
-      for (let end = output.indexOf(`
-`, lineFrom);end >= 0; end = output.indexOf(`
-`, lineFrom)) {
-        said(output.slice(lineFrom, end + 1));
-        lineFrom = end + 1;
-      }
-    }
-    if (options.refusedEnds && afterPaste && status.status === "pending" && turnedAway()) {
-      status = { status: "failed", message: options.refusedEnds };
-      child.kill();
-    }
+    printed += text;
+    output = plain2(printed);
   };
   let type;
   let child;
   try {
-    if (options.terminal) {
+    const spawned = Bun.spawn([options.command, ...options.args], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    child = spawned;
+    const read = async (stream) => {
       const decoder = new TextDecoder;
-      const spawned = Bun.spawn([options.command, ...options.args], {
-        env,
-        terminal: { ...TERMINAL, data: (_terminal, data) => take(decoder.decode(data, { stream: true })) }
-      });
-      child = spawned;
-      type = async (text) => void spawned.terminal.write(text.replace(/\n$/, "\r"));
-    } else {
-      const spawned = Bun.spawn([options.command, ...options.args], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-      child = spawned;
-      const read = async (stream) => {
-        const decoder = new TextDecoder;
-        for await (const chunk of stream)
-          take(decoder.decode(chunk, { stream: true }));
-      };
-      read(spawned.stdout);
-      read(spawned.stderr);
-      type = async (text) => {
-        spawned.stdin.write(text);
-        await spawned.stdin.flush();
-      };
-    }
+      for await (const chunk of stream)
+        take(decoder.decode(chunk, { stream: true }));
+    };
+    read(spawned.stdout);
+    read(spawned.stderr);
+    type = async (text) => {
+      spawned.stdin.write(text);
+      await spawned.stdin.flush();
+    };
   } catch {
     rmSync8(own, { recursive: true, force: true });
     throw new Error("The sign-in program couldn\u2019t start. Try again.");
@@ -10497,15 +10144,6 @@ async function commandSignIn(options) {
     await Bun.sleep(200);
   }
   const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
-  const waitFor = async (ready, message) => {
-    const deadline = performance.now() + 1e4;
-    while (status.status === "pending" && !ready() && performance.now() < deadline)
-      await Bun.sleep(25);
-    if (status.status !== "pending")
-      throw new Error("That sign-in is over. Start it again.");
-    if (!ready())
-      throw new Error(message);
-  };
   return {
     url,
     userCode,
@@ -10517,41 +10155,20 @@ async function commandSignIn(options) {
         throw new Error("That sign-in is over. Start it again.");
       if (submitting)
         throw new Error("A code is already being submitted.");
-      if (screen && afterPaste && !incomplete())
-        throw new Error("A code was already submitted for this sign-in.");
       submitting = true;
       try {
         const text = code.trim();
-        if (screen) {
-          afterPaste = false;
-          if (!text || /[\x00-\x1f\x7f-\x9f]/.test(text))
-            throw new Error("Paste the code from the sign-in page.");
-          await waitFor(() => codePrompt.test(output), "The code prompt isn't ready. Try again.");
-          const before = output;
-          await type(`\x1B[200~${text}\x1B[201~`);
-          const mask = options.codeMask;
-          if (mask)
-            await waitFor(() => output !== before && mask.test(output), "The sign-in didn't take the paste. Start it again.");
-        }
         pasted = true;
         pastedAt = output.length;
-        afterPaste = true;
-        refusedLine = false;
-        incompleteLine = false;
-        await type(screen ? `
-` : text + `
+        await type(text + `
 `);
         for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
           await Bun.sleep(100);
-          if (incomplete() || !options.refusedEnds && turnedAway()) {
+          if (turnedAway()) {
             pasted = false;
-            afterPaste = false;
             throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
           }
         }
-        const now = status;
-        if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
-          throw new Error(options.refusedEnds);
       } finally {
         submitting = false;
       }
@@ -10569,12 +10186,11 @@ async function commandSignIn(options) {
     }
   };
 }
-var SIGN_IN_FOLDER, TERMINAL;
+var SIGN_IN_FOLDER;
 var init_signin = __esm(() => {
   init_files();
   init_proc();
   SIGN_IN_FOLDER = /^kuvo-signin-(\d+)-/;
-  TERMINAL = { cols: 1000, rows: 50 };
 });
 
 // box/src/agents/skills.ts
@@ -11882,60 +11498,9 @@ var init_antigravity = __esm(() => {
   ];
 });
 
-// box/src/shared/account.ts
-import os from "os";
-function homeFolder() {
-  return process.env.HOME || os.homedir();
-}
-var init_account = () => {};
-
-// box/src/shared/agent-credentials.ts
-import { readFileSync as readFileSync20 } from "fs";
-import { join as join20 } from "path";
-function read2(file) {
-  try {
-    return JSON.parse(readFileSync20(file, "utf8"));
-  } catch {
-    return;
-  }
-}
-function codexAuthFile(home) {
-  return read2(join20(home, "auth.json"));
-}
-function codexOAuth(saved) {
-  if (saved?.auth_mode === "apikey" || !saved?.auth_mode && typeof saved?.OPENAI_API_KEY === "string" && saved.OPENAI_API_KEY)
-    return;
-  const tokens = saved?.tokens;
-  if (typeof tokens?.access_token !== "string" || !tokens.access_token)
-    return;
-  return {
-    token: tokens.access_token,
-    account: typeof tokens.account_id === "string" ? tokens.account_id : undefined,
-    refresh: typeof tokens.refresh_token === "string" ? tokens.refresh_token : undefined
-  };
-}
-function grokCredential(home) {
-  const entries = read2(join20(home, "auth.json"));
-  return entries && Object.values(entries).find((each) => typeof each?.key === "string" && each.key.trim());
-}
-function grokHome(instance) {
-  if (instance.home)
-    return instance.home;
-  const home = homeFolder();
-  const set = process.env.GROK_HOME?.trim();
-  return set === "~" ? home : set?.startsWith("~/") ? join20(home, set.slice(2)) : set || join20(home, ".grok");
-}
-function claudeToken(file) {
-  const token = read2(file)?.token;
-  return typeof token === "string" && token ? token : undefined;
-}
-var init_agent_credentials = __esm(() => {
-  init_account();
-});
-
 // box/src/agents/maintenance.ts
-import { existsSync as existsSync13, mkdirSync as mkdirSync13, readFileSync as readFileSync21, realpathSync as realpathSync7, rmSync as rmSync12 } from "fs";
-import { basename as basename3, dirname as dirname10, join as join21 } from "path";
+import { existsSync as existsSync13, mkdirSync as mkdirSync13, readFileSync as readFileSync20, realpathSync as realpathSync7, rmSync as rmSync12 } from "fs";
+import { basename as basename3, dirname as dirname10, join as join20 } from "path";
 function oneAtATime(name, kind, task) {
   const running = underWay.get(name);
   if (running?.kind === kind)
@@ -11967,7 +11532,7 @@ function isOutdated(maintenance) {
 }
 function programInstallerStarted(home, program, attempt) {
   try {
-    const [pid, , owner] = readFileSync21(installFile(home, program), "utf8").split(" ");
+    const [pid, , owner] = readFileSync20(installFile(home, program), "utf8").split(" ");
     return owner === attempt && Number(pid) > 0;
   } catch {
     return false;
@@ -11977,7 +11542,7 @@ function finishProgramInstallation(home, program, attempt) {
   const marker = installFile(home, program);
   let owner;
   try {
-    owner = readFileSync21(marker, "utf8").split(" ")[2];
+    owner = readFileSync20(marker, "utf8").split(" ")[2];
   } catch {
     return;
   }
@@ -11988,7 +11553,7 @@ function programInstallation(home, program) {
   if (!/^[a-z][a-z0-9-]*$/.test(program))
     return;
   try {
-    const [pid, until] = readFileSync21(installFile(home, program), "utf8").split(" ").map(Number);
+    const [pid, until] = readFileSync20(installFile(home, program), "utf8").split(" ").map(Number);
     if (pid === 0)
       return Date.now() < until ? "running" : "ended";
     if (!Number.isSafeInteger(pid) || pid < 2)
@@ -12118,16 +11683,16 @@ async function resolveUpdater(definition) {
     return nativeUpdater;
   const prefix = npmGlobalPrefix(realPath, definition.npmPackage);
   if (prefix) {
-    const npm = existsSync13(join21(prefix, "bin", "npm")) ? join21(prefix, "bin", "npm") : "npm";
+    const npm = existsSync13(join20(prefix, "bin", "npm")) ? join20(prefix, "bin", "npm") : "npm";
     return {
       command: [npm, "install", "-g", "--prefix", prefix, `--allow-scripts=${definition.npmPackage}`, `${definition.npmPackage}@latest`],
       shown: `npm install -g ${definition.npmPackage}@latest`,
-      env: { PATH: `${join21(prefix, "bin")}:${process.env.PATH ?? ""}` }
+      env: { PATH: `${join20(prefix, "bin")}:${process.env.PATH ?? ""}` }
     };
   }
   const keg = homebrewKeg(realPath);
   if (keg && keg.name.toLowerCase() !== "mise") {
-    const brew = existsSync13(join21(keg.prefix, "bin", "brew")) ? join21(keg.prefix, "bin", "brew") : which("brew");
+    const brew = existsSync13(join20(keg.prefix, "bin", "brew")) ? join20(keg.prefix, "bin", "brew") : which("brew");
     if (brew) {
       const said = (await run(brew, ["--prefix"], { timeout: 15000 }).catch(() => {
         return;
@@ -12180,7 +11745,7 @@ function homebrewLatest(json, cask) {
     return;
   }
 }
-var checked, newest, underWay, INSTALL_TIMEOUT, installFile = (home, program) => join21(home, "program-installing", program);
+var checked, newest, underWay, INSTALL_TIMEOUT, installFile = (home, program) => join20(home, "program-installing", program);
 var init_maintenance = __esm(() => {
   init_files();
   init_machine();
@@ -12191,41 +11756,389 @@ var init_maintenance = __esm(() => {
   INSTALL_TIMEOUT = 10 * 60000;
 });
 
-// box/src/usage/claude-limits.ts
-import { createHash as createHash9 } from "crypto";
-import { readFileSync as readFileSync22, statSync as statSync7 } from "fs";
-import { join as join22 } from "path";
-function credentialsIn(configHome) {
+// box/src/usage/codex-resets.ts
+function codexResets(list, embedded, now = Date.now()) {
+  const source = typeof list?.available_count === "number" && Number.isFinite(list.available_count) ? list : embedded;
+  const count = source?.available_count;
+  if (typeof count !== "number" || !Number.isFinite(count) || count < 0)
+    return;
+  const expiries = (Array.isArray(source.credits) ? source.credits : []).filter(available).map((credit) => time(credit.expires_at)).filter((at) => at !== undefined && at > now).sort((a, b) => a - b).slice(0, 50);
+  const left = Math.floor(count);
+  return { id: "resets", name: "Rate Limit Resets", kind: "resets", count: left, ...expiries.length ? { expiries } : {}, usable: left > 0 };
+}
+function codexCredits(credits) {
+  if (!credits || typeof credits !== "object" || credits.unlimited === true)
+    return;
+  const raw = credits.balance;
+  const balance = typeof raw === "string" && raw.trim() ? Number(raw) : raw;
+  if (typeof balance === "number" && Number.isFinite(balance))
+    return { id: "credits", name: "Extra Usage", kind: "left", amount: Math.max(0, Math.floor(balance)), unit: "credits" };
+  if (credits.has_credits === false || credits.hasCredits === false)
+    return { id: "credits", name: "Extra Usage", kind: "left", amount: 0, unit: "credits" };
+  return;
+}
+async function readCodexResets(signIn, now = Date.now()) {
   try {
-    const oauth = JSON.parse(readFileSync22(join22(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth;
-    if (typeof oauth?.accessToken !== "string" || !oauth.accessToken)
+    const response = await fetch(codexResetEndpoints.list, { headers: headers(signIn), signal: AbortSignal.timeout(15000) });
+    if (!response.ok)
       return;
-    return {
-      token: oauth.accessToken,
-      ...typeof oauth.subscriptionType === "string" ? { subscription: oauth.subscriptionType } : {},
-      ...typeof oauth.rateLimitTier === "string" ? { tier: oauth.rateLimitTier } : {},
-      ...typeof oauth.expiresAt === "number" ? { expiresAt: oauth.expiresAt } : {},
-      ...Array.isArray(oauth.scopes) ? { scopes: oauth.scopes.filter((scope) => typeof scope === "string") } : {}
-    };
+    return codexResets(await response.json(), undefined, now);
   } catch {
     return;
   }
 }
-function claudeIdentity(configHome, token) {
-  if (token !== undefined)
-    return tokenIdentity(configHome, token);
-  const file = join22(configHome, ".claude.json");
+var codexResetEndpoints, headers = (signIn) => ({
+  Authorization: `Bearer ${signIn.token.trim()}`,
+  Accept: "application/json",
+  "Content-Type": "application/json",
+  "OpenAI-Beta": "codex-1",
+  originator: "Codex Desktop",
+  ...signIn.account ? { "ChatGPT-Account-Id": signIn.account } : {}
+}), time = (value) => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0)
+    return value < 1000000000000 ? value * 1000 : value;
+  if (typeof value !== "string" || !value.trim())
+    return;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? at : undefined;
+}, available = (credit) => credit && typeof credit === "object" && (credit.status === undefined || credit.status === null || credit.status === "available");
+var init_codex_resets = __esm(() => {
+  codexResetEndpoints = {
+    list: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+    consume: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+  };
+});
+
+// box/src/usage/engine-limits.ts
+async function fetched(url, headers, now, maker, refused) {
+  let response;
+  try {
+    response = await fetch(url, { headers: { Accept: "application/json", ...headers }, signal: AbortSignal.timeout(15000) });
+  } catch (caught) {
+    throw new LimitsProblem("failed", `Couldn't reach ${maker}: ${caught instanceof Error ? caught.message : String(caught)}`);
+  }
+  if (response.status === 429)
+    throw new LimitsProblem("rate-limited", `${maker} is turning away reads of the limits for now.`, retryAt(response.headers.get("retry-after"), now));
+  if (response.status === 401 || response.status === 403) {
+    throw refused?.(response.status, await response.text().catch(() => "")) ?? new LimitsProblem("expired", `${maker} turned the sign-in away: sign in again in Settings \u203A Accounts if it keeps saying so.`);
+  }
+  if (!response.ok)
+    throw new LimitsProblem("failed", `${maker} answered ${response.status}.`);
+  try {
+    return await response.json();
+  } catch {
+    throw new LimitsProblem("failed", `${maker}'s answer wasn't what Kuvo Code reads.`);
+  }
+}
+async function readChatGPT(secret, credential, now) {
+  const account = credential.value.metadata?.accountID;
+  const body = await fetched(engineEndpoints.chatgpt, { Authorization: `Bearer ${secret}`, ...typeof account === "string" && account ? { "ChatGPT-Account-Id": account } : {} }, now, "ChatGPT");
+  const windows = [...whamWindows(body?.rate_limit, "", undefined, now)];
+  for (const extra of Array.isArray(body?.additional_rate_limits) ? body.additional_rate_limits : []) {
+    const name = typeof extra?.limit_name === "string" ? extra.limit_name : typeof extra?.metered_feature === "string" ? extra.metered_feature : undefined;
+    const id = typeof extra?.limit_id === "string" ? extra.limit_id : typeof extra?.metered_feature === "string" ? extra.metered_feature : name;
+    if (id)
+      windows.push(...whamWindows(extra.rate_limit, `${id}.`, name, now));
+  }
+  const plan = title(body?.plan_type);
+  const signIn = chatGPTSignInOf(credential);
+  const embedded = body?.rate_limit_reset_credits;
+  const listed = signIn && Number(embedded?.available_count) > 0 ? await readCodexResets(signIn, now) : undefined;
+  const extras = [codexCredits(body?.credits), listed ?? codexResets(undefined, embedded, now)].filter((extra) => !!extra);
+  return { windows, ...plan ? { plan } : {}, ...extras.length ? { extras } : {} };
+}
+function chatGPTSignInOf(credential) {
+  const token = credential?.value.access?.trim();
+  if (!token)
+    return;
+  const account = credential.value.metadata?.accountID;
+  return { token, ...typeof account === "string" && account ? { account } : {} };
+}
+function whamWindows(limit, prefix, model, now) {
+  return ["primary", "secondary"].flatMap((which) => {
+    const window = limit?.[`${which}_window`];
+    const used = number2(window?.used_percent);
+    if (!window || used === undefined)
+      return [];
+    const seconds = number2(window.limit_window_seconds);
+    const resetsAt = number2(window.reset_at) !== undefined ? number2(window.reset_at) * 1000 : number2(window.reset_after_seconds) !== undefined ? now + number2(window.reset_after_seconds) * 1000 : undefined;
+    return [{ id: prefix + which, used: used / 100, ...seconds ? { minutes: Math.round(seconds / 60) } : {}, ...resetsAt ? { resetsAt } : {}, ...model ? { model } : {} }];
+  });
+}
+async function readGrok(secret, _credential, now) {
+  return grokBilling(await fetched(engineEndpoints.grok, { Authorization: `Bearer ${secret}`, "X-XAI-Token-Auth": "xai-grok-cli" }, now, "xAI"), now);
+}
+function grokBilling(body, _now) {
+  const period = body?.config?.currentPeriod;
+  const config = body?.config;
+  if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key)))
+    throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.");
+  const start = date(period?.start);
+  const end = date(period?.end);
+  if (!start || !end || end <= start)
+    throw new LimitsProblem("failed", "xAI's answer wasn't what Kuvo Code reads.");
+  const used = number2(body.config.creditUsagePercent) ?? 0;
+  return { windows: [{ id: "weekly", used: used / 100, minutes: Math.round((end - start) / 60000), resetsAt: end }] };
+}
+async function readCopilot(secret, _credential, now) {
+  const body = await fetched(engineEndpoints.copilot, { Authorization: `token ${secret}`, "Editor-Version": "vscode/1.96.2", "Editor-Plugin-Version": "copilot-chat/0.26.7", "User-Agent": "GitHubCopilotChat/0.26.7", "X-Github-Api-Version": "2025-04-01" }, now, "GitHub");
+  const resetsAt = date(body?.quota_reset_date) ?? date(body?.limited_user_reset_date);
+  const windows = [];
+  const snapshots = body?.quota_snapshots;
+  for (const [id, name] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
+    const snapshot = snapshots?.[id];
+    const entitlement = number2(snapshot?.entitlement);
+    const remaining = number2(snapshot?.remaining);
+    if (!snapshot || snapshot.unlimited === true || entitlement === -1 || remaining === -1 || !entitlement)
+      continue;
+    const percentLeft = number2(snapshot.percent_remaining);
+    const used = percentLeft !== undefined ? 1 - percentLeft / 100 : remaining !== undefined ? 1 - remaining / entitlement : undefined;
+    if (used === undefined)
+      continue;
+    windows.push({
+      id,
+      used,
+      minutes: MONTH,
+      ...resetsAt ? { resetsAt } : {},
+      name,
+      ...remaining !== undefined ? { amount: { used: Math.max(0, entitlement - remaining), limit: entitlement, unit: "requests" } } : {}
+    });
+  }
+  if (!snapshots) {
+    for (const [id, name] of [["chat", "Chat"], ["completions", "Completions"]]) {
+      const limit = number2(body?.monthly_quotas?.[id]);
+      const remaining = number2(body?.limited_user_quotas?.[id]);
+      if (!limit || remaining === undefined)
+        continue;
+      windows.push({ id, used: 1 - remaining / limit, minutes: MONTH, name, ...resetsAt ? { resetsAt } : {}, amount: { used: Math.max(0, limit - remaining), limit, unit: "requests" } });
+    }
+  }
+  const plan = title(body?.copilot_plan);
+  const login = typeof body?.login === "string" && body.login.trim() ? body.login.trim().toLowerCase() : undefined;
+  const extras = !windows.length && body?.token_based_billing === true ? await organizationCredits(secret, now) : undefined;
+  return { windows, ...plan ? { plan } : {}, ...extras?.length ? { extras } : {}, ...login ? { identity: `github:${login}` } : {} };
+}
+async function organizationCredits(secret, now) {
+  const key = fingerprint(secret);
+  const known = billingOrgs.get(key);
+  const read = async (org) => {
+    try {
+      const response = await fetch(`${engineEndpoints.githubBilling}/${encodeURIComponent(org)}/settings/billing/usage/summary`, { headers: githubHeaders(secret), signal: AbortSignal.timeout(15000) });
+      if (notNow(response))
+        return;
+      if (!response.ok)
+        return null;
+      return billingExtras(await response.json());
+    } catch {
+      return;
+    }
+  };
+  if (known?.org) {
+    const extras = await read(known.org);
+    if (extras === undefined)
+      return known.extras;
+    if (extras) {
+      billingOrgs.set(key, { org: known.org, extras });
+      return extras;
+    }
+    billingOrgs.delete(key);
+  } else if (known?.none && now - known.none < ORGS_AGAIN) {
+    return;
+  }
+  let orgs;
+  try {
+    const response = await fetch(engineEndpoints.githubOrgs, { headers: githubHeaders(secret), signal: AbortSignal.timeout(15000) });
+    if (notNow(response))
+      return known?.extras;
+    if (!response.ok) {
+      billingOrgs.set(key, { none: now });
+      return;
+    }
+    const body = await response.json();
+    orgs = (Array.isArray(body) ? body : []).map((each) => typeof each?.login === "string" ? each.login.trim() : "").filter(Boolean).slice(0, 30);
+  } catch {
+    return;
+  }
+  for (const org of orgs) {
+    const extras = await read(org);
+    if (extras === undefined)
+      return;
+    if (!extras)
+      continue;
+    billingOrgs.set(key, { org, extras });
+    return extras;
+  }
+  billingOrgs.set(key, { none: now });
+  return;
+}
+function notNow(response) {
+  if (response.status === 429 || response.status >= 500)
+    return true;
+  return response.status === 403 && (response.headers.has("retry-after") || response.headers.get("x-ratelimit-remaining") === "0");
+}
+function billingExtras(body) {
+  const items = Array.isArray(body?.usageItems) ? body.usageItems : null;
+  if (!items)
+    return null;
+  const copilot = items.filter((item) => String(item?.product ?? "").trim().toLowerCase() === "copilot" && ["ai-units", "ai-credits"].includes(String(item?.unitType ?? "").trim().toLowerCase()));
+  if (!copilot.length)
+    return null;
+  const sum = (field) => copilot.reduce((total, item) => total + Math.max(0, number2(item?.[field]) ?? 0), 0);
+  return [
+    { id: "org_credits", name: "Org Credits", kind: "spent", amount: sum("grossQuantity"), unit: "credits" },
+    { id: "org_spend", name: "Org Spend", kind: "spent", amount: sum("netAmount"), unit: "usd" }
+  ];
+}
+async function readOpenRouter(secret, _credential, now) {
+  const headers = { Authorization: `Bearer ${secret}` };
+  const key = (await fetched(engineEndpoints.openrouterKey, headers, now, "OpenRouter"))?.data;
+  const windows = [];
+  const limit = number2(key?.limit);
+  if (limit && limit > 0) {
+    const left = Math.max(0, number2(key.limit_remaining) ?? limit - (number2(key.usage) ?? 0));
+    windows.push({ id: "key", used: 1 - left / limit, name: "Key limit", amount: { used: limit - left, limit, unit: "usd" } });
+  }
+  let balance;
+  try {
+    const credits = (await fetched(engineEndpoints.openrouterCredits, headers, now, "OpenRouter"))?.data;
+    const total = number2(credits?.total_credits);
+    const spent = number2(credits?.total_usage);
+    if (total !== undefined && spent !== undefined)
+      balance = { left: Math.max(0, total - spent), ...total > 0 ? { limit: total } : {}, unit: "usd" };
+  } catch (caught) {
+    if (!windows.length)
+      throw caught;
+  }
+  const plan = key?.is_free_tier === true ? "Free tier" : key?.is_free_tier === false ? "Pay as you go" : undefined;
+  const extras = [];
+  for (const [field, id, name, ends] of [["usage_daily", "today", "Today", endOfDay], ["usage_weekly", "week", "This Week", endOfWeek], ["usage_monthly", "month", "This Month", endOfMonth]]) {
+    const spent = number2(key?.[field]);
+    if (spent !== undefined)
+      extras.push({ id, name, kind: "spent", amount: Math.max(0, spent), unit: "usd", resetsAt: ends(now) });
+  }
+  return { windows, ...balance ? { balance } : {}, ...plan ? { plan } : {}, ...extras.length ? { extras } : {} };
+}
+async function readZai(secret, _credential, now) {
+  const root = await fetched(engineEndpoints.zai, { Authorization: `Bearer ${secret}` }, now, "Z.ai");
+  if (root?.success === false && /coding plan/i.test(String(root?.msg ?? "")))
+    throw new LimitsProblem("none", "No coding plan on this key.");
+  const limits = Array.isArray(root?.data?.limits) ? root.data.limits : Array.isArray(root?.limits) ? root.limits : undefined;
+  if (!limits)
+    throw new LimitsProblem("failed", "Z.ai's answer wasn't what Kuvo Code reads.");
+  const UNIT = { 3: 60, 4: 1440, 5: 43200, 6: 10080 };
+  const windows = [];
+  for (const entry of limits) {
+    const type = entry?.type ?? entry?.name;
+    const resetsAt = number2(entry?.nextResetTime);
+    if (type === "CREDIT_LIMIT" || type === "TOKENS_LIMIT") {
+      const unit = UNIT[number2(entry.unit) ?? 0];
+      const count = number2(entry.number);
+      const percent = number2(entry.percentage);
+      if (!unit || !count || percent === undefined)
+        continue;
+      const minutes = unit * count;
+      windows.push({ id: minutes < 1440 ? "session" : `window_${minutes}`, used: percent / 100, minutes, ...resetsAt ? { resetsAt } : {} });
+    } else if (type === "TIME_LIMIT") {
+      const used = number2(entry.currentValue);
+      const limit = number2(entry.usage);
+      if (used === undefined || !limit)
+        continue;
+      windows.push({ id: "web_search", used: used / limit, name: "Web searches", ...resetsAt ? { resetsAt } : {}, amount: { used, limit, unit: "requests" } });
+    }
+  }
+  return { windows };
+}
+async function readOpenCodeGo(secret, _credential, now) {
+  const body = await fetched(engineEndpoints.opencodeGo, { Authorization: `Bearer ${secret}` }, now, "OpenCode", (status, text) => status === 403 && /EntitlementError/i.test(text) ? new LimitsProblem("none", "No OpenCode Go plan on this key.") : undefined);
+  const usage = body?.usage;
+  if (!usage || typeof usage !== "object")
+    throw new LimitsProblem("none", "No OpenCode Go plan on this key.");
+  const windows = [];
+  for (const [id, minutes] of [["rolling", 300], ["weekly", 10080], ["monthly", MONTH]]) {
+    const percent = number2(usage[id]?.percent);
+    if (percent === undefined)
+      continue;
+    let resetsAt = date(usage[id].resetsAt);
+    if (id === "rolling" && resetsAt && resetsAt >= now + 299 * 60000)
+      resetsAt = undefined;
+    windows.push({ id, used: percent / 100, minutes, ...resetsAt ? { resetsAt } : {} });
+  }
+  return { windows, plan: "Go" };
+}
+var engineEndpoints, EVERY2, MONTH = 43200, byKey = (value) => value.key?.trim() ? `key:${value.key.trim()}` : undefined, READERS, ENGINE_SERVICES, number2 = (value) => {
+  const found = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof found === "number" && Number.isFinite(found) ? found : undefined;
+}, date = (value) => {
+  if (typeof value !== "string" || !value.trim())
+    return;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? at : undefined;
+}, title = (value) => typeof value === "string" && value.trim() ? value.trim().split(/[_\s]+/).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ") : undefined, billingOrgs, ORGS_AGAIN, githubHeaders = (secret) => ({ Authorization: `token ${secret}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Kuvo-Code" }), endOfDay = (now) => {
+  const day = new Date(now);
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
+}, endOfWeek = (now) => {
+  const day = new Date(now);
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 7 - (day.getUTCDay() + 6) % 7);
+}, endOfMonth = (now) => {
+  const day = new Date(now);
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth() + 1, 1);
+};
+var init_engine_limits = __esm(() => {
+  init_codex_resets();
+  init_limits2();
+  engineEndpoints = {
+    chatgpt: "https://chatgpt.com/backend-api/wham/usage",
+    grok: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+    copilot: "https://api.github.com/copilot_internal/user",
+    githubOrgs: "https://api.github.com/user/orgs?per_page=100",
+    githubBilling: "https://api.github.com/orgs",
+    openrouterKey: "https://openrouter.ai/api/v1/key",
+    openrouterCredits: "https://openrouter.ai/api/v1/credits",
+    zai: "https://api.z.ai/api/monitor/usage/quota/limit",
+    opencodeGo: "https://opencode.ai/zen/go/v1/usage"
+  };
+  EVERY2 = 10 * 60000;
+  READERS = {
+    openai: { service: "codex", signIn: true, read: readChatGPT, identity: (value) => chatGPTIdentity(value.access, value.metadata?.accountID) },
+    xai: { service: "grok", signIn: true, read: readGrok, identity: (value) => xaiIdentity(value.access) },
+    "github-copilot": { service: "copilot", lasting: true, read: readCopilot },
+    openrouter: { service: "openrouter", read: readOpenRouter, identity: byKey },
+    zai: { service: "zai", read: readZai, identity: byKey },
+    "zai-coding-plan": { service: "zai", read: readZai, identity: byKey },
+    "opencode-go": { service: "opencode", read: readOpenCodeGo, identity: byKey }
+  };
+  ENGINE_SERVICES = [...new Set(Object.values(READERS).map((reader) => reader.service))];
+  billingOrgs = new Map;
+  ORGS_AGAIN = 6 * 60 * 60000;
+});
+
+// box/src/usage/native-usage.ts
+var init_native_usage = __esm(() => {
+  init_rpc();
+  init_codex_resets();
+  init_engine_limits();
+  init_limits2();
+});
+
+// box/src/usage/claude-limits.ts
+import { readFileSync as readFileSync21, statSync as statSync7 } from "fs";
+import { join as join21 } from "path";
+function claudeIdentity(recordHome) {
+  const file = join21(recordHome, ".claude.json");
   try {
     const { mtimeMs, size } = statSync7(file);
     const known = identities.get(file);
     if (known && known.mtimeMs === mtimeMs && known.size === size)
       return known.identity;
-    const identity = identityIn(readFileSync22(file, "utf8"));
+    const identity = identityIn(readFileSync21(file, "utf8"));
     identities.set(file, { mtimeMs, size, identity });
     return identity;
   } catch {
     return;
   }
+}
+function claudeSignInMark(recordHome) {
+  return fingerprint(claudeIdentity(recordHome));
 }
 function identityIn(text) {
   try {
@@ -12238,40 +12151,6 @@ function identityIn(text) {
   } catch {
     return;
   }
-}
-function tokenIdentity(configHome, token) {
-  try {
-    return recordIdentity(configHome, readFileSync22(join22(configHome, "policy-limits.json.stamp.json"), "utf8"), readFileSync22(join22(configHome, "policy-limits.json.signature.json"), "utf8"), token);
-  } catch {
-    return;
-  }
-}
-function recordIdentity(configHome, stampText, signatureText, token) {
-  try {
-    const stamp = JSON.parse(stampText);
-    if (stamp?.v !== 1 || typeof stamp.identity !== "string")
-      return unread(configHome, "its policy note isn't one this version reads");
-    const principal = `token:${createHash9("sha256").update(token.trim()).digest("hex").slice(0, 32)}`;
-    if (stamp?.kind !== "token" || stamp.identity !== createHash9("sha256").update(principal).digest("hex"))
-      return;
-    const payload = String(JSON.parse(signatureText)?.jws ?? "").split(".")[1];
-    if (!payload)
-      return unread(configHome, "its policy record isn't one this version reads");
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (typeof stamp.sha !== "string" || claims?.sha !== stamp.sha)
-      return;
-    const account = typeof claims.sub === "string" ? claims.sub.trim().toLowerCase() : "";
-    const organization = typeof claims.aud === "string" ? claims.aud.trim().toLowerCase() : "";
-    return account && organization ? `anthropic:${account}|${organization}` : undefined;
-  } catch {
-    return;
-  }
-}
-function unread(configHome, why) {
-  if (!told.has(configHome))
-    console.error(`Claude's account in ${configHome} can't be told: ${why}.`);
-  told.add(configHome);
-  return;
 }
 function heardWindows(info) {
   const windows = [];
@@ -12323,14 +12202,14 @@ function warnedLimit(type) {
     return shape.model ? `your weekly ${shape.model} limit` : "your weekly Claude limit";
   return "your Claude usage limit";
 }
-var CLAUDE_LIMITS_EVERY, CLAUDE_GRANTS_EVERY, identities, told, CLOSE_TO_LIMIT = 0.9, HEARD;
+var CLAUDE_LIMITS_EVERY, CLAUDE_GRANTS_EVERY, identities, CLOSE_TO_LIMIT = 0.9, HEARD;
 var init_claude_limits = __esm(() => {
   init_limits2();
+  init_native_usage();
   init_limits2();
   CLAUDE_LIMITS_EVERY = 15 * 60000;
   CLAUDE_GRANTS_EVERY = 60 * 60000;
   identities = new Map;
-  told = new Set;
   HEARD = {
     five_hour: { id: "five_hour", minutes: 300 },
     seven_day: { id: "seven_day", minutes: 10080 },
@@ -12379,6 +12258,17 @@ var init_queue = __esm(() => {
       };
     }
   };
+});
+
+// box/src/shared/agent-programs.ts
+import { homedir as homedir2 } from "os";
+import { join as join22 } from "path";
+var claudePlaces, codexPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
+var init_agent_programs = __esm(() => {
+  init_proc();
+  claudePlaces = [join22(homedir2(), ".local/bin"), join22(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
+  codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join22(homedir2(), ".local/bin"), join22(homedir2(), ".codex/bin")];
+  grokPlaces = [join22(homedir2(), ".grok/bin"), join22(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 });
 
 // box/src/agents/shells.ts
@@ -12485,9 +12375,9 @@ var paragraphs = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filte
 
 // box/src/agents/agents/claude.ts
 import { spawn as spawn6 } from "child_process";
-import { createHash as createHash10, randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync14, mkdirSync as mkdirSync14, readdirSync as readdirSync11, readFileSync as readFileSync23, rmdirSync as rmdirSync2, rmSync as rmSync13, statSync as statSync8 } from "fs";
-import { homedir as homedir2 } from "os";
+import { createHash as createHash9, randomUUID as randomUUID3 } from "crypto";
+import { existsSync as existsSync14, mkdirSync as mkdirSync14, readdirSync as readdirSync11, readFileSync as readFileSync22, rmdirSync as rmdirSync2, statSync as statSync8 } from "fs";
+import { homedir as homedir3 } from "os";
 import { basename as basename4, dirname as dirname11, join as join23, resolve as resolve6 } from "path";
 import { pathToFileURL as pathToFileURL3 } from "url";
 function botMemory(session) {
@@ -12536,6 +12426,486 @@ class Said {
     return withoutSecrets(line ?? "").slice(0, 300);
   }
 }
+
+class ClaudeAgent {
+  context;
+  instance;
+  static heardWithin = 1000;
+  id = "claude";
+  compacts = true;
+  providerID;
+  get name() {
+    return accountName("Claude Code", this.instance);
+  }
+  install = "curl -fsSL https://claude.ai/install.sh | bash";
+  status;
+  turnedAway;
+  modelList;
+  loadingModels;
+  catalogGeneration = 0;
+  listed = [];
+  program = 0;
+  signOut;
+  signOutShared;
+  constructor(context, instance = { id: "default" }) {
+    this.context = context;
+    this.instance = instance;
+    this.providerID = providerID("claude", instance.id);
+    if (instance.id === "default") {
+      this.signOutShared = true;
+      this.signOut = async () => {
+        await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env());
+        this.programUpdated();
+        this.known.reset();
+        this.modelList = undefined;
+      };
+    }
+  }
+  executable() {
+    return claudeProgram();
+  }
+  get definition() {
+    const executable = this.executable();
+    if (!executable)
+      return;
+    return {
+      name: "Claude Code",
+      executable,
+      npmPackage: "@anthropic-ai/claude-code",
+      nativeUpdate: { args: ["update"], isNative: (path) => /\/\.local\/share\/claude\/|\/\.claude\/local\//.test(path), distTag: updateChannel }
+    };
+  }
+  async maintenance(fresh = false) {
+    const definition = this.definition;
+    return definition ? maintenance(definition, fresh) : {};
+  }
+  async update(attempt) {
+    const definition = this.definition;
+    if (!definition)
+      return { updated: false, message: "Claude Code isn't installed." };
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt });
+  }
+  async installProgram() {
+    return install("Claude Code", this.install, this.context.temporary, () => this.executable());
+  }
+  programUpdated() {
+    this.program++;
+    this.catalogGeneration++;
+    this.loadingModels = undefined;
+    if (this.modelList)
+      this.modelList.at = 0;
+  }
+  methods() {
+    return [
+      { type: "oauth", id: "claudeai", label: "Sign in with your Claude plan" },
+      { type: "oauth", id: "console", label: "Sign in with Anthropic Console" }
+    ];
+  }
+  async readStatus(env = this.env()) {
+    const executable = this.executable();
+    if (!executable)
+      throw new Error("Claude Code isn't installed.");
+    const result = await run(executable, ["auth", "status", "--json"], { timeout: 20000, env });
+    if (result.timedOut)
+      throw new TookTooLong("Claude Code took too long to say whether it's signed in.");
+    let status;
+    try {
+      status = JSON.parse(result.stdout);
+    } catch {}
+    if (typeof status?.loggedIn !== "boolean") {
+      const words = (result.stderr.trim() || result.stdout.trim()).split(`
+`).pop()?.trim().slice(0, 300);
+      throw new Error(words ? `Claude Code couldn't say whether it's signed in: ${words}` : `Claude Code couldn't say whether it's signed in (it stopped with code ${result.code}).`);
+    }
+    this.status = { at: Date.now(), status };
+    return status;
+  }
+  known = new KnownAccount(30000);
+  async account(fresh = false) {
+    if (!this.executable()) {
+      return { installed: false, signedIn: false, message: "Install Claude Code, then sign in here." };
+    }
+    const account = await this.known.read(fresh, async () => {
+      const status = await this.readStatus();
+      if (!status.loggedIn)
+        return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
+      return { installed: true, signedIn: true, ...named4(status, "Claude Code") };
+    });
+    const turnedAway = this.turnedAway;
+    if (!turnedAway)
+      return account;
+    if (turnedAway.written !== undefined && await this.credentialsWritten() > turnedAway.written) {
+      if (this.turnedAway === turnedAway)
+        this.turnedAway = undefined;
+      this.known.reset();
+      return this.account();
+    }
+    return account.signedIn ? { installed: true, signedIn: false, ended: true, message: "Claude ended this sign-in. Sign in again." } : account;
+  }
+  usesKey() {
+    const method = this.status?.status.authMethod ?? "";
+    return method !== "" && method !== "claude.ai";
+  }
+  turnAway() {
+    const turnedAway = {};
+    this.turnedAway = turnedAway;
+    this.credentialsWritten().then((written) => turnedAway.written = written, () => turnedAway.written = 0);
+    emit("integration.updated", { integrationID: this.providerID });
+  }
+  async signedOut() {
+    const out = (account) => account.installed && !account.signedIn;
+    return out(await this.account()) && out(await this.account(true));
+  }
+  async credentialsWritten() {
+    const own = this.instance.home ?? process.env.CLAUDE_CONFIG_DIR;
+    let written = 0;
+    try {
+      written = statSync8(join23(own ?? join23(homedir3(), ".claude"), ".credentials.json")).mtimeMs;
+    } catch {}
+    if (process.platform === "darwin")
+      written = Math.max(written, await keychainWritten(`Claude Code-credentials${own ? `-${createHash9("sha256").update(own).digest("hex").slice(0, 8)}` : ""}`));
+    return written;
+  }
+  signsInRemotely = true;
+  get configHome() {
+    return this.instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? join23(homedir3(), ".claude");
+  }
+  get recordHome() {
+    return this.instance.home ?? (process.env.CLAUDE_CONFIG_DIR?.trim() ? process.env.CLAUDE_CONFIG_DIR : homedir3());
+  }
+  limits = {
+    every: 15 * 60000,
+    signIn: () => claudeSignInMark(this.recordHome),
+    identity: () => claudeIdentity(this.recordHome)
+  };
+  async signIn(methodID, options = {}) {
+    const executable = this.executable();
+    if (!executable)
+      throw new Error(`Install Claude Code first: ${this.install}`);
+    if (this.instance.home)
+      mkdirSync14(this.instance.home, { recursive: true, mode: 448 });
+    const env = this.env();
+    return commandSignIn({
+      command: executable,
+      args: ["auth", "login", methodID === "console" ? "--console" : "--claudeai"],
+      env,
+      home: this.context.home,
+      temporary: this.context.temporary,
+      instructions: "Finish signing in on Claude\u2019s page. If it gives you a code, paste it here.",
+      signedIn: async () => (await this.readStatus(env)).loggedIn === true,
+      codePrompt: /Paste code here if prompted >\s*/g,
+      onComplete: () => {
+        this.turnedAway = undefined;
+        this.known.reset();
+        this.modelList = undefined;
+        this.programUpdated();
+      },
+      printedPage: options.remote && !options.browserReturn
+    });
+  }
+  async sdk() {
+    await this.context.deps.ensure(this.id, SDK, { optional: false });
+    return this.context.deps.load(this.id, SDK[0].name);
+  }
+  ownsPath(path, session) {
+    const file = resolve6(path);
+    const memory = session && botMemory(session);
+    if (memory && file.startsWith(memory + "/"))
+      return true;
+    const settings = this.configHome;
+    if (file.startsWith(settings + "/") && /^(plans\/[^/]+\.md|projects\/[^/]+\/memory\/.+|projects\/[^/]+\/[^/]+\/tool-results\/.+)$/.test(file.slice(settings.length + 1)))
+      return true;
+    const uid = process.getuid?.();
+    return uid !== undefined && ["/tmp", "/private/tmp"].some((tmp) => file.startsWith(`${tmp}/claude-${uid}/`) && /^[^/]+\/[^/]+\/tasks\/[^/]+$/.test(file.slice(`${tmp}/claude-${uid}/`.length)));
+  }
+  projectFolder(directory, home = this.configHome) {
+    return join23(home, "projects", projectSlug(directory));
+  }
+  homesItMayUse() {
+    return [this.configHome];
+  }
+  conversationFiles(state, session) {
+    const id = state.claudeSession;
+    if (typeof id !== "string" || !state.claudeStarted)
+      return null;
+    if (!CONVERSATION_ID.test(id))
+      return { items: [], missing: true };
+    let folder;
+    for (const home of this.homesItMayUse()) {
+      const named = this.projectFolder(session.location.directory, home);
+      if (existsSync14(join23(named, `${id}.jsonl`))) {
+        folder = named;
+        break;
+      }
+    }
+    if (!folder) {
+      for (const home of this.homesItMayUse()) {
+        const projects = join23(home, "projects");
+        const found = (() => {
+          try {
+            return readdirSync11(projects).find((name) => existsSync14(join23(projects, name, `${id}.jsonl`)));
+          } catch {
+            return;
+          }
+        })();
+        if (found) {
+          folder = join23(projects, found);
+          break;
+        }
+      }
+    }
+    if (!folder)
+      return { items: [], missing: true };
+    const beside = join23(folder, id);
+    const ownMemory = botMemory(session);
+    const memory = ownMemory && existsSync14(ownMemory) ? undefined : join23(this.homesItMayUse().find((home) => folder.startsWith(home + "/")) ?? this.configHome, "projects", projectSlug(session.location.directory), "memory");
+    return {
+      items: [{ path: join23(folder, `${id}.jsonl`), name: `${id}.jsonl` }, ...existsSync14(beside) ? [{ path: beside, name: id }] : []],
+      ...memory && existsSync14(memory) ? { memory, ...ownMemory ? {} : { memoryShared: true } } : {}
+    };
+  }
+  conversationPlace(_state, session) {
+    const folder = this.projectFolder(session.location.directory);
+    const own = botMemory(session);
+    return {
+      item: (name) => CONVERSATION_ITEM.test(name) ? join23(folder, name) : null,
+      memory: own ?? join23(folder, "memory"),
+      memoryMerges: !own
+    };
+  }
+  conversationRoots() {
+    return this.homesItMayUse().map((home) => join23(home, "projects"));
+  }
+  ownSkillFolders(directory) {
+    const settings = this.configHome;
+    return [join23(settings, "skills"), ...upward(directory).map((folder) => join23(folder, ".claude", "skills"))];
+  }
+  env() {
+    const env = { ...process.env, CLAUDE_CODE_TMPDIR: join23(this.context.temporary, "claude"), CLAUDE_CODE_OAUTH_TOKEN: undefined };
+    if (this.instance.home)
+      env.CLAUDE_CONFIG_DIR = this.instance.home;
+    const own = onMachine ? ownFoldersScript(this.context.home) : undefined;
+    if (own)
+      env.CLAUDE_ENV_FILE = own;
+    if (onMachine)
+      env.DISABLE_AUTOUPDATER = "1";
+    return env;
+  }
+  async removeAccount() {
+    const executable = this.executable();
+    if (executable && this.instance.home)
+      await run(executable, ["auth", "logout"], { timeout: 20000, env: this.env() }).catch(() => {});
+  }
+  async models(options = {}) {
+    if (this.modelList?.at && !options.refresh)
+      return this.modelList.models;
+    const generation = this.catalogGeneration;
+    const loading = this.loadingModels ??= this.loadModels(generation).finally(() => {
+      if (this.loadingModels === loading)
+        this.loadingModels = undefined;
+    });
+    if (options.refresh) {
+      let listed = () => {};
+      const ready = new Promise((resolve) => {
+        listed = resolve;
+        this.listed.push(listed);
+      });
+      try {
+        await Promise.race([ready, loading]);
+      } catch (error) {
+        if (generation === this.catalogGeneration)
+          throw error;
+      } finally {
+        this.listed = this.listed.filter((each) => each !== listed);
+      }
+      if (generation !== this.catalogGeneration)
+        return this.models(options);
+    } else {
+      loading.catch(() => {});
+    }
+    return this.modelList?.models ?? fallbackModels(this.providerID);
+  }
+  listsEveryModel() {
+    return Boolean(this.modelList);
+  }
+  async concreteModel(id) {
+    if (id !== "default")
+      return;
+    if (!this.modelList) {
+      this.models();
+      const loading = this.loadingModels;
+      await new Promise((resolve) => {
+        const told = () => {
+          this.listed = this.listed.filter((each) => each !== told);
+          resolve();
+        };
+        this.listed.push(told);
+        if (loading)
+          loading.then(told, told);
+        else
+          told();
+      });
+    }
+    const models = this.modelList?.models ?? [];
+    if (models.some((model) => model.id === id))
+      return;
+    return models.find((model) => model.aliases?.includes(id))?.id;
+  }
+  async loadModels(generation) {
+    const sdk = await this.sdk();
+    if (generation !== this.catalogGeneration)
+      return;
+    const abort = new AbortController;
+    const idle = async function* () {
+      await new Promise((resolve) => abort.signal.addEventListener("abort", resolve));
+    }();
+    const q = sdk.query({
+      prompt: idle,
+      options: {
+        pathToClaudeCodeExecutable: this.executable(),
+        cwd: this.context.temporary,
+        persistSession: false,
+        abortController: abort,
+        allowedTools: [],
+        mcpServers: {},
+        strictMcpConfig: true,
+        settings: { disableAllHooks: true },
+        env: this.env(),
+        stderr: () => {}
+      }
+    });
+    try {
+      const init = await Promise.race([q.initializationResult(), Bun.sleep(30000).then(() => {
+        return;
+      })]);
+      const list = init?.models ?? [];
+      if (!list.length && generation === this.catalogGeneration)
+        throw new Error("Claude Code didn\u2019t list its models.");
+      if (generation === this.catalogGeneration && list.length) {
+        this.listModels(list);
+        if (await this.askWindows(q, list, generation) && generation === this.catalogGeneration)
+          this.listModels(list);
+      }
+    } finally {
+      abort.abort();
+    }
+  }
+  windows = new ContextWindows;
+  contextWindow(id) {
+    return this.windows.get(id) ?? this.windows.get(this.modelList?.models.find((each) => each.aliases?.includes(id))?.id ?? id);
+  }
+  compaction(model) {
+    const choice = compactionChoice();
+    if (choice !== "never")
+      return choice;
+    const window = this.contextWindow(model) ?? this.modelList?.models.find((each) => each.id === model || each.aliases?.includes(model))?.limit.context;
+    return window && window >= 900000 ? "never" : "400000";
+  }
+  heardWindow(model, window) {
+    if (this.windows.note(model, window))
+      emit("model.updated", {});
+  }
+  listModels(list) {
+    const standing = list.find((info) => info.value === "default");
+    const stands = standing && list.find((info) => info !== standing && stoodFor(standing, info));
+    this.modelList = {
+      at: Date.now(),
+      models: list.flatMap((info, index) => {
+        if (info === standing && stands)
+          return [];
+        const alone = info === standing && standing.resolvedModel ? standing.resolvedModel : undefined;
+        const place = info === stands ? list.indexOf(standing) : index;
+        const name = info === standing ? aloneName(info) : modelName(info);
+        return [
+          model(this.providerID, alone ?? info.value, name, {
+            family: family(name),
+            variants: info.supportedEffortLevels,
+            images: true,
+            context: this.windows.get(info.value) ?? (/1M/i.test(info.description ?? "") ? 1e6 : 200000),
+            released: Date.now() - place,
+            ...info === stands || alone ? { aliases: ["default"] } : {}
+          })
+        ];
+      })
+    };
+    for (const told of [...this.listed])
+      told();
+    emit("model.updated", {});
+  }
+  async askWindows(q, list, generation) {
+    const said = new Map;
+    let changed = false;
+    for (const info of list) {
+      if (generation !== this.catalogGeneration)
+        return false;
+      const key = info.resolvedModel ?? info.value;
+      let window = said.get(key);
+      if (window === undefined) {
+        try {
+          await withTimeout(q.setModel(info.value), 5000);
+          window = (await withTimeout(q.getContextUsage({ detail: "summary" }), 5000))?.maxTokens;
+        } catch {
+          return changed;
+        }
+        if (typeof window !== "number" || window <= 0)
+          return changed;
+        said.set(key, window);
+      }
+      if (generation !== this.catalogGeneration)
+        return false;
+      if (this.windows.note(info.value, window))
+        changed = true;
+    }
+    return changed;
+  }
+  forgetModels() {
+    this.catalogGeneration++;
+    this.loadingModels = undefined;
+    this.modelList = undefined;
+    this.windows = new ContextWindows;
+  }
+  thread(session, state) {
+    return new ClaudeThread(this, session, state);
+  }
+  async generate(prompt, model) {
+    const sdk = await this.sdk();
+    const abort = new AbortController;
+    const timer = setTimeout(() => abort.abort(), 120000);
+    const q = sdk.query({
+      prompt,
+      options: {
+        pathToClaudeCodeExecutable: this.executable(),
+        cwd: this.context.temporary,
+        model: !model ? "haiku" : model.id === "default" ? undefined : model.id,
+        persistSession: false,
+        maxTurns: 1,
+        tools: [],
+        allowedTools: [],
+        mcpServers: {},
+        strictMcpConfig: true,
+        settings: { disableAllHooks: true },
+        abortController: abort,
+        env: this.env(),
+        stderr: () => {}
+      }
+    });
+    try {
+      for await (const message of q) {
+        if (message.type !== "result")
+          continue;
+        if (message.subtype === "success" && !message.is_error && typeof message.result === "string")
+          return message.result.trim();
+        throw new Error(typeof message.result === "string" && message.result.trim() ? message.result.trim() : "Claude Code couldn't answer.");
+      }
+      throw new Error("Claude Code stopped before it answered.");
+    } finally {
+      clearTimeout(timer);
+      try {
+        q.close?.();
+      } catch {}
+    }
+  }
+}
 function withTimeout(promise, milliseconds) {
   return Promise.race([promise, Bun.sleep(milliseconds).then(() => Promise.reject(new Error("Claude Code didn't answer in time.")))]);
 }
@@ -12561,8 +12931,8 @@ function family(name) {
 }
 function updateChannel() {
   try {
-    const folder = process.env.CLAUDE_CONFIG_DIR ?? join23(homedir2(), ".claude");
-    const settings = JSON.parse(readFileSync23(join23(folder, "settings.json"), "utf8"));
+    const folder = process.env.CLAUDE_CONFIG_DIR ?? join23(homedir3(), ".claude");
+    const settings = JSON.parse(readFileSync22(join23(folder, "settings.json"), "utf8"));
     return settings?.autoUpdatesChannel === "stable" ? "stable" : "latest";
   } catch {
     return "latest";
@@ -12981,7 +13351,7 @@ ${input.text}` } : input, this.copies());
     } catch {}
     if (task?.outputFile) {
       try {
-        const bytes = readFileSync23(task.outputFile);
+        const bytes = readFileSync22(task.outputFile);
         return { output: bytes.subarray(Math.max(0, bytes.length - 64000)).toString("utf8"), total: bytes.length };
       } catch {}
     }
@@ -13274,7 +13644,7 @@ ${input.text}` } : input, this.copies());
         await this.heard(ended, active.hooks.signal);
       if (active.hooks.signal.aborted)
         return active.resolve({ outcome: "interrupted" });
-      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told2(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited });
+      active.resolve({ outcome: "failed", error: this.failed(active, active.problem ? told(active.problem) : this.stoppedWhy(ended, "Claude Code stopped.")), agentExited });
     }
   }
   lastEnd;
@@ -13297,7 +13667,7 @@ ${input.text}` } : input, this.copies());
     stopped.removeEventListener("abort", stop);
   }
   stoppedWhy(ended, otherwise = "Claude Code stopped before it took your message.") {
-    const error = told2(ended ?? otherwise);
+    const error = told(ended ?? otherwise);
     const last = this.said?.last;
     return ended !== undefined && last && !error.message.includes(last) ? { ...error, message: `${error.message}: ${last}` } : error;
   }
@@ -14131,7 +14501,7 @@ function diffs(name, input, structured) {
 }
 function safeRead(path) {
   try {
-    return readFileSync23(path, "utf8");
+    return readFileSync22(path, "utf8");
   } catch {
     return;
   }
@@ -14238,7 +14608,7 @@ ${others.map((path) => `- ${path}`).join(`
 }
 function safeBase642(path) {
   try {
-    return readFileSync23(path).toString("base64");
+    return readFileSync22(path).toString("base64");
   } catch {
     return;
   }
@@ -14259,14 +14629,12 @@ function named4(status, otherwise) {
   const described = status ? describe(status) : "";
   return described && status?.email ? { label: described } : { label: described || otherwise, what: true };
 }
-var SDK, places2, outputLimit3 = 30000, STATE_IN_HOME, CONVERSATION_ID, CONVERSATION_ITEM, projectSlug = (directory) => directory.replace(/[^a-zA-Z0-9]/g, "-"), KEPT_IN_HOME, PRINTED_TOKEN, ANY_TOKEN, VALUE = `"[^"]*"|'[^']*'|[^\\s"',;]+`, SECRET_NAME = "[A-Za-z0-9_-]*(?:key|token(?!s)|secret|password|passwd)[A-Za-z0-9_-]*", withoutSecrets = (text) => text.replace(ANY_TOKEN, "sk-ant-\u2026").replace(/:\/\/[^\s/]*@/g, "://\u2026@").replace(new RegExp(`\\b((?:proxy-)?authorization)(["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\\s+)?[^\\s"',;]+)`, "gi"), "$1$2\u2026").replace(/\bBearer\s+(?!tokens?\b)[A-Za-z0-9._~+/-]+=*/gi, "Bearer \u2026").replace(new RegExp(`\\b(${SECRET_NAME})(\\s*=\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(["'])(${SECRET_NAME})\\1(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2$1$3\u2026").replace(new RegExp(`\\b((?:[A-Za-z0-9_-]+[-_])?(?:api[-_]?key|token)|[A-Za-z0-9_-]*(?:password|passwd|secret))(?<!(?:^|[\\s(])token)(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(--${SECRET_NAME})(\\s+|=)(?:${VALUE})`, "gi"), "$1$2\u2026"), told2 = (error) => {
+var SDK, outputLimit3 = 30000, STATE_IN_HOME, CONVERSATION_ID, CONVERSATION_ITEM, projectSlug = (directory) => directory.replace(/[^a-zA-Z0-9]/g, "-"), KEPT_IN_HOME, ANY_TOKEN, VALUE = `"[^"]*"|'[^']*'|[^\\s"',;]+`, SECRET_NAME = "[A-Za-z0-9_-]*(?:key|token(?!s)|secret|password|passwd)[A-Za-z0-9_-]*", withoutSecrets = (text) => text.replace(ANY_TOKEN, "sk-ant-\u2026").replace(/:\/\/[^\s/]*@/g, "://\u2026@").replace(new RegExp(`\\b((?:proxy-)?authorization)(["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\\s+)?[^\\s"',;]+)`, "gi"), "$1$2\u2026").replace(/\bBearer\s+(?!tokens?\b)[A-Za-z0-9._~+/-]+=*/gi, "Bearer \u2026").replace(new RegExp(`\\b(${SECRET_NAME})(\\s*=\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(["'])(${SECRET_NAME})\\1(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2$1$3\u2026").replace(new RegExp(`\\b((?:[A-Za-z0-9_-]+[-_])?(?:api[-_]?key|token)|[A-Za-z0-9_-]*(?:password|passwd|secret))(?<!(?:^|[\\s(])token)(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(--${SECRET_NAME})(\\s+|=)(?:${VALUE})`, "gi"), "$1$2\u2026"), told = (error) => {
   const said = failure(error);
   return { ...said, message: withoutSecrets(said.message) };
-}, ClaudeAgent, goingOnLimit = 60000, knownSubagents = 100, claudeMessages, claudeSystem;
+}, goingOnLimit = 60000, knownSubagents = 100, claudeMessages, claudeSystem;
 var init_claude = __esm(() => {
   init_context();
-  init_limits2();
-  init_agent_credentials();
   init_work_order();
   init_accounts();
   init_agent();
@@ -14275,8 +14643,8 @@ var init_claude = __esm(() => {
   init_events();
   init_proc();
   init_queue();
-  init_files();
   init_signin();
+  init_agent_programs();
   init_toolrelay();
   init_servers();
   init_skills();
@@ -14288,7 +14656,6 @@ var init_claude = __esm(() => {
   init_client();
   init_adopt();
   SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: CLAUDE_SDK }];
-  places2 = [join23(homedir2(), ".local/bin"), join23(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
   STATE_IN_HOME = [
     "projects",
     "sessions",
@@ -14316,593 +14683,7 @@ var init_claude = __esm(() => {
   CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   CONVERSATION_ITEM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.jsonl$|$|\/)/i;
   KEPT_IN_HOME = ["settings*.json", "hooks", ".mcp.json"];
-  PRINTED_TOKEN = /sk-ant-oat\d+-[A-Za-z0-9_-]{60,}(?=[^A-Za-z0-9_-])/;
   ANY_TOKEN = /sk-ant-[A-Za-z0-9_-]+/g;
-  ClaudeAgent = class ClaudeAgent {
-    context;
-    instance;
-    static heardWithin = 1000;
-    static keychain = process.platform === "darwin";
-    id = "claude";
-    compacts = true;
-    providerID;
-    get name() {
-      return accountName("Claude Code", this.instance);
-    }
-    install = "curl -fsSL https://claude.ai/install.sh | bash";
-    status;
-    turnedAway;
-    modelList;
-    loadingModels;
-    catalogGeneration = 0;
-    listed = [];
-    program = 0;
-    signOut;
-    constructor(context, instance = { id: "default" }) {
-      this.context = context;
-      this.instance = instance;
-      this.providerID = providerID("claude", instance.id);
-      if (ClaudeAgent.keychain) {
-        this.signOut = async () => {
-          rmSync13(this.tokenFile, { force: true });
-          try {
-            if ((await this.readStatus(this.consoleEnv()).catch(() => {
-              return;
-            }))?.loggedIn !== false) {
-              await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.consoleEnv());
-            }
-          } finally {
-            this.programUpdated();
-            this.known.reset();
-            this.modelList = undefined;
-          }
-        };
-      } else if (instance.id === "default" && instance.home) {
-        this.signOut = async () => {
-          await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env());
-          this.programUpdated();
-          this.known.reset();
-          this.modelList = undefined;
-        };
-      }
-    }
-    executable() {
-      return which("claude", places2);
-    }
-    get definition() {
-      const executable = this.executable();
-      if (!executable)
-        return;
-      return {
-        name: "Claude Code",
-        executable,
-        npmPackage: "@anthropic-ai/claude-code",
-        nativeUpdate: { args: ["update"], isNative: (path) => /\/\.local\/share\/claude\/|\/\.claude\/local\//.test(path), distTag: updateChannel }
-      };
-    }
-    async maintenance(fresh = false) {
-      const definition = this.definition;
-      return definition ? maintenance(definition, fresh) : {};
-    }
-    async update(attempt) {
-      const definition = this.definition;
-      if (!definition)
-        return { updated: false, message: "Claude Code isn't installed." };
-      return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt });
-    }
-    async installProgram() {
-      return install("Claude Code", this.install, this.context.temporary, () => this.executable());
-    }
-    programUpdated() {
-      this.program++;
-      this.catalogGeneration++;
-      this.loadingModels = undefined;
-      if (this.modelList)
-        this.modelList.at = 0;
-    }
-    methods() {
-      return [
-        { type: "oauth", id: "claudeai", label: "Sign in with your Claude plan" },
-        { type: "oauth", id: "console", label: "Sign in with Anthropic Console" }
-      ];
-    }
-    async readStatus(env = this.env({ ownToken: false })) {
-      const executable = this.executable();
-      if (!executable)
-        throw new Error("Claude Code isn't installed.");
-      const result = await run(executable, ["auth", "status", "--json"], { timeout: 20000, env });
-      if (result.timedOut)
-        throw new TookTooLong("Claude Code took too long to say whether it's signed in.");
-      let status;
-      try {
-        status = JSON.parse(result.stdout);
-      } catch {}
-      if (typeof status?.loggedIn !== "boolean") {
-        const words = (result.stderr.trim() || result.stdout.trim()).split(`
-`).pop()?.trim().slice(0, 300);
-        throw new Error(words ? `Claude Code couldn't say whether it's signed in: ${words}` : `Claude Code couldn't say whether it's signed in (it stopped with code ${result.code}).`);
-      }
-      this.status = { at: Date.now(), status };
-      return status;
-    }
-    known = new KnownAccount(30000);
-    async account(fresh = false) {
-      if (!this.executable()) {
-        return { installed: false, signedIn: false, message: "Install Claude Code, then sign in here." };
-      }
-      const account = await this.known.read(fresh, async () => {
-        if (ClaudeAgent.keychain) {
-          if (!this.token()) {
-            const console2 = await this.readStatus(this.consoleEnv());
-            if (console2.loggedIn && console2.authMethod !== "claude.ai")
-              return { installed: true, signedIn: true, ...named4(console2, "Anthropic Console") };
-            return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
-          }
-          const status = this.instance.home ? undefined : await this.readStatus().catch(() => {
-            return;
-          });
-          return { installed: true, signedIn: true, ...named4(status?.loggedIn ? status : undefined, "Claude plan") };
-        }
-        const status = await this.readStatus();
-        if (!status.loggedIn)
-          return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
-        return { installed: true, signedIn: true, ...named4(status, "Claude Code") };
-      });
-      const turnedAway = this.turnedAway;
-      if (!turnedAway)
-        return account;
-      if (turnedAway.written !== undefined && await this.credentialsWritten() > turnedAway.written) {
-        if (this.turnedAway === turnedAway)
-          this.turnedAway = undefined;
-        this.known.reset();
-        return this.account();
-      }
-      return account.signedIn ? { installed: true, signedIn: false, ended: true, message: "Claude ended this sign-in. Sign in again." } : account;
-    }
-    usesKey() {
-      if (ClaudeAgent.keychain && this.token())
-        return false;
-      const method = this.status?.status.authMethod ?? "";
-      return method !== "" && method !== "claude.ai";
-    }
-    turnAway() {
-      const turnedAway = {};
-      this.turnedAway = turnedAway;
-      this.credentialsWritten().then((written) => turnedAway.written = written, () => turnedAway.written = 0);
-      emit("integration.updated", { integrationID: this.providerID });
-    }
-    async signedOut() {
-      const out = (account) => account.installed && !account.signedIn;
-      return out(await this.account()) && out(await this.account(true));
-    }
-    async credentialsWritten() {
-      if (ClaudeAgent.keychain) {
-        try {
-          return statSync8(this.tokenFile).mtimeMs;
-        } catch {
-          return 0;
-        }
-      }
-      const own = this.instance.home ?? process.env.CLAUDE_CONFIG_DIR;
-      let written = 0;
-      try {
-        written = statSync8(join23(own ?? join23(homedir2(), ".claude"), ".credentials.json")).mtimeMs;
-      } catch {}
-      if (process.platform === "darwin")
-        written = Math.max(written, await keychainWritten(`Claude Code-credentials${own ? `-${createHash10("sha256").update(own).digest("hex").slice(0, 8)}` : ""}`));
-      return written;
-    }
-    signsInRemotely = true;
-    get consoleHome() {
-      return this.instance.home ?? join23(this.context.home, "claude", "console");
-    }
-    get configHome() {
-      if (this.instance.home)
-        return this.instance.home;
-      if (ClaudeAgent.keychain && !this.token())
-        return this.consoleHome;
-      return process.env.CLAUDE_CONFIG_DIR ?? join23(homedir2(), ".claude");
-    }
-    consoleEnv() {
-      return { ...this.env({ ownToken: false }), CLAUDE_CONFIG_DIR: this.consoleHome };
-    }
-    get tokenFile() {
-      return join23(this.context.home, "claude", "tokens", `${this.instance.id}.json`);
-    }
-    byToken = ClaudeAgent.keychain;
-    limits = {
-      every: 15 * 60000,
-      signIn: () => fingerprint(this.limitsSignIn()?.token),
-      identity: () => {
-        if (!this.byToken)
-          return claudeIdentity(this.instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? homedir2());
-        const token = this.token();
-        return token ? claudeIdentity(this.configHome, token) : undefined;
-      }
-    };
-    limitsSignIn() {
-      if (this.byToken) {
-        const token = this.token();
-        return token ? { token } : undefined;
-      }
-      return credentialsIn(this.configHome);
-    }
-    token() {
-      return claudeToken(this.tokenFile);
-    }
-    async signIn(methodID, options = {}) {
-      const executable = this.executable();
-      if (!executable)
-        throw new Error(`Install Claude Code first: ${this.install}`);
-      if (ClaudeAgent.keychain && methodID !== "console") {
-        const started = Date.now();
-        let handedOver = false;
-        const keep = (token) => {
-          writeSecret(this.tokenFile, JSON.stringify({ token, made: started }));
-          options.onPlanToken?.();
-          handedOver = true;
-        };
-        return commandSignIn({
-          command: executable,
-          args: ["setup-token"],
-          env: this.env({ ownToken: false }),
-          home: this.context.home,
-          temporary: this.context.temporary,
-          instructions: "Finish signing in on Claude\u2019s page, then paste the code here.",
-          signedIn: async () => handedOver,
-          terminal: true,
-          codePrompt: /Paste code here if prompted/,
-          codeMask: /[\u2502>][ \t]*\*/,
-          refusedCode: /wasn.t accepted|invalid code/i,
-          incompleteCode: /doesn.t look like the full code/i,
-          refusedEnds: "Claude didn't take that code. Start again for a new one.",
-          onLine: (line) => {
-            const token = handedOver ? undefined : PRINTED_TOKEN.exec(line)?.[0];
-            if (token)
-              keep(token);
-          },
-          onComplete: () => {
-            this.turnedAway = undefined;
-            this.known.reset();
-            this.modelList = undefined;
-            this.programUpdated();
-          },
-          printedPage: options.remote && !options.browserReturn
-        });
-      }
-      if (ClaudeAgent.keychain)
-        mkdirSync14(this.consoleHome, { recursive: true, mode: 448 });
-      const env = ClaudeAgent.keychain ? this.consoleEnv() : this.env();
-      return commandSignIn({
-        command: executable,
-        args: ["auth", "login", methodID === "console" ? "--console" : "--claudeai"],
-        env,
-        home: this.context.home,
-        temporary: this.context.temporary,
-        instructions: "Finish signing in on Claude\u2019s page. If it gives you a code, paste it here.",
-        signedIn: async () => (await this.readStatus(env)).loggedIn === true,
-        codePrompt: /Paste code here if prompted >\s*/g,
-        onComplete: () => {
-          if (ClaudeAgent.keychain) {
-            rmSync13(this.tokenFile, { force: true });
-            this.modelList = undefined;
-            this.programUpdated();
-          }
-          this.turnedAway = undefined;
-          this.known.reset();
-        },
-        printedPage: options.remote && !options.browserReturn
-      });
-    }
-    async sdk() {
-      await this.context.deps.ensure(this.id, SDK, { optional: false });
-      return this.context.deps.load(this.id, SDK[0].name);
-    }
-    ownsPath(path, session) {
-      const file = resolve6(path);
-      const memory = session && botMemory(session);
-      if (memory && file.startsWith(memory + "/"))
-        return true;
-      const settings = this.configHome;
-      if (file.startsWith(settings + "/") && /^(plans\/[^/]+\.md|projects\/[^/]+\/memory\/.+|projects\/[^/]+\/[^/]+\/tool-results\/.+)$/.test(file.slice(settings.length + 1)))
-        return true;
-      const uid = process.getuid?.();
-      return uid !== undefined && ["/tmp", "/private/tmp"].some((tmp) => file.startsWith(`${tmp}/claude-${uid}/`) && /^[^/]+\/[^/]+\/tasks\/[^/]+$/.test(file.slice(`${tmp}/claude-${uid}/`.length)));
-    }
-    projectFolder(directory, home = this.configHome) {
-      return join23(home, "projects", projectSlug(directory));
-    }
-    homesItMayUse() {
-      return [...new Set([this.configHome, ...this.instance.home ? [] : [this.consoleHome, process.env.CLAUDE_CONFIG_DIR ?? join23(homedir2(), ".claude")]])];
-    }
-    conversationFiles(state, session) {
-      const id = state.claudeSession;
-      if (typeof id !== "string" || !state.claudeStarted)
-        return null;
-      if (!CONVERSATION_ID.test(id))
-        return { items: [], missing: true };
-      let folder;
-      for (const home of this.homesItMayUse()) {
-        const named = this.projectFolder(session.location.directory, home);
-        if (existsSync14(join23(named, `${id}.jsonl`))) {
-          folder = named;
-          break;
-        }
-      }
-      if (!folder) {
-        for (const home of this.homesItMayUse()) {
-          const projects = join23(home, "projects");
-          const found = (() => {
-            try {
-              return readdirSync11(projects).find((name) => existsSync14(join23(projects, name, `${id}.jsonl`)));
-            } catch {
-              return;
-            }
-          })();
-          if (found) {
-            folder = join23(projects, found);
-            break;
-          }
-        }
-      }
-      if (!folder)
-        return { items: [], missing: true };
-      const beside = join23(folder, id);
-      const ownMemory = botMemory(session);
-      const memory = ownMemory && existsSync14(ownMemory) ? undefined : join23(this.homesItMayUse().find((home) => folder.startsWith(home + "/")) ?? this.configHome, "projects", projectSlug(session.location.directory), "memory");
-      return {
-        items: [{ path: join23(folder, `${id}.jsonl`), name: `${id}.jsonl` }, ...existsSync14(beside) ? [{ path: beside, name: id }] : []],
-        ...memory && existsSync14(memory) ? { memory, ...ownMemory ? {} : { memoryShared: true } } : {}
-      };
-    }
-    conversationPlace(_state, session) {
-      const folder = this.projectFolder(session.location.directory);
-      const own = botMemory(session);
-      return {
-        item: (name) => CONVERSATION_ITEM.test(name) ? join23(folder, name) : null,
-        memory: own ?? join23(folder, "memory"),
-        memoryMerges: !own
-      };
-    }
-    conversationRoots() {
-      return this.homesItMayUse().map((home) => join23(home, "projects"));
-    }
-    ownSkillFolders(directory) {
-      const settings = this.configHome;
-      return [join23(settings, "skills"), ...upward(directory).map((folder) => join23(folder, ".claude", "skills"))];
-    }
-    env({ ownToken = true } = {}) {
-      const env = { ...process.env, CLAUDE_CODE_TMPDIR: join23(this.context.temporary, "claude"), CLAUDE_CODE_OAUTH_TOKEN: undefined };
-      if (this.instance.home)
-        env.CLAUDE_CONFIG_DIR = this.instance.home;
-      const token = ownToken && ClaudeAgent.keychain ? this.token() : undefined;
-      if (token)
-        env.CLAUDE_CODE_OAUTH_TOKEN = token;
-      else if (ownToken && ClaudeAgent.keychain)
-        env.CLAUDE_CONFIG_DIR = this.consoleHome;
-      const own = onMachine ? ownFoldersScript(this.context.home) : undefined;
-      if (own)
-        env.CLAUDE_ENV_FILE = own;
-      if (onMachine)
-        env.DISABLE_AUTOUPDATER = "1";
-      return env;
-    }
-    async removeAccount() {
-      rmSync13(this.tokenFile, { force: true });
-      const executable = this.executable();
-      if (executable && this.instance.home)
-        await run(executable, ["auth", "logout"], { timeout: 20000, env: this.env() }).catch(() => {});
-    }
-    async models(options = {}) {
-      if (this.modelList?.at && !options.refresh)
-        return this.modelList.models;
-      const generation = this.catalogGeneration;
-      const loading = this.loadingModels ??= this.loadModels(generation).finally(() => {
-        if (this.loadingModels === loading)
-          this.loadingModels = undefined;
-      });
-      if (options.refresh) {
-        let listed = () => {};
-        const ready = new Promise((resolve) => {
-          listed = resolve;
-          this.listed.push(listed);
-        });
-        try {
-          await Promise.race([ready, loading]);
-        } catch (error) {
-          if (generation === this.catalogGeneration)
-            throw error;
-        } finally {
-          this.listed = this.listed.filter((each) => each !== listed);
-        }
-        if (generation !== this.catalogGeneration)
-          return this.models(options);
-      } else {
-        loading.catch(() => {});
-      }
-      return this.modelList?.models ?? fallbackModels(this.providerID);
-    }
-    listsEveryModel() {
-      return Boolean(this.modelList);
-    }
-    async concreteModel(id) {
-      if (id !== "default")
-        return;
-      if (!this.modelList) {
-        this.models();
-        const loading = this.loadingModels;
-        await new Promise((resolve) => {
-          const told = () => {
-            this.listed = this.listed.filter((each) => each !== told);
-            resolve();
-          };
-          this.listed.push(told);
-          if (loading)
-            loading.then(told, told);
-          else
-            told();
-        });
-      }
-      const models = this.modelList?.models ?? [];
-      if (models.some((model) => model.id === id))
-        return;
-      return models.find((model) => model.aliases?.includes(id))?.id;
-    }
-    async loadModels(generation) {
-      const sdk = await this.sdk();
-      if (generation !== this.catalogGeneration)
-        return;
-      const abort = new AbortController;
-      const idle = async function* () {
-        await new Promise((resolve) => abort.signal.addEventListener("abort", resolve));
-      }();
-      const q = sdk.query({
-        prompt: idle,
-        options: {
-          pathToClaudeCodeExecutable: this.executable(),
-          cwd: this.context.temporary,
-          persistSession: false,
-          abortController: abort,
-          allowedTools: [],
-          mcpServers: {},
-          strictMcpConfig: true,
-          settings: { disableAllHooks: true },
-          env: this.env(),
-          stderr: () => {}
-        }
-      });
-      try {
-        const init = await Promise.race([q.initializationResult(), Bun.sleep(30000).then(() => {
-          return;
-        })]);
-        const list = init?.models ?? [];
-        if (!list.length && generation === this.catalogGeneration)
-          throw new Error("Claude Code didn\u2019t list its models.");
-        if (generation === this.catalogGeneration && list.length) {
-          this.listModels(list);
-          if (await this.askWindows(q, list, generation) && generation === this.catalogGeneration)
-            this.listModels(list);
-        }
-      } finally {
-        abort.abort();
-      }
-    }
-    windows = new ContextWindows;
-    contextWindow(id) {
-      return this.windows.get(id) ?? this.windows.get(this.modelList?.models.find((each) => each.aliases?.includes(id))?.id ?? id);
-    }
-    compaction(model) {
-      const choice = compactionChoice();
-      if (choice !== "never")
-        return choice;
-      const window = this.contextWindow(model) ?? this.modelList?.models.find((each) => each.id === model || each.aliases?.includes(model))?.limit.context;
-      return window && window >= 900000 ? "never" : "400000";
-    }
-    heardWindow(model, window) {
-      if (this.windows.note(model, window))
-        emit("model.updated", {});
-    }
-    listModels(list) {
-      const standing = list.find((info) => info.value === "default");
-      const stands = standing && list.find((info) => info !== standing && stoodFor(standing, info));
-      this.modelList = {
-        at: Date.now(),
-        models: list.flatMap((info, index) => {
-          if (info === standing && stands)
-            return [];
-          const alone = info === standing && standing.resolvedModel ? standing.resolvedModel : undefined;
-          const place = info === stands ? list.indexOf(standing) : index;
-          const name = info === standing ? aloneName(info) : modelName(info);
-          return [
-            model(this.providerID, alone ?? info.value, name, {
-              family: family(name),
-              variants: info.supportedEffortLevels,
-              images: true,
-              context: this.windows.get(info.value) ?? (/1M/i.test(info.description ?? "") ? 1e6 : 200000),
-              released: Date.now() - place,
-              ...info === stands || alone ? { aliases: ["default"] } : {}
-            })
-          ];
-        })
-      };
-      for (const told of [...this.listed])
-        told();
-      emit("model.updated", {});
-    }
-    async askWindows(q, list, generation) {
-      const said = new Map;
-      let changed = false;
-      for (const info of list) {
-        if (generation !== this.catalogGeneration)
-          return false;
-        const key = info.resolvedModel ?? info.value;
-        let window = said.get(key);
-        if (window === undefined) {
-          try {
-            await withTimeout(q.setModel(info.value), 5000);
-            window = (await withTimeout(q.getContextUsage({ detail: "summary" }), 5000))?.maxTokens;
-          } catch {
-            return changed;
-          }
-          if (typeof window !== "number" || window <= 0)
-            return changed;
-          said.set(key, window);
-        }
-        if (generation !== this.catalogGeneration)
-          return false;
-        if (this.windows.note(info.value, window))
-          changed = true;
-      }
-      return changed;
-    }
-    forgetModels() {
-      this.catalogGeneration++;
-      this.loadingModels = undefined;
-      this.modelList = undefined;
-      this.windows = new ContextWindows;
-    }
-    thread(session, state) {
-      return new ClaudeThread(this, session, state);
-    }
-    async generate(prompt, model) {
-      const sdk = await this.sdk();
-      const abort = new AbortController;
-      const timer = setTimeout(() => abort.abort(), 120000);
-      const q = sdk.query({
-        prompt,
-        options: {
-          pathToClaudeCodeExecutable: this.executable(),
-          cwd: this.context.temporary,
-          model: !model ? "haiku" : model.id === "default" ? undefined : model.id,
-          persistSession: false,
-          maxTurns: 1,
-          tools: [],
-          allowedTools: [],
-          mcpServers: {},
-          strictMcpConfig: true,
-          settings: { disableAllHooks: true },
-          abortController: abort,
-          env: this.env(),
-          stderr: () => {}
-        }
-      });
-      try {
-        for await (const message of q) {
-          if (message.type !== "result")
-            continue;
-          if (message.subtype === "success" && !message.is_error && typeof message.result === "string")
-            return message.result.trim();
-          throw new Error(typeof message.result === "string" && message.result.trim() ? message.result.trim() : "Claude Code couldn't answer.");
-        }
-        throw new Error("Claude Code stopped before it answered.");
-      } finally {
-        clearTimeout(timer);
-        try {
-          q.close?.();
-        } catch {}
-      }
-    }
-  };
   claudeMessages = new Set(["assistant", "user", "stream_event", "result", "system", "rate_limit_event", "auth_status", "conversation_reset", "tool_progress", "tool_use_summary", "prompt_suggestion", "command_lifecycle"]);
   claudeSystem = new Set([
     "init",
@@ -14938,18 +14719,55 @@ var init_claude = __esm(() => {
   ]);
 });
 
-// box/src/shared/agent-programs.ts
-import { homedir as homedir3 } from "os";
+// box/src/shared/account.ts
+import os from "os";
+function homeFolder() {
+  return process.env.HOME || os.homedir();
+}
+var init_account = () => {};
+
+// box/src/shared/agent-credentials.ts
+import { readFileSync as readFileSync23 } from "fs";
 import { join as join24 } from "path";
-var codexPlaces, grokPlaces, codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
-var init_agent_programs = __esm(() => {
-  init_proc();
-  codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join24(homedir3(), ".local/bin"), join24(homedir3(), ".codex/bin")];
-  grokPlaces = [join24(homedir3(), ".grok/bin"), join24(homedir3(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
+function read2(file) {
+  try {
+    return JSON.parse(readFileSync23(file, "utf8"));
+  } catch {
+    return;
+  }
+}
+function codexAuthFile(home) {
+  return read2(join24(home, "auth.json"));
+}
+function codexOAuth(saved) {
+  if (saved?.auth_mode === "apikey" || !saved?.auth_mode && typeof saved?.OPENAI_API_KEY === "string" && saved.OPENAI_API_KEY)
+    return;
+  const tokens = saved?.tokens;
+  if (typeof tokens?.access_token !== "string" || !tokens.access_token)
+    return;
+  return {
+    token: tokens.access_token,
+    account: typeof tokens.account_id === "string" ? tokens.account_id : undefined,
+    refresh: typeof tokens.refresh_token === "string" ? tokens.refresh_token : undefined
+  };
+}
+function grokCredential(home) {
+  const entries = read2(join24(home, "auth.json"));
+  return entries && Object.values(entries).find((each) => typeof each?.key === "string" && each.key.trim());
+}
+function grokHome(instance) {
+  if (instance.home)
+    return instance.home;
+  const home = homeFolder();
+  const set = process.env.GROK_HOME?.trim();
+  return set === "~" ? home : set?.startsWith("~/") ? join24(home, set.slice(2)) : set || join24(home, ".grok");
+}
+var init_agent_credentials = __esm(() => {
+  init_account();
 });
 
 // box/src/usage/codex-credentials.ts
-import { createHash as createHash11 } from "crypto";
+import { createHash as createHash10 } from "crypto";
 import { readFileSync as readFileSync24, realpathSync as realpathSync8 } from "fs";
 import { join as join25 } from "path";
 function codexKeychainAccount(home) {
@@ -14957,7 +14775,7 @@ function codexKeychainAccount(home) {
   try {
     canonical = realpathSync8(home);
   } catch {}
-  return "cli|" + createHash11("sha256").update(canonical).digest("hex").slice(0, 16);
+  return "cli|" + createHash10("sha256").update(canonical).digest("hex").slice(0, 16);
 }
 
 class CodexCredentials {
@@ -15175,7 +14993,7 @@ var init_codex_citations = __esm(() => {
 });
 
 // box/src/agents/agents/codex.ts
-import { existsSync as existsSync15, lstatSync as lstatSync8, mkdirSync as mkdirSync15, readdirSync as readdirSync12, readFileSync as readFileSync25, readlinkSync, rmSync as rmSync14, symlinkSync as symlinkSync2, unlinkSync as unlinkSync2 } from "fs";
+import { existsSync as existsSync15, lstatSync as lstatSync8, mkdirSync as mkdirSync15, readdirSync as readdirSync12, readFileSync as readFileSync25, readlinkSync, rmSync as rmSync13, symlinkSync as symlinkSync2, unlinkSync as unlinkSync2 } from "fs";
 import { homedir as homedir4 } from "os";
 import { basename as basename6, join as join26 } from "path";
 function rolloutOf(home, id) {
@@ -17630,7 +17448,7 @@ function shadowHome(home, own) {
       if (stat && !stat.isSymbolicLink())
         continue;
       if (stat)
-        rmSync14(link, { force: true });
+        rmSync13(link, { force: true });
       symlinkSync2(target, link);
     } catch {}
   }
@@ -17638,7 +17456,7 @@ function shadowHome(home, own) {
     const link = join26(home, name);
     try {
       if (lstatSync8(link).isSymbolicLink() && !wanted.includes(name))
-        rmSync14(link, { force: true });
+        rmSync13(link, { force: true });
     } catch {}
   }
 }
@@ -18013,8 +17831,8 @@ var init_cursor_worker = __esm(() => {
 });
 
 // box/src/agents/agents/cursor.ts
-import { createHash as createHash12 } from "crypto";
-import { existsSync as existsSync16, mkdirSync as mkdirSync16, readFileSync as readFileSync27, rmSync as rmSync15 } from "fs";
+import { createHash as createHash11 } from "crypto";
+import { existsSync as existsSync16, mkdirSync as mkdirSync16, readFileSync as readFileSync27, rmSync as rmSync14 } from "fs";
 import { homedir as homedir5 } from "os";
 import { dirname as dirname12, join as join28 } from "path";
 function readable(path) {
@@ -18150,7 +17968,7 @@ class CursorAgent {
     this.modelList = undefined;
   }
   async signOut() {
-    rmSync15(this.authFile, { force: true });
+    rmSync14(this.authFile, { force: true });
     this.known.reset();
     this.modelList = undefined;
     if (!this.instance.home && process.env.CURSOR_API_KEY?.trim())
@@ -18159,7 +17977,7 @@ class CursorAgent {
   async removeAccount() {
     if (!this.instance.home)
       return;
-    rmSync15(this.authFile, { force: true });
+    rmSync14(this.authFile, { force: true });
     this.known.reset();
     this.modelList = undefined;
   }
@@ -18297,7 +18115,7 @@ class CursorThread {
   async ensureAgent(sdk, options, hooks) {
     const approvesAll = hooks.approvesAll(false);
     const skills = options.local?.dirs?.[0];
-    const tools = createHash12("sha256").update(JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])).digest("hex");
+    const tools = createHash11("sha256").update(JSON.stringify([kuvoTools(this.session.id)?.key, Object.entries(options.mcpServers ?? {}).map(([name, server]) => [name, server?.url ?? ""]).sort(), options.agents ?? {}])).digest("hex");
     const fence = fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : "";
     if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || this.startedFence !== fence || this.worker?.isClosed)
       this.stop();
@@ -19406,17 +19224,10 @@ class AccountRefresh {
       this.publish(agent, account);
     return account;
   }
-  async signedIn(agent, hasPlanToken = false) {
-    if (!hasPlanToken)
-      this.forgetSignIn(agent);
+  async signedIn(agent) {
+    this.forgetSignIn(agent);
     const account = await this.read(agent, true);
     await this.publish(agent, account);
-  }
-  planTokenStored(agent) {
-    const signIn = usageSignInOf(agent);
-    this.forgetSignIn(agent);
-    if (signIn)
-      this.observed?.(agent.providerID, true, signIn);
   }
   forgetSignIn(agent) {
     const previous = this.snapshot(agent);
@@ -19721,7 +19532,7 @@ var init_engine_swap = __esm(() => {
 
 // box/src/agents/updates.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { readdirSync as readdirSync13, readFileSync as readFileSync29, rmSync as rmSync16 } from "fs";
+import { readdirSync as readdirSync13, readFileSync as readFileSync29, rmSync as rmSync15 } from "fs";
 import { join as join31 } from "path";
 function isUpdating(program) {
   return underWay2.has(program);
@@ -19750,7 +19561,7 @@ function forgetUpdate(program, at) {
 function inUpdateAll(agent, maintained) {
   return Boolean(agent.update && maintained?.command && isOutdated(maintained) && !isUpdating(agent.id));
 }
-function told3(agent, accounts) {
+function told2(agent, accounts) {
   for (const each of accounts)
     if (each.id === agent.id)
       emit("integration.updated", { integrationID: each.providerID });
@@ -19783,7 +19594,7 @@ function resumeProgramUpdates(accounts, noted, control) {
       if (typeof drain.provider !== "string" || !Number.isFinite(drain.deadline) || typeof drain.attempt !== "string" || !/^[a-f0-9-]{36}$/.test(drain.attempt))
         continue;
       if (programInstallerStarted(home, program, drain.attempt)) {
-        rmSync16(file, { force: true });
+        rmSync15(file, { force: true });
         continue;
       }
       const candidates = accounts().filter((agent) => agent.id === program && agent.update);
@@ -19792,7 +19603,7 @@ function resumeProgramUpdates(accounts, noted, control) {
         updateProgram(agent, accounts, noted, control, drain);
       else {
         kept2.set(program, outcome({ updated: false, message: "This program can no longer be updated here." }));
-        rmSync16(file, { force: true });
+        rmSync15(file, { force: true });
       }
     } catch (error) {
       console.error("Couldn't restore a program update:", error);
@@ -19832,12 +19643,12 @@ function updateProgram(agent, accounts, noted, control = {}, saved) {
     } finally {
       kept2.set(program, outcome(result));
       underWay2.delete(program);
-      told3(agent, accounts());
+      told2(agent, accounts());
       if (result.updated)
         emit("model.updated", { program });
       try {
         if (home && file) {
-          rmSync16(file, { force: true });
+          rmSync15(file, { force: true });
           finishProgramInstallation(home, program, drain.attempt);
         }
       } catch (error) {
@@ -19849,7 +19660,7 @@ function updateProgram(agent, accounts, noted, control = {}, saved) {
     return result;
   })();
   underWay2.set(program, done);
-  told3(agent, accounts());
+  told2(agent, accounts());
   return done;
 }
 async function updateAll(agents, accounts, noted, known, control) {
@@ -20514,7 +20325,7 @@ var AGENTS_TEXT_BYTES = 200000;
 var init_text = () => {};
 
 // box/src/agents/sessions.ts
-import { createHash as createHash13 } from "crypto";
+import { createHash as createHash12 } from "crypto";
 import { spawn as spawnProcess } from "child_process";
 import { readFileSync as readFileSync30, realpathSync as realpathSync9, statSync as statSync9 } from "fs";
 import { homedir as homedir7 } from "os";
@@ -21355,7 +21166,7 @@ class Sessions {
     const directory = body.location.directory;
     const session = {
       id: newID("ses"),
-      projectID: "prj_" + createHash13("sha1").update(directory).digest("hex").slice(0, 16),
+      projectID: "prj_" + createHash12("sha1").update(directory).digest("hex").slice(0, 16),
       agent: typeof body.agent === "string" && body.agent ? body.agent : "build",
       model: body.model,
       cost: 0,
@@ -24174,7 +23985,7 @@ var init_attachment_paths = __esm(() => {
 });
 
 // box/src/agents/store.ts
-import { mkdirSync as mkdirSync18, readdirSync as readdirSync14, readFileSync as readFileSync31, renameSync as renameSync13, rmSync as rmSync17, statSync as statSync10, writeFileSync as writeFileSync18 } from "fs";
+import { mkdirSync as mkdirSync18, readdirSync as readdirSync14, readFileSync as readFileSync31, renameSync as renameSync13, rmSync as rmSync16, statSync as statSync10, writeFileSync as writeFileSync18 } from "fs";
 import { join as join33 } from "path";
 
 class Store {
@@ -24223,7 +24034,7 @@ class Store {
     this.records.delete(id);
     clearTimeout(this.pending.get(id));
     this.pending.delete(id);
-    rmSync17(join33(this.root, id), { recursive: true, force: true });
+    rmSync16(join33(this.root, id), { recursive: true, force: true });
   }
   save(id, now = false) {
     if (this.provisional) {
@@ -24335,12 +24146,12 @@ var init_store = __esm(() => {
 });
 
 // box/src/agents/carry.ts
-import { createHash as createHash14 } from "crypto";
+import { createHash as createHash13 } from "crypto";
 import { createReadStream } from "fs";
 import { copyFile, lstat as lstat2, mkdir, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "fs/promises";
 import { basename as basename7, dirname as dirname15, isAbsolute as isAbsolute2, join as join34, normalize, sep as sep4 } from "path";
 async function hashOf(file) {
-  const hash = createHash14("sha256");
+  const hash = createHash13("sha256");
   for await (const chunk of createReadStream(file))
     hash.update(chunk);
   return hash.digest("hex");
@@ -24636,7 +24447,7 @@ class Carrying {
           const { chat: _, ...kuvo } = session.metadata?.kuvo ?? {};
           session.metadata = { ...session.metadata ?? {}, kuvo: chat ? { ...kuvo, chat } : kuvo };
         }
-        session.projectID = "prj_" + createHash14("sha1").update(directory).digest("hex").slice(0, 16);
+        session.projectID = "prj_" + createHash13("sha1").update(directory).digest("hex").slice(0, 16);
         delete agent.snapshots;
         const lanesHere = manifest.lanes.filter((lane) => lane.session === id);
         const threads = agent.threads ?? {};
@@ -24876,7 +24687,7 @@ async function carryRoutes(carrying, method, parts, body) {
   }
 }
 var WORKING = 423, CantCarry, digestOf = (records, lanes, said = []) => {
-  const hash = createHash14("sha256");
+  const hash = createHash13("sha256");
   for (const record of records)
     hash.update(`r ${record.path} ${record.size} ${record.sha256}
 `);
@@ -28877,7 +28688,7 @@ function moveHold(value) {
 
 // box/src/agents/groups/store.ts
 import fs11 from "fs";
-import { existsSync as existsSync17, mkdirSync as mkdirSync19, readdirSync as readdirSync15, readFileSync as readFileSync32, renameSync as renameSync14, rmSync as rmSync18, writeFileSync as writeFileSync19 } from "fs";
+import { existsSync as existsSync17, mkdirSync as mkdirSync19, readdirSync as readdirSync15, readFileSync as readFileSync32, renameSync as renameSync14, rmSync as rmSync17, writeFileSync as writeFileSync19 } from "fs";
 import { dirname as dirname16, join as join35 } from "path";
 function isTurning(value) {
   return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
@@ -28977,7 +28788,7 @@ class GroupStore {
     if (awake && !existsSync17(file) && existsSync17(this.folder(id)))
       writeFileSync19(file, "");
     if (!awake)
-      rmSync18(file, { force: true });
+      rmSync17(file, { force: true });
   }
   trash(id, trash) {
     if (!existsSync17(this.folder(id))) {
@@ -29105,7 +28916,7 @@ class GroupStore {
   }
   setPendingMemory(pending) {
     if (Object.keys(pending).length === 0)
-      rmSync18(join35(this.root, "pending-memory.json"), { force: true });
+      rmSync17(join35(this.root, "pending-memory.json"), { force: true });
     else
       write(join35(this.root, "pending-memory.json"), pending);
   }
@@ -29122,7 +28933,7 @@ class GroupStore {
     renameSync14(path + ".new", path);
   }
   removeFile(path) {
-    rmSync18(path, { force: true });
+    rmSync17(path, { force: true });
   }
 }
 var version2 = 1, strings2 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string"), stringMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string"), isDate = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)), kinds2, states, forgottenFor, read3 = (file) => {
@@ -30524,7 +30335,7 @@ function handler(context, transferring) {
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) };
   resumeProgramUpdates(() => roster.all(), note, programs);
   const accounts = new AccountRefresh(undefined, Date.now, (provider, signedIn, signIn) => context.boxServices?.observe(provider, { signedIn, signIn }));
-  const signedIn = (agent, hasPlanToken = false) => void accounts.signedIn(agent, hasPlanToken).catch(() => {});
+  const signedIn = (agent) => void accounts.signedIn(agent).catch(() => {});
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all();
@@ -30590,14 +30401,9 @@ function handler(context, transferring) {
               return error2(400, `${agent.name} signs in another way.`);
             if (remote === true && !agent.signsInRemotely)
               return error2(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`);
-            let hasPlanToken = false;
             const attempt = await agent.signIn(methodID, {
               remote: remote === true,
-              browserReturn: remote === true && browserReturn === true,
-              onPlanToken: () => {
-                accounts.planTokenStored(agent);
-                hasPlanToken = true;
-              }
+              browserReturn: remote === true && browserReturn === true
             });
             const id = newID("att");
             const created = Date.now();
@@ -30607,7 +30413,7 @@ function handler(context, transferring) {
               if (completed)
                 return;
               completed = true;
-              signedIn(agent, hasPlanToken);
+              signedIn(agent);
             };
             const stop = watchSignIn(attempt, expires, finish);
             attempts.set(id, { agent, attempt, created, expires, stop, finish });
@@ -31978,7 +31784,7 @@ var init_box_services2 = __esm(() => {
 
 // box/src/agents/bridge-transfer.ts
 import { spawn as spawn7 } from "child_process";
-import { existsSync as existsSync19, readFileSync as readFileSync36, rmSync as rmSync19 } from "fs";
+import { existsSync as existsSync19, readFileSync as readFileSync36, rmSync as rmSync18 } from "fs";
 import { join as join37 } from "path";
 function readTransfer(run) {
   const plan = JSON.parse(readFileSync36(transferFile(run), "utf8"));
@@ -31988,8 +31794,8 @@ function readTransfer(run) {
   return plan;
 }
 function finishTransfer(run) {
-  rmSync19(transferFile(run), { force: true });
-  rmSync19(previousBridge(run), { force: true });
+  rmSync18(transferFile(run), { force: true });
+  rmSync18(previousBridge(run), { force: true });
 }
 async function standBy(run, build) {
   if (!process.send)
@@ -32062,7 +31868,7 @@ function commitTransfer(run, plan, source) {
     writeSecret(pid, String(plan.next));
   } catch (error) {
     finishTransfer(run);
-    rmSync19(join37(run, "agents-renewing"), { force: true });
+    rmSync18(join37(run, "agents-renewing"), { force: true });
     throw error;
   }
 }
@@ -32079,7 +31885,7 @@ var init_bridge_transfer = __esm(() => {
 });
 
 // box/src/agents/main.ts
-import { existsSync as existsSync20, mkdirSync as mkdirSync20, readdirSync as readdirSync16, readFileSync as readFileSync37, realpathSync as realpathSync10, rmSync as rmSync20 } from "fs";
+import { existsSync as existsSync20, mkdirSync as mkdirSync20, readdirSync as readdirSync16, readFileSync as readFileSync37, realpathSync as realpathSync10, rmSync as rmSync19 } from "fs";
 import { basename as basename8, dirname as dirname18, join as join38 } from "path";
 import { format as format2 } from "util";
 import { spawn as spawn8 } from "child_process";
@@ -32205,7 +32011,7 @@ function stop(reason, handOver = false, startReplacement = true) {
   cancelSignIns();
   try {
     if (record && readRendezvous(bridgeRecordFormat, record).pid === process.pid)
-      rmSync20(record, { force: true });
+      rmSync19(record, { force: true });
   } catch {}
   const end = () => {
     server4.stop(true);
@@ -32226,7 +32032,7 @@ function startNext(run) {
       return;
     if (Number(readFileSync37(join38(run, "agents.pid"), "utf8").trim()) !== process.pid)
       return;
-    rmSync20(join38(run, "agents.pid"), { force: true });
+    rmSync19(join38(run, "agents.pid"), { force: true });
     const start = join38(machineHome, "bin", "kuvo-start");
     const env = { HOME: dirname18(machineHome), PATH: process.env.PATH ?? "/usr/bin:/bin" };
     spawn8("sh", [start, "bridge"], { detached: true, stdio: "ignore", env, cwd: machineHome }).unref();
@@ -32242,7 +32048,7 @@ var version3 = "1", script, build, transferLayout, transferCapability, home3, pa
   console.error("Sandbox restart requested.");
   restarting = true;
   noteInside();
-}, self, groups, groupFolders, groupMemoryKey, post, directory, peers, agentsFile, runFolder, boxServices, places3, goals, sideQuestions, handoffs, reviews, usageFollow, gates, carrying, server4, renewal, transferring = false, answer3, answering = 0, serveRequest = (request) => {
+}, self, groups, groupFolders, groupMemoryKey, post, directory, peers, agentsFile, runFolder, boxServices, places2, goals, sideQuestions, handoffs, reviews, usageFollow, gates, carrying, server4, renewal, transferring = false, answer3, answering = 0, serveRequest = (request) => {
   if (transferring)
     return answer3(request);
   if (new URL(request.url).pathname === "/api/event" || servicePath(new URL(request.url).pathname))
@@ -32422,14 +32228,14 @@ var init_main = __esm(async () => {
   try {
     for (const name of readdirSync16(join38(temporary, "antigravity"))) {
       if (!heldRuns.has(join38(temporary, "antigravity", name)))
-        rmSync20(join38(temporary, "antigravity", name), { recursive: true, force: true });
+        rmSync19(join38(temporary, "antigravity", name), { recursive: true, force: true });
     }
   } catch {}
   leftSignIns(temporary);
   try {
     for (const name of readdirSync16(join38(home3, "antigravity")))
       if (name.startsWith(".install-"))
-        rmSync20(join38(home3, "antigravity", name), { recursive: true, force: true });
+        rmSync19(join38(home3, "antigravity", name), { recursive: true, force: true });
   } catch {}
   delete process.env.BUN_BE_BUN;
   process.env.KUVO_WAKE_VIA = "bridge";
@@ -32444,7 +32250,7 @@ var init_main = __esm(async () => {
     dropOwnPrograms(join38(home3, "runtime"));
     useSavedLoginPath();
   }
-  rmSync20(join38(home3, "cache", "install"), { recursive: true, force: true });
+  rmSync19(join38(home3, "cache", "install"), { recursive: true, force: true });
   context = { home: home3, temporary, deps };
   accounts = new Accounts(home3);
   adoptOwnFolders(home3, accounts);
@@ -32534,7 +32340,7 @@ var init_main = __esm(async () => {
       console.error("group chats:", error);
     }
   }
-  places3 = {
+  places2 = {
     engine: {
       api: link4,
       listen: (session, told) => link4.listen(session, { event: (event) => told.event(event.type, event.data), reconnected: told.reconnected })
@@ -32552,11 +32358,11 @@ var init_main = __esm(async () => {
       }
     }
   };
-  goals = new Goals(join38(home3, "goals.json"), places3);
+  goals = new Goals(join38(home3, "goals.json"), places2);
   setInterval(() => goals.resumeDue(), 60000).unref?.();
-  sideQuestions = new SideQuestions(join38(home3, "side-questions.json"), places3);
-  handoffs = new Handoffs(places3);
-  reviews = new Reviews(join38(home3, "reviews.json"), places3);
+  sideQuestions = new SideQuestions(join38(home3, "side-questions.json"), places2);
+  handoffs = new Handoffs(places2);
+  reviews = new Reviews(join38(home3, "reviews.json"), places2);
   usageFollow = new AbortController;
   roster.observeLimits((agent) => {
     if (agent.limits)
@@ -32593,7 +32399,7 @@ var init_main = __esm(async () => {
     }
   }
   carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind));
-  answer3 = handler({ roster, sessions, auto, link: link4, password, programHome: home3, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places3, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring);
+  answer3 = handler({ roster, sessions, auto, link: link4, password, programHome: home3, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places2, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring);
   try {
     if (standby) {
       server4 = standby.server;
@@ -32642,7 +32448,7 @@ var init_main = __esm(async () => {
     } catch {}
   }
   if (onMachine)
-    rmSync20(join38(machineHome, "run", "agents-renewing"), { force: true });
+    rmSync19(join38(machineHome, "run", "agents-renewing"), { force: true });
   if (transfer) {
     finishTransfer(bridgeRun);
     store.commit();
@@ -32749,4 +32555,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 5a4e8702b80b71d79e44bcac1534686ee943e427add67d6a13d79013a111d45b
+// Built from Packages/Box/src/agents 552b98e55995e87be83d6ae30373f98c9b2bbdd802221bfc13a373a5f89af1bc
