@@ -71,6 +71,24 @@ test("the box serves and keeps the automatic summary threshold for this computer
   }
 })
 
+test("the coding agents don't update themselves until you turn it on, as the box keeps it for its bridge", async () => {
+  const file = join(process.env.KUVO_HOME!, "box", "agents-update-themselves.json")
+  const { agentsUpdateThemselves } = await import("../src/shared/agent-updates")
+  rmSync(file, { force: true })
+  try {
+    const row = rowOf(await page("computer"), "agents-update")
+    expect([row.kind, row.value, row.title]).toEqual(["switch", false, "Update coding agents automatically"])
+    expect(agentsUpdateThemselves()).toBe(false)
+    expect((await change("computer", row, true)).status).toBe(200)
+    expect(rowOf(await page("computer"), "agents-update").value).toBe(true)
+    // What the bridge reads as it starts each agent.
+    expect(agentsUpdateThemselves()).toBe(true)
+    expect((await change("computer", rowOf(await page("computer"), "agents-update"), "yes")).status).toBe(400)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
 test("the box lists its sections, each with what a sidebar and search show", async () => {
   const { status, json } = await ask(handler, "GET", "kuvo/settings")
   expect(status).toBe(200)
@@ -762,6 +780,9 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
       ["Kuvo Code 1.0.0", "This computer updates with your setup.", "1.0.0"],
       ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
     ]],
+    ["Coding Agents", [
+      ["Update coding agents automatically", "Off: each agent keeps its version until you update it in Accounts. On: agents update themselves as they run.", false],
+    ]],
     ["What macOS Allows Kuvo Helper", [
       ["Login Items", "Kuvo starts when you log in to this Mac.", "On"],
       ["Screen Recording", "For agents that look at the screen.", "Allowed"],
@@ -823,7 +844,7 @@ test("a computer you added has the same page without a Mac's rows: no helper, no
   Object.assign(computerFacts, realFacts, { update: () => update({ setUp: false }), working: async () => false })
   // (No engine in this test's home, as on a computer whose engine is down: said, with the way out.)
   const shown = await fromAway("kuvo/settings/computer")
-  expect(shown.groups.map((group: any) => group.id)).toEqual(["computer"])
+  expect(shown.groups.map((group: any) => group.id)).toEqual(["computer", "agents"])
   expect(shown.groups[0].rows.map((row: any) => [row.id, row.kind, row.line])).toEqual([
     ["state", "actions", "Its engine isn’t running, so no agent works here. Restart starts it again."],
     ["version", "status", "Updates aren’t set up for devbox yet."],

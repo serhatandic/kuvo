@@ -23,6 +23,7 @@ import { run } from "../proc"
 import { Queue } from "../queue"
 import { commandSignIn } from "../signin"
 import { claudeProgram } from "../../shared/agent-programs"
+import { agentsUpdateThemselves } from "../../shared/agent-updates"
 import { forgetLegacyToken, legacyToken } from "../claude-compat"
 import { newID } from "../ids"
 import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
@@ -516,7 +517,8 @@ export class ClaudeAgent implements Agent {
     if (own) env.CLAUDE_ENV_FILE = own
     // Nor does it update itself there: with Kuvo Code's folders it would put the new version in
     // them (where your ~/.local/bin/claude would then point). Update does, with your own.
-    if (onMachine) env.DISABLE_AUTOUPDATER = "1"
+    // Elsewhere its own updater is off unless you let the agents update themselves (Settings › Computer).
+    if (onMachine || !agentsUpdateThemselves()) env.DISABLE_AUTOUPDATER = "1"
     return env
   }
 

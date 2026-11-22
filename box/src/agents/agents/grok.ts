@@ -15,6 +15,7 @@ import { AcpThread, questionFields } from "../acp"
 import { withOwnFolders } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { plain, run } from "../proc"
+import { agentsUpdateThemselves } from "../../shared/agent-updates"
 import { grokProgram } from "../../shared/agent-programs"
 import { commandSignIn } from "../signin"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
@@ -199,7 +200,8 @@ export class GrokAgent implements Agent {
 
   env(): Record<string, string | undefined> {
     // An added account's own GROK_HOME: its sign-in and sessions there.
-    return withOwnFolders({ ...process.env, GROK_DISABLE_AUTOUPDATER: "1", ...(this.instance.home ? { GROK_HOME: this.instance.home } : {}) })
+    // Its own updater off, unless you let the agents update themselves (Settings › Computer).
+    return withOwnFolders({ ...process.env, ...(agentsUpdateThemselves() ? {} : { GROK_DISABLE_AUTOUPDATER: "1" }), ...(this.instance.home ? { GROK_HOME: this.instance.home } : {}) })
   }
 
   /**
