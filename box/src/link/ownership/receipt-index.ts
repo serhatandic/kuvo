@@ -8,7 +8,7 @@ import { isObject } from "../../shared/json";
 import { readSubmissionID, submissionKey, submissionReference } from "./submission-address";
 import { draftReplayFence, readForwardEvidence } from "./forward-evidence-address";
 import { readSubmitter } from "./submitter";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 
 const VERSION = 1;
 const root = path.join(RUN, "owned-data");
@@ -34,12 +34,26 @@ function stamp(family: IndexedFamily): string {
   }
 }
 
-function database<T>(work: (db: DatabaseSync) => T): T {
+type ReceiptQueries = Pick<DatabaseSync, "prepare">;
+
+function database<T>(work: (db: ReceiptQueries) => T): T {
   privateFolder(folder);
   const SQLite = process.versions.bun
     ? require(["bun", "sqlite"].join(":")).Database as typeof DatabaseSync
     : require("node:sqlite").DatabaseSync as typeof DatabaseSync;
   const db = new SQLite(file);
+  // Bun's close defers releasing SQLite while a prepared statement is still alive.
+  const statements = new Map<string, StatementSync & { finalize?: () => void }>();
+  const queries: ReceiptQueries = {
+    prepare(sql) {
+      let statement = statements.get(sql);
+      if (!statement) {
+        statement = db.prepare(sql);
+        statements.set(sql, statement);
+      }
+      return statement;
+    },
+  };
   try {
     db.exec(`
       PRAGMA busy_timeout=500;
@@ -60,7 +74,7 @@ function database<T>(work: (db: DatabaseSync) => T): T {
     `);
     db.exec("BEGIN IMMEDIATE");
     try {
-      const result = work(db);
+      const result = work(queries);
       db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -68,11 +82,12 @@ function database<T>(work: (db: DatabaseSync) => T): T {
       throw error;
     }
   } finally {
+    for (const statement of statements.values()) statement.finalize?.();
     db.close();
   }
 }
 
-function indexed<T>(work: (db: DatabaseSync) => T): T {
+function indexed<T>(work: (db: ReceiptQueries) => T): T {
   return locked(lock, () => database(work), { exclusive: true, wait: 500 });
 }
 
@@ -115,18 +130,18 @@ function addresses(family: IndexedFamily, key: string, record: unknown): string[
   return undefined;
 }
 
-function setEntry(db: DatabaseSync, family: IndexedFamily, generation: string, key: string, value: unknown) {
+function setEntry(db: ReceiptQueries, family: IndexedFamily, generation: string, key: string, value: unknown) {
   const entry = value === undefined ? undefined : addresses(family, key, value);
   if (entry) db.prepare("INSERT OR REPLACE INTO entry VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(family, generation, key, ...entry);
   else db.prepare("DELETE FROM entry WHERE family=? AND generation=? AND key=?").run(family, generation, key);
 }
 
 type Generation = { stamp: string; generation: string; catalogued: number };
-function known(db: DatabaseSync, family: IndexedFamily) {
+function known(db: ReceiptQueries, family: IndexedFamily) {
   return db.prepare("SELECT stamp, generation, catalogued FROM family WHERE name=?").get(family) as Generation | undefined;
 }
 
-function start(db: DatabaseSync, family: IndexedFamily, at: string) {
+function start(db: ReceiptQueries, family: IndexedFamily, at: string) {
   const prior = known(db, family);
   if (prior?.stamp === at) return prior;
   const generation = randomUUID();
@@ -135,12 +150,12 @@ function start(db: DatabaseSync, family: IndexedFamily, at: string) {
   return { stamp: at, generation, catalogued: 0 };
 }
 
-function remember(db: DatabaseSync, family: IndexedFamily, generation: string, keys: string[]) {
+function remember(db: ReceiptQueries, family: IndexedFamily, generation: string, keys: string[]) {
   const insert = db.prepare("INSERT OR IGNORE INTO scan VALUES (?, ?, ?)");
   for (const key of keys) insert.run(family, generation, key);
 }
 
-function publish(db: DatabaseSync, family: IndexedFamily, generation: string) {
+function publish(db: ReceiptQueries, family: IndexedFamily, generation: string) {
   db.prepare("UPDATE family SET catalogued=1 WHERE name=? AND generation=?").run(family, generation);
 }
 
@@ -162,7 +177,7 @@ function fewKeys(family: IndexedFamily): string[] | undefined {
   }
 }
 
-function prepare(db: DatabaseSync, family: IndexedFamily, at: string) {
+function prepare(db: ReceiptQueries, family: IndexedFamily, at: string) {
   const prior = known(db, family);
   if (prior?.stamp === at) return prior.catalogued ? prior : undefined;
   const found = fewKeys(family);
@@ -173,7 +188,7 @@ function prepare(db: DatabaseSync, family: IndexedFamily, at: string) {
   return { ...staged, catalogued: 1 };
 }
 
-function refresh(db: DatabaseSync, selected: readonly IndexedFamily[]) {
+function refresh(db: ReceiptQueries, selected: readonly IndexedFamily[]) {
   const before = selected.map(family => stamp(family));
   let remaining = RECEIPT_INDEX_BATCH;
   let bytes = BUILD_BYTES;
@@ -200,12 +215,12 @@ function refresh(db: DatabaseSync, selected: readonly IndexedFamily[]) {
   return before;
 }
 
-function queryGeneration(db: DatabaseSync, family: IndexedFamily, at: string) {
+function queryGeneration(db: ReceiptQueries, family: IndexedFamily, at: string) {
   const staged = known(db, family);
   return staged?.stamp === at && staged.catalogued ? staged.generation : null;
 }
 
-function complete(db: DatabaseSync, selected: readonly IndexedFamily[], before: string[]) {
+function complete(db: ReceiptQueries, selected: readonly IndexedFamily[], before: string[]) {
   return selected.every((family, i) => {
     const generation = queryGeneration(db, family, before[i]!);
     return generation && before[i] === stamp(family)
@@ -307,7 +322,7 @@ async function catalogue(family: IndexedFamily) {
   insert(batch, true);
 }
 
-function dropRetired(db: DatabaseSync) {
+function dropRetired(db: ReceiptQueries) {
   const old = db.prepare("SELECT family, generation FROM retired LIMIT 1").get() as { family: string; generation: string } | undefined;
   if (!old) return;
   for (const table of ["entry", "scan"]) {

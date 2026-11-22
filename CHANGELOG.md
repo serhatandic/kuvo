@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Sessions in Git worktrees appear under their original project, including worktrees created outside Kuvo.
 - Older conversations keep their place in the sidebar when Kuvo rewrites their history or changes session settings.
 
+- The box checks conversation permissions faster after a restart and uses fewer resources to track message delivery.
 - Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
 
 - Changing an agent’s settings leaves its running background work alone. Older Claude Code and Codex sessions keep their process when their summary setting matches the default.
