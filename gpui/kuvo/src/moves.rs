@@ -9,7 +9,7 @@ use gpui::{
 };
 use kuvo_box::moves::{Moves, Moving, Place, Places, Receipt, Target};
 use kuvo_box::{
-    BoxClient, Error, Timing,
+    BoxClient, Error,
     bots::Elsewhere,
     boxes::Boxes,
     follow::{Follow, Followed},
@@ -115,7 +115,7 @@ impl MovesView {
             _tasks: Vec::new(),
         };
         if live {
-            let follow = view.client.follow_moves(Timing::default());
+            let follow = view.client.follow_moves();
             let updates = follow.updates().clone();
             view._tasks.push(cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {

@@ -273,11 +273,11 @@ impl ConversationView {
                 }
             }));
             // What it asks, as the box words it, now and as it changes.
-            let asks = client.follow_asks(&session, Timing::default());
+            let asks = client.follow_asks(&session);
             let updates = asks.updates().clone();
             view._asks_follow = Some(asks);
             // What waits its turn, now and as it changes.
-            let queue = client.follow_queue(&session, Timing::default());
+            let queue = client.follow_queue(&session);
             let queued = queue.updates().clone();
             view._queue_follow = Some(queue);
             view.tasks.push(cx.spawn(async move |this, cx| {
@@ -770,12 +770,14 @@ impl ConversationView {
     fn run_queue_removal(&mut self, pending: queue_removal::Pending, cx: &mut Context<Self>) {
         let item = pending.removal.item.clone();
         if !self.queue_removals.insert(item.clone()) { return }
+        // Still on its way here (sent, not listed yet): its box takes it out as it arrives.
+        let arriving = self.pending_queued(cx).iter().any(|outgoing| outgoing.id == item);
         let (client, session) = (self.client.clone(), self.session.clone());
         let composer = self.composer.clone();
         cx.spawn(async move |this, cx| {
             let result = loop {
                 let (reader, session_id, item_id, receipt) = (client.clone(), session.clone(), item.clone(), pending.receipt().map(str::to_owned));
-                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref()) }).await;
+                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref(), arriving) }).await;
                 let Err(error) = &result else { break result };
                 if pending.receipt().is_none() || !kuvo_box::queue::removal_retryable(error) { break result }
                 let _ = this.update(cx, |this, cx| {
@@ -1824,23 +1826,24 @@ impl ConversationView {
                     div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(div().max_w(px(90.)).truncate().child(files))
                 }))
                 .children(next_step)
-                .when(!pending, |row| row.child(go))
-                .when(!pending, |row| row.child({
+                // (Yours on its way too: what's done with one acts by its id, and its box settles it.)
+                .child(go)
+                .child({
                     let selector = format!("remove-{}", item.id);
                     div().flex_none().debug_selector(move || selector).child(
                         Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav)
                             .on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))),
                     )
-                }))
-                .when(!pending, |row| row.child(div().flex_none().debug_selector({
+                })
+                .child(div().flex_none().debug_selector({
                     let selector = more.clone();
                     move || selector
                 }).child(
                     PopoverMenu::button(SharedString::from(more.clone()), Button::icon_only(SharedString::from(format!("open-{more}")), IconName::More, "More actions")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav), menu.clone())
                         .above().align_right(),
-                )));
+                ));
             let row = match previous_slots.get(&item.id) {
                 Some(previous) if !dragging_here && *previous != index => {
                     let distance = (*previous as f32 - index as f32) * QUEUE_ROW_HEIGHT;
@@ -1851,9 +1854,6 @@ impl ConversationView {
                 }
                 _ => row.into_any_element(),
             };
-            if pending {
-                return row;
-            }
             ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu).into_any_element()
         });
         Some(

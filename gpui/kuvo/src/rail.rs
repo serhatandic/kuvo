@@ -13,7 +13,7 @@ use gpui::{
 };
 use kuvo_box::areas::{Account, Level};
 use kuvo_box::error::Offered;
-use kuvo_box::{BoxClient, Refusal, Timing, follow::Followed};
+use kuvo_box::{BoxClient, Refusal, follow::Followed};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     menu::{Tooltip, card_frame},
@@ -156,7 +156,7 @@ impl Rings {
         let mut rings = Rings { client, live, accounts: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
             if rings.client.streams() {
-                let follow = rings.client.follow_usage(Timing::default());
+                let follow = rings.client.follow_usage();
                 rings._following = Some(cx.spawn(async move |this, cx| {
                     while let Ok(update) = follow.updates().recv().await {
                         if matches!(update, Followed::Now(_))

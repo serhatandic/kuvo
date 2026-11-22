@@ -16,7 +16,7 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Bot, Look};
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::groups::{Activity, Chat, Group, GroupMessage, GroupTask};
 use kuvo_box::messages::{Content, Message, Step, Time, UserMessage};
 use kuvo_ui::{
@@ -175,7 +175,7 @@ impl GroupChatView {
         if !self.live || self.follow.is_some() {
             return;
         }
-        let follow = Rc::new(self.client.follow_group(&self.id, Timing::default()));
+        let follow = Rc::new(self.client.follow_group(&self.id));
         let updates = follow.updates().clone();
         self.follow = Some(follow);
         self.follow_task = Some(cx.spawn(async move |this, cx| {

@@ -80,7 +80,7 @@ impl SubagentsView {
             run(self, false, cx, move || client.subagents(&session), |this, read, cx| this.take(read.map_err(|error| error.to_string()), cx));
             return;
         }
-        let follow = self.client.follow_subagents(&self.session, Timing::default());
+        let follow = self.client.follow_subagents(&self.session);
         let updates = follow.updates().clone();
         self._follow = Some(follow);
         self._task = Some(cx.spawn(async move |this, cx| {

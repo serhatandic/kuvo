@@ -19,7 +19,7 @@ use kuvo_box::BoxClient;
 use kuvo_box::accounts::{Confirm, said};
 use kuvo_box::areas::{AddTry, Adding, Computer};
 use kuvo_box::boxes::Pairing;
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
@@ -322,7 +322,7 @@ impl ComputersView {
         view._subscriptions.push(sized);
         // The box's tries, followed as they go; in tests and shots, read as each thing is asked.
         if live {
-            let follow = view.client.follow_adding(Timing::default());
+            let follow = view.client.follow_adding();
             let updates = follow.updates().clone();
             view._adding_follow = Some(follow);
             view._tasks.push(cx.spawn(async move |this, cx| {

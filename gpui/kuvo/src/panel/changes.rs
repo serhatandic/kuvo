@@ -12,7 +12,7 @@ use gpui::{
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, actions, div,
     prelude::FluentBuilder as _, px,
 };
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::git::{ChangedFile, Committed, DiscardKind, FileDiff, GitFiles, Group, Stage};
 use kuvo_box::BoxClient;
 use kuvo_ui::output::{DiffLine, DiffView, parse_patch};
@@ -173,7 +173,7 @@ impl ChangesView {
             self.read_again(cx);
             return;
         }
-        let follow = self.client.follow_git_files(&place.directory, Timing::default());
+        let follow = self.client.follow_git_files(&place.directory);
         let updates = follow.updates().clone();
         self._follow = Some(follow);
         self._follow_task = Some(cx.spawn(async move |this, cx| {

@@ -633,7 +633,7 @@ impl Workspace {
             // Where the box streams, what waits on you and your computers are followed as they
             // change; elsewhere they're read again (as the list changes, as Computers opens).
             if client.streams() {
-                let follow = client.follow_waiting(Timing::default());
+                let follow = client.follow_waiting();
                 let updates = follow.updates().clone();
                 workspace._waiting_follow = Some(follow);
                 workspace.tasks.push(cx.spawn(async move |this, cx| {
@@ -647,7 +647,7 @@ impl Workspace {
                         }
                     }
                 }));
-                let follow = client.follow_computers(Timing::default());
+                let follow = client.follow_computers();
                 let updates = follow.updates().clone();
                 workspace._computers_follow = Some(follow);
                 workspace.tasks.push(cx.spawn(async move |this, cx| {
