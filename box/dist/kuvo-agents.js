@@ -9771,12 +9771,29 @@ var init_limit_display = __esm(() => {
   DAY_MS = 24 * HOUR_MS;
 });
 
+// box/src/usage/limit-card.ts
+var IN_USE_FOR, CURRENT_FOR;
+var init_limit_card = __esm(() => {
+  init_limit_display();
+  init_limits_rows();
+  IN_USE_FOR = 30 * 60000;
+  CURRENT_FOR = 30 * 60000;
+});
+
 // box/src/usage/limits-rows.ts
 var DAY2;
 var init_limits_rows = __esm(() => {
   init_limit_display();
+  init_limit_card();
   init_limit_display();
   DAY2 = 24 * 60;
+});
+
+// box/src/usage/pace.ts
+var MINUTE2 = 60000, HOUR, NEW_PERIOD;
+var init_pace = __esm(() => {
+  HOUR = 60 * MINUTE2;
+  NEW_PERIOD = 5 * MINUTE2;
 });
 
 // box/src/usage/notices.ts
@@ -9861,12 +9878,14 @@ function xaiIdentity(...tokens) {
   }
   return;
 }
-var LimitsProblem, MINUTE2 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, SHARED_SLACK, text2 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
+var LimitsProblem, MINUTE3 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, SHARED_SLACK, text2 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 var init_limits2 = __esm(() => {
   init_accounts();
   init_events();
   init_limits_resets();
   init_limits_rows();
+  init_limit_card();
+  init_pace();
   init_notices();
   LimitsProblem = class LimitsProblem extends Error {
     kind;
@@ -9879,12 +9898,12 @@ var init_limits2 = __esm(() => {
       this.sent = sent;
     }
   };
-  FIRST_HOLD = 60 * MINUTE2;
-  LONGEST_HOLD = 6 * 60 * MINUTE2;
-  FIRST_RETRY = 5 * MINUTE2;
-  LONGEST_RETRY = 30 * MINUTE2;
-  NOTHING_AGAIN = 30 * MINUTE2;
-  SHARED_SLACK = 2 * MINUTE2;
+  FIRST_HOLD = 60 * MINUTE3;
+  LONGEST_HOLD = 6 * 60 * MINUTE3;
+  FIRST_RETRY = 5 * MINUTE3;
+  LONGEST_RETRY = 30 * MINUTE3;
+  NOTHING_AGAIN = 30 * MINUTE3;
+  SHARED_SLACK = 2 * MINUTE3;
 });
 // box/src/usage/cursor-api.ts
 import { existsSync as existsSync9, readFileSync as readFileSync15 } from "fs";
@@ -18554,7 +18573,7 @@ ${text}`;
         return { outcome: "interrupted" };
       if (result?.status === "error") {
         const message = errorWords(result.error) ?? "Cursor stopped with an error.";
-        const limit = limitOf2(message, result.error);
+        const limit = limitOf3(message, result.error);
         return limit ? { outcome: "failed", error: { type: "limit", message }, limit } : { outcome: "failed", error: failure(message) };
       }
       return { outcome: "succeeded" };
@@ -18566,7 +18585,7 @@ ${text}`;
       if (error instanceof RPCClosed)
         return { outcome: "failed", error: failure(error), agentExited: true };
       const message = errorWords(error) ?? "Cursor stopped with an error.";
-      const limit = limitOf2(message, error);
+      const limit = limitOf3(message, error);
       if (limit)
         return { outcome: "failed", error: { type: "limit", message }, limit };
       if (/Cannot use this model/i.test(message))
@@ -18795,7 +18814,7 @@ ${text}`;
     dropRelayed(this.session.id, this);
   }
 }
-function limitOf2(message, error) {
+function limitOf3(message, error) {
   const code = String(error?.code ?? error?.name ?? "");
   if (error?.status === 429 || /resource.exhausted|rate.?limit/i.test(code) || /resource.?exhausted|usage limit (?:reached|exceeded)|quota exceeded|rate limit exceeded|too many requests/i.test(message)) {
     return { scope: "provider", message, resetsAt: resetsIn(message) };
@@ -33554,4 +33573,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 5e8cbf5dc08fbf993130ee2c08039119308b41d6bf52eef2a0f5a1661e95ded2
+// Built from Packages/Box/src/agents 8d83b1d4c2037375a23f40713e641b68531c1fe5361dad3d9bdf6ae1b94ecfd8
