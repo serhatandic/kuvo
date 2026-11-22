@@ -82,7 +82,13 @@ pinned to 1.3.0, which never updates. That's why its updates were missing. It mo
   app's notifications bell and macOS notifications draw them.
 - Using an agent in Terminal can still update a shared install. Kuvo then notices the new version.
 
-Planned per agent (not built yet; each row is confirmed when it's built):
+Built (step 6): the box checks each installed agent's newest version as accounts are read and
+every hour, and keeps its notices in `<agents home>/update-notices.json`, one per program and
+version (`box/src/agents/update-notices.ts`, PROTOCOL.md "Update notices"). Each is told once on
+`kuvo/notices` (category `update`) for macOS and phones, and served at
+`kuvo/agents/api/kuvo/updates/notices` for the notifications bell.
+
+Per agent:
 
 | Agent | Turn its updater off | Newest version from |
 |---|---|---|

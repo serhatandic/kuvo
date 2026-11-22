@@ -22,6 +22,8 @@ import { branchRoutes } from "./branch"
 import { handoffRoutes, type Handoffs } from "./handoff"
 import { reviewRoutes, type Reviews } from "./reviews"
 import { isOutdated, type Maintenance } from "./maintenance"
+import { UpdateNotices, updateNoticesFile } from "./update-notices"
+import { agentsUpdateThemselves } from "../shared/agent-updates"
 import { forgetUpdate, inUpdateAll, programUpdate, resumeProgramUpdates, updateAll, updateProgram } from "./updates"
 import { refreshLoginPath } from "./proc"
 import { setToolServer } from "./kuvotools"
@@ -108,8 +110,12 @@ const lastMaintained = new Map<string, Maintenance>()
  * Its version and the newest, if they come soon (checking may ask Homebrew or npm): what was
  * known before otherwise, and the account is said again once they do.
  */
+/** Each program as it's read, for its update notices (the bridge's handler sets it, update-notices.ts). */
+let noticeUpdates: ((agent: Agent, value: Maintenance) => void) | undefined
+
 /** What `agent`'s program is now, as just read; whether that's news. */
 function maintainedNow(agent: Agent, value: Maintenance, matching: Agent[] = []): boolean {
+  noticeUpdates?.(agent, value)
   const before = lastMaintained.get(agent.id)
   const changed = JSON.stringify(before) !== JSON.stringify(value)
   lastMaintained.set(agent.id, value)
@@ -255,6 +261,24 @@ export function handler(context: Context, transferring?: () => boolean) {
   const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
   resumeProgramUpdates(() => roster.all(), note, programs)
+  // The update notices, decided as each program is read (and every hour, by the running bridge).
+  const updateNotices = context.programHome ? new UpdateNotices(updateNoticesFile(context.programHome)) : undefined
+  noticeUpdates = updateNotices && ((agent, value) => {
+    const own = roster.all().find((each) => each.id === agent.id && each.instance.id === "default") ?? agent
+    const decided = updateNotices.note({ program: agent.id, name: own.name, provider: own.providerID, maintenance: value, updates: Boolean(own.update && value.command) }, agentsUpdateThemselves())
+    if (decided.told) emit("kuvo.updates.notice", { notice: decided.told })
+    if (decided.changed) emit("kuvo.updates.notices.updated", {})
+  })
+  if (updateNotices && context.refreshAccounts) {
+    // Each program's newest looked up (npm, Homebrew) once soon after starting, then every hour.
+    const look = () => {
+      const programs = new Map<string, Agent>()
+      for (const agent of roster.all()) if (agent.maintenance && !programs.has(agent.id)) programs.set(agent.id, agent)
+      for (const agent of programs.values()) void agent.maintenance!(true).then((value) => note(agent, value), () => {})
+    }
+    setTimeout(look, 60_000).unref?.()
+    setInterval(look, 60 * 60_000).unref?.()
+  }
   const accounts = new AccountRefresh(undefined, Date.now, (provider, signedIn, signIn) => context.boxServices?.observe(provider, { signedIn, signIn }))
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).catch(() => {})
   if (context.refreshAccounts) {
@@ -608,6 +632,15 @@ export function handler(context: Context, transferring?: () => boolean) {
       // how it goes (`metadata.programUpdate`). `POST kuvo/updates`: Update All, each program it
       // picks (`metadata.updateAll`); `POST kuvo/updates/<provider>`: that account's program;
       // `DELETE kuvo/updates/<provider>?at=…`: how that one went, seen, for every client.
+      // The update notices (update-notices.ts): what's served now, and one seen, for every client.
+      if (extension === "updates" && b === "notices") {
+        if (!c && method === "GET") return json({ data: { notices: updateNotices?.list() ?? [] } })
+        if (c && !d && method === "DELETE") {
+          if (updateNotices?.seen(c)) emit("kuvo.updates.notices.updated", {})
+          return json({})
+        }
+        return error(405, "Not allowed.")
+      }
       if (extension === "updates" && !c) {
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")

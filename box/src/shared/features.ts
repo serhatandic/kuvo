@@ -23,6 +23,7 @@ export const FEATURES = [
   "agents.accounts",
   "agents.start",
   "agents.updates",
+  "agents.updates.notices",
   "agents.voice",
   "approval",
   "approval.default",

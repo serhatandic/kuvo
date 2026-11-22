@@ -4432,6 +4432,7 @@ device of kind `desktop` (`clients.kind`) is sent none, as Apple has nothing for
 | `report` | A bot's news: its reply to you, what it sent you on purpose (`notify_user`), a goal's digest (`quiet`) or its report. |
 | `blocked` | A bot's goal needs you (`quiet`, or `wake` where you asked to be woken). |
 | `message` | Something in a group chat. |
+| `update` | A coding agent's update notice ("Codex 0.161.0 is available", "Codex updated to 0.161.0"); `data.notice` is its id in `kuvo/agents/api/kuvo/updates/notices`, `thread` `update:<program>`. |
 
 **Handed over, and how it went.** A push counts as handed over only once the box's relay
 connection takes it: one closing as it's handed over is held and tried again, as when the relay
@@ -4571,7 +4572,7 @@ a browser's, itself).
   405 for another method.
 - **`GET kuvo/notices/events`**: the same, a line now and one each time it changes (NDJSON).
 - **A client** shows each notice of the categories that are news (`finished`, `failed`, `report`,
-  `message`) once, by its `id`, and none of what was listed the first time it read a box (news from
+  `message`, `update`) once, by its `id`, and none of what was listed the first time it read a box (news from
   before it was there). The desktop app, which has no answer buttons in its notifications,
   shows what's asked (`permission`, `question`, `ask`, `blocked`) the same way, as the box words
   it; each device decides only whether it shows them (its own settings: none while its window is
@@ -4825,7 +4826,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     still runs after 30 minutes, the update ends and the held messages go ahead. A replacement
     bridge restores the pending update and its original deadline before admitting queued turns.
     A client draws the outcomes, says each once and then that it was seen. Update All on
-    the phone asks each computer. Installing done,
+    the phone asks each computer.
+  - **Update notices** (`agents.updates.notices`): the box checks each installed agent's newest
+    version (npm or Homebrew, as its installer would update it) as accounts are read and every
+    hour, and decides its notices. With "Update coding agents automatically" off (Settings ›
+    Computer): `available`, "Codex 0.161.0 is available", as soon as a newer version is known;
+    on: `updated`, "Codex updated to 0.161.0", once the installed version moved on. One per
+    program and version, kept across restarts; it goes once the program is updated to it or past
+    it, or once a client says it was seen, and the same version is never raised again.
+    `GET kuvo/agents/api/kuvo/updates/notices` → `{data: {notices: [{id, program, provider, kind:
+    "available" | "updated", version, title, body, at, action?}]}}`, newest first: `title` and
+    `body` are the box's words, drawn as they are; `action` `{id: "update", label}` where Kuvo
+    Code can update it, done through `POST …/kuvo/updates/<provider>` (`provider`: the agent's own
+    sign-in). `DELETE …/kuvo/updates/notices/<id>`: seen, for every client. The bridge's
+    `kuvo.updates.notices.updated` says the list changed; each notice, as it's made, is told once
+    on `kuvo/notices` (category `update`) for macOS and your phones. Installing done,
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
@@ -8240,6 +8255,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `agents.accounts` | `kuvo/agents/api/kuvo/accounts…`: add, rename and remove named coding-agent accounts |
 | `agents.start` | `POST kuvo/agents/start`: restart the coding agents' bridge when it fails to start |
 | `agents.updates` | `kuvo/agents/api/kuvo/updates…`: start program updates and acknowledge the results |
+| `agents.updates.notices` | `kuvo/agents/api/kuvo/updates/notices`: the coding agents' update notices ("Update notices") |
 | `agents.voice` | `kuvo/agents/api/kuvo/voice…`: voice routes |
 | `approval` | `kuvo/approval` and `kuvo/sessions/<id>/approval` ("Approval", bridge 0.9.180) |
 | `approval.default` | A new conversation's approval where its client doesn't say: Auto the first time on a computer, then the last one picked there (`kuvo/approval`'s `default`, bridge 0.9.185); one a client made with `kuvo.approval` alone gets that ("Approval") |

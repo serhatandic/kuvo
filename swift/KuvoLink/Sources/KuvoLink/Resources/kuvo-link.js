@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 b2fca98025a9
+// Kuvo folder layout 23 fa1c99701f64
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1860,7 +1860,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b2fca98025a9";
+var BRIDGE_VERSION = "fa1c99701f64";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -8957,6 +8957,7 @@ var init_features = __esm(() => {
     "agents.accounts",
     "agents.start",
     "agents.updates",
+    "agents.updates.notices",
     "agents.voice",
     "approval",
     "approval.default",
@@ -9253,12 +9254,23 @@ var init_mac = __esm(() => {
 });
 
 // box/src/shared/routes/box.ts
-var PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var UPDATE_NOTICE, PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
   init_features();
   init_shape();
   init_mac();
   init_setup_save();
+  UPDATE_NOTICE = object({
+    id: string,
+    program: string,
+    provider: string,
+    kind: words("available", "updated"),
+    version: string,
+    title: string,
+    body: string,
+    at: number,
+    "action?": object({ id: literal("update"), label: string })
+  });
   PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
   COMPATIBILITY = oneOf(object({ state: literal("open") }), object({ state: words("behind", "held"), missing: list(string) }));
   INFO = oneOf(object({
@@ -9714,6 +9726,8 @@ var init_box = __esm(() => {
     { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
     { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
     { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
+    { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
+    { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
     { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
     { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } }
   ];
@@ -88864,6 +88878,17 @@ function groupNotice(event) {
     return { ...about, subtitle: `${data.who} finished its part`, body: oneSentence(data.text) };
   return null;
 }
+function updateNotice(served) {
+  if (!isObject(served) || typeof served.id !== "string" || typeof served.title !== "string" || typeof served.program !== "string")
+    return null;
+  return {
+    category: "update",
+    title: served.title,
+    ...typeof served.body === "string" && served.body ? { body: served.body } : {},
+    thread: `update:${served.program}`,
+    data: { notice: served.id }
+  };
+}
 var offersAlways = (request) => {
   const strings = (value) => (Array.isArray(value) ? value : []).filter((each) => typeof each === "string");
   const shown = strings(request.resources);
@@ -117465,6 +117490,12 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
           usageRevision++;
         if (!notices)
           continue;
+        if (event.type === "kuvo.updates.notice") {
+          const notice = updateNotice(event.data?.notice);
+          if (notice)
+            tell(notice);
+          continue;
+        }
         if (ANSWERED2.has(event.type))
           answered(event.data?.requestID ?? event.data?.id);
         if (RUN_ENDS.has(event.type) && hold && typeof event.data?.sessionID === "string")

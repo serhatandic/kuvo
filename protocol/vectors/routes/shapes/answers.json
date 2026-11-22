@@ -10735,6 +10735,9 @@
             "literal": "agents.updates"
            },
            {
+            "literal": "agents.updates.notices"
+           },
+           {
             "literal": "agents.voice"
            },
            {
@@ -11664,6 +11667,9 @@
            },
            {
             "literal": "agents.updates"
+           },
+           {
+            "literal": "agents.updates.notices"
            },
            {
             "literal": "agents.voice"
@@ -15839,6 +15845,70 @@
    "answers": {
     "202": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/agents/api/kuvo/updates/notices",
+   "feature": "agents.updates.notices",
+   "answers": {
+    "200": {
+     "object": {
+      "data": {
+       "object": {
+        "notices": {
+         "list": {
+          "object": {
+           "id": "string",
+           "program": "string",
+           "provider": "string",
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "available"
+             },
+             {
+              "literal": "updated"
+             }
+            ]
+           },
+           "version": "string",
+           "title": "string",
+           "body": "string",
+           "at": "number",
+           "action?": {
+            "object": {
+             "id": {
+              "literal": "update"
+             },
+             "label": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/agents/api/kuvo/updates/notices/:id",
+   "feature": "agents.updates.notices",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },
