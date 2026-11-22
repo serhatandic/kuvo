@@ -148,6 +148,7 @@ export const FEATURES = [
   "library",
   "limits",
   "limits.bar",
+  "limits.card",
   "limits.resets",
   "limits.rings",
   "limits.titles",

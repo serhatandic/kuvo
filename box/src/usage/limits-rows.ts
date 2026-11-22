@@ -5,6 +5,8 @@
 import type { AgentKind } from "../agents/accounts"
 import type { AccountLimits, LimitWindow } from "./limits"
 import { levelOf, limitDisplay, windowTitle, type LimitDisplay } from "./limit-display"
+import { cardOf, notePace, railed, railKey, type LimitCard } from "./limit-card"
+import type { Pace } from "./pace"
 
 export { levelOf, windowTitle } from "./limit-display"
 
@@ -80,6 +82,8 @@ export interface LimitRow extends AccountLimits {
   boxes: LimitRowBox[]
   /** Display facts for the Usage page, added to HTTP answers. */
   usage?: LimitDisplay
+  /** What its card on the rail shows, in words (`limit-card.ts`), added to HTTP answers. */
+  card?: LimitCard
   /** Every computer it's on is away: its numbers are as of their `read`, not live. */
   away?: true
   /**
@@ -95,7 +99,7 @@ export interface LimitRow extends AccountLimits {
  * one `identity` are one account, from any box; one without an identity is its box's own. `now`, the
  * box's clock: a window whose reset has passed by then has started over.
  */
-export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false): LimitRow[] {
+export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false, pace?: Pace): LimitRow[] {
   const groups: { id: string; members: { box: LimitsBox; account: AccountLimits }[] }[] = []
   const found = new Map<string, number>()
   for (const box of boxes) {
@@ -143,6 +147,13 @@ export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false)
     return row
   })
   named(rows)
+  // Each window's reading kept on its trail, for how fast it's going; and, for a client, each card.
+  if (pace) for (const row of rows) notePace(row, pace, now)
+  if (presentUsage) {
+    const siblings = new Map<string, number>()
+    for (const row of rows) if (railed(row)) siblings.set(railKey(row), (siblings.get(railKey(row)) ?? 0) + 1)
+    for (const row of rows) row.card = cardOf(row, pace, now, siblings.get(railKey(row)) ?? 1)
+  }
   return rows
 }
 
@@ -151,9 +162,14 @@ const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", 
 const SERVICE_NAMES: Record<string, string> = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" }
 const capitalized = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
 
+/** What an account is called before what you called it: its coding agent's name, else its plan's ("ChatGPT"). */
+export function baseTitle(account: { agent?: string; service: string }): string {
+  return account.agent ? (AGENT_NAMES[account.agent] ?? capitalized(account.agent)) : (SERVICE_NAMES[account.service] ?? capitalized(account.service))
+}
+
 /** An account's name (PROTOCOL.md, "Plan limits", `title`): its coding agent's, else its plan's ("ChatGPT"), with what you called it ("Claude · Work"). */
 export function accountTitle(account: { agent?: string; service: string; label?: string }): string {
-  const base = account.agent ? (AGENT_NAMES[account.agent] ?? capitalized(account.agent)) : (SERVICE_NAMES[account.service] ?? capitalized(account.service))
+  const base = baseTitle(account)
   const label = account.label?.trim()
   return label ? `${base} · ${label}` : base
 }
@@ -352,7 +368,7 @@ function merged(boxes: { box: LimitsBox; account: AccountLimits }[]): AccountLim
  * Which limit a window is, the same from any box and either sign-in to an account (a coding agent's,
  * the engine's), which may name it differently: what it counts, and how long it is.
  */
-function limitOf(window: LimitWindow): string {
+export function limitOf(window: Pick<LimitWindow, "id" | "model" | "name" | "minutes">): string {
   if (window.model === undefined && window.name === undefined && window.minutes === undefined) return "id:" + window.id
   return `${window.model?.toLowerCase() ?? ""}|${window.name ?? ""}|${window.minutes ?? ""}`
 }

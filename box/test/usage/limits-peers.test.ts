@@ -271,7 +271,7 @@ describe("plan limits across your computers", () => {
     }
     // The route says the same, and keeps what older clients read: each box's own accounts.
     const said = await hetzner.route()
-    expect(said.rows.map(({ usage: _, ...row }) => row)).toEqual(JSON.parse(JSON.stringify(hetzner.rows())))
+    expect(said.rows.map(({ usage: _, card: __, ...row }) => row)).toEqual(JSON.parse(JSON.stringify(hetzner.rows())))
     expect(said.rows[0]!.usage?.computers).toEqual([{ name: "MacBook Pro", here: false }])
     expect(said.accounts.map((account) => account.provider)).toEqual(["claude-code"])
     // hetzner never read it: what it lists as its own (for a client from before rows) has the Mac's numbers.

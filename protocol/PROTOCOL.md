@@ -6785,6 +6785,46 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     shares: its `balance` (what's gone of `limit`) and each `capped` extra (`amount` of `limit`), the
     highest of them. It's left out where nothing says a limit (a balance with no cap, spend alone, no
     reading): that is "no level", which a client draws apart from `calm`, never as it.
+  - **Cards and the rail** (`limits.card`, #952): in `GET` and `refresh` answers (never in what
+    peers are told), each row adds `card`, what a client shows of the account when its ring is
+    rested on, worded by the box; and the answer adds `rail`, the rings a client draws, in order.
+    Words are a list of `{text, at?, as?, tone?, strong?}`: a client writes `text`, then `at` (ms)
+    in its own time zone, as a time of day (`as: "time"`; with its weekday, or its date, where
+    it isn't today) or a date (`as: "date"`, "Nov 30"); `tone` is `warning`, `danger`, `muted` or
+    `faint`. A `card` is `{title, name, dot?, tone, left?, lines, note?, inUse?, resets?}`:
+    - `title`: the account's name on its card, the agent's with which account where you have more
+      than one on the rail ("Claude · Max"); `name`, the account alone ("Max", "Lab 12").
+    - `lines`: one per window, the plan's own shortest first (5-hour, then Weekly), then those
+      named for what they count, then each model's; each `{window, title, left, tone, words}`:
+      `left`, what's left (0 to 1) for its bar; `tone` `calm`, `warning` or `danger`.
+    - How fast it's going: the box keeps each window's readings (from any of your computers, as the
+      row has them; through a restart, in `limits.json`'s `paces`) and, where it has three or more
+      over a quarter of a recent stretch (a fifth of the window, half an hour to a day; a quarter
+      hour at least), takes the rate between the stretch's first and last. Used up: "Back at
+      {reset}" (`danger`). On pace to be used up before it starts over: "38% left · runs out
+      ~{about when, to five minutes}, resets {reset}" (`warning`). Otherwise "56% left · lasts until
+      reset". With too few readings nothing is guessed: "56% left · resets {reset}".
+    - `dot`: `danger` where a window is used up, else `warning` where one runs out before its
+      reset: a client marks the account's ring with it, and the ring itself stays as `rings` say.
+      `tone` and `left` (its rings' tightest) are the account's as a whole, for a mark among others
+      (`unknown` and no `left` where nothing's known).
+    - `note`: why there's nothing (or not everything) to show: its maker's own (`problem.unknown`,
+      Google not counting Antigravity's use), what to do about a problem, "Fills in once a session
+      runs on this account" before anything was read, or "No limits reported.".
+    - `inUse`: a turn told of it in the last half hour.
+    - `resets`, only where one of its resets can be used now: `{words, action, confirm: {title,
+      message, button, cancel}}`: "2 resets left · next expires {date}", "Use a reset", and the
+      question asked before one's used, naming the reset it uses: the soonest to expire, as each
+      maker's spend picks ("Use the reset that expires {date}?", "Codex's usage limits start over
+      now.", "Use Reset", "Cancel"). Using it is `POST …/limits/reset` (below, "Resets").
+    `rail`: the accounts signed in on the answering box (`here`) whose plan hasn't ended, in the
+    rows' order, each item `{key, rows, ring, selected, title, dot?, count?, summary?, strip?}`:
+    an account a ring (`rows` its own `id`); an agent's (or, for the engine's, a service's) three
+    or more accounts one ring, at its first's place: `ring` the row it draws (the emptiest with
+    rings), `count`, `summary` ("17 of 20 fine": `tone` `calm`), and `strip`, each account
+    emptiest first (unknown last), `{row, name, left?, tone, heading}`, `heading` the words over
+    its card when shown in full (", in use" for the one in use). `selected`: the account its card
+    shows in full at first, the one in use (newest), else the emptiest.
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of
   your computers that states accounts, a machine's on Linux too), refreshed
