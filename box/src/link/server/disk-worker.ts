@@ -1,3 +1,5 @@
+import type { artifactCitations } from "../artifacts/service";
+import type { libraryHandovers } from "../library/service";
 import type { verifyHeldPack } from "../updates/fleet";
 import type { packForTransfer, unpackForTransfer } from "../moves/bundle";
 import type { checkMoveQueueFiles, clearQueuePlacement, forgetWorkQueues, packQueuesForMove, placeMoveWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
@@ -21,7 +23,7 @@ import type { browserSites, removeSiteData, siteSignInsHere } from "../browser/s
 import type { sweepWakeFolders } from "../fence/state";
 import type { readBacklogFiles } from "../work-queue/import";
 import type { allocateNumbers, claimNumbers, movePast, numbersToSend, receiveNumbers } from "../work-queue/numbers";
-import type { receiveRelease } from "../updates/update";
+import type { keepDownloadedRelease, receiveRelease } from "../updates/update";
 import type { readPermissionSettings } from "../permissions";
 
 type Operations = {
@@ -37,6 +39,8 @@ type Operations = {
   listFolders: typeof listFolders;
   makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
+  artifactCitations: typeof artifactCitations;
+  libraryHandovers: typeof libraryHandovers;
   scanSourceGeneration: typeof scanSourceGeneration;
   authenticate: (file: string, key: string, context: Buffer) => ReturnType<typeof authenticate>;
   openArchive: typeof openArchive;
@@ -49,6 +53,7 @@ type Operations = {
   mergeInsightsDatabase: typeof mergeInsightsDatabase;
   prepareEngineBootstrap: typeof prepareEngineBootstrap;
   receiveRelease: typeof receiveRelease;
+  keepDownloadedRelease: typeof keepDownloadedRelease;
   verifyHeldPack: typeof verifyHeldPack;
   allocateNumbers: typeof allocateNumbers;
   claimNumbers: typeof claimNumbers;
@@ -96,6 +101,8 @@ if (isDiskWorker) {
         case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
         case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;
         case "scanSourceGeneration": value = (await import("../setup/removal-generation")).scanSourceGeneration(...args); break;
+        case "artifactCitations": value = (await import("../artifacts/service")).artifactCitations(...args); break;
+        case "libraryHandovers": value = (await import("../library/service")).libraryHandovers(...args); break;
         case "captureBackup": value = (await import("../backup/engine")).captureBackup(...args); break;
         case "authenticate": {
           const [file, key, context] = args;
@@ -135,6 +142,7 @@ if (isDiskWorker) {
         case "receiveNumbers": value = (await import("../work-queue/numbers")).receiveNumbers(...args); break;
         case "allocateNumbers": value = (await import("../work-queue/numbers")).allocateNumbers(...args); break;
         case "verifyHeldPack": value = await (await import("../updates/fleet")).verifyHeldPack(...args); break;
+        case "keepDownloadedRelease": value = (await import("../updates/update")).keepDownloadedRelease(...args); break;
         case "receiveRelease": value = (await import("../updates/update")).receiveRelease(...args); break;
         case "readPermissionSettings": value = (await import("../permissions")).readPermissionSettings(...args); break;
       }
@@ -147,11 +155,15 @@ if (isDiskWorker) {
 
 class DiskWorker {
   private worker: Worker | undefined;
+  private parking?: ReturnType<typeof setTimeout>;
+
+  constructor(private readonly idleMs = 0) {}
   private next = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
   run<Key extends Operation>(operation: Key, ...args: Parameters<Operations[Key]>): Promise<Awaited<ReturnType<Operations[Key]>>> {
     const worker = this.worker ?? this.start();
+    clearTimeout(this.parking);
     worker.ref();
     return new Promise((resolve, reject) => {
       const id = ++this.next;
@@ -179,7 +191,14 @@ class DiskWorker {
       const task = this.pending.get(id);
       if (!task) return;
       this.pending.delete(id);
-      if (!this.pending.size) worker.unref();
+      if (!this.pending.size) {
+        worker.unref();
+        if (this.idleMs) this.parking = setTimeout(() => {
+          if (this.worker !== worker || this.pending.size) return;
+          this.worker = undefined;
+          void worker.terminate();
+        }, this.idleMs).unref();
+      }
       if (error === undefined) task.resolve(value);
       else task.reject(new Error(error));
     });
@@ -201,3 +220,5 @@ export const backlogDisk = new DiskWorker();
 export const queueMoveDisk = new DiskWorker();
 export const numberUpkeepDisk = new DiskWorker();
 export const moveBundleDisk = new DiskWorker();
+
+export const artifactDisk = new DiskWorker(5_000);

@@ -75,17 +75,10 @@ export class AccountRefresh {
   }
 
   /** The command finished with credentials. Even an identical label can be another account. */
-  async signedIn(agent: Agent, hasPlanToken = false): Promise<void> {
-    if (!hasPlanToken) this.forgetSignIn(agent)
+  async signedIn(agent: Agent): Promise<void> {
+    this.forgetSignIn(agent)
     const account = await this.read(agent, true)
     await this.publish(agent, account)
-  }
-
-  /** A Claude turn can use this token before the asynchronous account or catalog check finishes. */
-  planTokenStored(agent: Agent) {
-    const signIn = usageSignInOf(agent)
-    this.forgetSignIn(agent)
-    if (signIn) void this.observed?.(agent.providerID, true, signIn)
   }
 
   private forgetSignIn(agent: Agent) {

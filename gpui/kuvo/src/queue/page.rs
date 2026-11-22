@@ -976,7 +976,7 @@ impl QueueView {
                 .max_h(px(84.)).overflow_y_scroll().flex().flex_wrap().gap(space::S2).children(extras)))
             .child(div().px(space::S4).pb(space::S3).child(chips))
             // Why the box turned it down, in its words.
-            .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).px(space::S5).pb(space::S3).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .children(self.sheet_error.clone().map(|error| div().px(space::S5).pb(space::S2).child(kuvo_ui::Notice::said("sheet-error", kuvo_ui::Tone::Error, error))))
             .child(
                 div()
                     .flex()
@@ -1062,7 +1062,7 @@ impl QueueView {
             .child(div().debug_selector(|| "sheet-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
             .child(body)
             // Why the box turned it down, in its words.
-            .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .children(self.sheet_error.clone().map(|error| kuvo_ui::Notice::said("sheet-error", kuvo_ui::Tone::Error, error)))
             .child(
                 div()
                     .flex()

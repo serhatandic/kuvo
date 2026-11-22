@@ -301,7 +301,7 @@ impl AreaView {
             })
             .unwrap_or_default();
         let groups_follow = (area == Area::Bots && live).then(|| {
-            let follow = client.follow_groups(kuvo_box::Timing::default());
+            let follow = client.follow_groups();
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -315,7 +315,7 @@ impl AreaView {
             (follow, task)
         });
         let bots_follow = (area == Area::Bots && live).then(|| {
-            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let follow = client.follow_bots();
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -432,10 +432,15 @@ impl AreaView {
     }
 
     fn peer_is_away(&self, listed: &Elsewhere) -> bool {
+        self.away_words(listed).is_some()
+    }
+
+    /// The box's word for its computer while it's away ("Can’t be reached"), drawn on its name.
+    fn away_words(&self, listed: &Elsewhere) -> Option<String> {
         ready(&self.computers).and_then(|computers| {
             computers.iter().find(|each| !listed.computer_key.is_empty() && each.key == listed.computer_key)
                 .or_else(|| computers.iter().find(|each| each.name == listed.computer))
-        }).is_some_and(|computer| computer.reach == "away")
+        }).filter(|computer| computer.reach == "away").map(|computer| computer.reach_title("away"))
     }
 
     pub(crate) fn reachability(&self) -> Reachability {
@@ -622,7 +627,7 @@ impl AreaView {
                 continue;
             }
             let (bots, reachability) = before.map(|remote| (remote.bots.clone(), remote.reachability)).unwrap_or_default();
-            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let follow = client.follow_bots();
             let updates = follow.updates().clone();
             let followed_key = key.clone();
             let task = cx.spawn(async move |this, cx| {
@@ -1215,6 +1220,8 @@ impl AreaView {
                 } else {
                     format!("On {computer}")
                 };
+                // Its computer away: the box's word on its name, muted, never a pill.
+                let away = self.away_words(listed).filter(|words| !words.is_empty() && !there.waiting && !there.refused);
                 let target = MoveTarget::new(MoveKind::Bot, &there.id);
                 let move_status = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
                 let face = match &there.look {
@@ -1226,7 +1233,12 @@ impl AreaView {
                 let detail_color = mark.as_ref().map_or(c.text_muted, |mark| mark.detail_color(&c));
                 let avatar = crate::bot_face::sidebar_avatar(&there.id, &there.name, face, mark.as_ref());
                 let trailing = mark.as_ref().map(|mark| mark.trailing(&c));
-                let detail = move_status.unwrap_or_else(|| div().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(line).into_any_element());
+                let detail = move_status.unwrap_or_else(|| {
+                    div().min_w_0().flex().items_center().gap(px(4.))
+                        .child(div().min_w_0().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(line))
+                        .children(away.map(|words| kuvo_ui::notice::on_name(words, cx)))
+                        .into_any_element()
+                });
                 let row = div()
                         .id(SharedString::from(selector.clone()))
                         .debug_selector(move || selector)

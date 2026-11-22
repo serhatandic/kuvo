@@ -604,7 +604,7 @@ impl QueueView {
                     }),
             )
             // Why the box wouldn't make the label, in its words.
-            .children(picker.error.clone().map(|error| div().debug_selector(|| "picker-error".into()).px(space::S3).pb(space::S2).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .children(picker.error.clone().map(|error| div().px(space::S3).pb(space::S1).child(kuvo_ui::Notice::said("picker-error", kuvo_ui::Tone::Error, error))))
             .into_any_element()
     }
 }

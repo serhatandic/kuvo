@@ -554,7 +554,7 @@ impl GroupsView {
         let offered = self.offered();
         let bots: AnyElement = match (&self.joinable, offered.is_empty()) {
             (Reading::NotYet, true) => kuvo_ui::small::LoadingLabel::new("joinable-loading", "Loading the bots…").compact().into_any_element(),
-            (Reading::Failed(why), true) => div().debug_selector(|| "joinable-failed".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.warning).child(format!("The bots couldn’t be read: {why}")).into_any_element(),
+            (Reading::Failed(why), true) => div().p(space::S5).child(kuvo_ui::Notice::inline("joinable-failed", kuvo_ui::Tone::Warning, "The bots couldn’t be read").detail(why.clone())).into_any_element(),
             (_, true) => div().debug_selector(|| "joinable-none".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.text_muted).child("There are no bots here to bring together yet. Make one with the + beside Bots.").into_any_element(),
             (_, false) => {
                 let count = offered.len();
@@ -604,7 +604,7 @@ impl GroupsView {
             .flex()
             .items_center()
             .gap(space::S3)
-            .child(div().flex_1().min_w_0().children(self.form.error.clone().map(|error| div().debug_selector(|| "group-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error))))
+            .child(div().flex_1().min_w_0().children(self.form.error.clone().map(|error| kuvo_ui::Notice::said("group-error", kuvo_ui::Tone::Error, error))))
             .child(div().debug_selector(|| "group-cancel".into()).child(Button::new("group-cancel", "Cancel").disabled(saving).on_click(cx.listener(|this, _, _, cx| this.act(Act::Cancel, cx)))))
             .child(
                 div()

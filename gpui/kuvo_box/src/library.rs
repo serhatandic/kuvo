@@ -8,7 +8,7 @@ use crate::error::{Error, Refusal, Result};
 use crate::follow::{Followed, follow_lines};
 use crate::paths::segment;
 use crate::transport::Request;
-use crate::{BoxClient, Follow, Timing};
+use crate::{BoxClient, Follow};
 
 /// The Library's tabs: what a thing is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
@@ -181,9 +181,9 @@ impl BoxClient {
     }
 
     /// The Library now, then again as it changes.
-    pub fn follow_library(&self, query: &LibraryQuery, timing: Timing) -> Follow<Followed<Library>> {
+    pub fn follow_library(&self, query: &LibraryQuery) -> Follow<Followed<Library>> {
         let query = query.query();
-        follow_lines(self, "library", format!("kuvo/library/events{query}"), format!("kuvo/library{query}"), timing)
+        follow_lines(self, format!("kuvo/library/events{query}"))
     }
 
     /// Its thumbnail's bytes (a PNG, or the picture as it is).

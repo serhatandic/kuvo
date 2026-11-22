@@ -1,3 +1,4 @@
+import { acquireEngine, acquireSessionEngine } from "../engine/lifetime";
 // The models a session can use here, and the one a new session starts on (PROTOCOL.md, "The models
 // offered"): `GET kuvo/models/offered[?folder=<path>]`, decided by the box's one rule
 // (work/model-rule.ts), so every client's picker offers the same, and a new session starts by the
@@ -59,42 +60,47 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const query = new URLSearchParams(request.path.split("?")[1] ?? "");
   if (query.get("refresh") === "1" && (yield* heldRead(request, signal))) return;
-  const folder = await folderIn(request.path);
-  if (!targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't running." });
-  let engine: Target | null = null;
-  try { engine = readEngine(); } catch {}
-  const agents = bridge();
   const session = query.get("session")?.trim();
-  let place: Awaited<ReturnType<typeof sessionHere>> = null;
-  if (session) {
-    try {
-      place = await sessionHere([engine, agents].filter((target): target is Target => target !== null), session, signal);
-    } catch (error) {
-      if (error instanceof Unreached) return yield* json(503, { message: error.message });
-      throw error;
+  const release = session ? await acquireSessionEngine(session) : await acquireEngine();
+  try {
+    const folder = await folderIn(request.path);
+    if (!targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't running." });
+    let engine: Target | null = null;
+    try { engine = readEngine(); } catch {}
+    const agents = bridge();
+    let place: Awaited<ReturnType<typeof sessionHere>> = null;
+    if (session) {
+      try {
+        place = await sessionHere([engine, agents].filter((target): target is Target => target !== null), session, signal);
+      } catch (error) {
+        if (error instanceof Unreached) return yield* json(503, { message: error.message });
+        throw error;
+      }
+      if (!place) return yield* json(404, { message: "This conversation is no longer available." });
     }
-    if (!place) return yield* json(404, { message: "This conversation is no longer available." });
+    const [lists, plans] = await Promise.all([
+      listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
+      plansHere(signal),
+    ]);
+    const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
+    if (query.get("for") === "defaults") {
+      const models = answer.models.filter(model => model.side === "engine" && !model.hidden && !model.retiring);
+      return yield* json(200, { ...answer, models, scoped: true });
+    }
+    if (!place) return yield* json(200, answer);
+    const bot = typeof place.data.metadata?.kuvo?.bot === "string";
+    const side = agents && place.target.port === agents.port ? "agents" : "engine";
+    return yield* json(200, {
+      ...answer,
+      scoped: true,
+      models: side === "agents" ? answer.models : answer.models.filter(model => model.side === side),
+      ...(side === "engine" ? { note: bot
+        ? "To use a coding agent in this bot, change its model in Edit Bot."
+        : "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}),
+    });
+  } finally {
+    release();
   }
-  const [lists, plans] = await Promise.all([
-    listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
-    plansHere(signal),
-  ]);
-  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
-  if (query.get("for") === "defaults") {
-    const models = answer.models.filter(model => model.side === "engine" && !model.hidden && !model.retiring);
-    return yield* json(200, { ...answer, models, scoped: true });
-  }
-  if (!place) return yield* json(200, answer);
-  const bot = typeof place.data.metadata?.kuvo?.bot === "string";
-  const side = agents && place.target.port === agents.port ? "agents" : "engine";
-  return yield* json(200, {
-    ...answer,
-    scoped: true,
-    models: side === "agents" ? answer.models : answer.models.filter(model => model.side === side),
-    ...(side === "engine" ? { note: bot
-      ? "To use a coding agent in this bot, change its model in Edit Bot."
-      : "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}),
-  });
 }
 
 /** A coding agent's account, as a picker tells your accounts with it apart

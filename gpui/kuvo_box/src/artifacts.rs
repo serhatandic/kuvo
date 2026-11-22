@@ -5,7 +5,7 @@ use crate::error::{Error, Refusal, Result};
 use crate::follow::{Followed, follow_lines};
 use crate::paths::segment;
 use crate::transport::Request;
-use crate::{BoxClient, Follow, Timing};
+use crate::{BoxClient, Follow};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Outputs {
@@ -41,9 +41,9 @@ impl BoxClient {
         self.get(&route)
     }
 
-    pub fn follow_session_outputs(&self, session: &str, timing: Timing) -> Follow<Followed<Outputs>> {
+    pub fn follow_session_outputs(&self, session: &str) -> Follow<Followed<Outputs>> {
         let id = segment(session);
-        follow_lines(self, "session outputs", format!("kuvo/artifacts/events?session={id}"), format!("kuvo/artifacts?session={id}"), timing)
+        follow_lines(self, format!("kuvo/artifacts/events?session={id}"))
     }
 
     pub fn artifact_bytes(&self, artifact: &Artifact) -> Result<Vec<u8>> {

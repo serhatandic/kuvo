@@ -17,7 +17,6 @@ import { EngineAgent, EngineLink } from "../../src/agents/engine"
 import { generatedImages } from "../../src/agents/agents/antigravity"
 import { kuvoToolName, loadKuvoTools, setToolServer } from "../../src/agents/kuvotools"
 import { pictureData, pictureFile, withPictures } from "../../src/agents/pictures"
-import { expandCommand } from "../../src/agents/server"
 import { Auto } from "../../src/agents/auto"
 import type { Roster } from "../../src/agents/roster"
 import { commandParts, parseCommands, Sessions, withTextFiles } from "../../src/agents/sessions"
@@ -434,24 +433,6 @@ exit 1
     }
   })
 
-  test("a command that prints its page and takes a code only in a terminal (claude setup-token): run in one, the code typed with Return", async () => {
-    const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-signin-"))
-    try {
-      const script = join(folder, "terminal-only")
-      writeFileSync(script, `#!/bin/sh\n[ -t 0 ] || exit 3\nprintf 'Use the url below\\nhttps://example.com/terminal?redirect=platform\\n\\nPaste code here if prompted > '\nIFS= read -r code\n[ "$code" = "$(printf '\\033[200~good\\033[201~')" ] && echo signed > "${join(folder, "account")}"\n`)
-      chmodSync(script, 0o755)
-      const sign = await commandSignIn({
-        command: script, args: [], home: folder, temporary: folder, instructions: "Finish on the page.", terminal: true, printedPage: true,
-        codePrompt: /Paste code here if prompted\s*>\s*/g, signedIn: async () => existsSync(join(folder, "account")),
-      })
-      expect(sign.url).toBe("https://example.com/terminal?redirect=platform")
-      await sign.complete!("good")
-      expect((await settled(sign)).status).toBe("complete")
-    } finally {
-      rmSync(folder, { recursive: true, force: true })
-    }
-  })
-
   test("opens the page handed to the browser, not the one printed first", async () => {
     const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-signin-"))
     try {
@@ -660,50 +641,6 @@ describe("the engine's models", () => {
       link.configure(undefined, undefined)
       server.stop(true)
     }
-  })
-})
-
-describe("your commands", () => {
-  test("a command from Settings or written as a file in a settings folder, the last one counting", async () => {
-    const home = mkdtempSync(join(tmpdir(), "kuvo-commands-"))
-    const project = join(home, "project", ".opencode")
-    mkdirSync(join(project, "command", "git"), { recursive: true })
-    writeFileSync(join(project, "command", "md.md"), "---\ndescription: From a file\n---\nDo the md thing with $ARGUMENTS\n")
-    writeFileSync(join(project, "command", "git", "tidy.md"), "Tidy $1")
-    const server = Bun.serve({
-      port: 0,
-      fetch(request) {
-        if (new URL(request.url).pathname !== "/api/config") return new Response("", { status: 404 })
-        return Response.json([
-          { type: "document", path: join(home, "opencode.json"), info: { commands: { cfg: { template: "cfg says $1" }, md: { template: "overridden" } } } },
-          { type: "directory", path: project },
-        ])
-      },
-    })
-    const link = new EngineLink()
-    try {
-      link.configure(`http://127.0.0.1:${server.port}`, "pw")
-      expect(await link.commandTemplate("cfg", home)).toBe("cfg says $1")
-      expect(await link.commandTemplate("md", home)).toBe("Do the md thing with $ARGUMENTS")
-      expect(await link.commandTemplate("git/tidy", home)).toBe("Tidy $1")
-      expect(await link.commandTemplate("../project/.opencode/command/md", home)).toBeUndefined()
-      expect(await link.commandTemplate("none", home)).toBeUndefined()
-    } finally {
-      link.configure(undefined, undefined)
-      server.stop(true)
-      rmSync(home, { recursive: true, force: true })
-    }
-  })
-
-  test("what you write after a command fills it in, as the engine does", () => {
-    expect(expandCommand("Review $ARGUMENTS carefully.", "src/a.ts")).toBe("Review src/a.ts carefully.")
-    expect(expandCommand("Compare $1 with $2.", "a.ts b.ts")).toBe("Compare a.ts with b.ts.")
-    expect(expandCommand("Write the changelog.", "")).toBe("Write the changelog.")
-    expect(expandCommand("Write the changelog.", "for 1.2")).toBe("Write the changelog.\n\nfor 1.2")
-    expect(expandCommand("Fix this: $ARGUMENTS", "awk '{print $2}' $$ $&")).toBe("Fix this: awk '{print $2}' $$ $&")
-    expect(expandCommand("Review $1", "a.ts and b.ts")).toBe("Review a.ts and b.ts")
-    expect(expandCommand("Move $1 to $2", "a.ts b c")).toBe("Move a.ts to b c")
-    expect(expandCommand("Fix $1: $ARGUMENTS", "$ARGUMENTS x")).toBe("Fix $ARGUMENTS x: $ARGUMENTS x")
   })
 })
 

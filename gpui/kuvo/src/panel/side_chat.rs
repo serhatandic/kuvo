@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
 };
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::side_chats::{Answering, SideThread, SideThreads};
 use kuvo_box::BoxClient;
 use kuvo_ui::markdown::Markdown;
@@ -82,7 +82,7 @@ impl SideChatView {
             self.read_again(cx);
             return;
         }
-        let follow = self.client.follow_side_threads(&self.session, Timing::default());
+        let follow = self.client.follow_side_threads(&self.session);
         let updates = follow.updates().clone();
         self._follow = Some(follow);
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -173,7 +173,7 @@ impl SideChatView {
                 let id = question.id.clone();
                 let answer: AnyElement = match (question.state, &question.answer, &question.error) {
                     (Answering::Answered, Some(answer), _) => div().text_ui(TypeSize::Body).child(Markdown::new(SharedString::from(format!("side-answer-{id}")), answer)).into_any_element(),
-                    (Answering::Failed, _, why) => div().text_ui(TypeSize::Small).text_color(c.danger).child(why.clone().unwrap_or_else(|| "It couldn’t be answered.".into())).into_any_element(),
+                    (Answering::Failed, _, why) => kuvo_ui::Notice::said(format!("side-failed-{id}"), kuvo_ui::Tone::Error, why.clone().unwrap_or_else(|| "It couldn’t be answered.".into())).into_any_element(),
                     _ => kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("side-answering-{id}")), "Answering…").compact().into_any_element(),
                 };
                 div()
@@ -213,7 +213,7 @@ impl SideChatView {
                 crate::composer::card(cx)
                     .debug_selector(|| "side-chat-composer".into())
                     .child(crate::composer::field_room(self.field.clone()))
-                    .children(self.failed.clone().map(|why| div().text_ui(TypeSize::Caption).text_color(c.danger).child(format!("It couldn’t be asked: {why}"))))
+                    .children(self.failed.clone().map(|why| kuvo_ui::Notice::inline("side-chat-failed", kuvo_ui::Tone::Error, "It couldn’t be asked").detail(why)))
                     .child(
                         crate::composer::controls().child(div().flex_1()).child(
                             Button::icon_only("side-chat-send", IconName::ArrowUp, if written { "Ask" } else { "Type to ask" })

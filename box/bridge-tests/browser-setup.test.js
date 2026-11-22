@@ -47,7 +47,9 @@ fs.createReadStream(null, { fd: 3, encoding: "utf8" }).on("data", (chunk) => {
   while ((end = buffer.indexOf("\\0")) >= 0) {
     const message = JSON.parse(buffer.slice(0, end));
     buffer = buffer.slice(end + 1);
-    if (message.id !== undefined) output.write(JSON.stringify({ id: message.id, result: {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }) + "\\0");
+    if (message.method === "Browser.close") process.exit(0);
+    const result = message.method === "Target.getTargets" ? { targetInfos: [] } : {};
+    if (message.id !== undefined) output.write(JSON.stringify({ id: message.id, result, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }) + "\\0");
   }
 });
 `);
@@ -131,4 +133,53 @@ test("with no network, an agent's browser tool says why, and the box tries again
   assert.ok(state.retryAt > Date.now());
   assert.equal(fs.existsSync(path.join(home, "browser", "current")), false);
   assert.deepEqual(fs.readdirSync(path.join(home, "browser")).filter(name => name.startsWith(".box-staging")), []);
+});
+
+test("a browser tool wakes Chrome, which sleeps and wakes again while MCP stays connected", { timeout: 60_000 }, async () => {
+  const home = freshMachine();
+  const { env, asked } = await source(home);
+  const tools = spawn(process.execPath, [script, "mcp"], {
+    env: { ...env, KUVO_BROWSER_IDLE: "1" }, stdio: ["pipe", "pipe", "ignore"],
+  });
+  atEnd(() => tools.kill());
+  const readline = await import("node:readline");
+  const lines = readline.createInterface({ input: tools.stdout });
+  const waiting = new Map();
+  lines.on("line", line => {
+    const message = JSON.parse(line);
+    waiting.get(message.id)?.(message.result);
+  });
+  const call = (id, method, params) => new Promise(resolve => {
+    waiting.set(id, result => { waiting.delete(id); resolve(result); });
+    tools.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+  const run = path.join(home, "run");
+  fs.mkdirSync(run, { recursive: true });
+  const pidFile = path.join(run, "browser.pid");
+  assert.equal((await call(1, "initialize", { protocolVersion: "2025-06-18" })).serverInfo.name, "kuvo-browser");
+  assert.deepEqual(asked, [], "the MCP handshake never requests the browser download");
+  assert.equal(fs.existsSync(pidFile), false);
+
+  const tabs = id => call(id, "tools/call", { name: "browser_tabs", arguments: {} });
+  const asleep = () => new Promise(resolve => {
+    const check = () => {
+      if (fs.existsSync(pidFile)) return;
+      watcher.close();
+      resolve();
+    };
+    const watcher = fs.watch(run, check);
+    atEnd(() => watcher.close());
+    check();
+  });
+  try {
+    for (const id of [2, 3]) {
+      assert.deepEqual((await tabs(id)).content, [{ type: "text", text: "No tabs are open." }]);
+      await asleep();
+      assert.equal(tools.exitCode, null, "the agent can still use the same MCP process");
+    }
+  } finally {
+    lines.close();
+    tools.stdin.end();
+    tools.kill();
+  }
 });

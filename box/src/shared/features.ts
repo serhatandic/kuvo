@@ -150,6 +150,7 @@ export const FEATURES = [
   "limits.resets",
   "limits.rings",
   "limits.titles",
+  "line",
   "mcp.catalog",
   "messages.commands",
   "messages.compaction-words",

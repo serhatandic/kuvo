@@ -1,4 +1,4 @@
-// kuvo-browser 6e90828d3d20c0d3
+// kuvo-browser fee9631592e0958f
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -89,7 +89,7 @@ const SETTINGS = path.join(BROWSER, "settings.json");
 // --disable-dev-shm-usage puts there. Emptied each time it starts.
 const TMP = path.join(BROWSER, "tmp");
 const SCRIPT = process.argv[1];
-// How long Chromium keeps running with nobody connected.
+// How long Chromium stays open without a viewer, a working tool or an open ask.
 const IDLE = Number(process.env.KUVO_BROWSER_IDLE || 10 * 60) * 1000;
 // The languages to ask sites for: those of the Mac that started it ("en-GB,en,tr-TR,tr").
 const LANGUAGES = String(process.env.KUVO_LANG || "").split(",").filter((tag) => /^[A-Za-z0-9-]+$/.test(tag));
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "db2259eb4e8b";
+const KEEPER = "c0723b23d2dd";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -183,11 +183,11 @@ const browserFormatError = "Unsupported browser control format. Update Kuvo Code
 const browserControl = fields => ({ ...fields, formatVersion: BROWSER_CONTROL_VERSION });
 
 /// A connection to the keeper, the key given first.
-function keeperConnection(quiet = false) {
+function keeperConnection(quiet = false, agent = false) {
   const socket = net.createConnection(SOCKET);
   socket.once("connect", () => {
     try {
-      socket.write(JSON.stringify(browserControl({ method: "Kuvo.key", params: { key: socketKey(), quiet } })) + "\n");
+      socket.write(JSON.stringify(browserControl({ method: "Kuvo.key", params: { key: socketKey(), quiet, ...(agent ? { agent: true } : {}) } })) + "\n");
     } catch {
       socket.destroy();
     }
@@ -861,6 +861,7 @@ async function host() {
     if (asks.delete(id)) {
       broadcast({ method: "Kuvo.askClosed", params: { id } });
       noteAsks();
+      idleSoon();
     }
   };
 
@@ -1398,9 +1399,10 @@ async function host() {
       if (Number(fs.readFileSync(PIDFILE, "utf8")) === process.pid) fs.rmSync(PIDFILE, { force: true });
     } catch {}
   };
+  const inUse = () => asks.size > 0 || [...clients].some(client => !client.agent || client.status?.working);
   const idleSoon = () => {
     clearTimeout(idle);
-    idle = setTimeout(() => { if (!clients.size && !asks.size) void stop(); }, IDLE);
+    if (!inUse()) idle = setTimeout(() => { if (!inUse()) void stop(); }, IDLE);
   };
 
   chrome.on("exit", () => {
@@ -1631,7 +1633,7 @@ async function host() {
       }
       if (client.status?.working) { announcePages(); broadcast({ method: "Kuvo.status", params: (status = everyStatus()) }); }
       if (client.viewer) broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
-      if (!clients.size) idleSoon();
+      idleSoon();
     });
     let serial = Promise.resolve();
     lines(socket, text => {
@@ -1662,7 +1664,10 @@ async function host() {
         // The box reading what the browser keeps (its cookies) or removing a site's data: it doesn't
         // keep the browser running.
         client.quiet = message.params?.quiet === true;
-        clearTimeout(idle);
+        client.agent = message.params?.agent === true;
+        // A tool handshake starts in the working state, before it sends any CDP.
+        if (client.agent) client.status = { working: true };
+        idleSoon();
         send(client, { method: "Kuvo.hello", params: { targetId: active, status, version: VERSION, keeper: KEEPER_NUMBER, build: KEEPER, idleStop: true, asks: [...asks.values()].map((ask) => ask.params), viewers: viewers(), held: [...held.keys()], holdMacs: Object.fromEntries(holdMacs), passkeys: Object.fromEntries(passkeyPages) } });
         send(client, { method: "Kuvo.pages", params: pages() });
         for (const [targetId, size] of sizes) send(client, { method: "Kuvo.viewport", params: { targetId, ...size } });
@@ -1697,6 +1702,7 @@ async function host() {
           const previousTarget = client.status?.working ? client.status.targetId : null;
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
+          idleSoon();
           // Agent activity is a fact even if Chrome cannot apply the requested geometry.
           status = everyStatus();
           announcePages();
@@ -1881,7 +1887,7 @@ class Connection {
 
   static open() {
     return new Promise((resolve, reject) => {
-      const socket = keeperConnection();
+      const socket = keeperConnection(false, true);
       socket.once("connect", () => resolve(new Connection(socket)));
       socket.once("error", reject);
     });
@@ -2148,6 +2154,7 @@ async function openLink() {
         waiting.delete(message.params.id);
         break;
       case "Kuvo.closed":
+        held.clear();
         for (const resolve of waiting.values()) resolve({ type: "lost" });
         waiting.clear();
         break;
@@ -3124,7 +3131,13 @@ async function perform(call, reply) {
     await takeTurn(call);
     try {
       if (call.cancelled) return;
-      await browser();
+      let connection = await browser();
+      try { await connection.send("Kuvo.setStatus", { working: true, tool: call.name }); }
+      catch (error) {
+        if (!connection.closed) throw error;
+        connection = await browser();
+        await connection.send("Kuvo.setStatus", { working: true, tool: call.name });
+      }
       const result = wait ? await afterControl(wait) : await tool(call.name, call.args);
       // A page it worked in that's on a file it may not read (one handed back to it, say): its
       // result is kept back, and the page goes blank unless you have it.
@@ -3609,13 +3622,6 @@ async function mcp() {
     }
   });
   process.stdin.on("end", () => process.exit(0));
-  // (A Mac's own box has no browser of its own: its app's panel is.)
-  if (MAC_BOX) return;
-  // A keeper that's already running stays up while the engine does, across its restarts.
-  if (await reachable()) browser().catch(() => {});
-  // No browser here: the box sets it up now, ready for the first tool (it waits a while after a
-  // failure, as its keeper does).
-  else if (!browserBinary(CURRENT)) startSetUp().catch(() => {});
 }
 
 const mode = process.argv[2];

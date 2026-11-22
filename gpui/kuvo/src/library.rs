@@ -17,7 +17,7 @@ use gpui::{
 use kuvo_box::areas::Look;
 use kuvo_box::follow::Followed;
 use kuvo_box::library::{Library, LibraryItem, LibraryKind, LibraryQuery, PartState};
-use kuvo_box::{BoxClient, Follow, Timing};
+use kuvo_box::{BoxClient, Follow};
 use kuvo_ui::menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu, PopoverMenuHandle};
 use kuvo_ui::text_field::{TextField, TextFieldEvent};
 use kuvo_ui::theme::{radius, space};
@@ -269,7 +269,7 @@ impl LibraryView {
             }));
             return;
         }
-        let follow = self.client.follow_library(&self.query(), Timing::default());
+        let follow = self.client.follow_library(&self.query());
         let updates = follow.updates().clone();
         let task = cx.spawn(async move |this, cx| {
             while let Ok(update) = updates.recv().await {

@@ -1,3 +1,4 @@
+import { acquireSessionEngine } from "../engine/lifetime";
 import { SESSION_NOTE_ROUTE } from "../ownership/session-notes";
 import { mutationNonce } from "../ownership/mutation";
 import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit, sessionNoteRoute } from "../ownership/edits";
@@ -108,6 +109,7 @@ import { retryFleetRoute } from "../updates/progress";
 import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
 import { SIGN_IN_ACTION_ROUTE, signInActionRoute } from "../areas/sign-in-action";
 import { pairedSubmitter } from "../ownership/authority";
+import { LINE_ROUTE, LINE_WATCH_ROUTE, lineRoute } from "./line";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
@@ -129,6 +131,8 @@ async function* backupRoutes(context: RouteContext) {
 
 const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "info", when: route => route === "kuvo/info", answer: infoRoute },
+  // The one line: every change a client draws, pushed on one stream (PROTOCOL.md, "The line").
+  { feature: "line", when: route => route === LINE_ROUTE || route === LINE_WATCH_ROUTE, answer: (context: RouteContext) => lineRoute(context, context.redispatch!) },
   { feature: "vault", when: route => route === "kuvo/vault" || route.startsWith("kuvo/vault/"), answer: vaultRoute },
   { feature: "sandbox", when: route => route === "kuvo/sandbox" || route.startsWith("kuvo/sandbox/"), answer: sandboxRoute },
   { feature: "file", when: route => route === "kuvo/file", answer: ({ request, json }: RouteContext) => fileAt(request.path, json) },
@@ -351,7 +355,8 @@ export function createBoxDispatcher({
     // (What only the link says of a session: never a request's own word.)
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const method = request.method.toUpperCase();
-    const context: RouteContext = { ...entry, request, phone, signal, route, readEngine, readBridge, bridge, json, text };
+    const context: RouteContext = { ...entry, request, phone, signal, route, readEngine, readBridge, bridge, json, text,
+      redispatch: (asked, topicSignal) => dispatch(entry, asked, phone, topicSignal) };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
       if (method !== "POST" && !editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
@@ -434,7 +439,12 @@ export function createBoxDispatcher({
     if (route === LOCAL_SETUP_SAVE) return yield* saveLocalSetup(context);
     const matched = matchBoxRoute(route, request, phone);
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.
-    if (matched) return yield* matched.entry.answer(context, matched.match as never);
+    if (matched) {
+      const session = (SESSION_ACTION_ROUTE.exec(route) ?? SESSION_MOVE_ROUTE.exec(route))?.[1];
+      const release = session ? await acquireSessionEngine(session) : undefined;
+      try { return yield* matched.entry.answer(context, matched.match as never); }
+      finally { release?.(); }
+    }
     return yield* engineRoute(context);
   }
 

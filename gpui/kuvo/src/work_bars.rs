@@ -14,7 +14,7 @@ use kuvo_box::artifacts::{Artifact, Outputs, Version};
 use kuvo_box::background::{Activity, ActivitySession, Background};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
-use kuvo_box::{BoxClient, Follow, Timing};
+use kuvo_box::{BoxClient, Follow};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     icon::{Mark, provider_mark, provider_mark_color},
@@ -122,7 +122,7 @@ impl WorkBars {
         };
         if live {
             // What runs for it, now and as the box says it changes (one past the counts' limit too).
-            let follow = client.follow_session_background(&bars.session, Timing::default());
+            let follow = client.follow_session_background(&bars.session);
             let updates = follow.updates().clone();
             bars._background_follow = Some(follow);
             bars.tasks.push(cx.spawn(async move |this, cx| {
@@ -203,7 +203,7 @@ impl WorkBars {
         self.work_seen = None;
         cx.notify();
         let Some(bot) = bot.filter(|_| self.live) else { return };
-        let follow = self.client.follow_work_changes(Timing::default());
+        let follow = self.client.follow_work_changes();
         let updates = follow.updates().clone();
         self._work_follow = Some(follow);
         self.tasks.push(cx.spawn(async move |this, cx| {
@@ -963,7 +963,7 @@ impl ActivityCard {
         };
         card.read_providers(client.clone(), live, sessions, recent, cx);
         if live {
-            let follow = client.follow_session_outputs(&session, Timing::default());
+            let follow = client.follow_session_outputs(&session);
             let updates = follow.updates().clone();
             let task = cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -980,7 +980,7 @@ impl ActivityCard {
         // Its side chats, where its box keeps them as threads.
         if client.gate().has(kuvo_box::side_chats::SIDE_CHATS) {
             if live {
-                let follow = client.follow_side_threads(&session, Timing::default());
+                let follow = client.follow_side_threads(&session);
                 let updates = follow.updates().clone();
                 let task = cx.spawn(async move |this, cx| {
                     while let Ok(update) = updates.recv().await {
@@ -1007,7 +1007,7 @@ impl ActivityCard {
         // Its subagents, at work and done, for the compact row that opens the side panel's tab.
         if client.gate().has(kuvo_box::subagents::SUBAGENTS) {
             if live {
-                let follow = client.follow_subagents(&session, Timing::default());
+                let follow = client.follow_subagents(&session);
                 let updates = follow.updates().clone();
                 let task = cx.spawn(async move |this, cx| {
                     while let Ok(update) = updates.recv().await {
@@ -2490,7 +2490,7 @@ impl Render for ActivityCard {
                 list = list.child(section);
             }
 
-            list.children(bars.failure.clone().map(|why| div().p(space::S2).text_color(c.warning).child(why)))
+            list.children(bars.failure.clone().map(|why| div().px(space::S2).child(kuvo_ui::Notice::said("work-bars-failure", kuvo_ui::Tone::Warning, why))))
                 .into_any_element()
         };
         div()

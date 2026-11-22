@@ -9,7 +9,7 @@ use gpui::{
 };
 use kuvo_box::moves::{Moves, Moving, Place, Places, Receipt, Target};
 use kuvo_box::{
-    BoxClient, Error, Timing,
+    BoxClient, Error,
     bots::Elsewhere,
     boxes::Boxes,
     follow::{Follow, Followed},
@@ -115,7 +115,7 @@ impl MovesView {
             _tasks: Vec::new(),
         };
         if live {
-            let follow = view.client.follow_moves(Timing::default());
+            let follow = view.client.follow_moves();
             let updates = follow.updates().clone();
             view._tasks.push(cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
@@ -537,7 +537,8 @@ impl MovesView {
     }
 
     fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
-        if let Some(Notice::Tracking { target, .. }) = self.notices.pop()
+        let tracking = self.notices.iter().rposition(|notice| matches!(notice, Notice::Tracking { .. }));
+        if let Some(Notice::Tracking { target, .. }) = tracking.map(|at| self.notices.remove(at))
             && let Some(Some(moving)) = self.pending.remove(&target)
         {
             self.remove_progress(&moving.id);
@@ -738,6 +739,68 @@ fn progress(moving: &Moving, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+impl MovesView {
+    /// How many of its notices wait in the title bar's notifications.
+    pub fn notice_count(&self) -> usize {
+        self.notices.len()
+    }
+
+    /// Seen in the notifications: what only said a move went through goes; what still needs you
+    /// (one that failed, one that couldn't be followed) stays until it's done.
+    pub fn seen(&mut self, cx: &mut Context<Self>) {
+        let count = self.notices.len();
+        self.notices.retain(|notice| !matches!(notice, Notice::Done { .. }));
+        if self.notices.len() != count {
+            cx.notify();
+        }
+    }
+
+    /// Its notices as rows of the title bar's notifications, newest first, each with its one action.
+    pub fn listed(this: &Entity<Self>, cx: &App) -> Vec<AnyElement> {
+        let view = this.read(cx);
+        let retrying = view.retrying.is_some();
+        view.notices
+            .iter()
+            .rev()
+            .map(|notice| match notice {
+                Notice::Done { moved, target, message, note } => {
+                    let (computer, target, this) = (moved.to.clone(), target.clone(), this.clone());
+                    let label = moved.place.as_ref().map(|name| format!("Open on {name}")).unwrap_or_else(|| "Open on the other computer".into());
+                    kuvo_ui::Notice::listed("move-done", kuvo_ui::Tone::Info, message.clone())
+                        .icon(IconName::Check)
+                        .detail_opt(note.clone())
+                        .trailing(Button::new("move-open", label).ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                            this.update(cx, |view, cx| {
+                                view.notices.retain(|notice| !matches!(notice, Notice::Done { target: done, .. } if *done == target));
+                                cx.emit(OpenMoved { computer: computer.clone(), target: target.clone() });
+                                cx.notify();
+                            });
+                        }))
+                        .into_any_element()
+                }
+                Notice::Tracking { message, .. } => {
+                    let this = this.clone();
+                    kuvo_ui::Notice::listed("move-tracking", kuvo_ui::Tone::Warning, "Move status unavailable")
+                        .detail(*message)
+                        .trailing(Button::new("move-dismiss", "Dismiss").ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                            this.update(cx, |view, cx| view.dismiss_notice(cx));
+                        }))
+                        .into_any_element()
+                }
+                Notice::Failed { choice, message } => {
+                    let (choice, this) = (choice.clone(), this.clone());
+                    kuvo_ui::Notice::listed("move-failed", kuvo_ui::Tone::Error, "Couldn’t move")
+                        .detail(message.clone())
+                        .trailing(Button::new("move-again", "Try Again").ghost().size(ButtonSize::Small).loading(retrying).on_click(move |_, window, cx| {
+                            this.update(cx, |view, cx| view.retry(choice.clone(), window, cx));
+                        }))
+                        .into_any_element()
+                }
+            })
+            .collect()
+    }
+}
+
 impl Render for MovesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
@@ -789,97 +852,6 @@ impl Render for MovesView {
                 sheet(card.into_any_element(), cx)
             });
 
-        let notice = self.notices.last().map(|notice| {
-            let (id, message, note, action) = match notice {
-                Notice::Done {
-                    moved,
-                    target,
-                    message,
-                    note,
-                } => {
-                    let (computer, target) = (moved.to.clone(), target.clone());
-                    let label = moved
-                        .place
-                        .as_ref()
-                        .map(|name| format!("Open on {name}"))
-                        .unwrap_or_else(|| "Open on the other computer".into());
-                    (
-                        "move-done",
-                        message.clone(),
-                        note.clone(),
-                        Some(Button::new("move-open", label).on_click(cx.listener(
-                            move |_, _, _, cx| {
-                                cx.emit(OpenMoved {
-                                    computer: computer.clone(),
-                                    target: target.clone(),
-                                });
-                            },
-                        ))),
-                    )
-                }
-                Notice::Tracking { message, .. } => (
-                    "move-tracking",
-                    "Move status unavailable".into(),
-                    Some((*message).into()),
-                    None,
-                ),
-                Notice::Failed { choice, message } => {
-                    let choice = choice.clone();
-                    (
-                        "move-failed",
-                        "Couldn’t move".into(),
-                        Some(message.clone()),
-                        Some(
-                            Button::new("move-again", "Try Again")
-                                .loading(self.retrying.is_some())
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.retry(choice.clone(), window, cx);
-                                })),
-                        ),
-                    )
-                }
-            };
-            div()
-                .absolute()
-                .top(px(56.))
-                .right(space::S4)
-                .w(px(350.))
-                .max_w_full()
-                .debug_selector(move || id.into())
-                .occlude()
-                .flex()
-                .flex_col()
-                .gap(space::S2)
-                .p(space::S4)
-                .rounded(radius::CARD)
-                .border_1()
-                .border_color(c.border)
-                .bg(c.elevated)
-                .shadow(cx.theme().elevated_shadow())
-                .child(div().text_ui(TypeSize::Small).medium().child(message))
-                .children(note.map(|note| {
-                    div()
-                        .text_ui(TypeSize::Small)
-                        .text_color(c.text_muted)
-                        .child(note)
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(space::S2)
-                        .child(
-                            Button::new("move-dismiss", "Dismiss")
-                                .ghost()
-                                .size(ButtonSize::Small)
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.dismiss_notice(cx);
-                                })),
-                        )
-                        .children(action.map(|action| action.size(ButtonSize::Small))),
-                )
-        });
-
-        div().absolute().inset_0().children(notice).children(prompt)
+        div().absolute().inset_0().children(prompt)
     }
 }

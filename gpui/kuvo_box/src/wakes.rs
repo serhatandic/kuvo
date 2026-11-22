@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoxClient, Follow, Timing,
+    BoxClient, Follow,
     error::Result,
     follow::{Followed, follow_lines},
     paths,
@@ -55,16 +55,9 @@ impl BoxClient {
     pub fn follow_wake_schedule(
         &self,
         session: &str,
-        timing: Timing,
     ) -> Follow<Followed<Schedule>> {
         let path = route(session);
-        follow_lines(
-            self,
-            "kuvo-box wake-ups",
-            format!("{path}/events"),
-            path,
-            timing,
-        )
+        follow_lines(self, format!("{path}/events"))
     }
 
     pub fn cancel_wake(&self, session: &str, cancel: &Cancel) -> Result<()> {

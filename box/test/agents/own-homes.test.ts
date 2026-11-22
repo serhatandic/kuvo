@@ -1,11 +1,12 @@
-// Where the coding agents keep your default accounts (#333): on a machine, in Kuvo Code's folder
-// there; on a Mac, in your own home (`~/.claude`, `~/.codex`, `~/.grok`), whichever way its box runs:
-// in its app's folder, or in a home of its own (`~/.kuvo-code`, `box/kind` saying `mac`), where its
-// bridge is started as a machine's. Moving the box mustn't sign you out of them or lose their history.
+// Where the coding agents keep your first accounts (docs/architecture/agent-accounts.md): in the
+// agent's own folder (`~/.claude`, `~/.codex`, `~/.grok`), the one Terminal uses, on every box: a
+// Mac's however its box runs, and a Linux machine's. An earlier Linux bridge kept them in its folder
+// (`<agent>/home`): updating moves them over, signed in and with their conversations.
 
 import "../safety"
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { Accounts, adoptOwnFolders } from "../../src/agents/accounts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -31,20 +32,67 @@ function homes(env: Record<string, string>): Record<string, string> {
   return JSON.parse(ran.stdout.toString())
 }
 
-test("a Mac's box in a home of its own keeps your default accounts where they are; a machine's are in its folder", () => {
+test("every box's first accounts are the agents' own folders, a machine's too; an added one is in the bridge's", () => {
   const machine = join(base, "machine", ".kuvo-code"), mac = join(base, "mac", ".kuvo-code")
   mkdirSync(join(mac, "box"), { recursive: true })
   writeFileSync(join(mac, "box", "kind"), "mac\n")
   mkdirSync(machine, { recursive: true })
-  // A machine's.
-  expect(homes({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: machine, AGENTS: join(machine, "agents") })).toEqual({
-    claude: join(machine, "agents", "claude", "home"), codex: join(machine, "agents", "codex", "home"), grok: join(machine, "agents", "grok", "home"),
-    added: "<bridge>/claude/accounts/<id>",
-  })
-  // A Mac's, started the same way in its home of its own.
-  expect(homes({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: mac, AGENTS: join(mac, "agents") })).toEqual({ claude: "yours", codex: "yours", grok: "yours", added: "<bridge>/claude/accounts/<id>" })
-  // And as its app starts it in its folder.
-  expect(homes({ AGENTS: join(base, "app", "agents") })).toEqual({ claude: "yours", codex: "yours", grok: "yours", added: "<bridge>/claude/accounts/<id>" })
+  const yours = { claude: "yours", codex: "yours", grok: "yours", added: "<bridge>/claude/accounts/<id>" }
+  expect(homes({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: machine, AGENTS: join(machine, "agents") })).toEqual(yours)
+  expect(homes({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: mac, AGENTS: join(mac, "agents") })).toEqual(yours)
+  expect(homes({ AGENTS: join(base, "app", "agents") })).toEqual(yours)
+})
+
+/** A Linux box an earlier bridge ran: its first sign-ins and conversations in `<agent>/home`. */
+function earlier(root: string, kind: "codex" | "grok", signIn: string) {
+  const old = join(root, kind, "home")
+  mkdirSync(join(old, "sessions", "2026", "11", "01"), { recursive: true })
+  writeFileSync(join(old, "auth.json"), signIn)
+  writeFileSync(join(old, "sessions", "2026", "11", "01", "rollout-thread-1.jsonl"), "the conversation")
+  return old
+}
+
+test("updating, an earlier bridge's first sign-in and its conversations move into the agent's own folder, and nothing is left behind", () => {
+  const you = join(base, "update-you"), root = join(base, "update", "agents")
+  const home = process.env.HOME
+  process.env.HOME = you
+  try {
+    const old = earlier(root, "codex", "kuvo-codex-sign-in")
+    earlier(root, "grok", "kuvo-grok-sign-in")
+    const accounts = new Accounts(root)
+    adoptOwnFolders(root, accounts)
+    expect(readFileSync(join(you, ".codex", "auth.json"), "utf8")).toBe("kuvo-codex-sign-in")
+    expect(readFileSync(join(you, ".codex", "sessions", "2026", "11", "01", "rollout-thread-1.jsonl"), "utf8")).toBe("the conversation")
+    expect(readFileSync(join(you, ".grok", "auth.json"), "utf8")).toBe("kuvo-grok-sign-in")
+    expect(existsSync(old)).toBe(false)
+    expect(existsSync(join(root, "grok", "home"))).toBe(false)
+    // One account each, the agent's own: no copy of the sign-in anywhere.
+    expect(accounts.all().filter(each => each.kind === "codex" || each.kind === "grok")).toEqual([{ kind: "codex", id: "default" }, { kind: "grok", id: "default" }])
+  } finally {
+    process.env.HOME = home
+  }
+})
+
+test("updating where you're signed in to the agent already, yours stays the first account and the earlier one is an added account", () => {
+  const you = join(base, "both-you"), root = join(base, "both", "agents")
+  const home = process.env.HOME
+  process.env.HOME = you
+  try {
+    mkdirSync(join(you, ".codex"), { recursive: true })
+    writeFileSync(join(you, ".codex", "auth.json"), "your-terminal-sign-in")
+    earlier(root, "codex", "kuvo-codex-sign-in")
+    const accounts = new Accounts(root)
+    adoptOwnFolders(root, accounts)
+    expect(readFileSync(join(you, ".codex", "auth.json"), "utf8")).toBe("your-terminal-sign-in")
+    // Its conversations go on in the first account's folder.
+    expect(readFileSync(join(you, ".codex", "sessions", "2026", "11", "01", "rollout-thread-1.jsonl"), "utf8")).toBe("the conversation")
+    const added = accounts.all().filter(each => each.kind === "codex" && each.id !== "default")
+    expect(added.map(each => each.label)).toEqual(["Earlier sign-in"])
+    expect(readFileSync(join(accounts.home(added[0]!)!, "auth.json"), "utf8")).toBe("kuvo-codex-sign-in")
+    expect(existsSync(join(root, "codex", "home"))).toBe(false)
+  } finally {
+    process.env.HOME = home
+  }
 })
 
 // A bot moved from an earlier Kuvo Code remembers this Mac's group chats in its own conversation

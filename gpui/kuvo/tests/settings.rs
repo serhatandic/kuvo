@@ -462,6 +462,10 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     // Signed in, ended, never: each says so, with the box's ways.
     assert!(shown(cx, "account-antigravity-sign-in-again"), "an agent whose sign-in ended");
     assert!(shown(cx, "account-gitlab-sign-in-again") && shown(cx, "account-gitlab-disconnect"), "an engine plan the box says ended");
+    // One that ended says so inside its own row, as the one notice (#339): its warning glyph and
+    // the box's line, not amber words.
+    assert!(shown(cx, "account-gitlab-needs-you") && shown(cx, "account-gitlab-needs-you-icon"), "the ended sign-in's notice in its row");
+    assert!(!shown(cx, "account-codex-cli-needs-you"), "none on one that's fine");
     assert!(shown(cx, "account-cursor-sign-in"));
     assert!(shown(cx, "account-grok-cli-install"));
     assert!(shown(cx, "account-anthropic-sign-in"));
@@ -595,8 +599,9 @@ fn signing_in_in_the_browser_follows_the_box_until_it_goes_through(cx: &mut Test
     assert_eq!(step(&view, cx), Some(Step::Done));
     click(cx, "sign-in-done");
     assert!(!shown(cx, "sign-in"));
-    // Read again: signed in, no longer ended.
+    // Read again: signed in, no longer ended, and its notice gone by itself.
     assert!(!shown(cx, "account-gitlab-sign-in-again"));
+    assert!(!shown(cx, "account-gitlab-needs-you"));
     click(cx, "account-gitlab-menu");
     assert!(shown(cx, "menu-item-Disconnect…"));
 }
@@ -2195,20 +2200,6 @@ fn custom_auto_descriptions_draw_ordered_lists_and_new_list_form(cx: &mut TestAp
     click(cx, "row-lists-new-list");
     assert!(shown(cx, "settings-form"));
     assert!(shown(cx, "settings-form-name-field"));
-}
-
-#[gpui::test]
-fn commands_list_and_add_are_described_by_the_service(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.add_settings_section(kuvo::stand_in::settings::commands::section(), kuvo::stand_in::settings::commands::page());
-    let (workspace, cx) = open(cx, stand_in);
-    section(&workspace, cx, "commands");
-    assert_eq!(title(&workspace, cx).as_deref(), Some("Commands"));
-    click(cx, "row-commands-new-command");
-    assert!(shown(cx, "settings-form"));
-    assert!(shown(cx, "settings-form-name-field"));
-    assert!(shown(cx, "settings-form-description-field"));
-    assert!(shown(cx, "settings-form-template-field"));
 }
 
 /// Git as the box describes it: no Save buttons; a field is saved as it's left (or on Return),

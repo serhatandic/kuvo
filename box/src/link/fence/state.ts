@@ -860,7 +860,8 @@ export async function keepFence(every: (round: () => Promise<void>) => void = ro
   let trying = false;
   every(async () => {
     const round = rounds++;
-    const sweeping = round % 60 === 0 ? wakeDisk.run("sweepWakeFolders").catch(() => {}) : undefined;
+    const sweep = round % 60 === 0 && [path.join(FOLDER, "tmp"), TEMPORARY, SESSION_WAKES].some(folder => listOf(folder).length > 0);
+    const sweeping = sweep ? wakeDisk.run("sweepWakeFolders").catch(() => {}) : undefined;
     // Agents told once the engine has loaded the plugin, and no longer once it's gone.
     try { tellAgents(); } catch {}
     if (checkingFence || !fenceWanted()) {

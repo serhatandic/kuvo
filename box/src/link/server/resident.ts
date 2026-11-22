@@ -11,11 +11,19 @@ export const RESIDENT_RELEASE = "// Kuvo resident serve v1\n";
 
 /** The start and rollback target select their own client-process layout. */
 export function residentInstalled(): boolean {
+  return installedMarker(RESIDENT_RELEASE);
+}
+
+export function residentWorkersInstalled(): boolean {
+  return installedMarker("// Kuvo resident workers v1\n");
+}
+
+function installedMarker(marker: string): boolean {
   try {
     const file = fs.openSync(path.join(K, "bin", "kuvo-link.js"), "r");
     try {
       const head = Buffer.alloc(512);
-      return head.subarray(0, fs.readSync(file, head)).toString("utf8").includes(RESIDENT_RELEASE);
+      return head.subarray(0, fs.readSync(file, head)).toString("utf8").includes(marker);
     } finally { fs.closeSync(file); }
   } catch { return false; }
 }

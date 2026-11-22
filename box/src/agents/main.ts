@@ -16,7 +16,8 @@ import { boxZoneIs } from "../shared/zone"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { format } from "node:util"
-import { Accounts, parseProvider } from "./accounts"
+import { Accounts, adoptOwnFolders, parseProvider } from "./accounts"
+import { adoptConsoleFolder } from "./claude-compat"
 import { Auto } from "./auto"
 import { Deps } from "./deps"
 import { EngineAgent, EngineLink } from "./engine"
@@ -206,7 +207,12 @@ if (onMachine) {
 // What an earlier bridge left of its downloads (it kept them on this Mac): nothing installs yet.
 rmSync(join(home, "cache", "install"), { recursive: true, force: true })
 const context = { home, temporary, deps }
-const roster = new Roster(new Accounts(home), context)
+// Each agent's first account is its own folder now, on Linux too: an earlier bridge's moved there.
+const accounts = new Accounts(home)
+adoptOwnFolders(home, accounts)
+// And on a Mac, an earlier version's Anthropic Console sign-in becomes an account you added.
+if (process.platform === "darwin") adoptConsoleFolder(home, accounts)
+const roster = new Roster(accounts, context)
 const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).

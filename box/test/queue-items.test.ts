@@ -209,8 +209,8 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect(json.removed).toEqual({
     id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
     files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
-    // (A goal: Edit puts it back as one, as sending it again asks for the goal again.)
-    keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+    // (Its words alone: an old message's keyword no longer does anything when sent again.)
+    keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
     metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
   })
   expect(got).toContainEqual({ method: "DELETE", path: "/api/session/ses_q/inbox/msg_steer" })
@@ -221,6 +221,18 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/msg_steer/ack", { receipt: json.removed.receipt })).status).toBe(200)
   // Not waiting anywhere: 404.
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_none")).status).toBe(404)
+})
+
+test("one the app still shows on its way can be removed: it's taken out as it arrives, or said to have gone already", async () => {
+  // Not here yet: held as it comes, for the app's removal (asked again) to take out.
+  const coming = await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_coming?arriving=1")
+  expect(coming).toEqual({ status: 409, json: { message: "It’s still on its way, and is taken out as it arrives.", arriving: true } })
+  expect(Object.keys(queueOf("ses_q").arriving ?? {})).toContain("msg_coming")
+  // Handed to the agent already: said so, never a row that can't be acted on.
+  const { sentOnce } = await import("../src/link/server/sent-once")
+  await sentOnce("engine\nses_q\nmsg_went", async () => ({ status: 200, headers: {}, body: Buffer.from("{}") }))
+  const went = await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_went?arriving=1")
+  expect(went).toEqual({ status: 404, json: { message: "It was already sent to the agent.", delivered: true } })
 })
 
 for (const failedRead of ["inbox", "transcript"] as const) {
@@ -246,7 +258,7 @@ for (const failedRead of ["inbox", "transcript"] as const) {
     expect(recovered.json.removed).toEqual({
       id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
       files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "steer", words: "Use the blue one.",
-      keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+      keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
       metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
     })
     expect(await ask(handler, "DELETE", route)).toEqual(recovered)

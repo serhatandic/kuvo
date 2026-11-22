@@ -1,3 +1,4 @@
+import { acquireEngine } from "../engine/lifetime";
 // Mark All as Read (PROTOCOL.md, "What's been read"): everything new on this box read at once, as
 // a client asks for it (a phone's Inbox, a Mac's sidebar): each conversation, on the engine and
 // the coding agents' bridge, read up to where it ended, and each group chat up to now. What waits on
@@ -73,14 +74,19 @@ export async function readGroups(bridge: Target, signal?: AbortSignal): Promise<
 // where nothing here could be read (its engine and its bridge both down).
 export async function* readAllRoute({ request, readEngine, bridge, signal, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  let engine: Target | null = null;
-  try { engine = readEngine(); } catch {}
-  const agents = bridge();
-  const counts = await Promise.all([
-    engine ? readAllOn(engine, signal) : null,
-    agents ? readAllOn(agents, signal) : null,
-    agents ? readGroups(agents, signal) : null,
-  ]);
-  if (counts.every(count => count === null)) return yield* json(503, { message: "Nothing here could be read just now. Try again in a moment." });
-  return yield* json(200, { read: counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) });
+  const release = await acquireEngine();
+  try {
+    let engine: Target | null = null;
+    try { engine = readEngine(); } catch {}
+    const agents = bridge();
+    const counts = await Promise.all([
+      engine ? readAllOn(engine, signal) : null,
+      agents ? readAllOn(agents, signal) : null,
+      agents ? readGroups(agents, signal) : null,
+    ]);
+    if (counts.every(count => count === null)) return yield* json(503, { message: "Nothing here could be read just now. Try again in a moment." });
+    return yield* json(200, { read: counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) });
+  } finally {
+    release();
+  }
 }

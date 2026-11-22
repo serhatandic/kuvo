@@ -119,18 +119,18 @@ fn a_box_held_as_it_says_is_still_asked_until_it_updates() {
     // Its first request reads what it is first, then goes to it.
     assert!(client.messages("ses_1", Where::Engine, 10).is_ok());
     assert_eq!(client.gate(), Gate::Held { missing: vec!["typed".into()] });
-    let _ = client.typed_offers("ses_1");
+    let _ = client.messages("ses_1", Where::Engine, 10);
     assert_eq!(stand_in.seen_routes().len(), 3, "{:?}", stand_in.seen_routes());
     assert_eq!(stand_in.seen_routes()[..2], ["GET kuvo/info", "GET api/session/ses_1/message?limit=10&order=desc"]);
 
     // Updated, it's let go once it's read again.
     stand_in.answer(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        _ => Answer::json(200, json!({ "keywords": [], "commands": [] })),
+        _ => Answer::json(200, json!({ "data": [] })),
     });
     client.connect().unwrap();
     assert_eq!(client.gate(), Gate::Open);
-    assert!(client.typed_offers("ses_1").is_ok());
+    assert!(client.messages("ses_1", Where::Engine, 10).is_ok());
 
     // One that answers no kuvo/info at all is held.
     stand_in.answer(|_| Answer::json(404, json!({})));
@@ -162,14 +162,14 @@ fn the_session_list_follows_the_box_and_resumes_where_it_was() {
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
     assert_eq!(listing.facts("ses_a").unwrap().title.as_deref(), Some("Renamed"));
 
-    // The stream ends: it's opened again from where it was, and goes on.
+    // The list's own stream ends: the box opens it again, and the line goes on.
     drop(first);
     second.send(json!({ "archivedGroups": [], "at": "3", "sessions": { "ses_c": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 1, "updated": 40 } }, "projects": projects }).to_string()).unwrap();
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the list again") };
     assert_eq!(listing.sidebar().chats, vec!["ses_c"]);
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
     let opened: Vec<String> = stand_in.seen().iter().filter(|seen| seen.route() == "kuvo/sessions/list/events").map(|seen| seen.path.clone()).collect();
-    assert_eq!(opened, vec!["kuvo/sessions/list/events", "kuvo/sessions/list/events?since=2"]);
+    assert_eq!(opened, vec!["kuvo/sessions/list/events", "kuvo/sessions/list/events"]);
 
     // Stopped, it says nothing more and closes what it had open.
     follow.stop();
@@ -186,58 +186,6 @@ fn a_list_the_box_cant_read_yet_waits() {
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_sessions(at_once());
     assert_eq!(follow.next_blocking(), Some(ListUpdate::Waiting("The engine isn't answering yet.".into())));
-}
-
-#[test]
-fn an_unchanged_session_list_recovers_after_a_failed_line() {
-    let stand_in = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        _ => Answer::json(500, json!({})),
-    });
-    let stream = stand_in.stream_for("kuvo/sessions/list/events");
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_sessions(at_once());
-
-    let list = json!({
-        "archivedGroups": [], "at": "1", "full": true,
-        "sessions": { "ses_a": session("project", "/home/me/web", 10.0) },
-        "projects": { "/home/me/web": { "updated": 10 } }
-    });
-    stream.send(list.to_string()).unwrap();
-    let ListUpdate::Listing(before) = follow.next_blocking().unwrap() else { panic!("the first list") };
-
-    stream.send("{".into()).unwrap();
-    assert!(matches!(follow.next_blocking(), Some(ListUpdate::Failed(_))));
-
-    let mut resumed = list;
-    resumed["at"] = json!("2");
-    stream.send(resumed.to_string()).unwrap();
-    let updates = follow.updates().clone();
-    let (report, recovered) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
-        let _ = report.send(updates.recv_blocking());
-    });
-    let recovered = recovered.recv_timeout(Duration::from_secs(5));
-    follow.stop();
-    drop(stream);
-    reader.join().unwrap();
-    let recovered = recovered.expect("the unchanged answer should recover the list").unwrap();
-    let ListUpdate::Listing(recovered) = recovered else { panic!("the recovered list") };
-    assert_eq!(recovered.at(), Some("2"));
-    assert_eq!(recovered.sidebar(), before.sidebar());
-}
-
-#[test]
-fn a_box_without_bots_events_still_supplies_its_bots() {
-    let stand_in = StandInBox::start(|seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "kuvo/bots" => Answer::json(200, json!({ "bots": [], "elsewhere": [], "held": [], "refused": [] })),
-        _ => Answer::json(404, json!({})),
-    });
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_bots(at_once());
-    assert!(matches!(follow.next_blocking(), Some(kuvo_box::follow::Followed::Now(said)) if said.bots.is_empty()));
-    assert!(stand_in.seen().iter().any(|seen| seen.route() == "kuvo/bots/events"));
 }
 
 fn user(id: &str, text: &str, at: f64) -> Value {
@@ -325,44 +273,6 @@ fn a_conversation_streams_its_words_and_is_read_again_as_steps_end() {
     drop(follow);
 }
 
-#[test]
-fn conversation_reads_keep_up_when_the_open_event_feed_has_said_nothing() {
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-    use std::time::Instant;
-
-    let newer = Arc::new(AtomicBool::new(false));
-    let seen = newer.clone();
-    let stand_in = StandInBox::start(move |request| match request.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_silent" => Answer::json(200, json!({ "data": { "id": "ses_silent" } })),
-        "api/session/active" => Answer::json(200, json!({ "data": {} })),
-        "api/session/ses_silent/message" => {
-            let mut rows = vec![user("msg_first", "First", 1.0)];
-            if seen.load(Ordering::Relaxed) {
-                rows.insert(0, user("msg_second", "Second", 2.0));
-            }
-            Answer::json(200, json!({ "data": rows }))
-        }
-        _ => Answer::json(404, json!({})),
-    });
-    let _silent = stand_in.stream_for("api/event");
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_silent", Timing { conversation_again: Duration::from_millis(20), ..at_once() });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let next = |expected| loop {
-        if let Ok(update) = follow.updates().try_recv() {
-            let ConversationUpdate::Conversation(shown) = update else { panic!("transcript read failed: {update:?}") };
-            if shown.messages.last().is_some_and(|row| row.id() == expected) {
-                break;
-            }
-        }
-        assert!(Instant::now() < deadline, "no transcript update for {expected}");
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    next("msg_first");
-    newer.store(true, Ordering::Relaxed);
-    next("msg_second");
-}
 
 #[test]
 fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
@@ -400,7 +310,7 @@ fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
         let mut queues = stand_in.stream_for(&queue_route);
         let (_home, _serve, client) = this_mac(&stand_in);
         let chat = client.follow_conversation(session, at_once());
-        let queue = client.follow_queue(session, at_once());
+        let queue = client.follow_queue(session);
         let expected = |first: usize| (first..=3).map(|n| format!("msg_user_{n}")).collect::<Vec<_>>();
         let check_queue = |first| {
             let Followed::Now(snapshot) = queue.next_blocking().unwrap() else { panic!("queue snapshot") };
@@ -498,19 +408,11 @@ fn a_coding_agents_conversation_is_read_from_its_bridge() {
 }
 
 #[test]
-fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
+fn a_composer_sends_its_fields_and_slash_or_bang_is_just_text() {
     use kuvo_box::parts::{Comment, File, Notes, Side};
     let stand_in = StandInBox::start(|seen| match (seen.method.as_str(), seen.route()) {
         (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-        ("GET", "api/session/ses_1") | ("POST", "api/session/ses_1/shell") => Answer::json(200, json!({})),
         ("POST", "kuvo/sessions/ses_1/send") => Answer::json(200, json!({})),
-        ("POST", "kuvo/sessions/ses_1/typed") => match seen.body.as_ref().unwrap()["text"].as_str().unwrap() {
-            "/plan sketch it" => Answer::json(200, json!({ "keyword": "plan", "agent": "plan", "send": { "text": "sketch it", "typed": "/plan", "quoted": true } })),
-            "/loop every hour check" => Answer::json(200, json!({ "wakeUp": { "due": 1, "every": "1h", "note": "check" }, "send": { "text": "check", "typed": "/loop every hour", "steer": true } })),
-            "/init now" => Answer::json(200, json!({ "command": { "name": "init", "arguments": "now" } })),
-            "!ls" => Answer::json(200, json!({ "shell": "ls" })),
-            _ => Answer::json(503, json!({ "message": "The engine isn't answering.", "restore": { "text": "/review now" } })),
-        },
         _ => Answer::json(404, json!({})),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
@@ -552,60 +454,15 @@ fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
     assert_eq!((answer.error.as_deref(), answer.restore.unwrap().text.as_str()), (Some("Sign in to Anthropic again."), "fix it"));
     assert_eq!(stand_in.seen().len(), before);
 
-    // "/plan sketch it": the box says what it means; the words it says to send go with the keyword
-    // as typed and what they reply to, and the box writes what the agent reads.
-    let mut plan = Draft::new("msg_p", "/plan sketch it");
-    plan.files = vec![File { uri: "data:image/png;base64,AA==".into(), name: None }];
-    plan.widget = Some("Pick one".into());
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &plan, Some(&quote)).unwrap() else { panic!("typed") };
-    assert_eq!((answer.agent.as_deref(), message.as_deref()), (Some("plan"), Some("msg_p")));
-    let seen = stand_in.seen();
-    let [.., typed, sent] = &seen[..] else { panic!() };
-    assert_eq!(typed.body.as_ref().unwrap(), &json!({ "id": "msg_p", "text": "/plan sketch it", "files": true, "side": false }));
-    assert_eq!(sent.body.as_ref().unwrap(), &json!({ "id": "msg_p", "words": "> the line\n\nsketch it", "keyword": "/plan", "delivery": "steer", "files": [{ "uri": "data:image/png;base64,AA==" }], "widget": "Pick one" }));
-
-    // A /loop's first goes now, whatever was asked.
-    let mut looped = Draft::new("msg_l", "/loop every hour check");
-    looped.delivery = Delivery::Queue;
-    client.send_draft("ses_1", &looped, None).unwrap();
-    assert_eq!(stand_in.seen().pop().unwrap().body.unwrap(), json!({ "id": "msg_l", "words": "check", "keyword": "/loop every hour", "delivery": "steer" }));
-
-    // One of the engine's commands runs with its arguments as written: not a message, so no id.
-    let Sent::Typed { message: None, .. } = client.send_draft("ses_1", &Draft::new("msg_c", "/init now"), None).unwrap() else { panic!("a command") };
-    let ran = stand_in.seen().pop().unwrap();
-    assert_eq!(ran.body.unwrap(), json!({ "words": "now", "command": "init", "delivery": "steer" }));
-    assert_eq!(ran.headers.get("idempotency-key"), None);
-
-    // With the side thread's tag on, a message is a follow-up there, the client's to ask.
-    let before = stand_in.seen().len();
-    let mut side = Draft::new("msg_t", "what about tests?");
-    side.side = true;
-    let Sent::Typed { answer, message: None } = client.send_draft("ses_1", &side, None).unwrap() else { panic!("side") };
-    assert_eq!(answer.side_thread, Some(true));
-    assert_eq!(stand_in.seen().len(), before);
-
-    // Both at once: the model that can't run is said first, as the box checks it first
-    // (typed/decide.ts), and the message is kept, not taken to the side thread.
-    side.refusal = Some("Sign in to Anthropic again.".into());
-    let Sent::Typed { answer, message: None } = client.send_draft("ses_1", &side, None).unwrap() else { panic!("kept") };
-    assert_eq!((answer.side_thread, answer.error.as_deref()), (None, Some("Sign in to Anthropic again.")));
-    assert_eq!(answer.restore.map(|restore| restore.text), Some("what about tests?".to_owned()));
-    assert_eq!(stand_in.seen().len(), before);
-
-    // "!ls": the box decides, then runs it without sending an agent message.
-    let before = stand_in.seen().len();
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_s", "!ls"), None).unwrap() else { panic!() };
-    assert_eq!((answer.shell.as_deref(), message), (Some("ls"), None));
-    assert_eq!(stand_in.seen().len(), before + 3);
-    assert_eq!(stand_in.seen().last().unwrap().body, Some(json!({ "command": "ls" })));
-
-    // Refused: it all goes back to the composer, saying why.
-    let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_r", "/review now"), None).unwrap() else { panic!() };
-    assert_eq!(message, None);
-    assert_eq!(answer.error.as_deref(), Some("The engine isn't answering."));
-    assert_eq!(answer.restore.unwrap().text_beside(""), "/review now");
-    // Nothing went the way before.
-    assert!(stand_in.seen().iter().all(|seen| !seen.route().ends_with("/prompt") && !seen.route().ends_with("/queue/add")));
+    // What starts with "/" or "!" is a message like any other: sent as written, nothing asked
+    // of the box about what it means and nothing run.
+    for (id, text) in [("msg_p", "/plan sketch it"), ("msg_s", "!ls"), ("msg_c", "  /init now")] {
+        assert_eq!(client.send_draft("ses_1", &Draft::new(id, text), None).unwrap(), Sent::Message { id: id.into() });
+        let sent = stand_in.seen().pop().unwrap();
+        assert_eq!(sent.route(), "kuvo/sessions/ses_1/send");
+        assert_eq!(sent.body.unwrap(), json!({ "id": id, "words": text, "delivery": "steer" }));
+    }
+    assert!(stand_in.seen().iter().all(|seen| !seen.route().ends_with("/typed") && !seen.route().ends_with("/shell") && !seen.route().ends_with("/command")));
 }
 
 #[test]
@@ -656,7 +513,8 @@ fn a_box_whose_server_started_again_is_found_at_its_new_place_and_read_again() {
 
 #[test]
 fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
-    // After the initial page and the feed's catch-up, hold the delivery-triggered read.
+    // After the initial page, hold the delivery-triggered read. (Its events are on the line before
+    // that page is read, so nothing between them is missed and no catch-up read is needed.)
     let (release, held) = std::sync::mpsc::channel::<()>();
     let (reading, started) = std::sync::mpsc::channel::<()>();
     let held = std::sync::Mutex::new(held);
@@ -667,8 +525,8 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
         "api/session/active" => Answer::json(200, json!({ "data": { "ses_1": {} } })),
         "api/session/ses_1/message" => {
             match reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-                0 | 1 => return Answer::json(200, json!({ "data": [user("msg_1", "Hi", 1.0)] })),
-                2 => {
+                0 => return Answer::json(200, json!({ "data": [user("msg_1", "Hi", 1.0)] })),
+                1 => {
                     reading.send(()).unwrap();
                     held.lock().unwrap().recv().unwrap();
                 }
@@ -682,13 +540,9 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     });
     let events = stand_in.stream_for("api/event");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_1", Timing { conversation_again: Duration::from_secs(60), ..at_once() });
+    let follow = client.follow_conversation("ses_1", at_once());
     let ConversationUpdate::Conversation(read) = follow.next_blocking().unwrap() else { panic!() };
     assert!(read.running, "the box says a run is under way");
-    events.send(event("server.connected", "ses_1", json!({}))).unwrap();
-    let ConversationUpdate::Conversation(caught_up) = follow.next_blocking().unwrap() else { panic!() };
-    assert_eq!(caught_up, read, "the first stream event refreshes the initial page");
-
     events.send(event("session.step.started", "ses_1", json!({ "assistantMessageID": "msg_2" }))).unwrap();
     events.send(event("session.text.started", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0 }))).unwrap();
     events.send(event("session.text.delta", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0, "delta": "Hel" }))).unwrap();
@@ -710,9 +564,10 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     assert_eq!(last_words(&ConversationUpdate::Conversation(after)).as_deref(), Some("Hello"));
     events.send(event("session.text.delta", "ses_1", json!({ "assistantMessageID": "msg_2", "ordinal": 0, "delta": "!" }))).unwrap();
     while last_words(&follow.next_blocking().expect("the follow goes on")).as_deref() != Some("Hello!") {}
-    // Only the initial, catch-up, and delivery reads were made: streamed words ask for none.
+    // Only the initial and delivery reads were made: streamed words ask for none, and the line
+    // needs no catch-up read.
     let reads: Vec<_> = stand_in.seen().into_iter().filter(|seen| seen.route() == "api/session/ses_1/message").collect();
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 2);
 }
 
 #[test]
@@ -871,34 +726,6 @@ fn after_a_gap_a_conversation_starts_again_from_its_newest() {
     assert_eq!(shown.earlier, None, "a page that wasn't full has nothing before it");
 }
 
-#[test]
-fn a_conversation_whose_stream_cant_be_opened_is_read_on_a_timer_meanwhile() {
-    let stored = std::sync::Arc::new(std::sync::Mutex::new(json!([user("msg_1", "Hi", 1.0)])));
-    let messages = stored.clone();
-    let stand_in = StandInBox::start(move |seen| match seen.route() {
-        "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_1" => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
-        // Its events can't be followed now.
-        "api/event" => Answer::json(503, json!({ "message": "The engine is starting." })),
-        "api/session/ses_1/message" => {
-            let mut newest: Vec<Value> = messages.lock().unwrap().as_array().unwrap().clone();
-            newest.reverse();
-            Answer::json(200, json!({ "data": newest }))
-        }
-        _ => Answer::json(404, json!({})),
-    });
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_1", Timing { conversation_again: Duration::ZERO, ..at_once() });
-    // A reply comes while nothing streams: it's read all the same.
-    *stored.lock().unwrap() = json!([user("msg_1", "Hi", 1.0), assistant("msg_2", "Hello.", 2.0)]);
-    loop {
-        if let Some(words) = last_words(&follow.next_blocking().expect("the follow goes on"))
-            && words == "Hello."
-        {
-            break;
-        }
-    }
-}
 
 /// What waits on you is followed as the box says it: its counts now, and again as they change
 /// (`kuvo/waiting/events`), with nothing counted here.
@@ -912,7 +739,7 @@ fn what_waits_on_you_follows_the_boxs_counts() {
     });
     let lines = stand_in.stream_for("kuvo/waiting/events");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_waiting(at_once());
+    let follow = client.follow_waiting();
     lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();
     assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 2, bots: 1, queue: 0 })));
     // An ask is answered: the box says its counts again.
@@ -926,7 +753,7 @@ fn usage_follows_changes_and_skips_heartbeats() {
     let stand_in = StandInBox::start(|_| Answer::json(404, json!({})));
     let lines = stand_in.stream_for("kuvo/agents/api/kuvo/limits/events");
     let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_usage(at_once());
+    let follow = client.follow_usage();
     // Older boxes send an empty object when the stream opens or limits change.
     lines.send("{}".into()).unwrap();
     assert_eq!(follow.next_blocking(), Some(Followed::Now(json!({}))));
@@ -1093,7 +920,7 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
     assert!(matches!(client.setting_action("browser", &site, &site.actions[0]).expect("done"), Changed::Done(_)));
     assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "was": "lh1" })));
 
-    let follow = client.follow_settings_page("browser", at_once());
+    let follow = client.follow_settings_page("browser");
     lines.send(page(true, "of1").to_string()).unwrap();
     match follow.next_blocking() {
         Some(Followed::Now(now)) => assert!(now.row("offers").unwrap().is_on()),
@@ -1103,82 +930,5 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
     match follow.next_blocking() {
         Some(Followed::Now(now)) => assert!(!now.row("offers").unwrap().is_on()),
         other => panic!("the page again, not {other:?}"),
-    }
-}
-
-#[test]
-fn compact_drafts_use_the_sessions_own_engine_and_preserve_refusal_words() {
-    for agents in [false, true] {
-        let stand_in = StandInBox::start(move |seen| match seen.route() {
-            "kuvo/info" => Answer::json(200, mac_info(current_features())),
-            "kuvo/sessions/ses_compact/typed" => Answer::json(200, json!({ "compact": true })),
-            "api/session/ses_compact" if !agents => Answer::json(200, json!({ "id": "ses_compact" })),
-            "kuvo/agents/api/session/ses_compact" if agents => Answer::json(200, json!({ "id": "ses_compact" })),
-            "api/session/ses_compact/compact" if !agents => Answer::json(200, json!({ "data": { "state": "waiting" } })),
-            "kuvo/agents/api/session/ses_compact/compact" if agents => Answer::json(400, json!({ "message": "There’s nothing to summarize yet." })),
-            _ => Answer::json(404, json!({})),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        let result = client.send_draft("ses_compact", &Draft::new("draft_compact", "/compact"), None);
-        if agents {
-            assert!(result.unwrap_err().to_string().contains("There’s nothing to summarize yet."));
-        } else {
-            assert!(matches!(result.unwrap(), Sent::Typed { answer, .. } if answer.compact == Some(true)));
-        }
-        let seen = stand_in.seen();
-        let expected = if agents { "kuvo/agents/api/session/ses_compact/compact" } else { "api/session/ses_compact/compact" };
-        assert_eq!(seen.last().unwrap().route(), expected);
-    }
-}
-
-#[test]
-fn shell_drafts_send_the_box_command_to_the_sessions_engine() {
-    for agents in [false, true] {
-        let stand_in = StandInBox::start(move |seen| match seen.route() {
-            "kuvo/info" => Answer::json(200, mac_info(current_features())),
-            "kuvo/sessions/ses_shell/typed" => Answer::json(200, json!({ "shell": "printf hello" })),
-            "api/session/ses_shell" if !agents => Answer::json(200, json!({})),
-            "kuvo/agents/api/session/ses_shell" if agents => Answer::json(200, json!({})),
-            "api/session/ses_shell/shell" | "kuvo/agents/api/session/ses_shell/shell" => {
-                assert_eq!(seen.method, "POST");
-                Answer::json(200, json!({}))
-            }
-            _ => Answer::json(404, json!({})),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        client.send_draft("ses_shell", &Draft::new("draft_shell", "!printf hello"), None).unwrap();
-        let seen = stand_in.seen();
-        let last = seen.last().unwrap();
-        assert_eq!(last.route(), if agents { "kuvo/agents/api/session/ses_shell/shell" } else { "api/session/ses_shell/shell" });
-        assert_eq!(last.body, Some(json!({ "command": "printf hello" })));
-    }
-}
-
-#[test]
-fn drafts_with_known_place_skip_where_is_for_shell_and_compact() {
-    for (agents, text, route) in [
-        (false, "!pwd", "api/session/ses_known/shell"),
-        (true, "/compact", "kuvo/agents/api/session/ses_known/compact"),
-    ] {
-        let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
-            (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-            ("POST", "kuvo/sessions/ses_known/typed") => Answer::json(
-                200,
-                if text.starts_with('!') { json!({ "shell": "pwd" }) } else { json!({ "compact": true }) },
-            ),
-            ("POST", "api/session/ses_known/shell") if !agents => Answer::json(200, json!({})),
-            ("POST", "kuvo/agents/api/session/ses_known/compact") if agents => Answer::json(200, json!({ "data": { "state": "compacting" } })),
-            _ => panic!("unexpected request: {} {}", seen.method, seen.route()),
-        });
-        let (_home, _serve, client) = this_mac(&stand_in);
-        client.connect().unwrap();
-        let mut draft = Draft::new("draft_known", text);
-        draft.place = Some(if agents { Where::Agents } else { Where::Engine });
-        client.send_draft("ses_known", &draft, None).unwrap();
-        let seen = stand_in.seen();
-        let routes: Vec<&str> = seen.iter().map(|s| s.route()).collect();
-        assert_eq!(routes, ["kuvo/info", "kuvo/sessions/ses_known/typed", route]);
     }
 }

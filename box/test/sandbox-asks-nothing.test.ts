@@ -146,7 +146,7 @@ test.skipIf(process.platform !== "darwin")("Claude Code's list opens nothing mac
   writeFileSync(join(claude, "agents", "helper.md"), "---\nname: helper\ndescription: Helps.\n---\nHelp.\n")
   const { preload, noted } = guard(root, home)
   const list = join(import.meta.dir, "..", "src", "link", "areas", "claude-code.ts")
-  const ran = Bun.spawnSync([process.execPath, "--preload", preload, "-e", `import { claudeCodeList } from ${JSON.stringify(list)}; console.log(JSON.stringify(await claudeCodeList(${JSON.stringify(claude)}, {}, new Set())))`],
+  const ran = Bun.spawnSync([process.execPath, "--preload", preload, "-e", `import { claudeCodeList } from ${JSON.stringify(list)}; console.log(JSON.stringify(await claudeCodeList(${JSON.stringify(claude)}, {})))`],
     { env: { ...environment(home), KUVO_HOME: join(root, "kuvo") }, cwd: root })
   expect(ran.exitCode, ran.stderr.toString()).toBe(0)
   expect(JSON.parse(ran.stdout.toString()).agents.map((agent: { name: string }) => agent.name)).toEqual(["helper"])

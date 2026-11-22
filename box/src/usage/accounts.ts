@@ -1,16 +1,15 @@
 import { CodexCredentials, type KeychainRead } from "./codex-credentials"
 // Read the credentials and log locations belonging to this box. Provider turns, install, login
 // and token renewal are the agents' responsibility.
-import { claudeToken, grokCredential, grokHome } from "../shared/agent-credentials"
+import { grokCredential, grokHome } from "../shared/agent-credentials"
 import { join } from "node:path"
 import { Accounts, providerID, type AgentAccount, type AgentKind } from "../agents/accounts"
 import { ClaudePlan, credentialsIn } from "./claude-limits"
 import { installedVersion } from "../agents/maintenance"
-import { which } from "../agents/proc"
 import { homeFolder } from "../shared/account"
-import { chatGPTIdentity, fingerprint, LimitsProblem, xaiIdentity, type LimitExtra, type LimitsSource } from "./limits"
-import { readCodexPlan, readGrok } from "./engine-limits"
-import { readCodexResets, spendCodexReset, type ChatGPTSignIn } from "./codex-resets"
+import { chatGPTIdentity, fingerprint, LimitsProblem, xaiIdentity, type LimitsSource } from "./limits"
+import { codexAccountNow, readCodexNative, readGrokNative, spendCodexResetNative } from "./native-usage"
+import { claudeProgram, codexProgram, grokProgram } from "../shared/agent-programs"
 import { AntigravityPlan, type AntigravityFetch } from "./antigravity-plan"
 import { CursorClient, cursorKey, cursorKeyUnreadable } from "./cursor-api"
 import { readCursorPlan, readingOf } from "./cursor-plan"
@@ -31,19 +30,22 @@ export interface UsageAgent {
 export class UsageAccounts {
   private readonly sources = new Map<string, UsageAgent>()
 
-  constructor(private readonly root: string, private readonly managedDefaults: boolean, private readonly options: {
-    claudeByToken?: boolean
+  constructor(private readonly root: string, private readonly options: {
+    /** Whether Claude Code keeps its sign-in in the Keychain (a Mac's), not a file. */
+    claudeKeychain?: boolean
     codexKeychain?: KeychainRead
+    /** The agents' programs (a test's stand-ins); else each one's own, where its installer puts it. */
+    programs?: { claude?: string; codex?: string; grok?: string }
     antigravity?: { fetch?: AntigravityFetch; bases: string[] }
   } = {}) {}
 
   all(): UsageAgent[] {
-    const accounts = new Accounts(this.root, this.managedDefaults)
+    const accounts = new Accounts(this.root)
     const current = accounts.all().map(record => {
       const provider = providerID(record.kind, record.id)
       let agent = this.sources.get(provider)
       if (!agent) {
-        agent = this.source(record.kind, provider, { id: record.id, home: accounts.home(record, false) })
+        agent = this.source(record.kind, provider, { id: record.id, home: accounts.home(record) })
         this.sources.set(provider, agent)
       }
       agent.instance.label = record.label
@@ -60,65 +62,67 @@ export class UsageAccounts {
     const every = 10 * 60_000
     switch (kind) {
       case "claude": {
-        const byToken = this.options.claudeByToken ?? (process.platform === "darwin")
-        const token = () => claudeToken(join(this.root, "claude", "tokens", instance.id + ".json"))
-        const standard = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude")
-        const consoleHome = join(this.root, "claude", "console")
-        const configHome = () => instance.home ?? (byToken && !token() ? consoleHome : standard)
-        const signIn = () => {
-          const own = byToken ? token() : undefined
-          return own ? { token: own } : !byToken && instance.home ? credentialsIn(instance.home) : undefined
-        }
+        // Your own sign-in where Claude Code keeps it (`~/.claude`, or CLAUDE_CONFIG_DIR), or an added account's folder.
+        const configHome = instance.home ?? process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude")
+        // (Where Claude Code keeps who's signed in, `.claude.json`: its folder when given one, else your home.)
+        const recordHome = instance.home ?? (process.env.CLAUDE_CONFIG_DIR?.trim() ? process.env.CLAUDE_CONFIG_DIR : home)
+        const executable = () => this.options.programs?.claude ?? claudeProgram()
         let version: { at: number; value?: string } | undefined
-        const plan = new ClaudePlan({ byToken, home: instance.home, token, configHome, signIn, version: async () => {
-          if (version && Date.now() - version.at < 3_600_000) return version.value
-          const executable = which("claude", [join(home, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"])
-          const value = executable ? await installedVersion(executable).catch(() => undefined) : undefined
-          version = { at: Date.now(), value }
-          return value
-        } })
-        return { ...common, limits: plan.limits, conversationRoots: () => [...new Set([configHome(), ...(!instance.home ? [consoleHome, standard] : [])])].map(folder => join(folder, "projects")) }
+        const plan = new ClaudePlan({
+          recordHome,
+          keychain: this.options.claudeKeychain ?? process.platform === "darwin",
+          program: () => { const path = executable(); return path ? { executable: path, home: instance.home, cwd: this.root } : undefined },
+          signIn: () => credentialsIn(configHome),
+          version: async () => {
+            if (version && Date.now() - version.at < 3_600_000) return version.value
+            const path = executable()
+            const value = path ? await installedVersion(path).catch(() => undefined) : undefined
+            version = { at: Date.now(), value }
+            return value
+          },
+        })
+        return { ...common, limits: plan.limits, conversationRoots: () => [join(configHome, "projects")] }
       }
       case "codex": {
         const folder = instance.home ?? process.env.CODEX_HOME ?? join(home, ".codex")
         const credential = new CodexCredentials(folder, this.options.codexKeychain)
         const signIn = () => credential.current()
-        const identityOf = (auth: ChatGPTSignIn | undefined) => chatGPTIdentity(auth?.token, auth?.account)
-        let kept: { identity: string; resets: LimitExtra } | undefined
+        const identity = () => { const auth = signIn(); return chatGPTIdentity(auth?.token, auth?.account) }
+        // Asked of Codex itself, in this account's folder: it renews its own sign-in as it answers.
+        const program = () => { const executable = this.options.programs?.codex ?? codexProgram(); return executable ? { executable, home: folder } : undefined }
         return { ...common, prepare: fresh => credential.prepare(fresh), conversationRoots: () => [join(folder, "sessions"), join(folder, "archived_sessions")], limits: {
-          every, signIn: () => fingerprint(signIn()?.token), account: () => fingerprint(signIn()?.refresh),
-          identity: () => identityOf(signIn()),
+          every, signIn: () => fingerprint(signIn()?.token), account: () => fingerprint(signIn()?.refresh), identity,
           read: async now => {
-            const auth = signIn()
-            if (!auth) return null
-            const identity = identityOf(auth) ?? fingerprint(auth.token)!
-            return readCodexPlan(auth, now, async () => {
-              const resets = await readCodexResets(auth, now)
-              if (resets) kept = { identity, resets }
-              return kept?.identity === identity ? kept.resets : undefined
-            })
+            if (!signIn()) return null
+            const codex = program()
+            if (!codex) throw new LimitsProblem("failed", "Codex isn't installed here.")
+            return readCodexNative(codex, now)
           },
           spender: async () => {
-            const expected = identityOf(signIn())
-            const checked = await credential.forReset()
-            const live = identityOf(checked)
-            return live && expected ? { same: live === expected, signIn: checked } : undefined
+            const codex = program()
+            const expected = signIn()?.account
+            const live = codex ? await codexAccountNow(codex) : undefined
+            return live && expected ? { same: live === expected } : undefined
           },
-          reset: (attempt, now) => spendCodexReset(attempt.signIn as ChatGPTSignIn | undefined, attempt, now),
+          reset: async (attempt, now) => {
+            const codex = program()
+            return codex ? spendCodexResetNative(codex, attempt, now) : { outcome: "failed" }
+          },
         } }
       }
       case "grok": {
         const folder = grokHome(instance)
         const signIn = () => grokCredential(folder)
+        const program = () => { const executable = this.options.programs?.grok ?? grokProgram(); return executable ? { executable, home: folder } : undefined }
         return { ...common, conversationRoots: () => [join(folder, "sessions")], limits: {
           every, signIn: () => fingerprint(signIn()?.key),
           identity: () => { const auth = signIn(); return xaiIdentity(auth?.key, auth?.id_token) },
+          // Asked of Grok itself (its ACP `_x.ai/billing`), which renews a lapsed sign-in as it answers.
           read: async now => {
-            const auth = signIn()
-            if (!auth) return null
-            if (Date.parse(auth.expires_at ?? auth.expiresAt ?? auth.expires ?? "") <= now)
-              throw new LimitsProblem("expired", "Its sign-in has lapsed: Grok renews it the next time it runs here.")
-            return readGrok(auth.key.trim(), undefined, now)
+            if (!signIn()) return null
+            const grok = program()
+            if (!grok) throw new LimitsProblem("failed", "Grok's CLI isn't installed here.")
+            return readGrokNative(grok, now)
           },
         } }
       }

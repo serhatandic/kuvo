@@ -14,13 +14,14 @@ import { fingerprint, xaiIdentity, type LimitsSource } from "../../usage/limits"
 import { AcpThread, questionFields } from "../acp"
 import { withOwnFolders } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { plain, run, which } from "../proc"
+import { plain, run } from "../proc"
+import { agentsUpdateThemselves } from "../../shared/agent-updates"
+import { grokProgram } from "../../shared/agent-programs"
 import { commandSignIn } from "../signin"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { grokSubagents, subagentsFor } from "../subagents"
 import type { Model, Session } from "../wire"
 
-const places = [join(homedir(), ".grok/bin"), join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
 
 /**
  * Run whole in the box's sandbox (acp.ts `whole`), Grok writes of its home (GROK_HOME) only its
@@ -111,7 +112,13 @@ export class GrokAgent implements Agent {
   }
 
   executable(): string | undefined {
-    return which("grok", places)
+    return grokProgram()
+  }
+
+  /** An added account signs out as it goes: Grok forgets the sign-in in its folder, before the folder goes. */
+  async removeAccount() {
+    const executable = this.executable()
+    if (executable && this.instance.home) await run(executable, ["logout"], { timeout: 20_000, env: this.env(), cwd: this.context.temporary }).catch(() => {})
   }
 
   /** Its own installer puts it in `~/.grok`: `grok update`. */
@@ -193,7 +200,8 @@ export class GrokAgent implements Agent {
 
   env(): Record<string, string | undefined> {
     // An added account's own GROK_HOME: its sign-in and sessions there.
-    return withOwnFolders({ ...process.env, GROK_DISABLE_AUTOUPDATER: "1", ...(this.instance.home ? { GROK_HOME: this.instance.home } : {}) })
+    // Its own updater off, unless you let the agents update themselves (Settings › Computer).
+    return withOwnFolders({ ...process.env, ...(agentsUpdateThemselves() ? {} : { GROK_DISABLE_AUTOUPDATER: "1" }), ...(this.instance.home ? { GROK_HOME: this.instance.home } : {}) })
   }
 
   /**

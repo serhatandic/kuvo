@@ -133,7 +133,7 @@ function account(key: string | undefined, id = "work", extra: Record<string, unk
   const folder = join(home, "cursor", "accounts", id)
   mkdirSync(folder, { recursive: true })
   if (key !== undefined) writeFileSync(join(folder, "auth.json"), JSON.stringify({ version: 1, backendUrl: "https://api2.cursor.sh", apiKey: key, createdAtMs: 1, ...extra }))
-  return { ...new UsageAccounts(home, true).source("cursor", `cursor@${id}`, { id, home: folder, label: "Work" }), folder } as CursorFixture
+  return { ...new UsageAccounts(home).source("cursor", `cursor@${id}`, { id, home: folder, label: "Work" }), folder } as CursorFixture
 }
 
 const limitsOf = (agents: Agent[]) => new Limits(() => agentAccounts(agents), undefined, () => now)

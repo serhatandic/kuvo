@@ -98,6 +98,8 @@ export interface RouteContext {
   /** The running bridge's notices held while you're at a computer; none in `box route`. */
   hold: NoticeHold | null;
   json: (status: number, value: unknown) => AnswerPiece[];
+  /** Asks this box's own dispatcher, as the same asker (the line's topics). */
+  redispatch?: (request: LinkRequest, signal: AbortSignal) => AsyncGenerator<AnswerPiece>;
   text: (status: number, words: string) => AnswerPiece[];
 }
 

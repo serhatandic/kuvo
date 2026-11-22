@@ -5,9 +5,9 @@ import { UsageAccounts } from "../../src/usage/accounts"
 // there, as its Accounts shows them, each with what's left; one signed out is gone at once, and
 // what was read of it with it; a signed-in Claude Code has its ring before any turn told its
 // limits; a ring never shows another provider's windows; and nothing kept from before is shown
-// before the agents have said who's signed in. Cursor is a stand-in (support/cursor-standin.ts),
-// and each agent's own word on its sign-in (Cursor's SDK, Claude Code's `auth status`) is the
-// test's, as the agent would answer it.
+// before the agents have said who's signed in. Cursor and Claude Code are stand-ins
+// (support/cursor-standin.ts, support/agent-programs.ts), and each agent's own word on its sign-in
+// (Cursor's SDK, Claude Code's `auth status`) is the test's, as the agent would answer it.
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -20,13 +20,14 @@ import { subscribe } from "../../src/agents/events"
 import { agentAccounts, Limits, limitsRoutes, type LimitedAccount } from "../../src/usage/limits"
 import { signedInAgents, SignIns } from "./support/sign-ins"
 import { CursorStandIn } from "../agents/support/cursor-standin"
+import { agentPrograms, keepJSON } from "./support/agent-programs"
 
 const { ringsOn } = await import("../../src/link/at-work")
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-limits-sign-ins-test-"))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
+const programs = agentPrograms(join(base, "programs"))
 
-const keychain = ClaudeAgent.keychain
 let cursor: CursorStandIn
 beforeEach(() => {
   delete process.env.CURSOR_API_KEY
@@ -34,13 +35,12 @@ beforeEach(() => {
 })
 afterEach(() => {
   cursor.stop()
-  ClaudeAgent.keychain = keychain
 })
 
 /** Cursor as the agent has it, its sign-in in its folder; whether it's signed in, as Cursor's SDK
  * would answer the agent (`turnedDown`: Cursor said no, though the key is still in its folder). */
 class TestCursor extends CursorAgent {
-  override readonly limits = new UsageAccounts(this.context.home, true).source("cursor", this.providerID, this.instance).limits!
+  override readonly limits = new UsageAccounts(this.context.home).source("cursor", this.providerID, this.instance).limits!
   turnedDown = false
   /** Its check fails (Cursor out of reach), or never answers. */
   failing: "throws" | "hangs" | undefined
@@ -62,23 +62,30 @@ function cursorAgent(home: string, key?: string): TestCursor {
   return new TestCursor({ home, temporary: home, deps: { ensure: async () => home, load: async () => ({}) } } as any)
 }
 
-/** A Mac's Claude Code, Kuvo Code's own token for it in its folder (`claude setup-token`). */
+/** A Mac's Claude Code, signed in in its folder: who as it keeps it (`.claude.json`), as `auth status` would say. */
 class TestClaude extends ClaudeAgent {
-  override readonly limits = claudeProbe(this, "2.1.300")
+  override readonly limits = claudeProbe(this, "2.1.300", { claude: programs.claude, keychain: true })
   override executable() {
     return "/bin/true"
   }
   override async account(): Promise<Account> {
-    return existsSync(this.tokenFile) ? { installed: true, signedIn: true, label: "Claude plan" } : { installed: true, signedIn: false, message: "Sign in to Claude Code." }
+    return this.limits.signIn!() ? { installed: true, signedIn: true, label: "Claude plan" } : { installed: true, signedIn: false, message: "Sign in to Claude Code." }
+  }
+  /** Signed out in Terminal, as `claude auth logout` leaves its folder. */
+  loggedOut() {
+    keepJSON(join(this.configHome, ".claude.json"), {})
+    rmSync(join(this.configHome, "usage.json"), { force: true })
   }
 }
 
-function claudeAgent(home: string, token?: string): TestClaude {
-  if (token) {
-    mkdirSync(join(home, "claude", "tokens"), { recursive: true })
-    writeFileSync(join(home, "claude", "tokens", "default.json"), JSON.stringify({ token, made: 1 }))
+function claudeAgent(home: string, signedIn = true): TestClaude {
+  const folder = join(home, "claude", "home")
+  if (signedIn) {
+    keepJSON(join(folder, ".claude.json"), { oauthAccount: { accountUuid: "00000000-0000-4000-8000-0000000000c1", organizationUuid: "org-c" } })
+    // What Claude Code says of its plan (its `/usage`).
+    keepJSON(join(folder, "usage.json"), { subscription_type: "max", rate_limits: { five_hour: { utilization: 20 }, seven_day: { utilization: 3 } } })
   }
-  return new TestClaude({ home, temporary: home, deps: {} as any })
+  return new TestClaude({ home, temporary: home, deps: {} as any }, { id: "default", home: folder })
 }
 
 /** This box's limits as the bridge has them (main.ts): its agents' accounts that are signed in. */
@@ -155,15 +162,15 @@ test("Accounts' word on Cursor is the rings': its own key turned down there, no 
   expect(cursor.asked).toEqual([])
 })
 
-test("a Mac's Claude Code signed in has its ring before any turn told its limits; signed out, none", async () => {
-  ClaudeAgent.keychain = true
+test("a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none", async () => {
   const home = mkdtempSync(join(base, "box-"))
-  const agent = claudeAgent(home, "token-own")
+  const agent = claudeAgent(home)
   const record = new SignIns()
   const limits = limitsOf([agent], record)
   await limits.tick()
   const [row] = await rows(limits)
-  expect(row).toMatchObject({ title: "Claude", service: "claude", agent: "claude", windows: [], rings: {} })
+  expect(row).toMatchObject({ title: "Claude", service: "claude", agent: "claude", plan: "Max" })
+  expect(row.rings).toMatchObject({ short: { window: "five_hour", used: 0.2 }, long: { window: "seven_day", used: 0.03 } })
   expect(row.boxes.map((box: any) => box.here)).toEqual([true])
   expect(await menuBarRings(limits)).toEqual(["Claude"])
 
@@ -171,14 +178,13 @@ test("a Mac's Claude Code signed in has its ring before any turn told its limits
   agent.limits.heard!({ id: "five_hour", used: 0.3, minutes: 300 })
   expect((await rows(limits))[0].rings.short).toMatchObject({ window: "five_hour", used: 0.3 })
 
-  rmSync(agent.tokenFile)
+  agent.loggedOut()
   await record.ask(agent)
   expect(await rows(limits)).toEqual([])
 })
 
-test("a newly signed-in Mac Claude publishes its first turn reading before the next limits round", async () => {
-  ClaudeAgent.keychain = true
-  const agent = claudeAgent(mkdtempSync(join(base, "box-")), "token-own")
+test("a newly signed-in Mac Claude publishes its first reading before the next limits round", async () => {
+  const agent = claudeAgent(mkdtempSync(join(base, "box-")))
   const agents: Agent[] = []
   const record = new SignIns()
   const limits = limitsOf(agents, record)
@@ -187,40 +193,17 @@ test("a newly signed-in Mac Claude publishes its first turn reading before the n
   const stop = subscribe(event => event.type === "kuvo.limits.updated" && told.push(event.data?.rows))
   try {
     // A newly added account finishes signing in after the last round. AccountRefresh records it
-    // and asks for its limits, which a Mac's Claude only reports from its turns.
+    // and asks for its limits: Claude Code is asked for them at once.
     agents.push(agent)
     record.record(agent.providerID, { signedIn: true })
     await limits.readAgain(agent.providerID)
-    expect(told).toEqual([[expect.objectContaining({ service: "claude", windows: [], rings: {} })]])
+    expect(told.at(-1)).toEqual([expect.objectContaining({ service: "claude", rings: expect.objectContaining({ short: expect.objectContaining({ used: 0.2 }), long: expect.objectContaining({ used: 0.03 }) }) })])
+    // And its turns keep it current.
     agent.limits.heard?.({ id: "five_hour", used: 0.30, minutes: 300 })
-    agent.limits.heard?.({ id: "seven_day", used: 0.03, minutes: 10_080 })
-    expect(told).toHaveLength(3)
-    expect(told[2][0].rings).toMatchObject({ short: { used: 0.30 }, long: { used: 0.03 } })
+    expect(told.at(-1)[0].rings).toMatchObject({ short: { used: 0.30 }, long: { used: 0.03 } })
   } finally {
     stop()
   }
-})
-
-test("account checks started before a stored plan token cannot remove the new sign-in", async () => {
-  const record = new SignIns()
-  const providerID = "claude-code@checking"
-  let fingerprint = "old-token"
-  const old = Promise.withResolvers<Account>()
-  const agent = {
-    providerID,
-    limits: { every: 60_000, signIn: () => fingerprint },
-    account: () => old.promise,
-  } as unknown as Agent
-  const round = record.round([agent])
-  const ask = record.ask(agent)
-  const changed: string[] = []
-  record.changed = provider => changed.push(provider)
-  fingerprint = "new-token"
-  record.planTokenStored(providerID)
-  old.resolve({ installed: true, signedIn: false })
-  await Promise.all([round, ask])
-  expect(record.signedIn(providerID)).toBe(true)
-  expect(changed).toEqual([providerID])
 })
 
 test("what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file", async () => {

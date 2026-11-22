@@ -1,7 +1,7 @@
 // SQLite and pricing run on one worker. Its message queue orders writes, price changes and reads.
 import type { Pricing } from "./pricing"
 import type { InsightRecord } from "./insight-records"
-import type { Lineage } from "./insights-scan"
+import type { InsightBot, InsightsScan, Lineage } from "./insights-scan"
 import type { CallsPage, Filter, InsightsStore, OriginScope, Overview, Route, Scope, SessionsPage } from "./insights-store"
 import type { SummaryFacts } from "./insights-summary"
 
@@ -12,11 +12,20 @@ export type PricingSnapshot = {
   secondary: Pricing["secondary"]["entries"]
 }
 
+export interface InsightScanInput {
+  home: string
+  cache: string
+  bots: InsightBot[]
+  computer: string
+  engine?: string
+}
+
 type Commands = {
   open: [file: string]
   close: []
   read: [key: string]
   write: [key: string, value: unknown]
+  scan: [input: InsightScanInput, since: number]
   cursor: [sender: string, scope?: string]
   batch: [after: number, historical?: string[]]
   choices: [computers: string[]]
@@ -120,6 +129,10 @@ export class InsightsDB {
   cursor(sender: string, scope?: string) { return this.call<{ after: number; epoch?: string }>(["cursor", [sender, scope]]) }
   batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
+  scan(input: InsightScanInput, pricing: Pricing, since: number) {
+    return this.call<Awaited<ReturnType<InsightsScan["scan"]>>>(["scan", [input, since]], pricing)
+  }
+
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }
   attribute(lineage: [string, Lineage][]) { return this.call<void>(["attribute", [lineage]]) }
   take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {

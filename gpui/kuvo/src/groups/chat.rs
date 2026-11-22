@@ -16,7 +16,7 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Bot, Look};
-use kuvo_box::follow::{Follow, Followed, Timing};
+use kuvo_box::follow::{Follow, Followed};
 use kuvo_box::groups::{Activity, Chat, Group, GroupMessage, GroupTask};
 use kuvo_box::messages::{Content, Message, Step, Time, UserMessage};
 use kuvo_ui::{
@@ -175,7 +175,7 @@ impl GroupChatView {
         if !self.live || self.follow.is_some() {
             return;
         }
-        let follow = Rc::new(self.client.follow_group(&self.id, Timing::default()));
+        let follow = Rc::new(self.client.follow_group(&self.id));
         let updates = follow.updates().clone();
         self.follow = Some(follow);
         self.follow_task = Some(cx.spawn(async move |this, cx| {
@@ -921,7 +921,7 @@ impl Render for GroupChatView {
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
-                    .children(banner.map(|why| div().debug_selector(|| "group-problem".into()).w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
+                    .children(banner.map(|why| div().w_full().max_w(px(COLUMN)).pb(space::S2).child(kuvo_ui::Notice::said("group-problem", kuvo_ui::Tone::Warning, why))))
                     .children(self.paused_bar(cx))
                     .child(div().w_full().max_w(px(COLUMN)).child(self.composer.clone())),
             )

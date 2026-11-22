@@ -19,7 +19,7 @@ use kuvo_box::follow::{ConversationUpdate, Follow, Followed, Timing};
 use kuvo_box::BoxClient;
 use kuvo_box::error::Offered;
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Notice, StyledType, Tone, TypeSize,
     anchor::{Placement, Popover},
     chat_list::{ChatListState, chat_list},
     menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
@@ -276,11 +276,11 @@ impl ConversationView {
                 }
             }));
             // What it asks, as the box words it, now and as it changes.
-            let asks = client.follow_asks(&session, Timing::default());
+            let asks = client.follow_asks(&session);
             let updates = asks.updates().clone();
             view._asks_follow = Some(asks);
             // What waits its turn, now and as it changes.
-            let queue = client.follow_queue(&session, Timing::default());
+            let queue = client.follow_queue(&session);
             let queued = queue.updates().clone();
             view._queue_follow = Some(queue);
             view.tasks.push(cx.spawn(async move |this, cx| {
@@ -675,7 +675,7 @@ impl ConversationView {
             div()
                 .debug_selector(|| "conversation-problem-action".into())
                 .flex_none()
-                .child(Button::new("conversation-problem-action", label).size(ButtonSize::Small).disabled(self.taking_action).on_click(move |_, _, cx| {
+                .child(Button::new("conversation-problem-action", label).ghost().size(ButtonSize::Small).disabled(self.taking_action).on_click(move |_, _, cx| {
                     view.update(cx, |this, cx| this.take_action(action.clone(), cx)).ok();
                 }))
                 .into_any_element(),
@@ -806,12 +806,14 @@ impl ConversationView {
     fn run_queue_removal(&mut self, pending: queue_removal::Pending, cx: &mut Context<Self>) {
         let item = pending.removal.item.clone();
         if !self.queue_removals.insert(item.clone()) { return }
+        // Still on its way here (sent, not listed yet): its box takes it out as it arrives.
+        let arriving = self.pending_queued(cx).iter().any(|outgoing| outgoing.id == item);
         let (client, session) = (self.client.clone(), self.session.clone());
         let composer = self.composer.clone();
         cx.spawn(async move |this, cx| {
             let result = loop {
                 let (reader, session_id, item_id, receipt) = (client.clone(), session.clone(), item.clone(), pending.receipt().map(str::to_owned));
-                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref()) }).await;
+                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref(), arriving) }).await;
                 let Err(error) = &result else { break result };
                 if pending.receipt().is_none() || !kuvo_box::queue::removal_retryable(error) { break result }
                 let _ = this.update(cx, |this, cx| {
@@ -1663,7 +1665,7 @@ impl ConversationView {
         div()
             .flex()
             .gap(space::S1)
-            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
+            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").ghost().size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
                 retry.update(cx, |composer, cx| composer.retry(&retry_id, cx));
             })))
             .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-unsent-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, window, cx| {
@@ -1860,23 +1862,24 @@ impl ConversationView {
                     div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(div().max_w(px(90.)).truncate().child(files))
                 }))
                 .children(next_step)
-                .when(!pending, |row| row.child(go))
-                .when(!pending, |row| row.child({
+                // (Yours on its way too: what's done with one acts by its id, and its box settles it.)
+                .child(go)
+                .child({
                     let selector = format!("remove-{}", item.id);
                     div().flex_none().debug_selector(move || selector).child(
                         Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav)
                             .on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))),
                     )
-                }))
-                .when(!pending, |row| row.child(div().flex_none().debug_selector({
+                })
+                .child(div().flex_none().debug_selector({
                     let selector = more.clone();
                     move || selector
                 }).child(
                     PopoverMenu::button(SharedString::from(more.clone()), Button::icon_only(SharedString::from(format!("open-{more}")), IconName::More, "More actions")
                             .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav), menu.clone())
                         .above().align_right(),
-                )));
+                ));
             let row = match previous_slots.get(&item.id) {
                 Some(previous) if !dragging_here && *previous != index => {
                     let distance = (*previous as f32 - index as f32) * QUEUE_ROW_HEIGHT;
@@ -1887,9 +1890,6 @@ impl ConversationView {
                 }
                 _ => row.into_any_element(),
             };
-            if pending {
-                return row;
-            }
             ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu).into_any_element()
         });
         Some(
@@ -1929,7 +1929,7 @@ impl ConversationView {
                         if this.queue_dragging.is_some() { this.cancel_queue_drag(cx); }
                     }))
                     .children(rows))
-                .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
+                .children(self.queue_failed.clone().map(|why| div().px(space::S2).child(Notice::said("queue-failed", Tone::Warning, why))))
                 .into_any_element(),
         )
     }
@@ -2102,8 +2102,8 @@ impl Render for ConversationView {
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = match (&self.problem, self.read) {
-            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), c.warning)),
-            (Some(Problem::Gone(why)), true) => Some((why.clone(), c.danger)),
+            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), Tone::Warning)),
+            (Some(Problem::Gone(why)), true) => Some((why.clone(), Tone::Error)),
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
@@ -2128,23 +2128,19 @@ impl Render for ConversationView {
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
-                    .children(banner.map(|(why, color)| {
-                        let button = self.action_button(cx);
-                        div()
-                            .debug_selector(|| "conversation-problem".into())
-                            .w_full()
-                            .max_w(px(COLUMN))
-                            .pb(space::S2)
-                            .flex()
-                            .items_center()
-                            .gap(space::S2)
-                            .text_ui(TypeSize::Caption)
-                            .text_color(color)
-                            .child(div().flex_1().min_w_0().child(why))
-                            .children(button)
+                    // What's wrong with it, said once over the composer as the one notice; it goes as
+                    // soon as it's read again.
+                    .children(banner.map(|(why, tone)| {
+                        let notice = Notice::inline("conversation-problem", tone, why);
+                        let notice = match self.action_button(cx) {
+                            Some(button) => notice.trailing(button),
+                            None => notice,
+                        };
+                        div().w_full().max_w(px(COLUMN)).pb(space::S2).child(notice)
                     }))
+                    // BOX-NEEDED: plain words for asks that couldn't be read (the box's raw error is shown).
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
-                        div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
+                        div().w_full().max_w(px(COLUMN)).pb(space::S2).child(Notice::said("asks-failed", Tone::Warning, why))
                     }))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.

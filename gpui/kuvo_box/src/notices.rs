@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::client::BoxClient;
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, follow_lines};
 
 /// What a box told in the last ten minutes, oldest first, and whether it tells its news now (a
 /// machine whose bridge isn't running doesn't: it has no news to show until it runs again).
@@ -80,8 +80,8 @@ impl BoxClient {
 
     /// What the box told lately: as it is now, then again each time it changes (over SSH, read
     /// again every few seconds).
-    pub fn follow_notices(&self, timing: Timing) -> Follow<Followed<Told>> {
-        follow_lines(self, "kuvo-box notices", "kuvo/notices/events".into(), "kuvo/notices".into(), timing)
+    pub fn follow_notices(&self) -> Follow<Followed<Told>> {
+        follow_lines(self, "kuvo/notices/events".into())
     }
 }
 

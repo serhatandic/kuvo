@@ -1,3 +1,4 @@
+import { keepEngineOnDemand } from "./engine/lifetime";
 import { updateUnderWay } from "../shared/updating";
 import { locked, writeSecret } from "../shared/files";
 import { once } from "node:events";
@@ -421,6 +422,8 @@ async function run(owner?: ClientOwner): Promise<void> {
     return pid;
   }, { exclusive: true });
   if (old === null) return;
+  if (resident) keepEngineOnDemand();
+  const stopServices = resident ? keepResidentServices() : undefined;
   let leaving = false;
   const cleanUp = async (reason: string) => {
     if (leaving) return;
@@ -428,6 +431,7 @@ async function run(owner?: ClientOwner): Promise<void> {
     report("link stopping", { reason });
     if (owner) {
       await owner.drain();
+      stopServices?.();
       removeOwnServeRecord(owner.generation);
     }
     removeOwnLinkRecord();
@@ -522,6 +526,7 @@ async function run(owner?: ClientOwner): Promise<void> {
   // Its engine and the coding agents here (their sessions, and group chats that live here),
   // through their bridge: each notice kept as told too, for clients to show (`kuvo/notices`).
   watchBox({ tell: notice => { keepTold(notice); return tell(notice); }, hold });
+  if (resident) sendWakes();
   // And what its agents send you on purpose (notify_user), whichever process answered them.
   watchSentByAgents(tell);
   // (So its clients know it tells them: a bridge from before didn't.)
@@ -1061,23 +1066,42 @@ function keepAppServices(): void {
   child.once("close", () => setTimeout(keepAppServices, 5_000).unref());
 }
 
-async function runBoxServices(): Promise<void> {
-  const app = process.argv.includes("--app");
-  if (app !== Boolean(APP_FOLDER) || typeof Bun === "undefined") return;
-  const script = fileURLToPath(import.meta.url);
-  const bridgeOwnsServices = () => {
-    try {
-      const record = readBridgeFile();
-      if (record.boxServices === true || !processRuns(record.pid, "kuvo-agents")) return false;
-      if (app) {
-        try { if (fs.readFileSync(path.join(RUN, "bridge-box-services.pid"), "utf8").trim() === String(record.pid)) return false; } catch {}
-      }
-      return true;
-    } catch { return false; }
+function keepResidentServices(): () => void {
+  let stopped = false;
+  let leave: (() => void) | undefined;
+  let retry: NodeJS.Timeout | undefined;
+  const start = async () => {
+    try { leave = await openBoxServices(false, () => !stopped, true); }
+    catch (error) { console.error("Box services:", error); }
+    if (!stopped && !leave) retry = setTimeout(start, 2_000).unref();
   };
+  void start();
+  return () => {
+    stopped = true;
+    clearTimeout(retry);
+    leave?.();
+  };
+}
+
+function bridgeOwnsServices(app: boolean): boolean {
+  try {
+    const record = readBridgeFile();
+    if (record.boxServices === true || !processRuns(record.pid, "kuvo-agents")) return false;
+    if (app) {
+      try { if (fs.readFileSync(path.join(RUN, "bridge-box-services.pid"), "utf8").trim() === String(record.pid)) return false; } catch {}
+    }
+    return true;
+  } catch { return false; }
+}
+
+async function openBoxServices(app: boolean, wanted = () => true, resident = false): Promise<(() => void) | undefined> {
+  if (typeof Bun === "undefined") return;
+  const script = fileURLToPath(import.meta.url);
   const { serveBoxServices } = await import("./services");
   const home = path.join(APP_FOLDER ?? K, "agents");
-  process.env.KUVO_AGENTS_HOME = home;
+  if (bridgeOwnsServices(app)) return;
+  const shown = resident ? await (await import("./artifacts/service")).artifactHistory(path.join(home, "sessions")) : undefined;
+  if (!resident) process.env.KUVO_AGENTS_HOME = home;
   if (!app) {
     const login = OWN_HOME_MAC && REAL_BOX ? await loginEnvironment() : undefined;
     for (const name of ["CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR", "CURSOR_API_KEY", "GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"]) {
@@ -1088,7 +1112,7 @@ async function runBoxServices(): Promise<void> {
   }
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   const leave = locked(path.join(RUN, ".box-services-start"), () => {
-    if (fs.existsSync(path.join(RUN, ".rolling-back")) || updateUnderWay(RUN)) return;
+    if (!wanted() || fs.existsSync(path.join(RUN, ".rolling-back")) || (!resident && (updateUnderWay(RUN) || residentRunning()))) return;
     if (!app && fs.existsSync(path.join(RUN, "agents", "handover.json"))) {
       try {
         const previous = fs.readFileSync(path.join(RUN, "agents", "previous", "kuvo-agents.js"), "utf8");
@@ -1096,20 +1120,31 @@ async function runBoxServices(): Promise<void> {
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
     }
     const current = readServices(RUN);
-    if ((current && processRuns(current.pid, "box-services")) || bridgeOwnsServices()) return;
+    if ((current && (processRuns(current.pid, "box-services") || residentRunning(current.pid))) || bridgeOwnsServices(app)) return;
     return serveBoxServices({
       home, run: RUN, box: APP_FOLDER ?? K, bots: path.join(APP_FOLDER ?? K, "bots"), artifacts: path.join(K, "artifacts"),
       engineData: APP_FOLDER ? path.join(APP_FOLDER, "opencode", "data", "opencode") : path.join(K, "data", "opencode"),
-      managedDefaults: !IS_MAC, bundle: script,
+      bundle: script, shown,
     });
   }, { exclusive: true });
-  if (!leave) return;
+  return leave;
+}
+
+// Compatibility for releases and old app copies that launch services separately.
+async function runBoxServices(): Promise<void> {
+  const app = process.argv.includes("--app");
+  if (app !== Boolean(APP_FOLDER)) return;
+  const close = await openBoxServices(app);
+  if (!close) return;
+  const leave = () => { close(); process.exit(0); };
+  process.on("SIGTERM", leave);
+  process.on("SIGINT", leave);
   if (app) {
     process.stdin.on("end", leave);
     process.stdin.resume();
-  } else leaveForNewCode(script, leave);
+  } else leaveForNewCode(fileURLToPath(import.meta.url), leave);
   setInterval(() => {
-    if (bridgeOwnsServices() || ["off", "paused"].some(name => fs.existsSync(path.join(RUN, name)))) leave();
+    if (residentRunning() || bridgeOwnsServices(app) || ["off", "paused"].some(name => fs.existsSync(path.join(RUN, name)))) leave();
   }, 2_000).unref();
 }
 
@@ -1214,6 +1249,8 @@ async function serve(owner?: ClientOwner): Promise<void> {
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
+  if (owner) keepEngineOnDemand();
+  const stopServices = owner ? keepResidentServices() : undefined;
   if (owner) writeServeRecord({ pid: process.pid, port, password, kept: false, startedAt, generation: owner.generation });
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // This Mac's vault's newest generations, from its app, before agents use it (vault/store.ts).
@@ -1293,6 +1330,7 @@ async function serve(owner?: ClientOwner): Promise<void> {
     if (leaving) return;
     leaving = true;
     await owner?.drain();
+    stopServices?.();
     for (let tries = 0; tries < 30 && (macLink.host?.unsent?.() ?? 0) > 0; tries++) await sleep(50);
     // What didn't get out in time isn't lost without a word.
     if ((macLink.host?.unsent?.() ?? 0) > 0) console.error("Kuvo Code quit before what its link had for your phones and machines went out.");

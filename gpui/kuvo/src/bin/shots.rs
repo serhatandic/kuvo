@@ -155,8 +155,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "model-picker-accounts-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_search) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "compaction-running", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
@@ -221,7 +219,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "asking-sandbox", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "asking-vault", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "slash", width: 1280., height: 820., session: Some("ses_recipes"), typed: Some("/"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 2), ("msg_s5", 4)], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "search", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: Some("redis"), walks: 1, attach: &[], panel: None },
@@ -401,8 +398,6 @@ const SCREENS: &[Screen] = &[
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
     Screen { slug: "settings-skills", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(skills_list) },
     Screen { slug: "settings-skills-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(skills_add) },
-    Screen { slug: "settings-commands", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(commands_list) },
-    Screen { slug: "settings-commands-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(commands_add) },
     Screen { slug: "settings-custom-auto", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(custom_auto_list) },
     Screen { slug: "settings-custom-auto-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(custom_auto_add) },
     Screen { slug: "settings-mcp", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
@@ -458,6 +453,13 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agents-usage-restarting", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "agents-rail-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // One standard for warnings and errors (#339): each placement in the real views.
+    Screen { slug: "warn-failed-send", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(warn_failed_send) },
+    Screen { slug: "warn-stopped-turn", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "warn-account-ended", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "warn-bot-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-move-failed-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_notifications) },
+    Screen { slug: "bot-move-done-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_notifications) },
     Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
     Screen { slug: "insights-default", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-expanded", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -587,6 +589,20 @@ fn bot_move_confirm(workspace: &mut Workspace, window: &mut Window, cx: &mut Con
     let target = MoveTarget::new(MoveKind::Bot, "bot_mira");
     let place = workspace.client().move_places(&target).expect("move places").places.remove(0);
     workspace.moves().update(cx, |view, cx| view.ask(target, place, None, window, cx));
+}
+
+/// A move's result, then the title bar's notifications open, where it's said (#339).
+fn bot_move_notifications(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_move_result(workspace, window, cx);
+    workspace.toggle_notifications(cx);
+}
+
+/// One of yours that couldn't go (the stand-in refuses sends), with its notice under it.
+fn warn_failed_send(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+    let field = composer.read(cx).field().clone();
+    field.update(cx, |field, cx| field.set_text("Also cap the backoff at 30 seconds and log the attempt count.", cx));
+    composer.update(cx, |composer, cx| composer.send(cx));
 }
 
 fn bot_move_result(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1098,8 +1114,6 @@ fn flow_add(w: &mut Workspace, section: &str, window: &mut Window, cx: &mut Cont
 }
 fn skills_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "skills", window, cx); }
 fn skills_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "skills", window, cx); }
-fn commands_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "commands", window, cx); }
-fn commands_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "commands", window, cx); }
 fn custom_auto_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "custom-auto", window, cx); }
 fn custom_auto_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { flow_add(w, "custom-auto", window, cx); }
 fn mcp_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "mcp", window, cx); }
@@ -2527,6 +2541,18 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "sidebar-narrow-bots" {
                 stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 60_000. }));
             }
+            if screen.slug == "warn-failed-send" {
+                stand_in.fail_sends();
+            }
+            if screen.slug == "warn-bot-away" {
+                stand_in.set_elsewhere(true);
+            }
+            if screen.slug == "warn-stopped-turn" {
+                stand_in.add_message("ses_dark", serde_json::json!({ "type": "user", "id": "msg_limit_u", "time": { "created": NOW - 60_000. }, "text": "Add rate limits per API key: 100 requests a minute." }));
+                stand_in.add_message("ses_dark", serde_json::json!({ "type": "assistant", "id": "msg_limit_a", "time": { "created": NOW - 59_000., "completed": NOW - 58_000. }, "agent": "build", "finish": "error",
+                    "content": [{ "type": "text", "text": "Added the sliding-window limiter keyed by API token. Next up is the integration test for burst traffic." }],
+                    "error": { "name": "APIError", "data": { "message": "Claude usage limit reached. Your limit will reset at 5pm." } } }));
+            }
             if screen.slug.starts_with("conversation-failed-step") {
                 let refused = "Blocked: sleep 240 followed by: cd /Users/sam/Projects/website scripts/build.sh status tail -3 /private/tmp/claude-501/-Users-sam-Projects-website/28e29ba5/tasks/bcj6wfy9b.output. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.";
                 let raw = format!("<tool_use_error>{refused}</tool_use_error>");
@@ -2576,9 +2602,6 @@ fn main() -> anyhow::Result<()> {
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
                 "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
                 _ => {}
-            }
-            if screen.slug.starts_with("settings-commands") {
-                stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));
             }
             if screen.slug.starts_with("settings-custom-auto") {
                 stand_in.add_settings_section(kuvo::stand_in::settings::custom_auto::section(), kuvo::stand_in::settings::custom_auto::page());
@@ -2755,7 +2778,7 @@ fn main() -> anyhow::Result<()> {
             if screen.slug.starts_with("bot-move-") {
                 stand_in.set_move_scenario(match screen.slug {
                     "bot-move-moving" => MoveScenario::Copying,
-                    "bot-move-failed" => MoveScenario::Failed,
+                    "bot-move-failed" | "bot-move-failed-notifications" => MoveScenario::Failed,
                     _ => MoveScenario::Ready,
                 });
             }
@@ -3220,30 +3243,6 @@ fn main() -> anyhow::Result<()> {
                             settings(workspace, "Accounts", window, cx);
                             settings(workspace, "Usage", window, cx);
                         }
-                    });
-                })?;
-                cx.run_until_parked();
-            }
-            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
-                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
-                let session = screen.session.expect("a session");
-                cx.update_window(any, |root, _window, cx| {
-                    let workspace = root.downcast::<Workspace>().expect("the workspace");
-                    workspace.update(cx, |workspace, cx| {
-                        let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
-                        composer.update(cx, |composer, cx| {
-                            composer.field().clone().update(cx, |field, cx| field.set_text(text, cx));
-                            composer.send(cx);
-                        });
-                    });
-                })?;
-                cx.run_until_parked();
-                cx.update_window(any, |root, window, cx| {
-                    let workspace = root.downcast::<Workspace>().expect("the workspace");
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.open_read_at_once(session, window, cx);
-                        let field = workspace.conversation().expect("the conversation").read(cx).composer().read(cx).field().clone();
-                        window.focus(&field.focus_handle(cx), cx);
                     });
                 })?;
                 cx.run_until_parked();

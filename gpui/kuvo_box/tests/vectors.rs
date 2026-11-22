@@ -1,13 +1,12 @@
 //! The shared cases every client is held to (protocol/vectors), as KuvoClient's tests
-//! hold the Swift apps: what a sidebar shows from a box's session facts, which keyword a typed text
-//! starts with, which texts go to the box at all, and that a box of this version passes the gate.
+//! hold the Swift apps: what a sidebar shows from a box's session facts, the fields a message is
+//! sent with, and that a box of this version passes the gate.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use kuvo_box::gate;
 use kuvo_box::sessions::{self, Facts, Line, Listing, Project};
-use kuvo_box::typed;
 use serde_json::Value;
 
 fn vectors(name: &str) -> Value {
@@ -133,59 +132,6 @@ fn a_list_taken_line_by_line_ends_as_the_box_says() {
 }
 
 #[test]
-fn a_keyword_is_drawn_as_the_box_reads_it() {
-    let vectors = vectors("typed.json");
-    for case in vectors["keywords"].as_array().unwrap() {
-        let text = case["text"].as_str().unwrap();
-        let parsed = typed::keyword(text).map(|(keyword, rest)| serde_json::json!({ "keyword": keyword, "rest": rest })).unwrap_or(Value::Null);
-        assert_eq!(parsed, case["parsed"], "{text:?}");
-    }
-}
-
-/// A client answers a text that isn't "/" or "!" itself, without asking, as the box would: kept
-/// with a model that can't run, a follow-up in the side thread with its tag on, else sent.
-#[test]
-fn a_text_the_client_answers_without_asking_is_answered_as_the_box_would() {
-    let vectors = vectors("typed.json");
-    let mut checked = (0, 0, 0);
-    for case in vectors["decide"].as_array().unwrap() {
-        let text = case["text"].as_str().unwrap();
-        if typed::asks_box(text) {
-            continue;
-        }
-        let facts = &case["facts"];
-        let side = facts.get("side") == Some(&Value::Bool(true));
-        let refusal = facts.get("refusal").and_then(Value::as_str);
-        let decision = &case["decision"];
-        match typed::plain_answer(text, side, refusal) {
-            None => {
-                assert_eq!(decision["send"]["text"].as_str(), Some(text), "{text:?}");
-                checked.0 += 1;
-            }
-            Some(answer) if answer.side_thread == Some(true) => {
-                assert_eq!(decision, &serde_json::json!({ "sideThread": true }), "{text:?}");
-                checked.1 += 1;
-            }
-            Some(answer) => {
-                let restore = answer.restore.expect("put back");
-                assert_eq!(decision, &serde_json::json!({ "restore": { "text": restore.text }, "error": answer.error }), "{text:?}");
-                checked.2 += 1;
-            }
-        }
-    }
-    assert!(checked.0 > 0 && checked.1 > 0 && checked.2 > 0, "{checked:?}");
-    // The box checks the model first (typed/decide.ts): with both, the refusal.
-    let both = typed::plain_answer("what now?", true, Some("Sign in to Anthropic again.")).unwrap();
-    assert_eq!((both.side_thread, both.error.as_deref()), (None, Some("Sign in to Anthropic again.")));
-    // And every text that starts "/" or "!" is the box's to read.
-    for case in vectors["decide"].as_array().unwrap() {
-        let text = case["text"].as_str().unwrap();
-        let first = text.trim_start().chars().next();
-        assert_eq!(typed::asks_box(text), matches!(first, Some('/' | '!')), "{text:?}");
-    }
-}
-
-#[test]
 fn a_box_of_this_version_passes_the_gate() {
     let vectors = vectors("routes/features.json");
     let expect = &vectors["scenarios"][0]["steps"][0]["expect"];
@@ -248,7 +194,6 @@ fn a_client_sends_the_fields_the_box_takes() {
         let strings = |value: &Value| -> Vec<String> { serde_json::from_value(value.clone()).unwrap_or_default() };
         let sending = Sending {
             words: fields["words"].as_str().unwrap().to_owned(),
-            keyword: fields["keyword"].as_str().map(str::to_owned),
             widget: fields["widget"].as_str().map(str::to_owned),
             comments: fields["comments"]
                 .as_array()
@@ -292,8 +237,8 @@ fn a_models_readiness_is_drawn_as_its_box_words_it() {
         assert_eq!(state.action.as_ref().map(|action| action.kind.as_str()), action.and_then(|action| action["do"].as_str()), "{about}");
         assert_eq!(state.action.as_ref().map(|action| action.label.as_str()), action.and_then(|action| action["label"].as_str()), "{about}");
         assert_eq!(state.action.as_ref().map(|action| action.help.as_str()), action.and_then(|action| action["help"].as_str()), "{about}");
-        // A plain message on it is kept, saying why in the box's words, as the box would (typed/decide.ts).
-        let kept = kuvo_box::typed::plain_answer("fix it", false, state.refusal.as_deref());
+        // A plain message on it is kept, saying why in the box's words, as the box would.
+        let kept = kuvo_box::typed::plain_answer("fix it", state.refusal.as_deref());
         assert_eq!(kept.and_then(|answer| answer.error), state.refusal.clone(), "{about}");
     }
 }

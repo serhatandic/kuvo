@@ -8,7 +8,7 @@ use crate::background::Command;
 use crate::error::Result;
 use crate::follow::{Followed, follow_lines};
 use crate::paths;
-use crate::{BoxClient, Follow, Timing};
+use crate::{BoxClient, Follow};
 
 pub const OUTPUT_STREAM: &str = "work.background.output";
 
@@ -50,9 +50,9 @@ impl BoxClient {
     }
 
     /// What `command` has printed, now and as it prints more (and once, when it ends).
-    pub fn follow_printed(&self, session: &str, command: &str, timing: Timing) -> Follow<Followed<Printed>> {
+    pub fn follow_printed(&self, session: &str, command: &str) -> Follow<Followed<Printed>> {
         let once = route(session, command);
-        follow_lines(self, "kuvo-box printed", format!("{once}/events"), once, timing)
+        follow_lines(self, format!("{once}/events"))
     }
 }
 

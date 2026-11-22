@@ -256,7 +256,7 @@ export function handler(context: Context, transferring?: () => boolean) {
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
   resumeProgramUpdates(() => roster.all(), note, programs)
   const accounts = new AccountRefresh(undefined, Date.now, (provider, signedIn, signIn) => context.boxServices?.observe(provider, { signedIn, signIn }))
-  const signedIn = (agent: Agent, hasPlanToken = false) => void accounts.signedIn(agent, hasPlanToken).catch(() => {})
+  const signedIn = (agent: Agent) => void accounts.signedIn(agent).catch(() => {})
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all()
@@ -315,14 +315,9 @@ export function handler(context: Context, transferring?: () => boolean) {
             if (!agent.signIn) return error(400, `${agent.name} signs in another way.`)
             // Its page opened on another device (a phone): only where that can finish.
             if (remote === true && !agent.signsInRemotely) return error(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`)
-            let hasPlanToken = false
             const attempt = await agent.signIn(methodID, {
               remote: remote === true,
               browserReturn: remote === true && browserReturn === true,
-              onPlanToken: () => {
-                accounts.planTokenStored(agent)
-                hasPlanToken = true
-              },
             })
             const id = newID("att")
             const created = Date.now()
@@ -332,7 +327,7 @@ export function handler(context: Context, transferring?: () => boolean) {
             const finish = () => {
               if (completed) return
               completed = true
-              signedIn(agent, hasPlanToken)
+              signedIn(agent)
             }
             const stop = watchSignIn(attempt, expires, finish)
             attempts.set(id, { agent, attempt, created, expires, stop, finish })
@@ -525,18 +520,6 @@ export function handler(context: Context, transferring?: () => boolean) {
             // `model`: on that model of the session's own maker (Auto's reviewer, on its small one).
             const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id } : undefined
             return json({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } })
-          }
-          case "command": {
-            // One of yours (Settings › Commands): what it says, with what you wrote after it. Any
-            // other: the agent's own, as it takes them, typed. Its message keeps the parts the box
-            // sends with it (`metadata`), so it shows as typed.
-            const input = await body()
-            const name = String(input.name ?? "")
-            const written = String(input.text ?? "")
-            const template = name ? await link.commandTemplate(name, sessions.get(id).location.directory) : undefined
-            const text = template ? expandCommand(template, written) : `/${name} ${written}`.trim()
-            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined })
-            return json({})
           }
           case "interrupt":
             return json({ interrupted: await sessions.interrupt(id, url.searchParams.get("resume") === "true") })
@@ -748,22 +731,4 @@ export function handler(context: Context, transferring?: () => boolean) {
     headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION)
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
   }
-}
-
-/**
- * A command's text with what you wrote after its name: in place of $ARGUMENTS (and $1, $2… for
- * its words), as the engine fills it in; after it, when it names none.
- */
-export function expandCommand(template: string, written: string): string {
-  const all = written.trim()
-  const words = all ? all.split(/\s+/) : []
-  const named = /\$ARGUMENTS|\$[1-9]/.test(template)
-  // In one pass, so what you wrote is never filled in again: $1, $2… a word each, the highest
-  // taking the rest; $ARGUMENTS all of it, as written.
-  const highest = Math.max(0, ...[...template.matchAll(/\$([1-9]\d*)/g)].map((match) => Number(match[1])))
-  const filled = template.replace(/\$ARGUMENTS|\$([1-9]\d*)/g, (_, index?: string) => {
-    if (index === undefined) return all
-    return Number(index) === highest ? words.slice(highest - 1).join(" ") : (words[Number(index) - 1] ?? "")
-  })
-  return named || !all ? filled.trim() : `${filled.trim()}\n\n${all}`
 }

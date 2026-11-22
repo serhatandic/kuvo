@@ -13,6 +13,7 @@ pub mod icon;
 pub mod markdown;
 pub mod menu;
 pub mod motion;
+pub mod notice;
 #[cfg(test)]
 mod motion_tests;
 pub mod output;
@@ -25,6 +26,7 @@ pub mod theme;
 
 pub use button::{Button, ButtonSize, ButtonStyle, ShownState};
 pub use icon::{Assets, Icon, IconName, IconSize};
+pub use notice::{Notice, Tone};
 pub use row::{TextRow, TextRowMode};
 pub use text_field::{Pasted, TextField, TextFieldEvent};
 pub use theme::{ActiveTheme, Appearance, StyledType, TextRole, TextSize, Theme, TypeSize};

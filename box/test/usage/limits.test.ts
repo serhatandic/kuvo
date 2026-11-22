@@ -1,55 +1,44 @@
 import "../safety"
 import { claudeProbe } from "./claude-probe"
-// Your plans' limits as the box states them (`api/kuvo/limits`): read from Kuvo Code's own sign-in
-// for each account, one row each, kept through a 429 for as long as Anthropic says, and through a
-// restart; what a turn hears keeps them current. Anthropic and Codex are stand-ins here.
+// Your plans' limits as the box states them (`api/kuvo/limits`): Claude's asked of Claude Code
+// itself in each account's folder (its own `/usage`), Codex's of Codex, one row each, one Claude
+// account a minute, kept through a restart; what a turn hears keeps them current. Claude Code and
+// Codex are stand-ins (support/agent-programs.ts), and so is Anthropic, for Claude's resets.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ClaudeAgent } from "../../src/agents/agents/claude"
-import { claudeUsage } from "../../src/usage/claude-limits"
+import { claudeUsage, KEYCHAIN_RESETS } from "../../src/usage/claude-limits"
 import { UsageAccounts } from "../../src/usage/accounts"
-import { EngineAccounts, engineEndpoints } from "../../src/usage/engine-limits"
-import { codexResetEndpoints } from "../../src/usage/codex-resets"
+import { EngineAccounts } from "../../src/usage/engine-limits"
+import { agentPrograms, keepJSON, type AgentPrograms } from "./support/agent-programs"
 import { subscribe } from "../../src/agents/events"
 import { agentAccounts, Limits, limitsRoutes, type AccountLimits } from "../../src/usage/limits"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-limits-test-"))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
 
-const keychain = ClaudeAgent.keychain
-afterEach(() => {
-  ClaudeAgent.keychain = keychain
-})
-
-/** Anthropic's usage endpoint: what it answers each sign-in (by its token), and every read it got. */
+/** Anthropic, for Claude's resets: each sign-in's reset grants (by its token), every read of them, and anything else asked of it. */
 class Anthropic {
-  answers = new Map<string, () => Response>()
-  reads: { token: string; agent: string | null; beta: string | null }[] = []
-  /** Each sign-in's reset grants, and every read of them. */
   grants = new Map<string, () => Response>()
   grantReads: { token: string; agent: string | null }[] = []
-  private waiting: (() => void)[] = []
-  /** Once the next read has come. */
-  nextRead() {
-    return new Promise<void>((resolve) => this.waiting.push(resolve))
-  }
+  /** Anything else asked of it: Claude's windows are Claude Code's to read, never Kuvo's with its token. */
+  others: string[] = []
   private server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: (request) => {
       const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "")
-      // Its reset grants: Claude Code's own read of them, apart (at most hourly an account).
+      // Its reset grants: Claude Code's own read of them (at most hourly an account).
       if (new URL(request.url).searchParams.get("cedar_ember") === "1") {
         this.grantReads.push({ token, agent: request.headers.get("user-agent") })
         return this.grants.get(token)?.() ?? Response.json({ cedar_ember: null })
       }
-      this.reads.push({ token, agent: request.headers.get("user-agent"), beta: request.headers.get("anthropic-beta") })
-      for (const resolve of this.waiting.splice(0)) resolve()
-      return this.answers.get(token)?.() ?? new Response("{}", { status: 401 })
+      this.others.push(new URL(request.url).pathname)
+      return new Response("{}", { status: 404 })
     },
   })
   readonly url = `http://127.0.0.1:${this.server.port}/api/oauth/usage`
@@ -58,26 +47,77 @@ class Anthropic {
   }
 }
 
-const usage = (fiveHour: number, week: number, extra: Record<string, unknown> = {}) => () =>
-  Response.json({
+/** Claude Code's answer to `get_usage` (its `/usage`): the plan, and each window's percent used. */
+const usage = (fiveHour: number, week: number, more: Record<string, unknown> = {}) => ({
+  subscription_type: "max",
+  rate_limits_available: true,
+  rate_limits: {
     five_hour: { utilization: fiveHour, resets_at: "2026-11-09T02:00:00.000Z" },
     seven_day: { utilization: week, resets_at: "2026-11-12T09:00:00.000Z" },
     seven_day_sonnet: null,
-    ...extra,
-  })
+    ...more,
+  },
+})
 
+/** What Claude Code answers for the account signed in to `folder` (none there: it isn't signed in). */
+const claudeSays = (folder: string, body: unknown) => keepJSON(join(folder, "usage.json"), body)
+
+let programs: AgentPrograms
+
+/** The folders Claude Code was asked its usage in, in order. */
+const asks = () => programs.asked().filter((each) => each.program === "claude" && each.method === "get_usage").map((each) => each.home)
+
+/** Claude Code as the bridge has it for an account, its limits as the usage reader has them: here on Linux, its sign-in in a file. */
 class TestClaude extends ClaudeAgent {
-  override readonly limits = claudeProbe(this, "2.1.300")
+  override readonly limits = claudeProbe(this, "2.1.300", { claude: programs.claude, keychain: false })
   constructor(home: string, instance?: { id: string; label?: string; home?: string }) {
     super({ home, temporary: home, deps: {} as any }, instance)
   }
 }
 
-/** Kuvo Code's own token for an account on a Mac, as signing in keeps it (`claude setup-token`). */
-function signIn(home: string, account: string, token: string) {
-  mkdirSync(join(home, "claude", "tokens"), { recursive: true })
-  writeFileSync(join(home, "claude", "tokens", `${account}.json`), JSON.stringify({ token, made: 1 }))
+/** The same on a Mac, where Claude Code keeps its sign-in in the Keychain. */
+class MacClaude extends TestClaude {
+  override readonly limits = claudeProbe(this, "2.1.300", { claude: programs.claude, keychain: true })
 }
+
+/** Claude Code's own sign-in file, in the account's folder. */
+function credentials(folder: string, oauth: Record<string, unknown>) {
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, ".credentials.json"), JSON.stringify({ claudeAiOauth: oauth }))
+}
+const signedIn = (folder: string, token: string) => credentials(folder, { accessToken: token, expiresAt: clock.at + 30 * 86_400_000, scopes: ["user:inference", "user:profile"], subscriptionType: "max", rateLimitTier: "default_claude_max_20x" })
+
+const pipes: string[] = []
+/**
+ * Claude Code's answer for `folder`, held until the test gives it: its usage file is a pipe, which
+ * the stand-in waits on once it's asked (`reached`).
+ */
+function held(folder: string) {
+  mkdirSync(folder, { recursive: true })
+  const file = join(folder, "usage.json")
+  rmSync(file, { force: true })
+  expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0)
+  pipes.push(file)
+  const writer = open(file, "w")
+  return {
+    reached: writer.then(() => undefined),
+    async answer(body: unknown) {
+      const handle = await writer
+      await handle.writeFile(JSON.stringify(body))
+      await handle.close()
+      rmSync(file)
+      claudeSays(folder, body)
+    },
+  }
+}
+afterEach(() => {
+  // (One never asked: opened here, so its writer isn't left waiting.)
+  for (const file of pipes.splice(0)) {
+    try {
+      closeSync(openSync(file, constants.O_RDONLY | constants.O_NONBLOCK))
+    } catch {}
+  }
+})
 
 /** A clock the test moves. */
 class Clock {
@@ -108,63 +148,12 @@ beforeEach(() => {
   claudeUsage.url = anthropic.url
   home = mkdtempSync(join(base, "case-"))
   clock = new Clock()
+  programs = agentPrograms(join(home, "claude-bin"))
 })
 
 afterEach(() => anthropic.stop())
 
-describe("Claude on a Mac", () => {
-  beforeEach(() => {
-    ClaudeAgent.keychain = true
-  })
-
-  /** Claude Code's rate-limit event, as 2.1.3xx sends it with every window from a response's headers. */
-  const event = (fiveHour: number, week: number, fable?: number) => ({
-    status: "allowed",
-    rateLimitType: "five_hour",
-    utilization: fiveHour,
-    unifiedWindows: {
-      five_hour: { utilization: fiveHour, resetsAt: 1_794_200_000, status: "allowed" },
-      seven_day: { utilization: week, resetsAt: 1_794_600_000, status: "allowed" },
-      ...(fable === undefined ? {} : { seven_day_overage_included: { utilization: fable, resetsAt: 1_794_600_000 } }),
-    },
-  })
-
-  test("each Claude login is its own row, from what its turns hear, and Anthropic's usage endpoint is never asked", async () => {
-    const { heardWindows } = await import("../../src/usage/claude-limits")
-    const own = new TestClaude(home)
-    const work = new TestClaude(home, { id: "1f2e3d4c", label: "Work", home: join(home, "claude", "accounts", "1f2e3d4c") })
-    // Kuvo Code's own sign-ins: setup-tokens, which can only run Claude.
-    signIn(home, "default", "token-own")
-    signIn(home, "1f2e3d4c", "token-work")
-    anthropic.answers.set("token-own", usage(1, 1))
-    const limits = new Limits(() => agentAccounts([own, work]), undefined, clock.now)
-    const told: any[] = []
-    const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
-    await limits.refresh()
-    // Signed in, each has its row before any turn told its limits: nothing read yet, no windows.
-    expect((await route(limits)).accounts.map((each) => [each.provider, each.windows])).toEqual([["claude-code", []], ["claude-code@1f2e3d4c", []]])
-
-    clock.pass(60_000)
-    for (const window of heardWindows(event(0.42, 0.18, 0.07))) own.limits.heard!(window)
-    for (const window of heardWindows(event(0.9, 0.61))) work.limits.heard!(window)
-    stop()
-    await limits.refresh()
-    clock.pass(60 * 60_000)
-    await limits.tick()
-
-    const { accounts, services } = await route(limits)
-    expect(services).toEqual(["claude"])
-    expect(accounts.map((each) => [each.provider, each.label])).toEqual([["claude-code", undefined], ["claude-code@1f2e3d4c", "Work"]])
-    expect(accounts[0]!.windows.map((window) => [window.id, window.used, window.minutes, window.model, window.resetsAt, window.source])).toEqual([
-      ["five_hour", 0.42, 300, undefined, 1_794_200_000_000, "turn"],
-      ["seven_day", 0.18, 10_080, undefined, 1_794_600_000_000, "turn"],
-      ["seven_day_fable", 0.07, 10_080, "Fable", 1_794_600_000_000, "turn"],
-    ])
-    expect(accounts[1]!.windows.map((window) => window.used)).toEqual([0.9, 0.61])
-    expect(told.at(-1).accounts).toHaveLength(2)
-    expect(anthropic.reads).toHaveLength(0)
-  })
-
+describe("what Claude Code's turns say of its limits", () => {
   test("an older Claude Code's event, with only the window that limits it, keeps that one", async () => {
     const { heardWindows } = await import("../../src/usage/claude-limits")
     expect(heardWindows({ status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.81, resetsAt: 1_794_600_000 })).toEqual([{ id: "seven_day", used: 0.81, minutes: 10_080, resetsAt: 1_794_600_000_000 }])
@@ -195,22 +184,71 @@ describe("Claude on a Mac", () => {
   })
 })
 
-describe("Claude on Linux", () => {
-  beforeEach(() => {
-    ClaudeAgent.keychain = false
+describe("Claude on a Mac", () => {
+  /** Claude Code's rate-limit event, as 2.1.3xx sends it with every window from a response's headers. */
+  const event = (fiveHour: number, week: number, fable?: number) => ({
+    status: "allowed",
+    rateLimitType: "five_hour",
+    utilization: fiveHour,
+    unifiedWindows: {
+      five_hour: { utilization: fiveHour, resetsAt: 1_794_200_000, status: "allowed" },
+      seven_day: { utilization: week, resetsAt: 1_794_600_000, status: "allowed" },
+      ...(fable === undefined ? {} : { seven_day_overage_included: { utilization: fable, resetsAt: 1_794_600_000 } }),
+    },
   })
 
-  /** Claude Code's own sign-in file, in Kuvo Code's folder for the account. */
-  function credentials(folder: string, oauth: Record<string, unknown>) {
-    mkdirSync(folder, { recursive: true })
-    writeFileSync(join(folder, ".credentials.json"), JSON.stringify({ claudeAiOauth: oauth }))
-  }
-  const signedIn = (folder: string, token: string) => credentials(folder, { accessToken: token, expiresAt: clock.at + 30 * 86_400_000, scopes: ["user:inference", "user:profile"], subscriptionType: "max", rateLimitTier: "default_claude_max_20x" })
+  test("each login is its own row with what Claude Code says of it (its windows, plan and extra usage), its resets say they show only from Linux, and Anthropic is never asked with its sign-in", async () => {
+    const { heardWindows } = await import("../../src/usage/claude-limits")
+    const ownHome = join(home, "claude", "home")
+    const workHome = join(home, "claude", "accounts", "1f2e3d4c")
+    // (A sign-in file Claude Code left behind on a Mac: never read, nor sent anywhere.)
+    signedIn(ownHome, "token-own")
+    signedIn(workHome, "token-work")
+    anthropic.grants.set("token-own", () => Response.json({ cedar_ember: { eligible: true, next_grant_id: "promo_one", grants: [{ id: "promo_one", resets_left: 2, clears: ["five_hour"] }] } }))
+    claudeSays(ownHome, usage(30, 50, { extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 } }))
+    claudeSays(workHome, usage(90, 61))
+    const own = new MacClaude(home, { id: "default", home: ownHome })
+    const work = new MacClaude(home, { id: "1f2e3d4c", label: "Work", home: workHome })
+    const limits = new Limits(() => agentAccounts([own, work]), undefined, clock.now)
+    const told: any[] = []
+    const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
+    await limits.tick()
+    clock.pass(60_000)
+    await limits.tick()
+    expect(asks()).toEqual([ownHome, workHome])
 
+    const read = await route(limits)
+    expect(read.services).toEqual(["claude"])
+    expect(read.accounts.map((each) => [each.provider, each.label, each.plan])).toEqual([["claude-code", undefined, "Max"], ["claude-code@1f2e3d4c", "Work", "Max"]])
+    expect(read.accounts.map((each) => each.windows.map((window) => [window.id, window.used, window.source]))).toEqual([
+      [["five_hour", 0.3, "usage"], ["seven_day", 0.5, "usage"]],
+      [["five_hour", 0.9, "usage"], ["seven_day", 0.61, "usage"]],
+    ])
+    expect(read.accounts[0]!.extras).toEqual([
+      { id: "extra_usage", name: "Extra Usage", kind: "capped", amount: 12.4, limit: 50, unit: "usd" },
+      { id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: KEYCHAIN_RESETS },
+    ])
+    expect(read.accounts[1]!.extras).toEqual([{ id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: KEYCHAIN_RESETS }])
+
+    // Its turns keep them current between reads.
+    clock.pass(60_000)
+    for (const window of heardWindows(event(0.42, 0.18, 0.07))) own.limits.heard!(window)
+    stop()
+    expect((await route(limits)).accounts[0]!.windows.map((window) => [window.id, window.used, window.minutes, window.model, window.resetsAt, window.source])).toEqual([
+      ["five_hour", 0.42, 300, undefined, 1_794_200_000_000, "turn"],
+      ["seven_day", 0.18, 10_080, undefined, 1_794_600_000_000, "turn"],
+      ["seven_day_fable", 0.07, 10_080, "Fable", 1_794_600_000_000, "turn"],
+    ])
+    expect(told.at(-1).accounts).toHaveLength(2)
+    expect([anthropic.grantReads, anthropic.others]).toEqual([[], []])
+  })
+})
+
+describe("Claude", () => {
   test("its extra usage, and its reset grants read at most hourly: a failed read of them keeps what was read, never none", async () => {
     const folder = join(home, "claude", "home")
     signedIn(folder, "token-own")
-    anthropic.answers.set("token-own", usage(30, 50, { extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 } }))
+    claudeSays(folder, usage(30, 50, { extra_usage: { is_enabled: true, used_credits: 1240, monthly_limit: 5000 } }))
     const grants = (left: number) => () => Response.json({ cedar_ember: { eligible: true, next_grant_id: "promo_one", grants: [{ id: "promo_one", resets_left: left, ends_at: "2026-11-20T00:00:00.000Z", clears: ["five_hour", "seven_day"] }] } })
     anthropic.grants.set("token-own", grants(2))
     const claude = new TestClaude(home, { id: "default", home: folder })
@@ -225,6 +263,7 @@ describe("Claude on Linux", () => {
     anthropic.grants.set("token-own", grants(1))
     clock.pass(15 * 60_000)
     await limits.tick()
+    expect(asks()).toHaveLength(2)
     expect(anthropic.grantReads).toHaveLength(1)
     expect(extras()[1]).toEqual(["resets", "resets", 2, null])
     // An hour after: read again. Then Anthropic turns that read away: what was read stands.
@@ -243,268 +282,210 @@ describe("Claude on Linux", () => {
     expect(anthropic.grantReads).toHaveLength(3)
   })
 
+  const ownHome = () => join(home, "claude", "home")
+  const workHome = () => join(home, "claude", "accounts", "1f2e3d4c")
   /** Two accounts, signed in in Kuvo Code's folders. */
   function two() {
-    const ownHome = join(home, "claude", "home")
-    const workHome = join(home, "claude", "accounts", "1f2e3d4c")
-    signedIn(ownHome, "token-own")
-    signedIn(workHome, "token-work")
-    return [new TestClaude(home, { id: "default", home: ownHome }), new TestClaude(home, { id: "1f2e3d4c", label: "Work", home: workHome })]
+    signedIn(ownHome(), "token-own")
+    signedIn(workHome(), "token-work")
+    return [new TestClaude(home, { id: "default", home: ownHome() }), new TestClaude(home, { id: "1f2e3d4c", label: "Work", home: workHome() })]
   }
 
-  test("each login is its own row, read with its own sign-in in Kuvo Code's folder, one a minute", async () => {
+  test("each login is its own row, asked of Claude Code in its own folder, one a minute", async () => {
     const [own, work] = two()
-    anthropic.answers.set("token-own", usage(42, 18, { limits: [{ kind: "weekly_scoped", percent: 7, resets_at: "2026-11-12T09:00:00.000Z", scope: { model: { display_name: "Fable" } } }] }))
-    anthropic.answers.set("token-work", usage(90, 61))
+    claudeSays(ownHome(), usage(42, 18, { model_scoped: [{ display_name: "Fable", utilization: 7, resets_at: "2026-11-12T09:00:00.000Z" }] }))
+    claudeSays(workHome(), usage(90, 61))
     const limits = new Limits(() => agentAccounts([own!, work!]), undefined, clock.now)
     await limits.tick()
     // Anthropic's limit on reads is the computer's: never two at once.
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-own"])
+    expect(asks()).toEqual([ownHome()])
     clock.pass(60_000)
     await limits.tick()
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-own", "token-work"])
+    expect(asks()).toEqual([ownHome(), workHome()])
 
     const { accounts } = await route(limits)
-    expect(accounts.map((each) => [each.provider, each.label, each.plan])).toEqual([["claude-code", undefined, "Max 20x"], ["claude-code@1f2e3d4c", "Work", "Max 20x"]])
-    expect(accounts[0]!.windows.map((window) => [window.id, window.used, window.minutes, window.model, window.source])).toEqual([
-      ["five_hour", 0.42, 300, undefined, "usage"],
-      ["seven_day", 0.18, 10_080, undefined, "usage"],
-      ["seven_day_fable", 0.07, 10_080, "Fable", "usage"],
+    expect(accounts.map((each) => [each.provider, each.label, each.plan])).toEqual([["claude-code", undefined, "Max"], ["claude-code@1f2e3d4c", "Work", "Max"]])
+    expect(accounts[0]!.windows.map((window) => [window.id, window.used, window.minutes, window.model, window.resetsAt, window.source])).toEqual([
+      ["five_hour", 0.42, 300, undefined, Date.parse("2026-11-09T02:00:00.000Z"), "usage"],
+      ["seven_day", 0.18, 10_080, undefined, Date.parse("2026-11-12T09:00:00.000Z"), "usage"],
+      ["seven_day_fable", 0.07, 10_080, "Fable", Date.parse("2026-11-12T09:00:00.000Z"), "usage"],
     ])
     expect(accounts[1]!.windows.map((window) => window.used)).toEqual([0.9, 0.61])
-    // As Claude Code asks it.
-    expect(anthropic.reads.every((read) => read.beta === "oauth-2025-04-20" && read.agent === "claude-cli/2.1.300 (external, cli)")).toBe(true)
+    // As Claude Code's own `/usage` asks it: the plan's limits only.
+    expect(programs.asked().filter((each) => each.method === "get_usage").map((each) => each.params)).toEqual([{ subtype: "get_usage", skip_behaviors: true }, { subtype: "get_usage", skip_behaviors: true }])
   })
 
-  test("a 429 holds every Claude login through a restart, and old readings stop showing", async () => {
-    const [own, work] = two()
-    anthropic.answers.set("token-own", usage(42, 18))
-    anthropic.answers.set("token-work", usage(90, 61))
-    const file = join(home, "limits.json")
-    const limits = new Limits(() => agentAccounts([own!, work!]), file, clock.now)
-    await limits.tick()
-    clock.pass(60_000)
-    await limits.tick()
-    expect(anthropic.reads).toHaveLength(2)
-
-    // Fifteen minutes on, Anthropic turns the first away, for 46 minutes.
-    clock.pass(15 * 60_000)
-    anthropic.answers.set("token-own", () => new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429, headers: { "retry-after": "2766" } }))
-    await limits.tick()
-    clock.pass(60_000)
-    await limits.tick()
-    // The other isn't asked meanwhile: the hold is the computer's.
-    expect(anthropic.reads).toHaveLength(3)
-    const held = await route(limits)
-    expect(held.accounts[0]!.problem).toEqual({ kind: "rate-limited", message: expect.any(String), until: clock.at - 60_000 + 2_766_000 })
-    expect(held.accounts.map((each) => each.windows.map((window) => window.used))).toEqual([[0.42, 0.18], [0.9, 0.61]])
-
-    // Refreshing, and the minutes passing, ask nothing until then: not after a restart either.
-    await limits.refresh()
-    clock.pass(30 * 60_000)
-    await limits.tick()
-    const restarted = new Limits(() => agentAccounts([own!, work!]), file, clock.now)
-    await restarted.refresh()
-    await restarted.tick()
-    expect(anthropic.reads).toHaveLength(3)
-    expect((await route(restarted)).accounts.map((each) => each.windows)).toEqual([[], []])
-
-    // Once it's time, they're read again, one a minute.
-    anthropic.answers.set("token-own", usage(50, 20))
-    clock.pass(16 * 60_000)
-    await restarted.tick()
-    clock.pass(60_000)
-    await restarted.tick()
-    expect(anthropic.reads).toHaveLength(5)
-    const after = await route(restarted)
-    expect(after.accounts[0]!.problem).toBeUndefined()
-    expect(after.accounts[0]!.windows.map((window) => window.used)).toEqual([0.5, 0.2])
+  test("an added account's usage is asked of Claude Code with that account's folder, and never with a token", async () => {
+    const folder = join(home, "claude", "accounts", "1f2e3d4c")
+    signedIn(folder, "token-work")
+    claudeSays(folder, usage(64, 12))
+    // A token in the box's own environment (as a shell might have one) never reaches it.
+    const before = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "token-from-the-environment"
+    try {
+      // As the usage reader has it on a Mac.
+      const work = new UsageAccounts(home, { programs, claudeKeychain: true }).source("claude", "claude-code@1f2e3d4c", { id: "1f2e3d4c", label: "Work", home: folder })
+      const { accounts } = await refreshed(new Limits(() => agentAccounts([work]), undefined, clock.now))
+      expect(accounts.map((each) => [each.provider, each.plan, each.windows.map((window) => window.used)])).toEqual([["claude-code@1f2e3d4c", "Max", [0.64, 0.12]]])
+      const asked = programs.asked().filter((each) => each.method === "get_usage")
+      expect(asked).toEqual([{ program: "claude", home: folder, method: "get_usage", params: { subtype: "get_usage", skip_behaviors: true } }])
+      expect([anthropic.grantReads, anthropic.others]).toEqual([[], []])
+    } finally {
+      if (before === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = before
+    }
   })
 
   test("a read under way is kept before it's answered: a restart meanwhile doesn't ask again", async () => {
-    const folder = join(home, "claude", "home")
+    const folder = ownHome()
     signedIn(folder, "token-own")
-    let answer!: () => void
-    anthropic.answers.set("token-own", () => new Promise<Response>((resolve) => (answer = () => resolve(usage(42, 18)()))) as any)
+    const answer = held(folder)
     const file = join(home, "limits.json")
     const own = new TestClaude(home, { id: "default", home: folder })
     const first = new Limits(() => agentAccounts([own]), file, clock.now)
-    const asked = anthropic.nextRead()
     const reading = first.tick()
-    await asked
-    // The box starts again while Anthropic hasn't answered.
+    await answer.reached
+    // The box starts again while Claude Code hasn't answered.
     const restarted = new Limits(() => agentAccounts([new TestClaude(home, { id: "default", home: folder })]), file, clock.now)
     await restarted.tick()
-    expect(anthropic.reads).toHaveLength(1)
-    answer()
+    expect(asks()).toHaveLength(1)
+    await answer.answer(usage(42, 18))
     await reading
   })
 
   test("a refresh right after a read doesn't read another Claude account within the minute", async () => {
     const [own, work] = two()
-    anthropic.answers.set("token-own", usage(42, 18))
-    anthropic.answers.set("token-work", usage(90, 61))
+    claudeSays(ownHome(), usage(42, 18))
+    claudeSays(workHome(), usage(90, 61))
     const limits = new Limits(() => agentAccounts([own!, work!]), undefined, clock.now)
     await limits.tick()
     clock.pass(5_000)
     await limits.refresh()
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-own"])
+    expect(asks()).toEqual([ownHome()])
     clock.pass(55_000)
     await limits.refresh()
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-own", "token-work"])
+    expect(asks()).toEqual([ownHome(), workHome()])
   })
 
   test("a restart while one Claude account is being read doesn't read another in the same minute", async () => {
     const [own, work] = two()
-    let answer!: () => void
-    anthropic.answers.set("token-own", () => new Promise<Response>((resolve) => (answer = () => resolve(usage(42, 18)()))) as any)
-    anthropic.answers.set("token-work", usage(90, 61))
+    const answer = held(ownHome())
+    claudeSays(workHome(), usage(90, 61))
     const file = join(home, "limits.json")
     const first = new Limits(() => agentAccounts([own!, work!]), file, clock.now)
-    const asked = anthropic.nextRead()
     const reading = first.tick()
-    await asked
+    await answer.reached
     // The box starts again, seconds later.
     clock.pass(5_000)
     const restarted = new Limits(() => agentAccounts([own!, work!]), file, clock.now)
     await restarted.tick()
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-own"])
-    answer()
+    expect(asks()).toEqual([ownHome()])
+    await answer.answer(usage(42, 18))
     await reading
   })
 
-  test("a 429 with no time waits an hour, then longer each time", async () => {
-    const folder = join(home, "claude", "home")
+  test("Claude Code not signed in: its row says to sign in again, it isn't started again while that's so, and signed in again, it's asked again", async () => {
+    const folder = ownHome()
     signedIn(folder, "token-own")
-    anthropic.answers.set("token-own", () => new Response("{}", { status: 429 }))
-    const limits = new Limits(() => agentAccounts([new TestClaude(home, { id: "default", home: folder })]), undefined, clock.now)
+    // Claude Code knows who was signed in, but can't read with that sign-in now (no answer in the stand-in).
+    keepJSON(join(folder, ".claude.json"), { oauthAccount: { accountUuid: "00000000-0000-4000-8000-00000000000a", organizationUuid: "org-a" } })
+    const own = new TestClaude(home, { id: "default", home: folder })
+    const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
     await limits.tick()
-    expect((await route(limits)).accounts[0]!.problem?.until).toBe(clock.at + 60 * 60_000)
-    clock.pass(60 * 60_000)
-    await limits.tick()
-    expect(anthropic.reads).toHaveLength(2)
-    expect((await route(limits)).accounts[0]!.problem?.until).toBe(clock.at + 2 * 60 * 60_000)
-  })
-
-  test("a sign-in Anthropic won't let read its limits isn't asked again until it's signed in again", async () => {
-    const folder = join(home, "claude", "home")
-    signedIn(folder, "token-old")
-    anthropic.answers.set("token-old", () => Response.json({ error: { type: "permission_error", message: "OAuth token does not meet scope requirement user:profile" } }, { status: 403 }))
-    anthropic.answers.set("token-new", usage(5, 5))
-    const limits = new Limits(() => agentAccounts([new TestClaude(home, { id: "default", home: folder })]), undefined, clock.now)
-    await limits.tick()
-    expect((await route(limits)).accounts[0]!.problem?.kind).toBe("unreadable")
+    expect((await route(limits)).accounts[0]!.problem).toEqual({ kind: "expired", message: "Claude Code isn't signed in here now. Sign in again." })
     clock.pass(3 * 60 * 60_000)
     await limits.tick()
     await limits.refresh()
-    expect(anthropic.reads).toHaveLength(1)
-    // Signed in again: read at its next turn.
-    signedIn(folder, "token-new")
-    clock.pass(15 * 60_000)
-    await limits.tick()
-    expect(anthropic.reads.map((read) => read.token)).toEqual(["token-old", "token-new"])
-    expect((await route(limits)).accounts[0]!.problem).toBeUndefined()
+    expect(asks()).toHaveLength(1)
+    // Signed in again: the box hears it from its agent's account check (service.ts), and asks at once.
+    claudeSays(folder, usage(5, 6))
+    limits.invalidate(own.providerID)
+    await limits.readAgain(own.providerID)
+    expect(asks()).toHaveLength(2)
+    const [again] = (await route(limits)).accounts
+    expect([again!.problem, again!.windows.map((window) => window.used)]).toEqual([undefined, [0.05, 0.06]])
   })
 
   test("what a turn hears keeps a window current between reads, even while a read is under way", async () => {
-    const folder = join(home, "claude", "home")
+    const folder = ownHome()
     signedIn(folder, "token-own")
+    claudeSays(folder, usage(42, 18))
     const own = new TestClaude(home, { id: "default", home: folder })
-    anthropic.answers.set("token-own", usage(42, 18))
     const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
     await limits.tick()
     clock.pass(60_000)
     own.limits.heard!({ id: "five_hour", used: 0.97, resetsAt: Date.parse("2026-11-09T02:00:00.000Z") })
-    let window = (await route(limits)).accounts[0]!.windows.find((each) => each.id === "five_hour")!
+    const window = (await route(limits)).accounts[0]!.windows.find((each) => each.id === "five_hour")!
     expect([window.used, window.minutes, window.source, window.read]).toEqual([0.97, 300, "turn", clock.at])
     // A read asked before a turn heard more doesn't take its place with older numbers.
-    let answer!: () => void
-    anthropic.answers.set("token-own", () => new Promise<Response>((resolve) => (answer = () => resolve(usage(50, 20)()))) as any)
+    const answer = held(folder)
     clock.pass(15 * 60_000)
-    const asked = anthropic.nextRead()
     const reading = limits.tick()
-    await asked
+    await answer.reached
     own.limits.heard!({ id: "five_hour", used: 0.99 })
-    answer()
+    await answer.answer(usage(50, 20))
     await reading
     const windows = (await route(limits)).accounts[0]!.windows
     expect(windows.map((each) => [each.id, each.used, each.source])).toEqual([["seven_day", 0.2, "usage"], ["five_hour", 0.99, "turn"]])
   })
 
-  test("a lapsed or inference-only sign-in says why, and never goes to Anthropic", async () => {
-    const lapsed = join(home, "claude", "home")
-    const inference = join(home, "claude", "accounts", "a1")
-    credentials(lapsed, { accessToken: "token-lapsed", expiresAt: clock.at - 1, scopes: ["user:profile"] })
-    credentials(inference, { accessToken: "token-inference", expiresAt: clock.at + 3_600_000, scopes: ["user:inference"] })
-    const limits = new Limits(() => agentAccounts([new TestClaude(home, { id: "default", home: lapsed }), new TestClaude(home, { id: "a1", home: inference })]), undefined, clock.now)
-    const { accounts } = await route(limits, "POST", ["refresh"])
-    expect(accounts.map((each) => each.problem?.kind)).toEqual(["expired", "unreadable"])
-    expect(anthropic.reads).toHaveLength(0)
-  })
-
-  test("never reads a sign-in outside Kuvo Code's folders (yours in ~/.claude)", async () => {
-    credentials(join(process.env.HOME!, ".claude"), { accessToken: "token-yours", scopes: ["user:profile"] })
-    anthropic.answers.set("token-yours", usage(1, 1))
-    const limits = new Limits(() => agentAccounts([new TestClaude(home)]), undefined, clock.now)
-    const { accounts, services } = await refreshed(limits)
-    expect(accounts).toEqual([])
-    expect(services).toEqual(["claude"])
-    expect(anthropic.reads).toHaveLength(0)
+  test("the first account is Claude Code's own sign-in, in ~/.claude, the one Terminal uses", async () => {
+    const yours = join(process.env.HOME!, ".claude")
+    claudeSays(yours, usage(1, 2))
+    try {
+      const own = new UsageAccounts(home, { programs, claudeKeychain: false }).source("claude", "claude-code", { id: "default" })
+      const { accounts } = await refreshed(new Limits(() => agentAccounts([own]), undefined, clock.now))
+      expect(accounts.map((each) => [each.provider, each.windows.map((window) => window.used)])).toEqual([["claude-code", [0.01, 0.02]]])
+      expect(asks()).toEqual([yours])
+    } finally {
+      rmSync(yours, { recursive: true, force: true })
+    }
   })
 })
 
-const wham = (used: number, minutes = 300) => ({
-  used_percent: used, limit_window_seconds: minutes * 60, reset_at: 1_794_200_000,
-})
-const codexFolder = () => join(home, "codex", "home")
+// Codex's plan is asked of Codex itself (native-usage.ts): a stand-in `codex` first on the PATH
+// answers `account/rateLimits/read` from the folder it's given (support/agent-programs.ts).
+const window = (used: number, minutes = 300) => ({ usedPercent: used, windowDurationMins: minutes, resetsAt: 1_794_200_000 })
+const codexFolder = () => join(home, "codex-own")
 function codexAuth(access = "fixture", account?: string) {
   mkdirSync(codexFolder(), { recursive: true })
-  writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ tokens: { access_token: access, account_id: account } }))
+  writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ tokens: { access_token: access, account_id: account ?? "acct-fixture" } }))
 }
 function codexLimits() {
-  const agents = new UsageAccounts(home, true)
+  const agents = new UsageAccounts(home, { codexKeychain: async () => undefined })
   return new Limits(() => agentAccounts(agents.all().filter(agent => agent.providerID === "codex-cli" && agent.limits?.signIn?.())), undefined, clock.now)
 }
 
 async function withChatGPT(run: (fixture: {
   usage: (body: unknown) => void
-  resets: (body: unknown, status?: number) => void
-  answers: { path: string; account: string | null }[]
+  asked: () => { account?: string }[]
 }) => Promise<void>) {
-  let usage: unknown = { plan_type: "plus", rate_limit: { primary_window: wham(12) } }
-  let resets: unknown = {}
-  let resetStatus = 200
-  const answers: { path: string; account: string | null }[] = []
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    const path = new URL(request.url).pathname
-    answers.push({ path, account: request.headers.get("chatgpt-account-id") })
-    return path === "/usage" ? Response.json(usage) : Response.json(resets, { status: resetStatus })
-  } })
-  const endpoints = { usage: engineEndpoints.chatgpt, resets: codexResetEndpoints.list }
-  const environmentPath = process.env.PATH
-  const starts = join(home, "starts.txt")
-  mkdirSync(join(home, "bin"), { recursive: true })
-  const launcher = join(home, "bin", "codex")
-  writeFileSync(launcher, `#!/bin/sh\necho started >> "${starts}"\nexit 1\n`, { mode: 0o700 })
-  engineEndpoints.chatgpt = `http://127.0.0.1:${server.port}/usage`
-  codexResetEndpoints.list = `http://127.0.0.1:${server.port}/list`
-  process.env.PATH = join(home, "bin") + ":" + environmentPath
+  const programs = agentPrograms(join(home, "bin"))
+  const environment = { PATH: process.env.PATH, CODEX_HOME: process.env.CODEX_HOME }
+  process.env.PATH = join(home, "bin") + ":" + environment.PATH
+  process.env.CODEX_HOME = codexFolder()
+  const usage = (body: unknown) => {
+    mkdirSync(codexFolder(), { recursive: true })
+    writeFileSync(join(codexFolder(), "usage.json"), JSON.stringify({ "*": body }))
+  }
+  usage({ rateLimitsByLimitId: { codex: { planType: "plus", primary: window(12) } } })
   try {
-    await run({ usage: body => { usage = body }, resets: (body, status = 200) => { resets = body; resetStatus = status }, answers })
-    expect(existsSync(starts)).toBe(false)
+    await run({ usage, asked: () => programs.asked().filter(each => each.method === "account/rateLimits/read") })
   } finally {
-    process.env.PATH = environmentPath
-    engineEndpoints.chatgpt = endpoints.usage
-    codexResetEndpoints.list = endpoints.resets
-    server.stop(true)
+    process.env.PATH = environment.PATH
+    if (environment.CODEX_HOME === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = environment.CODEX_HOME
+    rmSync(codexFolder(), { recursive: true, force: true })
   }
 }
 
 describe("Codex", () => {
-  test("its plan's windows and a model's own are read with its ChatGPT sign-in", async () => withChatGPT(async ({ usage }) => {
+  test("its plan's windows and a model's own are what Codex says for its sign-in", async () => withChatGPT(async ({ usage }) => {
     codexAuth()
-    usage({ plan_type: "pro", rate_limit: { primary_window: wham(12), secondary_window: wham(40, 10080) },
-      additional_rate_limits: [{ metered_feature: "codex_spark", limit_name: "GPT-5.3-Codex-Spark", rate_limit: { primary_window: wham(3) } }] })
+    usage({ rateLimitsByLimitId: {
+      codex: { planType: "pro", primary: window(12), secondary: window(40, 10080) },
+      codex_spark: { limitName: "GPT-5.3-Codex-Spark", primary: window(3) },
+    } })
     const { accounts } = await refreshed(codexLimits())
     expect(accounts).toHaveLength(1)
     expect(accounts[0]!.plan).toBe("Pro")
@@ -515,54 +496,33 @@ describe("Codex", () => {
     ])
   }))
 
-  test("its credits and resets are read without Codex and kept when a reset read fails", async () => withChatGPT(async ({ usage, resets, answers }) => {
-    codexAuth(token({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-9" } }), "acct-9")
-    usage({ plan_type: "plus", rate_limit: { primary_window: wham(12) }, credits: { has_credits: true, unlimited: false, balance: "50.7" } })
-    resets({ available_count: 1, credits: [{ id: "c-1", status: "available", expires_at: "2026-11-20T00:00:00Z" }, { id: "c-0", status: "redeemed", expires_at: "2026-11-19T00:00:00Z" }] })
-    const limits = codexLimits()
-    await limits.tick()
-    const extras = () => (limits.list()[0]?.extras ?? []).map(extra => [extra.id, extra.kind, extra.amount ?? extra.count, extra.expiries ?? null])
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 1, [Date.parse("2026-11-20T00:00:00Z")]]])
-    expect(answers.filter(request => request.path === "/list").map(request => request.account)).toEqual(["acct-9"])
-    resets({ available_count: 0, credits: [] })
-    clock.pass(10 * 60_000)
-    await limits.tick()
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 0, null]])
-    expect(limits.list()[0]!.windows.map(each => each.used)).toEqual([0.12])
-    resets({}, 502)
-    clock.pass(10 * 60_000)
-    await limits.tick()
-    expect(extras()).toEqual([["credits", "left", 50, null], ["resets", "resets", 0, null]])
-  }))
-
-  test("Codex limits refresh on schedule without starting an app-server", async () => withChatGPT(async ({ answers }) => {
+  test("Codex limits are read again on schedule, each time from Codex", async () => withChatGPT(async ({ asked }) => {
     codexAuth()
     const limits = codexLimits()
-    const reads = () => answers.filter(request => request.path === "/usage").length
     await limits.tick()
-    expect(reads()).toBe(1)
+    expect(asked()).toHaveLength(1)
     clock.pass(10 * 60_000)
     await limits.tick()
-    expect(reads()).toBe(2)
+    expect(asked()).toHaveLength(2)
     expect((await route(limits)).accounts[0]!.windows.map(each => each.used)).toEqual([0.12])
   }))
 
-  test("a configured API key never starts Codex or reads ChatGPT plan limits", async () => withChatGPT(async ({ answers }) => {
+  test("a configured API key never starts Codex or reads ChatGPT plan limits", async () => withChatGPT(async ({ asked }) => {
     codexAuth()
     writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "key", tokens: { access_token: "old-oauth" } }))
     const limits = codexLimits()
     await limits.tick()
     clock.pass(31 * 60_000)
     await limits.tick()
-    expect(answers).toHaveLength(0)
+    expect(asked()).toHaveLength(0)
     expect((await route(limits)).accounts).toEqual([])
   }))
 
-  test("an API key has no plan limits: not listed", async () => withChatGPT(async ({ answers }) => {
+  test("an API key has no plan limits: not listed", async () => withChatGPT(async ({ asked }) => {
     mkdirSync(codexFolder(), { recursive: true })
     writeFileSync(join(codexFolder(), "auth.json"), JSON.stringify({ OPENAI_API_KEY: "key" }))
     expect((await refreshed(codexLimits())).accounts).toEqual([])
-    expect(answers).toHaveLength(0)
+    expect(asked()).toHaveLength(0)
   }))
 })
 
@@ -571,7 +531,7 @@ const token = (claims: Record<string, unknown>) => `eyJhbGciOiJSUzI1NiJ9.${Buffe
 
 describe("who each account is, the same from every computer", () => {
   let recordWrites = 0
-  /** Claude Code's own record of who it's signed in as, beside its sign-in (Linux). */
+  /** Claude Code's own record of who it's signed in as (`.claude.json`), beside its sign-in, and its answer for it. */
   function signedInAs(folder: string, token: string, account: string, organization: string) {
     mkdirSync(folder, { recursive: true })
     writeFileSync(join(folder, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: clock.at + 86_400_000, scopes: ["user:inference", "user:profile"] } }))
@@ -584,16 +544,15 @@ describe("who each account is, the same from every computer", () => {
     utimesSync(record, at, at)
   }
 
-  test("one Claude login on two computers is one identity, another login another, and neither says who", async () => {
-    ClaudeAgent.keychain = false
-    // Two computers' boxes, each with Kuvo Code's own sign-ins in its folders.
+  test("one Claude login on a Mac and a Linux computer is one identity, another login another, and neither says who", async () => {
+    // Two computers' boxes, each with Claude Code's sign-ins in its folders: a Mac's, and a Linux one's.
     const first = join(home, "first")
     const second = join(home, "second")
     signedInAs(join(first, "claude", "home"), "token-1", "6F1E0C4A-0000-4000-8000-000000000001", "org-1")
     signedInAs(join(second, "claude", "home"), "token-2", "6f1e0c4a-0000-4000-8000-000000000001", "ORG-1")
     signedInAs(join(second, "claude", "accounts", "a1"), "token-3", "6f1e0c4a-0000-4000-8000-000000000002", "org-2")
-    for (const each of ["token-1", "token-2", "token-3"]) anthropic.answers.set(each, usage(10, 20))
-    const one = new Limits(() => agentAccounts([new TestClaude(first, { id: "default", home: join(first, "claude", "home") })]), undefined, clock.now)
+    for (const each of [join(first, "claude", "home"), join(second, "claude", "home"), join(second, "claude", "accounts", "a1")]) claudeSays(each, usage(10, 20))
+    const one = new Limits(() => agentAccounts([new MacClaude(first, { id: "default", home: join(first, "claude", "home") })]), undefined, clock.now)
     const two = new Limits(() => agentAccounts([new TestClaude(second, { id: "default", home: join(second, "claude", "home") }), new TestClaude(second, { id: "a1", label: "Athas", home: join(second, "claude", "accounts", "a1") })]), undefined, clock.now)
     await one.tick()
     clock.pass(60_000)
@@ -611,152 +570,10 @@ describe("who each account is, the same from every computer", () => {
     for (const secret of ["6f1e0c4a", "6F1E0C4A", "org-1", "org-2", "ada@example.com", "token-1"]) expect(said).not.toContain(secret)
   })
 
-  /**
-   * What Claude Code keeps in its settings folder as it runs with a token (`claude setup-token`'s, as
-   * a Mac's Kuvo Code runs it): Anthropic's signed record of the policies of the account the token is
-   * for (`aud` its organization, `sub` the account), and its note of which sign-in fetched it.
-   */
-  function policyRecord(folder: string, token: string, account: string, organization: string, options: { plan?: string; kind?: "token" | "org"; signed?: string } = {}) {
-    mkdirSync(folder, { recursive: true })
-    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
-    const body = `sha256:${sha256(`policies of ${account}`)}`
-    // A sign-in Claude Code keeps itself (yours in Terminal) is stamped as its organization's.
-    const principal = options.kind === "org" ? `org:${organization}` : `token:${sha256(token).slice(0, 32)}`
-    writeFileSync(join(folder, "policy-limits.json"), "{}")
-    writeFileSync(join(folder, "policy-limits.json.stamp.json"), JSON.stringify({ v: 1, identity: sha256(principal), kind: options.kind ?? "token", sha: body, confirmed_at: clock.at, hipaa_seen: [] }))
-    const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
-    const claims = { v: 1, typ: "policy-limits", aud: organization, sub: account, ws: "5e0c0000-0000-4000-8000-0000000000ff", plan: options.plan ?? "consumer", iat: clock.at / 1000, exp: clock.at / 1000 + 86_400, sha: options.signed ?? body }
-    writeFileSync(join(folder, "policy-limits.json.signature.json"), JSON.stringify({ jws: `${part({ alg: "ES256", typ: "cc-signed-cache+jws", kid: "k1", x5c: ["MIIB"] })}.${part(claims)}.c2lnbmF0dXJl`, receivedAt: clock.at }))
-  }
-
-  test("one Claude account on three computers, a Mac's by Kuvo Code's token among them, is one identity; a second account there is another", async () => {
-    // hetzner (Linux): Claude Code's own sign-in. mini-local (a Mac as a machine) and this Mac: Kuvo
-    // Code's tokens, which say nothing of who they're for, and Claude Code's record as it ran with each.
-    const account = "6F1E0C4A-0000-4000-8000-000000000001"
-    const organization = "0A1B2C3D-0000-4000-8000-0000000000aa"
-    const hetzner = join(home, "hetzner")
-    signedInAs(join(hetzner, "claude", "home"), "token-linux", account, organization)
-    anthropic.answers.set("token-linux", usage(29, 70))
-    ClaudeAgent.keychain = false
-    // (Made once, as the bridge keeps its agents: this test makes the Macs' after it.)
-    const linuxClaude = new TestClaude(hetzner, { id: "default", home: join(hetzner, "claude", "home") })
-    const linux = new Limits(() => agentAccounts([linuxClaude]), undefined, clock.now)
-    await linux.tick()
-
-    ClaudeAgent.keychain = true
-    const mini = join(home, "mini-local")
-    signIn(mini, "default", "token-mini")
-    signIn(mini, "57eea190", "token-athas")
-    policyRecord(join(mini, "claude", "home"), "token-mini", account.toLowerCase(), organization.toLowerCase())
-    policyRecord(join(mini, "claude", "accounts", "57eea190"), "token-athas", "6f1e0c4a-0000-4000-8000-000000000002", "0a1b2c3d-0000-4000-8000-0000000000bb", { plan: "team" })
-    const own = new TestClaude(mini, { id: "default", home: join(mini, "claude", "home") })
-    const athas = new TestClaude(mini, { id: "57eea190", label: "Athas", home: join(mini, "claude", "accounts", "57eea190") })
-    const machine = new Limits(() => agentAccounts([own, athas]), undefined, clock.now)
-    await machine.tick()
-    // (A Mac's Claude rows are what its turns hear.)
-    own.limits.heard!({ id: "five_hour", used: 0.3, minutes: 300 })
-    athas.limits.heard!({ id: "five_hour", used: 0.31, minutes: 300 })
-
-    // This Mac's own box: its default account's settings are yours (`~/.claude`), Kuvo Code's token in its folder.
-    const mac = join(home, "mac")
-    const yours = join(mac, "your-claude")
-    signIn(mac, "default", "token-mac")
-    policyRecord(yours, "token-mac", account.toLowerCase(), organization.toLowerCase())
-    const before = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = yours
-    try {
-      const macClaude = new TestClaude(mac)
-      const macLimits = new Limits(() => agentAccounts([macClaude]), undefined, clock.now)
-      await macLimits.tick()
-      macClaude.limits.heard!({ id: "five_hour", used: 0.3, minutes: 300 })
-
-      const [linuxRow] = (await route(linux)).accounts
-      const [miniRow, athasRow] = (await route(machine)).accounts
-      const [macRow] = (await route(macLimits)).accounts
-      expect(linuxRow!.identity).toMatch(/^[0-9a-f]{16}$/)
-      expect(miniRow!.identity).toBe(linuxRow!.identity!)
-      expect(macRow!.identity).toBe(linuxRow!.identity!)
-      expect(athasRow!.label).toBe("Athas")
-      expect(athasRow!.identity).toMatch(/^[0-9a-f]{16}$/)
-      expect(athasRow!.identity).not.toBe(linuxRow!.identity!)
-      // Nothing of the account, its organization or the token leaves the box.
-      const said = JSON.stringify([await route(machine), await route(macLimits)])
-      for (const secret of ["6f1e0c4a", "0a1b2c3d", "token-"]) expect(said).not.toContain(secret)
-    } finally {
-      if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = before
-    }
-  })
-
-  test("a Mac's record that isn't for Kuvo Code's token (yours in Terminal, another's signature) says nothing of who it is", async () => {
-    ClaudeAgent.keychain = true
-    const folder = join(home, "claude", "home")
-    signIn(home, "default", "token-kuvo")
-    // Your own Claude Code in Terminal ran last in the folder, signed in as someone else.
-    policyRecord(folder, "token-yours", "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-0000000000aa", { kind: "org" })
-    const own = new TestClaude(home, { id: "default", home: folder })
-    const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
-    await limits.tick()
-    own.limits.heard!({ id: "five_hour", used: 0.3, minutes: 300 })
-    const [account] = (await route(limits)).accounts
-    expect(account!.windows.map((each) => each.used)).toEqual([0.3])
-    expect(account!.identity).toBeUndefined()
-    // Stamped for Kuvo Code's token, but the signature beside it is of another record.
-    policyRecord(folder, "token-kuvo", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-0000000000bb", { signed: "sha256:another" })
-    clock.pass(60_000)
-    await limits.tick()
-    expect((await route(limits)).accounts[0]!.identity).toBeUndefined()
-    // Claude Code runs with Kuvo Code's token: now it says.
-    policyRecord(folder, "token-kuvo", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-0000000000bb")
-    clock.pass(60_000)
-    await limits.tick()
-    const known = (await route(limits)).accounts[0]!
-    expect(known.identity).toMatch(/^[0-9a-f]{16}$/)
-    // Your Terminal's runs again, writing its own over it: who it is, and its numbers, stay.
-    policyRecord(folder, "token-yours", "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-0000000000aa", { kind: "org" })
-    clock.pass(60_000)
-    await limits.tick()
-    const after = (await route(limits)).accounts[0]!
-    expect([after.identity, after.windows.map((each) => each.used), after.problem]).toEqual([known.identity, [0.3], undefined])
-  })
-
-  test("a Mac's Claude signed in to another account: what's told after is that account's, never the one before's", async () => {
-    ClaudeAgent.keychain = true
-    const folder = join(home, "claude", "home")
-    const file = join(home, "limits.json")
-    signIn(home, "default", "token-ada")
-    policyRecord(folder, "token-ada", "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-0000000000aa")
-    const own = new TestClaude(home, { id: "default", home: folder })
-    const limits = new Limits(() => agentAccounts([own]), file, clock.now)
-    await limits.tick()
-    own.limits.heard!({ id: "five_hour", used: 0.3, minutes: 300 })
-    const ada = (await route(limits)).accounts[0]!
-    expect(ada.identity).toMatch(/^[0-9a-f]{16}$/)
-
-    // Signed in as Bob: Claude Code hasn't run with his token yet, and his first turn is heard.
-    signIn(home, "default", "token-bob")
-    own.limits.heard!({ id: "five_hour", used: 0.9, minutes: 300 })
-    const heard = (await route(limits)).accounts[0]!
-    expect([heard.identity, heard.windows.map((each) => each.used), heard.problem]).toEqual([undefined, [0.9], undefined])
-    // Claude Code's record for his token: his, with what his turn told, and nothing more to say.
-    policyRecord(folder, "token-bob", "00000000-0000-4000-8000-00000000000b", "00000000-0000-4000-8000-0000000000bb")
-    clock.pass(60_000)
-    await limits.tick()
-    own.limits.heard!({ id: "five_hour", used: 0.91, minutes: 300 })
-    const bob = (await route(limits)).accounts[0]!
-    expect(bob.identity).toMatch(/^[0-9a-f]{16}$/)
-    expect(bob.identity).not.toBe(ada.identity!)
-    expect([bob.windows.map((each) => each.used), bob.problem]).toEqual([[0.91], undefined])
-    // Through a restart too.
-    const restarted = new Limits(() => agentAccounts([new TestClaude(home, { id: "default", home: folder })]), file, clock.now)
-    expect((await route(restarted)).accounts[0]!.identity).toBe(bob.identity!)
-  })
-
   test("signed in to another account since, what was kept of the one before isn't shown as this one's", async () => {
-    ClaudeAgent.keychain = false
     const folder = join(home, "claude", "home")
     signedInAs(folder, "token-old", "00000000-0000-4000-8000-00000000000a", "org-a")
-    anthropic.answers.set("token-old", usage(80, 70))
+    claudeSays(folder, usage(80, 70))
     const file = join(home, "limits.json")
     const own = new TestClaude(home, { id: "default", home: folder })
     const limits = new Limits(() => agentAccounts([own]), file, clock.now)
@@ -764,20 +581,19 @@ describe("who each account is, the same from every computer", () => {
     const before = (await route(limits)).accounts[0]!
     expect(before.windows.map((each) => each.used)).toEqual([0.8, 0.7])
 
-    // Signed in as someone else, and Anthropic holding reads off for now: nothing of the old one stays.
+    // Signed in as someone else, and Claude Code can't answer for the new sign-in yet: nothing of the old one stays.
     signedInAs(folder, "token-new", "00000000-0000-4000-8000-00000000000b", "org-b")
-    anthropic.answers.set("token-new", () => new Response("{}", { status: 429, headers: { "retry-after": "600" } }))
+    rmSync(join(folder, "usage.json"))
     clock.pass(60_000)
     await limits.tick()
     const after = (await route(limits)).accounts[0]!
     expect(after.identity).not.toBe(before.identity!)
     expect(after.windows).toEqual([])
-    expect(after.problem?.kind).toBe("rate-limited")
+    expect(after.problem?.kind).toBe("expired")
     // Through a restart too.
     const restarted = new Limits(() => agentAccounts([own]), file, clock.now)
     expect((await route(restarted)).accounts[0]!.windows).toEqual([])
   })
-
   test("Codex's ChatGPT sign-in is its account and workspace member, the same as the engine's sign-in to it", async () => withChatGPT(async () => {
     const access = (user: string) => token({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-77", chatgpt_user_id: user }, "https://api.openai.com/profile": { email: "ada@example.com" } })
     codexAuth(access("user-ada"), "acct-77")
@@ -792,10 +608,10 @@ describe("who each account is, the same from every computer", () => {
     expect(JSON.stringify(agent)).not.toContain("acct-77")
   }))
 
-  test("a switched Codex account is read with its own sign-in", async () => withChatGPT(async ({ usage, answers }) => {
+  test("a switched Codex account is read with its own sign-in", async () => withChatGPT(async ({ usage, asked }) => {
     const access = (user: string) => token({ "https://api.openai.com/auth": { chatgpt_account_id: `acct-${user}`, chatgpt_user_id: user } })
     codexAuth(access("ada"), "acct-ada")
-    usage({ plan_type: "plus", rate_limit: { primary_window: wham(70) } })
+    usage({ rateLimitsByLimitId: { codex: { planType: "plus", primary: window(70) } } })
     const limits = codexLimits()
     const first = (await refreshed(limits)).accounts[0]!
     expect(first.windows.map(each => each.used)).toEqual([0.7])
@@ -806,26 +622,23 @@ describe("who each account is, the same from every computer", () => {
     expect(switched.identity).not.toBe(first.identity!)
     expect(switched.windows.map(each => each.used)).toEqual([0.7])
     expect(switched.problem).toBeUndefined()
-    expect(answers.filter(request => request.path === "/usage").map(request => request.account)).toEqual(["acct-ada", "acct-bob"])
+    expect(asked().map(request => request.account)).toEqual(["acct-ada", "acct-bob"])
   }))
 
 })
 
 describe("plan_limits, an agent's read of them", () => {
   test("says each account's windows, how much is used, when each resets and as of when", async () => {
-    ClaudeAgent.keychain = false
-    const sign = (folder: string, token: string) => {
-      mkdirSync(folder, { recursive: true })
-      writeFileSync(join(folder, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: token, scopes: ["user:profile"] } }))
-    }
-    sign(join(home, "claude", "home"), "token-own")
-    sign(join(home, "claude", "accounts", "1f2e3d4c"), "token-work")
-    const own = new TestClaude(home, { id: "default", home: join(home, "claude", "home") })
-    const work = new TestClaude(home, { id: "1f2e3d4c", label: "Work", home: join(home, "claude", "accounts", "1f2e3d4c") })
+    const ownHome = join(home, "claude", "home")
+    const workHome = join(home, "claude", "accounts", "1f2e3d4c")
+    signedIn(ownHome, "token-own")
+    signedIn(workHome, "token-work")
+    const own = new TestClaude(home, { id: "default", home: ownHome })
+    const work = new TestClaude(home, { id: "1f2e3d4c", label: "Work", home: workHome })
     const real = Date.now()
     const at = (minutes: number) => new Date(real + minutes * 60_000).toISOString()
-    anthropic.answers.set("token-own", () => Response.json({ five_hour: { utilization: 42, resets_at: at(130) }, seven_day: { utilization: 18, resets_at: at(4 * 1440) } }))
-    anthropic.answers.set("token-work", () => Response.json({}, { status: 429, headers: { "retry-after": "1800" } }))
+    claudeSays(ownHome, { subscription_type: "pro", rate_limits: { five_hour: { utilization: 42, resets_at: at(130) }, seven_day: { utilization: 18, resets_at: at(4 * 1440) } } })
+    // (Claude Code isn't signed in for the other: no answer.)
     let clockAt = real
     const limits = new Limits(() => agentAccounts([own, work]), undefined, () => clockAt)
     // (One Claude account a minute.)
@@ -838,13 +651,13 @@ describe("plan_limits, an agent's read of them", () => {
       const { planLimitsTool } = await import("../../src/link/work/plan-limits")
       const { text, isError } = await planLimitsTool({ port: bridge.port, password: "x" } as never)
       expect(isError).toBe(false)
-      expect(text).toContain("- Claude Code, provider claude-code:")
+      expect(text).toContain("- Claude Code, Pro, provider claude-code:")
       expect(text).toContain("5-hour window: 42% used, resets in 2h 10m")
       expect(text).toContain("weekly limit: 18% used, resets in 4 days")
       expect(text).toContain("as of just now")
-      // One Anthropic turned away: said so, with when it's read again.
+      // One Claude Code couldn't read: said so, and why.
       expect(text).toContain("- Claude Code (Work), provider claude-code@1f2e3d4c:")
-      expect(text).toContain("Not read just now: Anthropic is turning away reads of the plan's limits for now. Read again in 31m.")
+      expect(text).toContain("Not read just now: Claude Code isn't signed in here now. Sign in again.")
     } finally {
       bridge.stop(true)
     }
@@ -862,19 +675,17 @@ describe("an account's rings (#711)", () => {
     limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: service, service, windows: windows.map((window) => ({ read: 1, source: "usage", ...window })) } as any] }], 0)[0]!
 
   test("Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event", async () => {
-    ClaudeAgent.keychain = true
-    const { heardWindows } = await import("../../src/usage/claude-limits")
-    const own = new TestClaude(home)
-    signIn(home, "default", "token-own")
+    const folder = join(home, "claude", "home")
+    claudeSays(folder, usage(93, 72, {
+      five_hour: { utilization: 93, resets_at: new Date(1_794_200_000_000).toISOString() },
+      seven_day: { utilization: 72, resets_at: new Date(1_794_600_000_000).toISOString() },
+      model_scoped: [{ display_name: "Fable", utilization: 99, resets_at: new Date(1_794_600_000_000).toISOString() }],
+    }))
+    const own = new MacClaude(home, { id: "default", home: folder })
     const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
     const told: any[] = []
     const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
     await limits.refresh()
-    clock.pass(60_000)
-    for (const window of heardWindows({ status: "allowed", rateLimitType: "five_hour", utilization: 0.93, unifiedWindows: { five_hour: { utilization: 0.93, resetsAt: 1_794_200_000 }, seven_day: { utilization: 0.72, resetsAt: 1_794_600_000 }, seven_day_overage_included: { utilization: 0.99, resetsAt: 1_794_600_000 } } })) own.limits.heard!(window)
-    await limits.refresh()
-    clock.pass(60 * 60_000)
-    await limits.tick()
     stop()
 
     const { rows } = (await route(limits)) as any
@@ -1025,13 +836,14 @@ describe("names, the bar's ring and windows that started over (#668)", () => {
   })
 
   test("on the route and its event: named accounts and rows, and clients told when a window starts over", async () => {
-    ClaudeAgent.keychain = true
     const { heardWindows } = await import("../../src/usage/claude-limits")
-    const own = new TestClaude(home)
-    signIn(home, "default", "token-own")
+    const folder = join(home, "claude", "home")
+    claudeSays(folder, usage(10, 20, { five_hour: { utilization: 10 }, seven_day: { utilization: 20 } }))
+    const own = new MacClaude(home, { id: "default", home: folder })
     const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
     await limits.refresh()
-    const fiveHour = Math.floor(clock.at / 1000) + 3_600
+    // A turn hears where they stand, and when each starts over: the session in ten minutes.
+    const fiveHour = Math.floor(clock.at / 1000) + 600
     for (const window of heardWindows({ status: "allowed", rateLimitType: "five_hour", utilization: 0.93, unifiedWindows: { five_hour: { utilization: 0.93, resetsAt: fiveHour }, seven_day: { utilization: 0.72, resetsAt: fiveHour + 86_400 } } })) own.limits.heard!(window)
     await limits.refresh()
     const told: any[] = []
@@ -1058,10 +870,11 @@ describe("names, the bar's ring and windows that started over (#668)", () => {
   })
 
   test("a box that reads arms a timer for the next window to start over, and stopping clears it", async () => {
-    ClaudeAgent.keychain = true
     const { heardWindows } = await import("../../src/usage/claude-limits")
-    const own = new TestClaude(home)
-    signIn(home, "default", "token-own")
+    const folder = join(home, "claude", "home")
+    // (Read with no time said for either window: nothing to wait for yet.)
+    claudeSays(folder, usage(50, 20, { five_hour: { utilization: 50 }, seven_day: { utilization: 20 } }))
+    const own = new MacClaude(home, { id: "default", home: folder })
     const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
     const fiveHour = Math.floor(clock.at / 1000) + 3_600
     limits.start()

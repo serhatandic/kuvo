@@ -277,6 +277,9 @@ impl Transport for Via {
     }
 }
 
+/// How often the computers' lines are looked at for silence.
+const LINE_LOOK: Duration = Duration::from_secs(5);
+
 /// Why this app cannot pair when its key could not be kept.
 const NO_KEYCHAIN: &str = "This app couldn’t keep its key, so it can’t reach your other computers.";
 
@@ -743,9 +746,17 @@ impl Boxes {
             Err(error) if link::is_unpaired(&error) => Reach::NotPaired,
             Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some(link::PAIRING_WAIT) => Reach::Waiting(refusal.message),
             Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some(link::PAIRING_READD) => Reach::Readd(refusal),
+            // A computer is away only once its line has been silent a while (PROTOCOL.md, "The
+            // line"), never because one request was slow or failed.
+            Err(_) if client.line().heard_within(self.inner.timing.follow.silent_after) => match state.reach.get(key) {
+                Some(Reach::Held { missing }) => Reach::Held { missing: missing.clone() },
+                _ => Reach::Connected,
+            },
+            Err(error) if client.line().silent_for(self.inner.timing.follow.silent_after) => Reach::Away(error.to_string()),
             Err(error) => {
                 let since = *state.failing.entry(key.to_owned()).or_insert_with(Instant::now);
-                if since.elapsed() >= self.inner.timing.away_after { Reach::Away(error.to_string()) } else { Reach::Connecting }
+                let silent_after = if client.line().silence().is_some() { self.inner.timing.follow.silent_after } else { self.inner.timing.away_after };
+                if since.elapsed() >= silent_after { Reach::Away(error.to_string()) } else { Reach::Connecting }
             }
         };
         if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired | Reach::Waiting(_) | Reach::Readd(_)) {
@@ -814,10 +825,13 @@ impl Boxes {
                     match state.reach.get(*key) {
                         None | Some(Reach::Connecting) => since.is_none_or(|since| since >= timing.away_after.min(Duration::from_secs(2))) || !state.failing.contains_key(*key),
                         Some(Reach::Connected | Reach::Held { .. }) => {
+                            // (Its line gone quiet: asked, to say it's away once it's been so a while.)
+                            linked.client.line().silent_for(timing.follow.silent_after) || {
                             let ssh_active = linked.selected.as_ref().and_then(|selected| selected.active()) == Some(ConnectionMethod::Ssh);
                             !ssh_active && linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host))
                                 || !linked.at.ssh.is_empty() && since.is_none_or(|since| since >= timing.look_again)
                                 || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again)
+                            }
                         }
                         Some(Reach::NotPaired | Reach::Waiting(_) | Reach::Readd(_)) => since.is_none_or(|since| since >= timing.away_after),
                         Some(Reach::Away(_)) => {
@@ -869,7 +883,9 @@ impl Boxes {
             // Again when something changes, when a computer that just stopped answering is due,
             // or after a while.
             let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired | Reach::Waiting(_)) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_) | Pairing::Checking(_)) | None) && Self::wants_pairing(&state);
-            let wait = if soon { timing.away_after.min(timing.look_again) } else { timing.look_again };
+            // (While a line is followed, often enough to see it go quiet.)
+            let lines = state.linked.values().any(|linked| linked.client.line().silence().is_some());
+            let wait = if soon { timing.away_after.min(timing.look_again) } else if lines { LINE_LOOK.min(timing.look_again) } else { timing.look_again };
             let _ = self.inner.woken.wait_timeout(state, wait);
         }
     }
@@ -886,7 +902,7 @@ impl Boxes {
             return;
         }
         Self::stop_follow(&mut state);
-        let follow = Arc::new(client.follow_computers(self.inner.timing.follow));
+        let follow = Arc::new(client.follow_computers());
         state.source = Some(position);
         state.follow = Some(follow.clone());
         drop(state);

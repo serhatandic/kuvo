@@ -3,7 +3,7 @@ import { readBridgeFile, readEngineFile } from "./engine/client"
 import { server as requests } from "../agents/groups/api"
 import type { Target } from "../shared/records"
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
-// The link's independent local services, supervised by the box's keeper or the app's server.
+// The resident box serves these routes on a private endpoint also used by the bridge.
 import { existsSync, mkdirSync, rmSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { randomBytes, timingSafeEqual } from "node:crypto"
@@ -20,8 +20,8 @@ import { DATA_ID, ownerOf } from "./ownership/resolve"
 import { peersOf } from "./peers/known"
 import { readLink } from "./state"
 
-export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
-  const { handle, started } = usageReader({
+export function serveBoxServices(options: UsageOptions & { artifacts: string; shown?: NonNullable<Parameters<typeof artifactService>[3]>["shown"] }) {
+  const { handle, started, closeInsights } = usageReader({
     ...options,
     conversationHome: (id, computer) => {
       if (!DATA_ID.test(id)) return
@@ -31,7 +31,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
       return undefined
     },
   })
-  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"), { library: join(dirname(options.artifacts), "library"), computer: ownComputerName })
+  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"), { library: join(dirname(options.artifacts), "library"), computer: ownComputerName, shown: options.shown })
   const api = (read: () => Target) => ({
     request<T>(...args: Parameters<ReturnType<typeof requests>["request"]>): Promise<T> {
       const { port, password } = read()
@@ -72,10 +72,8 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
     if (readServices(options.run)?.pid === process.pid) rmSync(file, { force: true })
     github.cancel()
     server.stop(true)
-    process.exit(0)
+    closeInsights()
   }
-  process.on("SIGTERM", leave)
-  process.on("SIGINT", leave)
   new HangWatch({ name: "engine", run: options.run, record: join(options.run, "engine.json"), isIt: isEngine }).start()
   started()
   writeSecret(file, JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: server.port, password })))
