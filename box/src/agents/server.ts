@@ -211,7 +211,7 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
 export function withSummarizeAt(session: Session): Session {
   const context = session.context
   if (!context) return session
-  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window)
+  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window)
   return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } }
 }
 
@@ -457,7 +457,10 @@ export function handler(context: Context, transferring?: () => boolean) {
       // Sessions
       if (area === "session") {
         if (!a) {
-          if (method === "POST") return json({ data: sessions.create(await body()) })
+          if (method === "POST") {
+            const session = sessions.create(await body())
+            return json({ data: await sessions.withContextWindow(session.id) })
+          }
           const directory = url.searchParams.get("directory") ?? undefined
           // Later pages carry the first's filter in their cursor ("<order>:<id>:<parentID>").
           const under = url.searchParams.get("parentID") ?? url.searchParams.get("cursor")?.split(":")[2] ?? null
@@ -474,7 +477,10 @@ export function handler(context: Context, transferring?: () => boolean) {
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
         const id = a
         if (!b) {
-          if (method === "GET") return json({ data: withSummarizeAt(sessions.get(id)) })
+          if (method === "GET") {
+            const session = url.searchParams.get("context") === "0" ? sessions.get(id) : await sessions.withContextWindow(id)
+            return json({ data: withSummarizeAt(session) })
+          }
           if (method === "PATCH") {
             sessions.update(id, await body())
             return json({ data: sessions.get(id) })

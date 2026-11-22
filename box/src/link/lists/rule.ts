@@ -72,7 +72,7 @@ export const isPinned = (session: Partial<EngineSession>): boolean => session.me
 const inBotsFolder = (folder: string, botsFolder: string): boolean => Boolean(botsFolder) && folder.startsWith(botsFolder.endsWith(path.sep) ? botsFolder : botsFolder + path.sep);
 
 /** What `session` is. */
-export function kindOf(session: EngineSession, place: ListPlace): SessionKind {
+export function kindOf(session: EngineSession, place: Pick<ListPlace, "isChatsFolder" | "botsFolder" | "botSessions">): SessionKind {
   if (typeof session.parentID === "string" && session.parentID) return "subagent";
   const kuvo = kuvoOf(session);
   if (kuvo.seat !== undefined && kuvo.seat !== null) return "seat";
@@ -105,7 +105,7 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
     kind,
     directory: folderOf(session),
     created: Number(session.time?.created) || 0,
-    updated: Number(session.time?.updated) || 0,
+    updated: Number(session.time?.activity ?? session.time?.updated) || 0,
   };
   if (kind === "project") facts.project = projectOf(session, place.filed);
   if (typeof session.title === "string" && session.title) facts.title = session.title;
@@ -330,9 +330,9 @@ export function projectPage(sessions: Readonly<Record<string, SessionFacts>>, pr
  * such session changed, and how many of them wait on you (`asking`) and are at work (`working`,
  * never one that's asking); and its list's first sessions (`shown`, in its order), how many it has
  * (`total`), and what "Show more" adds (`more`, `projectPage`). */
-export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>, place: Pick<ListPlace, "projects">): Record<string, ListedProject> {
+export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>, place: Pick<ListPlace, "projects"> & Partial<Pick<ListPlace, "filed">>): Record<string, ListedProject> {
   const names = new Map<string, string | undefined>();
-  for (const project of place.projects) if (!project.removed) names.set(project.directory, project.name);
+  for (const project of place.projects) if (!project.removed && !place.filed?.[project.directory]) names.set(project.directory, project.name);
   const newest = new Map<string, number>();
   const sums = new Map<string, { asking: number; working: number }>();
   const rows = new Map<string, Record<string, SessionFacts>>();

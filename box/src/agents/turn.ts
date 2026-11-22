@@ -2,7 +2,7 @@
 // words, thinking and tool calls, as events the app's transcript applies, and as messages kept for
 // a later read. Agents report what happens in plain calls; this keeps both in step.
 
-import { tokenCount, type ContextSize } from "../shared/context"
+import { contextCapacity, sameContextModel, tokenCount } from "../shared/context"
 import { emit } from "./events"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
@@ -80,18 +80,24 @@ export class Turn {
 
   /** The latest occupancy measured on this conversation, separate from billing totals. */
   context(used: unknown, window: unknown) {
-    if (!tokenCount(used)) return
-    this.saveContext({ used, ...(tokenCount(window) && window > 0 ? { window } : {}) })
+    const session = this.store.get(this.sessionID)?.session
+    if (!session || this.ended) return
+    const same = sameContextModel(session.contextModel ?? session.model, this.model)
+    const capacity = contextCapacity(window) ? window : same ? session.contextWindow ?? session.context?.window : undefined
+    const occupancy = tokenCount(used) ? used : same ? session.context?.used : undefined
+    if (capacity === undefined && occupancy === undefined) return
+    if (same && session.contextWindow === capacity && session.context?.window === capacity && session.context?.used === occupancy) return
+    session.contextModel = this.model
+    session.contextWindow = capacity
+    session.context = occupancy === undefined ? undefined : { used: occupancy, window: capacity }
+    this.save()
   }
 
   clearContext() {
-    this.saveContext(undefined)
-  }
-
-  private saveContext(context: ContextSize | undefined) {
     const session = this.store.get(this.sessionID)?.session
-    if (!session || this.ended || (session.context?.used === context?.used && session.context?.window === context?.window)) return
-    session.context = context
+    if (!session?.context || this.ended) return
+    session.contextWindow ??= session.context.window
+    delete session.context
     this.save()
   }
 

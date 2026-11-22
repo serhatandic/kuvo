@@ -159,6 +159,76 @@ afterEach(() => {
   timing.shellGrace = 5_000
 })
 
+async function readSessionRoute(path: string, method = "GET", body?: unknown) {
+  const serve = handler({ sessions, password: "pw" } as Parameters<typeof handler>[0])
+  const response = await serve(new Request(`http://box/api/session${path}`, {
+    method, headers: { authorization: "Basic " + btoa("opencode:pw"), "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }))
+  expect(response.status).toBe(200)
+  return (await response.json()).data
+}
+
+test("a conversation keeps its window when the agent sends usage without a size after a restart", async () => {
+  a.listed = [model("alpha", "one", "One", { context: 1_000_000, aliases: ["alias"] })]
+  const id = create({ providerID: "alpha", id: "alias" })
+  const read = () => readSessionRoute(`/${id}`)
+  const beforeFirstTurn = (await read()).contextWindow
+
+  const reply = async (used: number, window?: number, summarized = false) => {
+    a.script = async (_input, turn) => {
+      if (summarized) turn.clearContext()
+      turn.context(used, window)
+      return { outcome: "succeeded" }
+    }
+    const complete = new Promise<void>(done => {
+      const stop = subscribe(event => {
+        if (event.type !== "session.execution.succeeded" || event.data?.sessionID !== id) return
+        stop()
+        done()
+      })
+    })
+    send(id, "Continue")
+    await complete
+  }
+  await reply(195_000, 1_048_576)
+  expect((await read()).context).toMatchObject({ used: 195_000, window: 1_048_576 })
+  sessions.closeAll()
+  make()
+  a.listed = []
+  await reply(238_000, undefined, true)
+  expect((await read()).context).toMatchObject({ used: 238_000, window: 1_048_576 })
+  expect(beforeFirstTurn).toBe(1_000_000)
+})
+
+test("an old conversation stays below newer replies after migration, a checkpoint and a metadata edit", async () => {
+  const id = "ses_older", newer = "ses_newer"
+  for (const [session, updated, ended] of [[id, 900, 100], [newer, 500, 500]] as const) {
+    const folder = join(root, "sessions", session)
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, "session.json"), JSON.stringify({
+      id: session, projectID: "p", location: { directory: root }, model: { providerID: "alpha", id: "one" },
+      time: { created: 1, updated, idle: ended },
+    }))
+    writeFileSync(join(folder, "messages.json"), JSON.stringify([
+      { type: "user", id: "msg_input", time: { created: ended - 10 }, text: 'A quote: " and a backslash: \\' },
+      { type: "idle", id: "msg_idle", time: { created: ended }, outcome: "succeeded" },
+      { type: "agent-switched", id: "msg_mode", time: { created: updated + 50 }, agent: 'brace } and quote "' },
+    ], null, 2))
+  }
+  make()
+  const expectOrder = async () => {
+    const list = await readSessionRoute("")
+    expect(list.map((session: any) => [session.id, session.time.activity])).toEqual([[newer, 500], [id, 100]])
+  }
+  await expectOrder()
+  await readSessionRoute(`/${id}/message`)
+  await readSessionRoute(`/${id}`, "PATCH", { metadata: { "kuvo.pinned": true } })
+  sessions.closeAll()
+  make()
+  await expectOrder()
+})
+
 async function until(condition: () => boolean, ms = 3_000) {
   const start = Date.now()
   while (!condition()) {

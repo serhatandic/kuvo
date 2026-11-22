@@ -829,7 +829,7 @@ function stepContext(usage) {
   const used = values.reduce((sum, value) => sum + value, 0);
   return used || undefined;
 }
-var compactionChoices, DEFAULT_COMPACTION = "400000", compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var compactionChoices, DEFAULT_COMPACTION = "400000", compactionFile = (home) => join6(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, contextCapacity = (value) => tokenCount(value) && value > 0, sameContextModel = (one, other) => one?.providerID === other?.providerID && one?.id === other?.id;
 var init_context = __esm(() => {
   compactionChoices = ["200000", "400000", "600000", "never"];
   choosing = new Set(["claude", "codex", "grok"]);
@@ -8633,6 +8633,7 @@ class AcpThread {
         this.sessionID = this.setup?.sessionId;
         if (previous && previous !== this.sessionID) {
           this.startedOver = true;
+          this.session.contextWindow ??= this.session.context?.window;
           delete this.session.context;
           delete this.state.acpInstructions;
           delete this.state.acpInstructed;
@@ -9111,8 +9112,8 @@ ${others.map((path) => `- ${path}`).join(`
         }
         if (tokenCount(update.used)) {
           active.used = update.used;
-          turn.context(update.used, active.contextWindow);
         }
+        turn.context(update.used, active.contextWindow);
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD")
           this.cost(turn, update.cost.amount);
         return;
@@ -18266,6 +18267,7 @@ class CursorAgent {
       return model(this.providerID, info.id, info.id === "default" ? "Auto" : info.displayName ?? info.id, {
         variants: effort?.values?.map((value) => String(value.value)) ?? [],
         images: true,
+        context: 0,
         released: info.id === "default" ? 2000 : 1000 - index
       });
     });
@@ -20304,18 +20306,27 @@ class Turn {
     this.model = model;
   }
   context(used, window) {
-    if (!tokenCount(used))
+    const session = this.store.get(this.sessionID)?.session;
+    if (!session || this.ended)
       return;
-    this.saveContext({ used, ...tokenCount(window) && window > 0 ? { window } : {} });
+    const same = sameContextModel(session.contextModel ?? session.model, this.model);
+    const capacity = contextCapacity(window) ? window : same ? session.contextWindow ?? session.context?.window : undefined;
+    const occupancy = tokenCount(used) ? used : same ? session.context?.used : undefined;
+    if (capacity === undefined && occupancy === undefined)
+      return;
+    if (same && session.contextWindow === capacity && session.context?.window === capacity && session.context?.used === occupancy)
+      return;
+    session.contextModel = this.model;
+    session.contextWindow = capacity;
+    session.context = occupancy === undefined ? undefined : { used: occupancy, window: capacity };
+    this.save();
   }
   clearContext() {
-    this.saveContext(undefined);
-  }
-  saveContext(context) {
     const session = this.store.get(this.sessionID)?.session;
-    if (!session || this.ended || session.context?.used === context?.used && session.context?.window === context?.window)
+    if (!session?.context || this.ended)
       return;
-    session.context = context;
+    session.contextWindow ??= session.context.window;
+    delete session.context;
     this.save();
   }
   get currentModel() {
@@ -21689,10 +21700,29 @@ class Sessions {
     emit("session.updated", { sessionID: record.session.id, session: record.session }, record.session.location.directory);
   }
   list(directory, parentID) {
-    return this.store.all().filter((session) => !directory || session.location.directory === directory).filter((session) => parentID === undefined || (parentID === null ? !session.parentID : session.parentID === parentID)).sort((a, b) => b.time.updated - a.time.updated || (a.id < b.id ? 1 : -1));
+    return this.store.all().filter((session) => !directory || session.location.directory === directory).filter((session) => parentID === undefined || (parentID === null ? !session.parentID : session.parentID === parentID)).map((session) => this.withActivity(session)).sort((a, b) => b.time.activity - a.time.activity || (a.id < b.id ? 1 : -1));
   }
   get(id) {
-    return this.record(id).session;
+    return this.withActivity(this.record(id).session);
+  }
+  withActivity(session) {
+    session.time.activity = this.store.activity(session);
+    return session;
+  }
+  async withContextWindow(id) {
+    const session = this.get(id);
+    const ref = session.contextModel ?? session.model;
+    if (!ref || session.contextWindow !== undefined)
+      return session;
+    const listed = session.context?.window === undefined ? Sessions.modelIn(await this.listedModels(ref.providerID), ref.id) : undefined;
+    const window = session.context?.window ?? (listed?.provisional ? undefined : listed?.limit.context);
+    if (session.contextWindow === undefined && sameContextModel(session.contextModel ?? session.model, ref) && contextCapacity(window)) {
+      session.contextWindow = window;
+      if (session.context)
+        session.context.window = window;
+      this.store.progress(id);
+    }
+    return session;
   }
   messages(id) {
     return this.record(id).messages;
@@ -22033,6 +22063,11 @@ class Sessions {
     if (previous && previous.providerID === model.providerID && previous.id === model.id && previous.variant === model.variant)
       return;
     this.slots(record);
+    if (!sameContextModel(previous, model)) {
+      delete session.context;
+      delete session.contextWindow;
+      delete session.contextModel;
+    }
     session.model = model;
     session.metadata = { ...session.metadata, kuvoAgent: this.kind(model.providerID) };
     const event = emit("session.model.selected", { sessionID: id, model, previous }, session.location.directory);
@@ -24224,6 +24259,7 @@ var legacyKeys, carryOn = "Carry on with my last message from where you left off
 var init_sessions = __esm(() => {
   init_maintenance();
   init_agent();
+  init_context();
   init_accounts();
   init_codex_citations();
   init_auto();
@@ -24290,7 +24326,7 @@ var init_sessions = __esm(() => {
 });
 
 // box/src/agents/transcript.ts
-import { closeSync as closeSync2, existsSync as existsSync18, openSync as openSync2, readSync as readSync2, renameSync as renameSync12, rmSync as rmSync17, statSync as statSync10, utimesSync as utimesSync3, writeSync } from "fs";
+import { closeSync as closeSync2, existsSync as existsSync18, fstatSync as fstatSync2, openSync as openSync2, readSync as readSync2, renameSync as renameSync12, rmSync as rmSync17, statSync as statSync10, utimesSync as utimesSync3, writeSync } from "fs";
 import { StringDecoder } from "string_decoder";
 import { createHash as createHash12 } from "crypto";
 import { dirname as dirname15, join as join35 } from "path";
@@ -24509,6 +24545,81 @@ function messageFileTime(folder) {
     } catch {}
   }
   return;
+}
+function messageActivity(message) {
+  if (message.type === "model-switched" || message.type === "agent-switched")
+    return;
+  return message.time?.completed ?? message.time?.streamed ?? message.time?.created;
+}
+function* legacyTail(file) {
+  const fd = openSync2(file, "r");
+  const size = fstatSync2(fd).size;
+  const block = Buffer.allocUnsafe(32 * 1024);
+  let offset = -block.length;
+  const byte = (at) => {
+    if (at < offset || at >= offset + block.length) {
+      offset = Math.floor(at / block.length) * block.length;
+      readSync2(fd, block, 0, Math.min(block.length, size - offset), offset);
+    }
+    return block[at - offset];
+  };
+  try {
+    let end = 0, depth = 0, quoted = false;
+    for (let at = size - 1;at >= 0; at--) {
+      const char = byte(at);
+      if (char === 34) {
+        let escape = at - 1;
+        while (escape >= 0 && byte(escape) === 92)
+          escape--;
+        if ((at - escape) % 2 === 1)
+          quoted = !quoted;
+      }
+      if (quoted)
+        continue;
+      if (char === 125) {
+        if (depth === 0)
+          end = at + 1;
+        depth++;
+      }
+      if (char !== 123)
+        continue;
+      depth--;
+      if (depth !== 0)
+        continue;
+      const text = Buffer.allocUnsafe(end - at);
+      for (let read = 0;read < text.length; ) {
+        const count = readSync2(fd, text, read, text.length - read, at + read);
+        if (!count)
+          throw new SyntaxError("The saved conversation ended early.");
+        read += count;
+      }
+      yield JSON.parse(text.toString("utf8"));
+    }
+  } finally {
+    closeSync2(fd);
+  }
+}
+function savedActivity(folder) {
+  const file = join35(folder, transcriptDatabase);
+  if (!existsSync18(file)) {
+    const legacy = join35(folder, "messages.json");
+    if (existsSync18(legacy))
+      for (const message of legacyTail(legacy)) {
+        const at = messageActivity(message);
+        if (at !== undefined)
+          return at;
+      }
+    return;
+  }
+  const db = database(file, true);
+  try {
+    db.exec("PRAGMA busy_timeout=1000");
+    const row = db.prepare(`SELECT body FROM message WHERE json_extract(body, '$.type')
+      NOT IN ('model-switched', 'agent-switched') ORDER BY position DESC LIMIT 1`).get();
+    return row ? messageActivity(JSON.parse(row.body)) : undefined;
+  } finally {
+    db.close();
+  }
 }
 function writeTranscript(folder, messages, length, attachments, session, durable) {
   const file = join35(folder, transcriptDatabase);
@@ -24920,6 +25031,24 @@ class Store {
   writtenAt(id) {
     return messageFileTime(join36(this.root, id));
   }
+  activity(session) {
+    const loaded = this.loaded.get(session.id);
+    if (loaded) {
+      for (let at = loaded.messages.length - 1;at >= 0; at--) {
+        const time = messageActivity(loaded.messages[at]);
+        if (time !== undefined)
+          return time;
+      }
+      return session.time.created;
+    }
+    if (session.time.activity !== undefined)
+      return session.time.activity;
+    try {
+      return session.time.activity = savedActivity(join36(this.root, session.id)) ?? session.time.created;
+    } catch {
+      return session.time.idle ?? session.time.created;
+    }
+  }
   add(session) {
     this.checkWritable(session.id);
     this.keep(session, {}, join36(this.root, session.id), []);
@@ -25007,6 +25136,7 @@ class Store {
         }
       }
       writeTranscript(folder, changed(), messages.length, this.attachments, id, durable);
+      record.session.time.activity = this.activity(record.session);
       loaded.order = [...messages];
       dirty.clear();
     }
@@ -31259,7 +31389,7 @@ function withSummarizeAt(session) {
   const context = session.context;
   if (!context)
     return session;
-  const at = summarizeAt(parseProvider(session.model?.providerID ?? "")?.kind, context.window);
+  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window);
   return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } };
 }
 function page(items, url) {
@@ -31492,8 +31622,10 @@ function handler(context, transferring) {
       }
       if (area === "session") {
         if (!a) {
-          if (method === "POST")
-            return json9({ data: sessions.create(await body()) });
+          if (method === "POST") {
+            const session = sessions.create(await body());
+            return json9({ data: await sessions.withContextWindow(session.id) });
+          }
           const directory = url.searchParams.get("directory") ?? undefined;
           const under = url.searchParams.get("parentID") ?? url.searchParams.get("cursor")?.split(":")[2] ?? null;
           const roots = sessions.list(directory, under === null || under === "" ? undefined : under === "null" ? null : under);
@@ -31511,8 +31643,10 @@ function handler(context, transferring) {
           return json9({ data: sessions.importSession(await body()) });
         const id = a;
         if (!b) {
-          if (method === "GET")
-            return json9({ data: withSummarizeAt(sessions.get(id)) });
+          if (method === "GET") {
+            const session = url.searchParams.get("context") === "0" ? sessions.get(id) : await sessions.withContextWindow(id);
+            return json9({ data: withSummarizeAt(session) });
+          }
           if (method === "PATCH") {
             sessions.update(id, await body());
             return json9({ data: sessions.get(id) });
@@ -33554,4 +33688,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 5e8cbf5dc08fbf993130ee2c08039119308b41d6bf52eef2a0f5a1661e95ded2
+// Built from Packages/Box/src/agents c0e8557c57ed15bef8554bcc2b504d6a8a418bba5e88b337dab20462ccb50a16

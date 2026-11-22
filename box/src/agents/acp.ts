@@ -464,6 +464,7 @@ export class AcpThread implements Thread {
         if (previous && previous !== this.sessionID) {
           // In place of one it had: the instructions go again, and what came before is handed over.
           this.startedOver = true
+          this.session.contextWindow ??= this.session.context?.window
           delete this.session.context
           delete this.state.acpInstructions
           delete this.state.acpInstructed
@@ -958,8 +959,8 @@ export class AcpThread implements Thread {
         }
         if (tokenCount(update.used)) {
           active.used = update.used
-          turn.context(update.used, active.contextWindow)
         }
+        turn.context(update.used, active.contextWindow)
         // What it cost, when it says (in dollars).
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") this.cost(turn, update.cost.amount)
         return

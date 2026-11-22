@@ -15,7 +15,7 @@ export interface EngineSession {
   /** Its folder said flat, which this reads too where `location` has none (the engine itself has it
    * only in `location`). */
   directory?: string;
-  time: { created: number; updated: number; idle?: number; viewed?: number; archived?: number };
+  time: { created: number; updated: number; activity?: number; idle?: number; viewed?: number; archived?: number };
   permissions?: { action: string; resource: string; effect: "allow" | "deny" | "ask" }[];
   /** An undo waiting to be kept: the conversation is back to before this message. */
   revert?: { messageID: string };

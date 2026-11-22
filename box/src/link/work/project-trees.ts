@@ -86,7 +86,10 @@ export async function repositoryOf(folder: string): Promise<{ top: string; main:
       if (!own || path.basename(path.dirname(own)) !== "worktrees") return null;
       const common = path.dirname(path.dirname(own));
       if (path.basename(common) !== ".git" || !await isRepository(common)) return null;
-      return (await linkedWorktrees(path.dirname(common))).includes(at) ? { top: at, main: path.dirname(common) } : null;
+      const trees = path.dirname(own);
+      if (await real(trees) !== trees || !(await fsp.lstat(own).catch(() => null))?.isDirectory()) return null;
+      const back = (await smallFile(path.join(own, "gitdir")))?.trim();
+      return back && await real(path.resolve(own, back)) === git ? { top: at, main: path.dirname(common) } : null;
     }
     if (kind || path.dirname(at) === at) return null;
   }

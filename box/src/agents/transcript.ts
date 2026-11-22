@@ -1,6 +1,6 @@
 // Coding-agent messages are checkpointed by position. Portable moves and backups still use
 // the legacy JSON array, read from one descriptor and decoded one message at a time.
-import { closeSync, existsSync, openSync, readSync, renameSync, rmSync, statSync, utimesSync, writeSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, openSync, readSync, renameSync, rmSync, statSync, utimesSync, writeSync } from "node:fs"
 import { StringDecoder } from "node:string_decoder"
 import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
@@ -202,11 +202,78 @@ export function* savedMessages(folder: string, view: MessageView = "body"): Gene
   } finally { db.close() }
 }
 
+// File time is used only to decide whether a crashed turn's edits are recent enough to recover.
 export function messageFileTime(folder: string) {
   for (const name of [transcriptDatabase + "-wal", transcriptDatabase, "messages.json"]) {
     try { return statSync(join(folder, name)).mtimeMs } catch {}
   }
   return undefined
+}
+
+/** Preferences have transcript markers of their own, but aren't conversation activity. */
+export function messageActivity(message: Message): number | undefined {
+  if (message.type === "model-switched" || message.type === "agent-switched") return
+  return message.time?.completed ?? message.time?.streamed ?? message.time?.created
+}
+
+/** Walk the portable array from the end, so a list read needn't decode a conversation or migrate it. */
+function* legacyTail(file: string): Generator<Message> {
+  const fd = openSync(file, "r")
+  const size = fstatSync(fd).size
+  const block = Buffer.allocUnsafe(32 * 1024)
+  let offset = -block.length
+  const byte = (at: number) => {
+    if (at < offset || at >= offset + block.length) {
+      offset = Math.floor(at / block.length) * block.length
+      readSync(fd, block, 0, Math.min(block.length, size - offset), offset)
+    }
+    return block[at - offset]
+  }
+  try {
+    let end = 0, depth = 0, quoted = false
+    for (let at = size - 1; at >= 0; at--) {
+      const char = byte(at)
+      if (char === 34) {
+        let escape = at - 1
+        while (escape >= 0 && byte(escape) === 92) escape--
+        if ((at - escape) % 2 === 1) quoted = !quoted
+      }
+      if (quoted) continue
+      if (char === 125) {
+        if (depth === 0) end = at + 1
+        depth++
+      }
+      if (char !== 123) continue
+      depth--
+      if (depth !== 0) continue
+      const text = Buffer.allocUnsafe(end - at)
+      for (let read = 0; read < text.length;) {
+        const count = readSync(fd, text, read, text.length - read, at + read)
+        if (!count) throw new SyntaxError("The saved conversation ended early.")
+        read += count
+      }
+      yield JSON.parse(text.toString("utf8")) as Message
+    }
+  } finally { closeSync(fd) }
+}
+
+export function savedActivity(folder: string): number | undefined {
+  const file = join(folder, transcriptDatabase)
+  if (!existsSync(file)) {
+    const legacy = join(folder, "messages.json")
+    if (existsSync(legacy)) for (const message of legacyTail(legacy)) {
+      const at = messageActivity(message)
+      if (at !== undefined) return at
+    }
+    return
+  }
+  const db = database(file, true)
+  try {
+    db.exec("PRAGMA busy_timeout=1000")
+    const row = db.prepare(`SELECT body FROM message WHERE json_extract(body, '$.type')
+      NOT IN ('model-switched', 'agent-switched') ORDER BY position DESC LIMIT 1`).get()
+    return row ? messageActivity(JSON.parse(row.body as string)) : undefined
+  } finally { db.close() }
 }
 
 /** Publish all changed rows in one WAL commit. The legacy array stays readable until the
