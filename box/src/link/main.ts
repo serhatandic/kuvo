@@ -1429,7 +1429,10 @@ async function setup(): Promise<void> {
         return null;
       }
     }
-    if (mac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign)
+    // A box in no setup, set up again by the Mac it already has (a 0.7 Mac does each time its phones
+    // change): its work, those phones included, is that Mac's. Any other Mac is refused below.
+    const sameMac = !!mac && !current?.setup && macsOf(current).includes(mac);
+    if (mac && !sameMac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign)
       && hasSetupWork(current)) {
       alreadySetUp = true;
       return null;

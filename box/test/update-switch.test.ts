@@ -92,7 +92,7 @@ for (const version of ["0.8.0-beta.35", "0.8.0-beta.40", "0.8.0-beta.41", "0.7.2
     if (process.platform === "darwin") {
       expect(fs.realpathSync(path.join(root, "bin/Kuvo Helper.app"))).toBe(
         fs.realpathSync(path.join(root, "helper/Kuvo Helper.app")));
-      expect(fs.statSync(helper).ino).toBe(enrolled);
+      expect(fs.statSync(helper).ino).toBe(enrolled!);
     }
   });
 }
@@ -201,7 +201,7 @@ test("prepare rejects the broken internal route argv and switches a signed relea
       expect(fs.readFileSync(path.join(root, "bin/box-version"), "utf8")).toBe("0.8.0-beta.35");
       expect(sha(fs.readFileSync(path.join(root, "bin/kuvo-link.js")))).toBe(oldLink);
     } else {
-      expect(outcome.result, outcome.message).toBe("updated");
+      expect<string>(outcome.result, outcome.message).toBe("updated");
       expect(fs.readFileSync(path.join(root, "bin/box-version"), "utf8")).toBe(version);
     }
   }

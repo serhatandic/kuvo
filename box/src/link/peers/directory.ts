@@ -139,8 +139,9 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   const layout = count(given.layout);
   const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
   const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate as FleetUpdate : undefined;
-  return { staged: releaseRef(given.staged), cannot: cannotFact(given.cannot), candidate: toldVersion(given.candidate),
-    releaseManifest: short(given.releaseManifest, 16_384), runningManifest: short(given.runningManifest, 16_384),
+  const update = { staged: releaseRef(given.staged), cannot: cannotFact(given.cannot), candidate: toldVersion(given.candidate),
+    releaseManifest: short(given.releaseManifest, 16_384), runningManifest: short(given.runningManifest, 16_384) };
+  return { ...Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as Partial<typeof update>,
     ...(installedSha256 ? { installedSha256 } : {}), ...(layout !== undefined ? { layout } : {}), ...(fleetUpdate ? { fleetUpdate } : {}), ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),

@@ -1598,14 +1598,15 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     autopilot: ["GET", "kuvo/sessions/ses_none/autopilot"],
     bots: ["GET", "kuvo/bots"],
     "bots.deletes": ["GET", "kuvo/bots"],
-    "bots.edit": ["DELETE", "kuvo/bots/bot_none"],
-    "bots.effort": ["PATCH", "kuvo/bots/bot_none"],
+    // (Held for the computer it lives on, from a client of yours: an unknown caller is refused.)
+    "bots.edit": ["DELETE", "kuvo/bots/bot_none", { fromApp: true }],
+    "bots.effort": ["PATCH", "kuvo/bots/bot_none", { fromApp: true }],
     "bots.elsewhere": ["GET", "kuvo/bots"],
     "bots.events": ["GET", "kuvo/bots/events"],
     // (A bot on another computer, held for it: a bot none of them lists is refused with words.)
-    "bots.held": ["PATCH", "kuvo/bots/bot_none"],
+    "bots.held": ["PATCH", "kuvo/bots/bot_none", { fromApp: true }],
     "bots.job": ["GET", "kuvo/bots"],
-    "bots.job-fields": ["PATCH", "kuvo/bots/bot_none"],
+    "bots.job-fields": ["PATCH", "kuvo/bots/bot_none", { fromApp: true }],
     "bots.make": ["GET", "kuvo/bots/templates"],
     "bots.now": ["GET", "kuvo/bots"],
     // (A bot's state is in `now`; seen is a bot's own route: one that isn't here says so.)
@@ -1620,6 +1621,9 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (What Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac.)
     "box.atWork": ["GET", "kuvo/box/at-work"],
     "box.backups": ["GET", "kuvo/box/backups", { served: true, fromApp: true }],
+    // (Encrypted deposits over peer mail: the same route.)
+    "box.backups.relay": ["GET", "kuvo/box/backups", { served: true, fromApp: true }],
+    "box.backups.status": ["GET", "kuvo/box/backups/status", { served: true, fromApp: true }],
     // (A command, `kuvo-link.js helper`, not a route: kuvo/info names it.)
     "box.helper": ["GET", "kuvo/info"],
     // (A box in a home of its own: on a Mac's, kuvo/work/settings's keepsAwake.)
@@ -1678,6 +1682,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
+    "config.apply.from": ["POST", "kuvo/config/change-sets"],
     "data.ownership": ["GET", "kuvo/data/owner", { desktop: true }],
     // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)
     "devices.pair": ["GET", "kuvo/devices/pair"],
@@ -1753,6 +1758,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "messages.send": ["POST", "kuvo/messages/parts"],
     // (Each message page the box forwards: a tool step's title and doing, a lead's news of its sessions.)
     "messages.session-news": ["GET", "api/session/none/message"],
+    "messages.tool-failures": ["GET", "api/session/none/message"],
     "messages.tool-titles": ["GET", "api/session/none/message"],
     // (A wake-up's or watch's message as a card: its summary and note, in the same pages.)
     "messages.wake-cards": ["GET", "api/session/none/message"],
@@ -1769,11 +1775,12 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Your starred models, kept by the box: its own route.)
     "models.starred": ["GET", "kuvo/models/starred"],
     moves: ["GET", "kuvo/moves"],
-    "moves.two-computers": ["GET", "kuvo/moves"],
     // (Moves with a coding agent's own conversation: what kuvo/moves takes besides.)
     "moves.agents": ["GET", "kuvo/moves"],
     // (The check before a move holds anything, which a box asks of another in its mail.)
     "moves.check": ["GET", "kuvo/moves/places?kind=bot&id=bot_none"],
+    // (A move between the two computers alone, with no main computer taking part.)
+    "moves.two-computers": ["GET", "kuvo/moves"],
     named: ["GET", "kuvo/named"],
     "names.titles": ["GET", "kuvo/computers"],
     notices: ["GET", "kuvo/notices"],
@@ -1829,6 +1836,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.chat": ["GET", "kuvo/info"],
     "sessions.glance": ["POST", "kuvo/sessions/glance"],
     "sessions.list": ["POST", "kuvo/sessions/list"],
+    "sessions.list.pages": ["GET", "kuvo/sessions/page"],
     "sessions.list.start": ["POST", "kuvo/sessions/list"],
     "sessions.mentions": ["GET", "kuvo/sessions/ses_none/mentions?for=files"],
     "sessions.models": ["POST", "kuvo/sessions/models"],
@@ -1847,21 +1855,20 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     setup: ["GET", "kuvo/setup"],
     // These capabilities are exchanged between peers.
     "setup.checkpoints": ["GET", "kuvo/info"],
-    "setup.handover": ["POST", "kuvo/setup/handover"],
+    "setup.handover": ["POST", "kuvo/setup/handover", { fromApp: true }],
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "setup.merge": ["GET", "kuvo/setup/merge", { fromApp: true, served: true }],
     "setup.ready": ["GET", "kuvo/setup/ready"],
+    // (The main computer agreed through the relay's lease: kuvo/info names it.)
+    "setup.relay-lease": ["GET", "kuvo/info"],
     "setup.shared-saves": ["POST", "kuvo/setup/save-local", { fromHolder: true }],
-    "setup.sole-primary": ["GET", "kuvo/info"],
-    "setup.standby-acceptance": ["GET", "kuvo/info"],
-    "setup.successor-chain": ["GET", "kuvo/info"],
-    "setup.takeover": ["GET", "kuvo/setup/standby"],
     "setup.welcomed": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.plan": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.state": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.action": ["GET", "kuvo/sign-in/action"],
+    "sign-in.browser-return": ["POST", "kuvo/sign-in/start"],
     "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
     "sign-in.return": ["GET", "kuvo/sign-in/return"],
@@ -1873,6 +1880,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "update.fleet": ["POST", "kuvo/update/retry"],
     "usage.history": ["GET", "kuvo/agents/api/kuvo/usage"],
     "usage.insights": ["GET", "kuvo/agents/api/kuvo/insights"],
+    "usage.insights.summary": ["GET", "kuvo/agents/api/kuvo/insights/summary"],
     "usage.notices": ["GET", "kuvo/agents/api/kuvo/limits"],
     "usage.settings": ["GET", "kuvo/agents/api/kuvo/usage/settings"],
     vault: ["GET", "kuvo/vault/tools"],

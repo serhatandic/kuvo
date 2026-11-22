@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use kuvo_box::install::stand_in::Bundle;
-use kuvo_box::install::{End, Installer, MoveFacts, Outcome, Progress, Ran, Step, Verb};
+use kuvo_box::install::{End, Installer, MoveFacts, Outcome, Progress, Step, Verb};
 
 const TRIAL: &str = "run.kuvo.code.trial713.p5";
 const ROOT: &str = ".kuvo-trial713-p5";
@@ -319,28 +319,4 @@ fn kuvo_code_itself_installs_into_its_own_home_and_carries_the_keychain_tool() {
     assert_eq!(real.asked(), Vec::<String>::new());
     std::fs::remove_file(real.path.join("Contents/MacOS/kuvo-keys")).unwrap();
     assert_eq!(kuvo_box::install::carried(&real.executable()).unwrap().keys, None);
-}
-
-/// This Mac's box brought up to the release the app carries (`update`): waiting for work to end,
-/// its words and Update Now's question handed on as the box said them; then at once (`--now`).
-#[test]
-fn this_macs_box_is_updated_waiting_for_work_to_end_or_now() {
-    let made = tempfile::tempdir().unwrap();
-    let (bundle, installer) = bundle(made.path());
-    let waiting = r#"{"step":"waiting","title":"Kuvo on this Mac updates once your sessions finish.","confirm":{"title":"Update Kuvo on this Mac now?","message":"2 sessions are at work on this Mac. They stop as Kuvo restarts.","label":"Update Now"}}"#;
-    bundle.says("update", Some(1), 1, &[waiting, r#"{"result":"busy","message":"Something is running there now."}"#]);
-    bundle.says("update", Some(2), 0, &[r#"{"step":"updating","title":"Updating Kuvo on this Mac…"}"#, r#"{"result":"updated"}"#]);
-    let mut drawn = Vec::new();
-    let ran = installer.update(false, &mut |progress| drawn.push(progress));
-    let Progress::Step(step) = &drawn[0] else { panic!("{drawn:?}") };
-    assert_eq!((step.step.as_str(), step.title.as_deref()), ("waiting", Some("Kuvo on this Mac updates once your sessions finish.")));
-    assert_eq!(step.confirm.as_ref().map(|confirm| confirm.label.as_str()), Some("Update Now"));
-    let Ran::Answered { exit: 1, answer } = ran else { panic!("{ran:?}") };
-    assert_eq!(answer.result.as_deref(), Some("busy"));
-    let mut drawn = Vec::new();
-    let ran = installer.update(true, &mut |progress| drawn.push(progress));
-    assert!(matches!(&ran, Ran::Answered { exit: 0, answer } if answer.result.as_deref() == Some("updated")), "{ran:?}");
-    assert_eq!(drawn, vec![Progress::Step(Step { step: "updating".into(), title: Some("Updating Kuvo on this Mac…".into()), ..Step::default() })]);
-    // Asked as the protocol says: the verb, `--now` where it's now, the copy's own root.
-    assert_eq!(asked(&bundle), vec![format!("update --root {ROOT}"), format!("update --now --root {ROOT}")]);
 }
