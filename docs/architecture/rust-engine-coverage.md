@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 90 of
-411 declarations are covered, 103 are partial and 218 are gaps.
-Row 3.2 retains 196 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 98 of
+411 declarations are covered, 102 are partial and 211 are gaps.
+Row 3.2 retains 187 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -106,7 +106,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/message-parts.test.ts` (18) | 2, 5, 11, 17 | 1, 3–4, 8–10, 12–16, 18 | 6–7 | 3.2 · 1, 3–4, 6, 8–10, 12–16, 18<br>4.1 · 7 |
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
-| `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | — | 3 | 3.2 · 3 |
+| `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | 3 | — | 3.2 · 3 |
 | `box/test/queue-items.test.ts` (25) | 7, 9–10, 22 | 1–6, 13, 21, 23 | 8, 11–12, 14–20, 24–25 | 3.2 · 1–6, 8, 11–21, 23–24<br>4.1 · 25<br>5.1 · 21 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
@@ -118,7 +118,7 @@ owners on the same case each own the part described by their phase.
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
-| `box/test/draft-orphan.test.ts` (5) | 1–4 | — | 5 | 3.2 · 5 |
+| `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 3.2 · 5 |
 | `box/test/conversation.test.ts` (3) | — | 3 | 1–2 | 3.2 · 1–3 |
 | `box/test/conversation-activity.test.ts` (2) | — | — | 1–2 | 3.2 · 1<br>4.1 · 2<br>5.1 · 2 |
 | `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
@@ -135,9 +135,9 @@ Each row uses the same one-based numbering and ownership rule.
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
-| `box/test/session-asks.test.ts` (19) | 3–4, 14–15, 18 | 1, 6–11, 19 | 2, 5, 12–13, 16–17 | 3.2 · 1–2, 5, 13, 16–17, 19<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
+| `box/test/session-asks.test.ts` (19) | 1, 3–5, 14–18 | 2, 6–11, 19 | 12–13 | 3.2 · 13, 19<br>4.1 · 2<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
 | `box/test/model-readiness.test.ts` (1) | — | 1 | — | 3.2 · 1 |
-| `box/test/models-offered.test.ts` (15) | 7 | 1–2, 4–6, 8–15 | 3 | 3.2 · 3–4, 6, 10–11, 13<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
+| `box/test/models-offered.test.ts` (15) | 3–4, 6–7, 13 | 1–2, 5, 8–12, 14–15 | — | 3.2 · 10–11<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
 | `box/test/models-starred.test.ts` (7) | 1–2, 4–7 | — | 3 | 7.3 · 3 |
 | `box/test/models-speed.test.ts` (3) | 2–3 | 1 | — | 4.2 · 1 |
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
