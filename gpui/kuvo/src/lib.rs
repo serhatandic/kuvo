@@ -62,7 +62,7 @@ use gpui::{App, KeyBinding, actions};
 pub use home::Home;
 pub use workspace::Workspace;
 
-actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ToggleSidebar, ShowChanges, ShowFiles, CheckForUpdates]);
+actions!(kuvo, [NewSession, OpenFolder, ToggleAppearance, Quit, TogglePanel, ToggleSidebar, ShowChanges, ShowFiles, CheckForUpdates]);
 
 /// Binds the app's keys, after the blocks' (so "/"'s list takes its keys ahead of the field's).
 mod wakes;
@@ -81,6 +81,7 @@ pub fn bind_keys(cx: &mut App) {
     app_menu::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-n", NewSession, Some("Workspace")),
+        KeyBinding::new("cmd-o", OpenFolder, Some("Workspace")),
         // The open area's sidebar folded away or brought back; keep ⌘0 as an alias.
         KeyBinding::new("cmd-b", ToggleSidebar, Some("Workspace")),
         KeyBinding::new("cmd-0", ToggleSidebar, Some("Workspace")),

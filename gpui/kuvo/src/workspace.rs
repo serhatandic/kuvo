@@ -39,7 +39,7 @@ use crate::session_menu::{
 };
 use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Kind, PanelEvent, Place, SidePanel};
-use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
+use crate::{NewSession, OpenFolder, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
 #[path = "quick_search.rs"]
 mod quick_search;
@@ -3946,6 +3946,52 @@ impl Workspace {
         }
     }
 
+    /// Add Project (the + at Projects, File › Open Folder…): the system's folder picker, then the
+    /// folder picked kept as a project by this Mac's box (`PUT kuvo/projects`); the list shows it
+    /// as the box says. Another computer's folders can't be picked here: see
+    /// [`Workspace::can_add_project`].
+    pub fn add_project(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_add_project() {
+            return;
+        }
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Add Project".into()) });
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(folder) = paths.into_iter().next() else { return };
+            this.update(cx, |this, cx| this.add_project_folder(folder.to_string_lossy().into_owned(), cx)).ok();
+        }));
+    }
+
+    /// Whether Add Project can pick a folder: the system's picker shows this Mac's folders, so only
+    /// while the window shows this Mac's own sessions.
+    pub fn can_add_project(&self) -> bool {
+        self.client.here() && !self.client.gate().is_held()
+    }
+
+    fn add_project_folder(&mut self, directory: String, cx: &mut Context<Self>) {
+        self.session_menu.action_error = None;
+        let client = self.client.clone();
+        if !self.live {
+            match client.add_project(&directory) {
+                Ok(()) => self.refresh_list_now(cx),
+                Err(error) => self.session_menu.action_error = Some(format!("The project wasn’t added: {}", kuvo_box::accounts::said(&error))),
+            }
+            cx.notify();
+            return;
+        }
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { client.add_project(&directory) }).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.refresh_list_after_action(cx),
+                    Err(error) => this.session_menu.action_error = Some(format!("The project wasn’t added: {}", kuvo_box::accounts::said(&error))),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     fn refresh_list_after_action(&mut self, cx: &mut Context<Self>) {
         if !self.live {
             self.refresh_list_now(cx);
@@ -4572,6 +4618,7 @@ impl Render for Workspace {
             .key_context("Workspace")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NewSession, window, cx| this.new_session(None, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenFolder, window, cx| this.add_project(window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)))
             .on_action(cx.listener(|this, _: &RenameSession, window, cx| this.run_shortcut("rename", window, cx)))
             .on_action(cx.listener(|this, _: &ArchiveSession, window, cx| this.run_shortcut("archive", window, cx)))

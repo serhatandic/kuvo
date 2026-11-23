@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- **+** next to Projects in the Sessions sidebar, and **File › Open Folder…** (⌘O), pick a folder on this Mac and add it as a project.
 - The filter button beside the sidebar's search is gone; archived sessions are in **Settings › Archived Sessions**.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.

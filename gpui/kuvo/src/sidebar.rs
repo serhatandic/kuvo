@@ -164,9 +164,8 @@ pub fn lines(workspace: &Workspace, cx: &App) -> Vec<Line> {
         lines.extend(listing.needs_you().iter().map(|needs| Line::Needs { id: needs.session.clone(), asks: needs.asks.summary.clone() }));
     }
     // Draft B: a pinned session keeps its place once inside its project (or Chats) and is raised to its top.
-    if !sidebar.projects.is_empty() {
-        lines.push(Line::Header("Projects"));
-    }
+    // (Its heading shows with none too: its + adds the first.)
+    lines.push(Line::Header("Projects"));
     for group in &sidebar.projects {
         lines.push(Line::Project(group.directory.clone()));
         if workspace.is_collapsed(&group.directory) {
@@ -402,6 +401,10 @@ fn sessions(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Wo
         let message = if workspace.archived_filter() { "No archived sessions." } else { "No sessions yet." };
         return vec![quiet(Some(message), false, cx)];
     }
+    if lines == [Line::Header("Projects")] {
+        // (Nothing yet but the Projects heading, with its +.)
+        return vec![line_row(workspace, &lines[0], false, cx), quiet(Some("No sessions yet."), false, cx)];
+    }
     let cursor = workspace.walked().map(str::to_owned);
     lines
         .iter()
@@ -435,6 +438,22 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
                 .text_ui(TypeSize::Caption)
                 .child(div().text_color(c.text_muted).medium().child("Needs you"))
                 .child(div().text_color(c.text_faint).child(count.to_string()))
+                .into_any_element()
+        }
+        Line::Header("Projects") => {
+            // Add Project: this Mac's folders, through its own picker; another computer's can't be
+            // picked here yet.
+            let here = workspace.can_add_project();
+            let add = Button::icon_only("add-project", IconName::Plus, "Add Project")
+                .ghost()
+                .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
+                .tooltip(if here { "Add Project" } else { "Projects are added on the computer they’re on" })
+                .disabled(!here)
+                .on_click(cx.listener(|this, _, window, cx| this.add_project(window, cx)));
+            div()
+                .debug_selector(|| "header-Projects".into())
+                .child(SectionHeader::new("header-Projects", "Projects").action(div().debug_selector(|| "add-project".into()).child(add)))
                 .into_any_element()
         }
         Line::Header(title) => {

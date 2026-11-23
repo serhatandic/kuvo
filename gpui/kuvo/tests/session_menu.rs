@@ -749,3 +749,21 @@ fn the_sidebar_search_has_no_archived_filter_button(cx: &mut TestAppContext) {
     assert!(bounds(cx, "toggle-archived").is_none(), "no filter button beside the search (Settings › Archived Sessions lists them)");
 }
 
+#[gpui::test]
+fn add_project_at_the_projects_heading_lists_the_folder_picked(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, cx) = open(cx, stand_in.clone());
+    assert!(bounds(cx, "project-Garden").is_none());
+
+    click(cx, "add-project");
+    assert!(cx.did_prompt_for_paths(), "the system's folder picker opens");
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple, "it picks one folder");
+        Some(vec![std::path::PathBuf::from("/Users/you/Code/Garden")])
+    });
+    cx.run_until_parked();
+
+    let sent: Vec<String> = stand_in.seen_at("PUT", "kuvo/projects").into_iter().map(|seen| seen.path).collect();
+    assert_eq!(sent, ["kuvo/projects?directory=%2FUsers%2Fyou%2FCode%2FGarden"]);
+    assert!(bounds(cx, "project-Garden").is_some(), "the folder is listed under Projects");
+}
