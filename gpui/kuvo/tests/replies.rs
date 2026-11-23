@@ -125,6 +125,19 @@ fn an_item_named_in_a_reply_is_a_chip_where_its_written_and_opens_the_item(cx: &
     shows_item_234(&workspace, cx);
 }
 
+/// The user's (11-23, beta.46): "(#975)" in a reply drew its chip between the parentheses. The chip
+/// takes their place; words round it keep theirs.
+#[gpui::test]
+fn an_items_chip_in_parentheses_drops_them(cx: &mut TestAppContext) {
+    const WRAPPED: &str = "Next up (#234), then the rest.";
+    let stand_in = with_turn(json!([text(WRAPPED)]));
+    stand_in.work_queue_mention_fixture(WRAPPED, json!([{ "start": 9, "end": 13, "number": 234 }]));
+    let (_, view, cx) = open(cx, stand_in);
+    assert!(bounds(cx, "item-chip-234").is_some(), "the item's chip");
+    view.update_in(cx, |view, window, cx| assert!(view.select_text("Next", "rest.", window, cx)));
+    assert_eq!(view.read_with(cx, |view, _| view.selected_text()), "Next up #234 Dark mode for the settings page, then the rest.");
+}
+
 /// The user's flicker (11-22, beta.42): an item's chips in a conversation were one element to the
 /// window, sharing one hover, so pointing at one opened a card under every chip of that item, and
 /// the cards blinked off and on while the pointer rested there. Chips now differ from row to row,
