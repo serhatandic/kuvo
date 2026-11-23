@@ -72,4 +72,6 @@ Counts: 19 cases; 17 covered, 2 partly (the `box route` halves of file-info), no
 - OSes: the conformance area and the differential run on macOS. On native Windows,
   `kuvo_services` cross-builds (llvm-mingw, `x86_64-pc-windows-gnullvm`) and its unit tests pass
   there, the `file://` seam's drive letters, network hosts and refusals included; the files
-  conformance area on Windows (both boxes) and anything on Linux are left.
+  conformance area on Windows (both boxes) and anything on Linux are left. A run of the four TS
+  test files there (`scripts/windows-box-check.sh`) stopped in the runner's own setup: PowerShell
+  refused `windows-test-credentials.ps1` (scripts are disabled on that machine).
