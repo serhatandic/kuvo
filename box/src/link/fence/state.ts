@@ -187,7 +187,7 @@ export function fenceState(): FenceState {
 /** What a sandbox that's on says while commands can still reach your login's services (`gaps`): why, and the page on what the machine needs. */
 export function servicesWhy(needs: string | undefined): string {
   const fix = needs === "util-linux" ? "has util-linux" : "allows user namespaces";
-  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
+  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here.`;
 }
 
 /** The checks failed in a row from which a client offers Report a Problem with the sandbox's row (`report`). */
@@ -240,7 +240,7 @@ const PENDING_WHY = "Its check didn't finish in time (this computer may be busy)
  * any of the box's processes can tell: a Mac's always; a Linux machine's only where each command
  * has a namespace of its own (`run/fence/namespace` names its unshare), or one could have the
  * services your login runs start anything outside it (`systemd-run --user`). What the vault and a
- * goal going on alone ask for besides `on`. */
+ * Auto requires besides `on`. */
 export function fenceWhole(): boolean {
   return platform === "darwin" || (textOf(path.join(FOLDER, "namespace")) ?? "").startsWith("/");
 }

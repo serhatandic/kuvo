@@ -25,7 +25,6 @@ import { collected } from "../server/sent-once";
 import { followedSetup } from "../setup/record";
 import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
-import { goalPlans } from "../work/goals";
 import { actHere } from "../work-queue/acts";
 import { itemElsewhere } from "../work-queue/across";
 import { previewLabelsHere } from "../work-queue/label-preview";
@@ -65,7 +64,7 @@ function requestOf(kind: unknown, id: unknown, offset: unknown): ReadRequest | n
   if (offset !== undefined && (typeof offset !== "string" || !/^[A-Za-z0-9_:-]{1,200}$/.test(offset) || kind !== "conversations")) return null;
   if (isPrimaryRead(kind)) return id === "_" ? { kind, id } : null;
   switch (kind) {
-    case "conversations": case "sessionFiles": case "sessionQueue": case "sessionSchedules": case "pendingSessionWork": case "sessionGoals":
+    case "conversations": case "sessionFiles": case "sessionQueue": case "sessionSchedules": case "pendingSessionWork":
       return /^ses_[A-Za-z0-9_-]+$/.test(id) ? { kind, id, ...(offset ? { offset: offset as string } : {}) } : null;
     case "groupTranscript": case "groupSettings":
       return /^grp_[a-z0-9]+$/.test(id) ? { kind, id } : null;
@@ -187,7 +186,6 @@ async function localRead(ref: ReadRequest, context: RouteContext, places: PeerPl
   if (!me() || awaySessions().includes(id)) return { status: 409, value: null };
   // Either runtime can own the session. One runtime's miss doesn't settle the other one's absence.
   if (!place) return { status: places.bridge ? 404 : 503, value: null };
-  if (kind === "sessionGoals") return { status: 200, value: goalPlans().filter(goal => goal.session === id) };
   if (kind === "conversations" || kind === "sessionFiles") {
     const after = ref.offset ? `&cursor=${encodeURIComponent(ref.offset)}` : "";
     const wait = AbortSignal.timeout(8_000);

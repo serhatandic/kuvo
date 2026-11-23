@@ -15,8 +15,6 @@ import { callOf, keepAnswer, noteSession, pendingAsk, permissionWords, ruleFor, 
 import { permissionsHere } from "../bots/tell";
 import { allowRefusal } from "./policy";
 import { approvalOf } from "./approval";
-import { appsNamed, finishGoal, goalProgress, goalProject, maySpend, progressRefused, proposalRefused, proposeGoal, runningGoal } from "./goals";
-import { findApps } from "./apps";
 import { isObject } from "../../shared/json";
 import fs from "node:fs";
 import path from "node:path";
@@ -303,8 +301,7 @@ export async function listModelsTool(engine: Target | null, bridge: Target | nul
 }
 
 /** make_project: a new project, in the projects folder you picked (or the folder you named for it),
- * made once you allow it (at once for a bot you said Always to, or one whose goal you started with
- * it in the plan); what it is, or why not. Waits for your answer up to `wait` ms; after that it
+ * made once you allow it (at once for a bot you said Always to). Waits for your answer up to `wait` ms; after that it
  * stays asked, and the conversation is told when you answer. */
 export async function makeProjectTool(caller: Caller, args: Record<string, unknown>, { signal, wait, every }: { signal?: AbortSignal; wait?: number; every?: number } = {}): Promise<ToolAnswer> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
@@ -313,17 +310,12 @@ export async function makeProjectTool(caller: Caller, args: Record<string, unkno
   const clone = typeof args.clone === "string" && args.clone.trim() ? args.clone.trim() : undefined;
   if (clone && !cloneable(clone)) return refused(`${clone} isn't a repository address git can clone: give an https or ssh one.`);
   const bot = botOfConversation(caller.session);
-  // In the goal you started: by its name, or by the folder you named for it there.
-  const inPlan = bot ? (runningGoal(bot.bot)?.projects ?? []).map(goalProject) : [];
   let named: string | undefined;
   if (typeof args.folder === "string" && args.folder.trim()) {
     const checked = namedPlace(args.folder);
     if ("refused" in checked) return refused(checked.refused);
     named = checked.folder;
-  } else {
-    named = inPlan.find(each => each.folder && folderName(each.name) === folderName(name))?.folder;
   }
-  const planned = inPlan.some(each => (each.folder ? each.folder === named : !named && each.name.toLowerCase() === name.toLowerCase()));
   // What would fail anyway isn't asked.
   const place = named ?? projectPlace(name);
   const listed = place ? readProjects().find(each => each.directory === place && !each.removed) : null;
@@ -332,8 +324,7 @@ export async function makeProjectTool(caller: Caller, args: Record<string, unkno
   const asker = { session: caller.session, name: bot?.name ?? caller.name, ...(bot ? { bot: bot.bot } : {}) };
   const action = clone ? "cloneProject" : "makeProject";
   const given = { name, ...(args.git === false ? { git: false } : {}), ...(clone ? { clone } : {}), ...(named ? { folder: named } : {}) };
-  // Named in the goal you started, or allowed Always.
-  if (bot && (planned || botAllows(bot.bot, action)) && (named || projectsFolder())) {
+  if (bot && botAllows(bot.bot, action) && (named || projectsFolder())) {
     try {
       const done = await doWork(action, given, asker);
       return done.isError ? refused(done.text) : said(done.text);
@@ -378,55 +369,4 @@ export async function listProjectsTool(where = HERE): Promise<ToolAnswer> {
     lines.push(`- ${each.name ?? path.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`);
   }
   return said(`Projects on ${where}:\n${lines.join("\n")}\n${folder.trim()}`);
-}
-
-// The bot a conversation is, for the goal's tools: only a bot works through a goal of this kind (a
-// session's /goal is the conversation's own, `agents/goals.ts`).
-const goalBot = (caller: Caller) => botOfConversation(caller.session);
-const ONLY_BOTS = "Only a bot takes a goal with a plan: ask the user to give it to one of their bots.";
-const answered = (outcome: { said: string } | { refused: string }): ToolAnswer => ("said" in outcome ? said(outcome.said) : refused(outcome.refused));
-
-/** propose_goal: the goal's plan and checks, put to the user on the goal card (once it's checked,
- * the apps its steps name looked for on this computer first). */
-export async function proposeGoalTool(caller: Caller, args: Record<string, unknown>): Promise<ToolAnswer> {
-  const bot = goalBot(caller);
-  if (!bot) return refused(ONLY_BOTS);
-  const wrong = proposalRefused(bot.bot, args);
-  if (wrong) return refused(wrong);
-  await findApps(appsNamed(args)).catch(() => {});
-  const outcome = proposeGoal({ ...bot, session: caller.session }, args);
-  if ("refused" in outcome) return refused(outcome.refused);
-  const { goal, yours: set } = outcome;
-  const yours = goal.checks.filter(check => check.state === "needs").map(check => check.text);
-  // A spend line the user pays for themselves, left out of the plan's spending.
-  const theirs = (Array.isArray(args.spend) ? args.spend.slice(0, 10) : []).map(each => (isObject(each) && typeof each.what === "string" ? each.what.trim() : "")).filter(what => what && !goal.spend.some(line => line.what.toLowerCase() === what.slice(0, 200).toLowerCase()));
-  const paid = theirs.length ? ` ${theirs.join("; ")} ${theirs.length > 1 ? "are" : "is"} the user's to pay, as one of the checks: not yours to spend, so not in the plan's spending.` : "";
-  const alone = goal.alone ? "" : ` ${HERE[0].toUpperCase()}${HERE.slice(1)} can't work on it alone yet, so once it starts, what your sessions ask waits for the user rather than for you.`;
-  // The projects the user set on the card before: kept, or replaced by others the bot proposed.
-  const names = set ? set.projects.map(each => `"${each}"`).join(", ") : "";
-  const projects = !set ? "" : set.kept ? ` The user set its projects on the card: ${names}. They're kept: call them that.` : ` The user had set its projects on the card to ${names}; the ones you gave replace them. If they didn't ask you to change those, propose it again with theirs.`;
-  return said(`The card is up on ${HERE}: the user starts the goal from it, or says not now.${projects} ${yours.length ? `What's theirs to do first: ${yours.join("; ")}. ` : ""}Don't start the work until you hear [Goal started].${paid} If they change something, propose it again as it is now.${alone}`);
-}
-
-/** goal_progress: the goal's steps, what waits for the user, what's spent and what's still watched
- * (once it's checked, the apps it names looked for on this computer first). */
-export async function goalProgressTool(caller: Caller, args: Record<string, unknown>): Promise<ToolAnswer> {
-  const bot = goalBot(caller);
-  if (!bot) return refused(ONLY_BOTS);
-  const wrong = progressRefused(bot.bot, args);
-  if (wrong) return refused(wrong);
-  await findApps(appsNamed(args)).catch(() => {});
-  return answered(goalProgress(bot.bot, args));
-}
-
-/** may_spend: whether a purchase fits the plan's cap for it, in its period. */
-export function maySpendTool(caller: Caller, args: Record<string, unknown>): ToolAnswer {
-  const bot = goalBot(caller);
-  return bot ? answered(maySpend(bot.bot, args)) : refused(ONLY_BOTS);
-}
-
-/** finish_goal: the goal done, with the report. */
-export async function finishGoalTool(caller: Caller, args: Record<string, unknown>, targets: Target[]): Promise<ToolAnswer> {
-  const bot = goalBot(caller);
-  return bot ? answered(await finishGoal(bot.bot, args, () => targets)) : refused(ONLY_BOTS);
 }

@@ -10,8 +10,8 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import type { SideThreads } from "../shared/routes/sessions"
 import { emit, subscribe } from "./events"
-import type { GoalPlaces } from "./goals"
-import { transcript } from "./goals"
+import type { SessionPlaces } from "./session-places"
+import { transcript } from "./read-transcript"
 import { newID } from "./ids"
 import { answerWithContext, at, messages, modelInput, opening, sessionInfo, turnAnswer, withRecord } from "./oneoff"
 import type { ModelRef } from "./wire"
@@ -134,7 +134,7 @@ export class SideQuestions {
 
   constructor(
     private readonly file: string,
-    private readonly places: GoalPlaces,
+    private readonly places: SessionPlaces,
     private readonly now: () => number = Date.now,
   ) {
     try {

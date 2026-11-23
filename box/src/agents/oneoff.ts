@@ -1,7 +1,7 @@
-// One-off answers for the box's keywords (goal checks, side questions, handoffs, reviews): a
+// One-off answers for the box's side questions, handoffs, and reviews: a
 // conversation's model asked something outside the conversation, which keeps nothing of it.
 //
-// Two kinds: `fresh`, apart from the agent's own context (a second pair of eyes: a goal's check,
+// Two kinds: `fresh`, apart from the agent's own context (a second pair of eyes:
 // a review), shown only what the prompt holds; and `withContext`, from inside the conversation's
 // context (a side question about it), without adding to it.
 //

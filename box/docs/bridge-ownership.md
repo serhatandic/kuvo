@@ -2,7 +2,7 @@
 
 The bridge owns live agent adapters, holders, turn and permission delivery, the conversation
 store, the models and credentials needed to drive those agents, and agent program lifecycle
-operations. Goals, reviews, side questions, handoffs, Custom Auto, and group seats start or
+operations. Reviews, side questions, handoffs, Custom Auto, and group seats start or
 continue conversations and belong with the bridge. Their timers schedule agent work. Ordinary
 wake-ups and cross-computer delivery already belong to the keeper and link.
 

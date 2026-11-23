@@ -10,7 +10,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { lstat, readFile } from "node:fs/promises"
 import { dirname, join, sep } from "node:path"
 import { emit } from "./events"
-import type { GoalPlaces } from "./goals"
+import type { SessionPlaces } from "./session-places"
 import { newID } from "./ids"
 import { at, freshAnswer, messages, sessionInfo, type SessionInfo } from "./oneoff"
 import { runGit } from "./proc"
@@ -174,7 +174,7 @@ export class Reviews {
 
   constructor(
     private readonly file: string,
-    private readonly places: GoalPlaces,
+    private readonly places: SessionPlaces,
     /** What `scope` names in the folder: a diff, or the files already in parts (git's, in tests a
      * stand-in's). */
     private readonly changes: (directory: string, scope: Scope) => Promise<string | string[] | Parts> = readScope,

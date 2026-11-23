@@ -54,9 +54,6 @@ export interface QueueState {
   handoffPids?: Record<string, number | undefined>;
   /** The saved prefix of an interrupted engine inbox transfer, in delivery order. */
   inboxMoved?: string[];
-  /** Paused as its goal was (the goal's Pause, `link/work/goals.ts`'s `goalHolds`), until the goal
-   * goes on: kept only while it's paused, never in a route's answer. */
-  heldFor?: "goal";
   /** Messages a Stop named as still on its way (`stop {items}`), held as they come, each until when
    * (ms); never in a route's answer. */
   arriving?: Record<string, number>;
@@ -121,13 +118,6 @@ export function wakeMarkOf(metadata: unknown): ReturnType<typeof wakeMark> | nul
 /** Whether a message the engine has (its `metadata`) is one the box wrote (`boxNote`). */
 export const isBoxNote = (metadata: unknown): boolean => isObject(metadata) && isObject(metadata.kuvo) && isObject(metadata.kuvo.note);
 
-// How a box opened them before it marked them, with the line each shows (KuvoClient's BoxNote reads
-// them the same way).
-const GOAL_OPENINGS: [start: string, line: string][] = [
-  ["[Goal started] The user approved the plan.", "Goal started"], ["[Not now] The user didn't start this goal.", "You said not now"],
-  ["[Goal changed] The user changed the goal's limits.", "You changed the goal's limits"], ["[Goal's end] The end the user set has come.", "The goal's end came"],
-  ["[Goal] Nothing of the goal is at work now.", "Reminded to carry on"], ["[Goal resumed] The user resumed the goal you paused.", "Goal resumed"],
-];
 const ANSWERED = "[The user answered] ";
 const SESSION_NEWS = /^\[Session (finished|still working|failed|asks|stopped)\] "([^"\n]*)"/;
 
@@ -136,11 +126,7 @@ const SESSION_NEWS = /^\[Session (finished|still working|failed|asks|stopped)\] 
 export function boxNoteOf(text: string, metadata: unknown): { from: string; line: string } | null {
   const note = isBoxNote(metadata) ? (metadata as { kuvo: { note: Record<string, unknown> } }).kuvo.note : null;
   if (note && typeof note.from === "string" && typeof note.line === "string") return { from: note.from, line: note.line };
-  const goal = GOAL_OPENINGS.find(([start]) => text.startsWith(start));
-  if (goal) return { from: "Goal", line: goal[1] };
   if (text.startsWith(ANSWERED)) return { from: "Your answer", line: `You answered: ${text.slice(ANSWERED.length)}` };
-  const reset = /^\[Limit reset\] (.+?) has reset\. Carry on/.exec(text);
-  if (reset) return { from: "Goal", line: `${reset[1].charAt(0).toUpperCase()}${reset[1].slice(1)} reset` };
   const news = SESSION_NEWS.exec(text);
   if (!news) return note ? { from: "Kuvo Code", line: text } : null;
   // (As `wakeLineShown` says it: one session's, or how many.)
@@ -207,7 +193,6 @@ const keptState = (value: unknown): QueueState => {
     ...(isObject(value) && Array.isArray(value.order) && value.order.length
       ? { order: [...new Set(value.order.filter((id): id is string => typeof id === "string"))] } : {}),
     ...(inboxMoved.length ? { inboxMoved } : {}),
-    ...(isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" as const } : {}),
     ...(isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length
       ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each): each is [string, number] => typeof each[1] === "number")) } : {}),
     ...(isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id): id is string => typeof id === "string") } : {}),

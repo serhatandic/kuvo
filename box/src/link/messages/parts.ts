@@ -65,8 +65,6 @@ export interface Naming {
 
 // ——— The words ———
 
-/** /goal in a bot's chat (`askGoal`): the bot plans it before any of the work. */
-export const GOAL_HEADING = "The user sent this as a goal, with Kuvo Code's /goal. Plan it, check what it needs, and put it to them with propose_goal before doing any of the work:";
 const WIDGET_HEADING = "The user sent this from a widget shown in this conversation (show_widget), titled:";
 const WIDGET_BLOCK = messageBlock("<from-widget>", "</from-widget>", [WIDGET_HEADING]);
 const REVIEW_INTRO = "Comments on lines of the current changes:";

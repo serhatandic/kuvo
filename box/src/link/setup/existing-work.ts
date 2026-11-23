@@ -39,7 +39,7 @@ const usageFile = path.join(agents, "usage", "settings.json");
 // be set yet while this module loads (restoring a backup loads it that way).
 const categoriesFile = () => path.join(WORK_QUEUE, "categories.json");
 const settings = () => [PERSONALITIES_FILE, LABELS_FILE, categoriesFile(), ZONE_FILE, usageFile];
-const sessionMetadata = ["session-settings.json", "named.json", "archived.json", "work/goals.json"].map(file => path.join(RUN, file));
+const sessionMetadata = ["session-settings.json", "named.json", "archived.json"].map(file => path.join(RUN, file));
 const sessionQueues = sessionQueueFiles(RUN);
 
 const payloads = [path.join(agents, "sessions"), CHATS, GROUPS,

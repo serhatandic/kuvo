@@ -19,12 +19,11 @@ import { NOTE_MEMORY, placeOfSession } from "../letters/letter";
 import { tellMovedAway } from "../letters/outbox";
 import { frozen } from "../moves/records";
 import { isPutAway, type PutAwayable } from "../peers/directory";
-import { ANSWERED, describeForm, describePermission, stillAsked } from "../notices/news";
+import { describeForm, describePermission, stillAsked } from "../notices/news";
 import { noteOversight } from "./oversight";
 import { noteWorkChanged, WORK_FOLDER } from "./changes";
 import { asksIn } from "./answers";
 import { catchUpAutopilot, declineSharedOnAutopilot, goAheadOnAutopilot, goAheadOnQuestion, isAutopilot } from "./autopilot";
-import { settleAsk } from "./goals";
 import { awaitedBy } from "./awaited";
 import { tellLateAnswers } from "./asks";
 import { errorOf, failedOn, followUnanswering, holdWords, turnError } from "./unanswering";
@@ -874,13 +873,7 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
   void caughtUp.then(lateAgain);
   // (What each event set going, for a test to wait on.) Models that couldn't answer, too: let go
   // once one answers, or an account's key changes.
-  const watch = (event: WorkEvent) => Promise.all([followUnanswering(source, event).catch(() => {}), told(event), settled(event), background.noted(event).then(looked => (looked ? backgroundEnded() : undefined)).catch(() => {})]).then(() => {});
-  // An ask answered or skipped: what stands for it on a goal goes at once.
-  const settled = async (event: WorkEvent) => {
-    if (!ANSWERED.has(event.type)) return;
-    const ask = event.data?.requestID ?? event.data?.id;
-    if (typeof ask === "string") settleAsk(ask);
-  };
+  const watch = (event: WorkEvent) => Promise.all([followUnanswering(source, event).catch(() => {}), told(event), background.noted(event).then(looked => (looked ? backgroundEnded() : undefined)).catch(() => {})]).then(() => {});
   const told = (event: WorkEvent) => {
     const id = event.data?.sessionID ?? event.data?.form?.sessionID;
     if (typeof id !== "string" || !["session.inbox.delivered", "session.execution.started", "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "permission.asked", "form.created", "permission.replied", "form.replied"].includes(event.type)) return Promise.resolve();

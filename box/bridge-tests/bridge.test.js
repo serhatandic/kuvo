@@ -1723,7 +1723,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "git.status": ["POST", "kuvo/git/status"],
     // (Settings › Git kept here, and the prompts written here: a Mac's from before moves in once.)
     "git.words": ["POST", "kuvo/git/settings/move"],
-    goals: ["GET", "kuvo/agents/api/kuvo/goals"],
     groups: ["GET", "kuvo/groups"],
     "groups.delete": ["DELETE", "kuvo/groups/grp_none"],
     "groups.edit": ["PATCH", "kuvo/groups/grp_none"],
@@ -1914,9 +1913,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)
     "work.elsewhere.start": ["POST", "kuvo/agent-tools"],
-    "work.goals": ["GET", "kuvo/work/goals"],
-    "work.goals.apps": ["GET", "kuvo/work/apps/icon?app=com.example.none"],
-    "work.goals.projects": ["POST", "kuvo/work/goals/goal_none"],
     "work.projects": ["GET", "kuvo/work/settings"],
     "work.subagents": ["GET", "kuvo/work/subagents/ses_none"],
     "work.unanswering": ["GET", "kuvo/work/unanswering"],

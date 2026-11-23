@@ -549,7 +549,7 @@ export const inboxFollowers = new Set<(session: string) => void>();
 
 /** A message the engine holds, as clients show it waiting (as one the box keeps is): who it's from
  * (another agent, a wake-up, the box's own note; none for yours), what you wrote (its kept parts'
- * words, or its text without what the box added for the agent), the keyword it was sent with, and
+ * words, or its text without what the box added for the agent), and
  * its files' names. */
 function shownOfInbox(entry: InboxEntry, summarizeWake = false): { from: string | null; words: string; files: string[] } {
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
@@ -1034,7 +1034,7 @@ export async function holdQueue(target: Target, session: string, since?: number,
   if (limitStop && (limitStop.resetsAt === undefined || limitStop.resetsAt > Date.now())) {
     // An inbox read can fail or stall. Keep the reason before asking it to move its messages.
     const state = await changeQueueLater(session, state =>
-      state.userPaused || state.heldFor || resumedSince(state)
+      (state.paused && !state.limitStop) || resumedSince(state)
         ? state : { ...state, paused: true, limitStop });
     if (state.limitStop?.resetsAt !== undefined) scheduleLimitRelease(target, session, state.limitStop.resetsAt);
   }
@@ -1298,7 +1298,7 @@ function limitStopOf(value: unknown, at: number): QueueLimitStop | undefined {
 // A message you wrote, not one Kuvo Code sent the agent for you or another (an agent's letter, a
 // wake-up, a group chat's work, a note).
 // (Those marked as the box's own, and the ones a box sent before it marked them.)
-const NOT_YOURS = ["[Message from ", "[Wake-up]", "[Work from ", "[Session ", "[Goal started]", "[Goal changed]", "[Goal's end]", "[Goal resumed]", "[Not now]", "[Limit reset]", "[The user answered]"];
+const NOT_YOURS = ["[Message from ", "[Wake-up]", "[Work from ", "[Session ", "[Goal started]", "[Goal changed]", "[Goal's end]", "[Goal resumed]", "[Goal] Nothing of the goal is at work now.", "[Not now]", "[Limit reset]", "[The user answered]"];
 export const writtenByYou = (text: unknown, metadata: unknown) => !isBoxNote(metadata) && !NOT_YOURS.some(start => String(text ?? "").startsWith(start));
 // What the box says of its own accord (what another session did, a limit that reset), rather than
 // passes on from someone: a letter or work from an agent, or what you answered, approved or picked.

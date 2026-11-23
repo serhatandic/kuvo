@@ -2,7 +2,7 @@
 // question it or one of its subagents asks, noted as its event comes from the engine or the coding
 // agents' bridge, and let go as it's answered, its run ends or it's deleted; and what the box itself
 // asks you for it (to run a command outside the sandbox, a sign-in or a key from the vault, what an
-// agent asks while it browses, what a bot asks before it does it, a goal a bot puts to you). An ask
+// agent asks while it browses, what a bot asks before it does it). An ask
 // Auto's reviewer takes up isn't yours, and isn't counted. The box's long-running process notes them,
 // in `run/glance/asks.json`, so a route answered in a process of its own (`box route`) reads them
 // too. An ask made while the box wasn't listening has no time, and a client says how long since the
@@ -19,7 +19,6 @@ import { listSandboxAsks, onSandboxAsksChanged } from "../fence/outside";
 import { listAsks as listVaultAsks, onAsksChanged as onVaultAsksChanged } from "../vault/asks";
 import { readAsks as readBrowserAsks, type BrowserAsk } from "../areas/asks";
 import { askFollowers as workAskFollowers, workAsks } from "../work/asks";
-import { goalFollowers, proposedGoals } from "../work/goals";
 import type { Target } from "../../shared/records";
 
 export const ASKS_FILE = path.join(RUN, "glance", "asks.json");
@@ -78,7 +77,6 @@ export const workWords = (action: string): AskWords => ({
   kind: "other",
   summary: action === "makeProject" ? "asks to make a project" : action === "cloneProject" ? "asks to clone a project" : action === "resetLimits" ? "asks to use a limit reset" : "asks for your OK",
 });
-export const GOAL_WORDS: AskWords = { kind: "other", summary: "proposes a goal" };
 /** An ask heard without what it asks (noted by a box from before these words). */
 export const WAITS_WORDS: AskWords = { kind: "other", summary: "waits on you" };
 
@@ -154,7 +152,7 @@ const browserSeen = new Map<string, number>();
 
 /** What else waits on you for a session, kept by the box outside the engine's asks: what an agent
  * asks while it browses (a sign-in, a code, a step of yours), what a bot asks before it does it
- * (a project, a limit reset), and a goal a bot proposed, which waits in its own conversation. Each
+ * (a project, a limit reset). Each
  * by an id of its own, with the session it waits in. */
 function othersNow(now = Date.now()): Map<string, OpenAsk> {
   const asks = new Map<string, OpenAsk>();
@@ -165,7 +163,6 @@ function othersNow(now = Date.now()): Map<string, OpenAsk> {
     asks.set(`browser:${ask.id}`, { session: ask.session!, at: browserSeen.get(ask.id)!, asks: browserWords(ask) });
   }
   for (const ask of workAsks()) if (ask.session) asks.set(`work:${ask.id}`, { session: ask.session, at: ask.at, asks: workWords(ask.action) });
-  for (const goal of proposedGoals()) if (goal.session) asks.set(`goal:${goal.id}`, { session: goal.session, at: goal.proposed, asks: GOAL_WORDS });
   return asks;
 }
 
@@ -185,13 +182,11 @@ export function lookAtOthers(): void {
 export function followAsks(): () => void {
   const stops = [onAskReviewsChanged(keep), onSandboxAsksChanged(keep), onVaultAsksChanged(keep)];
   workAskFollowers.add(lookAtOthers);
-  goalFollowers.add(lookAtOthers);
   const timer = setInterval(lookAtOthers, 2000);
   timer.unref?.();
   return () => {
     for (const stop of stops) stop();
     workAskFollowers.delete(lookAtOthers);
-    goalFollowers.delete(lookAtOthers);
     clearInterval(timer);
   };
 }
