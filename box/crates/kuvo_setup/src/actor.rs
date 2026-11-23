@@ -23,7 +23,7 @@ use tokio::{
 };
 
 use crate::{
-    Error, checkpoint, edits, lease, mac_host,
+    Error, checkpoint, edits, installer, lease, mac_host,
     model::{
         ComputerKind, Identity, Link, Membership, Position, Role, Setup, SharedKind, safe_token,
         validate_position, validate_shared,
@@ -34,6 +34,7 @@ use crate::{
 
 mod activity;
 mod adding;
+pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
@@ -60,6 +61,7 @@ pub struct SetupRuntime {
 pub struct SetupHandle {
     pub(crate) inbox: mpsc::Sender<Request>,
     pub(crate) views: watch::Receiver<View>,
+    pub(crate) ssh_routes: watch::Sender<Option<std::sync::Weak<crate::ssh::Adding>>>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
     activity: activity::Sender,
 }
@@ -75,6 +77,13 @@ impl SetupHandle {
 
     pub async fn phone_activity(&self) {
         activity::record(&self.activity, activity::Activity::Seen).await;
+    }
+
+    pub async fn wait_for_local_wipe(&self) {
+        let mut views = self.views.clone();
+        if views.wait_for(|view| view.local_wipe).await.is_err() {
+            std::future::pending::<()>().await;
+        }
     }
 }
 
@@ -118,6 +127,7 @@ pub(crate) struct View {
     pub clock: Value,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
+    local_wipe: bool,
 }
 
 pub(crate) struct Request {
@@ -127,6 +137,24 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
+    ComputerViaMain(computer_requests::ComputerRequest, edits::Submitter),
+    InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
+    InstallerCancellation(installer::Cancellation),
+    SshAdmission(edits::Submitter),
+    SshAlias {
+        identity: String,
+        key: Option<String>,
+        destination: String,
+        by: edits::Submitter,
+    },
+    SshAddress {
+        key: String,
+        invite: String,
+        destination: String,
+        identity: String,
+        distro: Option<String>,
+        by: edits::Submitter,
+    },
     BackupMatch {
         source: crate::backup::Source,
         previous: String,
@@ -136,9 +164,7 @@ pub(crate) enum Command {
         sender: String,
         request: crate::backup::boundary::Approval,
     },
-    InstallerCode(Option<Value>, edits::Submitter),
     RenameComputer(String, String, edits::Submitter),
-    UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
@@ -164,6 +190,7 @@ pub(crate) enum Command {
     },
 }
 
+#[derive(Clone)]
 pub(crate) struct Response {
     pub status: u16,
     pub value: Value,
@@ -303,6 +330,7 @@ impl PreparedSetup {
             welcomed,
         )?;
         let (views, view_rx) = watch::channel(view);
+        let (ssh_routes, ssh) = watch::channel(None);
         let (rosters, roster_rx) =
             watch::channel(peer_roster(&link, identity.as_ref()).map(Arc::new));
         for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
@@ -327,7 +355,10 @@ impl PreparedSetup {
             manifests: VecDeque::new(),
             pending_tips: VecDeque::new(),
             pending_handover: None,
+            unlink_challenge: None,
             pending_devices: HashMap::new(),
+            forwarding: computer_requests::Forwarding::default(),
+            ssh,
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
@@ -341,6 +372,7 @@ impl PreparedSetup {
                 inbox: tx,
                 views: view_rx,
                 rosters: roster_rx,
+                ssh_routes,
                 activity,
             },
             task,
@@ -477,6 +509,17 @@ fn open(
     }
     link.name.get_or_insert_with(|| name.into());
     let own = Identity::read(&link)?;
+    bootstrap(files, &mut link, &own, kind)?;
+    write_link(files, &link, kind)?;
+    Ok((link, Some(own)))
+}
+
+fn bootstrap(
+    files: &Files,
+    link: &mut Link,
+    own: &Identity,
+    kind: ComputerKind,
+) -> Result<(), Error> {
     let position = Position {
         id: format!("set_{}", encode(&random::<16>()?)),
         epoch: 1,
@@ -499,14 +542,13 @@ fn open(
             offline_edits: None,
         },
     );
-    let cert = checkpoint::build(files, &own, position.clone(), None, 1, &link)?;
+    let cert = checkpoint::build(files, own, position.clone(), None, 1, &link)?;
     link.leadership.insert(1, cert.envelope);
     link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
     link.format_version = 1;
     link.extra.entry("phones").or_insert_with(|| json!([]));
-    remember_link_key(&mut link, &own, kind);
-    write_link(files, &link, kind)?;
-    Ok((link, Some(own)))
+    remember_link_key(link, own, kind);
+    Ok(())
 }
 
 pub(crate) fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> bool {
@@ -801,6 +843,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        local_wipe: crate::wipe::LocalWipe::from(link).is_some(),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -827,7 +870,10 @@ struct Owner {
     manifests: VecDeque<(String, Document)>,
     pending_tips: VecDeque<Document>,
     pending_handover: Option<Handover>,
+    unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
+    forwarding: computer_requests::Forwarding,
+    ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
@@ -840,10 +886,16 @@ impl Owner {
         loop {
             let until = self.next.min(self.next_edits);
             let event = self.network.as_mut().map(|relay| &mut relay.events);
+            let adding = !self.forwarding.jobs.is_empty();
             tokio::select! {
                 command = self.rx.recv() => {
                     let Some(request) = command else { return; };
                     self.request(request).await;
+                }
+                finished = self.forwarding.jobs.join_next(), if adding => {
+                    if let Some(Ok(finished)) = finished {
+                        self.finish_add_request(finished).await;
+                    }
                 }
                 incoming = async {
                     match event {
@@ -865,6 +917,9 @@ impl Owner {
                 () = time::sleep_until(until) => {
                     if self.next <= Instant::now() {
                         self.next = Instant::now() + Duration::from_secs(2);
+                        if let Err(error) = self.resume_local_unlink().await {
+                            eprintln!("setup unlink cleanup: {error}");
+                        }
                         if let Err(error) = self.offer_unlinks().await {
                             eprintln!("setup removal delivery: {error}");
                         }
@@ -881,6 +936,7 @@ impl Owner {
                     }
                     self.expire_handover().await;
                     self.expire_device_changes();
+                    self.retry_computer_requests().await;
                     self.refresh();
                 }
             }
@@ -1089,6 +1145,12 @@ impl Owner {
             self.ask_device_change(mutation, reply).await;
             return;
         }
+        if let Command::ComputerViaMain(request, by) = command {
+            if let Err(error) = self.begin_computer_request(request, by, reply).await {
+                eprintln!("sending installer request: {error}");
+            }
+            return;
+        }
         let result = self.execute(command).await;
         let _ = reply.send(result);
     }
@@ -1140,8 +1202,24 @@ impl Owner {
             Command::InstallerCode(credentials, by) => {
                 self.issue_installer_code(credentials, by).await
             }
-            Command::UnlinkComputer(key, request, explicit, by) => {
-                self.unlink_computer(key, request, explicit, by).await
+            Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
+            Command::SshAdmission(by) => self.ssh_admission(&by),
+            Command::SshAlias {
+                identity,
+                key,
+                destination,
+                by,
+            } => self.keep_ssh_alias(&identity, key.as_deref(), &destination, &by),
+            Command::SshAddress {
+                key,
+                invite,
+                destination,
+                identity,
+                distro,
+                by,
+            } => {
+                self.keep_ssh_address(key, invite, destination, identity, distro, by)
+                    .await
             }
             Command::RenameComputer(key, name, by) => self.rename_computer(key, name, by).await,
             Command::ReadEdit(target) => {
@@ -1313,7 +1391,7 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } | Command::DeviceChange(_) => {
+            Command::Handover { .. } | Command::DeviceChange(_) | Command::ComputerViaMain(..) => {
                 unreachable!("this request can wait on relay mail")
             }
         }

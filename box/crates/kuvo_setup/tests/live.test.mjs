@@ -795,6 +795,44 @@ test("a Mac starts its setup with the authenticated helper and leaves the privat
   assert.equal((await get(box)).json.setup, setup.setup);
 });
 
+test("a main with incoming devices off still revokes a device and delivers a machine unlink", { timeout: 50000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = computer("Studio");
+  const lab = computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const original = readJSON(linkPath(studio));
+  await macHost(t, studio, { key: original.key, sign: original.sign, secret: original.secret });
+  const configuration = phones => write(path.join(studio.home, "run", "mac-link.json"),
+    JSON.stringify({ phones, machines: true, relay: relay.url, name: "Studio", own: false }));
+  configuration(true);
+  await studio.start();
+  await lab.start();
+  await until(() => leases.leaseFor(original.setup.id)?.holder === main.key, "Studio did not hold the relay lease.");
+  const desktop = Buffer.alloc(32, 79).toString("base64url");
+  const pairing = await post(studio, "kuvo/devices/pair", { key: desktop, kind: "desktop", name: "Test desktop" });
+  assert.equal(pairing.status, 200, pairing.text);
+  const labDevices = async () => (await get(lab, "kuvo/phones")).json.phones;
+  await until(async () => (await labDevices()).some(device => device.key === desktop), "Lab did not see the desktop grant.");
+  await studio.stop();
+  configuration(false);
+  await studio.start();
+  const refused = await post(studio, "kuvo/devices/pair", { key: Buffer.alloc(32, 80).toString("base64url"), kind: "desktop", name: "Another desktop" });
+  assert.equal(refused.status, 409, refused.text);
+  const release = relay.pause(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"));
+  try {
+    const revoked = await post(studio, "kuvo/phones/remove", { phones: [{ key: desktop, pairing: pairing.json.pairing }] });
+    assert.equal(revoked.status, 200, revoked.text);
+    assert.ok((await labDevices()).some(device => device.key === desktop));
+  } finally { release(); }
+  await until(async () => !(await labDevices()).some(device => device.key === desktop), "Lab missed the revocation while incoming devices were off.");
+  const unlink = await post(studio, `kuvo/computers/${member.key}/unlink`, {});
+  assert.equal(unlink.status, 200, unlink.text);
+  await until(() => entry(studio, "membershipAndAccess").value.removals[member.key].delivered,
+    "Lab did not acknowledge the unlink while incoming devices were off.", 15000);
+  assert.equal((await get(lab)).json.you.role, "primary");
+});
+
 test("an older Mac main converts its signed checkpoint once under the relay lease", { timeout: 25000 }, async t => {
   let cut;
   const held = new Promise(resolve => { cut = resolve; });

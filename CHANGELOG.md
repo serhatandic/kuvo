@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
+- A computer with a retained session database can rejoin after unlinking when its saved work hasn't changed. A Rust computer clears its machine sign-ins and keys before completing unlink.
 - The Rust box can verify encrypted backups on disk, over SSH, or on another computer through the relay. Restore keeps recovered pending work paused for review.
 
 - Older computers can update after goals and slash commands were retired. An interrupted trial preserves the existing setup.
@@ -27,6 +28,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A long pending message remains readable after a Mac move when an emoji falls at the size limit.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
+- A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
+- An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
+- Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
+- Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server reads saved move results and shows moves reported by your other computers.

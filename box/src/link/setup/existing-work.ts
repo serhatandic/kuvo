@@ -68,9 +68,13 @@ function openDatabase(file: string) {
   const immutable = !identity.wal?.size && !identity.journal?.size;
   const source = immutable ? pathToFileURL(file).href + "?mode=ro&immutable=1" : file;
   const require = createRequire(import.meta.url);
-  const bun = !!process.versions.bun;
-  const SQLite = bun ? require(["bun", "sqlite"].join(":")).Database : require("node:sqlite").DatabaseSync;
-  const db = new SQLite(source, bun ? { readonly: true } : { readOnly: true }) as import("node:sqlite").DatabaseSync;
+  const bun = process.versions.bun
+    ? require(["bun", "sqlite"].join(":")) as typeof import("bun:sqlite")
+    : undefined;
+  // Bun on Linux passes a URI through to SQLite only with SQLITE_OPEN_URI.
+  const db = (bun
+    ? new bun.Database(source, bun.constants.SQLITE_OPEN_READONLY | (immutable ? bun.constants.SQLITE_OPEN_URI : 0))
+    : new (require("node:sqlite").DatabaseSync)(source, { readOnly: true })) as import("node:sqlite").DatabaseSync;
   return { db, identity, immutable };
 }
 
