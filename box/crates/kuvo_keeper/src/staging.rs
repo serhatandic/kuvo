@@ -16,7 +16,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Release,
+    Release, SELECTOR,
+    engine_pack::EnginePack,
     manifest::{ReleaseRef, SignedRelease, sha256},
 };
 
@@ -77,6 +78,17 @@ pub fn prepare(
     // Serialize stage publication and its ready fact. Download and signature admission
     // are outside the lock and the running release never waits on it.
     let _lock = locks::try_file_lock(&home.run().join(".release-staging.lock"))?;
+    for entry in fs::read_dir(&versions)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(".staging-") || name.starts_with(".probe-"))
+            && entry.file_type()?.is_dir()
+        {
+            files::remove_tree_synced(&entry.path())?;
+        }
+    }
     let draft = tempfile::Builder::new()
         .prefix(".staging-")
         .tempdir_in(&versions)?;
@@ -95,6 +107,7 @@ pub fn prepare(
     if expected != actual {
         return Err(damaged());
     }
+    check_downgrade(home, &contents)?;
     let binary = format!("bin/kuvo-box{}", std::env::consts::EXE_SUFFIX);
     if !actual.contains_key(&binary)
         || fs::read_to_string(draft.path().join("bin/box-version"))
@@ -104,21 +117,12 @@ pub fn prepare(
     {
         return Err(damaged());
     }
-    let engine = home
-        .root()
-        .join("engine")
-        .join(&contents.engine)
-        .join(format!("opencode{}", std::env::consts::EXE_SUFFIX));
-    if !engine.is_file() {
-        return Err(io::Error::other(
-            "The release has no engine for this machine.",
-        ));
-    }
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&versions)?;
+    let engine = EnginePack::find_or_fetch(home, signed, target, probe.path())?;
     check_program(
-        &engine,
+        engine.executable(),
         &["--version"],
         probe.path(),
         "The new engine doesn't run here.",
@@ -151,12 +155,42 @@ pub fn prepare(
     });
     let receipt = serde_json::to_vec(&receipt)?;
     files::write_secret(&bin.join(".installed.json"), &receipt)?;
-    publish(home, draft.path(), &release, &receipt)?;
+    engine.publish(home)?;
+    publish(home, draft.path(), &release, &receipt, &actual)?;
     files::write_secret(
         &home.run().join("fleet-ready.json"),
         &serde_json::to_vec(&reference)?,
     )?;
     Ok(reference)
+}
+
+fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
+    let read = |path: &Path, field: &str| -> io::Result<Option<String>> {
+        files::read(path)?
+            .map(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .map(|entry| entry[field].as_str().map(str::to_owned))
+            })
+            .transpose()
+            .map(Option::flatten)
+            .map_err(io::Error::from)
+    };
+    let selected = Release::read(&home.root().join(SELECTOR))?.map_or_else(
+        || home.bin().join("../box.json"),
+        |release| release.folder(home.root()).join("box.json"),
+    );
+    let current = match read(&home.run().join("engine.json"), "version")? {
+        Some(running) => Some(running),
+        None => read(&selected, "engine")?,
+    };
+    if current.is_some_and(|version| {
+        version != next.engine && !(next.downgrade_safe && next.engines.contains(&version))
+    }) {
+        return Err(io::Error::other(
+            "The new engine hasn't been checked for going back to the engine running here.",
+        ));
+    }
+    Ok(())
 }
 
 fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) -> io::Result<()> {
@@ -206,7 +240,13 @@ fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) ->
     }
 }
 
-fn publish(home: &Home, draft: &Path, release: &Release, receipt: &[u8]) -> io::Result<()> {
+fn publish(
+    home: &Home,
+    draft: &Path,
+    release: &Release,
+    receipt: &[u8],
+    hashes: &BTreeMap<String, String>,
+) -> io::Result<()> {
     let folder = release.folder(home.root());
     if folder.try_exists()? {
         // A retry after the durable rename may have lost only the ready fact.
@@ -215,6 +255,23 @@ fn publish(home: &Home, draft: &Path, release: &Release, receipt: &[u8]) -> io::
             return Err(io::Error::other(
                 "A different release is already staged at this location.",
             ));
+        }
+        if fs::read(folder.join("box.json"))? != fs::read(draft.join("box.json"))? {
+            return Err(damaged());
+        }
+        for (name, hash) in hashes {
+            let file = match name.strip_prefix("config/opencode/plugins/") {
+                Some(plugin) => folder.join("bin/opencode-plugins").join(plugin),
+                None => folder.join(name),
+            };
+            if !fs::symlink_metadata(&file)?.is_file() {
+                return Err(damaged());
+            }
+            let mut digest = Sha256::new();
+            io::copy(&mut File::open(file)?, &mut digest)?;
+            if format!("{:x}", digest.finalize()) != *hash {
+                return Err(damaged());
+            }
         }
     } else {
         files::sync_tree(draft, home.root())?;

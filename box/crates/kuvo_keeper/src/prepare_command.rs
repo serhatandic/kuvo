@@ -113,7 +113,7 @@ fn is_scratch(home: &Home) -> io::Result<bool> {
         }))
 }
 
-fn version_order(version: &str) -> Option<([u64; 3], bool, u64)> {
+pub(crate) fn version_order(version: &str) -> Option<([u64; 3], bool, u64)> {
     let (base, beta) = version
         .split_once("-beta.")
         .map_or((version, None), |(base, beta)| (base, Some(beta)));

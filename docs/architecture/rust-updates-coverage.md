@@ -14,8 +14,19 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U1 | `update --phase prepare` rejects a foreign key, a forged signature, and edited manifest bytes. |
 | U2 | The same command rejects a changed pack while preserving the selected release. |
 | U3 | The same command declines an older release and a release without `spreads: true`. |
-| U4 | The release signer emits one signed descriptor per target. The Rust updater validates the local pack, probes its programs, preserves the selected release, and can retry preparation. |
+| U4 | The release signer emits one signed descriptor per target. The Rust updater validates the local pack and engine, probes its programs, and can retry preparation while the old resident keeps serving. An explicit native-keeper selection starts and confirms the prepared release. |
 | U5 | The shell keeper answers an SSH request using Rust after the previous stager's bin-only move. It restores `box.json` on disk. |
+| U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. |
+| U7 | The prepared-pack scenario stops its keeper and uninstalls the standalone computer. It retains the home, clears the desktop identity, and leaves the scratch account and its temporary directory unchanged. |
+
+On macOS the update area passed five Rust cases and four shared TypeScript
+cases. U4 rejected a damaged engine from a loopback feed, then prepared and
+retried in 39.0 seconds. Explicit selection and confirmation took 1.2 seconds.
+Both release directories used the same tested Rust executable with distinct
+version and pack identities. The workspace compile check, the three shell
+keeper route cases, and the two existing TypeScript signing and packaging
+cases passed. The differential runner matched the failed-trial status response
+and reported differences in the rest of the home inventory.
 
 ## TypeScript reference cases
 
@@ -23,13 +34,15 @@ under `packs`, with the existing signed `pack` field available to older readers.
 underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
+The reference table maps 81 cases. Two are covered, 42 have partial proof,
+three are specific to the TypeScript bridge or desktop updater, and 34 are open.
 
 | Source and case | Status | Remaining owner |
 | --- | --- | --- |
 | [updates](../../box/bridge-tests/updates.test.js), version order | Partial. U3 checks an older release and the beta-to-final ordering in U4. Numeric components, same version with a new digest, and already-ahead peers need coverage. | 7.2 |
 | Same, pinned signatures and signed bytes | Covered by U1. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
-| Same, partial rollback reported once | Partial. 7.1 writes the refusal record. The status consumer is open. | 7.2 |
+| Same, partial rollback reported once | Partial. 7.1 writes the refusal record and U6 reads it. The interrupted in-place restore and its one-time settlement need the predecessor fixture. | 7.2 |
 | Same, signed release with Helper kept for peers | Partial. U4 covers signing and selecting a target. Target pack assembly, Helper validation, and retaining the signed feed and pack for peers are open. | 7.2, 6.2 |
 | Same, full packaged contents | Partial. U4 checks the shipped executable and manifest in isolation. Complete per-target artifacts remain open. | 7.2 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Open. | 7.2 |
@@ -74,7 +87,7 @@ update prompts follow the switch-over scope in [the design](rust-box.md#4-switch
 | [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Partial. U1–U4 cover update admission and 2.6 C1 covers the read-only verdict. Installer admission and engine download remain open. | 7.2 |
 | Same 148, 204, 267, installer after last wipe, stop without Helper, and completion outside App Support | Open as installer scenarios. See 2.3 U7–U8 for wipe and receipt checks. | 2.3, 6.2, 7.2 |
 | Same 361, two installers prepare together | Open. | 7.2 |
-| Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 covers update pack integrity only. | 7.2 |
+| Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. The installer entry remains open. | 7.2 |
 | Same 418, 442, 451, existing home, fleet update instead of reinstall, and offline status | Open. | 7.2 |
 | Same 468, 505, Mac new and interrupted install, Helper launch | Partial. 2.6 covers staged making. The installer handoff and real Helper remain open. | 6.2, 7.2 |
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. 2.6 A7 and C1 cover move and publication. The installer entry and Helper remain open. | 7.2 |
@@ -89,7 +102,7 @@ update prompts follow the switch-over scope in [the design](rust-box.md#4-switch
 
 | Source | Status | Remaining owner |
 | --- | --- | --- |
-| [Keeper](rust-keeper-coverage.md) route, future update record, rollback status, and former release | U5 covers bin-only manifest recovery. Future pack file-list versions are refused by the Rust reader. Update state, status consumption and former-release integration remain open. | 7.2 |
+| [Keeper](rust-keeper-coverage.md) route, future update record, rollback status, and former release | U5 covers bin-only manifest recovery and U6 covers the failed-trial status. Future pack file-list versions are refused by the Rust reader. Former-release integration remains open. | 7.2 |
 | [Store](rust-store-coverage.md) authority-format cases | Installer stdin/prefix before making, making marker, repair records, and former-release rollback still need full installer and updater proofs. | 2.3, 7.2 |
 | [Adding](rust-adding-coverage.md) `computers-add.test.js` 302, 360, 397, 445, 2038, 2069 | Open. Cover update discovery, missing version, fallback address, retired app, and interrupted Helper reinstall. | 2.3, 2.4, 2.6, 6.2, 7.2 |
 | [Move](rust-move-coverage.md) `rehome`, `rehome-run`, `folder-version` 287, 301, 326, and own-home Mac | Partial. 2.6 has released data and cutover tests with stand-ins. The installer entry, release trial and Helper launch remain open. | 4.1, 6.2, 7.2 |
@@ -98,4 +111,4 @@ update prompts follow the switch-over scope in [the design](rust-box.md#4-switch
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Existing backup boundary. Call it from the TypeScript-to-Rust switch and prove interrupted retries. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Open. | 7.2 |
 | Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Open. | 7.2 |
-| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Open. | 7.2 |
+| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers a stopped standalone Mac scratch install. The live shared, Helper-owned and full four-platform flows remain open. | 2.3, 7.2 |

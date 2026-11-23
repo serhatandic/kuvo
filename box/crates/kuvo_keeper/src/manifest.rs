@@ -59,11 +59,19 @@ struct Manifest {
     version: String,
     engine: String,
     spreads: Option<Value>,
-    released: Option<String>,
     launch: Option<Value>,
     pack: Pack,
     #[serde(default)]
     packs: BTreeMap<String, Pack>,
+    darwin: Option<Value>,
+    linux: Option<Value>,
+    windows: Option<Value>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct EngineBuild {
+    pub url: String,
+    pub integrity: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -147,10 +155,6 @@ impl SignedRelease {
         &self.manifest.engine
     }
 
-    pub fn released(&self) -> Option<&str> {
-        self.manifest.released.as_deref()
-    }
-
     pub fn spreads(&self) -> bool {
         self.manifest.spreads == Some(Value::Bool(true))
     }
@@ -173,6 +177,17 @@ impl SignedRelease {
             version: self.manifest.version.clone(),
             sha256: pack.sha256.clone(),
         }
+    }
+
+    pub(crate) fn engine_build(&self, target: &str) -> Option<EngineBuild> {
+        let (arch, system) = target.split_once('-')?;
+        let catalogue = match system {
+            "apple-darwin" => self.manifest.darwin.as_ref(),
+            "unknown-linux-musl" => self.manifest.linux.as_ref(),
+            "pc-windows-gnullvm" => self.manifest.windows.as_ref(),
+            _ => None,
+        }?;
+        serde_json::from_value(catalogue.get(arch)?.clone()).ok()
     }
 }
 

@@ -67,7 +67,7 @@ const manifest = Buffer.from(JSON.stringify({
   ...(layout ? { layout: Number(layout[1]) } : {}),
   linux: box.linux,
   darwin: box.darwin,
-  ...(targets.length ? { launch: "rust", packs } : {}),
+  ...(targets.length ? { launch: "rust", packs, windows: box.windows } : {}),
   pack: packed(pack, url),
   ...(process.env.KUVO_BOX_SPREADS === "1" ? { spreads: true } : {}),
 }));
