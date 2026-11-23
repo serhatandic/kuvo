@@ -296,7 +296,7 @@ export class GrokAgent implements Agent {
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
         // Run under a holder on a box, its turns taken up by a bridge started after a crash (spike
-        // S2's ACP run, .claude/notes/update-handover.md).
+        // S2's ACP run).
         held: { kind: "grok", provider: agent.providerID },
         fileSystem: false,
         initializeMeta: { clientType: "extension" },

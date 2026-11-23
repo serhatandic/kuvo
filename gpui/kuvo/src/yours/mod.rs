@@ -15,7 +15,7 @@
 //! can't be read at all is all defaults, and the app opens as usual. What this app doesn't know (a
 //! newer app's keys) is kept as it was when it writes.
 //!
-//! How to add a page: `.claude/notes/yours-settings-pattern.md`.
+//! How to add a page: `docs/your-settings-pages.md`.
 
 pub mod editors;
 #[cfg(target_os = "macos")]

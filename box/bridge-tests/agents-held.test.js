@@ -4,8 +4,7 @@
 // one turn, with what the agent said before and after the crash. Then the box is stopped
 // (`kuvo-start stop`), and nothing it held runs on. The real bridge (box/dist/kuvo-agents.js, on
 // Bun), its real holders and keeper, and stand-ins for Codex's app-server and Claude Code (they
-// speak their protocols; the real ones were checked the same way in spikes S1 and S2,
-// .claude/notes/update-handover.md).
+// speak their protocols; the real ones were checked the same way in spikes S1 and S2).
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";

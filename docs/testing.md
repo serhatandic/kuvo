@@ -41,6 +41,10 @@ A new test must fail on the old code, for the right reason. Check it cheaply:
 
 A test that passes with the feature deleted protects nothing.
 
+A user's bug: reproduce it the way they saw it where you can (a demo copy, their log or steps). A
+fix to a nearby test isn't a fix to their bug. Until the user confirms it in their own copy, report
+it as merged and not yet seen, not as fixed.
+
 ## 3. Use the real components
 
 Stub only what's outside or unpredictable: the network, the engine's HTTP API, SSH, a coding
@@ -106,7 +110,11 @@ nitpicks: shots cover looks, and a visual fix gets a look before and after.
 
 ## 11. Running
 
-Only what you changed and what uses it, never the full suite unless asked:
+Only what you changed and what uses it, never the full suite unless asked. Run them locally
+through `scripts/heavy.sh` (the scripts below take its slots); CI is paused, and sessions never run
+`scripts/ci-branch.sh`. Linux checks run on lokum (`scripts/lokum-box-check.sh`,
+`scripts/lokum-bridge-check.sh`), never hetzner; Windows checks with `scripts/windows-box-check.sh`
+and `scripts/windows-bridge-check.sh`.
 
 ```sh
 scripts/test-box.sh box test/conversation.test.ts      # box

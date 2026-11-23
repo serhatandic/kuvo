@@ -40,6 +40,35 @@ bar) show what a box says and ask it to change things. Computers reach each othe
 - **Delivery:** the desktop shows sends immediately and retries the same ID. The box settles interrupted sends and the agents bridge keeps queued messages across restarts. The shared event line carries merged session, waiting and queue lists for clients that subscribe to them. See [Message delivery](message-delivery.md).
 - **Side panel:** files, terminals, Changes and the browser. Each is a box route that the app draws (`files.ts`, `git.ts`, `areas/*`; `gpui/kuvo`).
 
+## Where new code goes
+
+CLAUDE.md's first two rules, in full.
+
+- **A box decides, a client draws.** Sessions, agents, accounts, models, settings, files, git,
+  processes, the network and what's allowed belong in `box/`. A client reads the box's state,
+  changes it through a route, and draws the result. Keep clients thin enough that a new client
+  (Windows, Linux) is almost trivial; between two working designs, pick the one a new client would
+  rewrite less of.
+- **The box states facts** for clients to present, documented in `protocol/PROTOCOL.md` so
+  another client can use them.
+- **Only this stays in a client:** drawing and layout, animation, window and selection state, the
+  side panel's browser view, and what only an installed app can do (updating itself, login items,
+  notifications). The keeper starts and watches the box and takes on no features.
+- **Never add** a route only the app answers (`toApp` in `box/src/link/mac/relay.ts`), a copy of
+  box logic in a client (or in `kuvo-browser.js` and the keeper side by side), or client logic
+  "for now", "until the box can", or because the app is quicker to change.
+- **Logic already in a client:** don't extend it. Move it to the box if that's small; otherwise
+  make the smallest fix and list it in your report as left to move.
+- **If something truly can't be on the box,** say why before building it; the user decides.
+  Plans and briefs name where each new piece of logic lives.
+- **Never only for this Mac**: not only in the app, only for the Mac's box, or only through the
+  Mac's SSH connection. Where a box can't do something yet, say so in the UI and your report;
+  never quietly make the Mac a hub.
+- **Every operating system in one place.** `IS_MAC` means the box beside the app, not the
+  system. Prefer code that's the same everywhere; where systems differ (file watching, processes,
+  paths, the keeper, the shell, Keychain versus files), handle each in one place, test each, and
+  say plainly what can't apply on one and why.
+
 ## Remaining work
 
 Findings 1–7 in the archived check have landed on main: box-authored removal

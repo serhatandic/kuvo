@@ -1,6 +1,17 @@
 # Where each change is documented
 
-CLAUDE.md's rule, "Docs must match the code", points here for the details.
+**Parked**: the website and its docs get no changes and no docs branches until the user says go.
+When they resume, this is the rule: a change that affects what users see, run or rely on isn't done
+until the docs in `../kuvo-web` match it.
+
+- Update them in the same task. Before reporting, check the pages mapped below for the files you
+  touched and say which you updated, or that none needed it.
+- Document only what you confirmed in the code; where they disagree, the code wins: fix the docs
+  and say so.
+- Commit kuvo-web separately, saying what changed for users. Pushing it deploys kuvo.run: only
+  when the user says so.
+- Set `updated:` to today on every page you change. Keep docs short: what people do and see, no
+  internals, no exact limits or tables the app already labels.
 
 The website and docs live in a separate repo, **kuvo-web**, checked out next to this one (`../kuvo-web`). Kuvo Code's docs are Markdown files in `src/content/docs/code/`, ordered by `src/lib/docs-nav.ts`, and its landing page is `src/pages/code/index.astro` (the site also hosts Kuvo Box under `/box`, and kuvo.run's own page is `src/pages/index.astro`).
 

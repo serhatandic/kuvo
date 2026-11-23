@@ -64,7 +64,7 @@ A layout change adds a tested, replayable folder step from n to n+1. Layout 1 pr
 the existing files so pre-marker builds can still use them during rollback. A future
 incompatible layout requires stopping older writers and a compatible rollback plan.
 Computers in an updating fleet continue to exchange messages using their wire versions. See the format inventory in
-`.claude/notes/848-U-versions-inventory.md`.
+`docs/architecture/stored-formats.md`.
 
 ## The relay
 

@@ -14,7 +14,7 @@
 # ALWAYS signed ad hoc, here and in everything it carries (scripts/sign-desktop-app.sh, inside
 # out): a release's signing with a Developer ID is scripts/sign-desktop-app.sh again, then
 # notarization, the disk image and the update feed: the release's own steps (release.yml), never
-# this script's (.claude/notes/759-desktop-app-updates.md).
+# this script's.
 #   scripts/build-desktop-app.sh
 #   VERSION     the version to stamp (default 0.0.0: a local build); a beta's is like 0.8.0-beta.1.
 #               A box takes the release an app carries only when it's newer than itself.
