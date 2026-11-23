@@ -282,6 +282,9 @@ pub(crate) async fn submit(
                     .ok()
                     .and_then(|body| serde_json::from_slice(&body.to_bytes()).ok())
                     .unwrap_or_default();
+                if crate::session_move::refused(reply.status, &value) {
+                    return Err(Refusal::json(reply.status, value));
+                }
                 json!({ "answer": { "restore": { "text": text }, "error": value["message"].as_str()
                     .unwrap_or("Check the conversation to see whether the draft went before sending again.") } })
             }

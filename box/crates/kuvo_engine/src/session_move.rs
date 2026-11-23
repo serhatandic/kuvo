@@ -1,25 +1,230 @@
 //! OpenCode's part of a move. The peer worker owns admission, the journal and
 //! the activation decision. This handle pins the engine for the lifetime of the lease.
 
-use std::{collections::HashSet, fmt, path::Path, time::Duration};
+use std::{
+    collections::HashSet,
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-use http::Method;
+use http::{Method, StatusCode};
+use kuvo_os::process::ProcessIdentity;
+use kuvo_server::Refusal;
+use kuvo_store::{files, format::ObjectFormat};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tokio::time::Instant;
 
 use crate::{
     Engine, api,
     lifetime::{Demand, Lease},
+    queue,
 };
 
 const READ_WAIT: Duration = Duration::from_secs(120);
 const EXPORT_WAIT: Duration = Duration::from_secs(600);
 const IMPORTED_BY: &str = "kuvo.moveImport";
+const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
+const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
+const RECENT_DEPARTURE: u64 = 2 * 24 * 60 * 60_000;
+const HELD: &str = "This record is held while its owner changes.";
+
+pub(crate) fn refused(status: StatusCode, body: &Value) -> bool {
+    status == StatusCode::CONFLICT && body["message"].as_str() == Some(HELD)
+}
+
+pub(crate) fn prompt_target(method: &Method, path: &str) -> Option<String> {
+    let mut tail = path.strip_prefix("api/session/")?.split('/');
+    let id = percent_encoding::percent_decode_str(tail.next()?)
+        .decode_utf8()
+        .ok()?;
+    if !crate::sessions::valid_id(&id) {
+        return None;
+    }
+    let guarded = match (method, tail.next()?, tail.next()) {
+        (&Method::POST, "prompt" | "command" | "shell" | "compact" | "summarize", None) => true,
+        (&Method::POST | &Method::DELETE, "permission" | "form", Some(token)) => {
+            !token.is_empty()
+                && matches!(tail.next(), None | Some("reply"))
+                && tail.next().is_none()
+        }
+        _ => false,
+    };
+    guarded.then(|| id.into_owned())
+}
+
+/// A write registers before looking for a fence. A snapshot taken after a
+/// durable fence then either waits for the write or knows it was refused.
+pub(crate) struct PromptWrite(PathBuf);
+
+impl Drop for PromptWrite {
+    fn drop(&mut self) {
+        let _ = files::remove_file_synced(&self.0);
+    }
+}
+
+#[derive(Deserialize)]
+struct Fence {
+    id: String,
+    thing: String,
+    role: String,
+    sessions: Vec<String>,
+    step: Option<String>,
+    failed: Option<String>,
+    activation: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct Departure {
+    session: String,
+    key: String,
+    at: u64,
+    arrived: Option<bool>,
+    queue: Option<String>,
+}
+
+pub(crate) async fn admit(
+    engine: &Engine,
+    session: &str,
+    activating: Option<&str>,
+) -> Result<PromptWrite, Refusal> {
+    let run = engine.home.join("run");
+    let session = session.to_owned();
+    let activating = activating.map(str::to_owned);
+    let admission = tokio::task::spawn_blocking(move || {
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+        let marker = run.join("move-prompt-writes").join(format!(
+            "{}-{}-{}",
+            write_prefix(&session),
+            std::process::id(),
+            hex::encode(nonce),
+        ));
+        files::write_new(&marker, &[])?;
+        let write = PromptWrite(marker);
+        if frozen(&run, &session, activating.as_deref())? {
+            Ok::<_, io::Error>(None)
+        } else {
+            Ok(Some(write))
+        }
+    })
+    .await;
+    match admission {
+        Ok(Ok(Some(write))) => Ok(write),
+        Ok(Ok(None)) => Err(Refusal::new(StatusCode::CONFLICT, HELD)),
+        Ok(Err(error)) => Err(fence_failure(error)),
+        Err(error) => Err(fence_failure(error)),
+    }
+}
+
+fn fence_failure(error: impl fmt::Display) -> Refusal {
+    eprintln!("Reading move admission: {error}");
+    Refusal::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "The computer couldn’t check whether this conversation is moving.",
+    )
+}
+
+fn entries(path: &Path) -> io::Result<impl Iterator<Item = io::Result<fs::DirEntry>>> {
+    let read = match fs::read_dir(path) {
+        Ok(read) => Some(read),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    Ok(read.into_iter().flatten())
+}
+
+fn frozen(run: &Path, session: &str, activating: Option<&str>) -> io::Result<bool> {
+    let root = run.join("moves");
+    for entry in entries(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !name
+            .to_str()
+            .and_then(|name| name.strip_prefix("mov_")?.strip_suffix(".json"))
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+        {
+            continue;
+        }
+        let Some(stored) = JOURNAL.read(&entry.path()).map_err(io::Error::other)? else {
+            continue;
+        };
+        let row: Fence = serde_json::from_value(stored.fields.into())?;
+        if !matches!(row.role.as_str(), "from" | "to") {
+            return Err(io::Error::other("An ownership record could not be read"));
+        }
+        if row.step.as_deref() == Some("check")
+            || row.failed.as_deref().is_some_and(|text| !text.is_empty())
+        {
+            continue;
+        }
+        let member = row.sessions.iter().any(|id| id == session);
+        let own_activation = activating == Some(row.id.as_str())
+            && row.role == "to"
+            && row.activation.is_some()
+            && member;
+        if !own_activation && (row.thing == session || member) {
+            return Ok(true);
+        }
+    }
+    let Some(raw) = files::read(&root.join("moved.json"))? else {
+        return Ok(false);
+    };
+    let Ok(Value::Array(rows)) = serde_json::from_slice(&raw) else {
+        return Ok(false);
+    };
+    let now = crate::disk::now();
+    for row in rows.into_iter().filter(Value::is_object) {
+        let fields = DEPARTURE.decode(row).map_err(io::Error::other)?.fields;
+        if let Ok(row) = serde_json::from_value::<Departure>(fields.into())
+            && row.session == session
+            && !row.key.is_empty()
+            && row.arrived != Some(true)
+            && row.queue.is_none()
+            && now.saturating_sub(row.at) < RECENT_DEPARTURE
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn write_prefix(session: &str) -> String {
+    hex::encode(Sha256::digest(session.as_bytes()))
+}
+
+fn in_flight(folder: &Path, prefixes: &HashSet<String>) -> io::Result<bool> {
+    for entry in entries(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some((hash, pid)) = name.to_str().and_then(|name| {
+            let (hash, rest) = name.split_once('-')?;
+            let (pid, _) = rest.split_once('-')?;
+            let pid: u32 = pid.parse().ok()?;
+            (pid > 0).then_some((hash, pid))
+        }) else {
+            continue;
+        };
+        if !prefixes.contains(hash) {
+            continue;
+        }
+        if ProcessIdentity::read(pid)?.is_some() {
+            return Ok(true);
+        }
+        files::remove_file_synced(&entry.path())?;
+    }
+    Ok(false)
+}
 
 #[derive(Debug)]
 pub enum MoveEngineError {
     Unavailable,
     InvalidTree,
     MissingOwnership,
+    Busy,
+    Storage(io::Error),
     Upstream(Box<dyn std::error::Error + Send + Sync>),
 }
 
@@ -31,7 +236,9 @@ impl fmt::Display for MoveEngineError {
             Self::MissingOwnership => {
                 out.write_str("The conversation copy has no import ownership receipt")
             }
+            Self::Busy => out.write_str("Its conversation is still running."),
             Self::Upstream(error) => write!(out, "{error}"),
+            Self::Storage(error) => write!(out, "{error}"),
         }
     }
 }
@@ -40,6 +247,7 @@ impl std::error::Error for MoveEngineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Upstream(error) => Some(error.as_ref()),
+            Self::Storage(error) => Some(error),
             _ => None,
         }
     }
@@ -70,6 +278,246 @@ impl Engine {
 }
 
 impl SessionMove {
+    pub async fn recent_messages(
+        &self,
+        session: &str,
+        limit: u8,
+    ) -> Result<Option<Vec<Value>>, MoveEngineError> {
+        if !valid_session(session) {
+            return Err(MoveEngineError::InvalidTree);
+        }
+        let route = format!("api/session/{session}/message?limit={limit}&order=desc");
+        match self
+            .engine
+            .call(&self.lease, Method::GET, &route, None)
+            .await
+        {
+            Ok(messages) => Ok(Some(messages)),
+            Err(error) if error.missing() => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub async fn moved_instruction(
+        &self,
+        session: &str,
+        words: &str,
+    ) -> Result<(), MoveEngineError> {
+        if !valid_session(session) {
+            return Err(MoveEngineError::InvalidTree);
+        }
+        let route = format!("api/experimental/session/{session}/instructions/entries/kuvo.moved");
+        self.engine
+            .call_raw(
+                &self.lease,
+                Method::PUT,
+                &route,
+                Some(&json!({"value": words})),
+                READ_WAIT,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Deliver the already composed letter through the same session turn and
+    /// lookup used to reconcile an accepted prompt whose reply was lost.
+    pub async fn deliver_letter(
+        &self,
+        session: &str,
+        id: String,
+        text: String,
+        from: String,
+        words: String,
+        steer: bool,
+        metadata: Option<Value>,
+    ) -> Result<bool, Refusal> {
+        let _turn = self.engine.turn(session).await;
+        let _admitted = admit(&self.engine, session, None).await?;
+        let queue = self
+            .engine
+            .queues
+            .get(session)
+            .await
+            .map_err(fence_failure)?;
+        if queue.contains(&id) {
+            return Ok(true);
+        }
+        if queue::reached(&self.engine, &self.lease, session, &id)
+            .await
+            .map_err(fence_failure)?
+        {
+            return Ok(false);
+        }
+        let keep = queue.is_paused();
+        let prompt = queue::Prompt {
+            id,
+            text,
+            delivery: if steer && !keep {
+                queue::Delivery::Steer
+            } else {
+                queue::Delivery::Queue
+            },
+            metadata,
+            files: vec![],
+        };
+        if self
+            .engine
+            .queues
+            .keep(session, &prompt, Some(&words), Some(from), None)
+            .await
+            .map_err(fence_failure)?
+        {
+            return Ok(true);
+        }
+        crate::send::post(&self.engine, &self.lease, session, &prompt).await?;
+        Ok(false)
+    }
+
+    pub async fn ready(&self) -> Result<(), MoveEngineError> {
+        self.active().await.map(|_| ())
+    }
+
+    pub async fn lookup(&self, session: &str) -> Result<Option<Value>, MoveEngineError> {
+        if !valid_session(session) {
+            return Err(MoveEngineError::InvalidTree);
+        }
+        let path = format!("api/session/{session}");
+        match self
+            .engine
+            .call::<Value>(&self.lease, Method::GET, &path, None)
+            .await
+        {
+            Ok(row) if row["id"].as_str() == Some(session) => Ok(Some(row)),
+            Ok(_) => Err(MoveEngineError::InvalidTree),
+            Err(error) if error.missing() => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// The journals already cover this set. Let turns already running end
+    /// and let existing prompt writes finish before reading the move's data.
+    pub async fn settle(&self, sessions: &[String]) -> Result<(), MoveEngineError> {
+        self.settle_writes(sessions).await?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let active = self.active().await?;
+            let busy = sessions.iter().any(|session| {
+                active.get(session).is_some()
+                    || active
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|id| id == session))
+            });
+            if !busy {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(MoveEngineError::Busy);
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    pub async fn remove_retired(&self, session: &str) -> Result<(), MoveEngineError> {
+        if !valid_session(session) {
+            return Err(MoveEngineError::InvalidTree);
+        }
+        let _turn = self.engine.turn(session).await;
+        let path = format!("api/session/{session}");
+        match self
+            .engine
+            .call_raw(&self.lease, Method::DELETE, &path, None, READ_WAIT)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.missing() => {}
+            Err(error) => return Err(error.into()),
+        }
+        queue::forget_moved(&self.engine, session)
+            .await
+            .map_err(MoveEngineError::Storage)
+    }
+
+    pub async fn queue_snapshot(
+        &self,
+        sessions: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Value>, MoveEngineError> {
+        queue::pack_move(&self.engine, &self.lease, sessions)
+            .await
+            .map_err(MoveEngineError::Storage)
+    }
+
+    pub async fn place_queues(
+        &self,
+        sessions: &[String],
+        queues: std::collections::BTreeMap<String, Value>,
+    ) -> Result<Vec<String>, MoveEngineError> {
+        queue::place_move(&self.engine, sessions, queues)
+            .await
+            .map_err(MoveEngineError::Storage)
+    }
+
+    pub async fn forget_queues(&self, session: &str) -> Result<(), MoveEngineError> {
+        queue::forget_moved(&self.engine, session)
+            .await
+            .map_err(MoveEngineError::Storage)
+    }
+
+    pub async fn activate_queues(
+        &self,
+        move_id: &str,
+        unpaused: &[String],
+    ) -> Result<(), MoveEngineError> {
+        for session in unpaused {
+            queue::resume_move(&self.engine, &self.lease, session, move_id)
+                .await
+                .map_err(|error| {
+                    MoveEngineError::Storage(io::Error::other(format!(
+                        "Activating the move queue: {}",
+                        error.reply().status
+                    )))
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn active(&self) -> Result<Value, MoveEngineError> {
+        Ok(self
+            .engine
+            .call::<Value>(&self.lease, Method::GET, "api/session/active", None)
+            .await?)
+    }
+
+    /// Call after the move journal fences this set of sessions, before
+    /// exporting or comparing with a copy that has arrived.
+    pub async fn settle_writes(&self, sessions: &[String]) -> Result<(), MoveEngineError> {
+        let folder = std::sync::Arc::new(self.engine.home.join("run/move-prompt-writes"));
+        let prefixes = std::sync::Arc::new(
+            sessions
+                .iter()
+                .map(|id| write_prefix(id))
+                .collect::<HashSet<_>>(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(125);
+        loop {
+            let folder = folder.clone();
+            let prefixes = prefixes.clone();
+            let busy = tokio::task::spawn_blocking(move || in_flight(&folder, &prefixes))
+                .await
+                .map_err(|error| MoveEngineError::Storage(io::Error::other(error)))?
+                .map_err(MoveEngineError::Storage)?;
+            if !busy {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(MoveEngineError::Storage(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "A prompt write has not finished",
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// Export the entire session tree, including paginated child lists. Each
     /// export's own ID and parent must agree with the listing that led to it.
     pub async fn export_tree(&self, root: &str) -> Result<Vec<Value>, MoveEngineError> {
