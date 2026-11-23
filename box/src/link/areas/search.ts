@@ -15,6 +15,7 @@ import type { EngineMessage } from "../engine/conversations";
 import { isHiddenRun } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { SEARCH } from "../home";
+import { isObject } from "../../shared/json";
 import { fitsShape } from "../../shared/shape";
 import { SEARCH_FOUND, type SearchFound } from "../../shared/routes/misc";
 import { listComputer } from "../lists/computer";
@@ -111,9 +112,10 @@ async function searchSetup(context: RouteContext, words: string, limit: number):
   for (const peer of peers) {
     if (peer.state === "away") awayComputers.push(peer.computer);
     else if (peer.state === "unavailable") unavailableComputers.push(peer.computer);
-    else for (const result of peer.found.results) keep(result, peer.computer);
+    else if (peer.found) for (const result of peer.found.results) keep(result, peer.computer);
   }
-  const updated = (result: SearchResult) => Number(result.info?.time?.updated) || 0;
+  const updated = ({ info }: SearchResult) =>
+    isObject(info) && isObject(info.time) && typeof info.time.updated === "number" ? info.time.updated : 0;
   rows.sort((a, b) => updated(b) - updated(a) || a.session.localeCompare(b.session) || a.computer!.id.localeCompare(b.computer!.id));
   const seen = new Set<string>();
   const results = rows.filter(row => {
