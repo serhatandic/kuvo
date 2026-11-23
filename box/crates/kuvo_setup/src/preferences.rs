@@ -15,8 +15,12 @@ use crate::{
 
 const LIBRARY: &str = "bots/personalities.json";
 const ZONE: &str = "box/time-zone.json";
+const WAKE_FILES: &str = "wakes";
 const MAX_COUNT: u64 = 1 << 52;
+const LOCAL_REMOVALS: usize = 500;
 const SYMBOL: &str = "person.crop.circle";
+// The reference box offers Bun's Intl catalog. Jiff still supplies the rules.
+const CLOCK_ZONES: &str = include_str!("../data/time-zones.txt");
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Personality {
@@ -238,8 +242,14 @@ impl Library {
         result
     }
 
-    pub fn change(mut self, change: PersonalityChange) -> Result<(Self, Response), Error> {
+    pub fn change(mut self, change: PersonalityChange, managed: bool) -> (Self, Response) {
         let now = lease::wall();
+        let removal_limit = if managed { usize::MAX } else { LOCAL_REMOVALS };
+        let limits_size = match &change {
+            PersonalityChange::Merge(_) => managed,
+            PersonalityChange::Create(_) | PersonalityChange::Patch(_, _) => true,
+            PersonalityChange::Delete(_) => false,
+        };
         let response = match change {
             PersonalityChange::Merge(document) => {
                 if document
@@ -250,13 +260,13 @@ impl Library {
                         .get("removed")
                         .is_some_and(|removed| !removed.is_array())
                 {
-                    return Ok((
+                    return (
                         self,
                         response(
                             400,
                             "Send a library of personalities: {document: {personalities, removed}}.",
                         ),
-                    ));
+                    );
                 }
                 let previous = self.shared();
                 let old: HashMap<_, _> = ["personalities", "removed"]
@@ -266,7 +276,7 @@ impl Library {
                     .collect();
                 self = Self::merge(
                     Self::entries(&previous).chain(Self::entries(&document)),
-                    usize::MAX,
+                    removal_limit,
                 );
                 let next = self.shared();
                 let changed: Vec<_> = ["personalities", "removed"]
@@ -282,7 +292,7 @@ impl Library {
             PersonalityChange::Create(value) => {
                 let Some(made) = live(format!("custom.{}", uuid::Uuid::new_v4()), now, &value)
                 else {
-                    return Ok((self, incomplete()));
+                    return (self, incomplete());
                 };
                 let response = Response::ok(json!(made));
                 self.personalities.push(made);
@@ -290,7 +300,7 @@ impl Library {
             }
             PersonalityChange::Patch(id, value) => {
                 let Some(prior) = self.personalities.iter_mut().find(|entry| entry.id == id) else {
-                    return Ok((self, response(404, "")));
+                    return (self, response(404, ""));
                 };
                 let fields = json!({
                     "name": value.get("name").filter(|v| !v.is_null()).cloned().unwrap_or_else(|| json!(prior.name)),
@@ -298,7 +308,7 @@ impl Library {
                     "symbol": prior.symbol,
                 });
                 let Some(changed) = live(id, prior.updated + 1, &fields) else {
-                    return Ok((self, incomplete()));
+                    return (self, incomplete());
                 };
                 let response = Response::ok(json!(changed));
                 *prior = changed;
@@ -306,7 +316,7 @@ impl Library {
             }
             PersonalityChange::Delete(id) => {
                 let Some(index) = self.personalities.iter().position(|entry| entry.id == id) else {
-                    return Ok((self, response(404, "")));
+                    return (self, response(404, ""));
                 };
                 let prior = self.personalities.remove(index);
                 self.removed.push(Removal {
@@ -315,21 +325,28 @@ impl Library {
                 });
                 self.removed
                     .sort_by_key(|entry| std::cmp::Reverse(entry.removed));
+                self.removed.truncate(removal_limit);
                 Response::ok(json!({}))
             }
         };
-        if serde_json::to_vec(&self).expect("library serializes").len()
-            > kuvo_wire::documents::MAX_BYTES - 4096
+        if limits_size
+            && serde_json::to_vec(&json!({
+                "personalities": self.personalities,
+                "removed": &self.removed[..self.removed.len().min(LOCAL_REMOVALS)],
+            }))
+            .expect("library serializes")
+            .len()
+                > kuvo_wire::documents::MAX_BYTES - 4096
         {
-            return Ok((
+            return (
                 self,
                 self::response(
                     400,
                     "There’s no room for more in your personalities. Shorten or remove one, then try again.",
                 ),
-            ));
+            );
         }
-        Ok((self, response))
+        (self, response)
     }
 }
 
@@ -347,7 +364,12 @@ fn incomplete() -> Response {
 }
 
 pub(crate) fn keep_local_library(files: &Files, library: &Library) -> Result<(), Error> {
-    files.write(LIBRARY, &library.document())
+    let mut text = serde_json::to_vec_pretty(&library.document()).expect("library serializes");
+    text.push(b'\n');
+    if fs::read(files.path(LIBRARY)).ok().as_deref() != Some(&text) {
+        files.write_bytes(LIBRARY, &text)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn library(files: &Files, link: &Link) -> Result<Library, Error> {
@@ -357,14 +379,22 @@ pub(crate) fn library(files: &Files, link: &Link) -> Result<Library, Error> {
     {
         return Ok(Library::merge(Library::entries(value), usize::MAX));
     }
-    let local = files.read::<Value>(LIBRARY)?.unwrap_or(Value::Null);
-    if local
+    let local = files
+        .read::<Value>(LIBRARY)
+        .ok()
+        .flatten()
+        .unwrap_or(Value::Null);
+    if let Some(version) = local
         .get("kuvo")
-        .is_some_and(|version| !matches!(version.as_f64(), Some(0.0 | 1.0)))
+        .filter(|version| !matches!(version.as_f64(), Some(0.0 | 1.0)))
     {
-        return Err(Error::Version("personality library"));
+        let version = version
+            .as_f64()
+            .filter(|number| number.fract() == 0.0 && number.abs() < (1u64 << 53) as f64)
+            .map_or_else(|| "invalid".into(), |number| number.to_string());
+        return Err(Error::PersonalityVersion(version));
     }
-    Ok(Library::merge(Library::entries(&local), 500))
+    Ok(Library::merge(Library::entries(&local), LOCAL_REMOVALS))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -396,6 +426,85 @@ fn rules(name: &str) -> Option<String> {
     }
     let bytes = fs::read(Path::new("/usr/share/zoneinfo").join(name)).ok()?;
     (bytes.starts_with(b"TZif") && bytes.len() < 16_384).then(|| STANDARD.encode(bytes))
+}
+
+fn decode_rules(value: Option<&str>) -> Option<Vec<u8>> {
+    let value = value.filter(|value| value.len() <= 22_000)?;
+    let bytes = STANDARD.decode(value).ok()?;
+    (bytes.len() > 4 && bytes.len() < 16_384 && bytes.starts_with(b"TZif")).then_some(bytes)
+}
+
+pub(crate) fn follow_carried_zone(
+    files: &Files,
+    link: &Link,
+    launched: Option<&str>,
+) -> Result<Option<Zone>, Error> {
+    if link.value(SharedKind::SetupTimeZone).is_some() {
+        return Ok(None);
+    }
+    let kit = files.read::<Value>("bots/kit.json").ok().flatten();
+    let kit_zone = kit
+        .as_ref()
+        .filter(|value| value["kuvo"] == 1)
+        .and_then(|value| value["timeZone"].as_str())
+        .filter(|name| zone_name(name) && TimeZone::get(name).is_ok());
+    let kit_rules = kit
+        .as_ref()
+        .and_then(|value| decode_rules(value["zoneinfo"].as_str()))
+        .map(|bytes| STANDARD.encode(bytes));
+    let next = match files.read::<Zone>(ZONE) {
+        Ok(Some(mut current)) if current.valid() => {
+            let Some(name) = kit_zone.filter(|name| current.kit_seen.as_deref() != Some(*name))
+            else {
+                return Ok(None);
+            };
+            current.kit_seen = Some(name.into());
+            if current.carried {
+                current.zone = name.into();
+                current.zoneinfo = kit_rules;
+            }
+            current
+        }
+        Ok(None) => {
+            let (name, zoneinfo, kit_seen) = if let Some(name) = kit_zone {
+                (name.to_owned(), kit_rules, Some(name.to_owned()))
+            } else {
+                let wake = fs::read_to_string(files.path("wakes/timezone")).ok();
+                let wake = wake
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| zone_name(name) && TimeZone::get(name).is_ok());
+                let env = fs::read_to_string(files.path("run/launch.env")).ok();
+                let launch = env
+                    .as_deref()
+                    .and_then(|text| text.lines().find_map(|line| line.strip_prefix("KUVO_TZ=")))
+                    .map(str::trim)
+                    .or(launched);
+                let Some(name) = wake
+                    .or(launch)
+                    .filter(|name| zone_name(name) && TimeZone::get(name).is_ok())
+                else {
+                    return Ok(None);
+                };
+                let zoneinfo = wake
+                    .and_then(|_| fs::read(files.path("wakes/zoneinfo")).ok())
+                    .filter(|bytes| !bytes.is_empty())
+                    .map(|bytes| STANDARD.encode(bytes));
+                (name.to_owned(), zoneinfo, None)
+            };
+            Zone {
+                kuvo: 1,
+                zone: name,
+                n: 0,
+                zoneinfo,
+                carried: true,
+                kit_seen,
+            }
+        }
+        _ => return Ok(None),
+    };
+    keep_local_zone(files, &next)?;
+    Ok(Some(next))
 }
 
 impl Zone {
@@ -436,7 +545,7 @@ pub(crate) fn keep_local_zone(files: &Files, zone: &Zone) -> Result<(), Error> {
 }
 
 pub(crate) fn apply_zone(files: &Files, setting: &Zone) -> Result<(), Error> {
-    let mut paths = vec!["wakes".to_owned()];
+    let mut paths = vec![WAKE_FILES.to_owned()];
     for entry in files.names("bots")? {
         let path = format!("bots/{entry}");
         if files.path(&format!("{path}/bot.json")).is_file()
@@ -445,12 +554,7 @@ pub(crate) fn apply_zone(files: &Files, setting: &Zone) -> Result<(), Error> {
             paths.push(path);
         }
     }
-    let rules = setting
-        .zoneinfo
-        .as_ref()
-        .filter(|value| value.len() <= 22_000)
-        .and_then(|value| STANDARD.decode(value).ok())
-        .filter(|value| value.len() > 4 && value.len() < 16_384 && value.starts_with(b"TZif"));
+    let rules = decode_rules(setting.zoneinfo.as_deref());
     for folder in paths {
         let rule_path = format!("{folder}/zoneinfo");
         if let Some(rules) = &rules {
@@ -472,7 +576,7 @@ pub(crate) fn zone(files: &Files, link: &Link) -> Result<Option<Zone>, Error> {
     {
         return Ok(Some(setting));
     }
-    let kept = files.read::<Zone>(ZONE)?.filter(Zone::valid);
+    let kept = files.read::<Zone>(ZONE).ok().flatten().filter(Zone::valid);
     Ok(kept)
 }
 
@@ -485,11 +589,16 @@ pub(crate) fn clock(files: &Files, link: &Link, computer: &str) -> Result<Value,
     let system = TimeZone::system();
     let own = system.iana_name().unwrap_or("UTC");
     let selected = kept.as_ref().map_or(own, |zone| zone.zone.as_str());
-    let timezone = TimeZone::get(selected).unwrap_or(TimeZone::UTC);
-    let seconds = timezone.to_offset(Timestamp::now()).seconds();
+    let seconds = TimeZone::get(selected)
+        .ok()
+        .map(|timezone| timezone.to_offset(Timestamp::now()).seconds());
+    let known_offset = seconds.is_some();
+    let seconds = seconds.unwrap_or_default();
     let minutes = seconds.unsigned_abs() / 60;
-    let offset = if minutes == 0 {
-        "GMT".to_owned()
+    let offset = if !known_offset {
+        String::new()
+    } else if minutes == 0 {
+        "GMT+0".to_owned()
     } else {
         let sign = if seconds < 0 { "−" } else { "+" };
         let (hours, minutes) = (minutes / 60, minutes % 60);
@@ -504,10 +613,9 @@ pub(crate) fn clock(files: &Files, link: &Link, computer: &str) -> Result<Value,
     } else {
         computer
     };
-    let mut choices: Vec<_> = jiff::tz::db()
-        .available()
-        .filter(|id| zone_name(id.as_str()))
-        .map(|id| json!({"id": id.as_str(), "title": title(id.as_str())}))
+    let mut choices: Vec<_> = CLOCK_ZONES
+        .lines()
+        .map(|id| json!({"id": id, "title": title(id)}))
         .collect();
     if kept.is_none() {
         choices.insert(
@@ -518,7 +626,9 @@ pub(crate) fn clock(files: &Files, link: &Link, computer: &str) -> Result<Value,
         choices.insert(0, json!({"id": selected, "title": title(selected)}));
     }
     let missing_rules = kept.as_ref().is_some_and(|zone| {
-        zone.zone != "UTC" && zone.zoneinfo.is_none() && rules(&zone.zone).is_none()
+        zone.zone != "UTC"
+            && decode_rules(zone.zoneinfo.as_deref()).is_none()
+            && rules(&zone.zone).is_none()
     });
     let line = match kept.as_ref() {
         Some(_) if missing_rules => format!(

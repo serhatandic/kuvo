@@ -33,6 +33,8 @@ pub enum Error {
     },
     #[error("unsupported {0} format")]
     Version(&'static str),
+    #[error("Personality library format version {0} is unsupported (this build writes 1).")]
+    PersonalityVersion(String),
     #[error("invalid {0}")]
     Invalid(&'static str),
     #[error("This device no longer has access to change setup devices.")]

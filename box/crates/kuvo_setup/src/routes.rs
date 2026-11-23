@@ -30,7 +30,9 @@ impl SetupHandle {
 
         let setup = self.clone();
         routes.register::<get_kuvo_setup_events::Spec, _, _>(Access::Any, move |_| {
-            std::future::ready(Ok(events(setup.views.clone(), |view| view.setup.clone())))
+            std::future::ready(Ok(events(setup.views.clone(), |view| {
+                Some(view.setup.clone())
+            })))
         });
 
         let setup = self.clone();
@@ -210,25 +212,31 @@ impl SetupHandle {
     fn register_personalities(&self, routes: &mut Registry) {
         let setup = self.clone();
         routes.register::<get_kuvo_personalities::Spec, _, _>(Access::Any, move |_| {
-            std::future::ready(typed::<get_kuvo_personalities::Spec, 200>(json!({
-                "personalities": setup.views.borrow().personalities["personalities"],
-            })))
+            std::future::ready(setup.personality_document().and_then(|document| {
+                typed::<get_kuvo_personalities::Spec, 200>(json!({
+                    "personalities": document["personalities"],
+                }))
+            }))
         });
 
         let setup = self.clone();
         routes.register::<get_kuvo_personalities_events::Spec, _, _>(Access::Any, move |_| {
-            std::future::ready(Ok(events(
-                setup.views.clone(),
-                |view| json!({"personalities": view.personalities["personalities"]}),
-            )))
+            std::future::ready(setup.personality_document().map(|_| {
+                events(setup.views.clone(), |view| {
+                    view.personalities
+                        .as_ref()
+                        .ok()
+                        .map(|document| json!({"personalities": document["personalities"]}))
+                })
+            }))
         });
 
         let setup = self.clone();
         routes.register::<get_kuvo_personalities_document::Spec, _, _>(Access::Any, move |call| {
             std::future::ready(personality_app(&call.request.caller).and_then(|()| {
-                typed::<get_kuvo_personalities_document::Spec, 200>(
-                    setup.views.borrow().personalities.clone(),
-                )
+                setup
+                    .personality_document()
+                    .and_then(typed::<get_kuvo_personalities_document::Spec, 200>)
             }))
         });
 
@@ -293,6 +301,14 @@ impl SetupHandle {
         });
     }
 
+    fn personality_document(&self) -> Result<Value, Refusal> {
+        self.views
+            .borrow()
+            .personalities
+            .clone()
+            .map_err(|version| refusal(Error::PersonalityVersion(version)))
+    }
+
     fn register_clock(&self, routes: &mut Registry) {
         routes.register::<get_kuvo_settings::Spec, _, _>(Access::Any, |_| {
             std::future::ready(typed::<get_kuvo_settings::Spec, 200>(json!({"sections": [{
@@ -312,7 +328,7 @@ impl SetupHandle {
         routes.register::<get_kuvo_settings_section_events::Spec, _, _>(Access::Any, move |call| {
             std::future::ready(
                 clock_section(call.param("section"))
-                    .map(|()| events(setup.views.clone(), |view| view.clock.clone())),
+                    .map(|()| events(setup.views.clone(), |view| Some(view.clock.clone()))),
             )
         });
 
@@ -444,6 +460,14 @@ fn unavailable() -> Refusal {
 }
 
 fn refusal(error: Error) -> Refusal {
+    if matches!(error, Error::PersonalityVersion(_)) {
+        return Refusal::json(
+            StatusCode::CONFLICT,
+            json!({
+                "code": "unsupportedFormatVersion", "message": error.to_string(),
+            }),
+        );
+    }
     let (status, message) = match error {
         Error::Conflict => (
             StatusCode::CONFLICT,
@@ -529,7 +553,7 @@ where
 
 fn events<R>(
     mut views: watch::Receiver<View>,
-    project: impl Fn(&View) -> Value + Send + 'static,
+    project: impl Fn(&View) -> Option<Value> + Send + 'static,
 ) -> RouteReply<R>
 where
     R: JsonStatus<200>,
@@ -539,7 +563,7 @@ where
         let mut previous = None;
         loop {
             let value = project(&views.borrow_and_update());
-            if previous.as_ref() != Some(&value) {
+            if let Some(value) = value && previous.as_ref() != Some(&value) {
                 let line = serde_json::from_value(value.clone()).map_err(io::Error::other).and_then(JsonLine::<R, 200>::new);
                 previous = Some(value);
                 yield line;

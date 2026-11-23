@@ -46,7 +46,7 @@ impl Upstream {
         Ok(Self(client))
     }
 
-    fn request(&self, record: &Record, method: Method, path: &str) -> RequestBuilder {
+    pub(crate) fn request(&self, record: &Record, method: Method, path: &str) -> RequestBuilder {
         self.0
             .request(method, record.url("http", path))
             .basic_auth("opencode", Some(&record.password))
@@ -67,6 +67,25 @@ impl Upstream {
             );
         }
         request.send().await?.error_for_status()?.json().await
+    }
+
+    pub(crate) async fn get_data<T: serde::de::DeserializeOwned>(
+        &self,
+        record: &Record,
+        path: &str,
+        headers: &HeaderMap,
+        timeout: Duration,
+    ) -> Result<T, reqwest::Error> {
+        #[derive(Deserialize)]
+        struct Envelope<T> {
+            data: T,
+        }
+        let mut request = self.request(record, Method::GET, path).timeout(timeout);
+        if let Some(directory) = headers.get(DIRECTORY) {
+            request = request.header(DIRECTORY, directory);
+        }
+        let answer: Envelope<T> = request.send().await?.error_for_status()?.json().await?;
+        Ok(answer.data)
     }
 
     pub async fn healthy(&self, record: &Record) -> bool {
@@ -204,16 +223,69 @@ pub(crate) async fn http(
                 .map(|value| (header::HeaderName::from_static(name), value))
         })
         .collect();
+    let session_tail = path.strip_prefix("api/session/").and_then(|path| {
+        let mut parts = path.split('/');
+        let id = parts.next()?;
+        (!id.is_empty()).then_some((id, parts.next(), parts.next(), parts.next()))
+    });
+    let session_read = matches!(session_tail, Some((id, None, None, None)) if id != "active");
+    let message_read = matches!(session_tail, Some((_, Some("message"), _, None)));
+    if status.is_success() && request.method == Method::GET && (session_read || message_read) {
+        return tokio::select! {
+            () = cancel.cancelled() => down(&engine).await.reply(),
+            result = async {
+                let mut page = response.json::<Value>().await.map_err(|_| {
+                    Refusal::new(StatusCode::BAD_GATEWAY, "The engine's conversation could not be read.")
+                })?;
+                if session_read {
+                    if let Some(session) = page.get_mut("data").and_then(Value::as_object_mut) {
+                        crate::context::enrich(&engine, &lease.record, path, &request.headers, session).await;
+                    }
+                } else {
+                    crate::conversation::compaction_page(&mut page);
+                }
+                let mut reply = Reply::json(status, page);
+                reply.headers = headers;
+                Ok::<_, Refusal>(reply)
+            } => result.unwrap_or_else(Refusal::reply),
+        };
+    }
+    let events = status.is_success() && request.method == Method::GET && path == "api/event";
     let stream = async_stream::try_stream! {
         let _lease = lease;
         let mut stream = response.bytes_stream();
+        let mut pending = Vec::new();
         loop {
-            tokio::select! {
-                part = stream.next() => match part {
-                    Some(piece) => yield piece.map_err(io::Error::other)?,
-                    None => break,
-                },
+            let next = tokio::select! {
+                part = stream.next() => part,
                 () = cancel.cancelled() => break,
+            };
+            let Some(piece) = next else {
+                if !pending.is_empty() { yield pending.into(); }
+                break;
+            };
+            let piece = piece.map_err(io::Error::other)?;
+            if !events {
+                yield piece;
+                continue;
+            }
+            pending.extend_from_slice(&piece);
+            let end = pending.iter().rposition(|byte| *byte == b'\n').map_or(0, |index| index + 1);
+            if end > 0 {
+                let rest = pending.split_off(end);
+                let complete = std::mem::replace(&mut pending, rest);
+                let mut output = Vec::with_capacity(complete.len());
+                for line in complete.split_inclusive(|byte| *byte == b'\n') {
+                    if let Some(event) = crate::conversation::compaction_event(line) {
+                        output.extend_from_slice(&event);
+                    } else {
+                        output.extend_from_slice(line);
+                    }
+                }
+                yield output.into();
+            }
+            if pending.len() > 4 * 1024 * 1024 {
+                Err(io::Error::other("The engine event is too large."))?;
             }
         }
     };

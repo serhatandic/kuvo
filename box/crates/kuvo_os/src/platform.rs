@@ -273,6 +273,18 @@ pub fn windows_native_path(wire: &str) -> Option<String> {
     (windows_wire_path(wire)?.as_str() == wire).then(|| wire.replace('/', "\\"))
 }
 
+/// A Win32 spelling to check when canonicalization returned an extended path.
+pub fn windows_conventional_path(path: &Path) -> Option<PathBuf> {
+    let tail = path.to_str()?.strip_prefix(r"\\?\")?;
+    let native = match tail.strip_prefix(r"UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None if tail.as_bytes().get(1) == Some(&b':') => tail.to_owned(),
+        None => return None,
+    };
+    windows_wire_path(&native)?;
+    Some(native.into())
+}
+
 /// Decode the file URL after the HTTP query layer has decoded its own escaping.
 pub fn file_uri_path(platform: Platform, uri: &str) -> Option<PathBuf> {
     use percent_encoding::percent_decode_str;

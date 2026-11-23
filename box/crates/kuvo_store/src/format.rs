@@ -56,11 +56,13 @@ pub fn check_version(
     }
 }
 
+pub type UpgradeStep<T, E> = fn(T) -> Result<T, E>;
+
 pub fn upgrade<T, E: From<Error>>(
     family: &str,
     from: Option<&Value>,
     mut value: T,
-    steps: &[fn(T) -> Result<T, E>],
+    steps: &[UpgradeStep<T, E>],
 ) -> Result<T, E> {
     let version = check_version(family, from, 0, steps.len() as u32)?;
     for step in &steps[version as usize..] {

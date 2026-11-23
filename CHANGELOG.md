@@ -7,6 +7,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
+- The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
+- The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
+- The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
+
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.
 
 - The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
