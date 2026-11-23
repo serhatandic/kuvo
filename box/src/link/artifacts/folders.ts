@@ -4,9 +4,9 @@
 // Its memory, job and skills are noted as they are when the watch starts, so their first change
 // has a before.
 
-import { promises as fs, readdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs"
+import { promises as fs, readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
-import { watchFolder } from "../../shared/watch"
+import { watchFolder, type SharedWatch } from "../../shared/watch"
 import type { Recorder } from "./recorder"
 import { copyLimit, type ArtifactStore, type Made } from "./store"
 import { changedSince, skipped } from "./turnfiles"
@@ -38,18 +38,17 @@ export function recordable(path: string): boolean {
  */
 export function watchTree(folder: string, changed: (path: string) => void, failed: (why: string) => void, { limit = 4000, linux = process.platform === "linux", missed = () => {} } = {}) {
   if (!linux) {
-    const watcher = watchFolder(folder, (_, name) => {
+    return watchFolder(folder, (_, name) => {
       if (name) changed(join(folder, name))
-    }, { recursive: true, missed })
-    watcher.on("error", (error: any) => {
-      watcher.close()
-      failed(String(error?.message ?? error))
-    })
-    return { close: () => watcher.close() }
+    }, { recursive: true, missed, failed })
   }
-  const watchers = new Map<string, FSWatcher>()
+  const watchers = new Map<string, SharedWatch>()
   let full = false
   let closed = false
+  let opening = 0, visiting = 0
+  const caughtUp = () => {
+    if (!closed && !opening && !visiting) missed()
+  }
   const add = (at: string) => {
     if (watchers.has(at) || full || closed) return false
     if (watchers.size >= limit) {
@@ -57,26 +56,35 @@ export function watchTree(folder: string, changed: (path: string) => void, faile
       failed(`more than ${limit} folders`)
       return false
     }
-    let watcher: FSWatcher
-    try {
-      watcher = watch(at, (_, name) => {
-        if (!name) return
-        const path = join(at, name.toString())
-        changed(path)
-        // A folder made since: watched too.
-        if (!watchers.has(path) && wanted(relative(folder, path))) {
-          void fs.lstat(path).then(stat => stat.isDirectory() ? visit(path) : undefined).catch(() => {})
-        }
-      })
-    } catch (error: any) {
-      full = true
-      failed(String(error?.message ?? error))
-      return false
+    let pending = true
+    const settled = () => {
+      if (!pending) return
+      pending = false
+      opening--
+      caughtUp()
     }
-    watcher.on("error", () => {
-      watcher.close()
-      watchers.delete(at)
+    opening++
+    const watcher = watchFolder(at, (_, name) => {
+      if (!name) return
+      const path = join(at, name)
+      changed(path)
+      // A folder made since: watched too.
+      if (!watchers.has(path) && wanted(relative(folder, path))) {
+        void fs.lstat(path).then(stat => stat.isDirectory() ? scan(path) : undefined).catch(() => {})
+      }
+    }, {
+      missed: settled,
+      failed: why => {
+        watcher.close()
+        watchers.delete(at)
+        settled()
+        if (!full) {
+          full = true
+          failed(why)
+        }
+      },
     })
+    if (watcher.whole) settled()
     watchers.set(at, watcher)
     return true
   }
@@ -89,7 +97,13 @@ export function watchTree(folder: string, changed: (path: string) => void, faile
       if (entry.isDirectory() && wanted(relative(folder, path))) await visit(path)
     }
   }
-  void visit(folder).then(() => { if (!closed) missed() })
+  // Catch changes made before the last of a newly discovered tree's watches opened.
+  const scan = async (at: string) => {
+    visiting++
+    try { await visit(at) }
+    finally { visiting--; caughtUp() }
+  }
+  void scan(folder)
   return { close: () => {
     closed = true
     for (const watcher of watchers.values()) watcher.close()

@@ -2,7 +2,6 @@ import "./safety"
 import { changedSince } from "../src/link/artifacts/turnfiles"
 import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test"
 import fs from "node:fs"
-import { EventEmitter } from "node:events"
 import { watchTree } from "../src/link/artifacts/folders"
 import { spawnSync } from "node:child_process"
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
@@ -298,16 +297,12 @@ describe("queued artifact reads", () => {
     } finally { read.mockRestore() }
   })
 
-  test("a failed recursive watch closes and unregisters its looks", () => {
-    const watcher = Object.assign(new EventEmitter(), { close() {} })
-    const close = spyOn(watcher, "close")
-    const watch = spyOn(fs, "watch").mockReturnValue(watcher as any)
+  test("a bot folder that cannot be watched reports the filesystem failure", async () => {
+    const failure = Promise.withResolvers<string>()
+    const tree = watchTree(join(project, "missing"), () => {}, failure.resolve, { linux: false })
     try {
-      const tree = watchTree(project, () => {}, () => {}, { linux: false })
-      watcher.emit("error", new Error("watch failed"))
-      expect(close).toHaveBeenCalledTimes(1)
-      tree.close()
-    } finally { watch.mockRestore(); close.mockRestore() }
+      expect(await failure.promise).toContain("ENOENT")
+    } finally { tree.close() }
   })
 })
 

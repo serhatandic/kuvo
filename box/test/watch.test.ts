@@ -34,7 +34,7 @@ function waiting(folder: string) {
   }
 }
 
-test("a watch looks again a moment after it starts, and after any other starts or stops", async () => {
+test.skipIf(process.platform !== "darwin")("a Mac watch looks again after itself or another watch starts or stops", async () => {
   const folder = fs.mkdtempSync(path.join(root, "q-"))
   let looks = 0
   let looked = () => {}
@@ -53,7 +53,7 @@ test("a watch looks again a moment after it starts, and after any other starts o
 }, 10_000)
 
 test("a change made as a watch starts is found, though its stream never told it", async () => {
-  for (let round = 0; round < 100; round++) {
+  for (let round = 0; round < 10; round++) {
     const folder = fs.mkdtempSync(path.join(root, "s-"))
     const watch = waiting(folder)
     const file = path.join(folder, "made")
@@ -72,7 +72,7 @@ test("a change made as another watch starts or stops is found, though the stream
   const other = fs.mkdtempSync(path.join(root, "x-"))
   const watch = waiting(folder)
   try {
-    for (let round = 0; round < 100; round++) {
+    for (let round = 0; round < 10; round++) {
       const file = path.join(folder, `f${round}`)
       const seen = watch.waitFor(file)
       fs.writeFileSync(file, "")

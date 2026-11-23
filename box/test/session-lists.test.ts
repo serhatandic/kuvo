@@ -1634,26 +1634,20 @@ test("a wake turn retries a failed message read and keeps its confirmed state du
   }
 })
 
-test("schedule streams share root watches and skip unrelated or superseded updates", async () => {
+test("schedule streams show filesystem changes and skip unrelated or superseded updates", async () => {
   const a = await aBot("bot_watchone", "ses_watchone", { "wakes/100-one": "First" })
   const b = await aBot("bot_watchtwo", "ses_watchtwo", { "wakes/100-two": "Other" })
   const { wakesChanged } = await import("../src/link/areas/wakes")
-  const watch = jest.spyOn(fs, "watch")
   const read = jest.spyOn(fs, "readFileSync")
   const first = following("kuvo/wakes/ses_watchone/events", line => line)
   const second = following("kuvo/wakes/ses_watchtwo/events", line => line)
   try {
     await first.until(line => line.wakes.length === 1)
     await second.until(line => line.wakes.length === 1)
-    const { BOTS, SESSION_WAKES } = await import("../src/link/home")
-    const roots = [BOTS, SESSION_WAKES]
-    const rootWatches = () => watch.mock.calls.filter(([path]) => roots.includes(String(path)))
     // The first snapshot comes before the filesystem subscription. Pull the next line of each
     // generator, as the server does once it has sent the snapshot.
     const nextFirst = first.until(() => true)
     const nextSecond = second.until(() => true)
-    for (let tries = 0; tries < 50 && rootWatches().length < 2; tries++) await Bun.sleep(10)
-    expect(rootWatches()).toHaveLength(2)
     writeFileSync(join(a, "wakes/100-one"), "From the filesystem")
     writeFileSync(join(b, "wakes/100-two"), "The other filesystem update")
     expect((await nextFirst).wakes[0].summary).toBe("From the filesystem")
@@ -1669,7 +1663,6 @@ test("schedule streams share root watches and skip unrelated or superseded updat
     await first.end()
     await second.end()
     read.mockRestore()
-    watch.mockRestore()
     rmSync(a, { recursive: true, force: true })
     rmSync(b, { recursive: true, force: true })
   }

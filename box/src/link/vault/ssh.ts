@@ -203,8 +203,7 @@ export function keepSshAgents(watch = watchFolder): () => void {
       try { if (Date.now() - fs.statSync(path.join(SSH_FOR, note)).mtimeMs > NOTE_KEPT) fs.rmSync(path.join(SSH_FOR, note), { force: true }); } catch {}
     }
   } catch {}
-  let watcher: fs.FSWatcher | null = null;
-  try { watcher = watch(SSH_FOR, () => look()); watcher.unref?.(); } catch {}
+  const watcher = watch(SSH_FOR, look);
   look();
   // On a busy Mac the watch tells late or not at all, and the launcher waits for the agent only a
   // moment before the command runs without it (git over SSH then finds no key): the notes' folder
@@ -226,7 +225,7 @@ export function keepSshAgents(watch = watchFolder): () => void {
   const every = setInterval(look, 30_000);
   every.unref?.();
   const stop = () => {
-    watcher?.close();
+    watcher.close();
     clearInterval(quick);
     clearInterval(every);
     for (const note of [...agents.keys()]) close(note);

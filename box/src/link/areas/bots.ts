@@ -9,6 +9,7 @@ import { botFollowers, botHere } from "../bots/here";
 import { HELD, heldLists, holdEdit } from "../bots/held";
 import { botsElsewhere, elsewhereSaid, knownOf } from "../bots/elsewhere";
 import { botTemplates, NO_KIT, readKit } from "../bots/kit";
+import { watchBotSchedules } from "../bots/watch";
 import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
 import { freshenBots, settleBot } from "../bots/tell";
@@ -168,23 +169,21 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   };
   // (What peers told, and which of them are away.)
   const peerStamp = () => [PEER_AGENTS_FILE, PEER_REACH].map(file => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } }).join(" ");
-  const watch: typeof watchFolders = (folders, changed, options) => {
-    const bots = watchFolders(folders, changed, options);
-    const activity = watchFolders([ACTIVITY_FOLDER], changed, { recursive: false });
-    let stamp = peerStamp();
-    const peers = watchFolders([RUN], () => {
-      const next = peerStamp();
-      if (next !== stamp) { stamp = next; changed(); }
-    }, { recursive: false });
-    return { get whole() { return bots.whole && peers.whole && activity.whole; }, close() { bots.close(); peers.close(); activity.close(); } };
-  };
+
   try {
     // (And as a bot is seen, here or in another process: its done or blocked may be over.)
     return yield* followedLive(said, tell => {
       const followers = followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers, peerListFollowers);
       followers.add(tell);
-      const watching = watch([BOTS, HELD, SEEN_FOLDER], tell, { recursive: true });
-      return () => { followers.delete(tell); watching.close(); };
+      const bots = watchBotSchedules(BOTS, tell);
+      // Held edits, seen records and activity are flat folders.
+      const records = watchFolders([HELD, SEEN_FOLDER, ACTIVITY_FOLDER], tell, { recursive: false });
+      let stamp = peerStamp();
+      const peers = watchFolders([RUN], () => {
+        const next = peerStamp();
+        if (next !== stamp) { stamp = next; tell(); }
+      }, { recursive: false });
+      return () => { followers.delete(tell); bots.close(); records.close(); peers.close(); };
     }, signal, { settle: 0, every: 3000 });
   } catch (error) {
     console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "bot events failed", error: error instanceof Error ? error.name : undefined }));

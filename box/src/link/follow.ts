@@ -4,7 +4,6 @@
 // Linux it's as the runtime can, and where a watch can't be kept the list is looked at each second
 // instead (`whole`), the same on both.
 
-import fs from "node:fs";
 import { watchFolder } from "../shared/watch";
 import type { AnswerPiece } from "./server/context";
 
@@ -18,23 +17,12 @@ export interface FolderWatch {
  * whether the system tells of every change (a watch it can't keep goes, and so does that), and how
  * to stop. `missed` (`changed`, unless given) is told a moment after any watch starts or stops, for
  * what the system missed then (`watchFolder`). */
-export function watchFolders(folders: string[], changed: () => void, { recursive = true, missed = changed }: { recursive?: boolean; missed?: () => void } = {}): FolderWatch {
-  let whole = folders.length > 0;
-  const watchers: fs.FSWatcher[] = [];
-  for (const folder of folders) {
-    try {
-      fs.mkdirSync(folder, { recursive: true });
-      const watcher = watchFolder(folder, changed, { recursive, missed });
-      watcher.on("error", () => {
-        whole = false;
-        watcher.close();
-      });
-      watchers.push(watcher);
-    } catch {
-      whole = false;
-    }
-  }
-  return { get whole() { return whole; }, close: () => { for (const watcher of watchers) watcher.close(); } };
+export function watchFolders(folders: string[], changed: Parameters<typeof watchFolder>[1], { recursive = true, missed = changed }: { recursive?: boolean; missed?: () => void } = {}): FolderWatch {
+  const watchers = folders.map(folder => watchFolder(folder, changed, { recursive, create: true, missed }));
+  return {
+    get whole() { return watchers.length > 0 && watchers.every(watch => watch.whole); },
+    close: () => { for (const watch of watchers) watch.close(); },
+  };
 }
 
 /** Several lists' followers as one, for what's read from them together: told as any of them is. */

@@ -21,7 +21,8 @@ import { keepWaitingLater } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { listOf, textOf } from "../files";
-import { watchFolder } from "../../shared/watch";
+import { watchFolder, type SharedWatch } from "../../shared/watch";
+import { watchBotSchedules } from "../bots/watch";
 import { followed, followersOf, watchFolders } from "../follow";
 import { stopIfWaiting } from "../work/answers";
 import { BOTS, OWN_RUNTIME, RUN, SCRIPT, SESSION_WAKES, WAKE_COMMAND } from "../home";
@@ -256,7 +257,7 @@ export function sendWakes(): () => Promise<void> {
     settling = setTimeout(() => schedule(), 200);
   };
   wakeFollowers.add(changed);
-  const watching = watchFolders([BOTS, SESSION_WAKES], changed);
+  const watching = watchSchedules(changed);
   schedule();
   return () => {
     stopped = true;
@@ -559,7 +560,14 @@ export async function* wakeEventsRoute(context: RouteContext): AsyncGenerator<An
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ sessions: allWakes() }), followersOf(wakeFollowers, moveFollowers), signal, { folders: [BOTS, SESSION_WAKES, MOVES], coalesce: true });
+  return yield* followed(() => ({ sessions: allWakes() }), followersOf(wakeFollowers, moveFollowers), signal, {
+    coalesce: true,
+    watch: (_, changed) => {
+      const schedules = watchSchedules(changed);
+      const moves = watchFolders([MOVES], changed, { recursive: false });
+      return { get whole() { return schedules.whole && moves.whole; }, close() { schedules.close(); moves.close(); } };
+    },
+  });
 }
 
 function listedWakes(folder: string | null): Wakes {
@@ -568,40 +576,44 @@ function listedWakes(folder: string | null): Wakes {
   return { wakes: wakes.map(listedWake), watches, paused };
 }
 
+function watchSchedules(changed: () => void): SharedWatch {
+  const bots = watchBotSchedules(BOTS, changed);
+  const sessions = watchBotSchedules(SESSION_WAKES, changed);
+  return { get whole() { return bots.whole && sessions.whole; }, close() { bots.close(); sessions.close(); } };
+}
+
 // One directory index and watcher per process, shared by the open per-session streams.
 class Schedules {
   private readonly byFolder = new Map<string, string>();
   private readonly bySession = new Map<string, string>();
   private readonly listeners = new Map<string, Set<() => void>>();
   private away = new Set<string>();
-  private readonly watchers: fs.FSWatcher[] = [];
+  private readonly watchers: SharedWatch[] = [];
   private readonly timer: ReturnType<typeof setInterval>;
 
   constructor() {
     this.refresh();
-    for (const root of [BOTS, SESSION_WAKES, MOVES]) {
-      try {
-        fs.mkdirSync(root, { recursive: true });
-        const watcher = watchFolder(root, (_, name) => {
-          if (root === MOVES) return this.ownership();
-          if (!name) return this.refresh(true);
-          const [id, file] = name.split(path.sep);
-          if (!id || id.startsWith(".")) return;
-          const folder = path.join(root, id);
-          if (root === SESSION_WAKES) {
-            if (!file || ["session", "wakes", "watches", "summaries", "paused"].includes(file)) this.changed(id);
-          } else if (!file || file === "session") {
-            this.index(folder);
-          } else if (["wakes", "watches", "summaries", "paused"].includes(file)) {
-            this.changed(this.byFolder.get(folder) ?? null);
-          }
-        }, { recursive: root !== MOVES, missed: () => {} });
-        watcher.on("error", () => watcher.close());
-        this.watchers.push(watcher);
-      } catch {}
+    for (const root of [BOTS, SESSION_WAKES]) {
+      this.watchers.push(watchBotSchedules(root, name => {
+        if (!name) return this.refresh(true);
+        const [id, file] = name.split(path.sep);
+        if (!id || id.startsWith(".")) return;
+        const folder = path.join(root, id);
+        if (root === SESSION_WAKES) {
+          if (!file || ["session", "wakes", "watches", "summaries", "paused"].includes(file)) this.changed(id);
+        } else if (!file || file === "session") {
+          this.index(folder);
+        } else if (["wakes", "watches", "summaries", "paused"].includes(file)) {
+          this.changed(this.byFolder.get(folder) ?? null);
+        }
+      }));
     }
+    this.watchers.push(watchFolder(MOVES, this.ownership, { create: true }));
     moveFollowers.add(this.ownership);
-    this.timer = setInterval(() => this.refresh(true), this.watchers.length === 3 ? 30_000 : 1_000);
+    let ticks = 0;
+    this.timer = setInterval(() => {
+      if (++ticks % 30 === 0 || this.watchers.some(watch => !watch.whole)) this.refresh(true);
+    }, 1_000);
     this.timer.unref?.();
   }
 

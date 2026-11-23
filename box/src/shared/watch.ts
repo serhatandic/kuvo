@@ -1,22 +1,47 @@
-// A folder watched for what changes in it, with what the system's watch never tells looked for too.
-//
-// On macOS, a process's watches of folders (Bun's and Node's alike) share one FSEvents stream, made
-// anew on a thread of its own each time a watch starts or stops, which tells only what changes once
-// it runs: so a change as a watch starts is never told to it, nor one in that moment, or just
-// before it, to any other watch in the process. Each watch made here is told to look again
-// (`missed`) a moment after any of them starts or stops, by then usually on the new stream. (On
-// Linux each watch is the system's own and starts as it's made: looking again costs a look.)
+// Folder watches shared by the process. The worker owns every native open and close. On macOS
+// either can wait on FSEvents, and rebuilding the stream can drop changes for existing watches too.
 
-import fs from "node:fs";
+import type fs from "node:fs";
+import { resolve, sep } from "node:path";
+import threads from "node:worker_threads";
+import { runWatchWorker, type WatchCommand, type WatchNotice } from "./watch-worker";
 
-/** When each watch looks again after one starts or stops (in ms): once the stream is usually made
- * anew, and later still on a busy computer. */
 export const WATCH_LOOKS_AGAIN = [250, 1000];
+const CLOSE_GRACE = 500;
 
-const watching = new Set<() => void>();
-// Looks to come, by when (on the process's own clock, which the time of day changing doesn't move;
-// to the tenth of a second: many watches started at once look once).
+type Changed = (event?: fs.WatchEventType, name?: string | null) => void;
+interface Subscriber {
+  changed: Changed;
+  missed: () => void;
+  failed: (error: string) => void;
+  recursive: boolean;
+}
+interface Entry {
+  folder: string;
+  id: number;
+  recursive: boolean;
+  create: boolean;
+  ready: boolean;
+  subscribers: Set<Subscriber>;
+  expiry?: ReturnType<typeof setTimeout>;
+}
+
+export interface SharedWatch {
+  readonly whole: boolean;
+  close(): void;
+}
+
+const watching = new Map<string, Entry>();
 const looks = new Map<number, ReturnType<typeof setTimeout>>();
+let worker: threads.Worker | undefined;
+let sequence = 0;
+
+function notify(entry: Entry, tell: (subscriber: Subscriber) => void) {
+  for (const subscriber of [...entry.subscribers]) {
+    if (!entry.subscribers.has(subscriber)) continue;
+    try { tell(subscriber); } catch (error) { console.error("Folder watch callback failed:", error); }
+  }
+}
 
 function startedOrStopped() {
   for (const after of WATCH_LOOKS_AGAIN) {
@@ -24,35 +49,102 @@ function startedOrStopped() {
     if (looks.has(at)) continue;
     const timer = setTimeout(() => {
       looks.delete(at);
-      // (Not one a look before it closed.)
-      for (const look of [...watching]) {
-        if (!watching.has(look)) continue;
-        try { look(); } catch {}
-      }
+      for (const entry of watching.values()) notify(entry, subscriber => subscriber.missed());
     }, at - performance.now());
     timer.unref?.();
     looks.set(at, timer);
   }
 }
 
-/**
- * `folder` watched as `fs.watch` watches it, `changed` told as it does; and `missed` (`changed` with
- * nothing, unless given) a moment after this or any other watch made here starts or stops, for what
- * the system didn't tell. Closing it stops both.
- */
+function failed(entry: Entry, error: string) {
+  watching.delete(entry.folder);
+  clearTimeout(entry.expiry);
+  entry.ready = false;
+  notify(entry, subscriber => subscriber.failed(error));
+  notify(entry, subscriber => subscriber.missed());
+}
+
+function heard(notice: WatchNotice) {
+  const mac = process.platform === "darwin";
+  if ("stopped" in notice) {
+    if (mac) startedOrStopped();
+    return;
+  }
+  const entry = watching.get(notice.folder);
+  if (!entry || entry.id !== notice.id) return;
+  if ("event" in notice) {
+    notify(entry, subscriber => {
+      if (subscriber.recursive || !notice.name?.includes(sep)) subscriber.changed(notice.event, notice.name);
+    });
+  } else {
+    if ("error" in notice) failed(entry, notice.error);
+    else {
+      entry.ready = true;
+      notify(entry, subscriber => subscriber.missed());
+    }
+    if (mac) startedOrStopped();
+  }
+}
+
+function send(command: WatchCommand) {
+  if (!worker) {
+    const started = new threads.Worker(
+      `(${runWatchWorker.toString()})(require("node:fs"), require("node:worker_threads").parentPort)`,
+      { eval: true },
+    );
+    worker = started;
+    const lost = (error: string) => {
+      if (worker !== started) return;
+      worker = undefined;
+      for (const entry of [...watching.values()]) failed(entry, error);
+    };
+    started.on("message", (notice: WatchNotice) => { if (worker === started) heard(notice); });
+    started.on("error", error => lost(error.message));
+    started.on("exit", code => lost(`Folder watch worker exited (${code})`));
+    started.unref();
+  }
+  worker.postMessage(command);
+}
+
+/** Subscribe to one folder. A recursive subscription also covers its shallow subscribers.
+ * `missed` looks again after native watches start or stop. `whole` is true once the watch is up. */
 export function watchFolder(
   folder: string,
-  changed: (event?: fs.WatchEventType, name?: string | null) => void,
-  { recursive = false, missed = () => changed() }: { recursive?: boolean; missed?: () => void } = {},
-): fs.FSWatcher {
-  const watcher = fs.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
-  const look = () => missed();
-  watching.add(look);
-  startedOrStopped();
-  const close = watcher.close.bind(watcher);
-  watcher.close = () => {
-    if (watching.delete(look)) startedOrStopped();
-    close();
+  changed: Changed,
+  { recursive = false, create = false, missed = () => changed(), failed: onError = () => {} }:
+  { recursive?: boolean; create?: boolean; missed?: () => void; failed?: (error: string) => void } = {},
+): SharedWatch {
+  folder = resolve(folder);
+  let entry = watching.get(folder);
+  if (!entry) {
+    entry = { folder, id: 0, recursive, create, ready: false, subscribers: new Set() };
+    watching.set(folder, entry);
+  }
+  const watch = entry;
+  const subscriber = { changed, missed, failed: onError, recursive };
+  watch.subscribers.add(subscriber);
+  clearTimeout(watch.expiry);
+  if (!watch.id || (recursive && !watch.recursive) || (create && !watch.create && !watch.ready)) {
+    watch.recursive ||= recursive;
+    watch.create ||= create;
+    watch.ready = false;
+    const id = watch.id = ++sequence;
+    setImmediate(() => {
+      if (watching.get(folder) !== watch || watch.id !== id) return;
+      try { send({ folder, id, recursive: watch.recursive, create: watch.create }); }
+      catch (error) { failed(watch, String(error)); }
+    });
+  }
+  return {
+    get whole() { return watch.ready && watch.subscribers.has(subscriber); },
+    close() {
+      if (!watch.subscribers.delete(subscriber) || watch.subscribers.size || watching.get(folder) !== watch) return;
+      watch.expiry = setTimeout(() => {
+        watching.delete(folder);
+        const command: WatchCommand = { folder, id: watch.id, close: true };
+        worker?.postMessage(command);
+      }, CLOSE_GRACE);
+      watch.expiry.unref?.();
+    },
   };
-  return watcher;
 }

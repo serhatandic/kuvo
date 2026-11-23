@@ -16,7 +16,7 @@ import { isObject } from "../../shared/json";
 import { listOf, locked, writePrivate } from "../files";
 import { BOTS, BOX, RUN } from "../home";
 import { watchFolders } from "../follow";
-import { watchFolder } from "../../shared/watch";
+import { watchFolder, type SharedWatch } from "../../shared/watch";
 import { bridgeTarget, call, engineGet } from "../engine/client";
 import { processRuns } from "../../shared/platform";
 import { isChatsFolder } from "../engine/chats";
@@ -450,23 +450,28 @@ export function keepList(): () => void {
   const moves = watchFolders([MOVES], again, { recursive: false });
   // Each bot's own folder, not what's in it (where its agent works: a repository, its packages,
   // which on Linux would each take a watch of the user's): watched as bots come and go.
-  const botWatches = new Map<string, fs.FSWatcher>();
+  const botWatches = new Map<string, SharedWatch>();
   const watchBots = () => {
     const now = new Set(listOf(BOTS).filter(id => /^bot_[A-Za-z0-9]+$/.test(id)));
     for (const [id, watch] of botWatches) if (!now.has(id)) { watch.close(); botWatches.delete(id); }
     for (const id of now) {
       if (botWatches.has(id)) continue;
-      try {
-        const watch = watchFolder(path.join(BOTS, id), (_, name) => { if (!name || BOT_FILES.has(name)) again(); }, { missed: again });
-        watch.on("error", () => { watch.close(); botWatches.delete(id); });
-        botWatches.set(id, watch);
-      } catch {}
+      const watch = watchFolder(path.join(BOTS, id), (_, name) => {
+        if (!name || BOT_FILES.has(name)) again();
+      }, { missed: again });
+      botWatches.set(id, watch);
     }
   };
-  const bots = watchFolders([BOTS], () => { watchBots(); again(); }, { recursive: false });
-  watchBots();
+  const mac = process.platform === "darwin";
+  const bots = mac
+    ? watchFolders([BOTS], (_, name) => {
+        const [id, file, ...inside] = name?.split(path.sep) ?? [];
+        if (!id || (!inside.length && (!file || BOT_FILES.has(file)))) again();
+      }, { recursive: true, missed: again })
+    : watchFolders([BOTS], () => { watchBots(); again(); }, { recursive: false });
+  if (!mac) watchBots();
   // (A watch the system couldn't keep: what the box knows read each time instead.)
-  watchesWhole = () => box.whole && moves.whole && bots.whole;
+  watchesWhole = () => box.whole && moves.whole && bots.whole && [...botWatches.values()].every(watch => watch.whole);
   const whole = setInterval(() => { for (const [name, place] of placeTargets) readPlace(name, place).catch(() => {}); }, READ_EVERY);
   whole.unref?.();
   return () => {

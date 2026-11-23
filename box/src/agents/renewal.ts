@@ -111,9 +111,7 @@ export class Renewal {
   start() {
     this.looking = setInterval(() => this.look(), renewalTiming.look)
     this.looking.unref?.()
-    try {
-      this.watching = watchFolder(dirname(this.options.script), () => this.look())
-    } catch {}
+    this.watching = watchFolder(dirname(this.options.script), () => this.look())
     this.look()
   }
 

@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.
 - A long command an agent runs and waits on now shows in a conversation's Processes (formerly Background processes) while it runs, not only inline: click it to see what it's printing, and Stop it there. For Codex, Claude Code, Cursor, Grok and Antigravity, Stop on such a command stops the agent's turn, as it does in their own apps.

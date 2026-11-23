@@ -32548,8 +32548,57 @@ var init_night = __esm(() => {
   init_zone();
 });
 
+// box/src/shared/watch-worker.ts
+function runWatchWorker(files, port) {
+  const watches = new Map;
+  port.on("message", (command) => {
+    const { folder, id } = command;
+    const prior = watches.get(folder);
+    if ("close" in command && prior?.id !== id)
+      return;
+    if (prior) {
+      prior.watcher.close();
+      watches.delete(folder);
+    }
+    const send = (notice) => port.postMessage({ folder, id, ...notice });
+    if ("close" in command)
+      return send({ stopped: true });
+    try {
+      if (command.create)
+        files.mkdirSync(folder, { recursive: true });
+      const watcher = files.watch(folder, { recursive: command.recursive }, (event, name) => {
+        if (watches.get(folder)?.id === id)
+          send({ event, name: name === null ? null : String(name) });
+      });
+      watches.set(folder, { id, watcher });
+      watcher.on("error", (error) => {
+        if (watches.get(folder)?.id !== id)
+          return;
+        watcher.close();
+        watches.delete(folder);
+        send({ error: error.message });
+      });
+      send({ ready: true });
+    } catch (error) {
+      send({ error: String(error instanceof Error ? error.message : error) });
+    }
+  });
+}
+
 // box/src/shared/watch.ts
-import fs14 from "fs";
+import { resolve as resolve8, sep as sep5 } from "path";
+import threads from "worker_threads";
+function notify(entry, tell) {
+  for (const subscriber of [...entry.subscribers]) {
+    if (!entry.subscribers.has(subscriber))
+      continue;
+    try {
+      tell(subscriber);
+    } catch (error) {
+      console.error("Folder watch callback failed:", error);
+    }
+  }
+}
 function startedOrStopped() {
   for (const after of WATCH_LOOKS_AGAIN) {
     const at = Math.ceil((performance.now() + after) / 100) * 100;
@@ -32557,35 +32606,113 @@ function startedOrStopped() {
       continue;
     const timer = setTimeout(() => {
       looks3.delete(at);
-      for (const look of [...watching]) {
-        if (!watching.has(look))
-          continue;
-        try {
-          look();
-        } catch {}
-      }
+      for (const entry of watching.values())
+        notify(entry, (subscriber) => subscriber.missed());
     }, at - performance.now());
     timer.unref?.();
     looks3.set(at, timer);
   }
 }
-function watchFolder(folder, changed, { recursive = false, missed = () => changed() } = {}) {
-  const watcher = fs14.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
-  const look = () => missed();
-  watching.add(look);
-  startedOrStopped();
-  const close = watcher.close.bind(watcher);
-  watcher.close = () => {
-    if (watching.delete(look))
-      startedOrStopped();
-    close();
-  };
-  return watcher;
+function failed2(entry, error) {
+  watching.delete(entry.folder);
+  clearTimeout(entry.expiry);
+  entry.ready = false;
+  notify(entry, (subscriber) => subscriber.failed(error));
+  notify(entry, (subscriber) => subscriber.missed());
 }
-var WATCH_LOOKS_AGAIN, watching, looks3;
+function heard(notice) {
+  const mac = process.platform === "darwin";
+  if ("stopped" in notice) {
+    if (mac)
+      startedOrStopped();
+    return;
+  }
+  const entry = watching.get(notice.folder);
+  if (!entry || entry.id !== notice.id)
+    return;
+  if ("event" in notice) {
+    notify(entry, (subscriber) => {
+      if (subscriber.recursive || !notice.name?.includes(sep5))
+        subscriber.changed(notice.event, notice.name);
+    });
+  } else {
+    if ("error" in notice)
+      failed2(entry, notice.error);
+    else {
+      entry.ready = true;
+      notify(entry, (subscriber) => subscriber.missed());
+    }
+    if (mac)
+      startedOrStopped();
+  }
+}
+function send(command) {
+  if (!worker) {
+    const started = new threads.Worker(`(${runWatchWorker.toString()})(require("node:fs"), require("node:worker_threads").parentPort)`, { eval: true });
+    worker = started;
+    const lost = (error) => {
+      if (worker !== started)
+        return;
+      worker = undefined;
+      for (const entry of [...watching.values()])
+        failed2(entry, error);
+    };
+    started.on("message", (notice) => {
+      if (worker === started)
+        heard(notice);
+    });
+    started.on("error", (error) => lost(error.message));
+    started.on("exit", (code) => lost(`Folder watch worker exited (${code})`));
+    started.unref();
+  }
+  worker.postMessage(command);
+}
+function watchFolder(folder, changed, { recursive = false, create = false, missed = () => changed(), failed: onError = () => {} } = {}) {
+  folder = resolve8(folder);
+  let entry = watching.get(folder);
+  if (!entry) {
+    entry = { folder, id: 0, recursive, create, ready: false, subscribers: new Set };
+    watching.set(folder, entry);
+  }
+  const watch = entry;
+  const subscriber = { changed, missed, failed: onError, recursive };
+  watch.subscribers.add(subscriber);
+  clearTimeout(watch.expiry);
+  if (!watch.id || recursive && !watch.recursive || create && !watch.create && !watch.ready) {
+    watch.recursive ||= recursive;
+    watch.create ||= create;
+    watch.ready = false;
+    const id = watch.id = ++sequence2;
+    setImmediate(() => {
+      if (watching.get(folder) !== watch || watch.id !== id)
+        return;
+      try {
+        send({ folder, id, recursive: watch.recursive, create: watch.create });
+      } catch (error) {
+        failed2(watch, String(error));
+      }
+    });
+  }
+  return {
+    get whole() {
+      return watch.ready && watch.subscribers.has(subscriber);
+    },
+    close() {
+      if (!watch.subscribers.delete(subscriber) || watch.subscribers.size || watching.get(folder) !== watch)
+        return;
+      watch.expiry = setTimeout(() => {
+        watching.delete(folder);
+        const command = { folder, id: watch.id, close: true };
+        worker?.postMessage(command);
+      }, CLOSE_GRACE);
+      watch.expiry.unref?.();
+    }
+  };
+}
+var WATCH_LOOKS_AGAIN, CLOSE_GRACE = 500, watching, looks3, worker, sequence2 = 0;
 var init_watch = __esm(() => {
   WATCH_LOOKS_AGAIN = [250, 1000];
-  watching = new Set;
+  watching = new Map;
   looks3 = new Map;
 });
 
@@ -32622,9 +32749,7 @@ class Renewal {
   start() {
     this.looking = setInterval(() => this.look(), renewalTiming.look);
     this.looking.unref?.();
-    try {
-      this.watching = watchFolder(dirname18(this.options.script), () => this.look());
-    } catch {}
+    this.watching = watchFolder(dirname18(this.options.script), () => this.look());
     this.look();
   }
   stop() {
@@ -32803,7 +32928,7 @@ var init_renewal = __esm(() => {
 });
 
 // box/src/shared/engines.ts
-import fs15 from "fs";
+import fs14 from "fs";
 import path11 from "path";
 function byNumbers(a, b) {
   const [x, y] = [a, b].map((version) => version.split(".").map((part) => parseInt(part, 10) || 0));
@@ -32818,11 +32943,11 @@ function enginesThere(root) {
 function enginesIn(folder) {
   let names = [];
   try {
-    names = fs15.readdirSync(folder);
+    names = fs14.readdirSync(folder);
   } catch {}
   const runs = (name) => {
     try {
-      fs15.accessSync(path11.join(folder, name, "opencode"), fs15.constants.X_OK);
+      fs14.accessSync(path11.join(folder, name, "opencode"), fs14.constants.X_OK);
       return true;
     } catch {
       return false;
@@ -32833,7 +32958,7 @@ function enginesIn(folder) {
 function keeperEngine(root) {
   let named;
   try {
-    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs15.readFileSync(path11.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
+    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs14.readFileSync(path11.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const there = enginesThere(root);
   return named && there.includes(named) ? named : there.at(-1) ?? null;
@@ -32841,20 +32966,20 @@ function keeperEngine(root) {
 var init_engines = () => {};
 
 // box/src/shared/updating.ts
-import fs16 from "fs";
+import fs15 from "fs";
 import path12 from "path";
 function updateUnderWay(run) {
   const lock = path12.join(run, ".updating");
-  if (!fs16.existsSync(lock))
+  if (!fs15.existsSync(lock))
     return false;
   let pid = null;
   try {
-    pid = Number(fs16.readFileSync(path12.join(lock, "pid"), "utf8"));
+    pid = Number(fs15.readFileSync(path12.join(lock, "pid"), "utf8"));
   } catch {}
   if (pid)
     return processRuns(pid, "kuvo-link");
   try {
-    return Date.now() - fs16.statSync(lock).mtimeMs < 60000;
+    return Date.now() - fs15.statSync(lock).mtimeMs < 60000;
   } catch {
     return false;
   }
@@ -32865,17 +32990,17 @@ var init_updating = __esm(() => {
 
 // box/src/shared/folder-version.ts
 import { spawnSync as spawnSync2 } from "child_process";
-import fs17 from "fs";
+import fs16 from "fs";
 import os2 from "os";
 import path13 from "path";
 function migrateDeviceGrants(folder) {
   const file = path13.join(folder, "run", "link.json");
-  if (!fs17.existsSync(file))
+  if (!fs16.existsSync(file))
     return;
   locked(path13.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
-      text = fs17.readFileSync(file, "utf8");
+      text = fs16.readFileSync(file, "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         return;
@@ -32899,12 +33024,12 @@ function migrateDeviceGrants(folder) {
 }
 function migrateRankHistory(folder) {
   const file = path13.join(folder, "run", "link.json");
-  if (!fs17.existsSync(file))
+  if (!fs16.existsSync(file))
     return;
   locked(path13.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
-      text = fs17.readFileSync(file, "utf8");
+      text = fs16.readFileSync(file, "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         return;
@@ -32925,11 +33050,11 @@ function checkpoint(file, current) {
   const format = `Kuvo folder at ${path13.dirname(file)}`;
   let text;
   try {
-    text = fs17.readFileSync(file, "utf8");
+    text = fs16.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code !== "ENOENT")
       throw error;
-    if (fs17.lstatSync(file, { throwIfNoEntry: false }))
+    if (fs16.lstatSync(file, { throwIfNoEntry: false }))
       throw error;
     return { version: 0 };
   }
@@ -32959,9 +33084,9 @@ function upgradeKuvoFolder(folder, importLegacy, checkWriter) {
 function installedLinkBuild(folder) {
   let file;
   try {
-    file = fs17.openSync(path13.join(folder, "bin", "kuvo-link.js"), "r");
+    file = fs16.openSync(path13.join(folder, "bin", "kuvo-link.js"), "r");
     const header = Buffer.alloc(96);
-    const count = fs17.readSync(file, header, 0, header.length, 0);
+    const count = fs16.readSync(file, header, 0, header.length, 0);
     const match = /^\/\/ Kuvo folder layout ([1-9][0-9]*) ([0-9a-f]{12})\n/.exec(header.toString("utf8", 0, count));
     return match ? { layout: Number(match[1]), build: match[2] } : null;
   } catch (error) {
@@ -32970,7 +33095,7 @@ function installedLinkBuild(folder) {
     return null;
   } finally {
     if (file !== undefined)
-      fs17.closeSync(file);
+      fs16.closeSync(file);
   }
 }
 function isInstalledBundle(folder, file, name) {
@@ -32980,7 +33105,7 @@ function isInstalledBundle(folder, file, name) {
   if (path13.dirname(path13.resolve(file)) === bin)
     return true;
   try {
-    return fs17.realpathSync(path13.dirname(file)) === fs17.realpathSync(bin);
+    return fs16.realpathSync(path13.dirname(file)) === fs16.realpathSync(bin);
   } catch {
     return false;
   }
@@ -32989,7 +33114,7 @@ function requireNoRollback(folder) {
   const run = path13.join(folder, "run");
   const restore = path13.join(run, ".rolling-back");
   let active = false;
-  if (fs17.existsSync(restore)) {
+  if (fs16.existsSync(restore)) {
     const pid = Number(textOf(path13.join(restore, "pid")));
     if (Number.isSafeInteger(pid) && pid > 1) {
       try {
@@ -32999,11 +33124,11 @@ function requireNoRollback(folder) {
         active = error.code !== "ESRCH";
       }
     } else {
-      const started = fs17.statSync(restore, { throwIfNoEntry: false });
+      const started = fs16.statSync(restore, { throwIfNoEntry: false });
       active = !!started && Date.now() - started.mtimeMs < 60000;
     }
   }
-  if (active || trialOpen(folder) && fs17.existsSync(path13.join(run, "update-restore"))) {
+  if (active || trialOpen(folder) && fs16.existsSync(path13.join(run, "update-restore"))) {
     throw new Error("Kuvo Code is rolling back this Box. Try again after the rollback.");
   }
 }
@@ -33014,7 +33139,7 @@ function legacyFolderTrial(folder) {
   if (!trialOpen(folder))
     return false;
   const marker = path13.join(folder, FOLDER_VERSION_FILE);
-  if (!fs17.lstatSync(marker, { throwIfNoEntry: false }))
+  if (!fs16.lstatSync(marker, { throwIfNoEntry: false }))
     return true;
   try {
     const { version, upgradingTo } = checkpoint(marker, steps.length);
@@ -33030,24 +33155,24 @@ function checkTrialRecovery(folder, start, importing) {
   const saved = path13.join(bin, "kuvo-link.js");
   let engine;
   try {
-    engine = /^V=([\w.-]+)$/m.exec(fs17.readFileSync(path13.join(bin, "kuvo-start"), "utf8"))?.[1];
+    engine = /^V=([\w.-]+)$/m.exec(fs16.readFileSync(path13.join(bin, "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const oldRuntime = engine && path13.join(folder, "engine", engine, "opencode");
   let runtime = process.execPath;
   if (oldRuntime)
     try {
-      fs17.accessSync(oldRuntime, fs17.constants.X_OK);
+      fs16.accessSync(oldRuntime, fs16.constants.X_OK);
       runtime = oldRuntime;
     } catch {}
   const refuse = () => {
     throw new Error(`The saved Kuvo Code can't recover folder layout ${steps.length}. Roll back the trial before updating the folder.`);
   };
-  if (!fs17.existsSync(saved))
+  if (!fs16.existsSync(saved))
     return refuse();
-  const scratch = fs17.mkdtempSync(path13.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  const scratch = fs16.mkdtempSync(path13.join(os2.tmpdir(), "kuvo-layout-probe-"));
   try {
     const probe = path13.join(scratch, ".kuvo-code");
-    fs17.mkdirSync(probe, { mode: 448 });
+    fs16.mkdirSync(probe, { mode: 448 });
     const marker = path13.join(probe, FOLDER_VERSION_FILE);
     const env = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
     for (const key of Object.keys(process.env))
@@ -33055,9 +33180,9 @@ function checkTrialRecovery(folder, start, importing) {
         delete env[key];
     const accepts = (version) => {
       if (version === undefined)
-        fs17.rmSync(marker, { force: true });
+        fs16.rmSync(marker, { force: true });
       else
-        fs17.writeFileSync(marker, JSON.stringify({ version }));
+        fs16.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
       const result = spawnSync2(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
         env,
@@ -33083,7 +33208,7 @@ function checkTrialRecovery(folder, start, importing) {
       return false;
     refuse();
   } finally {
-    fs17.rmSync(scratch, { recursive: true, force: true });
+    fs16.rmSync(scratch, { recursive: true, force: true });
   }
 }
 function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
@@ -33107,7 +33232,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     }
   });
 }
-var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs17.existsSync(path13.join(folder, "run", "update-trial"));
+var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs16.existsSync(path13.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
@@ -34142,4 +34267,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 4733b55f4ae8e30ed8873a8f92a3c030963987d97e54f66eb00fbf9a3fbe9f3d
+// Built from Packages/Box/src/agents 89b69637fa66f5794bdcfc794e32a66406b4cf32a89d0c1284a93134313f698b

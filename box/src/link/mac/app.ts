@@ -18,6 +18,7 @@
 // - `app-open-failed.json`: `{at, message}`, the last opening that failed;
 // - `app-updating`: noted as the app quits to install an update (by its time).
 
+import { watchFolder } from "../../shared/watch";
 import fs from "node:fs";
 import path from "node:path";
 import { alive } from "../../shared/platform";
@@ -318,18 +319,17 @@ async function hostOpens(bundle: string): Promise<string | null> {
  * besides (a change a watch misses). */
 function waitUntil(ready: () => boolean, deadline: number, signal?: AbortSignal): Promise<void> {
   return new Promise(resolve => {
-    let watcher: fs.FSWatcher | null = null;
     const done = () => {
       clearInterval(every);
       clearTimeout(timer);
-      watcher?.close();
+      watcher.close();
       signal?.removeEventListener("abort", done);
       resolve();
     };
     const look = () => { if (ready()) done(); };
     const every = setInterval(look, 1_000);
     const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
-    try { watcher = fs.watch(RUN, look); watcher.on("error", () => {}); } catch {}
+    const watcher = watchFolder(RUN, look);
     signal?.addEventListener("abort", done, { once: true });
     if (signal?.aborted) done();
     else look();
