@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, request } from "./adapter.mjs";
+import { openLine, request, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
 
@@ -252,15 +252,19 @@ test("a send keeps what the user wrote and the parts that went with it", { timeo
   const id = "ses_sendParts";
   here.engine.sessions.push(sessionOf({ id, directory: here.home }));
   const record = await here.start().ready();
-  const supported = vectors.compose.filter(row => !row.kept && !row.fields.named && !row.parts.agents?.length &&
-    !row.text.startsWith("Hi\n<named-agents>"));
-  assert.ok(supported.length >= 12);
+  const supported = vectors.compose.filter(row => !row.kept);
+  const sessions = new Set(supported.map(row => row.excluding ?? id));
+  for (const session of sessions) {
+    if (session !== id) here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  }
   for (const [index, row] of supported.entries()) {
+    const session = row.excluding ?? id;
     const given = { ...row.fields, id: "msg_parts" + index };
-    const response = await request(record, "POST", "kuvo/sessions/" + id + "/send", given,
+    write(path.join(here.home, "run", "agents.json"), JSON.stringify({ machine: row.here ?? null, agents: vectors.agents }));
+    const response = await request(record, "POST", "kuvo/sessions/" + session + "/send", given,
       row.phone ? {} : { "x-kuvo-from": "app" });
     assert.equal(response.status, 200, row.about);
-    const stored = here.engine.messages.get(id).find(message => message.id === given.id);
+    const stored = here.engine.messages.get(session).find(message => message.id === given.id);
     assert.equal(stored.text, row.text, row.about);
     assert.deepEqual(stored.metadata.kuvo.parts, row.parts, row.about);
   }

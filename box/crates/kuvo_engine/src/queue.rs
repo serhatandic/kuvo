@@ -1641,7 +1641,13 @@ async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Res
     Ok(sent)
 }
 
-pub(crate) fn engine_event(engine: &Engine, session: &str, kind: &str, data: &Value) {
+pub(crate) fn engine_event(
+    engine: &Engine,
+    session: &str,
+    kind: &str,
+    data: &Value,
+    stop: tokio_util::sync::CancellationToken,
+) {
     if kind.starts_with("session.inbox.") {
         engine.queues.notify();
     }
@@ -1663,9 +1669,15 @@ pub(crate) fn engine_event(engine: &Engine, session: &str, kind: &str, data: &Va
     };
     tokio::spawn(async move {
         // OpenCode can publish a completion before it removes the active record.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Err(error) = react(&engine, &session, operation, at).await {
-            eprintln!("Updating the engine's queue: {error}");
+        let update = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            react(&engine, &session, operation, at).await
+        };
+        tokio::select! {
+            () = stop.cancelled() => {}
+            result = update => if let Err(error) = result {
+                eprintln!("Updating the engine's queue: {error}");
+            }
         }
     });
 }

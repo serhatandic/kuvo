@@ -32,16 +32,76 @@ use crate::{
 pub struct LocalSessions {
     snapshot: watch::Receiver<Option<Arc<Snapshot>>>,
     refresh: mpsc::Sender<()>,
+    _tasks: Arc<ListTasks>,
+}
+
+struct ListTasks {
+    list: tokio::task::JoinHandle<()>,
+    feed: tokio::task::JoinHandle<()>,
+    stop: CancellationToken,
+}
+
+impl Drop for ListTasks {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        self.feed.abort();
+        self.list.abort();
+    }
 }
 
 impl LocalSessions {
-    /// The most recent local list. A consumer can subscribe to full snapshots
-    /// without starting the engine or joining the per-client cursor history.
-    pub fn latest(&self) -> Option<read::Status200> {
-        self.snapshot
-            .borrow()
-            .as_ref()
-            .and_then(|snapshot| typed(snapshot.answer(None)).ok())
+    pub(crate) fn names(&self, here: Option<&str>) -> Vec<crate::naming::Name> {
+        use crate::naming::{Kind as AgentKind, Name};
+        let current = self.snapshot.borrow();
+        let Some(snapshot) = current.as_deref() else {
+            return Vec::new();
+        };
+        let mut rows = snapshot.sessions.iter().collect::<Vec<_>>();
+        rows.sort_by(|(a, one), (b, other)| {
+            other
+                .facts
+                .updated
+                .cmp(&one.facts.updated)
+                .then_with(|| a.cmp(b))
+        });
+        rows.into_iter()
+            .filter_map(|(id, row)| {
+                let facts = &row.facts;
+                if facts.flag("archived") || facts.flag("away") {
+                    return None;
+                }
+                let title = facts
+                    .extra
+                    .get("title")?
+                    .as_str()
+                    .filter(|title| !title.is_empty() && *title != "New session")?;
+                let kind = match facts.kind {
+                    Kind::Bot => AgentKind::Bot,
+                    Kind::Project | Kind::Chat => AgentKind::Session,
+                    Kind::Hidden | Kind::Seat | Kind::Subagent => return None,
+                };
+                let project = facts
+                    .project()
+                    .and_then(|folder| {
+                        snapshot
+                            .projects
+                            .get(folder)
+                            .and_then(|project| project["name"].as_str())
+                            .or_else(|| {
+                                Path::new(folder).file_name().and_then(|name| name.to_str())
+                            })
+                    })
+                    .map(str::to_owned);
+                Some(Name {
+                    session: id.clone(),
+                    name: title.to_owned(),
+                    kind,
+                    project,
+                    machine: here.map(str::to_owned),
+                    about: None,
+                })
+            })
+            .collect()
     }
 
     /// The compatible on-disk representation, passed in memory to the peer publisher.
@@ -56,8 +116,9 @@ impl LocalSessions {
     pub(crate) fn start(engine: Engine) -> Self {
         let (refresh, mut requests) = mpsc::channel(1);
         let (updates, snapshot) = watch::channel(None);
-        crate::conversation::watch(engine.clone(), refresh.downgrade());
-        tokio::spawn(async move {
+        let stop = CancellationToken::new();
+        let feed = crate::conversation::watch(engine.clone(), refresh.downgrade(), stop.clone());
+        let list = tokio::spawn(async move {
             let mut last = load(&engine.home).await.unwrap_or_else(Snapshot::new);
             if !last.sessions.is_empty() {
                 last.seq += 1_000_000;
@@ -91,7 +152,11 @@ impl LocalSessions {
                 }
             }
         });
-        Self { snapshot, refresh }
+        Self {
+            snapshot,
+            refresh,
+            _tasks: Arc::new(ListTasks { list, feed, stop }),
+        }
     }
 
     pub(crate) fn refresh(&self) {

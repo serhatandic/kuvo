@@ -112,7 +112,7 @@ pub(crate) struct Parts<'a> {
 #[derive(Serialize)]
 pub(crate) struct Agent<'a> {
     pub name: &'a str,
-    session: &'a str,
+    pub session: &'a str,
 }
 
 #[derive(Serialize)]
@@ -315,6 +315,8 @@ pub(crate) fn compose(
     has_files: bool,
     phone: bool,
     legacy_queue: bool,
+    naming: &crate::naming::Naming,
+    session: &str,
 ) -> Result<Message, &'static str> {
     if let Some(text) = given.get("text").and_then(Value::as_str) {
         if text.trim().is_empty() && !has_files {
@@ -404,6 +406,26 @@ pub(crate) fn compose(
         .to_owned();
     }
     NAMED.escape(&mut text);
+    let picked = given
+        .get("named")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(200)
+        .collect::<Vec<_>>();
+    let named = naming.names(&text, session, &picked)?;
+    if !named.is_empty() {
+        shown.get_or_insert_with(|| trim(&text).to_owned());
+        let lines = named
+            .iter()
+            .map(|agent| naming.line(agent))
+            .collect::<Vec<_>>();
+        let block = std::iter::once(NAMED.headings[0])
+            .chain(lines.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        NAMED.append(&mut text, &block);
+    }
     REVIEW.escape(&mut text);
     if !comments.is_empty() {
         shown.get_or_insert_with(|| trim(&text).to_owned());
@@ -462,6 +484,7 @@ pub(crate) fn compose(
             })
             .collect(),
         paths: paths.into_iter().chain(unsent).collect(),
+        agents: naming.parts(&named),
         phone: phone.then_some(true),
         ..Parts::default()
     });

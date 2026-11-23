@@ -142,7 +142,13 @@ pub(crate) async fn forget(engine: &Engine, session: &str, id: &str) -> Result<(
     }
 }
 
-fn decode(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Send, Refusal> {
+async fn decode(
+    engine: &Engine,
+    list: &crate::LocalSessions,
+    call: &RouteCall<()>,
+    session: &str,
+    form: Form,
+) -> Result<Send, Refusal> {
     let given = sessions::body(call)
         .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Send what was written (words)."))?;
     let id = match given.get("id") {
@@ -167,22 +173,33 @@ fn decode(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Send, Ref
         Caller::Local(_) => true,
     };
     let legacy_queue = form == Form::Add;
-    let composed = parts::compose(&given, !files.is_empty(), phone, legacy_queue)
-        .map_err(|message| Refusal::new(StatusCode::BAD_REQUEST, message))?;
-    if given
-        .get("named")
-        .and_then(Value::as_array)
-        .is_some_and(|named| !named.is_empty())
-        && given
-            .get("words")
-            .and_then(Value::as_str)
-            .is_some_and(|words| words.contains('&'))
+    let naming = if given
+        .get("words")
+        .and_then(Value::as_str)
+        .is_some_and(|words| words.contains('&'))
     {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            "An agent you named with & isn't known to this computer yet. Try again in a moment.",
-        ));
-    }
+        crate::naming::Naming::local(engine, list).await
+    } else {
+        crate::naming::Naming::default()
+    };
+    let composed = parts::compose(
+        &given,
+        !files.is_empty(),
+        phone,
+        legacy_queue,
+        &naming,
+        session,
+    )
+    .map_err(|message| {
+        Refusal::new(
+            if message.starts_with("An agent") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            message,
+        )
+    })?;
     let mut metadata = composed
         .parts
         .map(|parts| json!({ "kuvo": { "parts": parts } }));
@@ -374,31 +391,39 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
     Ok(answer)
 }
 
-async fn apply(engine: Engine, call: RouteCall<()>, form: Form) -> Result<Value, Refusal> {
+async fn apply(
+    engine: Engine,
+    list: crate::LocalSessions,
+    call: RouteCall<()>,
+    form: Form,
+) -> Result<Value, Refusal> {
     let session = sessions::id(&call)?;
-    let given = decode(&engine, &call, form)?;
+    let given = decode(&engine, &list, &call, &session, form).await?;
     // The handoff owns its claim even after the caller disconnects.
     tokio::spawn(async move { deliver(&engine, &session, given).await })
         .await
         .map_err(|_| engine_busy())?
 }
 
-pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
+pub(crate) fn register(engine: &Engine, list: crate::LocalSessions, routes: &mut Registry) {
     let local = engine.clone();
+    let known = list.clone();
     routes.register::<send::Spec, _, _>(Access::Any, move |call| {
         let engine = local.clone();
+        let list = known.clone();
         async move {
             Ok(RouteReply::json::<200>(
-                apply(engine, call, Form::Send).await?,
+                apply(engine, list, call, Form::Send).await?,
             ))
         }
     });
     let local = engine.clone();
     routes.register::<add::Spec, _, _>(Access::Any, move |call| {
         let engine = local.clone();
+        let list = list.clone();
         async move {
             Ok(RouteReply::json::<200>(sessions::typed(
-                apply(engine, call, Form::Add).await?,
+                apply(engine, list, call, Form::Add).await?,
             )?))
         }
     });

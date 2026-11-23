@@ -67,7 +67,11 @@ struct Event {
     data: Value,
 }
 
-pub(crate) fn watch(engine: crate::Engine, refresh: tokio::sync::mpsc::WeakSender<()>) {
+pub(crate) fn watch(
+    engine: crate::Engine,
+    refresh: tokio::sync::mpsc::WeakSender<()>,
+    stop: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     use http::Method;
     use tokio::time::{Duration, sleep};
@@ -138,6 +142,7 @@ pub(crate) fn watch(engine: crate::Engine, refresh: tokio::sync::mpsc::WeakSende
                                     session,
                                     &event.kind,
                                     &event.data,
+                                    stop.clone(),
                                 );
                             }
                         }
@@ -147,5 +152,5 @@ pub(crate) fn watch(engine: crate::Engine, refresh: tokio::sync::mpsc::WeakSende
             }
             sleep(Duration::from_millis(250)).await;
         }
-    });
+    })
 }

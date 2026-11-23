@@ -74,7 +74,7 @@ message-parts vectors. A row with partial coverage records the gaps.
 
 | TypeScript source | Cases | Rust scenario and gaps |
 | --- | ---: | --- |
-| `box/test/message-parts.test.ts` and `protocol/vectors/message-parts.json` | 18 cases, 38 vectors | The legacy parts route checks all 13 read vectors. The send scenario checks text and metadata in 15 compose vectors for fields, quotes, widgets, comments, file notes and phone decoration. Same-ID replay and Undo are covered separately. The full attachment-copy path, model-specific file handling, named agents, forwarding to the agents runtime, and the validation and refusal variants still need checks. |
+| `box/test/message-parts.test.ts` and `protocol/vectors/message-parts.json` | 18 cases, 38 vectors | The legacy parts route checks all 13 read vectors. The send scenario checks text and metadata in 23 compose vectors for fields, quotes, widgets, comments, file notes and phone decoration. Same-ID replay and Undo are covered separately. The full attachment-copy path, model-specific file handling, setup-wide naming, forwarding to the agents runtime, and the validation and refusal variants still need checks. |
 | `box/test/engine-context.test.ts` | 1 | Latest step occupancy, cached model window and completed-summary invalidation are covered together. |
 | `box/test/engine-swap-inboxes.test.ts` | 2 | The Rust resident test covers strict inventory pagination, refusal of incomplete reads, and ordered recovery across restart with a new send arriving during an interrupted transfer. |
 | `box/test/queue-stop.test.ts` | 6 | An arriving removal is covered across Stop, send and removal. Timing of concurrent Stop and engine submission, named arrivals across restart or Resume, and the unlisted arrival cases still need their own scenarios. |
@@ -115,7 +115,7 @@ that fixture did not establish full list parity.
 The peer outbox still needs the durable delivery entry point and receipt topics
 for addressed sends. The legacy direct routes await engine confirmation.
 Keep and release of inboxes are implemented as engine operations. The keeper
-still has to coordinate the hold across the release switch. Named agents,
+still has to coordinate the hold across the release switch. Setup-wide naming,
 attachment retention, tool-step display fields, full project and worktree
 admission, and approval and archive integration need the remaining matching
 behavior described above. Asks, waiting, models and search remain 3.2b.

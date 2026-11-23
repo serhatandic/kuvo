@@ -6,6 +6,7 @@ mod conversation;
 mod disk;
 mod launch;
 mod lifetime;
+mod naming;
 mod parts;
 mod proxy;
 mod queue;
@@ -28,7 +29,7 @@ impl Engine {
         session_list::register(list.clone(), routes);
         parts::register(routes);
         queue::register(self, routes);
-        send::register(self, routes);
+        send::register(self, list.clone(), routes);
         sessions::register(self, routes);
         start_session::register(self, list.clone(), routes);
         let engine = self.clone();
