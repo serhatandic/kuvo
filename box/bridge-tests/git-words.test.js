@@ -2,6 +2,7 @@
 // request from come from the box, with your instructions on that computer, for a Mac and a phone
 // alike; and a Mac's Settings › Git from before moves to a box once, with nothing lost.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -11,7 +12,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-git-words-")));
 removeAtEnd(root);
 

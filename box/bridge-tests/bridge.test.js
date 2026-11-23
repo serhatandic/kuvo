@@ -1,6 +1,7 @@
 // The bridge, checked against the shared vectors and against a phone and an engine in this
 // process. Run with `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -23,7 +24,7 @@ const user = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-user-"));
 process.env.HOME = user;
 removeAtEnd(home);
 removeAtEnd(user);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // A phone's key as a phone has one (32 bytes, base64url), named for a test.
 const shaped = name => crypto.createHash("sha256").update(name).digest("base64url");
@@ -1160,7 +1161,7 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
   const phones = list => link.signDoc(seed, "phones", ++count, { phones: list.map(key => ({ key, name: key.slice(0, 4), pairing: "" })), removed: [] });
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-setup-"));
   fs.mkdirSync(path.join(folder, "workspace"));
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const script = fileURLToPath(LINK_BUNDLE);
   const tryingSetup = input =>
     spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "ws://127.0.0.1:9", name: "test", mac: MAC, macSign: link.signingKeyOf(seed), ...input }), env: { ...process.env, KUVO_HOME: folder }, encoding: "utf8" });
   const setup = input => {

@@ -1,5 +1,6 @@
 // The compiled service describes the repeated settings flows in the same words and kinds.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -11,7 +12,7 @@ removeAtEnd(root);
 process.env.KUVO_HOME = root;
 fs.mkdirSync(path.join(root, "box"));
 fs.writeFileSync(path.join(root, "box", "opencode.json"), "{}");
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const handle = link.engineHandler(() => { throw Error("offline"); }, { name: "test" }, () => null);
 const ask = async (method, route, body) => {
  let status, text = "";

@@ -81,7 +81,7 @@ test("learning the box's peer name leaves its unchanged local history checkpoint
   }]))
   const run = join(home, "run")
   mkdirSync(run)
-  const bundle = join(import.meta.dir, "../../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js")
+  const bundle = join(import.meta.dir, "../../dist/kuvo-link.js")
   const reader = usageReader({ home, run, box: home, bots: join(home, "bots"), bundle })
   const { Database } = await import("bun:sqlite")
   const refresh = () => reader.handle(new Request("http://box/api/kuvo/insights/summary?period=7&zone=UTC&refresh=1"))

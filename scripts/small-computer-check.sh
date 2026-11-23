@@ -52,8 +52,7 @@ tar xzf - -C "$build"
 cp "$engine" "$box/engine/$version/opencode"
 cp "$build"/box/src/keeper/kuvo-{start,launch,wake,npx,setsid} "$box/bin/"
 sed -i "s/@ENGINE@/$version/g" "$box/bin/kuvo-start" "$box/bin/kuvo-launch"
-cp "$build"/swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js "$box/bin/"
-cp "$build"/box/dist/kuvo-{agents,browser}.js "$box/bin/"
+cp "$build"/box/dist/kuvo-{link,agents,browser}.js "$box/bin/"
 cp "$build"/box/src/plugins/kuvo-code.js "$box/plugins/"
 printf 'PATH=/usr/local/bin:/usr/bin:/bin\nSHELL=/bin/bash\nLANG=C.UTF-8\nOPENCODE_CLIENT=desktop\n' >"$box/run/launch.env"
 container=$(sudo -n docker create --cpus=2 --memory=2g --memory-swap=2g --init \
@@ -70,16 +69,20 @@ exit "$(sudo -n docker inspect --format '{{.State.ExitCode}}' "$container")"
 REMOTE
 )
 printf -v command 'bash -c %q -- %q %q %q' "$remote" "$engine" "$seconds" "$mode"
-files=(box/src/keeper box/src/plugins/kuvo-code.js box/dist/kuvo-{agents,browser}.js
-    swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js)
+sources=(box/src/keeper box/src/plugins/kuvo-code.js)
+bundles=(box/dist/kuvo-{link,agents,browser}.js)
 if [[ -n "$revision" ]]; then
-    # Overlay the current sampler onto an earlier committed release for comparison.
-    staging=$(mktemp -d "${PWD}/.git-sampler.XXXXXXXX")
+    # Overlay the current sampler onto an earlier release for comparison.
+    staging=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-sampler.XXXXXXXX")
     trap 'rm -rf -- "$staging"' EXIT
-    git archive "$revision" "${files[@]}" | tar xf - -C "$staging"
-    mkdir "$staging/scripts"
+    git archive "$revision" "${sources[@]}" | tar xf - -C "$staging"
+    dist=$(BUILT_AT_CACHE="$staging/cache" scripts/built-at.sh "$revision")
+    mkdir -p "$staging/box/dist" "$staging/scripts"
+    cp "$dist"/kuvo-{link,agents,browser}.js "$staging/box/dist/"
     cp scripts/small-computer-scenario.mjs "$staging/scripts/"
     cd "$staging"
+else
+    scripts/build-built.sh
 fi
-COPYFILE_DISABLE=1 tar --no-xattrs -czf - "${files[@]}" scripts/small-computer-scenario.mjs |
+COPYFILE_DISABLE=1 tar --no-xattrs -czf - "${sources[@]}" "${bundles[@]}" scripts/small-computer-scenario.mjs |
     ssh -o BatchMode=yes "$host" "$command"

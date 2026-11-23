@@ -6,6 +6,7 @@
 //
 // Run with `node --test box/bridge-tests/vault-fill-wait.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -32,7 +33,7 @@ const write = (file, text) => {
 };
 const tool = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
 const script = path.join(home, "bin", "kuvo-link.js");
-write(script, fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)));
+write(script, fs.readFileSync(LINK_BUNDLE));
 const env = { ...process.env, KUVO_HOME: home, HOME: home, KUVO_VAULT_AGENTS: "1" };
 for (const name of ["KUVO_HOST_URL", "KUVO_HOST_PASSWORD", "KUVO_KEYS", "KUVO_KEYS_ON_HOST", "KUVO_BOX", "KUVO_SESSION"]) delete env[name];
 

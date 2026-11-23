@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -12,7 +13,7 @@ import { removeAtEnd } from "./at-end.js";
 test("duplicate tool workers run one command and keep only its masked result", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-tool-command-"));
   removeAtEnd(home);
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const script = fileURLToPath(LINK_BUNDLE);
   const id = "C".repeat(43);
   const effect = path.join(home, "effect");
   const secret = "fixture-only-vault-value";

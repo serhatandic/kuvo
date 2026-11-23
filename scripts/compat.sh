@@ -21,8 +21,7 @@ esac
 
 # The same files the test reads: the code as written (a bundle leaves comments out), new files too.
 git --no-optional-locks grep --untracked -n -I -E 'COMPAT\((0\.7|beta\.1|beta\.30|layout\.4) [a-z0-9-]+\)' -- \
-  'box/src' 'mac/helper/Sources' 'scripts' \
-  ':(exclude)box/dist/kuvo-agents.js' ':(exclude)box/dist/kuvo-browser.js' ':(exclude)scripts/compat.sh' |
+  'box/src' 'mac/helper/Sources' 'scripts' ':(exclude)scripts/compat.sh' |
   grep -E '^([^:]+\.(swift|ts|js|mjs|sh|py)|box/src/keeper/[^/.:]+):' |
   awk -v want="$want" '
     {

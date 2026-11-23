@@ -29,7 +29,7 @@ How coding sessions work on Kuvo, in full. CLAUDE.md keeps one line of each.
   the changelog. If you're skimming, guessing, or about to report what you haven't checked, stop
   and do it properly; if the context is too full, say so and suggest a fresh session.
 - **Routes are documented in their definition** (`box/src/shared/routes`), and listed by
-  `scripts/check-built.sh --build` in `protocol/ROUTES.md`. Add to `protocol/PROTOCOL.md` only a
+  `scripts/build-built.sh` in `protocol/ROUTES.md`. Add to `protocol/PROTOCOL.md` only a
   rule a client must know that the route can't say, in a few lines.
 
 ## Designing what people see

@@ -13,6 +13,7 @@ case "$NAME" in ''|*[!a-zA-Z0-9_-]*) echo 'name must contain only letters, digit
 # (The guard removes folders in ~/.kuvo-code-test named like a run of its own whose process is gone.)
 if [[ "$NAME" =~ ^(ku|sb|sa|kv|outside)-[0-9]+(-|$) ]]; then echo "name mustn't look like a test run's own folder: $NAME" >&2; exit 64; fi
 cd "$REPO"
+scripts/build-built.sh
 pattern=
 case "${1:-}" in --test-name-pattern=*) pattern=$1; shift ;; esac
 files=()
@@ -86,7 +87,7 @@ export PATH=$T/bin:/usr/local/bin:/usr/bin:/bin
 (cd "$T/repo/box" && BUN_BE_BUN=1 "$engine" install --frozen-lockfile)
 cd "$T/repo/box"
 [ $# -gt 0 ] || set -- bridge-tests/*.test.js
-# Node 24, as CI (.github/workflows/ci.yml) and the Mac run the bridge tests (the box's server takes
+# Node 24, as the Mac runs the bridge tests (the box's server takes
 # options Node 22 ignores), checked against nodejs.org's published checksums; never installed system-wide.
 node=v24.22.2
 case $(uname -m) in
@@ -120,32 +121,36 @@ history=()
 fixture_dir=$(mktemp -d)
 trap 'rm -r -- "$fixture_dir"' EXIT
 mkdir -p "$fixture_dir/box/bridge-tests"
+old_link() {
+    dist=$(BUILT_AT_CACHE="$fixture_dir/cache" scripts/built-at.sh "$1")
+    cat "$dist/kuvo-link.js"
+}
 ref_file=box/bridge-tests/failure-bench-legacy-ref.txt
 if [[ -f "$ref_file" ]] && { [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/devices-two-boxes.test.js "* || " ${files[*]} " == *" bridge-tests/failure-bench-legacy.test.js "* ]]; }; then
     read -r ref < "$ref_file"
     [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
     legacy=box/bridge-tests/.failure-bench-legacy.mjs
-    git --no-optional-locks show "$ref:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$legacy"
+    old_link "$ref" > "$fixture_dir/$legacy"
     history=(-C "$fixture_dir" "$legacy")
 fi
 if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/folder-version.test.js "* || " ${files[*]} " == *" bridge-tests/updates.test.js "* ]]; then
     layout=box/bridge-tests/.layout-4.mjs
-    git --no-optional-locks show "4330569c2f1c39eef166f65d2abb1b7256ef7dcb:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$layout"
+    old_link "4330569c2f1c39eef166f65d2abb1b7256ef7dcb" > "$fixture_dir/$layout"
     history+=(-C "$fixture_dir" "$layout")
 fi
 if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/update-real-keeper.test.js "* ]]; then
     baseline=box/bridge-tests/.layout-0.mjs
-    git --no-optional-locks show "11323b39316e0ec1f9b6281ab9bba9153db8e822:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$baseline"
+    old_link "11323b39316e0ec1f9b6281ab9bba9153db8e822" > "$fixture_dir/$baseline"
     history+=(-C "$fixture_dir" "$baseline")
 fi
 if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* ]]; then
     read -r neighbor < box/bridge-tests/recovery-neighbor-ref.txt
     [[ "$neighbor" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid recovery neighbor reference" >&2; exit 1; }
     recovery=box/bridge-tests/.recovery-neighbor.mjs
-    git --no-optional-locks show "$neighbor:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$recovery"
+    old_link "$neighbor" > "$fixture_dir/$recovery"
     history+=(-C "$fixture_dir" "$recovery")
     beta35=box/bridge-tests/.beta35-owner.mjs
-    git --no-optional-locks show "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$beta35"
+    old_link "fccda2de1" > "$fixture_dir/$beta35"
     history+=(-C "$fixture_dir" "$beta35")
 fi
 if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* || " ${files[*]} " == *" bridge-tests/resident-update-pilot.test.js "* ]]; then
@@ -153,12 +158,12 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
     [[ "$split" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid split launch reference" >&2; exit 1; }
     link=box/bridge-tests/.split-launch.mjs
     keeper=box/bridge-tests/.split-keeper.sh
-    git --no-optional-locks show "$split:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$link"
+    old_link "$split" > "$fixture_dir/$link"
     git --no-optional-locks show "$split:box/src/keeper/kuvo-start" > "$fixture_dir/$keeper"
     history+=(-C "$fixture_dir" "$link" "$keeper")
 fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
-    box/bridge-tests box/test/fixtures protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
+    box/bridge-tests box/test/fixtures protocol/vectors catalog box/.bun-version \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
     "${sources[@]}" "${history[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"

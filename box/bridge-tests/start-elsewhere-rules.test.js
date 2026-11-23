@@ -14,6 +14,7 @@
 //
 // Run with `node --test box/bridge-tests/start-elsewhere-rules.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -26,12 +27,12 @@ import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-start-rules-")));
 process.env.KUVO_HOME = home;
 process.env.KUVO_BOTS = path.join(home, "bots");
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const DAY = 86_400_000;
 const run = path.join(home, "run");

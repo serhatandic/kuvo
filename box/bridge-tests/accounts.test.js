@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/accounts.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +19,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-accounts-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // An engine with your plans, an integration's server, and what each is signed in with; it keeps
 // what was removed.
@@ -215,7 +216,7 @@ test("a plan whose sign-in ran out is noted as the box watches its engine, which
   // Where the box finds its engine.
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   fs.writeFileSync(path.join(home, "run", "engine.json"), JSON.stringify(engine.source));
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const script = fileURLToPath(LINK_BUNDLE);
   // A machine's link (`run`), then this Mac's box (`serve`), as each starts watching.
   for (const watching of [{}, { bots: true, notices: false }]) {
     await ask("POST", "kuvo/accounts/openai/forget");

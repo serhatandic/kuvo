@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/bots-held.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -21,7 +22,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-bots-held-")));
 removeAtEnd(home);
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const run = path.join(home, "run");
 const bots = path.join(home, "bots");
 const held = path.join(run, "bots-held");

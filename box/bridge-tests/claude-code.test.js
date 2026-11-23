@@ -4,6 +4,7 @@
 //
 // Run with `node --test box/bridge-tests/claude-code.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -19,7 +20,7 @@ removeAtEnd(home);
 removeAtEnd(user);
 process.env.KUVO_HOME = home;
 process.env.HOME = user;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // The engine's commands: its own, and one a plugin brings, besides one in your settings.
 const engine = http.createServer((request, response) => {

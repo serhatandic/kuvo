@@ -3,6 +3,7 @@
 // held by archiving), as a bot's Stop and Archive has it: nothing waits out of sight for an answer.
 // One that waits on nothing goes on working. The engine is a stand-in.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -14,7 +15,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-archive-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // The engine: ses_perm1 waits on a permission, ses_form1's subagent on a question, ses_busy1 on
 // nothing, all of them at work. What's stopped is noted.

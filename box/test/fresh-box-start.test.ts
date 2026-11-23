@@ -33,6 +33,7 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
+import "../bridge-tests/at-end.js"
 // @ts-expect-error: a stand-in in plain JavaScript, shared with the bridge's tests
 import { standInHost } from "../bridge-tests/box-stand-ins.js"
 
@@ -117,7 +118,7 @@ function release(version: string): string {
   put(path.join(root, "engine-package", "package", "bin", "opencode"), fs.readFileSync(ENGINE!), 0o755)
   expect(spawnSync("tar", ["czf", engineTar, "-C", path.join(root, "engine-package"), "package"], { env: { ...clean(), COPYFILE_DISABLE: "1" } }).status).toBe(0)
   const sources = path.join(root, "sources")
-  for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js", "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"]) {
+  for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js", "box/dist/kuvo-link.js"]) {
     put(path.join(sources, file), fs.readFileSync(path.join(checkout, file)))
   }
   const build = { url: pathToFileURL(engineTar).href, integrity: "sha512-" + crypto.createHash("sha512").update(fs.readFileSync(engineTar)).digest("base64") }

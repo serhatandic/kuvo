@@ -4,6 +4,7 @@
 //
 // Run with `node --test box/bridge-tests/browser-view-mac.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -19,7 +20,7 @@ removeAtEnd(home);
 process.env.KUVO_HOME = home;
 process.env.KUVO_BOX = "mac";
 process.env.KUVO_ENGINE_CONFIG = path.join(home, "engine");
-const { engineConnect, viewUpgrade } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const { engineConnect, viewUpgrade } = await import(LINK_BUNDLE.href);
 
 test("through the relay, a Mac's box ends a view socket with why, opening nothing", async () => {
   let opened = false;

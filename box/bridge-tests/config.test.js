@@ -3,6 +3,7 @@
 // computer made on this one too ("Also Apply to…"). Run with
 // `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -16,7 +17,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-config-"));
 const home = path.join(root, "machine");
 process.env.KUVO_HOME = home;
 removeAtEnd(root);
-const script = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url);
+const script = LINK_BUNDLE;
 const link = await import(script);
 
 const auth = `Basic ${Buffer.from("opencode:pw").toString("base64")}`;

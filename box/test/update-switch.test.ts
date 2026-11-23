@@ -11,7 +11,7 @@ import { activeBin, convertBin, previousBin, stageVersion, versionBin } from "..
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const keeper = fs.readFileSync(path.join(repo, "box/src/keeper/kuvo-start"), "utf8");
-const bundle = path.join(repo, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const bundle = path.join(repo, "box/dist/kuvo-link.js");
 const bridge = path.join(repo, "box/dist/kuvo-agents.js");
 const homes: string[] = [];
 const dirs = ["bin", "config/opencode/plugins", "run"];

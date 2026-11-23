@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -18,7 +19,7 @@ const exec = (file, args, options) => new Promise((resolve, reject) => {
 });
 const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-fleet-")));
 removeAtEnd(directory);
-const bundle = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const bundle = fileURLToPath(LINK_BUNDLE);
 const lib = await import(pathToFileURL(bundle));
 const OLD = "0.8.0-beta.40", NEXT = "0.8.0-beta.41", CLOCK = Date.now(), LIMIT = 5 * 60_000;
 const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");

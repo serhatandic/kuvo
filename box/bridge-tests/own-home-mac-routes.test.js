@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/own-home-mac-routes.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -72,7 +73,7 @@ write(path.join(K, "run", "host.json"), JSON.stringify({ url: `http://127.0.0.1:
 
 Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools });
 delete process.env.KUVO_BOX;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const relay = await relayStandIn(link, { request: relayLeaseStandIn().request });
 atEnd(() => relay.close());
 

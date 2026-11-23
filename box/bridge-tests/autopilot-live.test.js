@@ -10,6 +10,7 @@
 // provider's model with a sign-in of its own, also `KUVO_TEST_PROVIDER=<its id>` and
 // `KUVO_TEST_CREDENTIAL=<a file of what POST api/credential takes>`, which only this test's own engine gets.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -26,8 +27,8 @@ test("Autopilot on a real engine: a marked question goes ahead and can be change
   removeAtEnd(home);
   for (const folder of ["tmp", "work", "xdg/config", "xdg/data", "xdg/state", "xdg/cache", "bin", "run"]) fs.mkdirSync(path.join(home, folder), { recursive: true });
   process.env.KUVO_HOME = home;
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = await import(LINK_BUNDLE.href);
+  const script = fileURLToPath(LINK_BUNDLE);
   const waitFor = async (wanted, what) => {
     const end = Date.now() + 240_000;
     for (;;) {

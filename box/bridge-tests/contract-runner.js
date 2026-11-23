@@ -10,6 +10,7 @@
 // The caller sets the box's folders in the environment first (the bridge reads them as it loads),
 // then `contract({ box, root, files? })`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
@@ -24,8 +25,8 @@ import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { atEnd } from "./at-end.js";
 import { keepsIdle } from "./keeps-idle.js";
 
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-const linkBundle = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const link = await import(LINK_BUNDLE.href);
+const linkBundle = fileURLToPath(LINK_BUNDLE);
 // The box's folder, and the app's folders for its bots and sessions' wake-ups beside it on a Mac
 // (in its own folder on a machine).
 const home = process.env.KUVO_HOME;

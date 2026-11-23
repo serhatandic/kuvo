@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/at-work-computers.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -21,7 +22,7 @@ import { removeAtEnd } from "./at-end.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-at-work-computers-")));
 removeAtEnd(home);
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const run = path.join(home, "run");
 const k = key => key.toString("base64url");

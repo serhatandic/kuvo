@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Local builds and tests generate the box bundles and route vectors from the checkout.
+
 - Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.

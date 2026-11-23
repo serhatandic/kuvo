@@ -10,6 +10,7 @@
 //
 // Run with `node --test box/bridge-tests/bots-dead-models.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -23,10 +24,10 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-dead-models-")));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const tool = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
 fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url), path.join(home, "bin", "kuvo-link.js"));
+fs.copyFileSync(LINK_BUNDLE, path.join(home, "bin", "kuvo-link.js"));
 
 const app = path.join(home, "work", "the-app");
 fs.mkdirSync(app, { recursive: true });

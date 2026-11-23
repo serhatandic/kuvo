@@ -3,7 +3,7 @@
 What runs on each of your computers beside the engine, the same on this Mac and on a Linux machine.
 It's programs of ours, built from this one package:
 
-- **the link** (`src/link`), built to `swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js`,
+- **the link** (`src/link`), built to `box/dist/kuvo-link.js`,
   shipped in each box release. The keeper starts `serve --resident` for the
   routes, relay, peer mail, setup, notices and fleet updates.
 - **the agents bridge** (`src/agents`), built to `box/dist/kuvo-agents.js`, which a box's
@@ -12,7 +12,7 @@ It's programs of ours, built from this one package:
   which each box runs with the engine's Bun: the browser agents use there, its live view, and the
   agents' browser tools.
 
-The box release takes all three bundles as built. The link retains its historical output path.
+The box release installs the three bundles in `bin/`.
 
 **Its release** (protocol/PROTOCOL.md, "Updates") is built from this package alone, with no app
 (`scripts/box-release.sh`; `--files <version> <folder>` writes only the files, to look at them):
@@ -41,23 +41,13 @@ See [the protocol](../protocol/PROTOCOL.md),
 
 ## Building
 
-After changing anything in `src/link` or `src/shared`, run `scripts/build-box.sh` and commit
-`kuvo-link.js` with it. Build with the pinned Bun so every computer builds the same file. Check it (`build-box.sh
---check`). Never bump the link's version (`src/link/version.ts`): `build-box.sh` writes a hash of
-what it built in its place. After changing `src/agents` (or `src/shared`), run `scripts/build-agents.sh` and commit
-`kuvo-agents.js`; its last line names what it was built from (those folders and this package's
-`package.json` and lockfile, so a change to either needs it rebuilt too), which the build check verifies
-(`build-agents.sh --check`). `bun run build` runs both. After changing `src/browser` (the
-browser's keeper and the agents' browser tools), run `scripts/build-browser.sh` and commit
-`box/dist/kuvo-browser.js`; the build check and box suite check it byte for byte (`build-browser.sh --check`). Never bump its keeper's version (`KEEPER`): the
-script writes a hash of the source in its place.
+Run `scripts/build-built.sh` from the repository root or `bun run build` from `box/`.
+Use the Bun version in `.bun-version`. The build writes the three bundles to `box/dist/`
+and generates the route vectors and `protocol/ROUTES.md`. Commit changes to the sources.
+The builders stamp the link's `BRIDGE_VERSION` and the browser's `KEEPER` from their contents.
 
-`bun install --frozen-lockfile` here, then `bun run check` type-checks the link with Node's types
-(it must run on Node too) and the agents bridge with Bun's (`src/agents/tsconfig.json`, and
-`test/agents`'s beside its tests: it runs only on Bun). The lockfile is Bun 1.4.2's too, which
-an older Bun refuses (`lockfile had changes`): install with that Bun, or with the engine of a demo,
-perf or e2e copy, which is that Bun (`BUN_BE_BUN=1 <the copy's engine/<version>/opencode> install
---frozen-lockfile`), never the real Kuvo Code's.
+`bun install --frozen-lockfile` here, then `bun run check`, type-checks the link with Node's
+types and the agents bridge with Bun's.
 
 From the repo root, run focused checks through
 `scripts/test-box.sh [box|bridge|all] [filter]`. Check box changes on Linux

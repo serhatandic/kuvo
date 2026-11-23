@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { boxRoute } from "./box-stand-ins.js";
+import { boxRoute, LINK_BUNDLE } from "./box-stand-ins.js";
 import { integrationScenarios, standInEngine } from "./integrations-scenarios.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -17,7 +17,7 @@ process.env.KUVO_HOME = home;
 const user = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-user-"));
 process.env.HOME = user;
 delete process.env.KUVO_INTEGRATIONS;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 removeAtEnd(home);
 removeAtEnd(user);
 

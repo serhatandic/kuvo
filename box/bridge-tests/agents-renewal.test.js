@@ -7,6 +7,7 @@
 // Bun) and the real link, a stand-in `codex app-server` whose turns wait to be let go, and what
 // keeps a machine's bridge running (its launch starts it again from what's there as it ends).
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -21,7 +22,7 @@ import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 
 const bun = testBun();
 const built = fileURLToPath(new URL("../dist/kuvo-agents.js", import.meta.url));
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 
 import { CODEX_STAND_IN as FAKE } from "./codex-stand-in.js";
 

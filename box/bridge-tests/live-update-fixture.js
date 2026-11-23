@@ -13,7 +13,7 @@ import { splitLaunchBuild, splitLaunchKeeper } from "./failure-bench-legacy.js";
 
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
-const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const builtLink = path.join(checkout, "box/dist/kuvo-link.js");
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
 function write(file, text, mode = 0o644) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -226,7 +226,7 @@ let buffer =`) : asking);
     for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
       write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
     }
-    write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), editLink(fs.readFileSync(builtLink, "utf8")));
+    write(path.join(root, "box/dist/kuvo-link.js"), editLink(fs.readFileSync(builtLink, "utf8")));
     const integrity = "sha512-" + crypto.createHash("sha512").update("unused").digest("base64");
     const url = `https://example.invalid/engine-${engine}.tgz`;
     const builds = { x86_64: { url, integrity }, aarch64: { url, integrity } };

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-const built = path.join(repo, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const built = path.join(repo, "box/dist/kuvo-link.js");
 const script = fs.readFileSync(path.join(repo, "box/src/keeper/kuvo-start"), "utf8");
 const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 

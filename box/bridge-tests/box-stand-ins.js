@@ -7,9 +7,9 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { atEnd } from "./at-end.js";
 
-export const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+export const LINK_BUNDLE = new URL("../dist/kuvo-link.js", import.meta.url);
+export const script = fileURLToPath(LINK_BUNDLE);
 /** Where a box keeps its conversations' SSH agents (vault/ssh.ts). */
 export const sshAgentsOf = (box, home) => {
   const agents = path.join(box, "run", "ssh-agents");
@@ -33,6 +33,8 @@ export async function boxRoute(request, env) {
 /** The stand-in for this Mac's app: its host interface's keys, kept in memory as the Keychain would.
  * `asked`: each call it took ({call, name?, prefix?, suffix?}); `turnedAway`: those without its password. */
 export async function standInHost(password) {
+  // Importing the bundle path alone should leave the test's cleanup hooks alone.
+  const { atEnd } = await import("./at-end.js");
   const host = { keys: new Map(), asked: [], turnedAway: 0, down: false, onNames: null };
   const server = http.createServer(async (request, response) => {
     const chunks = [];

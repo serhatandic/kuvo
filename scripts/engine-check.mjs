@@ -25,10 +25,12 @@ import { watchTestProcesses } from "../box/bridge-tests/test-home-processes.js";
 const checkout = fileURLToPath(new URL("..", import.meta.url));
 const out = process.argv[2];
 if (!out) { console.error("Usage: node scripts/engine-check.mjs <out.json>"); process.exit(2); }
+const built = spawnSync("sh", ["scripts/build-built.sh"], { cwd: checkout, stdio: "inherit" });
+if (built.status !== 0) process.exit(built.status ?? 1);
 const pin = JSON.parse(fs.readFileSync(path.join(checkout, "box/src/shared/engine-pin.json"), "utf8"));
 const system = process.platform === "darwin" ? "darwin" : "linux";
 const kind = { x64: "x86_64", arm64: "aarch64" }[os.arch()];
-const link = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = path.join(checkout, "box/dist/kuvo-link.js");
 const agents = path.join(checkout, "box/dist/kuvo-agents.js");
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-engine-check-"));
 const lifetime = watchTestProcesses();

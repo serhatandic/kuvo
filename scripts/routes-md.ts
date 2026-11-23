@@ -1,4 +1,4 @@
-// protocol/ROUTES.md, as scripts/route-shapes.ts writes it (scripts/check-built.sh --build): every
+// protocol/ROUTES.md, as scripts/route-shapes.ts writes it (scripts/build-built.sh): every
 // route of a box, by area (one file of box/src/shared/routes each), with its feature, what it takes
 // and answers, and the comment written over it in its file. It's a readable list, never kept in
 // git: a route is documented where it's defined, and PROTOCOL.md holds only the rules a route can't say.
@@ -117,7 +117,7 @@ export async function routesMarkdown(root: string): Promise<string> {
   const lines = [
     "# Routes",
     "",
-    "Every route a box answers, by area: written from box/src/shared/routes by `scripts/check-built.sh --build` (scripts/route-shapes.sh); not kept in git, never edited. Each route says its feature (a client checks `kuvo/info`'s `features` before it uses the route), what it takes, what it answers by status (the shape's name in its file, and its fields; `?` may be left out) and the comment written over it in its file. A refusal that says only `message` (and `problem`, `reason`, `action`: index.ts's `ERROR`) is listed by status alone. The rules a route can't say are in [PROTOCOL.md](PROTOCOL.md).",
+    "Every route a box answers, by area: written from box/src/shared/routes by `scripts/build-built.sh` (scripts/route-shapes.sh); not kept in git, never edited. Each route says its feature (a client checks `kuvo/info`'s `features` before it uses the route), what it takes, what it answers by status (the shape's name in its file, and its fields; `?` may be left out) and the comment written over it in its file. A refusal that says only `message` (and `problem`, `reason`, `action`: index.ts's `ERROR`) is listed by status alone. The rules a route can't say are in [PROTOCOL.md](PROTOCOL.md).",
     "",
   ];
   const files = fs.readdirSync(dir).filter(name => name.endsWith(".ts") && name !== "index.ts").sort();

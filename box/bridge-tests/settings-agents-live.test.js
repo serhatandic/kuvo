@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/settings-agents-live.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -20,7 +21,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const binary = process.env.OPENCODE_TEST_BINARY;
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-settings-agents-")));
 removeAtEnd(root);
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const home = path.join(root, "home"), kuvo = path.join(home, ".kuvo-code");
 const settingsFile = path.join(kuvo, "box", "opencode.json");
 const write = (file, value) => {

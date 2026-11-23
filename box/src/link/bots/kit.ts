@@ -52,7 +52,7 @@ export interface KitRule {
   effect: "allow" | "deny" | "ask" | (string & {});
 }
 
-/** Kuvo Code's words for bots (`bin/bot-words.json`, KuvoLink's `Resources/bot-words.json`). */
+/** Kuvo Code's words for bots (`bin/bot-words.json`, `box/src/shared/bot-words.json` in the repository). */
 export interface BotWords {
   kuvo: 1;
   templates: BotTemplate[];
@@ -103,8 +103,7 @@ export const NO_KIT = "Kuvo Code on this computer is missing its words for bots:
 const AGENT_PROVIDERS = ["claude-code", "codex-cli", "cursor", "grok-cli", "antigravity"];
 export const runsWithAgents = (model: { providerID?: string } | null | undefined): boolean => model?.providerID === "auto" || AGENT_PROVIDERS.includes(String(model?.providerID ?? "").split("@")[0]);
 
-// What a box makes its bots with and tells them, as Kuvo Code words it (KuvoLink's
-// `Resources/bot-words.json`, which a client puts beside the bridge and a release brings): New
+// The release installs `box/src/shared/bot-words.json` in `bin/`. It holds New
 // Bot's templates, Kuvo Code's own personalities and the looks a bot can have, and what a bot is
 // told, paragraph by paragraph, with ⟦place⟧, ⟦clock⟧ and ⟦browser⟧ for where it runs (`here`:
 // this Mac, or a machine, by ⟦machine⟧ and ⟦timeZone⟧), ⟦jobLine⟧ and ⟦jobPart⟧ for its job

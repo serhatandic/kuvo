@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -12,7 +13,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 
 const bun = testBun();
-const linkScript = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url);
+const linkScript = LINK_BUNDLE;
 const bridgeScript = new URL("../dist/kuvo-agents.js", import.meta.url);
 
 test("Work Queue GitHub keeps complete located replies through the bridge and the link", { skip: bun ? false : NO_BUN, timeout: 30_000 }, async () => {

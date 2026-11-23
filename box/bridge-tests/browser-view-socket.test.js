@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +11,7 @@ import { test } from "node:test";
 import { removeAtEnd } from "./at-end.js";
 process.env.KUVO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "kv-view-"));
 removeAtEnd(process.env.KUVO_HOME);
-const { viewUpgrade, frameBudget, socketAllowed, LinkHost, IKInitiator, PROLOGUE } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const { viewUpgrade, frameBudget, socketAllowed, LinkHost, IKInitiator, PROLOGUE } = await import(LINK_BUNDLE.href);
 
 test("the shared frame message budget drops pictures without spending the next window", () => {
   for (let i = 0; i < 100; i++) assert.equal(frameBudget(1, 100000), true);
@@ -68,7 +69,7 @@ test("a Mac's box answers the view with why it has none, never opening it", asyn
 
 test("an unpaired relay client cannot open the browser socket", async () => {
   const crypto = await import("node:crypto");
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const link = await import(LINK_BUNDLE.href);
   const key = crypto.randomBytes(32), phone = crypto.randomBytes(32), address = crypto.randomBytes(16);
   let connected = 0, paired = false, sent = [];
   const host = new LinkHost({
@@ -96,7 +97,7 @@ test("an unpaired relay client cannot open the browser socket", async () => {
 });
 
 test("relay pictures are binary and excess or oversized frames are dropped at the socket", async t => {
-  const { browserView } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const { browserView } = await import(LINK_BUNDLE.href);
   const run = fs.mkdtempSync(path.join(os.tmpdir(), "kv-frames-"));
   removeAtEnd(run);
   const frames = [], acknowledgements = [];
@@ -145,7 +146,7 @@ test("box-only browser socket paths follow their own vectors without changing ke
 });
 
 async function keeperView(t, relay = false, options = {}) {
-  const { browserView } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const { browserView } = await import(LINK_BUNDLE.href);
   const { Heard } = await import("./browser-host-stand-in.js");
   const run = fs.mkdtempSync(path.join(os.tmpdir(), "kv-vk-")); removeAtEnd(run);
   const commands = new Heard(), heard = new Heard();
@@ -214,7 +215,7 @@ test("relay pictures are skipped while host.unsent reports buffered connection t
 });
 
 test("Mac-kind boxes do not advertise a keeper live view before their own browser is enabled", async () => {
-  const { macFeatures } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const { macFeatures } = await import(LINK_BUNDLE.href);
   assert.equal(macFeatures().includes("browser.view"), false);
   assert.equal(macFeatures().includes("browser"), false);
   assert.equal(macFeatures().includes("browser.data"), true);

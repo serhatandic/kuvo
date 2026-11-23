@@ -7,6 +7,7 @@
 // as ever. The real box code, watching an engine that's a stand-in. Run with
 // `node --test box/bridge-tests/work-read.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -19,7 +20,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-work-read-")));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 // The folder the stand-in engine says each session works in (not a repository on this machine).
 const WORK = "/home/me/kuvo-store";
 

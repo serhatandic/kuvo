@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/mac-restart.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -62,7 +63,7 @@ const environment = {
   KUVO_HOST_PASSWORD: "host-password",
 };
 Object.assign(process.env, environment);
-const script = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url);
+const script = LINK_BUNDLE;
 const link = await import(script);
 
 const relay = await relayStandIn(link);

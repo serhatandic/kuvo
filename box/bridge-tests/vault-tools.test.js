@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/vault-tools.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -29,7 +30,7 @@ const write = (file, text) => {
 };
 const tool = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
 const script = path.join(home, "bin", "kuvo-link.js");
-write(script, fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)));
+write(script, fs.readFileSync(LINK_BUNDLE));
 // Your login shell, in this home, and what it exports: on a Mac a command run with values from the
 // vault has it, as the engine's commands do (and did in Kuvo Code 0.7, whose app started the box with
 // your login shell's environment).

@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/bots-mac.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -25,7 +26,7 @@ Object.assign(process.env, {
   // The engine's settings folder, where this Mac's settings are (Settings › Permissions among them).
   KUVO_ENGINE_CONFIG: path.join(support, "engine"),
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const bots = process.env.KUVO_BOTS;
 const home = process.env.KUVO_HOME;

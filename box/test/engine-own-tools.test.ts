@@ -114,7 +114,7 @@ test("a Mac's own box's start (kuvo-launch) gives its engine them", async () => 
   const { home, env } = macBox()
   const checkout = join(here, "../..")
   const keeper = join(checkout, "box/src/keeper")
-  copyFileSync(join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), join(home, "bin", "kuvo-link.js"))
+  copyFileSync(join(checkout, "box/dist/kuvo-link.js"), join(home, "bin", "kuvo-link.js"))
   for (const file of ["kuvo-launch", "kuvo-setsid"]) {
     copyFileSync(join(keeper, file), join(home, "bin", file))
     chmodSync(join(home, "bin", file), 0o755)

@@ -15,6 +15,7 @@
 // its folders deleted afterwards; a sign-in that renews itself is refused, as the copy renewing it
 // would sign the original out.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -63,8 +64,8 @@ test("answering a bot's question takes it off its goal's list at once, and what 
   removeAtEnd(home);
   for (const folder of ["tmp", "xdg/config", "xdg/data", "xdg/state", "xdg/cache", "bin"]) fs.mkdirSync(path.join(home, folder), { recursive: true });
   process.env.KUVO_HOME = home;
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = await import(LINK_BUNDLE.href);
+  const script = fileURLToPath(LINK_BUNDLE);
   const write = (file, text) => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);

@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/goal-awake.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +19,7 @@ const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-goal-aw
 process.env.KUVO_HOME = home;
 process.env.KUVO_BOX = "mac";
 process.env.KUVO_ENGINE_CONFIG = path.join(home, "engine");
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const write = (file, text) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);

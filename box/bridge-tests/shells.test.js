@@ -4,6 +4,7 @@
 //
 // Run with `node --test box/bridge-tests/shells.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -16,7 +17,7 @@ import { runningAs } from "./running-as.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-shells-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // A server that runs commands, `running` by id: what it was asked to remove.
 async function runner(running, removes = true) {

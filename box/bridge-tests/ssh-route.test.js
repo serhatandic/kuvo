@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -13,7 +14,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 const ssh = Buffer.from("kuvo-ssh v1");
 const line = value => JSON.stringify(value) + "\n";

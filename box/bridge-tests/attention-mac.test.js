@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/attention-mac.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -27,7 +28,7 @@ Object.assign(process.env, {
   KUVO_ENGINE_CONFIG: path.join(support, "opencode"),
   KUVO_KEYS: path.join(support, "keys"),
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // The date as far as the tests go.
 const TODAY = 1_800_000_000_000;

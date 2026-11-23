@@ -3,6 +3,7 @@
 // the whole conversation and what was waiting go to a session of theirs, the engine's is archived,
 // and a bot's conversation becomes the new one. The engine and the agents' bridge are stand-ins.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -15,7 +16,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-to-agents-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const write = (file, text) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });

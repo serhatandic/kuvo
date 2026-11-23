@@ -4,10 +4,11 @@
 //
 // Run with `node --test box/bridge-tests/masking.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
-import { masked, showsAll } from "../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js";
+const { masked, showsAll } = await import(LINK_BUNDLE.href);
 import "./at-end.js";
 
 const { cases } = JSON.parse(fs.readFileSync(new URL("../test/fixtures/masking.json", import.meta.url), "utf8"));

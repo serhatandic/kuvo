@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/autopilot.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -21,8 +22,8 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-autopilot-")));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const script = fileURLToPath(LINK_BUNDLE);
+const link = await import(LINK_BUNDLE.href);
 const project = path.join(home, "work", "cafe");
 fs.mkdirSync(project, { recursive: true });
 

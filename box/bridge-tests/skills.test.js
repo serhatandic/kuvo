@@ -2,6 +2,7 @@
 // folder, a skill written and put away, and GitHub's collections, which the machine reaches
 // itself (a local stand-in here), installed from whole.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -80,7 +81,7 @@ const github = http.createServer((request, response) => {
 });
 await new Promise(resolve => github.listen(0, "127.0.0.1", resolve));
 process.env.KUVO_TEST_GITHUB = `http://127.0.0.1:${github.address().port}`;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 removeAtEnd(home);
 atEnd(() => {
   github.close();

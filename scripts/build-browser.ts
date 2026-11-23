@@ -4,14 +4,13 @@
 // (instructions.ts) filled in, with the search engines a box offers (shared/routes/browser.ts), as JSON with its keys in order, and its keeper's version (KEEPER):
 // the first 12 hex digits of the SHA-256 of that source as it is. Its first line names the rest
 // (`// kuvo-browser <16 hex digits of its SHA-256>`), which a box and a Mac tell copies apart by.
-// Run as `bun scripts/build-browser.ts <checkout> [--check]`.
+// Run as `bun scripts/build-browser.ts <checkout>`.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 const root = process.argv[2];
-const check = process.argv[3] === "--check";
 const folder = path.join(root, "box/src/browser");
 const { pageScripts } = await import(path.join(folder, "page.ts"));
 const { TOOLS } = await import(path.join(folder, "tools.ts"));
@@ -50,12 +49,12 @@ const body = BANNER + fill(fill(source, KEEPER, `const KEEPER = "${sha256(source
 const built = `// kuvo-browser ${sha256(body).slice(0, 16)}\n` + body;
 
 const where = path.join(root, OUT);
-if (check) {
-  let kept: string | null = null;
-  try { kept = fs.readFileSync(where, "utf8"); } catch {}
-  if (kept === built) process.exit(0);
-  console.error(`${OUT} isn't what box/src/browser builds: change the sources, not it, then run ./scripts/build-browser.sh and commit it.`);
-  process.exit(1);
+fs.mkdirSync(path.dirname(where), { recursive: true });
+const temporary = `${where}.${process.pid}.tmp`;
+try {
+  fs.writeFileSync(temporary, built);
+  fs.renameSync(temporary, where);
+} finally {
+  fs.rmSync(temporary, { force: true });
 }
-fs.writeFileSync(where, built);
 console.log(`Built ${OUT}`);

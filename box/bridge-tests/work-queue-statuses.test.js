@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/work-queue-statuses.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -22,7 +23,7 @@ fs.mkdirSync(path.join(home, "bin"), { recursive: true });
 fs.writeFileSync(path.join(home, "bin", "gh"), "#!/bin/sh\necho 'gh auth login' >&2\nexit 1\n", { mode: 0o755 });
 process.env.PATH = `${path.join(home, "bin")}${path.delimiter}${process.env.PATH}`;
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const write = (file, text) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);

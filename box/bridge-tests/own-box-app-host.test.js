@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/own-box-app-host.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -71,7 +72,7 @@ const registration = { tools: { url: "http://127.0.0.1:4567/mcp", token: "t".rep
 
 Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home });
 delete process.env.KUVO_BOX;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const relay = await relayStandIn(link);
 atEnd(() => relay.close());
 

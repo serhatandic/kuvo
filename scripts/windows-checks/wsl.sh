@@ -70,10 +70,11 @@ install_tool() {
 }
 
 # Read the shared versions and hashes without using an unpinned JS runtime.
-mapfile -t pins < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(*(v[k] for v in d.values() for k in ("version","linux-x64")),sep="\n")' "$repo/.windows-checks/pins.json")
-bun=${pins[0]} node=${pins[2]}
-install_tool bun "$bun" zip "https://github.com/oven-sh/bun/releases/download/bun-v$bun/bun-linux-x64.zip" "${pins[1]}" bun
-install_tool node "$node" tar.xz "https://nodejs.org/dist/v$node/node-v$node-linux-x64.tar.xz" "${pins[3]}" bin/node
+mapfile -t pins < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["bun"]["linux-x64"], d["node"]["version"], d["node"]["linux-x64"], sep="\n")' "$repo/.windows-checks/pins.json")
+bun=$(cat "$repo/box/.bun-version")
+node=${pins[1]}
+install_tool bun "$bun" zip "https://github.com/oven-sh/bun/releases/download/bun-v$bun/bun-linux-x64.zip" "${pins[0]}" bun
+install_tool node "$node" tar.xz "https://nodejs.org/dist/v$node/node-v$node-linux-x64.tar.xz" "${pins[2]}" bin/node
 # Pass versioned paths explicitly so a future pin can coexist with earlier caches.
 exec /usr/bin/time -f 'Peak RSS (largest process): %M KiB' \
     unshare --map-current-user --keep-caps --mount --pid --fork --kill-child --mount-proc \

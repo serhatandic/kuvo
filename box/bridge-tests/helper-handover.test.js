@@ -16,6 +16,7 @@
 // `open` start that program for `kickstart` and `open -n`.
 //
 // Run with `node --test box/bridge-tests/helper-handover.test.js`.
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -25,7 +26,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd } from "./at-end.js";
 
-const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const built = fileURLToPath(LINK_BUNDLE);
 const AGENT = "run.kuvo.code.machine";
 const mac = process.platform === "darwin";
 const root = mac ? fs.realpathSync(fs.mkdtempSync("/tmp/k")) : null;

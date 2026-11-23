@@ -3,6 +3,7 @@
 // for a bot or a session, its folder made with the first; a pause of your own. The engine is a
 // stand-in.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -14,7 +15,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-wakes-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // kuvo-wake, as every box's release has it in its bin (box/src/keeper/kuvo-wake).
 const script = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");

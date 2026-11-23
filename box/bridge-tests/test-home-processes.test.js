@@ -1,4 +1,5 @@
 // Run real test subprocesses and verify their boxes and keepers disappear when the runner ends.
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { ownPath } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,7 +17,7 @@ function live(pid) {
 }
 
 const safety = new URL("./test-safety.js", import.meta.url).href;
-const bundle = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href;
+const bundle = LINK_BUNDLE.href;
 const standIn = new URL("./relay-stand-in.js", import.meta.url).href;
 const keeperSource = new URL("../src/keeper/kuvo-start", import.meta.url);
 

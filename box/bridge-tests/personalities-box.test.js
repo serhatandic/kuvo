@@ -4,6 +4,7 @@
 // library as it changes, from a route, a copy met, or another process writing it. The engine is a
 // stand-in; the bridge is the real one, in this process and run as a command beside it.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -19,8 +20,8 @@ removeAtEnd(support);
 // As the app starts its box: KUVO_HOME is the box's folder, and the bots' is the app's own beside it.
 process.env.KUVO_HOME = path.join(support, "box");
 process.env.KUVO_BOTS = path.join(support, "bots");
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const script = fileURLToPath(LINK_BUNDLE);
+const link = await import(LINK_BUNDLE.href);
 const library = path.join(support, "bots", "personalities.json");
 
 // The engine: the instructions each bot is told, as they come.

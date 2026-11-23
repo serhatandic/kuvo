@@ -6,6 +6,7 @@
 // and a stand-in helper: never this computer's launchd, which a test's home leaves alone without them.
 //
 // Run with `node --test box/bridge-tests/own-box-helper.test.js`.
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -18,7 +19,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const write = (file, text, mode) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);

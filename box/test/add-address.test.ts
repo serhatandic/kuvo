@@ -44,7 +44,7 @@ test("the hosts suggested are ~/.ssh/config's Hosts and those of the files it in
 
 // (Held wherever the whole checkout is: a release is written from what's built and kept in git,
 // which a run sent only the box's own folders hasn't.)
-const whole = existsSync(join(import.meta.dir, "..", "..", "swift", "KuvoLink", "Sources", "KuvoLink", "Resources", "kuvo-link.js")) && existsSync(join(import.meta.dir, "..", "dist", "kuvo-agents.js"))
+const whole = existsSync(join(import.meta.dir, "..", "dist", "kuvo-link.js")) && existsSync(join(import.meta.dir, "..", "dist", "kuvo-agents.js"))
 test.if(whole)("what a box gives a computer it sets up is a release's own files, each with its mode", () => {
   const release = boxFiles(join(import.meta.dir, "..", ".."), "1.2.3")
   expect([...RELEASE_FILES].map(([path, mode]) => `${path} ${mode.toString(8)}`).sort()).toEqual(release.map(file => `${file.path} ${file.mode.toString(8)}`).sort())
