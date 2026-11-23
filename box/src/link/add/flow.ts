@@ -42,7 +42,9 @@ import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, 
 import * as scripts from "./scripts";
 import { credentialSeedFormat, isSetupReservation, RESERVATION_PREFIX, settingsSeedFormat, setupInputFormat, UNSUPPORTED_RESERVATION } from "./command-formats";
 import { gatherSeed, sshCopyScope, sshCopySelection } from "./seed";
-import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
+import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, remoteCommand, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
+import { WINDOWS_PROBE, WSL_LIST, scriptHeader, selectDistro, windowsHost, wslBootstrap } from "./windows";
+import { distroName } from "../../shared/wsl";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
 import { acceptedMembership, membershipOf } from "../setup/membership";
@@ -178,12 +180,15 @@ class Reach {
   private options: string[] = [];
   /** It's been reached: no other address is tried from then on. */
   private reached = false;
+  windows?: { host: string; distro: string };
   /** What ssh said at the address it was added under, where that didn't answer. */
   private firstSaid: string | null = null;
   private readonly others: OtherAddress[];
+  private readonly savedDistro: string | undefined;
   constructor(private readonly destination: string, private readonly name: string, private readonly tell: Telling, others: OtherAddress[] = []) {
     this.target = destination;
     this.others = [...others];
+    this.savedDistro = distroName(savedMachines()?.find(each => each.destination === destination)?.wslDistro);
   }
 
   /** Moves on to the next of its other addresses, where there's one left and none was reached yet. */
@@ -206,7 +211,24 @@ class Reach {
     for (let tries = 0; ; tries++) {
       if (!options.anyway) this.tell.check();
       const elsewhere = this.target !== this.destination;
-      const ran = await remote(this.target, script, { input: options.input, beforeInput: options.beforeInput, sent: options.sent, most: options.most, way: this.way, options: this.options, ...(options.cut ? { signal: this.tell.signal } : {}) });
+      const settings = { input: options.input, beforeInput: options.beforeInput, sent: options.sent, most: options.most, way: this.way, options: this.options, ...(options.cut ? { signal: this.tell.signal } : {}) };
+      const hop = (distro: string) => remoteCommand(this.target, wslBootstrap(distro), { ...settings, prefix: scriptHeader(script) });
+      let ran = this.windows ? await hop(this.windows.distro) : await remote(this.target, script, settings);
+      // The first command is a POSIX probe or account reservation, with no secret input.
+      // Only retry it when a Windows command positively identifies the remote shell.
+      if (!this.reached && !this.windows && (ran.status === 1 || ran.status === 127 || (ran.status === 255 && /\bexec\b|kuvo_script/.test(ran.stderr)))) {
+        const query = { way: this.way, options: this.options, signal: this.tell.signal, most: 30_000 };
+        const windows = await remoteCommand(this.target, WINDOWS_PROBE, query);
+        const host = windows.status === 0 && windowsHost(windows.stdout);
+        if (host) {
+          const list = await remoteCommand(this.target, WSL_LIST, query);
+          const distro = list.status === 0 && selectDistro(list.stdout, this.savedDistro);
+          if (!distro && this.savedDistro) throw new Failed(`Open ${this.savedDistro} on ${host} and check that it runs on WSL 2, then try again.`);
+          if (!distro) throw new Failed(`Install Ubuntu with WSL 2 on ${host}, then open Ubuntu once and try again.`);
+          this.windows = { host, distro };
+          ran = await hop(distro);
+        }
+      }
       const trouble = troubleOf(ran);
       if (!trouble) {
         this.reached = true;
@@ -476,6 +498,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   const account = new AccountReservation(reach, name, tell);
   const reserved = account.run;
   await account.use(async () => {
+    if (reach.windows && kind === "add") {
+      name = reach.windows.host;
+      tell.rename(name);
+    }
     const answer = await reach.run(scripts.probe(ENGINE_VERSION, identitySetup), { cut: true, most: 120_000 });
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
@@ -612,7 +638,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     // before it is (stopped, or failed), it's stopped there and what was copied is deleted.
     let unjoined = false;
     try {
-      const started = await reserved(scripts.start(ENGINE_VERSION, name, notes, fresh && record && selection.length ? `${record} copying` : undefined), {
+      const started = await reserved(scripts.start(ENGINE_VERSION, name, notes, fresh && record && selection.length ? `${record} copying` : undefined, reach.windows?.distro), {
         most: 600_000,
         beforeInput: () => { checkGrant(); unjoined = fresh; },
         ...(given ? { input: Buffer.from(JSON.stringify(settingsSeedFormat.write({ settings: given.settings, keys: given.keys }))) } : {}),
@@ -649,7 +675,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const joined = await join(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      const joined = await join(tell, reserved, destination, name, identity, reach.windows?.distro, account.token, (peer, enrollment) => {
         tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
@@ -686,7 +712,7 @@ function checkFingerprintReplacement(link: LinkState | null, predecessor: string
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string; selected?: string }): Promise<{ key: string; name: string }> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, wslDistro: string | undefined, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string; selected?: string }): Promise<{ key: string; name: string }> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -727,7 +753,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     const saved = savedMachines();
     if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
     const had = saved.find(each => each.destination === destination);
-    writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
+    writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had ? { ...each, ...(identity ? { identity } : {}), wslDistro } : each)) : [...saved, { destination, ...(identity ? { identity } : {}), wslDistro }], null, 2));
   };
   checkEnrollment(readLink());
   const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
@@ -864,12 +890,13 @@ export function beginAdd(destination: string, asker?: Asker, replace?: string, d
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
-export function sshAddressOf(key: string): { destination: string; name: string } | null {
+export function sshAddressOf(key: string): { destination: string; name: string; wslDistro?: string } | null {
   const link = readLink();
   const peer = peersOf(link).find(each => each.key === key);
   const destination = peer && localDestination(link, key);
   if (!peer || !destination || addressProblem(destination)) return null;
-  return { destination, name: peer.name };
+  const wslDistro = distroName(savedMachines()?.find(each => each.destination === destination)?.wslDistro);
+  return { destination, name: peer.name, wslDistro };
 }
 
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,

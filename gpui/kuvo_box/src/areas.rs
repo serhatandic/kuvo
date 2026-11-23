@@ -298,6 +298,8 @@ pub struct Computer {
     /// Possible SSH destinations, checked with this device's own SSH setup.
     #[serde(default)]
     pub ssh: Vec<String>,
+    #[serde(default, rename = "sshDistro")]
+    pub ssh_distro: Option<String>,
     /// How its box stands with adding Kuvo Code's app to your devices (`devices.allow`), where the
     /// main computer says: blocked after its app was removed, until you allow it again.
     #[serde(default)]

@@ -118,6 +118,7 @@ export interface ToldAgents {
  * sessions are at work, and which (the first few, newest first, by id and title). A box from
  * before said no `working` (or `atWork`): left out, not taken as none. */
 export interface ToldComputer {
+  wsl?: { version: 2; distro?: string; host?: string };
   version?: string;
   engine?: string;
   system?: string;

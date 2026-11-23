@@ -1,3 +1,4 @@
+import { distroName, windowsHostName } from "../../shared/wsl";
 // Agents on other boxes (PROTOCOL.md, "Peers")
 // Each box tells its peers who its agents are (its bots, its latest titled sessions), and keeps
 // what each told it, for list_agents here (`run/agents.json`, which kuvo-browser.js reads): those
@@ -158,12 +159,15 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
   const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000 ? value : undefined;
   const working = count(given.working), waiting = count(given.waiting);
+  const wsl = isObject(given.wsl) && given.wsl.version === 2 ? {
+    version: 2 as const, distro: distroName(given.wsl.distro), host: windowsHostName(given.wsl.host),
+  } : undefined;
   const layout = count(given.layout);
   const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
   const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate as FleetUpdate : undefined;
   const update = { staged: releaseRef(given.staged), cannot: cannotFact(given.cannot), candidate: toldVersion(given.candidate),
     releaseManifest: short(given.releaseManifest, 16_384), runningManifest: short(given.runningManifest, 16_384) };
-  return { ...Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as Partial<typeof update>,
+  return { ...(wsl ? { wsl } : {}), ...Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as Partial<typeof update>,
     ...(installedSha256 ? { installedSha256 } : {}), ...(layout !== undefined ? { layout } : {}), ...(fleetUpdate ? { fleetUpdate } : {}), ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),

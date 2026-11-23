@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
+
 - The Work Queue’s Deleted list includes items kept on your other computers.
 
 - The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.

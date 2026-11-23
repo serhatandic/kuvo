@@ -13,8 +13,8 @@ import os from "node:os";
 import { joinWindowsPath, windowsEnvValue } from "./windows-paths";
 
 /** WSL keeps Linux's paths, processes and IPC, with separate Windows-hosted capabilities. */
-export function platformFacts(platform: NodeJS.Platform = process.platform, release = platform === "linux" ? os.release() : "", distro = process.env.WSL_DISTRO_NAME) {
-  return { platform, wsl: platform === "linux" && (Boolean(distro) || /microsoft|wsl/i.test(release)) };
+export function platformFacts(platform: NodeJS.Platform = process.platform, release = platform === "linux" ? os.release() : "") {
+  return { platform, wsl: platform === "linux" && /microsoft|wsl/i.test(release) };
 }
 
 export function isWindowsHost(): boolean {

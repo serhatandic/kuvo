@@ -151,6 +151,8 @@ struct KeptComputer {
     relay: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ssh: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ssh_distro: Option<String>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -159,6 +161,7 @@ struct ConnectionFacts {
     relay: Option<String>,
     method: ConnectionMethod,
     ssh: Vec<String>,
+    ssh_distro: Option<String>,
 }
 
 /// How one computer is reached: over the link (its relay connection and where it is there), or as
@@ -452,7 +455,7 @@ impl Boxes {
     fn restore(&self) {
         let Some(path) = &self.inner.kept else { return };
         let Some(kept) = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { return };
-        let computers: Vec<Computer> = kept.computers.iter().map(|kept| Computer { key: kept.key.clone(), name: kept.name.clone(), kind: kept.kind.clone(), address: kept.address.clone(), relay: kept.relay.clone(), ssh: kept.ssh.clone(), ..Computer::default() }).collect();
+        let computers: Vec<Computer> = kept.computers.iter().map(|kept| Computer { key: kept.key.clone(), name: kept.name.clone(), kind: kept.kind.clone(), address: kept.address.clone(), relay: kept.relay.clone(), ssh: kept.ssh.clone(), ssh_distro: kept.ssh_distro.clone(), ..Computer::default() }).collect();
         self.state().kept = kept;
         // (With a box here, its key isn't known until it lists itself: nothing's linked before.)
         if self.inner.nearest.is_none() {
@@ -463,7 +466,7 @@ impl Boxes {
     fn save(&self, state: &mut State) {
         let computers = state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer {
             key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(),
-            address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone(),
+            address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone(), ssh_distro: computer.ssh_distro.clone(),
         }).collect();
         let kept = Kept {
             paired: state.kept.paired.clone(),
@@ -513,7 +516,7 @@ impl Boxes {
                 continue;
             }
             let preference = state.kept.connections.get(&key).cloned().unwrap_or_default();
-            let at = ConnectionFacts { address: computer.address.clone(), relay: computer.relay.clone(), method: preference.method, ssh: destinations(&preference, &computer.ssh) };
+            let at = ConnectionFacts { address: computer.address.clone(), relay: computer.relay.clone(), method: preference.method, ssh: destinations(&preference, &computer.ssh), ssh_distro: computer.ssh_distro.clone() };
             if state.linked.get(&key).is_some_and(|linked| linked.at == at) {
                 continue;
             }
@@ -544,7 +547,7 @@ impl Boxes {
                 let identity = if at.ssh.is_empty() { None } else { self.identity(state) };
                 let known = self.inner.kept.as_ref().and_then(|file| file.parent()?.parent()).map(|box_home| box_home.join("ssh/known_hosts"));
                 let ssh = at.ssh.iter().filter_map(|address| identity.clone().map(|identity| {
-                    let transport: Arc<dyn Transport> = Arc::new(SshBox::new(address).for_computer(&key, identity).known_hosts(known.clone()).app_version(&self.inner.app));
+                    let transport: Arc<dyn Transport> = Arc::new(SshBox::new(address).for_computer(&key, identity).known_hosts(known.clone()).app_version(&self.inner.app).wsl_distro(at.ssh_distro.clone()));
                     transport
                 })).collect();
                 Arc::new(ComputerTransport::new(computer.name.clone(), at.method, ssh, relay.as_ref().map(|(transport, _)| transport.clone())))

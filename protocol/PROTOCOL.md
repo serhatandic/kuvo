@@ -8880,10 +8880,34 @@ used the machine (`run/link.seen`).
 
 ### Windows box primitives (#699)
 
-This is the contract for the native Windows port. A WSL box uses POSIX paths, process records
-and Unix sockets. The box recognizes native Windows as `win32` and WSL as Linux with a
-WSL/Microsoft kernel release or `WSL_DISTRO_NAME`. This is independent of the box's role
-(`kind`). The WSL kernel signal works on stock kernels with Windows interop off.
+A WSL box uses Linux paths, process records and Unix sockets. A stock WSL 2 kernel
+identifies itself through the Linux release (`microsoft-standard` or `WSL2`), even with
+Windows interop off. A distro environment variable alone cannot identify the kernel. Native
+Windows is `win32`. The box's role (`kind`) is independent of both.
+
+- **WSL facts.** `kuvo/info`, `kuvo/computers` and peer computer announcements can include
+  `wsl: { version: 2, distro?, host? }`. The distro comes from the WSL launch, and the host
+  is the Windows computer's hostname. Each field is omitted if unavailable.
+- **Windows SSH.** Add probes the authenticated Windows SSH shell, selects a WSL 2 distro
+  (preferring Ubuntu), and runs Linux installation scripts in it. The bootstrap reads one
+  base64 script line from SSH stdin; remaining stdin bytes go to the script as-is. Later
+  setup and removal use the distro recorded at enrollment. In `kuvo/computers`, an
+  optional `sshDistro` applies to the advertised SSH destinations: call
+  `wsl.exe -d <distro> --cd ~ --exec /bin/sh .kuvo-code/bin/kuvo-start route-to` for
+  paired SSH (or `route` for the OS-account route). The distro is a single ASCII name
+  beginning with a letter or digit and containing only letters, digits, underscores, periods
+  and hyphens (at most 80 characters). Framing, Noise authority, peer mail and the line
+  are unchanged. WSL's private VM addresses aren't Windows SSH destinations.
+- **WSL lifetime.** A hidden interactive Windows task under the installing user's account
+  holds the Linux keeper in the foreground at sign-in. Initial startup waits for SSH
+  enrollment to release the account. Uninstall removes this installation's task
+  (`starts.windowsTask` in the uninstall check); an approved wipe erases Kuvo's Linux
+  folder. Release selection and rollback use the Linux filesystem and existing signed fleet
+  update protocol. A Windows system power request is held while work runs or a wake is due
+  soon, and released when idle.
+- **Windows drive projects.** Changes polls repositories on Windows mounts and suppresses
+  working-tree mode-bit differences on those mounts. Projects in the distro can use its
+  native filesystem watches.
 
 - **Paths.** On native Windows a box sends file and folder paths with forward slashes, including
   the drive letter or UNC share (`C:/Users/Ada/Project`, `//Server/Share/Project`). A client

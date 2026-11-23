@@ -1,3 +1,4 @@
+import { wslFacts } from "../../shared/wsl";
 import { removalDeliveryPending, removalsOf } from "../setup/removal-record";
 import { leadershipDocuments } from "../setup/checkpoint";
 // This Mac's box's link (PROTOCOL.md, "This Mac's box: the relay"): whether it's wanted, how it's
@@ -108,7 +109,7 @@ export function computerName(): string {
     const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
     if (said) return said;
   }
-  return plainName(os.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
+  return plainName((wslFacts()?.host ?? os.hostname()).replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
 }
 
 /** The link's settings of a Mac's box in a home of its own that no app ever told them (#713: the
