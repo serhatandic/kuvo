@@ -88,7 +88,13 @@ pub struct Follow<T> {
 }
 
 impl Follow<ConversationUpdate> {
-    /// Reads the messages before those shown (as you scroll up), and puts them ahead of them: the
+    fn earlier_page(client: &BoxClient, location: &messages::Location, place: Where, session: &str, cursor: &str) -> crate::Result<(Vec<Message>, Option<String>)> {
+    let page: Page = client.get(&location.message_route(session, messages::earlier_route(place, session, cursor, READ)))?;
+    let earlier = page.earlier(READ);
+    Ok((page.data, earlier))
+}
+
+/// Reads the messages before those shown (as you scroll up), and puts them ahead of them: the
     /// conversation that follows has them, and `earlier` says whether there are more.
     pub fn load_earlier(&self) {
         if let Some(wants) = &self.wants {
@@ -459,7 +465,7 @@ const READ: usize = 100;
 
 /// On a reconnect, bridge a gap wider than one page of an already visible running turn. Stop
 /// paging at the old transcript's time range if there is no shared message (such as after Undo).
-fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, known: Option<&ReconnectAnchor>) -> crate::Result<(Vec<Message>, Option<String>)> {
+fn reconnect_page(client: &BoxClient, location: &messages::Location, place: Where, session: &str, page: Page, known: Option<&ReconnectAnchor>) -> crate::Result<(Vec<Message>, Option<String>)> {
     let earlier = page.earlier(READ);
     let mut newest = page.data;
     let Some(ReconnectAnchor { ids, oldest }) = known else { return Ok((newest, earlier)) };
@@ -472,7 +478,7 @@ fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, k
     let mut seen = HashSet::new();
     let mut created = newest.last().map_or(0.0, Message::created);
     while created >= *oldest && let Some(cursor) = previous.take().filter(|cursor| seen.insert(cursor.clone())) {
-        let (older, next) = client.earlier_messages(session, place, &cursor, READ).map_err(|error| {
+        let (older, next) = earlier_page(client, location, place, session, &cursor).map_err(|error| {
             // An old cursor failing is not the conversation itself disappearing.
             Error::Unreachable(format!("The earlier messages couldn’t be recovered: {error}"))
         })?;
@@ -499,16 +505,32 @@ enum Read {
 /// Reads the conversation, and shows it with what came meanwhile: under the lock, so no older
 /// copy is ever handed on after a newer one. The parts of messages from before are read first, so
 /// the page shows as written.
-fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> Read {
+fn read(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> Read {
     let (session, place, known) = {
         let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         now.during = Some(Vec::new());
         (now.conversation.session.clone(), now.conversation.place, now.reconnecting.take())
     };
-    let read = client.get(&messages::newest_route(place, &session, READ)).and_then(|page| reconnect_page(client, place, &session, page, known.as_ref()));
+    let read = client.conversation_page(&session, location, place, READ).and_then(|page| reconnect_page(client, location, place, &session, page, known.as_ref()));
     let (parts, running) = match &read {
-        Ok((messages, _)) => (read_parts(client, shown, messages), is_running(client, place, &session)),
+        Ok((messages, _)) => {
+            let owner = client.conversation_owner(location);
+            let parts = owner.as_ref().map_or_else(Vec::new, |owner| read_parts(owner, shown, messages));
+            let running = match location {
+                messages::Location::Here(_) => is_running(client, place, &session),
+                messages::Location::Peer { .. } => client.conversation_runtime(&session, location).ok().map(|runtime| runtime.running),
+            };
+            (parts, running)
+        }
         Err(_) => (Vec::new(), None),
+    };
+    // A missing page from one runtime or computer cannot say the setup lost the conversation.
+    let absent = match &read {
+        Err(error) if error.status() == Some(404) => client.where_is(&session).err().and_then(|error| match error {
+            Error::Refused(refusal) if refusal.status == 404 => Some(refusal),
+            _ => None,
+        }),
+        _ => None,
     };
     let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let during = now.during.take().unwrap_or_default();
@@ -521,11 +543,11 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
             Read::Shown
         }
-        Err(Error::Refused(refusal)) if refusal.status == 404 => {
-            latest.put(ConversationUpdate::Gone(client.not_here()));
-            Read::Gone
-        }
         Err(error) => {
+            if let Some(refusal) = absent {
+                latest.put(ConversationUpdate::Gone(refusal));
+                return Read::Gone;
+            }
             if known.is_some() {
                 now.reconnecting = known;
             }
@@ -535,15 +557,15 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
 }
 
 /// Reads the messages before those shown, and puts them ahead.
-fn read_earlier(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) {
+fn read_earlier(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) {
     let (session, place, cursor) = {
         let now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(cursor) = now.conversation.earlier.clone() else { return };
         (now.conversation.session.clone(), now.conversation.place, cursor)
     };
-    match client.earlier_messages(&session, place, &cursor, READ) {
+    match earlier_page(client, location, place, &session, &cursor) {
         Ok((older, earlier)) => {
-            let parts = read_parts(client, shown, &older);
+            let parts = client.conversation_owner(location).map_or_else(Vec::new, |owner| read_parts(&owner, shown, &older));
             let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             now.parts.take(parts);
             now.conversation.take_earlier(older, earlier);
@@ -580,7 +602,7 @@ fn is_running(client: &BoxClient, place: Where, session: &str) -> Option<bool> {
 
 /// Reads as it's asked to (and on its timer while one's set), until it's ended or the conversation's
 /// gone. A read that fails is tried again, and said only once it's failed a while.
-fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Wants, timing: Timing) {
+fn reader(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Wants, timing: Timing) {
     let mut backoff = Backoff::new(timing);
     let mut patience = Patience::new(timing);
     while let Some((again, earlier)) = wants.next() {
@@ -588,12 +610,12 @@ fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<Conversation
             return;
         }
         if earlier {
-            read_earlier(client, shown, latest);
+            read_earlier(client, location, shown, latest);
         }
         if !again {
             continue;
         }
-        match read(client, shown, latest) {
+        match read(client, location, shown, latest) {
             Read::Shown => {
                 backoff.reset();
                 patience.came();
@@ -619,13 +641,20 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
     let mut backoff = Backoff::new(timing);
     let mut patience = Patience::new(timing);
     // Where it lives, once.
-    let place = loop {
-        match client.where_is(&session) {
-            Ok(place) => break place,
+    let (location, place) = loop {
+        // Only the setup's lookup can say a conversation is gone.
+        let found = match client.where_is(&session) {
+            Ok(location) => client.conversation_runtime(&session, &location).map(|runtime| (location, runtime.place)).map_err(|error| {
+                if error.status() == Some(404) { Error::Unreachable(error.to_string()) } else { error }
+            }),
             Err(Error::Refused(refusal)) if refusal.status == 404 => {
                 latest.put(ConversationUpdate::Gone(refusal));
                 return;
             }
+            Err(error) => Err(error),
+        };
+        match found {
+            Ok(found) => break found,
             Err(error) => {
                 if patience.says(&error) {
                     latest.put(ConversationUpdate::Failed(error));
@@ -636,13 +665,13 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
             }
         }
     };
-    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: None, parts: ReadParts::default() }));
+    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(&session, place), during: None, reconnecting: None, parts: ReadParts::default() }));
 
     if !client.streams() {
         // Read now, then again on the timer, and earlier ones as asked.
         wants.read_every(timing.conversation_again);
         wants.again();
-        reader(&client, &shown, latest, stop, wants, timing);
+        reader(&client, &location, &shown, latest, stop, wants, timing);
         return;
     }
 
@@ -650,7 +679,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
     // before the first read, so what comes during it is applied on top.
     let wants_events = wants.clone();
     let (theirs, told) = (shown.clone(), latest.clone());
-    let watch = client.line().watch(place.events_route(), move |said| {
+    let watch = client.line().watch(location.read_route(&session, place.events_route(), "events"), move |said| {
         let again = match said {
             Said::Data(event) => {
                 let mut now = theirs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -683,7 +712,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
     });
     stop.keep(watch);
     wants.again();
-    reader(&client, &shown, latest, stop, wants, timing);
+    reader(&client, &location, &shown, latest, stop, wants, timing);
 }
 
 impl BoxClient {

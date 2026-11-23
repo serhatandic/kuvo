@@ -115,7 +115,7 @@ impl Transport for StandIn {
                 let (status, value) = state.session_info.as_ref().unwrap();
                 json(*status, value.clone())
             }
-            ("GET", "api/session/ses_1") => json(200, json!({ "data": { "id": SESSION } })),
+            ("GET", "kuvo/sessions/ses_1/location") => json(200, json!({ "place": "engine", "running": true })),
             ("GET", "api/session/active") => json(200, json!({ "data": { (SESSION): {} } })),
             ("GET", "api/session/ses_1/message") => {
                 state.reads += 1;

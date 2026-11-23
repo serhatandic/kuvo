@@ -167,6 +167,80 @@ async function share(from: Box, to: Box, waiting?: string) {
   expect(await to.run({ kind: "receive", frames })).toBe(true);
 }
 
+test("a conversation only known from another computer’s list resolves to that computer", async () => {
+  const setup = pair(true, true);
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    for (const id of [far.session, ...agentNames.map(codingSession)]) {
+      const found = await near.read(`kuvo/sessions/${id}/location`);
+      expect(found.status).toBe(200);
+      expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: false, actions: ["open", "manage"] } });
+    }
+  } finally { setup.close(); }
+});
+
+test("another computer serves the runtime of each of its conversations over peer mail", async () => {
+  const setup = pair(true, true);
+  const { near, far } = setup;
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  const nearReady = Promise.withResolvers<void>();
+  const farReady = Promise.withResolvers<void>();
+  const replies = new Map<string, ReturnType<typeof Promise.withResolvers<{ status: number; text: string }>>>();
+  try {
+    await share(far, near);
+    a = near.linked(message => {
+      if (message.ready) nearReady.resolve();
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.failure) for (const reply of replies.values()) reply.reject(new Error(message.failure));
+      if (message.replyTo) replies.get(message.replyTo)?.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) farReady.resolve();
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([nearReady.promise, farReady.promise]);
+    for (const id of [far.session, ...agentNames.map(codingSession)]) {
+      const reply = Promise.withResolvers<{ status: number; text: string }>();
+      replies.set(id, reply);
+      a.send({ call: { path: `kuvo/peer-session/${far.computer.id}/${id}/location` }, replyTo: id });
+      const found = await reply.promise;
+      expect(found.status).toBe(200);
+      expect(JSON.parse(found.text)).toEqual({ place: id === far.session ? "engine" : "agents", running: false });
+    }
+  } finally {
+    a?.kill();
+    b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
+
+test("a conversation on an away computer is still known", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    await near.run({ kind: "away", address: far.peer.address });
+    const found = await near.read(`kuvo/sessions/${far.session}/location`);
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: true, lastSeen: expect.any(Number), actions: [] } });
+  } finally { setup.close(); }
+});
+
+test("a conversation absent from the setup is unknown", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    await share(near, far);
+    const found = await near.read("kuvo/sessions/ses_unknown/location");
+    expect(found.status).toBe(404);
+    expect(JSON.parse(found.text)).toEqual({ message: "That conversation isn’t there any more." });
+  } finally { setup.close(); }
+});
+
 async function line(box: Box) {
   const watch = Buffer.from(JSON.stringify(targets)).toString("base64url");
   const { status, text } = await box.read(`kuvo/line?once=1&watch=${watch}`);
@@ -443,7 +517,10 @@ test("the nearest box opens another computer’s bot chat, follows its turn and 
     });
     await Promise.all([readyA.promise, readyB.promise]);
 
-    const base = `kuvo/peer-session/${far.computer.id}/${far.session}`;
+    const location = await near.read(`kuvo/sessions/${far.session}/location`);
+    expect(location.status).toBe(200);
+    const owner = JSON.parse(location.text).on.id;
+    const base = `kuvo/peer-session/${owner}/${far.session}`;
     far.permissions.push({ id: "per_fixture", sessionID: far.session, action: "edit", resources: ["README.md"] });
     a.send({ watch: { turn: base + "/events", queue: base + "/queue/events", asks: base + "/asks/events" } });
     a.send({ read: base + "/session" });

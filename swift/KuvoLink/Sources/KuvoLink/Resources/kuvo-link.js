@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 dcbd634ef7b8
+// Kuvo folder layout 23 08725112849a
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "dcbd634ef7b8";
+var BRIDGE_VERSION = "08725112849a";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24431,7 +24431,7 @@ var init_work2 = __esm(() => {
 });
 
 // box/src/shared/routes/sessions.ts
-var CARRIED, LIST_COMPUTER, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, REMOTE_LIST_COMPUTER, SESSION_FACTS, SHOW_MORE, LISTED_PROJECT, SESSION_PAGE, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, LIST_ORIGIN, SETUP_SESSION, SETUP_PROJECT, SETUP_WAIT, SETUP_QUEUE, OFFERED_AGENT, START_CATALOG, SETUP_SESSIONS, SETUP_WAITING, SETUP_QUEUES, RUNS_ON, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
+var CARRIED, LIST_COMPUTER, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, REMOTE_LIST_COMPUTER, LOCAL_CONVERSATION_LOCATION, CONVERSATION_LOCATION, SESSION_FACTS, SHOW_MORE, LISTED_PROJECT, SESSION_PAGE, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, LIST_ORIGIN, SETUP_SESSION, SETUP_PROJECT, SETUP_WAIT, SETUP_QUEUE, OFFERED_AGENT, START_CATALOG, SETUP_SESSIONS, SETUP_WAITING, SETUP_QUEUES, RUNS_ON, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
 var init_sessions2 = __esm(() => {
   init_shape();
   CARRIED = object({ session: string });
@@ -24584,6 +24584,8 @@ var init_sessions2 = __esm(() => {
     "updating?": bool,
     actions: list(words("open", "manage"))
   });
+  LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool });
+  CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER }));
   SESSION_FACTS = object({
     kind: words(...SESSION_KINDS),
     "computer?": LIST_COMPUTER,
@@ -24706,6 +24708,8 @@ var init_sessions2 = __esm(() => {
     { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/:session/location", feature: "sessions.location", answers: { 200: CONVERSATION_LOCATION, 404: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/peer-session/:computer/:session/location", feature: "sessions.location", answers: { 200: LOCAL_CONVERSATION_LOCATION, 403: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/peer-session/:computer/:session/session", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/peer-session/:computer/:session/messages", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/peer-session/:computer/:session/events", feature: "line.peer-conversation", answers: { 200: BYTES, 403: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 503: REFUSED2 } },
@@ -25263,6 +25267,7 @@ var init_features = __esm(() => {
     "sessions.list",
     "sessions.list.pages",
     "sessions.list.start",
+    "sessions.location",
     "sessions.mentions",
     "sessions.models",
     "sessions.move",
@@ -89428,6 +89433,7 @@ sessions.archived-groups
 sessions.asks
 sessions.asks.box
 sessions.list
+sessions.location
 sessions.mentions
 sessions.models
 sessions.needsYou
@@ -117600,6 +117606,47 @@ var init_notices2 = __esm(() => {
 
 // box/src/link/lists/conversation.ts
 import { StringDecoder as StringDecoder3 } from "node:string_decoder";
+function localLocation(list, id) {
+  const entry = list?.sessions[id];
+  if (!entry || entry.facts.away)
+    return;
+  if (entry.place !== "engine" && entry.place !== "bridge")
+    return;
+  return { place: entry.place === "bridge" ? "agents" : "engine", running: entry.facts.running === true };
+}
+async function* conversationLocation(context, match) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, { message: "Only GET." });
+  const id = match[1];
+  const link = readLink();
+  const journal = movedOf(link).get(id);
+  const owner = ownerOf4({ kind: "conversations", id }, { link, name: context.info.name });
+  const list = keptList();
+  const here = localLocation(list, id);
+  if (here && owner?.local && (!journal || journal === owner.key))
+    return yield* json(200, here);
+  const peers = await peerSetupLists(link);
+  const destination = journal ?? owner?.key;
+  for (const { saved, origin } of peers) {
+    if (destination && destination !== origin.computer.id)
+      continue;
+    const row = saved.sessions.find((row) => row.id === id);
+    if (!row)
+      continue;
+    const { computer, away, ...details } = origin;
+    return yield* json(200, { on: { ...computer, away, ...details, actions: away ? [] : row.actions } });
+  }
+  const peer = peersOf(link).find((peer) => peer.key === destination);
+  if (peer) {
+    const saved = peers.find(({ origin }) => origin.computer.id === peer.key)?.origin;
+    const away = saved?.away ?? (owner?.key === peer.key ? !owner.reachable : true);
+    return yield* json(200, { on: { id: peer.key, name: peer.name, away, actions: away ? [] : ["open"] } });
+  }
+  if (!list || list.pending?.length || list.sessions[id] || owner || journal)
+    return yield* json(503, notReady);
+  return yield* json(404, gone2);
+}
 function eventFor(block, session) {
   const lines = block.split(/\r?\n/);
   const body = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join(`
@@ -117655,26 +117702,32 @@ async function* ownConversation(context, match) {
   if (resource.startsWith("queue") || resource.startsWith("asks")) {
     return yield* read(`kuvo/sessions/${id}/${resource}${resource === "queue" ? "?items=1" : ""}`);
   }
-  const known = keptList()?.sessions[id]?.place;
-  if (resource === "events" && (known === "engine" || known === "bridge")) {
-    const prefix = known === "bridge" ? "kuvo/agents/" : "";
-    return yield* scopedEvents(read(prefix + "api/event"), id);
+  const list = keptList();
+  const known = localLocation(list, id);
+  if (resource === "location") {
+    if (known)
+      return yield* json(200, known);
+    if (!list || list.pending?.length || list.sessions[id])
+      return yield* json(503, notReady);
+    return yield* json(404, gone2);
   }
-  const release = await acquireSessionEngine(id);
-  let prefix;
-  try {
-    const agents = bridge();
-    const targets = targetsOf2(context);
-    const place = await sessionHere2(targets, id, stop).catch(() => {
-      return;
-    });
-    if (place === undefined || !place && !targets.length)
-      return yield* json(503, { message: "The conversation’s engine isn’t answering." });
-    if (!place)
-      return yield* json(404, { message: "There’s no such conversation here." });
-    prefix = place.target.port === agents?.port ? "kuvo/agents/" : "";
-  } finally {
-    release();
+  let prefix = known?.place === "agents" ? "kuvo/agents/" : "";
+  if (!known) {
+    const release = await acquireSessionEngine(id);
+    try {
+      const agents = bridge();
+      const targets = targetsOf2(context);
+      const place = await sessionHere2(targets, id, stop).catch(() => {
+        return;
+      });
+      if (place === undefined || !place && !targets.length)
+        return yield* json(503, notReady);
+      if (!place)
+        return yield* json(404, gone2);
+      prefix = place.target.port === agents?.port ? "kuvo/agents/" : "";
+    } finally {
+      release();
+    }
   }
   if (resource === "events")
     return yield* scopedEvents(read(prefix + "api/event"), id);
@@ -117684,7 +117737,7 @@ async function* ownConversation(context, match) {
   const query = new URLSearchParams(request.path.split("?")[1]);
   return yield* read(base + "/message?" + query);
 }
-var SESSION9 = "(ses_[A-Za-z0-9_-]{1,95})", RESOURCES = "(session|messages|events|queue(?:/events)?|asks(?:/events)?)", PEER_CONVERSATION, OWN_CONVERSATION, CONVERSATION_FEATURE = "line.peer-conversation";
+var SESSION9 = "(ses_[A-Za-z0-9_-]{1,95})", RESOURCES = "(location|session|messages|events|queue(?:/events)?|asks(?:/events)?)", PEER_CONVERSATION, CONVERSATION_LOCATION2, OWN_CONVERSATION, CONVERSATION_FEATURE = "line.peer-conversation", gone2, notReady;
 var init_conversation2 = __esm(() => {
   init_glance();
   init_lifetime2();
@@ -117692,8 +117745,14 @@ var init_conversation2 = __esm(() => {
   init_records2();
   init_resolve();
   init_sessions3();
+  init_known();
+  init_lists();
+  init_state();
   PEER_CONVERSATION = new RegExp(`^kuvo/peer-session/([A-Za-z0-9_-]{43}|here)/${SESSION9}/${RESOURCES}$`);
+  CONVERSATION_LOCATION2 = new RegExp(`^kuvo/sessions/${SESSION9}/location$`);
   OWN_CONVERSATION = new RegExp(`^kuvo/session-read/${SESSION9}/${RESOURCES}$`);
+  gone2 = { message: "That conversation isn’t there any more." };
+  notReady = { message: "The conversation’s engine isn’t answering." };
 });
 
 // box/src/link/areas/agent-tools.ts
@@ -121330,6 +121389,7 @@ var init_router = __esm(() => {
     { feature: "sessions.glance", when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
     { feature: "sessions.list", when: (route) => route.match(LIST_ROUTE), answer: listRoute },
     { feature: "sessions.list.pages", when: (route) => route.match(PAGE_ROUTE), answer: pageRoute },
+    { feature: "sessions.location", when: (route) => route.match(CONVERSATION_LOCATION2), answer: conversationLocation },
     { feature: "line.peer-conversation", when: (route) => route.match(PEER_CONVERSATION), answer: peerConversation },
     { feature: "line.peer-conversation", when: (route) => route.match(OWN_CONVERSATION), answer: ownConversation },
     { feature: DELIVERY_FEATURE, when: (route) => route.match(DELIVERY_RECEIPT_EVENTS), answer: deliveryReceiptEvents },

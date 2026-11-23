@@ -277,6 +277,9 @@ const REMOTE_LIST_COMPUTER = object({
   ...LIST_COMPUTER.object, away: bool, "lastSeen?": number, "updating?": bool, actions: list(words("open", "manage")),
 });
 
+export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool });
+export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER }));
+
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
   "computer?": LIST_COMPUTER, "on?": REMOTE_LIST_COMPUTER,
@@ -436,6 +439,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:session/location", feature: "sessions.location", answers: { 200: CONVERSATION_LOCATION, 404: REFUSED, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/peer-session/:computer/:session/location", feature: "sessions.location", answers: { 200: LOCAL_CONVERSATION_LOCATION, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/session", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/messages", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/events", feature: "line.peer-conversation", answers: { 200: BYTES, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },

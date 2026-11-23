@@ -574,8 +574,13 @@ impl WorkBars {
         let read = self.context_reads;
         let (client, session, place) = (self.client.clone(), self.session.clone(), self.place);
         let work = move || -> kuvo_box::Result<(Where, SessionContext)> {
-            let place = match place { Some(place) => place, None => client.where_is(&session)? };
-            Ok((place, client.session_context_and_point(&session, place)?))
+            if let Some(place) = place {
+                return Ok((place, client.session_context_and_point(&session, place)?));
+            }
+            let location = client.where_is(&session)?;
+            let place = client.conversation_runtime(&session, &location)?.place;
+            let owner = client.conversation_owner(&location).ok_or_else(|| kuvo_box::Error::Unreachable(client.describe()))?;
+            Ok((place, owner.session_context_and_point(&session, place)?))
         };
         let then = move |this: &mut WorkBars, result: kuvo_box::Result<(Where, SessionContext)>, cx: &mut Context<Self>| {
             if this.context_reads != read { return; }
