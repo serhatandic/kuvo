@@ -54,6 +54,9 @@ const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
 const HISTORY: usize = 100;
+
+/// How far a conversation's scrolled within a row before where it's read up to is kept again.
+const READ_AT_STRETCH: f32 = 120.;
 /// The raised panel's leading edge, between the rail and the sidebar.
 const CARD_EDGE: Pixels = px(1.);
 
@@ -104,6 +107,8 @@ struct Restoring {
     /// The rows picked in the other areas, picked again at once: unpicked once their list is
     /// read without them.
     picks: Vec<(Area, String)>,
+    /// Where each conversation was read up to, by its session: brought into view as it opens.
+    reading: std::collections::BTreeMap<String, crate::yours::ReadAt>,
 }
 
 /// A bot's own conversation, shown in Bots in its page's place.
@@ -348,6 +353,11 @@ pub struct Workspace {
     panel: Entity<SidePanel>,
     panel_open: bool,
     panel_width: Pixels,
+    /// Where the conversations open were read up to as last kept (`keep_place`), by session, and
+    /// what follows their scrolling to keep it again as it moves on.
+    reading_kept: std::collections::BTreeMap<String, crate::yours::ReadAt>,
+    _open_reading: Option<Subscription>,
+    _bot_reading: Option<Subscription>,
     resizing: Option<(Pixels, Pixels)>,
     sidebar_drag: Option<SidebarDrag>,
     quick_search: Option<quick_search::QuickSearch>,
@@ -602,6 +612,9 @@ impl Workspace {
             panel: side_panel,
             panel_open: false,
             panel_width: panel::WIDTH,
+            reading_kept: Default::default(),
+            _open_reading: None,
+            _bot_reading: None,
             resizing: None,
             sidebar_drag: None,
             quick_search: None,
@@ -1927,11 +1940,30 @@ impl Workspace {
         self.wire_bars(&view, None, cx);
         self.wire_wakes(&view, session, cx);
         self.wire_shown_files(&view, cx);
+        self._open_reading = Some(self.follow_reading(&view, session, cx));
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.show_refuses(cx);
         self.place_panel(cx);
         cx.notify();
+    }
+
+    /// Keeps where `session`'s conversation is read up to as it's scrolled: once it's moved on a
+    /// row, or a stretch of a long one, from where it was last kept (not a write for each step of
+    /// a scroll).
+    fn follow_reading(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) -> Subscription {
+        let session = session.to_owned();
+        cx.observe(view, move |this, view, cx| {
+            let now = view.read(cx).read_at();
+            let moved = match (now.as_ref(), this.reading_kept.get(&session)) {
+                (None, None) => false,
+                (Some(now), Some(kept)) => now.row != kept.row || (now.offset - kept.offset).abs() >= READ_AT_STRETCH,
+                _ => true,
+            };
+            if moved {
+                this.keep_place(cx);
+            }
+        })
     }
 
     /// Gives a conversation this window's computer key (for remote shown-file downloads) and a
@@ -2033,6 +2065,7 @@ impl Workspace {
             self.wire_bars(&view, Some(bot.to_owned()), cx);
             self.wire_wakes(&view, session, cx);
             self.wire_shown_files(&view, cx);
+            self._bot_reading = Some(self.follow_reading(&view, session, cx));
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -2377,6 +2410,7 @@ impl Workspace {
         let open = self.panel_open;
         self.place_panel(cx);
         self.panel.update(cx, |panel, cx| panel.set_shown(open, cx));
+        self.keep_place(cx);
         cx.notify();
     }
 
@@ -2457,6 +2491,7 @@ impl Workspace {
 
     pub fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
+            self.keep_place(cx);
             cx.notify();
         }
     }
@@ -2464,6 +2499,7 @@ impl Workspace {
     /// Its width as it first opened.
     pub fn reset_panel_width(&mut self, cx: &mut Context<Self>) {
         self.panel_width = panel::WIDTH;
+        self.keep_place(cx);
         cx.notify();
     }
 
@@ -3254,6 +3290,16 @@ impl Workspace {
         }
         self.restoring.session = spot.session;
         self.restoring.bot = spot.bot;
+        self.restoring.reading = spot.reading;
+        // (Opened as it was, not toggled: that would keep a place before this one's restored.)
+        if spot.panel_open && !self.panel_open {
+            self.panel_open = true;
+            self.place_panel(cx);
+            self.panel.update(cx, |panel, cx| panel.set_shown(true, cx));
+        }
+        if let Some(width) = spot.panel_width {
+            self.panel_width = px(width).max(panel::NARROWEST);
+        }
         let area = spot.area.as_deref().and_then(|slug| Area::ALL.into_iter().find(|area| area.slug() == slug && !matches!(area, Area::Settings | Area::Sessions)));
         if let Some(area) = area {
             self.show_area_as_kept(area, window, cx);
@@ -3296,6 +3342,7 @@ impl Workspace {
         self.restoring_now = true;
         self.open_session_now(&session, window, cx);
         self.restoring_now = false;
+        self.read_from_kept(&session, cx);
         if let Some((history, at)) = history {
             (self.history, self.at) = (history, at);
             self.area = area;
@@ -3313,22 +3360,26 @@ impl Workspace {
     }
 
     /// Bots' list is read: last time's bot conversation opens again where Bots is in front and
-    /// the bot's still there; gone, Bots shows its own page.
+    /// the bot's still there; gone, Bots shows its own page. Until the list can say (its box not
+    /// answering yet, as while it starts, or its other computers' bots not said yet), it waits:
+    /// a bot not read yet isn't gone, and its page isn't where the window was.
     fn restore_bot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bot) = self.restoring.bot.clone() else { return };
         let Some(view) = self.area_view(Area::Bots).cloned() else { return };
+        let session = self.bot_session(&bot, cx);
         match view.read(cx).bots() {
-            Reading::NotYet => return,
-            // (Not read: what Bots shows says so.)
-            Reading::Failed(_) => {
-                self.restoring.bot = None;
-                return;
-            }
+            Reading::NotYet | Reading::Failed(_) => return,
             Reading::Ready(_) if self.area != Area::Bots => return,
+            Reading::Ready(bots) if session.is_none() => {
+                let listed_elsewhere = bots.elsewhere.iter().any(|each| each.id == bot && !each.unlisted);
+                if listed_elsewhere || bots.held_unsaid {
+                    return;
+                }
+            }
             Reading::Ready(_) => {}
         }
         self.restoring.bot = None;
-        match self.bot_session(&bot, cx) {
+        match session {
             Some(session) => {
                 let yours = window.focused(cx).filter(|focused| *focused != self.focus && *focused != self.landing.focus_handle(cx));
                 self.restoring_now = true;
@@ -3336,6 +3387,7 @@ impl Workspace {
                 self.open_bot_chat(&bot, &session, None, window, cx);
                 (self.folded, self.shown_narrow) = (folded, shown_narrow);
                 self.restoring_now = false;
+                self.read_from_kept(&session, cx);
                 if let Some(yours) = yours {
                     window.focus(&yours, cx);
                 }
@@ -3349,6 +3401,18 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The conversation of `session` just opened again goes to where it was read up to last time.
+    fn read_from_kept(&mut self, session: &str, cx: &mut Context<Self>) {
+        let Some(at) = self.restoring.reading.remove(session) else { return };
+        let view = match &self.bot_chat {
+            Some(chat) if chat.session == session => Some(chat.view.clone()),
+            _ => self.conversation().filter(|_| self.opened() == Some(session)).cloned(),
+        };
+        if let Some(view) = view {
+            view.update(cx, |view, cx| view.read_from(&at, cx));
+        }
     }
 
     /// Rows picked again as the window opened: one its list no longer has is unpicked (the list
@@ -3397,7 +3461,22 @@ impl Workspace {
         }
         let session = self.restoring.session.clone().or_else(|| self.opened().map(str::to_owned));
         let bot = self.restoring.bot.clone().or_else(|| self.bot_chat.as_ref().filter(|_| self.in_bot_chat).map(|chat| chat.bot.clone()));
-        let spot = crate::yours::Spot { sidebar_folded: self.folded, area: self.kept_area.clone(), session, bot, picked };
+        // Where each conversation open is read up to; what's still to open, as it was kept.
+        let mut reading = std::collections::BTreeMap::new();
+        if self.restoring.session.is_some() || self.restoring.bot.is_some() {
+            reading = self.restoring.reading.clone();
+        }
+        let open = self.conversation().zip(self.opened()).map(|(view, session)| (session.to_owned(), view.clone()));
+        let bots = self.bot_chat.as_ref().map(|chat| (chat.session.clone(), chat.view.clone()));
+        for (session, view) in open.into_iter().chain(bots) {
+            match view.read(cx).read_at() {
+                Some(at) => reading.insert(session, at),
+                None => reading.remove(&session),
+            };
+        }
+        self.reading_kept = reading.clone();
+        let panel_width = (self.panel_width != panel::WIDTH).then(|| f32::from(self.panel_width));
+        let spot = crate::yours::Spot { sidebar_folded: self.folded, area: self.kept_area.clone(), session, bot, picked, reading, panel_open: self.panel_open, panel_width };
         crate::yours::keep(crate::yours::Moved::Spot(key, spot), cx);
     }
 
