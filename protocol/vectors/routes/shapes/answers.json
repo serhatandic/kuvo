@@ -20002,6 +20002,7 @@
         "object": {
          "id": "string",
          "title": "string",
+         "line?": "string",
          "count": "number",
          "categories": {
           "list": {
@@ -20038,7 +20039,10 @@
            }
           }
          },
-         "empty": "string"
+         "empty": "string",
+         "here?": {
+          "map": "any"
+         }
         }
        }
       }
@@ -20433,6 +20437,44 @@
    "answers": {
     "200": {
      "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/restore",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/places",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/marketplace/skills/places",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/:id/enabled",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "enabled": "bool"
+     }
     }
    }
   },

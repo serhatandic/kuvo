@@ -10705,7 +10705,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands` and `custom-auto`; the rest come page by page.
+  `skills` is no longer listed (Marketplace › Skills has it, "Marketplace"); its page still answers by name.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
   These are that computer's own settings, kept on it: a client shows them with the computer (the
   desktop app under Computers › that computer, from that computer's own box), apart from its own
@@ -13092,10 +13093,17 @@ the snapshot before replacing the last good copy. It answers `{refreshed, messag
 leaves previously installed endpoints and skill bytes at the version reviewed by the user.
 
 - **Browse.** `GET kuvo/marketplace[?q=&category=&origin=kuvo|yours]` returns three ordered `areas`.
-  Each includes `id`, `title`, `count`, `categories` (title and count), visible `items`, `actions`, empty
+  Each includes `id`, `title`, `line` (the words under its title), `count`, `categories` (title and count), visible `items`, `actions`, empty
   text, and optional filters. It includes the computer choices with their key, name and availability.
   `GET kuvo/marketplace/{apps|agents|skills}/<id>` returns the details and action labels. An app's
   advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.
+  An added app's card carries `status: {words, tone}` (`good` or `warning`: "Connected", "Added",
+  "Vault locked") for a client to show in place of its first action's button. An agent's card
+  carries `detail`, the words under it (its apps, skills and bots added). `categories` come in the
+  order a client shows them: Your skills first in Skills, your own apps last in Apps. An action that
+  removes something carries `style: "destructive"` and `confirm: {title, body, button}`, asked first
+  in those words. Agents and skills not yet
+  installed carry `actions` with the words of their button ("Add", "Install").
 - **Apps.** `POST apps/<id>/add` or `POST apps/custom` with `{title,url,id?,summary?,auth?}` under
   `kuvo/marketplace/` enables a Streamable HTTP server across the setup. Custom endpoints use HTTPS
   without inline credentials or query parameters. `auth` is `open`, `token`, or `oauth`. The box
@@ -13114,9 +13122,16 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   `model` and the same stable URL-safe `request` on retries. It installs required catalog skills
   and creates a bot on the selected computer using the existing bot creation boundary. The result
   is the usual `201 {bot,firstMessage}`. The scheduled routines are created paused unless `routine: true`.
+  `routines: [<id>]` instead names the routines turned on: those are scheduled and the bot runs;
+  with none on, every routine is scheduled and paused. Each `missing` app in the options carries
+  `connect` (it can be connected from here: the computer answering is the one chosen) and `words`
+  ("Not connected", or "Connect it on <computer> first"), and `blocked` says how many are still to
+  connect. Agent details carry the sheet's `labels` (`name`, `computer`, `model`, `apps`,
+  `routines`, `skills`, `off`).
   Required apps must already be connected on that computer. Marketplace bots' workspaces carry the
   selected Marketplace apps and skills, and the box and bridge use that selection when exposing tools.
-- **Skills.** `POST skills/preview` takes `{link}`, `{repository,path,ref?}`, or `{folder}` on
+- **Skills.** `POST skills/preview` takes `{from}` (what was typed: a folder when it starts with `/`
+  or `~`, else a GitHub link), `{link}`, `{repository,path,ref?}`, or `{folder}` on
   the answering computer. It returns `{preview,skill,files,action}`. Each file has its relative
   `path`, base64 `data` and SHA-256 `sha256`. GitHub sources include `repository`, `path` and
   `commit`. `POST skills/install` with `{preview,was?}` installs the exact bytes reviewed on that
@@ -13126,6 +13141,18 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   takes `{was}` for a shared skill. `was` is the installed revision from details. To update an
   installed GitHub skill, explicitly ask `POST skills/<id>/update-preview` and install with its
   preview ID and the previous revision. Legacy local skills still use the existing skills routes.
+- **This computer's skills.** Marketplace › Skills holds what Settings › Skills did, for the computer
+  answering. The skills area carries `here`: `{computer, switchTitle, deleted, places}`, or
+  `{problem}` (words) when they can't be read. Each installed skill, and each skill its engine finds
+  in another folder (`origin: "found"`, with `location`: a path or "Built in"), has `enabled`, and
+  `switchWhy` when it can't be switched. `POST skills/<id>/enabled` with `{on}` turns it on or off
+  on this computer. `deleted` is Recently Deleted (`{title, note, items, action}`): `POST
+  skills/restore` with `{id}` brings one back. `places` is Other Places (`{title, note, items, add,
+  remove}`): `POST skills/places` with `{place}` adds one; `DELETE skills/places` with `{index}`
+  removes one. The skills area's `preview` and `create` actions, and a skill's `edit`, carry the
+  `form` a client draws as it is (fields with `kind` `lines` for several lines, `mono`, `value`
+  and `line`, the words under a field). A skill in this computer's own folder answers its details
+  like any other, with its text as `revision`.
 - **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
   primary and published in signed setup state. The Work Queue peer mail carries requests to the
   primary and bot creation to the selected owner. An offline computer projects the last accepted

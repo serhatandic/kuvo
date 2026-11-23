@@ -106,8 +106,9 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["vault", "Vault", "Agents & Tools", "shield"],
     ["mcp", "MCP Servers", "Agents & Tools", "sliders"],
     ["custom-auto", "Custom Auto", "Models", "sliders"],
-    ["skills", "Skills", "Agents & Tools", "pencil"],
   ])
+  // (Skills moved to Marketplace › Skills; its page still answers for a client that asks by name.)
+  expect((await ask(handler, "GET", "kuvo/settings/skills")).status).toBe(200)
   expect((await ask(handler, "GET", "kuvo/settings/general")).status).toBe(404)
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections.find((section: any) => section.id === "permissions").keywords).toContain("sandbox")

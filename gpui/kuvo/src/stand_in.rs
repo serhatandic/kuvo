@@ -27,6 +27,7 @@ pub mod groups;
 pub mod moves;
 pub mod insights;
 mod library;
+pub mod marketplace;
 pub mod panel;
 pub mod queue;
 pub mod settings;
@@ -168,6 +169,8 @@ struct State {
     areas: areas::Areas,
     /// What was handed over (`kuvo/library`).
     library: library::Library,
+    /// The Marketplace: the catalog, and what the setup added (`kuvo/marketplace`).
+    marketplace: marketplace::Market,
     made: Option<f64>,
     /// Its accounts, sign-ins and settings.
     settings: settings::Settings,
@@ -902,6 +905,16 @@ impl StandIn {
             state.bots.add(id, name, json!({ "color": color, "shape": shape, "face": "calm" }), now);
         }
         state.sync_bots();
+    }
+
+    /// The Marketplace's sample: nothing added yet, or a setup in use (a second computer too).
+    pub fn marketplace_sample(&self, sample: marketplace::Sample) {
+        self.state().marketplace.sample(sample);
+    }
+
+    /// Every Marketplace sign-in started finishes, as the browser's would.
+    pub fn finish_marketplace_sign_ins(&self) {
+        self.state().marketplace.finish_sign_ins();
     }
 
     /// From now on, Insights answers with `sample` (a month of work, a first week, nothing, or a failure).
@@ -2340,6 +2353,19 @@ impl StandIn {
         if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh") && !state.areas.usage_refresh_failed {
             state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
             state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;
+        }
+        if route.starts_with("kuvo/marketplace") {
+            let asked = |name: &str| query(path, name).map(decoded);
+            let body = request.body.clone().unwrap_or(Value::Null);
+            let name = state.name();
+            let now = if method == "GET" { made } else { now_ms() };
+            let state = &mut *state;
+            if let Some((status, kind, bytes)) = state.marketplace.answer(method, route, &asked, &body, &name, &mut state.bots, now) {
+                if method == "POST" && route.ends_with("/add") && status == 201 {
+                    state.sync_bots();
+                }
+                return Ok(Response { status, content_type: Some(kind.into()), body: bytes });
+            }
         }
         if route.starts_with("kuvo/library") {
             let asked = |name: &str| query(path, name).map(decoded);

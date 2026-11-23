@@ -7,7 +7,7 @@ import { call } from "../engine/client";
 import { CONFIG_FILE, valueAt } from "./config";
 import { skillsRoute, skillName, skillAbout, SKILLS_FOLDER, SKILL_TRASH_FOLDER } from "./skills";
 import { settingsRoute } from "./settings";
-import { asked, item, row, mtime, refusal, staleOrRefusal, unreadPage } from "./settings-kit";
+import { asked, item, row, mtime, refusal, said, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Section } from "./settings-kit";
 
 const NOTE = "The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.";
@@ -65,6 +65,29 @@ function readForm(name: string | null, values: Record<string, unknown>, taken: s
   if (typeof values.description !== "string" || !values.description.trim()) { ready = false; fields.push({ id: "description", words: "Say when the agent should use it.", tone: "warning" }); }
   if (typeof values.instructions !== "string") { ready = false; fields.push({ id: "instructions", words: "Instructions must be text.", tone: "warning" }); }
   return { ready, fields, name: id, text: skillDocument(id, typeof values.description === "string" ? values.description : "", typeof values.instructions === "string" ? values.instructions : "") };
+}
+/** This computer's skills as Marketplace › Skills lists them beside its own: each skill the agent
+ * can use here (its own folder's and those its engine finds elsewhere), whether it's on, Recently
+ * Deleted and Other Places. The same facts the Settings section was made from. */
+export async function skillsHere(context: RouteContext) {
+  const known = await facts(context);
+  if (known.problem) return { problem: said(known.problem, "This computer’s skills couldn’t be read.") };
+  const own = new Set(known.files!.map(each => each.name));
+  const found = known.engine!.filter(each => typeof each.id === "string" && !own.has(each.id)).map(each => {
+    const where = typeof each.path === "string" ? each.path : undefined;
+    return { id: each.id as string, title: typeof each.name === "string" && each.name ? each.name : each.id as string,
+      summary: typeof each.description === "string" ? each.description : "", location: where?.startsWith("/builtin/") ? "Built in" : where };
+  });
+  const trash = await asked(context, skillsRoute, "GET", "kuvo/skill-trash");
+  const places = valueAt(known.config, ["skills"]);
+  return {
+    problem: undefined,
+    enabled: (name: string) => !disabled(known.config, name),
+    canSwitch: known.config.permissions === undefined || Array.isArray(known.config.permissions),
+    found,
+    deleted: trash.status === 200 ? (trash.value.entries as any[]).map(each => ({ id: String(each.id), title: String(each.name), summary: typeof each.description === "string" ? each.description : "" })) : [],
+    places: Array.isArray(places) ? places.map(String) : [],
+  };
 }
 const disabled = (config: any, name: string) => (Array.isArray(config.permissions) ? config.permissions : []).some((each: any) => each?.action === "skill" && each.resource === name && typeof each.effect === "string" && !["allow", "ask"].includes(each.effect));
 

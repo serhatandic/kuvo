@@ -1602,7 +1602,7 @@ describe("Claude Code and the computer's MCP servers", () => {
     try {
       const { id, first } = await begin()
       const before = (fake.mcpServers as Record<string, any>).tracker
-      expect(await callServer(before)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Settings › Integrations/)
+      expect(await callServer(before)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Marketplace › Apps/)
       fake.result([first])
       await until(() => sessions.messages(id).some((message) => message.type === "idle"))
       servers.signedInAgain = true

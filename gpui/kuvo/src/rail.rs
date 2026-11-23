@@ -56,7 +56,11 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
     let waiting = workspace.waiting();
     // (The Library only where this computer's Kuvo has one: nothing to explain where it hasn't.)
     let library = workspace.client().drawn_gate().has("library");
-    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Computers, Area::Insights].into_iter().filter(|area| *area != Area::Library || library).map(|area| {
+    let marketplace = workspace.client().drawn_gate().has("marketplace");
+    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Marketplace, Area::Computers, Area::Insights]
+        .into_iter()
+        .filter(|area| (*area != Area::Library || library) && (*area != Area::Marketplace || marketplace))
+        .map(|area| {
         // How many things wait on you there, as the box counts them (`kuvo/waiting`).
         let count = match area {
             Area::Sessions => waiting.sessions,

@@ -1,11 +1,12 @@
-//! The rail's areas: the big switches (Sessions, Bots, Work Queue, Computers, Settings), each with
+//! The rail's areas: the big switches (Sessions, Bots, Work Queue, Library, Marketplace, Computers,
+//! Settings), each with
 //! its own sidebar beside the rail and its own main view. ⌃1 to ⌃5 switch between them (⌘1 to ⌘8
 //! are the tabs' keys, as on the Mac).
 
 use gpui::{App, KeyBinding, actions};
 use kuvo_ui::IconName;
 
-actions!(area, [ShowSessions, ShowBots, ShowQueue, ShowComputers, ShowSettings, ShowUsage, ShowLibrary, ShowAccounts, OpenHelp, Back, Forward]);
+actions!(area, [ShowSessions, ShowBots, ShowQueue, ShowComputers, ShowSettings, ShowUsage, ShowLibrary, ShowMarketplace, ShowAccounts, OpenHelp, Back, Forward]);
 
 #[derive(Clone, Debug, PartialEq, Eq, gpui::Action)]
 #[action(namespace = area, no_json)]
@@ -27,10 +28,11 @@ pub enum Area {
     Settings,
     Insights,
     Library,
+    Marketplace,
 }
 
 impl Area {
-    pub const ALL: [Area; 7] = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Computers, Area::Insights, Area::Settings];
+    pub const ALL: [Area; 8] = [Area::Bots, Area::Sessions, Area::Queue, Area::Library, Area::Marketplace, Area::Computers, Area::Insights, Area::Settings];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -41,6 +43,7 @@ impl Area {
             Area::Settings => "Settings",
             Area::Insights => "Insights",
             Area::Library => "Library",
+            Area::Marketplace => "Marketplace",
         }
     }
 
@@ -53,6 +56,7 @@ impl Area {
             Area::Settings => IconName::Settings,
             Area::Insights => IconName::Chart,
             Area::Library => IconName::Library,
+            Area::Marketplace => IconName::Grid,
         }
     }
 
@@ -66,6 +70,7 @@ impl Area {
             Area::Settings => "⌃5",
             Area::Insights => "⌃6",
             Area::Library => "⌃7",
+            Area::Marketplace => "⌃8",
         }
     }
 
@@ -79,6 +84,7 @@ impl Area {
             Area::Settings => "settings",
             Area::Insights => "insights",
             Area::Library => "library",
+            Area::Marketplace => "marketplace",
         }
     }
 }
@@ -98,6 +104,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-5", ShowSettings, workspace),
         KeyBinding::new("ctrl-6", ShowUsage, workspace),
         KeyBinding::new("ctrl-7", ShowLibrary, workspace),
+        KeyBinding::new("ctrl-8", ShowMarketplace, workspace),
         // Back and forward, as a browser's and Xcode's.
         KeyBinding::new("cmd-[", Back, workspace),
         KeyBinding::new("cmd-]", Forward, workspace),

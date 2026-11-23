@@ -27,7 +27,7 @@ use kuvo_ui::{
     theme::radius,
 };
 
-use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
+use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowLibrary, ShowMarketplace, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
 use crate::areas::{AreaView, Go, Picked, Reachability, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
@@ -253,6 +253,7 @@ pub struct Workspace {
     image_viewer: Entity<crate::image_viewer::ImageViewer>,
     insights: Entity<crate::insights::InsightsView>,
     library: Entity<crate::library::LibraryView>,
+    marketplace: Entity<crate::marketplace::MarketplaceView>,
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
     switching: Option<crate::home::Switching>,
@@ -437,6 +438,15 @@ impl Workspace {
             this.preview_file(&open.path, window, cx);
         }).detach();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
+        let marketplace = cx.new(|cx| crate::marketplace::MarketplaceView::new(client.clone(), window, cx));
+        // An agent added here: on to its bot's conversation, as New Bot goes.
+        cx.subscribe_in(&marketplace, window, |this: &mut Self, _, made: &crate::marketplace::BotMade, window, cx| {
+            if let Some(bots) = this.area_view(Area::Bots).cloned() {
+                bots.update(cx, |view, cx| view.read_list(cx));
+            }
+            this.open_bot_chat(&made.bot, &made.session, None, window, cx);
+        }).detach();
+        cx.observe(&marketplace, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
         area_subscriptions.push(cx.subscribe(&moves, |_: &mut Self, _, moved: &crate::moves::OpenMoved, cx| {
@@ -477,6 +487,7 @@ impl Workspace {
                 }
                 Go::Session(session) => this.open_session_now(session, window, cx),
                 Go::Sessions => this.show_area(Area::Sessions, window, cx),
+                Go::Marketplace => this.show_marketplace(crate::marketplace::Section::Agents, window, cx),
                 Go::SearchBotsAndSessions => { this.open_quick_search(window, cx); }
                 Go::ReadComputers => {
                     if this._computers_follow.is_none() {
@@ -579,6 +590,7 @@ impl Workspace {
             areas,
             insights,
             library,
+            marketplace,
             rings,
             bot_chat: None,
             in_bot_chat: false,
@@ -825,6 +837,7 @@ impl Workspace {
                     Area::Computers => self.read_computers(cx),
                     Area::Insights => self.insights.update(cx, |view, cx| view.read_again(cx)),
                     Area::Library => self.library.update(cx, |view, cx| view.read_again(cx)),
+                    Area::Marketplace => self.marketplace.update(cx, |view, cx| view.read_again(cx)),
                     _ => {}
                 }
             }
@@ -1479,6 +1492,7 @@ impl Workspace {
             Area::Computers => self.computers_reachability,
             Area::Insights => self.insights.read(cx).reachability(),
             Area::Library => self.library.read(cx).reachability(),
+            Area::Marketplace => self.marketplace.read(cx).reachability(),
             _ => Reachability::Unanswered,
         };
         reachability == Reachability::Reached
@@ -2888,6 +2902,22 @@ impl Workspace {
         self.show_area(Area::Library, window, cx);
     }
 
+    pub fn marketplace(&self) -> &Entity<crate::marketplace::MarketplaceView> {
+        &self.marketplace
+    }
+
+    /// The Marketplace, at one of its areas (New Bot's "ready-made agents").
+    pub fn show_marketplace(&mut self, section: crate::marketplace::Section, window: &mut Window, cx: &mut Context<Self>) {
+        self.marketplace.update(cx, |view, cx| view.show_section(section, cx));
+        self.show_area(Area::Marketplace, window, cx);
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn marketplace_sample(&mut self, slug: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_area(Area::Marketplace, window, cx);
+        self.marketplace.update(cx, |view, cx| view.sample(slug, window, cx));
+    }
+
     #[cfg(feature = "stand-in")]
     pub fn insights_sample(&mut self, slug: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.insights.update(cx, |view, cx| view.sample(slug, cx));
@@ -2899,7 +2929,7 @@ impl Workspace {
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.sidebar_for_area(window);
-        if area == Area::Insights || area == Area::Library {
+        if area == Area::Insights || area == Area::Library || area == Area::Marketplace {
             self.record(Nav::Area(area, None), cx);
         }
         // The Library's sidebar lists every bot, as the Bots list has them: read it, if it isn't yet.
@@ -3485,6 +3515,10 @@ impl Workspace {
         if self.area == Area::Insights { return (Some(self.area.name().into()), None); }
         if self.area == Area::Library {
             let (title, beside) = self.library.read(cx).title();
+            return (Some(title), beside);
+        }
+        if self.area == Area::Marketplace {
+            let (title, beside) = self.marketplace.read(cx).title();
             return (Some(title), beside);
         }
         // A bot's conversation, titled as Sessions titles one: the bot's name, and beside it what
@@ -4319,6 +4353,18 @@ impl Render for Workspace {
                 }
             });
         }
+        // The Marketplace, likewise, only where the box serves it.
+        let market_here = self.client.drawn_gate().has("marketplace");
+        if self.area == Area::Marketplace && !market_here && self.client.gate() != kuvo_box::Gate::Unknown {
+            cx.defer_in(window, |this, window, cx| {
+                if this.area == Area::Marketplace && !this.client.gate().has("marketplace") {
+                    this.show_area(Area::Sessions, window, cx);
+                }
+            });
+        }
+        let in_market = self.area == Area::Marketplace && market_here;
+        let marketplace = self.marketplace.clone();
+        marketplace.update(cx, |view, cx| view.shown(in_market, cx));
         let in_library = self.area == Area::Library && library_here;
         let library = self.library.clone();
         let show_library = in_library;
@@ -4342,6 +4388,8 @@ impl Render for Workspace {
             insights.into_any_element()
         } else if in_library {
             library.clone().into_any_element()
+        } else if in_market {
+            marketplace.clone().into_any_element()
         } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((_, chat)), _, _) => self.bot_chat_view(chat),
@@ -4356,7 +4404,7 @@ impl Render for Workspace {
             _ => landing::render(self, window, cx),
         } };
         let width = self.visible_sidebar_width(viewport, cx);
-        let sidebar_area = if compact && !in_library { Area::Bots } else { self.area };
+        let sidebar_area = if compact && !in_library && !in_market { Area::Bots } else { self.area };
         let area_view = self.area_view(sidebar_area).cloned();
         if let Some(view) = &area_view {
             let mode = match (compact, sessions) {
@@ -4371,6 +4419,7 @@ impl Render for Workspace {
         let sidebar = width.map(|width| {
             let content = match area_view {
                 _ if in_library => library.update(cx, |view, cx| view.sidebar(cx)),
+                _ if in_market => marketplace.update(cx, |view, cx| view.sidebar(cx)),
                 Some(view) => view.into_any_element(),
                 None => sidebar::render(self, window, cx),
             };
@@ -4425,6 +4474,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
             .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_area(Area::Insights, window, cx)))
             .when(library_here, |d| d.on_action(cx.listener(|this, _: &ShowLibrary, window, cx| this.show_area(Area::Library, window, cx))))
+            .when(market_here, |d| d.on_action(cx.listener(|this, _: &ShowMarketplace, window, cx| this.show_area(Area::Marketplace, window, cx))))
             .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| this.open_insights(Some(filter.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))

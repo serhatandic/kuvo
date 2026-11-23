@@ -116,6 +116,8 @@ pub enum Go {
     AddAt(Option<String>),
     /// This computer's last setup was wiped, and its Kuvo can be set up again.
     Reinstall,
+    /// Marketplace › Agents (from New Bot).
+    Marketplace,
     /// A place in Settings or in a computer's settings (`yours/…`, `box/…`) picked from the other.
     Setting(String),
 }
@@ -230,6 +232,7 @@ impl AreaView {
                         }
                         // The list as the box says it now (what a change answered shows meanwhile).
                         BotsEvent::Changed => this.shown(cx),
+                        BotsEvent::Marketplace => cx.emit(Go::Marketplace),
                     }),
                     // Its sheet dims the sidebar too: redrawn as it opens and closes.
                     cx.observe(page, |_, _, cx| cx.notify()),
@@ -962,7 +965,7 @@ impl Render for AreaView {
             Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
-            Area::Settings | Area::Insights | Area::Library => Vec::new(),
+            Area::Settings | Area::Insights | Area::Library | Area::Marketplace => Vec::new(),
             Area::Sessions => Vec::new(),
         };
         // A sheet open on the area's page: the sidebar waits under the same dimming.

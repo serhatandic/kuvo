@@ -57,12 +57,16 @@ pub enum BotsEvent {
     Select(Option<String>),
     /// The box's bots changed: its list is to be read again.
     Changed,
+    /// Marketplace › Agents, where ready-made bots are.
+    Marketplace,
 }
 
 /// What a control asks for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Chat,
+    /// Marketplace › Agents.
+    Marketplace,
     OpenSession(String),
     ShowAll,
     Rename,
@@ -156,7 +160,8 @@ enum Item {
     More { count: usize },
     Note { key: String, words: String, busy: bool },
     /// New Bot's templates, and which is picked.
-    Templates { picked: Option<String> },
+    /// Where ready-made bots are: Marketplace › Agents.
+    Marketplace,
     /// New Bot's foot: why it wasn't made, Cancel and Create.
     Foot { error: Option<String>, creating: bool },
     Empty { none: bool },
@@ -925,9 +930,9 @@ impl BotsView {
             }
             Reading::Ready(templates) => templates,
         };
-        if !templates.templates.is_empty() {
-            items.push(Item::Group("Start from".into()));
-            items.push(Item::Templates { picked: self.form.template.clone() });
+        // (Ready-made bots are the Marketplace's: New Bot makes one of your own.)
+        if self.client.drawn_gate().has("marketplace") {
+            items.push(Item::Marketplace);
         }
         items.push(Item::Group("Bot".into()));
         let personality = self.form_personality();
@@ -1139,6 +1144,7 @@ impl BotsView {
             Act::FormRunsOn(on) => self.pick_runs_on(on, cx),
             Act::Create => self.create(cx),
             Act::CancelNew => cx.emit(BotsEvent::Select(None)),
+            Act::Marketplace => cx.emit(BotsEvent::Marketplace),
         }
         self.rebuild(cx);
     }

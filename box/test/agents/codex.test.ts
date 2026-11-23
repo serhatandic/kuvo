@@ -2045,7 +2045,7 @@ describe("Codex and the computer's MCP servers", () => {
       const id = await run([["item/completed", { item: { type: "agentMessage", id: "m1", text: "Done." } }]])
       const tracker = (config: Record<string, any>) => ({ url: config["mcp_servers.tracker"].url as string, headers: config["mcp_servers.tracker"].http_headers as Record<string, string> })
       const first = tracker(sent().find((message) => message.method === "thread/start").params.config)
-      expect(await callServer(first)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Settings › Integrations/)
+      expect(await callServer(first)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Marketplace › Apps/)
       servers.signedInAgain = true
       forgetServers()
       sessions.prompt(id, { id: "msg_codex_test_141", text: "again", files: [], delivery: "steer" })

@@ -1,5 +1,6 @@
 // Marketplace clients read box-authored cards and submit explicit install, sign-in and Add actions.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import { marketplaceScope } from "../../shared/marketplace";
@@ -9,7 +10,7 @@ import type { Target } from "../../shared/records";
 import { acquireEngine } from "../engine/lifetime";
 import { workQueueClient } from "./work-queue";
 import { answerSkills, githubSkill, isSkillFolder, localSkill, SKILLS_FOLDER, skillAbout, skillName, SkillFailure, type SkillPackage } from "./skills";
-import { skillDocument } from "./settings-skills";
+import { skillDocument, skillsHere, skillsSection } from "./settings-skills";
 import { catalog, endpoint, itemID, refreshCatalog, sha256, type Agent, type CatalogSkill } from "../marketplace/catalog";
 import { addBot, botOptions, projectBotScopes } from "../marketplace/bots";
 import { cancelSignIn, cleanRemovedConnections, connectionState, connectToken, disconnect, finishSignIn, projectApps, signInStatus, startSignIn } from "../marketplace/connections";
@@ -23,6 +24,7 @@ import { primaryOf } from "../work-queue/numbers";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { VaultRefusal } from "../vault/store";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import type { SettingItem } from "../../shared/routes/settings-pages";
 
 const ROOT = "kuvo/marketplace";
 const success = (value: unknown): Acted => ({ status: 200, value });
@@ -47,8 +49,11 @@ function appCard(app: InstalledApp, installed: boolean, details = false) {
   const connection = installed ? connectionState(app) : undefined;
   const logo = app.origin === "catalog" && offeredApps().some(each => each.id === app.id)
     ? ROOT + "/apps/" + app.id + "/logo" : undefined;
+  // What a row says in place of its button once it's set up, in words a client shows as they are.
+  const status = !installed ? undefined : connection === "ready" ? { words: app.auth === "open" ? "Added" : "Connected", tone: "good" }
+    : connection === "locked" ? { words: "Vault locked", tone: "warning" } : undefined;
   return { id: app.id, title: app.title, category: app.category, summary: app.summary, origin: app.origin,
-    logo, installed, connection, ...(details ? {
+    logo, installed, connection, ...(status ? { status } : {}), ...(details ? {
       url: app.url, auth: app.auth, computerSignIn: app.auth !== "open",
       ...(app.auth === "token" ? { form: { title: `Connect ${app.title}`, submit: "Connect",
         fields: [{ id: "token", title: "Personal access token", kind: "password" }],
@@ -58,7 +63,8 @@ function appCard(app: InstalledApp, installed: boolean, details = false) {
     actions: installed ? [
       ...(app.auth === "open" ? [] : [{ id: "connect", title: connection === "ready" ? "Reconnect" : "Connect", enabled: connection !== "locked" },
         ...(connection === "ready" ? [{ id: "disconnect", title: "Disconnect on This Computer" }] : [])]),
-      { id: "remove", title: "Remove from All Computers" },
+      { id: "remove", title: "Remove from All Computers", style: "destructive", confirm: { title: `Remove ${app.title}?`,
+        body: "It's removed from all your computers, with each computer's sign-in. Agents can't use it until you add it again.", button: "Remove" } },
     ] : [{ id: "add", title: app.auth === "open" ? "Add" : "Connect" }] };
 }
 
@@ -107,14 +113,18 @@ async function catalogView(context: RouteContext, state: Installations, query: U
   const installed = new Map(state.skills.map(skill => [skill.name, skill]));
   const skills = catalog().skills.map(({ files, ...skill }) => ({
     ...skill, origin: "catalog", installed: installed.has(skill.id),
-    ...(installed.has(skill.id) ? { installedVersion: installed.get(skill.id)!.version } : {}),
+    ...(installed.has(skill.id) ? { installedVersion: installed.get(skill.id)!.version } : { actions: [{ id: "add", title: "Install" }] }),
   }));
   const managed = state.skills.filter(skill => skill.origin !== "catalog" || !catalogNames.has(skill.name)).map(skill => {
     const shown = cardSkill(skill);
-    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: "Yours" };
+    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: YOUR_SKILLS };
   });
   const local = await localSkills();
   const addedBots = agentBots();
+  const here = await skillsHere(context);
+  // (Whether each installed skill is on here; a skill only in the catalog has no switch.)
+  const withHere = <T extends { id: string; installed: boolean }>(items: T[]) => here.problem !== undefined ? items
+    : items.map(item => item.installed ? { ...item, enabled: here.enabled(item.id), ...(here.canSwitch ? {} : { switchWhy: "Permissions are set as something other than a list. Change them in the settings file." }) } : item);
   return success({
     title: "Marketplace", computers: computers(context), searchPlaceholder: "Search, or paste a GitHub link",
     areas: [
@@ -123,22 +133,66 @@ async function catalogView(context: RouteContext, state: Installations, query: U
         fields: [{ id: "title", title: "Name" }, { id: "url", title: "MCP server address", placeholder: "https://example.com/mcp" },
           { id: "auth", title: "Sign-in", choices: [{ id: "open", title: "No sign-in" }, { id: "token", title: "Personal access token" }, { id: "oauth", title: "Sign in with the service" }] }],
       } }]),
-      area("agents", "Agents", offeredAgents().map(({ instructions, ...agent }) => ({ ...agent, botCount: addedBots.get(agent.id)?.length ?? 0 })), query),
-      area("skills", "Skills", [...skills, ...managed, ...local.filter(skill => !installed.has(skill.id))], query,
-        [{ id: "preview", title: "Preview Skill" }, { id: "create", title: "New Skill" }]),
+      area("agents", "Agents", offeredAgents().map(({ instructions, ...agent }) => {
+        const botCount = addedBots.get(agent.id)?.length ?? 0;
+        const needs = agent.apps.map(id => catalog().apps.find(app => app.id === id)?.title ?? id);
+        const detail = [...needs, plural(agent.skills.length, "skill"), ...(botCount ? [`${plural(botCount, "bot")} added`] : [])].join(" · ");
+        return { ...agent, botCount, detail, actions: [{ id: "add", title: "Add" }] };
+      }), query),
+      { ...area("skills", "Skills", withHere([...skills, ...managed, ...local.filter(skill => !installed.has(skill.id)),
+        ...(here.problem !== undefined ? [] : here.found.filter(skill => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some(each => each.id === skill.id))
+          .map(skill => ({ ...skill, category: YOUR_SKILLS, origin: "found", installed: true })))]), query,
+        [{ id: "preview", title: "Add from Link or Folder", form: PREVIEW_FORM }, { id: "create", title: "New Skill", form: CREATE_FORM }]),
+        // This computer's own: whether each skill is on here, Recently Deleted and Other Places.
+        here: here.problem !== undefined ? { problem: here.problem } : {
+          computer: context.info.name, switchTitle: `Use on ${context.info.name}`,
+          deleted: { title: "Recently Deleted", note: SKILL_DELETION, items: here.deleted, action: { id: "restore", title: "Restore" } },
+          places: { title: "Other Places", note: "A folder, or the address of a skill catalog with an index.json, where agents also find skills.",
+            items: here.places.map((place, index) => ({ id: String(index), title: place })),
+            add: { id: "add", title: "Add Place", form: { title: "Add a Place", submit: "Add", fields: [{ id: "place", title: "A folder, or the address of a skill catalog" }] } },
+            remove: { id: "remove", title: "Remove" } },
+        } },
     ],
   });
 }
 
+const YOUR_SKILLS = "Your skills";
+const skillText = (skill: InstalledSkill) => Buffer.from(skill.files.find(file => file.path === "SKILL.md")!.data, "base64").toString("utf8");
+const USE_IT_WHEN = { id: "description", title: "Use it when", kind: "lines", placeholder: "Writing release notes from the commits since the last tag",
+  line: "The agent reads this to decide when the skill is needed, and loads the instructions only then." };
+const INSTRUCTIONS = { id: "instructions", title: "Instructions", kind: "lines", mono: true,
+  line: "Markdown. Mention any other files in the skill so the agent knows to use them." };
+// The forms a client draws as they are, with what's there now.
+function editForm(title: string, markdown: string) {
+  return { title: `Edit ${title}`, submit: "Save", fields: [
+    { ...USE_IT_WHEN, value: skillAbout(markdown).description ?? "" },
+    { ...INSTRUCTIONS, value: markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "").trim() },
+  ] };
+}
+const CREATE_FORM = { title: "New Skill", submit: "Create Skill", fields: [{ id: "name", title: "Name", placeholder: "release-notes" }, USE_IT_WHEN, INSTRUCTIONS] };
+const PREVIEW_FORM = { title: "Add a Skill", submit: "Preview", fields: [{ id: "from", title: "GitHub link or folder", placeholder: "https://github.com/owner/repository/tree/main/skill" }] };
+// The quiet line under each area's title.
+const LINES: Record<string, string> = {
+  apps: "Connect services once for all your computers.",
+  agents: "Ready-made bots, with their instructions, skills and the apps they need.",
+  skills: "Instructions that teach an agent a task.",
+};
+const SKILL_DELETION = "Deleted skills are kept for 30 days, then removed for good.";
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
 function area<T extends { title: string; summary: string; category: string }>(id: string, title: string, items: T[], query: URLSearchParams, actions: unknown[] = []) {
-  const categories = [...new Set(items.map(item => item.category))].map(title => ({ title, count: items.filter(item => item.category === title).length }));
+  // In the order shown: your own skills first, your own apps after the catalog's.
+  const titles = [...new Set(items.map(item => item.category))];
+  const mine = id === "skills" ? YOUR_SKILLS : id === "apps" ? "Yours" : undefined;
+  const ordered = mine && titles.includes(mine) ? (id === "skills" ? [mine, ...titles.filter(title => title !== mine)] : [...titles.filter(title => title !== mine), mine]) : titles;
+  const categories = ordered.map(title => ({ title, count: items.filter(item => item.category === title).length }));
   const search = (query.get("q") ?? "").trim().toLowerCase();
   const category = query.get("category");
   const origin = query.get("origin");
   const results = items.filter(item => (!category || item.category === category)
     && (!origin || id === "agents" || ("origin" in item && (origin === "kuvo") === (item.origin === "catalog")))
     && (!search || (item.title + "\n" + item.summary).toLowerCase().includes(search)));
-  return { id, title, count: items.length, categories, items: results, actions,
+  return { id, title, line: LINES[id] ?? "", count: items.length, categories, items: results, actions,
     ...(id === "agents" ? {} : { filters: [{ id: "kuvo", title: "Kuvo" }, { id: "yours", title: "Yours" }] }),
     empty: search ? "No items match your search." : "There’s nothing here yet." };
 }
@@ -153,7 +207,7 @@ async function localSkills() {
     const got = await answerSkills("GET", `kuvo/skills/${id}`, undefined, null);
     if (!("text" in got.value)) continue;
     const about = skillAbout(got.value.text);
-    rows.push({ id, title: about.name ?? id, summary: about.description ?? "", category: "Yours", origin: "local",
+    rows.push({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local",
       installed: true, source: value.github[id] });
   }
   return rows;
@@ -342,10 +396,11 @@ async function skillAction(context: RouteContext, id: string, action: string | u
   if (verb === "GET" && (skill || listed)) {
     const info = skill ?? offerSkill(listed!);
     return success({ ...cardSkill(info), title: listed?.title ?? cardSkill(info).name ?? id,
-      summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? "Yours", files: info.files, installed: !!skill,
+      summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? YOUR_SKILLS, files: info.files, installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
-      actions: skill ? [{ id: "remove", title: "Remove" }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
-        ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit" }] : [])] : [{ id: "add", title: "Install Skill" }] });
+      actions: skill ? [{ id: "remove", title: "Remove", style: "destructive", confirm: { title: `Remove ${listed?.title ?? cardSkill(info).name ?? id}?`,
+        body: "It's removed from all your computers. You can install it again later.", button: "Remove" } }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
+        ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : [])] : [{ id: "add", title: "Install Skill" }] });
   }
   if (skill && verb === "DELETE") return save("remove-skill", { id, was: body.was }, context);
   if (skill && verb === "PATCH") {
@@ -357,7 +412,20 @@ async function skillAction(context: RouteContext, id: string, action: string | u
   }
   if (!skill && filesOnThisBox(id)) {
     const legacy = `kuvo/skills/${encodeURIComponent(id)}`;
-    if (verb === "GET" || verb === "DELETE") return answerSkills(verb, legacy, body, null);
+    if (verb === "GET") {
+      // This computer's own skill, read and written by the skills routes: its card, its text as its
+      // revision, and the same actions as a Marketplace skill.
+      const got = await answerSkills("GET", legacy, undefined, null);
+      if (!("text" in got.value)) return got;
+      const text = got.value.text;
+      const about = skillAbout(text);
+      return success({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local", installed: true,
+        revision: text, files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha256(Buffer.from(text)) }],
+        actions: [{ id: "remove", title: "Delete", style: "destructive", confirm: { title: `Delete ${about.name ?? id}?`,
+          body: "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", button: "Delete" } },
+          { id: "edit", title: "Edit", form: editForm(about.name ?? id, text) }] });
+    }
+    if (verb === "DELETE") return answerSkills(verb, legacy, body, null);
     if (verb === "PATCH") {
       const old = await answerSkills("GET", legacy, undefined, null);
       if (!("text" in old.value)) return old;
@@ -401,7 +469,12 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
       return yield* json(result.status, { ...(isObject(result.value) ? result.value : {}), id });
     }
     if (action === "/skills/preview" && verb === "POST") {
-      const skill = typeof body.folder === "string" ? candidate(localSkill(body.folder), "folder") : candidate(await githubSkill(body), "github");
+      // `from`: what was typed or pasted, a folder on this computer or a GitHub link.
+      const from = typeof body.from === "string" ? body.from.trim() : undefined;
+      const folder = from !== undefined && /^[~/]/.test(from) ? from.replace(/^~(?=\/|$)/, os.homedir()) : body.folder;
+      if (typeof folder === "string" && !fs.existsSync(folder)) return yield* json(400, { message: "Choose a folder on this computer that contains SKILL.md." });
+      const given = from !== undefined && folder === undefined ? { link: from } : body;
+      const skill = typeof folder === "string" ? candidate(localSkill(folder), "folder") : candidate(await githubSkill(given), "github");
       const preview = stagePreview(skill);
       return yield* json(preview.status, preview.value);
     }
@@ -412,12 +485,24 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
       const result = await save("save-skill", { skill, was: body.was }, context);
       return yield* json(result.status, { ...(isObject(result.value) ? result.value : {}), id: skill.name });
     }
+    // This computer's own skills, as Settings › Skills kept them: Recently Deleted and Other Places.
+    if ((action === "/skills/restore" && verb === "POST") || (action === "/skills/places" && (verb === "POST" || verb === "DELETE"))) {
+      const at = action === "/skills/restore" ? `trash-${String(body.id ?? "")}` : verb === "POST" ? "places" : `place-${Number(body.index)}`;
+      if (action === "/skills/places" && verb === "DELETE" && !(Number.isInteger(body.index) && (body.index as number) >= 0)) return yield* json(400, { message: "Choose a place to remove." });
+      const refused = await skillsSection.act(context, { id: at } as SettingItem, { id: verb === "DELETE" ? "remove" : action === "/skills/restore" ? "restore" : "add", title: "" }, body);
+      return yield* json(refused ? refused.status : 200, refused ? { message: refused.message } : {});
+    }
     const match = detailsPath.exec(action);
     if (!match) return yield* json(404, {});
     const [, area, segment, command] = match as unknown as [string, string, string, string | undefined];
     let id: string;
     try { id = decodeURIComponent(segment); } catch { return yield* json(400, { message: "That item name isn’t valid." }); }
     if (area === "skills" ? !isSkillFolder(id) : !itemID.test(id)) return yield* json(404, {});
+    if (area === "skills" && command === "enabled" && verb === "POST") {
+      if (typeof body.on !== "boolean") return yield* json(400, { message: "Send {\"on\": true} or false." });
+      const refused = await skillsSection.change(context, { id: `skill-${id}` } as SettingItem, body.on);
+      return yield* json(refused && "status" in refused ? refused.status : 200, refused && "message" in refused ? { message: refused.message } : { enabled: body.on });
+    }
     if (area === "apps" && command === "logo" && verb === "GET") {
       const logo = offeredApps().find(app => app.id === id)?.logo;
       if (!logo) return yield* json(404, {});
@@ -433,7 +518,9 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
       if (!agent) result = missing();
       else if (!command && verb === "GET") result = success({ ...agent, bots: agentBots().get(id) ?? [],
         actions: [{ id: "add", title: "Add Agent" }], computers: computers(context),
-        labels: { computer: "Runs on", model: "Account and model", routine: "Enable scheduled routines" } });
+        labels: { computer: "Runs on", model: "Account and model", routine: "Enable scheduled routines", name: "Name",
+          apps: "Needed apps", routines: "Routines", skills: agent.skills.length ? `Includes ${plural(agent.skills.length, "skill")}: ${agent.skills.join(", ")}` : undefined,
+          off: "Routines stay off until you turn them on." } });
       else if ((command === "options" && verb === "GET") || (command === "add" && verb === "POST")) {
         const target = command === "options" ? query.get("computer") : body.computer;
         const local = computers(context)[0]!;
@@ -447,6 +534,13 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
         const run = command === "options" ? "options" : "add-agent";
         result = peer ? await send(peer, { method: verb as Act["method"], item: run + "/" + id, body }, context)
           : await agentAction(agent, run, body, context);
+        // An app still to connect is connected from here only on this computer; elsewhere, said so.
+        if (command === "options" && result.status === 200 && isObject(result.value) && Array.isArray(result.value.missing)) {
+          const name = peer ? computerName(peer) : local.name;
+          result = success({ ...result.value, missing: result.value.missing.map((app: Record<string, unknown>) => ({ ...app,
+            ...(peer ? { connect: false, words: `Connect it on ${name} first` } : { connect: true, words: "Not connected" }) })),
+            blocked: result.value.missing.length ? `${plural(result.value.missing.length, "app")} still to connect` : undefined });
+        }
       } else result = methodError();
     }
     return yield* json(result.status, result.value);

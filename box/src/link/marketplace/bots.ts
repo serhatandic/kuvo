@@ -76,7 +76,8 @@ export async function botOptions(agent: Agent, engine: Target | null, bridge: Ta
 export async function addBot(agent: Agent, body: Record<string, unknown>, readEngine: () => Target, readBridge: () => Target | null): Promise<Acted> {
   const request = body.request;
   if (typeof request !== "string" || !requestID.test(request) || !isModel(body.model) || body.model.providerID === "auto"
-    || body.routine !== undefined && typeof body.routine !== "boolean")
+    || body.routine !== undefined && typeof body.routine !== "boolean"
+    || body.routines !== undefined && !(Array.isArray(body.routines) && body.routines.every(id => agent.routines.some(routine => routine.id === id))))
     return no(400, "Choose a model and account, and send the original Add request ID.");
   if (body.version !== agent.version) return no(409, "This agent changed. Open its details and review the new version.");
   const existing = listBots().find(bot => marketplaceScope(path.join(BOTS, bot.id, "workspace"))?.request === request);
@@ -103,6 +104,12 @@ export async function addBot(agent: Agent, body: Record<string, unknown>, readEn
       placeWhole(path.join(directory, MARKETPLACE_SCOPE), JSON.stringify(scope));
       projectBotScope(directory, scope, state);
       if (!agent.routines.length) return;
+      // `routines`: the ones turned on, scheduled and running; none on, every one scheduled, paused.
+      const chosen = Array.isArray(body.routines) ? agent.routines.filter(routine => (body.routines as unknown[]).includes(routine.id)) : [];
+      if (chosen.length) {
+        for (const routine of chosen) seedRoutine(folder, routine);
+        return;
+      }
       fs.writeFileSync(path.join(folder, "paused"), "paused");
       for (const routine of agent.routines) seedRoutine(folder, routine);
       if (body.routine === true) fs.rmSync(path.join(folder, "paused"));
