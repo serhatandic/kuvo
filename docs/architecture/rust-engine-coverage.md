@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 98 of
-411 declarations are covered, 102 are partial and 211 are gaps.
-Row 3.2 retains 187 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 116 of
+411 declarations are covered, 91 are partial and 204 are gaps.
+Row 3.2 retains 168 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -103,7 +103,7 @@ owners on the same case each own the part described by their phase.
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
-| `box/test/message-parts.test.ts` (18) | 2, 5, 11, 17 | 1, 3–4, 8–10, 12–16, 18 | 6–7 | 3.2 · 1, 3–4, 6, 8–10, 12–16, 18<br>4.1 · 7 |
+| `box/test/message-parts.test.ts` (18) | 1–6, 8–18 | — | 7 | 4.1 · 7 |
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
 | `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | 3 | — | 3.2 · 3 |
@@ -148,7 +148,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1–2, 4–11 | 3 | — | 3.2 · 3<br>4.1 · 3 |
-| `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 16, 18–19, 32 | 2, 4, 6–15, 17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 17–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
+| `box/bridge-tests/session-models.test.js` (33) | 1, 3, 10, 14, 17, 20, 29–30 | 5, 16, 18–19, 26, 32 | 2, 4, 6–9, 11–13, 15, 21–25, 27–28, 31, 33 | 3.2 · 2, 4–5, 9, 12–13, 18–19, 22–25, 27–28, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
 ### Implementation and remaining parity work
