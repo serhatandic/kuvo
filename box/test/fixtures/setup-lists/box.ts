@@ -64,7 +64,7 @@ async function run() {
       return true;
     }
     case "away":
-      noteUnreachable(Buffer.from(command.address, "base64url"));
+      noteUnreachable(Buffer.from(command.address, "base64url"), command.at);
       return true;
     case "route":
       return await route(command.path);
@@ -134,6 +134,12 @@ if (command.kind === "conversation") {
             if (raw) process.send!({ line: JSON.parse(raw) });
           }
         }
+      }
+      // (The relay found nothing connected at that address.)
+      if (given.unreachable) noteUnreachable(Buffer.from(given.unreachable, "base64url"));
+      if (given.publish) {
+        await shareSetupLists(host, readers);
+        process.send!({ published: true });
       }
       if (given.read) process.send!({ read: await route(given.read) });
       if (given.send) {

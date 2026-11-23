@@ -58,6 +58,11 @@ The picker still ships. Its approved removal depends on these changes:
 - The nearest box can open a bot's chat or a session on another computer and carry its live turn,
   queue and asks on the same line. The nearest box queues messages in its durable outbox and
   delivers them to the owner.
+- The nearest box keeps the newest page it carried of each such conversation
+  (`run/peers/<key>/conversations/`, without inline attachments) and answers it, marked `away`,
+  while that computer is restarting, updating or off. The desktop reads a remote conversation's
+  newest page through its own box, so it shows that last transcript with one quiet line instead
+  of an empty page (`line.kept-conversation`, PROTOCOL.md).
 
 Still to build or verify end to end: the desktop's switch to merged topics, picker removal
 and Settings relocation, the rest of the off-loop work, and full tool-call

@@ -5,7 +5,7 @@ import "./safety"
 // conversations use the same list and peer protocol after the engine/bridge read.
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
@@ -42,6 +42,8 @@ function pair(codingAgents = false, bridgeDelivery = false) {
       [session]: { id: session, title: `Session on ${name}`, directory: project, time },
     };
     const permissions: Record<string, unknown>[] = [];
+    // Its conversation's messages, newest first, as the engine pages them.
+    const messages: unknown[] = [];
     const opened = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
     const prompt = Promise.withResolvers<{ session: string; body: unknown }>();
     const prompts: { session: string; body: unknown }[] = [];
@@ -70,7 +72,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
           prompt.resolve(sent);
           return data({});
         }
-        if (route.endsWith("/message")) return data([]);
+        if (route.endsWith("/message")) return data(messages);
         if (route.endsWith("/permission")) return data(permissions);
         if (route.endsWith("/inbox") || route.endsWith("/form")) return data([]);
         if (route === "/api/session") return data(Object.values(cases));
@@ -134,7 +136,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
       stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port, bridgePort: bridge?.port })),
       stdout: "ignore", stderr: "inherit", ipc,
     });
-    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
+    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions, messages };
   });
   const setup = "setup_" + "a".repeat(32);
   for (const box of boxes) {
@@ -231,7 +233,16 @@ test("a computer going away keeps its rows with the same last-seen time and no a
   const { near, far } = setup;
   try {
     await share(far, near, far.session);
+    // Quiet under a minute, it's just live: nothing greys, and no row says "seen now".
     expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
+    const blip = (await line(near)).sessions.sessions.find((row: any) => row.id === far.session);
+    expect(blip).toMatchObject({ computer: far.computer, away: false, actions: ["open", "manage"] });
+    expect(blip.lastSeen).toBeUndefined();
+    // Last heard from over a minute ago: away.
+    const lists = path.join(near.home, "run", "peers", far.computer.id, "lists-v1.json");
+    writeFileSync(lists, JSON.stringify({ ...JSON.parse(readFileSync(lists, "utf8")), seen: Date.now() - 2 * 60_000 }));
+    rmSync(path.join(near.home, "run", "peer-reach.json"));
+    expect(await near.run({ kind: "away", address: far.peer.address, at: Date.now() - 2 * 60_000 })).toBe(true);
     const merged = await line(near);
     const session = merged.sessions.sessions.find((row: any) => row.id === far.session);
     expect(session).toMatchObject({ computer: far.computer, away: true, lastSeen: expect.any(Number), actions: [] });
@@ -277,7 +288,9 @@ test("a computer that comes back after being away has its rows live again at onc
     const heard = Date.now() - 2 * 3600_000;
     const mira = { kind: "bot", id: "bot_mira", name: "Mira", session: "ses_mira" };
     writeFileSync(told, JSON.stringify({ [far.peer.key]: { features, at: 100, heard, list: [mira] } }));
-    expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
+    expect(await near.run({ kind: "away", address: far.peer.address, at: heard })).toBe(true);
+    const lists = path.join(near.home, "run", "peers", far.computer.id, "lists-v1.json");
+    writeFileSync(lists, JSON.stringify({ ...JSON.parse(readFileSync(lists, "utf8")), seen: heard }));
     const away = (await line(near)).sessions.sessions.find((row: any) => row.id === far.session);
     expect(away).toMatchObject({ away: true, actions: [] });
     const reachOf = async () => (JSON.parse((await near.read("kuvo/computers")).text).computers as any[]).find(computer => computer.key === far.peer.key)?.reach;
@@ -296,7 +309,7 @@ test("a computer that comes back after being away has its rows live again at onc
   } finally { setup.close(); }
 }, 30_000);
 
-test("a computer switching to a new release keeps its rows, said to be updating, with no actions", async () => {
+test("a computer switching to a new release isn't away: its rows stay live, said to be updating", async () => {
   const setup = pair();
   const { near, far } = setup;
   try {
@@ -308,9 +321,18 @@ test("a computer switching to a new release keeps its rows, said to be updating,
     } } }));
     expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
     const merged = await line(near);
-    expect(merged.sessions.sessions.find((row: any) => row.id === far.session))
-      .toMatchObject({ computer: far.computer, away: true, updating: true, actions: [] });
-    expect(merged.waiting.waiting).toEqual([expect.objectContaining({ session: far.session, updating: true, actions: [] })]);
+    const row = merged.sessions.sessions.find((row: any) => row.id === far.session);
+    expect(row).toMatchObject({ computer: far.computer, away: false, updating: true, actions: ["open", "manage"] });
+    expect(row.lastSeen).toBeUndefined();
+    expect(merged.waiting.waiting).toEqual([expect.objectContaining({ session: far.session, away: false, updating: true })]);
+    // Its bots too: as they are, said to be updating, never greyed as away.
+    writeFileSync(told, JSON.stringify({ [far.peer.key]: { features, at: 100, heard: Date.now() - 3 * 60_000, list: [{ kind: "bot", id: "bot_mira", name: "Mira", session: "ses_mira" }], computer: {
+      kuvo: "0.8.0-beta.43", fleetUpdate: { state: "updating", stage: "switching", current: "0.8.0-beta.43", target: "0.8.0-beta.44", canRetry: false },
+    } } }));
+    const mira = (JSON.parse((await near.read("kuvo/bots")).text).elsewhere as any[]).find(bot => bot.id === "bot_mira");
+    expect(mira).toMatchObject({ computer: "far", updating: true });
+    expect(mira.away).toBeUndefined();
+    expect(mira.lastSeen).toBeUndefined();
   } finally { setup.close(); }
 }, 30_000);
 
@@ -407,6 +429,88 @@ test("the nearest box opens another computer’s bot chat, follows its turn and 
     expect(accepted.status).toBe(202);
     expect(JSON.parse(accepted.text)).toMatchObject({ status: "pending", owner: far.computer.id });
     expect(await far.prompt.promise).toMatchObject({ session: far.session, body: { id, text: expect.stringContaining("Send to the remote bot") } });
+  } finally {
+    a?.kill();
+    b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 40_000);
+
+test("a followed conversation stays readable from the nearest box while its computer is away, and catches up when it's back", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  const readyA = Promise.withResolvers<void>(), readyB = Promise.withResolvers<void>();
+  const failed = Promise.withResolvers<never>();
+  void failed.promise.catch(() => {});
+  const reads: ReturnType<typeof Promise.withResolvers<any>>[] = [];
+  let published = Promise.withResolvers<void>();
+  // Away: what the near box mails it finds nothing there, and the relay says so.
+  let away = false;
+  let tried = 0;
+  try {
+    const picture = "data:image/png;base64," + "A".repeat(64 * 1024);
+    far.messages.push(
+      { id: "msg_2", role: "assistant", text: "The build is green.", files: [{ mime: "image/png", url: picture }] },
+      { id: "msg_1", role: "user", text: "Is the build green?" },
+    );
+    await share(far, near);
+    a = near.linked(message => {
+      if (message.failure) failed.reject(new Error(message.failure));
+      if (message.ready) readyA.resolve();
+      if (message.frame) {
+        if (away) {
+          tried++;
+          a!.send({ unreachable: far.peer.address });
+        } else b!.send({ frame: message.frame });
+      }
+      if (message.read) reads.shift()?.resolve(message.read);
+    });
+    b = far.linked(message => {
+      if (message.failure) failed.reject(new Error(message.failure));
+      if (message.ready) readyB.resolve();
+      if (message.frame) a!.send({ frame: message.frame });
+      if (message.published) published.resolve();
+    });
+    await Promise.all([readyA.promise, readyB.promise]);
+    const read = async () => {
+      const answer = Promise.withResolvers<any>();
+      reads.push(answer);
+      a!.send({ read: `kuvo/peer-session/${far.computer.id}/${far.session}/messages?limit=100&order=desc` });
+      const { status, text } = await Promise.race([answer.promise, failed.promise]);
+      return { status, page: JSON.parse(text) };
+    };
+
+    const live = await read();
+    expect(live.status).toBe(200);
+    expect(live.page.data.map((message: any) => message.text)).toEqual(["The build is green.", "Is the build green?"]);
+    expect(live.page.away).toBeUndefined();
+
+    // It restarts: the same transcript, kept without its inline picture, said as its last copy.
+    away = true;
+    const kept = await read();
+    expect(kept.status).toBe(200);
+    expect(kept.page.data.map((message: any) => message.text)).toEqual(["The build is green.", "Is the build green?"]);
+    expect(kept.page.data[0].files).toEqual([{ mime: "image/png", url: "data:image/png;base64," }]);
+    // (Quiet under a minute: no "seen now".)
+    expect(kept.page.away).toEqual({ computer: { id: far.computer.id, name: "far" } });
+    expect(tried).toBeGreaterThan(0);
+    // Known away now: answered at once, nothing sent to wait on.
+    const sent = tried;
+    expect((await read()).page).toEqual(kept.page);
+    expect(tried).toBe(sent);
+
+    // Back, with a new answer: its mail says so, and the next read is its transcript as it is now.
+    far.messages.unshift({ id: "msg_3", role: "assistant", text: "Deployed too." });
+    away = false;
+    b.send({ publish: true });
+    await Promise.race([published.promise, failed.promise]);
+    const back = await read();
+    expect(back.status).toBe(200);
+    expect(back.page.data.map((message: any) => message.text)).toEqual(["Deployed too.", "The build is green.", "Is the build green?"]);
+    expect(back.page.away).toBeUndefined();
   } finally {
     a?.kill();
     b?.kill();

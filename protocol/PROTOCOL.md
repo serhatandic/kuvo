@@ -243,14 +243,16 @@ routes.
 | `kuvo/setup/sessions/events` | `{sessions, projects}`. Sessions have `id` and the usual session-list `facts`. Projects have `directory` and the usual listed project `facts`. Project paths and pages belong to the project's computer. |
 | `kuvo/setup/waiting/events` | `{waiting}`. Each row gives `session`, `since` (ms), optional `title` and `asks: {kind, summary}` for the conversation's oldest ask. Its complete cards and replies use the owning box's `kuvo/sessions/<id>/asks` routes. |
 | `kuvo/setup/queues/events` | `{queues}`. Each row gives `session` and its `queue`, the same held or paused queue overview as `kuvo/sessions/queues/events`. |
-| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`; just after its box starts, before it has read its own catalog, it's the one it saved last (`run/lists/runs-on.json`), with `pending: true`, and the one read follows on the same stream (none only the very first time). Another computer's is the copy it last sent. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases; a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
+| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`; just after its box starts, before it has read its own catalog, it's the one it saved last (`run/lists/runs-on.json`), with `pending: true`, and the one read follows on the same stream (none only the very first time). Another computer's is the copy it last sent. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases (here `away` too, as it can't start anything meanwhile); a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
 
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
 public box key in `computer.id` to address its routes. Rows of the box answering have `here: true`. The local box uses `here` while it has
 no peer identity. Key rows by computer and row ID. An away row includes `lastSeen`, the time
-in milliseconds when the receiving box last received its snapshot. An away row from a computer
-that last said it was ready for a release, or switching to it, and went quiet less than ten
-minutes ago also has `updating: true`: show it as updating, not as last seen.
+in milliseconds when the receiving box last received its snapshot. A computer quiet for less
+than a minute since it was last heard from (or since the relay first found it not there) isn't
+away: its rows stay as they are. One that last said it was ready for a release, or switching to
+it, and went quiet less than ten minutes ago isn't away either: its rows have `away: false` and
+`updating: true`, keep their actions, and a client shows them as they are, saying it's updating.
 
 Session, waiting and queue rows carry `actions` with available controls. Away rows have empty
 actions. On sessions, `open` opens the conversation and `manage` opens its owner-provided
@@ -286,6 +288,17 @@ row's `computer.id`.
   the feed by session. The line's usual gap rule applies after a source drops.
 - `queue` and `asks` give their current state. Follow `queue/events` and `asks/events` on the
   same line. Queue and ask actions use the owning box's existing addressed routes.
+
+Feature `line.kept-conversation`: the nearest box keeps the newest `messages` page (one without
+`cursor`) it carried of each conversation, at most 64 for each computer and 2 MiB each, its inline
+`data:` attachments cut to their type, in `run/peers/<computer>/conversations/`. While that computer
+isn't answering (the relay finds it not there, its engine isn't up yet, or this box is off the
+relay), the same read answers `200` at once with that copy (`data`, newest first, no `cursor`; empty
+where none is kept) and `away: {computer: {id, name}, lastSeen?, updating?}`: `lastSeen` (ms) once
+it has been away a minute, `updating` while it only switches to a new release. Show the messages,
+readable, with one quiet line saying so, and keep the composer: sends wait at the nearest box
+("Durable composer delivery"). Read again as before; once it answers, the page is its own again,
+without `away`. The copies go with the computer when it leaves the setup.
 
 Send ordinary messages through the nearest box with
 `POST kuvo/data/messages?session=<session>&computer=<computer>` and the usual stable message ID.
@@ -6153,10 +6166,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     confirm shows these lines as they are and writes none of its own; a `what` it doesn't know
     is a line all the same.
   - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session?, name?,
-    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?, away?, lastSeen?}]`,
+    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?, away?, lastSeen?, updating?}]`,
     each bot your other computers list, as each last told the box asked (their agents, "Peers"), for
     a client to draw as it is (`away: true` while its computer isn't answering, as `kuvo/computers`
-    says it, with `lastSeen`, when it was last heard from, in ms; said again as that changes): its `job`'s line, the computer it lives on by its key (`box`, as
+    says it, with `lastSeen`, when it was last heard from, in ms; said again as that changes; not
+    away while it's been quiet under a minute, nor while it only switches to a new release, then
+    `updating: true` and the row drawn as it is): its `job`'s line, the computer it lives on by its key (`box`, as
     `kuvo/computers` has it) and by its name here (`computer`, a machine by its name), that
     computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there
     (its folder where that computer says its deleted bots' go, `trash` in its agents' mail: `trash`

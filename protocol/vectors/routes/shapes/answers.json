@@ -3020,6 +3020,9 @@
           "literal": true
          },
          "lastSeen?": "number",
+         "updating?": {
+          "literal": true
+         },
          "now?": {
           "object": {
            "working": "number",
@@ -3614,6 +3617,9 @@
           "literal": true
          },
          "lastSeen?": "number",
+         "updating?": {
+          "literal": true
+         },
          "now?": {
           "object": {
            "working": "number",
@@ -11239,6 +11245,9 @@
             "literal": "line"
            },
            {
+            "literal": "line.kept-conversation"
+           },
+           {
             "literal": "line.merged-sessions"
            },
            {
@@ -12214,6 +12223,9 @@
            },
            {
             "literal": "line"
+           },
+           {
+            "literal": "line.kept-conversation"
            },
            {
             "literal": "line.merged-sessions"

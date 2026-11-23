@@ -155,6 +155,7 @@ export const FEATURES = [
   "limits.rings",
   "limits.titles",
   "line",
+  "line.kept-conversation",
   "line.merged-sessions",
   "line.peer-conversation",
   "line.setup-lists",
