@@ -1,6 +1,6 @@
 # Kuvo on Windows
 
-Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. Windows and WSL trials are pending.
+Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. The Windows and WSL trial ran on 23 November 2026 ([results](../../.claude/notes/699-windows-trial.md)).
 
 **Before 0.8, ship the GPUI desktop and both box options: WSL2 and native Windows.** Each works with the app closed, owns its work and pairs directly. Build WSL first to exercise the contracts, then native. The [November 15 inventory](../../.claude/notes/699-windows-box.md) has the older port details. The [current architecture](how-kuvo-works.md) removes the need to port split serve and a separate box-services worker. The [engine and browser start on demand](small-computer.md), [accounts use upstream sign-ins](agent-accounts.md), and [one event line per client per box](message-delivery.md) covers reconnects across all transports.
 
