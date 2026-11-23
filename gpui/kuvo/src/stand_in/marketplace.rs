@@ -107,7 +107,7 @@ impl Market {
         if sample == Sample::Fresh {
             return;
         }
-        for (id, connected) in [("github", true), ("notion", true), ("cloudflare-docs", true), ("linear", false)] {
+        for (id, connected) in [("github", false), ("notion", true), ("cloudflare-docs", true), ("linear", false), ("sentry", true)] {
             if let Some(app) = self.catalog_app(id) {
                 self.apps.push((app, connected));
             }

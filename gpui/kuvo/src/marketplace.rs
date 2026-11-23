@@ -414,7 +414,7 @@ impl MarketplaceView {
         let (min, max) = if field.mono { (6, 14) } else { (3, 5) };
         let value = field.value.clone().unwrap_or_default();
         cx.new(|cx| {
-            let mut text = TextField::new(cx).placeholder(placeholder);
+            let mut text = TextField::new(cx).bare().placeholder(placeholder);
             if lines {
                 text = text.multi_line(min, max);
             }
@@ -452,7 +452,7 @@ impl MarketplaceView {
     // ---- Apps ----
 
     fn open_app(&mut self, id: &str, then: Option<Box<Sheet>>, window: &mut Window, cx: &mut Context<Self>) {
-        let callback = cx.new(|cx| TextField::new(cx).placeholder("http://localhost:…"));
+        let callback = cx.new(|cx| TextField::new(cx).bare().placeholder("http://localhost:…"));
         self.sheet = Some(Sheet::App(AppSheet { id: id.to_owned(), details: Reading::NotYet, fields: Vec::new(), sign_in: None, callback, then }));
         self.sheet_problem = None;
         let wanted = id.to_owned();
@@ -634,7 +634,7 @@ impl MarketplaceView {
     // ---- Agents ----
 
     fn open_agent(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| TextField::new(cx));
+        let name = cx.new(|cx| TextField::new(cx).bare());
         self.sheet = Some(Sheet::Agent(AgentSheet {
             id: id.to_owned(),
             details: Reading::NotYet,
@@ -1154,7 +1154,8 @@ impl MarketplaceView {
         } else {
             div().into_any_element()
         };
-        let yours = section != Section::Agents && item.is_yours() && item.origin.as_deref() != Some("found");
+        // ("Yours" beside a name only where it's among Kuvo's: its own group says so already.)
+        let yours = section != Section::Agents && item.is_yours() && item.origin.as_deref() != Some("found") && !item.category.starts_with("Your");
         let detail = item.detail.clone().or_else(|| item.location.clone());
         let pressable = !(section == Section::Skills && item.origin.as_deref() == Some("found"));
         let clicked = item.clone();
@@ -1381,6 +1382,12 @@ impl MarketplaceView {
     /// A sheet's card: its title and close, what's in it, and its foot (what went wrong, on the
     /// left; its buttons on the right).
     fn frame(&self, key: &'static str, width: f32, title: String, body: Vec<AnyElement>, buttons: Vec<AnyElement>, note: Option<String>, cx: &mut Context<Self>) -> AnyElement {
+        self.frame_with(key, width, title, body, Vec::new(), buttons, note, cx)
+    }
+
+    /// The same, with buttons on the left of its foot too (what undoes: Disconnect, Remove).
+    #[allow(clippy::too_many_arguments)]
+    fn frame_with(&self, key: &'static str, width: f32, title: String, body: Vec<AnyElement>, left: Vec<AnyElement>, buttons: Vec<AnyElement>, note: Option<String>, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let problem = self.sheet_problem.clone();
         div()
@@ -1427,6 +1434,7 @@ impl MarketplaceView {
                     .items_center()
                     .justify_between()
                     .gap(space::S3)
+                    .children((!left.is_empty()).then(|| div().flex_none().flex().items_center().gap(space::S2).children(left)))
                     .child(
                         div()
                             .debug_selector(|| "market-sheet-note".into())
@@ -1589,6 +1597,7 @@ impl MarketplaceView {
             body.push(self.heading(tile, item.title.clone(), item.summary.clone(), details.as_ref().and_then(|details| details.url.clone()), cx));
         }
         let mut buttons = vec![self.cancel(cx)];
+        let mut left = Vec::new();
         match (&details, &failed) {
             (_, Some(why)) => body.push(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(why.clone()).into_any_element()),
             (None, _) => body.push(self.waiting("Loading…", cx)),
@@ -1650,18 +1659,21 @@ impl MarketplaceView {
                     for (ix, action) in actions.into_iter().enumerate() {
                         let id = action.id.clone();
                         let mut button = Button::new(SharedString::from(format!("market-app-{id}")), action.title.clone()).disabled(!action.enabled || self.working);
-                        if Some(ix) == primary {
+                        let primary = Some(ix) == primary;
+                        if primary {
                             button = button.primary().loading(self.working);
                         } else if id == "remove" {
                             button = button.destructive();
                         }
-                        buttons.push(button.on_click(cx.listener(move |this, _, window, cx| this.app_action(&id, window, cx))).into_any_element());
+                        let button = button.on_click(cx.listener(move |this, _, window, cx| this.app_action(&id, window, cx))).into_any_element();
+                        if primary { buttons.push(button) } else { left.push(button) }
                     }
                 }
             }
         }
         let title = listed.map(|item| item.title).unwrap_or_default();
-        Some(self.frame("market-app-sheet", 520., title, body, buttons, None, cx))
+        let width = if left.is_empty() { 520. } else { 640. };
+        Some(self.frame_with("market-app-sheet", width, title, body, left, buttons, None, cx))
     }
 
     fn agent_sheet(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1842,7 +1854,8 @@ impl MarketplaceView {
         let ready = options.is_ok() && blocked.is_none() && self.sheet_model_set();
         let add = details.item.actions.first().map(|action| action.title.clone()).unwrap_or_default();
         buttons.push(Button::new("market-add-agent", add).primary().loading(self.working).disabled(!ready || self.working).on_click(cx.listener(|this, _, window, cx| this.add_agent(window, cx))).into_any_element());
-        Some(self.frame("market-agent-sheet", 600., details.item.title.clone(), body, buttons, blocked, cx))
+        let title = details.item.actions.first().map(|action| action.title.clone()).unwrap_or_else(|| details.item.title.clone());
+        Some(self.frame("market-agent-sheet", 600., title, body, buttons, blocked, cx))
     }
 
     fn sheet_model_set(&self) -> bool {
@@ -2113,6 +2126,13 @@ impl Render for MarketplaceView {
 /// The area's categories in the order shown: Your skills first, then as the box lists them.
 fn ordered(section: Section, area: &MarketArea) -> Vec<kuvo_box::marketplace::Category> {
     let mut categories = area.categories.clone();
+    // (Your own apps after the catalog's.)
+    if section == Section::Apps
+        && let Some(at) = categories.iter().position(|category| category.title == "Yours")
+    {
+        let yours = categories.remove(at);
+        categories.push(yours);
+    }
     if section == Section::Skills
         && let Some(at) = categories.iter().position(|category| category.title == "Your skills")
     {

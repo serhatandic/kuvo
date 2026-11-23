@@ -76,8 +76,8 @@ fn apps_show_each_apps_own_logo_as_the_box_serves_it(cx: &mut TestAppContext) {
     // An app whose sign-in needs Kuvo's own key isn't offered: no dead ends.
     assert!(!shown(cx, "market-item-slack"));
     // What's connected says so in place of a button; what isn't offers the box's words.
-    assert!(shown(cx, "market-status-github") && !shown(cx, "market-button-github"));
-    assert!(shown(cx, "market-button-sentry"));
+    assert!(shown(cx, "market-status-notion") && !shown(cx, "market-button-notion"));
+    assert!(shown(cx, "market-button-github") && !shown(cx, "market-status-github"));
 }
 
 #[gpui::test]
