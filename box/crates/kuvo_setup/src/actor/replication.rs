@@ -359,11 +359,11 @@ impl Owner {
         if let Some(part) = given.part
             && let Some(doc) = self.parts.receive(key, part)?
         {
-            self.take_doc(doc).await?;
+            self.take_doc(from, doc).await?;
         }
         for envelope in given.give.into_iter().take(64) {
             if let Ok(doc) = documents::verify(envelope)
-                && let Err(error) = self.take_doc(doc).await
+                && let Err(error) = self.take_doc(from, doc).await
                 && !matches!(
                     error,
                     Error::Conflict | Error::Version(_) | Error::Invalid(_)
@@ -453,7 +453,7 @@ impl Owner {
         Ok(())
     }
 
-    async fn take_doc(&mut self, doc: Document) -> Result<(), Error> {
+    async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
         match doc.kind {
             Kind::SetupShared => self.take_replica(doc).await,
             Kind::SetupCheckpoint => {
