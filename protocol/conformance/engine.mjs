@@ -171,6 +171,7 @@ export async function standInEngine(root, env) {
         if (engine.cantClose) return send({}, 405);
         engine.open.delete(folder);
         engine.closed.push(folder);
+        engine.locationClosed?.(folder);
         response.writeHead(204).end();
         return;
       }

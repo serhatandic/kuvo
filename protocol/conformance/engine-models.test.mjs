@@ -230,3 +230,77 @@ test("provider refresh holds folders with active work and settles them after the
   assert.deepEqual(refreshed.json, { waiting: [] });
   assert.deepEqual(here.engine.closed, [quiet, terminal, quiet, terminal]);
 });
+
+test("a replacement engine clears an older pending provider refresh without closing a folder", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-refresh-restart");
+  const folder = path.join(here.home, "project");
+  here.engine.open.add(folder);
+  const due = path.join(here.home, "run/models-due.json");
+  write(due, JSON.stringify({ engine: `0:${here.engine.record.port}`, folders: [folder] }));
+  await here.start().ready();
+  await until(() => !fs.existsSync(due), "The replacement engine kept the old refresh.");
+  assert.deepEqual([...here.engine.open], [folder]);
+  assert.deepEqual(here.engine.closed, []);
+});
+
+test("an engine-wide refresh checks new work and locations reopened while it closes them", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-refresh-sweep");
+  const one = path.join(here.home, "one");
+  const two = path.join(here.home, "two");
+  const reopened = path.join(here.home, "reopened");
+  here.engine.open.add(one).add(two);
+  const session = "ses_refreshStarted";
+  here.engine.sessions.push(sessionOf({ id: session, directory: two }));
+  here.engine.providers.push({ id: "github-copilot" });
+  here.engine.integrations.push({ id: "github-copilot", methods: [], connections: [] });
+  const record = await here.start().ready();
+  const refresh = () => request(record, "POST", "kuvo/accounts/github-copilot/refresh");
+  here.engine.locationClosed = folder => {
+    if (folder === one) here.engine.running.add(session);
+  };
+  const busy = await refresh();
+  assert.equal(busy.status, 409, busy.text);
+  assert.deepEqual(here.engine.closed, [one]);
+  assert.deepEqual([...here.engine.open], [two]);
+
+  here.engine.running.clear();
+  here.engine.locationClosed = folder => {
+    if (folder === two) here.engine.open.add(reopened);
+  };
+  const quiet = await refresh();
+  assert.equal(quiet.status, 200, quiet.text);
+  assert.deepEqual(quiet.json, { waiting: [] });
+  assert.deepEqual(here.engine.closed, [one, two, reopened]);
+  assert.equal(fs.existsSync(path.join(here.home, "run/models-due.json")), false);
+});
+
+test("provider refresh refuses unavailable catalogs and engines without closing a folder", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-refresh-errors");
+  here.engine.open.add(path.join(here.home, "project"));
+  here.engine.providers.push({ id: "github-copilot" });
+  here.engine.integrations.push({ id: "github-copilot", methods: [], connections: [] });
+  const record = await here.start().ready();
+  const refresh = (provider, method = "POST") => request(record, method, `kuvo/accounts/${provider}/refresh`);
+  const catalog = await refresh("anthropic");
+  assert.equal(catalog.status, 409, catalog.text);
+  assert.match(catalog.json.message, /by itself/);
+  const missing = await refresh("modal");
+  assert.equal(missing.status, 404, missing.text);
+  assert.match(missing.json.message, /isn't on this computer's engine/);
+  assert.equal((await refresh("github-copilot", "GET")).status, 405);
+  here.engine.cantClose = true;
+  const cant = await refresh("github-copilot");
+  assert.equal(cant.status, 503, cant.text);
+  assert.match(cant.json.message, /restart/i);
+  assert.deepEqual(here.engine.closed, []);
+  assert.equal(fs.existsSync(path.join(here.home, "run/models-due.json")), false);
+
+  const down = await computer("engine-model-refresh-down");
+  fs.rmSync(path.join(down.home, "run/engine.json"));
+  const unavailable = await request(await down.start().ready(), "POST", "kuvo/accounts/github-copilot/refresh");
+  assert.equal(unavailable.status, 503, unavailable.text);
+  assert.match(unavailable.json.message, /engine isn't running/i);
+});

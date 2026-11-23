@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 68 of
-411 declarations are covered, 114 are partial and 229 are gaps.
-Row 3.2 retains 221 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 70 of
+411 declarations are covered, 114 are partial and 227 are gaps.
+Row 3.2 retains 218 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -149,7 +149,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1, 4–7, 9, 11 | 3, 10 | 2, 8 | 3.2 · 2–3, 8, 10<br>4.1 · 3 |
 | `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 18–19, 32 | 2, 4, 6–17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 16–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
-| `box/bridge-tests/models-refresh.test.js` (4) | 1 | 3 | 2, 4 | 3.2 · 2–4<br>6.1 · 3 |
+| `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
 ### Implementation and remaining parity work
 
