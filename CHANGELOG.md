@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Pictures in conversations, the composer, the panel, Activity and the Library have one clean rounded edge, with no corners showing past it.
 - A project's longer session list says how many it has: "Show 10 more of 44", then "Show all 44" for the last of them. Activity's sessions fold the same way ("Show all 9").
 - Pointing at a Work Queue chip in a reply shows the pointing hand, not the text cursor.
+- Pointing at a Work Queue chip in a conversation opens one card, beside that chip, and it stays open: it no longer blinks, or opens under every chip for the same item.
 - The composer floats over the conversation: messages scroll under it instead of stopping at its top edge, and the last one always scrolls clear of it, in sessions, bots, group chats and the side chat.
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
 - Requests stay responsive while Kuvo reads saved artifacts and fills the Library at startup.
