@@ -304,6 +304,15 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             path = fs::canonicalize(&path)
                 .await
                 .map_err(|_| bad("Give the folder it works in (folder), as a full path."))?;
+            if cfg!(windows)
+                && let Some(ordinary) = kuvo_os::platform::windows_conventional_path(&path)
+                && fs::canonicalize(&ordinary)
+                    .await
+                    .as_ref()
+                    .is_ok_and(|resolved| resolved == &path)
+            {
+                path = ordinary;
+            }
             let allowed = parent
                 .as_ref()
                 .is_some_and(|parent| Path::new(parent.directory()) == path)
