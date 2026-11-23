@@ -16,6 +16,7 @@ kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }
+kuvo_store = { path = "../kuvo_store" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 

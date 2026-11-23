@@ -3,8 +3,10 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
+    future::Future,
     io,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
 };
 
@@ -12,7 +14,10 @@ use kuvo_protocol::{
     json::{Null, Nullable},
     routes::{self, types::*},
 };
-use kuvo_server::ssh::{Grant, IdentityRefusal, Pairings};
+use kuvo_server::{
+    Caller,
+    ssh::{Grant, IdentityRefusal, Pairings},
+};
 use kuvo_wire::keys::{Identity, decode_exact, encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
@@ -28,30 +33,30 @@ use crate::{
 
 #[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum DeviceKind {
+pub enum DeviceKind {
     Phone,
     Desktop,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-struct Device {
-    key: String,
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
+pub struct Device {
+    pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<DeviceKind>,
+    pub kind: Option<DeviceKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    added: Option<Number>,
+    pub added: Option<Number>,
     #[serde(default)]
-    pairing: String,
+    pub pairing: String,
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-struct Revocation {
-    key: String,
-    pairing: String,
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
+pub struct Revocation {
+    pub key: String,
+    pub pairing: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -113,13 +118,13 @@ struct Link {
     extra: serde_json::Map<String, Value>,
 }
 
-#[derive(Clone)]
-struct State {
-    devices: Vec<Device>,
-    removed: Vec<Revocation>,
+#[derive(Clone, Default, PartialEq)]
+pub struct DeviceRoster {
+    pub devices: Vec<Device>,
+    pub removed: Vec<Revocation>,
 }
 
-impl State {
+impl DeviceRoster {
     fn device(&self, key: &str) -> Option<&Device> {
         self.devices.iter().find(|device| {
             device.key == key
@@ -133,7 +138,8 @@ impl State {
 
 #[derive(Clone)]
 pub struct Devices {
-    current: watch::Receiver<Arc<State>>,
+    current: watch::Receiver<Arc<DeviceRoster>>,
+    managed: Option<Arc<dyn ManagedDevices>>,
     commands: mpsc::Sender<Command>,
     identity: Option<([u8; 32], ComputerKey)>,
     enabled: bool,
@@ -144,6 +150,21 @@ pub struct Devices {
 struct MacConfig {
     phones: bool,
 }
+
+/// Signed setup adapter. The setup owner publishes the accepted roster and writes grants.
+pub trait ManagedDevices: Pairings {
+    fn device_roster(&self) -> Arc<DeviceRoster>;
+    fn permits_pairing(&self) -> bool;
+    fn change<'a>(&'a self, caller: &'a Caller, change: DeviceChange) -> DeviceFuture<'a>;
+}
+
+pub enum DeviceChange {
+    PairDesktop { key: String, name: String },
+    Revoke(Vec<Revocation>),
+}
+
+pub type DeviceFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<String>, Error>> + Send + 'a>>;
 
 pub struct Bootstrap {
     pub roster: Roster,
@@ -183,6 +204,26 @@ pub struct Removal {
     pairing: Option<String>,
 }
 
+impl Request {
+    fn valid(&self) -> bool {
+        self.kind == DeviceKind::Desktop
+            && canonical_key(&self.key).is_some()
+            && self.name.encode_utf16().count() <= 100
+    }
+}
+
+impl Removal {
+    fn valid(&self) -> bool {
+        canonical_key(&self.key).is_some()
+            && self.pairing.as_ref().is_none_or(|id| {
+                id.len() <= 32
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
@@ -201,6 +242,10 @@ pub enum Error {
     Disabled,
     #[error("The main computer could not save the access change.")]
     Managed,
+    #[error("{0}")]
+    Authority(String),
+    #[error("{0}")]
+    WaitingForMain(String),
     #[error("Send devices from your setup to remove.")]
     InvalidRemoval,
     #[error("Saving device access: {0}")]
@@ -236,6 +281,7 @@ impl Devices {
         let (commands, rx) = mpsc::channel(16);
         let devices = Self {
             current,
+            managed: None,
             commands,
             identity,
             enabled: store.enabled,
@@ -249,12 +295,26 @@ impl Devices {
         })
     }
 
+    pub fn with_managed(mut self, managed: Arc<dyn ManagedDevices>) -> Self {
+        self.managed = Some(managed);
+        self
+    }
+
     pub fn permits_local_pairing(&self) -> bool {
-        self.can_pair
+        self.managed
+            .as_ref()
+            .map_or(self.can_pair, |managed| managed.permits_pairing())
+    }
+
+    fn state(&self) -> Arc<DeviceRoster> {
+        self.managed.as_ref().map_or_else(
+            || self.current.borrow().clone(),
+            |managed| managed.device_roster(),
+        )
     }
 
     pub fn grants(&self) -> HashMap<ComputerKey, String> {
-        let state = self.current.borrow();
+        let state = self.state();
         state
             .devices
             .iter()
@@ -267,11 +327,15 @@ impl Devices {
     }
 
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        if self.managed.is_some() {
+            // The signed setup owner updates relay trust with the membership it accepted.
+            return std::future::pending().await;
+        }
         self.current.changed().await
     }
 
     pub fn list(&self, asking: Option<ComputerKey>) -> routes::get_kuvo_phones::Status200 {
-        let state = self.current.borrow();
+        let state = self.state();
         let asking = asking.map(|key| encode(&key));
         let phones = state
             .devices
@@ -296,7 +360,33 @@ impl Devices {
         routes::get_kuvo_phones::Status200 { phones }
     }
 
-    pub async fn pair(&self, device: Request, now: Millis) -> Result<String, Error> {
+    pub async fn pair(
+        &self,
+        device: Request,
+        now: Millis,
+        caller: &Caller,
+    ) -> Result<String, Error> {
+        if let Some(managed) = &self.managed {
+            if !device.valid() {
+                return Err(Error::InvalidDevice);
+            }
+            let roster = managed.device_roster();
+            if roster.device(&device.key).is_none()
+                && roster.removed.iter().any(|entry| entry.key == device.key)
+            {
+                return Err(Error::Removed);
+            }
+            return managed
+                .change(
+                    caller,
+                    DeviceChange::PairDesktop {
+                        key: device.key,
+                        name: plain_name(&device.name),
+                    },
+                )
+                .await?
+                .ok_or(Error::Managed);
+        }
         let (answer, reply) = oneshot::channel();
         self.commands
             .send(Command::Pair(device, now, answer))
@@ -305,7 +395,39 @@ impl Devices {
         reply.await.map_err(|_| Error::Stopped)?
     }
 
-    pub async fn remove(&self, devices: Remove, actor: Option<Actor>) -> Result<(), Error> {
+    pub async fn remove(
+        &self,
+        devices: Remove,
+        actor: Option<Actor>,
+        caller: &Caller,
+    ) -> Result<(), Error> {
+        if let Some(managed) = &self.managed {
+            let max = if actor.is_some() { 16 } else { 100 };
+            if devices.phones.is_empty()
+                || devices.phones.len() > max
+                || !devices.phones.iter().all(Removal::valid)
+            {
+                return Err(Error::InvalidRemoval);
+            }
+            let state = managed.device_roster();
+            let grants = devices
+                .phones
+                .into_iter()
+                .map(|device| {
+                    let pairing = device.pairing.unwrap_or_else(|| {
+                        state
+                            .device(&device.key)
+                            .map_or_else(String::new, |active| active.pairing.clone())
+                    });
+                    Revocation {
+                        key: device.key,
+                        pairing,
+                    }
+                })
+                .collect();
+            managed.change(caller, DeviceChange::Revoke(grants)).await?;
+            return Ok(());
+        }
         let (answer, reply) = oneshot::channel();
         self.commands
             .send(Command::Remove(devices, actor, answer))
@@ -317,6 +439,9 @@ impl Devices {
 
 impl Pairings for Devices {
     fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        if let Some(managed) = &self.managed {
+            return managed.identity(computer);
+        }
         if !self.enabled {
             return Err(IdentityRefusal::Disabled);
         }
@@ -328,6 +453,9 @@ impl Pairings for Devices {
     }
 
     fn paired(&self, key: &ComputerKey) -> Option<Grant> {
+        if let Some(managed) = &self.managed {
+            return managed.paired(key);
+        }
         if !self.enabled {
             return None;
         }
@@ -453,7 +581,7 @@ fn load(home: &Path, fallback_name: String, kind: ComputerKind) -> io::Result<Lo
         .zip(key)
         .map(|((url, secret), key)| {
             let grants = if enabled {
-                let state = State {
+                let state = DeviceRoster {
                     devices: link.phones.clone(),
                     removed: link.removed.clone(),
                 };
@@ -504,8 +632,8 @@ fn load(home: &Path, fallback_name: String, kind: ComputerKind) -> io::Result<Lo
 }
 
 impl Store {
-    fn state(&self) -> State {
-        State {
+    fn state(&self) -> DeviceRoster {
+        DeviceRoster {
             devices: self.link.phones.clone(),
             removed: self.link.removed.clone(),
         }
@@ -514,7 +642,7 @@ impl Store {
     async fn run(
         mut self,
         mut commands: mpsc::Receiver<Command>,
-        publish: watch::Sender<Arc<State>>,
+        publish: watch::Sender<Arc<DeviceRoster>>,
     ) {
         while let Some(command) = commands.recv().await {
             let published = publish.clone();
@@ -548,11 +676,7 @@ impl Store {
     }
 
     fn pair(&mut self, request: Request, now: Millis) -> Result<String, Error> {
-        if request.kind != DeviceKind::Desktop
-            || canonical_key(&request.key).is_none()
-            || self.box_keys.contains(&request.key)
-            || request.name.encode_utf16().count() > 100
-        {
+        if !request.valid() || self.box_keys.contains(&request.key) {
             return Err(Error::InvalidDevice);
         }
         if !self.enabled {
@@ -601,16 +725,10 @@ impl Store {
         if !paired
             || request.phones.is_empty()
             || request.phones.len() > maximum
-            || request.phones.iter().any(|entry| {
-                canonical_key(&entry.key).is_none()
-                    || self.box_keys.contains(&entry.key)
-                    || entry.pairing.as_ref().is_some_and(|id| {
-                        id.len() > 32
-                            || !id
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                    })
-            })
+            || request
+                .phones
+                .iter()
+                .any(|entry| !entry.valid() || self.box_keys.contains(&entry.key))
         {
             return Err(Error::InvalidRemoval);
         }
