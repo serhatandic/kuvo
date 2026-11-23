@@ -148,9 +148,10 @@ column. The loop declarations cover each cut or outcome described by that loop.
   Helper launch still need a dedicated integration check. Both tagged
   published destinations match with the pinned OpenCode executable and the
   fixture's Keychain stand-ins.
-- **7.2 and 9.3** own installer and keeper integration and the fleet rehearsal,
-  including the pre-Rust backup and rollback drill. The move code currently
-  starts from the executable’s home gate or `rehome --run`. The installer and keeper own launching the new Helper.
+- **7.2 and 9.3** own installer and keeper integration and the fleet rehearsal.
+  Section 4 specifies the pre-Rust backup and manual recovery. The move code
+  starts from the executable’s home gate or `rehome --run`. The installer and
+  keeper own launching the new Helper.
 - **7.3** owns `stays` and `next` from the compatibility inventory, including
   the live response to unsigned beta.1 peers mail, old SSH settings verbs and
   repair after an old Mac has overwritten installation files.
@@ -178,12 +179,12 @@ Mac-built static executable, and on native Windows using LLVM MinGW.
 The lokum container runs an init so the harness is an ordinary process when
 the live-PID scenario checks it.
 
-With the verified OpenCode 2.2.6 package, C1 passes 26 checks on each
+With the verified OpenCode 2.2.6 package, C1 passes 29 checks on each
 executable, including its enclosing scenario. The focused Rust run passes
-16 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
+17 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
 plus their child harness. No TypeScript implementation was changed.
-The older malformed-journal assertion expects a different sentence from the
-one the TypeScript command emits. C1 checks the live command's receipt.
+The older malformed-journal assertion was updated to check the specific
+receipt the TypeScript command emits, also checked in C1.
 
 The Rust stored-format area passes 4/4. The holder area fails because the
 Rust executable does not yet implement the holder mode (4.1). Rust compat
@@ -196,11 +197,11 @@ and got the expected setup and personalities.
 
 | Fixture | Post-startup differential and separate assertions |
 |---|---|
-| 0.7.2 machine | Opens at 23 with the original key and relay secret. The rerun at `b6d7a501a` differs on 60 paths. `kuvo/info` differs and `kuvo/setup` differs only on the generated setup ID. |
-| 0.8.0-beta.1 machine | Opens at 23 with original identity and the saved `peersFrom` projected under `legacy`. The rerun at `b6d7a501a` differs on 54 paths, `kuvo/info` and the stable `you.key` in `kuvo/setup`. |
+| 0.7.2 machine | Opens at 23 with the original key and relay secret. The rerun with `8e3f4262b` differs on 57 paths. `kuvo/info` differs and `kuvo/setup` differs only on the generated setup ID. |
+| 0.8.0-beta.1 machine | Opens at 23 with original identity and the saved `peersFrom` projected under `legacy`. The rerun with `8e3f4262b` differs on 53 paths, `kuvo/info` and the stable `you.key` in `kuvo/setup`. |
 | 0.7.2 Mac app folder | All 76 published paths with the engine stand-in and all 81 with OpenCode 2.2.6 match. The move reply, Git backlink, and Keychain stand-in match. After startup, the setup answer matches and 40 runtime paths differ in the recorded run. |
 | 0.8.0-beta.1 Mac app folder | All 79 published paths with the engine stand-in and all 84 with OpenCode 2.2.6 match, including the pending letter. The move reply, Git backlink, and Keychain stand-in match. After startup, the setup answer matches and 44 runtime paths differ in the recorded run. |
-| Current TypeScript beta | Already at 23. The setup answer matches. After preparing an offline copy of the fixture, `kuvo/info` and 45 paths differ at `b6d7a501a`. |
+| Current TypeScript beta | Already at 23. The setup answer matches. After preparing an offline copy of the fixture, `kuvo/info` and 46 paths differ with `8e3f4262b`. |
 
 The differential counts include directory entries. The sequence asked for
 `GET kuvo/info` and `GET kuvo/setup` on each stopped machine seed. The entire
@@ -213,7 +214,9 @@ The original machine runs reported 62, 54 and 48 differing paths. Main through
 `b417a12e8` reported 62, 57 and 51. The rerun after merging 2.1b at
 `ac1c56076` reported 60, 56 and 50. The next run on the publication branch
 reported 57, 51 and 42. The rerun with 2.1, 2.2 and 3.2b on main reported
-60, 54 and 45. The prior owner groups still covered the union. The 0.7.2
+60, 54 and 45. The rerun after merging `8e3f4262b` reported 57, 53 and 46.
+The additional current-beta difference is the startup document counters in
+`run/link.json`. The prior owner groups still cover the union. The 0.7.2
 phone present only in Rust's startup roster has its original timestamp;
 expiry and the membership projection belong to 2.2 and 2.1. The session
 list remains a 3.2 producer. The latest `run/lists` directory is present on
@@ -227,7 +230,7 @@ startup and request sequence ran in each binary.
 | `run/link.seen` | **Made identical.** The 2.1b startup writer matches the empty marker. The installed 0.7 Mac uses the mtime in its leave-running path. That released-client drill belongs to 7.3 and 9.3. |
 | `run/link.version` | **Made identical at the writer boundary.** Both write the build identifier as plain UTF-8. The identifier differs with the executable. The keeper's version selection and rollback belong to 7.1. |
 | `run/link.needed` | **Owned by 7.1.** The keeper's `kuvo-start` reads it to decide when to start the link. The agents' fence and browser also read it. |
-| `run/link.json` startup fields, `run/docs.changed`, `run/setup-checkpoints/*.json` | **Owned by 2.1.** The current-beta link now matches. Older cases still differ in the startup roster's phone projection, empty membership fields and beta.1 signing and ownership fields. `setup/lead.ts`, `setup/membership.ts`, `state.ts` and `documents/changed.ts` write these fields and the document notification. Checkpoint file names embed a signature-derived hash. New setups create different IDs and keys. The stable roster fields still differ, so the older checkpoints do too. Link adoption with an attached legacy Mac also needs 7.3. |
+| `run/link.json` startup fields, `run/docs.changed`, `run/setup-checkpoints/*.json` | **Owned by 2.1.** The current-beta link differs on startup peer and phone document counters (`kuvo_setup/src/document.rs`). Older cases differ in the startup roster's phone projection, empty membership fields and beta.1 signing and ownership fields. `setup/lead.ts`, `setup/membership.ts`, `state.ts` and `documents/changed.ts` write these fields and the document notification. Checkpoint file names embed a signature-derived hash. New setups create different IDs and keys. The stable roster fields still differ, so the older checkpoints do too. Link adoption with an attached legacy Mac also needs 7.3. |
 | `run/setup-card.json` | **Owned by 2.3 and 5.2.** Installation discovery reads the startup card. The release cases differ in first-write timing or the stable `used` field. The new setup ID and card clock may vary. See the [2.1 startup file audit](rust-setup-coverage.md#startup-file-audit) for the queue and usage inputs. |
 | `run/peer-reach.json`, `run/peer-reach-checked.json` | **Owned by 2.4.** These are the peer reach projections from `peers/reach.ts`. Clock values are observations at startup. The stable records and file presence still need to match. |
 | `run/agents.json` | **Owned by 4.1.** The legacy roster export is read by `agents/main.ts` and `peers/known.ts`. |
