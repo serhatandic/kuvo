@@ -599,6 +599,77 @@ async fn a_destination_replays_only_the_committed_bundles_receipt() {
 }
 
 #[tokio::test]
+async fn staged_move_parts_survive_a_restart_and_only_acknowledge_the_bound_bundle() {
+    use kuvo_peers::{
+        directory::{Member, Roster},
+        moves::transfer::{BundleSize, IncomingBundle, PART_BYTES},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use sha2::{Digest, Sha256};
+    use std::sync::Arc;
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("run/moves/mov_copy.json");
+        let staged = home.path().join("run/moves/mov_copy");
+        let mut data = vec![b'a'; PART_BYTES as usize];
+        data.push(b'b');
+        let hash = encode(&Sha256::digest(&data));
+        let source = encode(&public(PEER_KEY));
+        let dest = encode(&public(RUST_KEY));
+        let journal = json!({
+            "formatVersion":1, "id":"mov_copy", "thing":"ses_copy", "kind":"chat", "name":"Copy",
+            "role":"to", "stage":"copying", "peer":source, "from":source, "to":dest,
+            "sessions":[], "started":1, "size":data.len(), "sent":0, "generation":2, "hash":hash,
+            "safeSwitch":true, "createdSessions":[],
+        });
+        files::write_atomic(&path, &serde_json::to_vec(&journal).unwrap()).unwrap();
+        let roster = || Roster {
+            here: Some(public(RUST_KEY)), main: Some(public(RUST_KEY)), name: "Destination".into(),
+            members: vec![Member {
+                key: public(PEER_KEY), address: Some(PEER_ADDRESS), name: "Source".into(),
+                kind: ComputerKind::Machine,
+            }],
+        };
+        for (index, part) in data.chunks(PART_BYTES as usize).enumerate() {
+            let (relay, mut wire) = TestRelay::connect().await;
+            let resident = ResidentPeers::start(home.path(), roster(), Some(relay), None, false, Arc::new(|| 12))
+                .await.unwrap();
+            // The same sender may still have an old generation in flight.
+            for generation in [1, 2] {
+                let packet = json!({"at":12, "move": {
+                    "id":"mov_copy", "op":"part", "generation":generation, "hash":hash,
+                    "i":index, "of":2, "d":encode(part),
+                }});
+                let bytes = Envelope(packet.as_object().unwrap().clone())
+                    .seal(&PEER_KEY, &public(RUST_KEY)).unwrap();
+                wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+            }
+            loop {
+                let (kind, _, body) = wire.frame().await;
+                if kind == Kind::Mail {
+                    let opened = Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                    if let Some(reply) = opened.0.get("move") {
+                        assert_eq!(*reply, json!({"id":"mov_copy", "op":"got", "generation":2, "hash":hash, "i":index}));
+                        break;
+                    }
+                }
+            }
+            assert_eq!(files::read(&staged.join("got")).unwrap().unwrap(), if index == 0 { &b"0\n"[..] } else { &b"0\n1\n"[..] });
+            drop(resident);
+        }
+        let complete = IncomingBundle::open(&staged, BundleSize::new(data.len() as u64, &hash).unwrap()).unwrap();
+        assert_eq!(files::read(complete.verify().unwrap()).unwrap().unwrap(), data);
+        let saved: serde_json::Value = serde_json::from_slice(&files::read(&path).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["sent"], data.len());
+        assert_eq!(saved["createdSessions"], json!([]));
+        assert!(saved.get("activation").is_none());
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn live_stream_parts_and_temporary_reads_leave_saved_peer_reach_alone() {
     use kuvo_peers::{
         directory::{Member, Roster},
