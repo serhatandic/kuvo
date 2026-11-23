@@ -18,11 +18,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod credentials;
 pub(super) mod destination;
 mod git;
 mod keychain;
 mod legacy;
 mod release;
+
+pub use credentials::{GenericPassword, KeychainItems};
 
 const PENDING: &str = "updates/rehome/publication.json";
 const JOURNAL: &str = "updates/rehome/journal.json";
@@ -54,6 +57,9 @@ pub enum CutoverStep {
     Placed,
     FirstGitRepair,
     FirstHistory,
+    CredentialAside,
+    CredentialCopy,
+    CredentialRetired,
     Git,
     Layout,
     Published,
@@ -116,6 +122,8 @@ struct Publication {
     destination: destination::Destination,
     #[serde(default)]
     history: history::External,
+    #[serde(default, skip_serializing_if = "credentials::Credentials::is_empty")]
+    credentials: credentials::Credentials,
     #[serde(default)]
     merged: Vec<merge::Merged>,
     counts: super::counts::Comparison,
@@ -205,6 +213,14 @@ fn has_pending(home: &Home) -> Result<bool, Error> {
     Ok(metadata(&disk.path(PENDING)?)?.is_some())
 }
 
+fn take_rehome(disk: &Disk, wait: Duration) -> Result<OwnedLock, Error> {
+    legacy::retire_lock(disk)?;
+    Ok(OwnedLock::acquire_rehome(
+        &disk.path("updates/rehome/lock")?,
+        wait,
+    )?)
+}
+
 pub fn unfinished(home: &Home) -> Result<Option<PathBuf>, Error> {
     let disk = Disk(home.root().into());
     let pending = disk.path(PENDING)?;
@@ -217,6 +233,24 @@ pub fn unfinished(home: &Home) -> Result<Option<PathBuf>, Error> {
 /// Resume a Rust publication using the installer's original inputs. The
 /// mover validates the saved paths again after it has taken the lock.
 pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outcome, Error> {
+    resume_using(home, account, system_account, None)
+}
+
+pub fn resume_with_keychain(
+    home: &Home,
+    account: &Path,
+    system_account: &Path,
+    items: &dyn KeychainItems,
+) -> Result<Outcome, Error> {
+    resume_using(home, account, system_account, Some(items))
+}
+
+fn resume_using(
+    home: &Home,
+    account: &Path,
+    system_account: &Path,
+    items: Option<&dyn KeychainItems>,
+) -> Result<Outcome, Error> {
     let disk = Disk(home.root().into());
     let pending = disk.path(PENDING)?;
     let publication = match read_pending(&pending) {
@@ -227,10 +261,7 @@ pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outc
                     == source.file_name().is_some_and(|id| id == "run.kuvo.code")
             {
                 let _layout = layout::lock_for_move(home, Duration::from_secs(3))?;
-                let _handover = OwnedLock::acquire_rehome(
-                    &disk.path("updates/rehome/lock")?,
-                    Duration::from_secs(3),
-                )?;
+                let _handover = take_rehome(&disk, Duration::from_secs(3))?;
                 if let Some(message) = legacy::undo(&disk, &source, layout::inspect(home)?)? {
                     return Ok(Outcome {
                         result: "failed",
@@ -269,7 +300,7 @@ pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outc
         release: &plan.release,
         engine: &plan.engine,
     }
-    .execute(|_| {}))
+    .execute_using(items, |_| {}))
 }
 
 /// The standalone move keeps its predecessor where it was. A legacy move
@@ -336,8 +367,7 @@ pub fn settle(home: &Home, account: &Path, system_account: &Path) -> Result<Outc
         return Ok(nothing());
     }
     let _layout = layout::lock_for_move(home, Duration::from_secs(3))?;
-    let _handover =
-        OwnedLock::acquire_rehome(&disk.path("updates/rehome/lock")?, Duration::from_secs(3))?;
+    let _handover = take_rehome(&disk, Duration::from_secs(3))?;
     let Some(record) = format.read(&state)? else {
         return Ok(nothing());
     };
@@ -388,8 +418,7 @@ pub fn settle_started(home: &Home, account: &Path) -> Result<(), Error> {
     let _layout = layout::lock_for_move(home, Duration::from_secs(3))?;
     let disk = Disk(home.root().into());
     let pending = disk.path(PENDING)?;
-    let _handover =
-        OwnedLock::acquire_rehome(&disk.path("updates/rehome/lock")?, Duration::from_secs(3))?;
+    let _handover = take_rehome(&disk, Duration::from_secs(3))?;
     let Some(publication) = read_pending(&pending)? else {
         return Ok(());
     };
@@ -430,8 +459,24 @@ fn is_account_home(home: &Home, account: &Path) -> io::Result<bool> {
 impl Run<'_> {
     /// The layout lock excludes startup until the marker commits. Hold the
     /// rehome lock as well for the signed key tool and any legacy caller.
-    pub fn execute(&self, mut complete: impl FnMut(CutoverStep)) -> Outcome {
-        self.run(&mut complete).unwrap_or_else(|error| {
+    pub fn execute(&self, complete: impl FnMut(CutoverStep)) -> Outcome {
+        self.execute_using(None, complete)
+    }
+
+    pub fn execute_with_keychain(
+        &self,
+        items: &dyn KeychainItems,
+        complete: impl FnMut(CutoverStep),
+    ) -> Outcome {
+        self.execute_using(Some(items), complete)
+    }
+
+    fn execute_using(
+        &self,
+        items: Option<&dyn KeychainItems>,
+        mut complete: impl FnMut(CutoverStep),
+    ) -> Outcome {
+        self.run(items, &mut complete).unwrap_or_else(|error| {
             let pending = has_pending(self.home).unwrap_or(true);
             Outcome {
                 result: if pending {
@@ -448,7 +493,11 @@ impl Run<'_> {
         })
     }
 
-    fn run(&self, complete: &mut impl FnMut(CutoverStep)) -> Result<Outcome, Error> {
+    fn run(
+        &self,
+        items: Option<&dyn KeychainItems>,
+        complete: &mut impl FnMut(CutoverStep),
+    ) -> Result<Outcome, Error> {
         let id = bundle_id(self.bundle)?;
         let real = is_account_home(self.home, self.system_account)?;
         if real != (id == "run.kuvo.code") {
@@ -484,8 +533,7 @@ impl Run<'_> {
             return Err(error);
         }
         let _layout = layout::lock_for_move(self.home, Duration::from_secs(3))?;
-        let lock = disk.path("updates/rehome/lock")?;
-        let _handover = OwnedLock::acquire_rehome(&lock, Duration::from_secs(3))?;
+        let _handover = take_rehome(&disk, Duration::from_secs(3))?;
         let progress = Progress(disk.path("updates/rehome/run.phase")?);
         // A legacy record is a startup fence in its own right, even when
         // there is no Rust publication record beside it.
@@ -528,10 +576,10 @@ impl Run<'_> {
                 if publication.phase == Phase::Settle {
                     progress.show("settle");
                 }
-                publication.finish(self, &disk, real, complete)
+                publication.finish(self, &disk, real, items, complete)
             } else {
                 progress.show("plan");
-                self.attempt(&disk, &app, real, &progress, complete)
+                self.attempt(&disk, &app, real, &progress, items, complete)
             };
             match attempt {
                 Err(error @ Error::SourceChanged(point)) => {
@@ -562,6 +610,7 @@ impl Run<'_> {
         app: &App,
         real: bool,
         progress: &Progress,
+        items: Option<&dyn KeychainItems>,
         complete: &mut impl FnMut(CutoverStep),
     ) -> Result<Outcome, Error> {
         let source = self
@@ -622,11 +671,16 @@ impl Run<'_> {
             }
         };
         let plan = Plan::new(self, source, app.clone(), began)?;
-        let mut prepared = Publication::prepare(plan, staged, input, disk)?;
+        let credentials = if items.is_some() {
+            credentials::Credentials::plan(&plan)?
+        } else {
+            credentials::Credentials::default()
+        };
+        let mut prepared = Publication::prepare(plan, staged, input, disk, credentials)?;
         prepared.history.validate(self.account)?;
         prepared.write(disk)?;
         complete(CutoverStep::Prepared);
-        prepared.finish(self, disk, real, complete)
+        prepared.finish(self, disk, real, items, complete)
     }
 }
 
@@ -716,7 +770,13 @@ impl Plan {
 }
 
 impl Publication {
-    fn prepare(plan: Plan, staged: StagedApp, input: String, disk: &Disk) -> Result<Self, Error> {
+    fn prepare(
+        plan: Plan,
+        staged: StagedApp,
+        input: String,
+        disk: &Disk,
+        credentials: credentials::Credentials,
+    ) -> Result<Self, Error> {
         let staged_disk = Disk(staged.path.clone());
         let destination = destination::Destination::capture(disk, plan.began)?;
         let target = disk.path(STAGING)?;
@@ -767,6 +827,7 @@ impl Publication {
             repairs,
             destination,
             history: staged.history,
+            credentials,
             merged: staged.merged,
             counts: staged.counts,
             leftovers: staged.leftovers,
@@ -829,6 +890,7 @@ impl Publication {
         }
         self.destination.validate()?;
         self.history.validate(run.account)?;
+        self.credentials.validate(&self.plan)?;
         self.repairs.validate()
     }
 
@@ -842,15 +904,21 @@ impl Publication {
         run: &Run<'_>,
         disk: &Disk,
         real: bool,
+        items: Option<&dyn KeychainItems>,
         complete: &mut impl FnMut(CutoverStep),
     ) -> Result<Outcome, Error> {
+        if items.is_none() && !self.credentials.is_empty() {
+            return Err(invalid(
+                "The move needs its Claude Code Keychain handover to continue.",
+            ));
+        }
         if self.phase == Phase::Install {
             self.plan.write_journal(disk, "install")?;
             if let Err(error) = self.destination.take(disk, self.plan.began, || {
                 complete(CutoverStep::FirstDisplacement)
             }) {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 eprintln!("The move stopped at install: {error}");
                 return note_failure(disk, "failed", "install", FAILED);
             }
@@ -865,7 +933,7 @@ impl Publication {
                 keychain::copy(&self.plan, run.account, || complete(CutoverStep::KeyCopies))
             }) {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 if matches!(error, Error::SourceChanged(_)) {
                     return Err(error);
                 }
@@ -879,12 +947,12 @@ impl Publication {
             self.plan.write_journal(disk, "place")?;
             if let Err(error) = self.source_is_unchanged(ChangePoint::Place) {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 return Err(error);
             }
             if let Err(error) = self.place(disk, complete) {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 eprintln!("The move stopped at place: {error}");
                 return note_failure(disk, "failed", "place", FAILED);
             }
@@ -893,7 +961,7 @@ impl Publication {
                 .and_then(|_| processes::no_open_writers(&self.plan.from))
             {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 return Err(error);
             }
             self.advance(Phase::Fix, disk)?;
@@ -905,10 +973,21 @@ impl Publication {
                 .repairs
                 .apply(|| complete(CutoverStep::FirstGitRepair))
                 .and_then(|_| self.history.apply(|| complete(CutoverStep::FirstHistory)))
+                .and_then(|_| {
+                    if let Some(items) = items {
+                        for index in 0..self.credentials.len() {
+                            if self.credentials.prepare(index, &self.plan, items)? {
+                                self.write(disk)?;
+                            }
+                            self.credentials.copy(index, &self.plan, items, complete)?;
+                        }
+                    }
+                    Ok(())
+                })
                 .and_then(|_| self.source_is_unchanged(ChangePoint::Fix))
             {
                 self.advance(Phase::Abort, disk)?;
-                self.rollback(disk, run.account)?;
+                self.rollback(disk, run.account, items)?;
                 if matches!(error, Error::SourceChanged(_)) {
                     return Err(error);
                 }
@@ -920,6 +999,9 @@ impl Publication {
         }
         if self.phase == Phase::Clear {
             self.plan.write_journal(disk, "clear")?;
+            if let Some(items) = items {
+                self.credentials.retire(&self.plan, items, complete)?;
+            }
             self.history.retire_caches()?;
             self.moved_at.get_or_insert_with(now);
             self.write(disk)?;
@@ -952,7 +1034,7 @@ impl Publication {
             return Ok(done(&state, real));
         }
         if self.phase == Phase::Abort {
-            self.rollback(disk, run.account)?;
+            self.rollback(disk, run.account, items)?;
             return Err(invalid("The unfinished move was taken back. Try again."));
         }
         Err(invalid("The saved move is at an invalid step."))
@@ -1002,7 +1084,12 @@ impl Publication {
             "to":self.plan.to.join(layout::FILE),"formatVersion":1}),
         );
         record(json!({"act":"made","path":self.plan.to.join("box/kind"),"formatVersion":1}));
-        for effect in self.repairs.actions().chain(self.history.actions()) {
+        for effect in self
+            .repairs
+            .actions()
+            .chain(self.history.actions())
+            .chain(self.credentials.actions(&self.plan)?)
+        {
             record(effect);
         }
         files::write_atomic(&disk.path(ACTS)?, log.as_bytes())?;
@@ -1016,7 +1103,15 @@ impl Publication {
         Ok(())
     }
 
-    fn rollback(&self, disk: &Disk, account: &Path) -> Result<(), Error> {
+    fn rollback(
+        &self,
+        disk: &Disk,
+        account: &Path,
+        items: Option<&dyn KeychainItems>,
+    ) -> Result<(), Error> {
+        if let Some(items) = items {
+            self.credentials.undo(&self.plan, items)?;
+        }
         self.history.undo()?;
         self.repairs.undo_outside()?;
         for &index in self.placed.iter().rev() {

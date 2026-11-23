@@ -1012,6 +1012,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "unicode-normalization",
  "url",
 ]
 

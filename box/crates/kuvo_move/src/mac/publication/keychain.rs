@@ -19,6 +19,11 @@ const SHORT_TIMEOUT: Duration = Duration::from_secs(180);
 struct Reply {
     #[serde(default)]
     reason: String,
+    error: Option<String>,
+    #[serde(rename = "status")]
+    os_status: Option<i32>,
+    #[serde(skip)]
+    exit: Option<i32>,
     #[serde(default)]
     unreadable: Vec<String>,
 }
@@ -49,6 +54,20 @@ pub(super) fn copy(plan: &Plan, account: &Path, complete: impl FnOnce()) -> Resu
         }
     }
     if !copied {
+        let reason = if reply.reason.is_empty() {
+            reply
+                .exit
+                .map_or_else(|| "didn't finish".into(), |code| format!("exit {code}"))
+        } else {
+            reply.reason.clone()
+        };
+        let status = reply
+            .os_status
+            .map_or_else(String::new, |code| format!(" (OSStatus {code})"));
+        eprintln!(
+            "kuvo-keys copy: {reason}{status}: {}",
+            reply.error.as_deref().unwrap_or("it said nothing")
+        );
         return Err(super::invalid(match reply.reason.as_str() {
             "locked" => {
                 "Your Keychain is locked, so Kuvo can't take this Mac's keys along. Unlock it (log out and back in, or open Keychain Access), then try again."
@@ -63,9 +82,19 @@ pub(super) fn copy(plan: &Plan, account: &Path, complete: impl FnOnce()) -> Resu
     let (checked, reply) = helper_command(&helper, "check", plan, account)?;
     if !checked {
         let message = match reply.unreadable.len() {
-            0 => "Kuvo couldn't check this Mac's keys after copying them, so nothing was moved. Try again.".into(),
-            1 => "Kuvo couldn't read one of this Mac's keys back after copying it. Try again.".into(),
-            len => format!("Kuvo couldn't read {len} of this Mac's keys back after copying them. Try again."),
+            0 => {
+                eprintln!(
+                    "Kuvo Helper keys check: {}",
+                    reply.error.as_deref().unwrap_or("it said nothing")
+                );
+                "Kuvo couldn't check this Mac's keys after copying them, so nothing was moved. Try again.".into()
+            }
+            1 => {
+                "Kuvo couldn't read one of this Mac's keys back after copying it. Try again.".into()
+            }
+            len => format!(
+                "Kuvo couldn't read {len} of this Mac's keys back after copying them. Try again."
+            ),
         };
         return Err(super::invalid(&message));
     }
@@ -165,6 +194,7 @@ fn call(
         thread::sleep(Duration::from_millis(25));
     }
     let status = child.wait()?;
-    let reply = reader.join().unwrap_or_default();
+    let mut reply = reader.join().unwrap_or_default();
+    reply.exit = status.code();
     Ok((status.success(), reply))
 }

@@ -211,7 +211,9 @@ export interface Ran { status: number | null; signal: string | null; said: Recor
 
 /** `kuvo-link.js rehome .kuvo-code …`, run as the installer runs it: in the box's home. */
 export function rehome(mac: Mac, args: string[], env: Record<string, string> = {}): Ran {
-  const result = spawnSync(process.execPath, [MAIN, "rehome", ".kuvo-code", ...args], {
+  const binary = process.env.KUVO_TEST_REHOME_BIN
+  const command = ["rehome", ".kuvo-code", ...args]
+  const result = spawnSync(binary || process.execPath, binary ? command : [MAIN, ...command], {
     cwd: mac.home, encoding: "utf8", timeout: 120_000,
     env: { ...clean, HOME: mac.home, TMPDIR: join(mac.home, "tmp"), BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: mac.K, ...env },
   })

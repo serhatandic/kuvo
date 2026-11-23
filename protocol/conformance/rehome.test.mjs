@@ -257,6 +257,7 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
       { act: "made", path: path.join(app.K, "box/kind") },
     ];
     write(path.join(rehome, "journal.acts"), actions.map(act => JSON.stringify({ ...act, formatVersion: 1 })).join("\n") + "\n");
+    write(path.join(rehome, "lock/pid"), "2147483647\n");
     const resumed = command([".kuvo-code", "--resume"], 1);
     assert.equal(resumed.result, "failed");
     assert.equal(resumed.message, "It stopped part way (place), so it went back.");
@@ -287,6 +288,12 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
   await t.test("a path in place of the home name is rejected as usage", () => {
     reset();
     assert.equal(command(["../.kuvo-code", "--status"], 2), null);
+    const plist = path.join(app.bundle, "Contents/Info.plist");
+    const originalPlist = fs.readFileSync(plist, "utf8");
+    write(plist, originalPlist.replace(path.basename(app.S), "run.kuvo.code"));
+    const refused = move(1);
+    assert.equal(refused.result, "refused");
+    assert.equal(refused.message, "Kuvo itself moves into ~/.kuvo-code only.");
     untouched();
   });
 
@@ -372,7 +379,7 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     ];
     const tasks = files.map(file => launch(file, ["-c", "print ready; read -r line"], env, app.home, "pipe"));
     try {
-      await Promise.all(tasks.map(task => once(task.child.stdout, "data")));
+      await Promise.all(tasks.map(task => once(task.child.stdout, "data", { signal: AbortSignal.timeout(5000) })));
       assert.equal(move(0).result, "done");
       await until(() => tasks[2].child.signalCode || tasks[2].child.exitCode !== null, "The older app did not exit", 3000);
       assert.equal(tasks[2].child.signalCode, "SIGTERM");

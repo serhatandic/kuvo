@@ -1,10 +1,11 @@
 #![cfg(target_os = "macos")]
 
-use kuvo_move::mac::{AppStep, CutoverStep, Run, stage};
+use kuvo_move::mac::{AppStep, CutoverStep, GenericPassword, KeychainItems, Run, stage};
 use kuvo_store::{files, home::Home, layout};
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     fs,
     io::{self, BufRead, BufReader, Read, Write},
@@ -443,16 +444,81 @@ fn cut_child(root: &Path, world: Option<&Path>, test: &str, boundary: &str) {
 }
 
 fn publish(app: &App, complete: impl FnMut(CutoverStep)) -> kuvo_move::mac::Outcome {
+    let path = app.home.join("generic-keychain");
+    let keychain = path.is_dir().then(|| FileKeychain::new(path));
+    publish_using(app, keychain.as_ref(), complete)
+}
+
+fn publish_using(
+    app: &App,
+    keychain: Option<&FileKeychain>,
+    complete: impl FnMut(CutoverStep),
+) -> kuvo_move::mac::Outcome {
     let home = Home::new(app.destination.clone()).unwrap();
-    Run {
+    let system_account = app.home.join("unused-system-account");
+    let run = Run {
         home: &home,
         account: &app.home,
-        system_account: &app.home.join("unused-system-account"),
+        system_account: &system_account,
         bundle: &app.bundle,
         release: &app.release,
         engine: &app.engine,
+    };
+    match keychain {
+        Some(keychain) => run.execute_with_keychain(keychain, complete),
+        None => run.execute(complete),
     }
-    .execute(complete)
+}
+
+struct FileKeychain {
+    root: PathBuf,
+    fail_after_write: Option<String>,
+    armed: Cell<bool>,
+    fail_read: Cell<bool>,
+}
+
+impl FileKeychain {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            fail_after_write: None,
+            armed: Cell::new(false),
+            fail_read: Cell::new(false),
+        }
+    }
+}
+
+impl KeychainItems for FileKeychain {
+    fn read(&self, service: &str) -> io::Result<Option<GenericPassword>> {
+        if self.fail_after_write.as_deref() == Some(service) && self.fail_read.replace(false) {
+            return Err(io::Error::other("read-back failed in the test"));
+        }
+        files::read(&self.root.join(service))?
+            .map(|bytes| {
+                let (account, value) = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                Ok(GenericPassword { account, value })
+            })
+            .transpose()
+    }
+
+    fn write(&self, service: &str, item: &GenericPassword) -> io::Result<()> {
+        let body = serde_json::to_vec(&(&item.account, &item.value)).map_err(io::Error::other)?;
+        files::write_atomic(&self.root.join(service), &body)?;
+        if self.fail_after_write.as_deref() == Some(service) && self.armed.replace(false) {
+            self.fail_read.set(true);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, service: &str, account: &str) -> io::Result<()> {
+        if self
+            .read(service)?
+            .is_some_and(|item| item.account != account)
+        {
+            return Err(io::Error::other("wrong test account"));
+        }
+        files::remove_file_synced(&self.root.join(service))
+    }
 }
 
 #[test]
@@ -874,6 +940,135 @@ fn staged_release(home: &Path) -> App {
     app
 }
 
+fn claude_service(folder: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use unicode_normalization::UnicodeNormalization;
+    let name: String = folder.to_str().unwrap().nfc().collect();
+    format!(
+        "Claude Code-credentials-{}",
+        hex::encode(&Sha256::digest(name)[..4])
+    )
+}
+
+#[test]
+fn claude_keychain_copy_survives_each_effect_and_requires_its_adapter_on_resume() {
+    for boundary in [
+        CutoverStep::CredentialAside,
+        CutoverStep::CredentialCopy,
+        CutoverStep::CredentialRetired,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let app = staged_release(root.path());
+        let folder = Path::new("agents/claude/accounts/cafe\u{301}");
+        put(&app.source.join(folder).join("profile.json"), b"settings");
+        let target = app.destination.join(folder);
+        let items = FileKeychain::new(app.home.join("generic-keychain"));
+        let source_name = claude_service(&app.source.join(folder));
+        let target_name = claude_service(&target);
+        let aside_name = format!("{target_name}.before-kuvo-move");
+        let expected = GenericPassword {
+            account: "the account".into(),
+            value: b"fixture source token".to_vec(),
+        };
+        let previous = GenericPassword {
+            account: "previous account".into(),
+            value: b"fixture prior contents".to_vec(),
+        };
+        items.write(&source_name, &expected).unwrap();
+        items.write(&target_name, &previous).unwrap();
+        let world = app.home.join("credential-world.json");
+        put(
+            &world,
+            &serde_json::to_vec(
+                &serde_json::json!({"home":app.home,"S":app.source,"K":app.destination,
+            "bundle":app.bundle,"release":app.release,"engine":app.engine}),
+            )
+            .unwrap(),
+        );
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{boundary:?}"),
+        );
+        assert!(target.join("profile.json").is_file());
+        assert_eq!(
+            items.read(&source_name).unwrap().is_none(),
+            boundary == CutoverStep::CredentialRetired
+        );
+        assert!(items.read(&aside_name).unwrap().as_ref() == Some(&previous));
+
+        let journal =
+            fs::read_to_string(app.destination.join("updates/rehome/publication.json")).unwrap();
+        for item in [&expected, &previous] {
+            assert!(!journal.contains(std::str::from_utf8(&item.value).unwrap()));
+            assert!(!journal.contains(&serde_json::to_string(&item.value).unwrap()));
+        }
+        let home = Home::new(app.destination.clone()).unwrap();
+        let system = app.home.join("unused-system-account");
+        assert_eq!(
+            kuvo_move::mac::resume(&home, &app.home, &system)
+                .unwrap()
+                .exit_code(),
+            3
+        );
+        assert!(!app.destination.join(layout::FILE).exists());
+        let recovered =
+            kuvo_move::mac::resume_with_keychain(&home, &app.home, &system, &items).unwrap();
+        assert_eq!(
+            recovered.exit_code(),
+            0,
+            "{:?}",
+            serde_json::to_value(recovered)
+        );
+        assert!(items.read(&target_name).unwrap().as_ref() == Some(&expected));
+        assert!(items.read(&source_name).unwrap().is_none());
+        assert!(items.read(&aside_name).unwrap().is_none());
+        assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
+    }
+}
+
+#[test]
+fn failed_claude_keychain_read_back_restores_the_existing_item_and_files() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let folder = Path::new("agents/claude/accounts/custom");
+    let source = app.source.join(folder);
+    let target = app.destination.join(folder);
+    put(&source.join("profile.json"), b"settings");
+    let source_name = claude_service(&source);
+    let target_name = claude_service(&target);
+    let expected = GenericPassword {
+        account: "account".into(),
+        value: b"fixture source".to_vec(),
+    };
+    let existing = GenericPassword {
+        account: "account".into(),
+        value: b"fixture previous".to_vec(),
+    };
+    let mut items = FileKeychain::new(app.home.join("generic-keychain"));
+    items.write(&source_name, &expected).unwrap();
+    items.write(&target_name, &existing).unwrap();
+    items.fail_after_write = Some(target_name.clone());
+    items.armed.set(true);
+    let failed = publish_using(&app, Some(&items), |_| {});
+    assert_eq!(failed.exit_code(), 1, "{:?}", serde_json::to_value(failed));
+    assert!(items.read(&source_name).unwrap().as_ref() == Some(&expected));
+    assert!(items.read(&target_name).unwrap().as_ref() == Some(&existing));
+    assert!(
+        items
+            .read(&format!("{target_name}.before-kuvo-move"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(source.join("profile.json").is_file());
+    assert!(!target.exists());
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(publish_using(&app, Some(&items), |_| {}).exit_code(), 0);
+    assert!(items.read(&source_name).unwrap().is_none());
+    assert!(items.read(&target_name).unwrap().as_ref() == Some(&expected));
+}
+
 #[test]
 fn a_write_during_copy_is_carried_by_the_same_move() {
     let root = tempfile::tempdir().unwrap();
@@ -909,6 +1104,32 @@ fn a_write_during_copy_is_carried_by_the_same_move() {
         fs::read(app.destination.join("chats/c1/new.md")).unwrap(),
         b"written during copy"
     );
+}
+
+#[test]
+fn linked_machine_settings_are_copied_without_replacing_the_external_file() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("machine");
+    let source = root.path().join("settings.json");
+    let saved = br#"{"instructions":["keep this"]}"#;
+    put(&source, saved);
+    put(&target.join("bin/kuvo-start"), b"old launcher");
+    let linked = target.join("config/opencode/opencode.json");
+    fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &linked).unwrap();
+
+    let home = Home::new(target.clone()).unwrap();
+    kuvo_move::open(&home, kuvo_os::platform::Platform::Mac, None, |_| {}).unwrap();
+    assert_eq!(fs::read_link(&linked).unwrap(), source);
+    assert_eq!(fs::read(&source).unwrap(), saved);
+    assert_eq!(
+        fs::read(target.join("box/adopted-from/opencode.json")).unwrap(),
+        saved
+    );
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(target.join("box/opencode.json")).unwrap()).unwrap();
+    assert_eq!(settings["instructions"], serde_json::json!(["keep this"]));
+    assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
 }
 
 #[test]

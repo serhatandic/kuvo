@@ -25,12 +25,19 @@ struct Toucher {
 struct Discovery<'a> {
     source: &'a Path,
     actual: PathBuf,
+    isolated_account: Option<PathBuf>,
     ancestors: BTreeSet<u32>,
 }
 
 impl<'a> Discovery<'a> {
     fn new(source: &'a Path) -> Result<Self, Error> {
         let actual = source.canonicalize()?;
+        let account = Account::current()?.home.canonicalize()?;
+        let isolated_account = actual
+            .ancestors()
+            .nth(3)
+            .filter(|source| *source != account)
+            .map(Path::to_owned);
         let list = Command::new("/bin/ps")
             .env_clear()
             .args(["-axo", "pid=,ppid="])
@@ -56,6 +63,7 @@ impl<'a> Discovery<'a> {
         Ok(Self {
             source,
             actual,
+            isolated_account,
             ancestors,
         })
     }
@@ -133,6 +141,11 @@ impl<'a> Discovery<'a> {
         let Some(bundle) = app_of(executable) else {
             return false;
         };
+        if let Some(account) = &self.isolated_account
+            && !bundle.starts_with(account)
+        {
+            return false;
+        }
         if bundle == mover || bundle.canonicalize().is_ok_and(|actual| actual == mover) {
             return false;
         }

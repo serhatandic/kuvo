@@ -1,6 +1,6 @@
 //! Undo a predecessor's private file placements before it cleared its source.
 use super::{ACTS, JOURNAL, STAGING, STATE, now, stamp, write_json};
-use crate::{Disk, Error, json_at, metadata};
+use crate::{Disk, Error, entries, json_at, metadata};
 use kuvo_store::{files, format::ObjectFormat, layout};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -8,6 +8,38 @@ use std::{
     fs, io,
     path::{Component, Path, PathBuf},
 };
+
+/// A stopped TypeScript mover left a PID file without a Rust owner record.
+/// The caller holds the layout lock while it retires that old lock.
+pub(super) fn retire_lock(disk: &Disk) -> Result<(), Error> {
+    let lock = disk.path("updates/rehome/lock")?;
+    let pid_path = disk.path("updates/rehome/lock/pid")?;
+    if !metadata(&pid_path)?.is_some_and(|entry| entry.is_file()) || entries(&lock)?.len() != 1 {
+        return Ok(());
+    }
+    let Some(bytes) = files::read(&pid_path)? else {
+        return Ok(());
+    };
+    let Some(pid) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|pid| *pid > 1)
+    else {
+        return Ok(());
+    };
+    if kuvo_os::process::ProcessIdentity::read(pid)?.is_none()
+        && files::read(&pid_path)?.as_deref() == Some(&bytes)
+        && entries(&lock)?.len() == 1
+    {
+        files::remove_file_synced(&pid_path)?;
+        if let Err(error) = files::remove_empty_dir_synced(&lock)
+            && error.kind() != io::ErrorKind::DirectoryNotEmpty
+        {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct Record {
