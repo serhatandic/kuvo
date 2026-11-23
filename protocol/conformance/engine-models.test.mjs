@@ -303,6 +303,8 @@ test("session readiness retries a default the engine could not answer", { timeou
   const picker = await request(record, "GET", "kuvo/models/offered");
   assert.equal(picker.status, 200, picker.text);
   assert.equal(Object.hasOwn(picker.json, "starting"), false);
+  assert.equal((await request(record, "GET", "kuvo/sessions/models")).status, 400);
+  assert.equal((await request(record, "POST", "kuvo/sessions/models?sessions=ses_explicit", {})).status, 405);
   const read = async () => {
     const reply = await request(record, "GET", "kuvo/sessions/models?sessions=ses_default,ses_explicit");
     assert.equal(reply.status, 200, reply.text);
