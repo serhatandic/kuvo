@@ -109,7 +109,7 @@ function found(top: string, at: string): FilesFound["files"][number] {
 export async function* filesFindRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json, signal } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = new URLSearchParams(request.path.includes("?") ? request.path.slice(request.path.indexOf("?") + 1) : "");
   const directory = query.get("directory")?.trim() ?? "";
   if (!directory) return yield* json(400, { message: "Name the folder to look in: directory=<its full path>." });
   const typed = query.get("q") ?? "";

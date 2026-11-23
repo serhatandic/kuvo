@@ -89,7 +89,7 @@ fn decoded_path(given: &str) -> Option<PathBuf> {
 
 /// An absolute path with `.` and `..` worked out and no trailing separator, as Node's
 /// `path.resolve` gives it.
-fn resolved(path: &Path) -> PathBuf {
+pub(crate) fn resolved(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
@@ -206,6 +206,28 @@ mod tests {
                 Err(Unnamed::NotAnAddress),
                 "{refused}"
             );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_addresses_read_as_node_reads_them_on_windows() {
+        let named = |uri: &str| file_url_path(uri);
+        assert_eq!(
+            named("file:///C:/a/b%20c%C5%9F.txt"),
+            Some(PathBuf::from(r"C:\a\b cş.txt"))
+        );
+        assert_eq!(
+            named("file://server/share/x"),
+            Some(PathBuf::from(r"\\server\share\x"))
+        );
+        for refused in [
+            "file:///a/b",
+            "file:///C:/a%5Cb",
+            "file:///C:/a%2fb",
+            "file:///C:/%ff",
+        ] {
+            assert_eq!(named(refused), None, "{refused}");
         }
     }
 
