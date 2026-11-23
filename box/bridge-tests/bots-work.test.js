@@ -7,7 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/bots-work.test.js`.
 import "./test-safety.js";
-import { LINK_BUNDLE } from "./box-stand-ins.js";
+import { LINK_BUNDLE, served } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -1070,11 +1070,9 @@ test("where its sessions' commands run in the sandbox, a bot allows what its own
   }
   const env = { ...process.env, KUVO_HOME: home, HOME: home, TMPDIR: home, OPENCODE_PASSWORD: "box-pw" };
   delete env.KUVO_SANDBOX;
-  const box = spawn(process.execPath, [script, "serve"], { env, stdio: ["pipe", "pipe", "inherit"] });
-  const exited = new Promise(resolve => box.once("exit", resolve));
   const plugin = path.join(home, "config", "opencode", "plugins", "kuvo-sandbox.js");
+  const box = await served(env);
   try {
-    await new Promise(resolve => box.stdout.once("data", resolve));
     assert.ok(fs.existsSync(path.join(home, "run", "fence", "on")), "the sandbox is set up and checked here");
     fs.utimesSync(plugin, 0, 0);
 
@@ -1124,8 +1122,7 @@ test("where its sessions' commands run in the sandbox, a bot allows what its own
       fs.rmSync(path.join(home, "box", "approval.json"), { force: true });
     }
   } finally {
-    box.kill("SIGTERM");
-    await exited;
+    await box.stop();
     // The sandbox gone again, for what comes after.
     fs.rmSync(path.join(home, "run", "fence"), { recursive: true, force: true });
     fs.rmSync(plugin, { force: true });
