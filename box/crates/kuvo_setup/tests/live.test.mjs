@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { createHash, createHmac, createPublicKey, verify } from "node:crypto";
 import http from "node:http";
 import {
-  boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write,
+  boxBinary, isolatedEnv, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write,
 } from "../../../../protocol/conformance/adapter.mjs";
 import { relayLeaseStandIn } from "../../../bridge-tests/relay-lease-stand-in.js";
 
@@ -17,11 +17,28 @@ const linkPath = box => path.join(box.home, "run", "link.json");
 const entry = (box, kind) => readJSON(linkPath(box)).shared?.[kind];
 const get = (box, route = "kuvo/setup") => box.ask("GET", route);
 const post = (box, route, body) => box.ask("POST", route, body);
+const address = box => relayAddress(Buffer.from(readJSON(linkPath(box)).secret, "base64url"));
 
-async function bench(t, { handover = false } = {}) {
+async function bench(t, { handover = false, transferred } = {}) {
   const root = fs.realpathSync(scratch());
   const leases = relayLeaseStandIn({ transferStartsNow: handover });
-  const relay = await localRelay({ request: leases.request });
+  const relay = await localRelay({
+    request: transferred ? (request, response) => {
+      const prior = leases.lease;
+      return leases.request(request, {
+        writeHead(...args) {
+          response.writeHead(...args);
+          return {
+            end(...args) {
+              const next = leases.lease;
+              if (prior && next && prior.holder !== next.holder) transferred(relay);
+              response.end(...args);
+            },
+          };
+        },
+      });
+    } : leases.request,
+  });
   const children = [];
   t.after(async () => {
     for (const child of children.reverse()) await child.stop();
@@ -49,7 +66,7 @@ async function bench(t, { handover = false } = {}) {
         }
         const record = await proc.ready();
         this.record = record;
-        this.ask = (method, route, body, headers = app) => request(record, method, route, body, headers);
+        this.ask = (method, route, body, headers = app, timeout) => request(record, method, route, body, headers, timeout);
         assert.equal((await get(this)).status, 200);
       },
     };
@@ -356,6 +373,110 @@ test("a member forwards the main's signed documents to a third computer while th
   assert.equal((await get(c)).json.you.role, "member");
 });
 
+test("a saved preference reaches a witness only after the former main exits", { timeout: 40000 }, async t => {
+  const { a, b, c, bKey, id, leases, relay } = await paired(t, { third: true });
+  const resume = [relay.pause(address(a), address(c)), relay.pause(address(b), address(c))];
+  await c.start();
+  const before = await baseline(a);
+  assert.equal((await decision(a, await edit(a, "saved-before-exit", before, { codexFallback: "gpt-5.4" }))).status, "committed");
+  await until(() => entry(b, preference)?.value.units?.codexFallback?.value === "gpt-5.4", "the successor has a durable copy");
+  assert.equal(entry(c, preference), undefined);
+  await a.stop();
+  await b.stop();
+  const saved = readJSON(linkPath(b));
+  delete saved.docs;
+  write(linkPath(b), JSON.stringify(saved));
+  const allowWitnessClaim = leases.disconnect(readJSON(linkPath(c)).shared.membershipAndAccess.value.boxes[2].key);
+  await b.start();
+  leases.advance(125000);
+  await until(() => leases.leaseFor(id)?.holder === bKey, "the successor claims the lease");
+  allowWitnessClaim();
+  for (const unpause of resume) unpause();
+  await until(async () => entry(c, preference)?.value.units?.codexFallback?.value === "gpt-5.4"
+    && (await get(c)).json.primary.key === bKey, "the witness receives the successor's checkpoint", 14000);
+});
+
+test("a connected member catches up after the main's publication is lost", { timeout: 25000 }, async t => {
+  const { a, b, relay } = await paired(t);
+  const resume = relay.pause(address(a), address(b));
+  const before = await baseline(a);
+  const saved = await edit(a, "lost-publication", before, { codexFallback: "gpt-5.4" });
+  assert.equal((await decision(a, saved)).status, "committed");
+  assert.equal(entry(b, preference), undefined);
+  resume();
+  await until(async () => (await get(b, preferenceRoute)).json.fields?.codexFallback === "gpt-5.4",
+    "the resident should resend the accepted preference without a restart");
+});
+
+test("independent preference fields merge against a common base in either order", { timeout: 25000 }, async t => {
+  const { computer } = await bench(t);
+  const fields = [{ codexFallback: "gpt-5.4" }, { totalSpend: { show: true } }];
+  for (const [name, order] of [["First", [0, 1]], ["Second", [1, 0]]]) {
+    const box = computer(name);
+    await box.start();
+    const before = await baseline(box);
+    for (const index of order) {
+      const saved = await edit(box, `independent-field-${index}`, before, fields[index]);
+      assert.equal((await decision(box, saved)).status, "committed");
+    }
+    assert.deepEqual((await get(box, preferenceRoute)).json.fields, { ...fields[0], ...fields[1] });
+    await box.stop();
+  }
+});
+
+test("a successor unavailable before readiness leaves the original lease in place", { timeout: 42000 }, async t => {
+  const { a, b, aKey, bKey, id, leases, relay } = await paired(t, { handover: true });
+  const reconnect = relay.disconnect(address(b));
+  try {
+    const result = await a.ask("POST", "kuvo/setup/handover", { primary: bKey, epoch: 1 }, app, 30000);
+    assert.equal(result.status, 503, result.text);
+    assert.equal(leases.leaseFor(id).holder, aKey);
+    assert.equal((await get(a)).json.epoch, 1);
+    assert.deepEqual(Object.keys(readJSON(linkPath(a)).leadership), ["1"]);
+  } finally {
+    reconnect();
+  }
+});
+
+test("a successor that disconnects after the transfer publishes its epoch on return", { timeout: 35000 }, async t => {
+  let target, reconnect;
+  const { a, b, bKey, id, leases } = await paired(t, {
+    handover: true,
+    transferred: relay => {
+      if (target && !reconnect) reconnect = relay.disconnect(target);
+    },
+  });
+  target = address(b);
+  const result = await post(a, "kuvo/setup/handover", { primary: bKey, epoch: 1 });
+  assert.equal(result.status, 202, result.text);
+  assert.equal(leases.leaseFor(id).holder, bKey);
+  assert.equal(typeof reconnect, "function");
+  reconnect();
+  await until(async () => (await get(a)).json.epoch === 2 && (await get(b)).json.you.role === "primary",
+    "both computers should follow the transferred lease");
+});
+
+test("a former main stopped immediately after transfer restarts as a member", { timeout: 35000 }, async t => {
+  let cut, resume;
+  const { a, b, bKey } = await paired(t, {
+    handover: true,
+    transferred: relay => {
+      if (cut && !resume) resume = relay.pause(cut.from, cut.to);
+    },
+  });
+  cut = { from: address(b), to: address(a) };
+  const result = await post(a, "kuvo/setup/handover", { primary: bKey, epoch: 1 });
+  assert.equal(result.status, 202, result.text);
+  assert.equal(typeof resume, "function");
+  await a.stop();
+  assert.equal(readJSON(linkPath(a)).setup.epoch, 1);
+  await until(async () => (await get(b)).json.you.role === "primary", "the successor becomes main");
+  resume();
+  await a.start();
+  await until(async () => (await get(a)).json.you.role === "member", "the former main follows the new epoch");
+  assert.equal((await get(a)).json.primary.key, bKey);
+});
+
 test("a removed personality cannot be brought back by a more recent copy", { timeout: 25000 }, async t => {
   const { computer } = await bench(t);
   const box = computer("Studio");
@@ -494,9 +615,11 @@ test("a member without zone data keeps the main's rules and warns if a later sav
     write(linkPath(a), JSON.stringify(link));
     await a.start();
     await until(() => entry(b, "setupTimeZone")?.sequence === sequence, "the zone save should replicate");
-    const { json } = await get(b, "kuvo/settings/clock");
-    const [row] = json.groups[0].rows;
-    assert.equal(row.value, "Fixture/Unavailable");
+    const row = await until(async () => {
+      const { json } = await get(b, "kuvo/settings/clock");
+      const [current] = json.groups[0].rows;
+      return current.value === "Fixture/Unavailable" && current.tone === (zoneinfo ? undefined : "warning") && current;
+    }, "the replica should reach the clock endpoint");
     assert.deepEqual(row.choices[0], { id: row.value, title: "Fixture › Unavailable" });
     const file = path.join(b.home, "wakes", "zoneinfo");
     if (zoneinfo) {

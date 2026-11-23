@@ -91,13 +91,18 @@ impl Owner {
             self.publish(false).await?;
         } else {
             let primary = setup.position.primary.clone();
+            let wants_tip = !self.link.leadership.contains_key(&setup.position.epoch);
             if self.next_digest <= Instant::now() {
                 self.next_digest = Instant::now() + Duration::from_secs(10);
                 self.publish(true).await?;
             }
-            self.send_authority(&primary, json!({
-                "kind": "available", "wantsTip": !self.link.leadership.contains_key(&setup.position.epoch),
-            })).await;
+            self.send_authority(
+                &primary,
+                json!({
+                    "kind": "available", "wantsTip": wants_tip,
+                }),
+            )
+            .await;
             if let Some(lease) = self
                 .lease
                 .seen

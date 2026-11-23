@@ -364,6 +364,8 @@ mod tests {
             let initial = take(&link, one).unwrap().unwrap();
             let after = take(&initial, two).unwrap().unwrap_or(initial);
             assert_eq!(stored(&after).next().unwrap().digest(), winner);
+            assert!(take(&after, one).unwrap().is_none());
+            assert!(take(&after, two).unwrap().is_none());
         }
         let alternate = sign(&[42; 32], &encode(&[42; 32]), 21);
         assert!(take(&link, &alternate).unwrap().is_none());

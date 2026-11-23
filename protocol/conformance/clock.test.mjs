@@ -29,9 +29,18 @@ test("the clock offers the reference Intl time zones and hashes the offered IDs"
   assert.equal(reply.status, 200, reply.text);
   const [row] = reply.json.groups[0].rows;
   assert.equal(row.value, "own-clock");
+  assert.equal(row.choices[0].id, "own-clock");
   assert.deepEqual(row.choices.slice(1), zones.map(id => ({
     id, title: id.replaceAll("_", " ").replaceAll("/", " › "),
   })));
   const governed = { can: true, choices: ["own-clock", ...zones], kind: "choice", value: "own-clock" };
   assert.equal(row.revision, createHash("sha256").update(JSON.stringify(governed)).digest("base64url").slice(0, 16));
+  const changed = await ask("PATCH", "kuvo/settings/clock", { row: row.id, value: "UTC", was: row.revision });
+  assert.equal(changed.status, 200, changed.text);
+  const [selected] = changed.json.groups[0].rows;
+  assert.equal(selected.value, "UTC");
+  assert.match(selected.line, /GMT\+0 now\.$/);
+  assert.deepEqual(selected.choices, row.choices.slice(1));
+  const selectedFields = { can: true, choices: zones, kind: "choice", value: "UTC" };
+  assert.equal(selected.revision, createHash("sha256").update(JSON.stringify(selectedFields)).digest("base64url").slice(0, 16));
 });

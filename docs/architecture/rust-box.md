@@ -403,35 +403,35 @@ parallel.
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |
 | 2.1 | Rust setup lease, takeover, signed membership, shared saves, time zone and personalities are wired into the resident. [Coverage and remaining parity](rust-setup-coverage.md) | setup | 1.4, 1.5 | 5 ×2 | A |
 | 2.2 | Peer reach, merged lists, record lookup, notice history and standalone device grants implemented. Managed device writes and engine integration remain. [Coverage](rust-peers-coverage.md) Managed devices and peer projections from `setup-lists`, `setup-two-boxes`, `devices-two-boxes`, `documents`, `owner-mutations`, and `setup-handover`. | peers | 1.5 | 6 | C |
-| 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment Admission, roster changes, removal and re-enrollment from `setup-merge`, `setup-two-boxes`, `setup-judge`, `setup-mac`, `documents`, `devices-two-boxes`, and `setup-handover`. | setup | 2.1 | 5 ×2 | A |
-| 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` Ownership and receipt cases from `setup-lists`, `offline-merge`, `owner-mutations`, and `setup-handover`. | peers | 2.2 | 5 ×2 | C |
-| 2.5 | Backups and restore (disk, SSH, relay store) Restore and label previews from `setup-shared` and `setup-handover`. | setup | 2.1 | 6 | A |
-| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes Predecessor conversion and legacy libraries from `setup-one-model`, `setup-mac`, `documents`, and `personalities-box`. | move | 1.2, 2.1 | 6 ×2 | C |
+| 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment. Admission, roster changes, removal and re-enrollment from `setup-merge`, `setup-two-boxes`, `setup-judge`, `setup-mac`, `documents`, `devices-two-boxes`, and `setup-handover`. | setup | 2.1 | 5 ×2 | A |
+| 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf`. Ownership and receipt cases from `setup-lists`, `offline-merge`, `owner-mutations`, and `setup-handover`. | peers | 2.2 | 5 ×2 | C |
+| 2.5 | Backups and restore (disk, SSH, relay store). Restore and label previews from `setup-shared` and `setup-handover`. | setup | 2.1 | 6 | A |
+| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes. Predecessor conversion and legacy libraries from `setup-one-model`, `setup-mac`, `documents`, and `personalities-box`. | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
-| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search Session cases in `offline-merge`, `owner-mutations`, `documents`, and `setup-handover`. | engine | 3.1 | 6 ×2 | B |
+| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search. Session cases in `offline-merge`, `owner-mutations`, `documents`, and `setup-handover`. | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
-| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals Bot retell and wake consumers from `personalities-box`, `time-zone`, and `setup-handover`; bot templates in the personality route fixtures. | work | 3.2 | 5 ×2 | C |
-| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub Queue cases from `setup-shared`, `setup-merge`, `work-queue-numbering`, `offline-merge`, `setup-two-boxes`, `documents`, `owner-mutations`, and `setup-handover`. | work | 2.2 | 5 ×2 | C |
-| 5.3 | Group chats and seats, autopilot Group clock consumer in `time-zone`. | work | 4.6, 2.2 | 4 ×2 | B |
+| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box`, `time-zone`, and `setup-handover`. Bot templates in the personality route fixtures. | work | 3.2 | 5 ×2 | C |
+| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Queue cases from `setup-shared`, `setup-merge`, `work-queue-numbering`, `offline-merge`, `setup-two-boxes`, `documents`, `owner-mutations`, and `setup-handover`. | work | 2.2 | 5 ×2 | C |
+| 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone`. | work | 4.6, 2.2 | 4 ×2 | B |
 | 5.4 | Usage, limits, Insights (SQLite), pricing | services | 4.1, 2.2 | 5 ×2 | C |
-| 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog Attachment cases in `offline-merge` and `setup-handover`. | services | 2.2 | 4 ×2 | A |
+| 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog. Attachment cases in `offline-merge` and `setup-handover`. | services | 2.2 | 4 ×2 | A |
 | 6.1 | Settings pages and flows, permissions, sandbox (Seatbelt, `fence-exec`) | services | 4.1 | 5 ×2 | D |
-| 6.2 | Vault: Helper Keychain, wrapped-key files, broker, SSH agent Installed Helper and Keychain in `setup-mac`. | services | 1.3 | 6 | D |
-| 6.3 | Files, Git, Changes, worktrees, projects, folders Golden-home projects in `protocol/conformance/compat.test.mjs`. | services | 1.4 | 5 ×2 | D |
+| 6.2 | Vault: Helper Keychain, wrapped-key files, broker, SSH agent. Installed Helper and Keychain in `setup-mac`. | services | 1.3 | 6 | D |
+| 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
-| 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest Link startup markers and legacy handoff from `bridge.test.js` and `setup-mac`. | keeper | 1.3 | 5 ×2 | D |
+| 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest. Link startup markers and legacy handoff from `bridge.test.js` and `setup-mac`. | keeper | 1.3 | 5 ×2 | D |
 | 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
-| 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote Released Mac coexistence, legacy roster mail and leave-running integration from `documents`, `setup-mac`, and tagged `compat.test.mjs`. | move | 7.1, 2.4 | 6 | D |
+| 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote. Released Mac coexistence, legacy roster mail and leave-running integration from `documents`, `setup-mac`, `time-zone`, `personalities-box`, `setup-handover`, and tagged `compat.test.mjs`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
 | 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback. Cross-process link writer handoff from `setup-mac` and `setup-handover` | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
-| 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust; the rollback drill once Mixed binaries, rollback, real Helper and released Mac cases from `setup-handover`, `setup-mac`, and `setup-two-boxes`. | — | 9.2 | 7 ×2 | A |
+| 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust; the rollback drill once. Mixed binaries, rollback, real Helper and released Mac cases from `setup-handover`, `setup-mac`, and `setup-two-boxes`. | — | 9.2 | 7 ×2 | A |
 | 9.4 | Four weeks after the user's computers switched: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
 
 Totals by phase: 0: 21 · 1: 39 · 2: 54 · 3: 18 · 4: 39 · 5: 46 · 6: 36 · 7: 24 · 8: 22 · 9: 30.

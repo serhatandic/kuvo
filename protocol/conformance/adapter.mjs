@@ -117,12 +117,12 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
 const authorization = password => "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
 
 // Use origin-form paths directly so encoded paths reach the server without URL rewriting.
-export async function request(record, method, route, body, headers = {}) {
+export async function request(record, method, route, body, headers = {}, timeout = 10000) {
   const data = body === undefined ? undefined : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
   const reply = await new Promise((resolve, reject) => {
     const req = http.request({
       host: "127.0.0.1", port: record.port, method, path: "/" + route, agent: false,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(timeout),
       headers: { authorization: authorization(record.password), "x-kuvo-route-version": "1",
         ...(data ? { "content-type": "application/json", "content-length": data.length } : {}),
         ...headers },

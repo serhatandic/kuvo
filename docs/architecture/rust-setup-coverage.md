@@ -46,6 +46,12 @@ require a deployed relay, a helper sign-in or the install command.
 | B20 | A machine carries the kit, wake or launch zone in that order, follows kit updates, and keeps an accepted pick |
 | B21 | A member projects transmitted zone rules and warns and removes the old rule file when a later signed save has no rules |
 | B22 | A machine writes the version token and the empty, rate-limited activity marker in their legacy formats |
+| B23 | A committed preference reaches the witness through a promoted member after the old main exits |
+| B24 | A connected member recovers a missed publication without a reconnect |
+| B25 | Two independent preference fields converge in both arrival orders |
+| B26 | A lost successor before readiness leaves the first epoch in place |
+| B27 | A successor disconnected immediately after lease transfer publishes the next epoch when it returns |
+| B28 | The former main exits immediately after lease transfer and rejoins as a member |
 | D1 | A valid digest moves a lost signed-document counter forward and a digest past the TS cap is refused |
 | D2 | Equal signed counts converge by digest in either arrival order, and a same-epoch document from an alternate main is rejected |
 | C1 | Both residents offer the same Bun Intl clock choices and compute the reference revision |
@@ -73,7 +79,7 @@ contains 222 declarations across the listed files, including adjacent work.
 | [wire-vectors](../../box/test/wire-vectors.test.ts) | 1 | W1 and the existing Rust peer-mail vectors cover the shared input and bytes. | Covered. |
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 6 | The lease client carries the saved high mark and reserves renewal headroom. The allocator, grant replays, queue mutations and Markdown import are 5.2. | 5.2 allocation, replay and import. |
 | [setup-two-boxes](../../box/bridge-tests/setup-two-boxes.test.js) | 3 | Common roster → B2. Handover → B3. Cards → R1. SSH enrollment, member device refusals, names saved through the computer management route, and queue numbering span 2.2, 2.3 and 5.2. | 2.2 device policy. 2.3 enrollment and computer management. 5.2 numbering. |
-| [documents](../../box/bridge-tests/documents.test.js) | 20 | Vector validation and part corruption → W1 and B8. Current bootstrap, following the main and stale authority → B1, B2, B6. Lost-mail catch-up → B7. Personality removal → B5. The old Mac-ranked, overlapping-setup, and credential re-enrollment cases require their compatibility or later setup paths. B17 covers third-computer forwarding. D1 and D2 cover count recovery and limits, equal-count ordering, and rejection of an alternate main at the same epoch. Phone denials and some live fault cuts remain. | 2.1 live fault cuts. 2.2 device denials. 2.3 re-enrollment and merged setups. 2.6 old authority. 7.3 old Mac mail. |
+| [documents](../../box/bridge-tests/documents.test.js) | 20 | Vector validation and part corruption → W1 and B8. Current bootstrap, following the main and stale authority → B1, B2, B6. Lost-mail catch-up → B7. Personality removal → B5. The old Mac-ranked, overlapping-setup, and credential re-enrollment cases require their compatibility or later setup paths. B17 covers third-computer forwarding. D1 and D2 cover count recovery and limits, equal-count ordering, and rejection of an alternate main at the same epoch. B24 covers lost publication with both computers connected. Phone denials and legacy library mail are covered by their respective ports. | 2.2 device denials. 2.3 re-enrollment and merged setups. 2.6 old authority. 7.3 old Mac mail and legacy personalities. |
 | [devices-two-boxes](../../box/bridge-tests/devices-two-boxes.test.js) | 7 | Accepted membership and its replica → B2 and B7. Signed device pairing and removal → R4 and R5 at the managed adapter. Device admission routes, device sessions and the reconnect phone/membership exchange are 2.2. Removal with incoming devices switched off and uninstall are 2.3. B17 checks signed roster and device document catch-up through another member. | 2.2 admission, device sessions, grants, paired reconnect and inbound switch. 2.3 uninstall. |
 | [personalities-box](../../box/bridge-tests/personalities-box.test.js) | 10 | Standalone save and removal-wins merge → B1 and B5. Route conformance covers missing fields and preset IDs. B18 covers oversized merge, 500 removals and ID filtering. B19 covers stream changes from an external writer and future-format refusal. | 2.6 app-folder libraries. 5.1 retelling bots. |
 | [time-zone bridge scenarios](../../box/bridge-tests/time-zone.test.js) | 3 | Clock settings and wake-up projection → B4. B20 covers kit and launch fallback. B21 checks that a member with a zone absent from its database projects received rules and warns when rules are unavailable. | 5.1 wake scheduling. |
@@ -86,10 +92,10 @@ contains 222 declarations across the listed files, including adjacent work.
 |---|---:|---|---|
 | [Move, away owner, local work, owner reads](../../box/bridge-tests/setup-handover.test.js#L520-L837) | 5 | 2.2, 2.4, queue and engine. | 2.2 lists. 2.4 moves and owner reads. 3.2 session work. 5.2 queue work. |
 | [Mixed rollback, multiple handovers, SSH epoch](../../box/bridge-tests/setup-handover.test.js#L838-L948) | 3 | B2 covers one missed epoch without unlink. B16 covers two successive handovers. Pinned SSH catch-up and historical rollback combinations remain open. | 2.3 SSH enrollment and unlink. 9.3 rollback. |
-| [Successor and primary loss during handover](../../box/bridge-tests/setup-handover.test.js#L949-L1013) | 3 | B3 and B6 cover the healthy readiness exchange and lease fencing. The three exact transfer cuts are open. | 2.1 all three transfer cuts. |
+| [Successor and primary loss during handover](../../box/bridge-tests/setup-handover.test.js#L949-L1013) | 3 | B26–B28 exercise all three transfer cuts. | Covered. |
 | [Credential cleanup, enroll/removal and access forwarding](../../box/bridge-tests/setup-handover.test.js#L1014-L1428) | 8 | 2.2 and 2.3. Scoped rename receipts and permission grants need their own route scenarios. | 2.2 access and forwarded grants. 2.3 credential cleanup, enroll, removal and scoped rename. |
-| [SSH personalities, label restores](../../box/bridge-tests/setup-handover.test.js#L1429-L1717) | 4 | B5 covers the library merge. SSH command saves, the label restore command and its old or unreachable main checks remain open. | 2.1 SSH personality writer. 2.5 and 5.2 label restore. |
-| [Commit before publication and number blocks](../../box/bridge-tests/setup-handover.test.js#L1718-L1812) | 2 | B7 exercises durable save and catch-up. The exact post-commit loss cut, peer pairing and number-block allocation still need checks. | 2.1 commit before publication. 2.2 pairing. 5.2 number blocks. |
+| [SSH personalities, label restores](../../box/bridge-tests/setup-handover.test.js#L1429-L1717) | 4 | B5 covers the library merge. The retired Mac SSH command and the label restore checks depend on their callers. | 7.3 legacy SSH personality command. 2.5 and 5.2 label restore. |
+| [Commit before publication and number blocks](../../box/bridge-tests/setup-handover.test.js#L1718-L1812) | 2 | B23 exercises the commit before the main exits and the delayed witness update. | 2.2 pairing. 5.2 number blocks. |
 | [Paired queued grants, drafts, notes and deletions](../../box/bridge-tests/setup-handover.test.js#L1813-L2273) | 4 | B2 covers the preference field decision. Queues, notes, attachment handling and live device changes need the respective area ports. | 2.2 device grants. 3.2 drafts and notes. 5.2 queue deletion. 5.5 attachments. |
 | [Preference merge through takeover](../../box/bridge-tests/setup-handover.test.js#L2274-L2304) | 1 | B2. | Covered. |
 | [Bot ownership, unlink, wipe, restore and mixed release](../../box/bridge-tests/setup-handover.test.js#L2305-L4139) | 29 | 2.3–2.5, engine/work, and rehearsal. | 2.3 unlink/wipe. 2.4 ownership. 2.5 backup/restore. 3.2 sessions. 5.1 bots. 9.3 mixed release. |
@@ -106,7 +112,7 @@ contains 222 declarations across the listed files, including adjacent work.
 | [Mac hands over to a machine](../../box/bridge-tests/setup-two-boxes.test.js#L290) | B3 checks handover. The Mac/device combination remains open. | 2.2 device policy. 9.3 released Mac combination. |
 | [Document vectors](../../box/bridge-tests/documents.test.js#L127) | W1. | Covered. |
 | [A third computer forwards peers](../../box/bridge-tests/documents.test.js#L142) | B17. | Covered. |
-| [Forged, altered or replayed peers](../../box/bridge-tests/documents.test.js#L165) | W1 and B8 cover signature and checkpoint mutation. The peer-list replay sequence remains open. | 2.1. |
+| [Forged, altered or replayed peers](../../box/bridge-tests/documents.test.js#L165) | W1 and B8 cover signature and checkpoint mutation. D2 covers replay and a competing signer. | Covered. |
 | [Different terms and two mains at one epoch](../../box/bridge-tests/documents.test.js#L194) | B6 covers stale authority and D2 rejects a wrong signer at the current epoch. | 7.3 legacy Mac rosters. |
 | [A phone stays with its signed Mac](../../box/bridge-tests/documents.test.js#L241) | Legacy Mac associations and phone projection remain open. | 7.3 Mac associations. 2.2 phone projection. |
 | [Main removes a machine and it starts separately](../../box/bridge-tests/documents.test.js#L273) | 2.3 unlink. | 2.3. |
@@ -119,9 +125,9 @@ contains 222 declarations across the listed files, including adjacent work.
 | [Exchange with skewed clocks](../../box/bridge-tests/documents.test.js#L385) | D2 covers ordering by signed counter and digest regardless of the timestamps in the documents. | Covered. |
 | [Removal wins over a later add](../../box/bridge-tests/documents.test.js#L432) | B5 covers personalities. R4 covers a removed desktop's return; the competing peer phone document remains open. | 2.2 phone denial. |
 | [Lost counter learns newer versions](../../box/bridge-tests/documents.test.js#L472) | D1. | Covered. |
-| [One missed mail with both computers connected](../../box/bridge-tests/documents.test.js#L497) | B7 exercises catch-up after reconnect. The same-connection drop remains open. | 2.1. |
-| [Large document with an altered part](../../box/bridge-tests/documents.test.js#L516) | W1 and B8 cover corruption. A large library over the live relay remains open. | 2.1. |
-| [Independent edits converge in either order](../../box/bridge-tests/documents.test.js#L548) | B2 covers independent and conflicting preference changes. Reverse arrival and other records remain open. | 2.1 reversal. 3.2 session records. 5.2 queue records. |
+| [One missed mail with both computers connected](../../box/bridge-tests/documents.test.js#L497) | B24 covers the same-connection drop. | Covered. |
+| [Large document with an altered part](../../box/bridge-tests/documents.test.js#L516) | W1 and B8 cover corruption and B16 carries a multipart archive live. The original signed personalities kind is from the old non-managed model. | 7.3 legacy personalities mail. |
+| [Independent edits converge in either order](../../box/bridge-tests/documents.test.js#L548) | B2 covers independent and conflicting preference changes. B25 checks both orders. | 3.2 session records. 5.2 queue records. |
 | [Only signed `left` plus absence releases a machine](../../box/bridge-tests/documents.test.js#L570) | 2.3 accepted removal and unlink. | 2.3. |
 | [Recovery rejects an implausibly high counter](../../box/bridge-tests/documents.test.js#L585) | D1. | Covered. |
 | [Desktop pairs through a member and is removed](../../box/bridge-tests/devices-two-boxes.test.js#L297) | R4 and R5 cover the signed writer and replica. The managed routes and session access are the 2.2 follow-up. | 2.2. |
@@ -144,10 +150,8 @@ contains 222 declarations across the listed files, including adjacent work.
 ## Structure and compatibility boundaries
 
 - One Tokio task owns mutable setup state. Subscribers see a watch snapshot.
-  Accepted changes publish through atomic file replacement, with a flushed temp
-  file and a parent directory sync on Unix. The eventual shared store, the
-  cross-process TypeScript link lock and Windows open-file replacement checks
-  still need integration. Lease freshness uses the current process's monotonic
+  Accepted changes use the shared store for atomic replacement and directory
+  durability. Mixed-process link writer handoff belongs to 9.1. Lease freshness uses the current process's monotonic
   clock as well as wall time. A restarted resident revalidates with the relay
   before using a saved observation for write authority.
 - The new resident uses the existing signed envelope, lease request, Noise mail
@@ -165,11 +169,15 @@ contains 222 declarations across the listed files, including adjacent work.
   responsibility. The local Mac helper adapter authenticates the host before
   proving an identity. A real signed Helper and installed Keychain rehearsal
   remains separate from the stand-in.
-- The install-code conformance scenario still needs the 2.3 install route. The
-  personalities route suite's complete lifecycle also calls the bot templates
-  route, which belongs to the bots port. The two binaries can be checked
-  against the same stopped, signed setup home before those cross-area scenarios
-  are green.
+
+| Cross-area check | Owner phase |
+|---|---|
+| Installer code and real SSH enrollment in the two-computer conformance scenario | 2.3 |
+| Bot templates in the complete personality lifecycle | 5.1 |
+| Project list in the complete current golden-home scenario | 6.3 |
+| Tagged layout upgrade and released peer mail | 2.6 migration. 7.3 released readers. |
+| Real signed Mac Helper and installed Keychain rehearsal | 6.2 Keychain. 9.3 rehearsal. |
+| Mixed-process link writer handoff and process selectors | 9.1 switch. 7.1 keeper. |
 
 ## Conformance results
 

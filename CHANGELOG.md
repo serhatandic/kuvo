@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
+
 - The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
 - Kuvo keeps the previous file intact if Windows has it locked and refuses an unsupported home layout before starting.
 
