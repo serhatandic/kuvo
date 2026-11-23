@@ -1,7 +1,7 @@
 use std::{fs, io, path::Path, sync::Arc};
 
 use kuvo_protocol::{gate::compatibility, routes::get_kuvo_info as info};
-use kuvo_server::{Access, LineTiming, Refusal, Registry, Resident, RouteReply, ssh::NoPairings};
+use kuvo_server::{Access, LineTiming, Refusal, Registry, Resident, RouteReply};
 use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -12,7 +12,15 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
     let generation = resident.record().generation;
     let port = resident.record().port;
-    let info = info(home)?;
+    let name = hostname::get()?.to_string_lossy().into_owned();
+    let mac = is_mac(home)?;
+    let relay = std::env::var("KUVO_TEST_RELAY").ok().or_else(|| {
+        let account = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+        (home == Path::new(&account).join(".kuvo-code"))
+            .then(|| "wss://kuvolink.porigam.com.tr".into())
+    });
+    let setup = kuvo_setup::SetupRuntime::start(home, name.clone(), mac, relay).await?;
+    let info = info(home, &name, mac)?;
     let mut routes = Registry::new();
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let answer = RouteReply::json_with::<200>(
@@ -25,28 +33,35 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
         std::future::ready(answer)
     });
+    setup.handle().register(&mut routes);
     let dispatcher = routes.build(LineTiming::default());
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
     resident
-        .serve(dispatcher, Arc::new(NoPairings), super::shutdown())
+        .serve(dispatcher, Arc::new(setup.handle()), super::shutdown())
         .await?;
     Ok(())
 }
 
-fn info(home: &Path) -> Result<info::Status200, Box<dyn std::error::Error>> {
+fn is_mac(home: &Path) -> io::Result<bool> {
+    match fs::read_to_string(home.join("box/kind")) {
+        Ok(kind) => Ok(kind.trim() == "mac"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn info(
+    home: &Path,
+    name: &str,
+    is_mac: bool,
+) -> Result<info::Status200, Box<dyn std::error::Error>> {
     let chats = home.join("chats");
     fs::create_dir_all(&chats)?;
-    let name = hostname::get()?;
-    let is_mac = match fs::read_to_string(home.join("box/kind")) {
-        Ok(kind) => kind.trim() == "mac",
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error.into()),
-    };
     // Advertise the implemented routes while the desktop remains behind its update gate.
     let features = ["info", "line"];
     let mut answer = json!({
         "kind": if is_mac { "mac" } else { "machine" },
-        "name": name.to_string_lossy(),
+        "name": name,
         "features": features,
         "compatibility": compatibility(&features),
         "agents": false,

@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
+
 - The Rust server keeps live updates through a brief disconnect and queues SSH calls while Kuvo starts.
 
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.

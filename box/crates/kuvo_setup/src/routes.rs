@@ -1,0 +1,560 @@
+use std::io;
+
+use http::StatusCode;
+use kuvo_protocol::{
+    JsonStatus, Route, RouteSpec,
+    routes::*,
+    shape::{Primitive, Shape},
+};
+use kuvo_server::{
+    Access, Caller, JsonLine, LocalOrigin, Refusal, Registry, RouteReply, Transport,
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::sync::{oneshot, watch};
+
+use crate::{
+    Error, SetupHandle,
+    actor::{Command, Request, Response, View},
+    edits::{Edit, Submitter, Target},
+    preferences::PersonalityChange,
+};
+
+impl SetupHandle {
+    pub fn register(&self, routes: &mut Registry) {
+        let setup = self.clone();
+        routes.register::<get_kuvo_setup::Spec, _, _>(Access::Any, move |_| {
+            let answer = typed::<get_kuvo_setup::Spec, 200>(setup.views.borrow().setup.clone());
+            std::future::ready(answer)
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_setup_events::Spec, _, _>(Access::Any, move |_| {
+            std::future::ready(Ok(events(setup.views.clone(), |view| view.setup.clone())))
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_setup_welcomed::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                let given: Welcome = read(&call.request.body)?;
+                respond(setup.request(Command::Welcome(given.welcomed)).await?)
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_setup_attached::Spec, _, _>(Access::Local, move |call| {
+            let setup = setup.clone();
+            async move {
+                if matches!(
+                    call.request.caller,
+                    Caller::Local(Transport::Http {
+                        origin: LocalOrigin::Direct,
+                        ..
+                    })
+                ) {
+                    return Err(Refusal::new(
+                        StatusCode::FORBIDDEN,
+                        "Only Kuvo Code on this computer says it attached.",
+                    ));
+                }
+                respond(setup.request(Command::Attached).await?)
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_setup_handover::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    let given: Handover = read(&call.request.body)?;
+                    if kuvo_wire::keys::decode_exact::<32>(&given.primary).is_none() {
+                        return Err(Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "Choose a computer by its key as the main computer.",
+                        ));
+                    }
+                    if given.unlink.is_some() {
+                        return Err(Refusal::new(
+                            StatusCode::CONFLICT,
+                            "Unlinking a computer is unavailable.",
+                        ));
+                    }
+                    let submitter = match &call.request.caller {
+                        Caller::Local(Transport::Ssh { .. }) => Submitter::Computer,
+                        caller => submitter(caller)?,
+                    };
+                    let answer = setup
+                        .request(Command::Handover {
+                            primary: given.primary,
+                            epoch: given.epoch,
+                            submitter,
+                        })
+                        .await?;
+                    if answer.status == 202 {
+                        typed::<post_kuvo_setup_handover::Spec, 202>(answer.value)
+                    } else {
+                        respond(answer)
+                    }
+                }
+            },
+        );
+
+        let setup = self.clone();
+        routes.register::<SaveLocal, _, _>(Access::Internal, move |call| {
+            let setup = setup.clone();
+            async move {
+                let body = call.body;
+                if body.kind != crate::SharedKind::SetupUsageDisplay {
+                    return Err(Refusal::json(StatusCode::BAD_REQUEST, json!({})));
+                }
+                respond(
+                    setup
+                        .request(Command::Usage {
+                            id: body.id,
+                            epoch: body.epoch,
+                            sequence: body.sequence,
+                            operation: body.operation,
+                            value: body.value,
+                        })
+                        .await?,
+                )
+            }
+        });
+        self.register_edits(routes);
+        self.register_personalities(routes);
+        self.register_clock(routes);
+    }
+
+    async fn request(&self, command: Command) -> Result<Response, Refusal> {
+        let (reply, result) = oneshot::channel();
+        self.inbox
+            .send(Request { command, reply })
+            .await
+            .map_err(|_| unavailable())?;
+        result.await.map_err(|_| unavailable())?.map_err(refusal)
+    }
+
+    fn register_edits(&self, routes: &mut Registry) {
+        let setup = self.clone();
+        routes.register::<get_kuvo_data_edits::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+            let setup = setup.clone();
+            async move {
+                submitter(&call.request.caller)?;
+                let query = call.request.path.split_once('?').map(|(_, query)| query);
+                let url = reqwest::Url::parse(&format!(
+                    "http://localhost/?{}",
+                    query.unwrap_or_default()
+                ))
+                .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Name the record to edit."))?;
+                let kind = url
+                    .query_pairs()
+                    .find(|(key, _)| key == "kind")
+                    .map(|(_, kind)| kind.into_owned());
+                let target: Target =
+                    serde_json::from_value(json!({"kind": kind})).map_err(|_| {
+                        Refusal::new(StatusCode::BAD_REQUEST, "Name the record to edit.")
+                    })?;
+                respond(setup.request(Command::ReadEdit(target)).await?)
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_data_edits::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+            let setup = setup.clone();
+            async move {
+                let by = submitter(&call.request.caller)?;
+                if call.request.body.len() > 512 * 1024 {
+                    return Err(Refusal::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "This draft is too large to send to the owner.",
+                    ));
+                }
+                let edit = Edit::read(read(&call.request.body)?).map_err(refusal)?;
+                let answer = setup.request(Command::SubmitEdit(edit, by)).await?;
+                if answer.status == 202 {
+                    typed::<post_kuvo_data_edits::Spec, 202>(answer.value)
+                } else {
+                    respond(answer)
+                }
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_data_edits_outbox::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    submitter(&call.request.caller)?;
+                    respond(setup.request(Command::EditOutbox).await?)
+                }
+            },
+        );
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_data_edits_operation::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    submitter(&call.request.caller)?;
+                    let operation = decoded_id(call.param("operation"))?;
+                    respond(setup.request(Command::EditReceipt(operation)).await?)
+                }
+            },
+        );
+    }
+
+    fn register_personalities(&self, routes: &mut Registry) {
+        let setup = self.clone();
+        routes.register::<get_kuvo_personalities::Spec, _, _>(Access::Any, move |_| {
+            std::future::ready(typed::<get_kuvo_personalities::Spec, 200>(json!({
+                "personalities": setup.views.borrow().personalities["personalities"],
+            })))
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_personalities_events::Spec, _, _>(Access::Any, move |_| {
+            std::future::ready(Ok(events(
+                setup.views.clone(),
+                |view| json!({"personalities": view.personalities["personalities"]}),
+            )))
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_personalities_document::Spec, _, _>(Access::Any, move |call| {
+            std::future::ready(personality_app(&call.request.caller).and_then(|()| {
+                typed::<get_kuvo_personalities_document::Spec, 200>(
+                    setup.views.borrow().personalities.clone(),
+                )
+            }))
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_personalities::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                setup.require_primary("personalities")?;
+                let body = read(&call.request.body)?;
+                respond(
+                    setup
+                        .request(Command::Personalities(PersonalityChange::Create(body)))
+                        .await?,
+                )
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_personalities_take::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                personality_app(&call.request.caller)?;
+                setup.require_primary("personalities")?;
+                let body: Value = read(&call.request.body)?;
+                respond(
+                    setup
+                        .request(Command::Personalities(PersonalityChange::Merge(
+                            body["document"].clone(),
+                        )))
+                        .await?,
+                )
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<patch_kuvo_personalities_id::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                setup.require_primary("personalities")?;
+                let id = decoded_id(call.param("id"))?;
+                let body = read(&call.request.body)?;
+                respond(
+                    setup
+                        .request(Command::Personalities(PersonalityChange::Patch(id, body)))
+                        .await?,
+                )
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<delete_kuvo_personalities_id::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                setup.require_primary("personalities")?;
+                let id = decoded_id(call.param("id"))?;
+                respond(
+                    setup
+                        .request(Command::Personalities(PersonalityChange::Delete(id)))
+                        .await?,
+                )
+            }
+        });
+    }
+
+    fn register_clock(&self, routes: &mut Registry) {
+        routes.register::<get_kuvo_settings::Spec, _, _>(Access::Any, |_| {
+            std::future::ready(typed::<get_kuvo_settings::Spec, 200>(json!({"sections": [{
+                "id": "clock", "title": "Clock", "group": "General", "icon": "clock",
+                "line": "Your time zone, which bots' wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
+            }]})))
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_settings_section::Spec, _, _>(Access::Any, move |call| {
+            std::future::ready(clock_section(call.param("section")).and_then(|()| {
+                typed::<get_kuvo_settings_section::Spec, 200>(setup.views.borrow().clock.clone())
+            }))
+        });
+
+        let setup = self.clone();
+        routes.register::<get_kuvo_settings_section_events::Spec, _, _>(Access::Any, move |call| {
+            std::future::ready(
+                clock_section(call.param("section"))
+                    .map(|()| events(setup.views.clone(), |view| view.clock.clone())),
+            )
+        });
+
+        let setup = self.clone();
+        routes.register::<patch_kuvo_settings_section::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                clock_section(call.param("section"))?;
+                let given: SettingChange = read(&call.request.body)?;
+                if given.row != "time-zone" {
+                    return Err(Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "That isn't something to change.",
+                    ));
+                }
+                let revision = Some(given.was);
+                let zone = given
+                    .value
+                    .as_str()
+                    .ok_or_else(|| {
+                        Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "This computer doesn't know that time zone.",
+                        )
+                    })?
+                    .to_owned();
+                if zone != "own-clock"
+                    && setup.views.borrow().clock["groups"][0]["rows"][0]["value"] != zone
+                {
+                    setup.require_primary("time zone")?;
+                }
+                respond(setup.request(Command::Zone { zone, revision }).await?)
+            }
+        });
+    }
+
+    fn require_primary(&self, setting: &str) -> Result<(), Refusal> {
+        if self.views.borrow().setup["you"]["role"] == "member" {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!("Change your setup's {setting} on its main computer."),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct Welcome {
+    welcomed: bool,
+}
+
+#[derive(Deserialize)]
+struct Handover {
+    primary: String,
+    epoch: Option<u64>,
+    unlink: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct SettingChange {
+    row: String,
+    value: Value,
+    was: String,
+}
+
+/// The holder's local save lane is internal and does not appear in the public route export.
+struct SaveLocal;
+impl RouteSpec for SaveLocal {
+    type Body = Usage;
+    const ROUTE: &'static Route = &Route {
+        method: "POST",
+        path: "kuvo/setup/save-local",
+        feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))],
+        body: Some(&Shape::Primitive(Primitive::Any)),
+    };
+}
+impl JsonStatus<200> for SaveLocal {
+    type Body = crate::Receipt;
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    kind: crate::SharedKind,
+    id: String,
+    epoch: u64,
+    sequence: u64,
+    operation: Option<String>,
+    value: Value,
+}
+
+fn personality_app(caller: &Caller) -> Result<(), Refusal> {
+    if matches!(
+        caller,
+        Caller::Local(Transport::Http {
+            origin: LocalOrigin::App,
+            ..
+        })
+    ) {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            StatusCode::FORBIDDEN,
+            "Only Kuvo Code on this computer can do that.",
+        ))
+    }
+}
+
+fn submitter(caller: &Caller) -> Result<Submitter, Refusal> {
+    match caller {
+        Caller::Local(Transport::Http {
+            origin: LocalOrigin::App | LocalOrigin::Mac,
+            ..
+        }) => Ok(Submitter::Computer),
+        Caller::Paired { pairing, .. } if pairing.is_current() => Ok(Submitter::Paired {
+            key: kuvo_wire::keys::encode(&pairing.key),
+            pairing: pairing.id.clone(),
+        }),
+        _ => Err(Refusal::new(
+            StatusCode::FORBIDDEN,
+            "Open this from a paired Kuvo Code client.",
+        )),
+    }
+}
+
+fn read<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
+    serde_json::from_slice(body)
+        .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Send a valid request body."))
+}
+
+fn unavailable() -> Refusal {
+    Refusal::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "This computer couldn't read its setup.",
+    )
+}
+
+fn refusal(error: Error) -> Refusal {
+    let (status, message) = match error {
+        Error::Conflict => (
+            StatusCode::CONFLICT,
+            "The setup changed before this could be saved.".into(),
+        ),
+        Error::Fenced => (StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
+        Error::Invalid("time zone") => (
+            StatusCode::BAD_REQUEST,
+            "This computer doesn't know that time zone.".into(),
+        ),
+        Error::Invalid(_) => (StatusCode::BAD_REQUEST, error.to_string()),
+        Error::Capacity => (StatusCode::CONFLICT, error.to_string()),
+        _ => {
+            eprintln!("setup route: {error}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "This computer couldn't save the setup change.".into(),
+            )
+        }
+    };
+    Refusal::new(status, message)
+}
+
+fn clock_section(section: Option<&str>) -> Result<(), Refusal> {
+    if section == Some("clock") {
+        Ok(())
+    } else {
+        Err(Refusal::new(
+            StatusCode::NOT_FOUND,
+            "That isn't a settings section.",
+        ))
+    }
+}
+
+fn decoded_id(given: Option<&str>) -> Result<String, Refusal> {
+    percent_encoding::percent_decode_str(given.unwrap_or_default())
+        .decode_utf8()
+        .map(|id| id.into_owned())
+        .map_err(|_| Refusal::json(StatusCode::NOT_FOUND, json!({})))
+}
+
+fn typed<R, const STATUS: u16>(value: Value) -> Result<RouteReply<R>, Refusal>
+where
+    R: JsonStatus<STATUS>,
+    <R as JsonStatus<STATUS>>::Body: serde::de::DeserializeOwned,
+{
+    let mut value = value;
+    let mut fields = Vec::new();
+    if value.get("proof").is_some()
+        && R::ROUTE.path != SaveLocal::ROUTE.path
+        && let Some(value) = value.as_object_mut()
+    {
+        for name in ["setup", "epoch", "operation", "proof", "status"] {
+            if let Some(field) = value.shift_remove(name) {
+                fields.push((name, field));
+            }
+        }
+    }
+    let body = serde_json::from_value(value).map_err(|error| {
+        eprintln!("encoding setup route: {error}");
+        Refusal::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "This computer couldn't describe its setup.",
+        )
+    })?;
+    RouteReply::json_with::<STATUS>(body, fields).map_err(|_| unavailable())
+}
+
+fn respond<R>(response: Response) -> Result<RouteReply<R>, Refusal>
+where
+    R: JsonStatus<200>,
+    <R as JsonStatus<200>>::Body: serde::de::DeserializeOwned,
+{
+    if response.status == 200 {
+        typed::<R, 200>(response.value)
+    } else {
+        Err(Refusal::json(
+            StatusCode::from_u16(response.status).expect("setup response status"),
+            response.value,
+        ))
+    }
+}
+
+fn events<R>(
+    mut views: watch::Receiver<View>,
+    project: impl Fn(&View) -> Value + Send + 'static,
+) -> RouteReply<R>
+where
+    R: JsonStatus<200>,
+    <R as JsonStatus<200>>::Body: serde::de::DeserializeOwned,
+{
+    RouteReply::ndjson::<200>(async_stream::stream! {
+        let mut previous = None;
+        loop {
+            let value = project(&views.borrow_and_update());
+            if previous.as_ref() != Some(&value) {
+                let line = serde_json::from_value(value.clone()).map_err(io::Error::other).and_then(JsonLine::<R, 200>::new);
+                previous = Some(value);
+                yield line;
+            }
+            if views.changed().await.is_err() {
+                break;
+            }
+        }
+    })
+}
