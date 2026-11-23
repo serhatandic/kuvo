@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the box bundles, route vectors and route reference from this checkout.
+# Build the box bundles, wire and route vectors and route reference from this checkout.
 # --if-needed reuses a complete build whose inputs have not changed.
 set -eu
 cd "$(dirname "$0")/.."
@@ -12,11 +12,11 @@ case "${1:-}" in
         if [ -f "$stamp" ] &&
             [ -s box/dist/kuvo-link.js ] && [ -s box/dist/kuvo-agents.js ] && [ -s box/dist/kuvo-browser.js ] &&
             [ -s protocol/vectors/routes/features.json ] && [ -s protocol/vectors/routes/shapes/answers.json ] &&
-            [ -s protocol/ROUTES.md ] &&
+            [ -s protocol/vectors/wire.json ] && [ -s protocol/ROUTES.md ] &&
             [ -z "$(find box/src box/.bun-version box/package.json box/bun.lock catalog \
                 scripts/build-built.sh scripts/build-bun.sh scripts/build-box.sh scripts/build-agents.sh \
                 scripts/build-browser.sh scripts/build-browser.ts \
-                scripts/route-shapes.sh scripts/route-shapes.ts scripts/routes-md.ts \
+                scripts/route-shapes.sh scripts/route-shapes.ts scripts/routes-md.ts box/test/fixtures/wire-vectors.ts \
                 -type f -newer "$stamp" -print)" ]; then
             exit 0
         fi ;;
@@ -37,4 +37,5 @@ scripts/build-box.sh
 scripts/build-agents.sh
 scripts/build-browser.sh
 scripts/route-shapes.sh
+BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file box/test/fixtures/wire-vectors.ts
 mv -f "$started" "$stamp"

@@ -37,7 +37,7 @@ and sorted JSON code. The tests also read `link.json`, `noise.json`, and the exi
 fixture directly. Generate the phase 1.5 additions before running the Rust wire tests on a fresh checkout.
 
 ```sh
-UPDATE_WIRE_VECTORS=1 scripts/test-box.sh box test/wire-vectors.test.ts
+scripts/build-built.sh
 scripts/cargo-box.sh test --locked -p kuvo_wire -p kuvo_peers
 ```
 
