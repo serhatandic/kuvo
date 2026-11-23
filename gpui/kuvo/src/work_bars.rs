@@ -1799,20 +1799,18 @@ impl ActivityCard {
                 .text_color(if near { c.warning } else if self.pinned { c.text_muted } else { c.text })
                 .child(words)
         });
-        let control = if self.pinned {
-            self.pinned_controls(cx)
-        } else {
+        // (Pinned, the card's controls have a row of their own above it.)
+        let control = (!self.pinned).then(|| {
             Button::icon_only("activity-pin", IconName::Pin, "Pin beside the conversation")
                 .ghost()
                 .size(ButtonSize::Small)
                 .on_click(cx.listener(|this, _, window, cx| this.set_pinned(true, window, cx)))
-                .into_any_element()
-        };
+        });
         let top = div().flex().items_center().justify_between().gap(space::S2)
             .child(div().min_w_0().flex().items_baseline().gap(space::S1_5)
                 .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child("Context"))
                 .children(figures))
-            .child(control);
+            .children(control);
         // (Where the box doesn't offer the point to pick, near it says so on a line of its own.)
         let note = context.and_then(|context| context.summarize_at).filter(|_| near && summarize.is_none()).map(|at| {
             div().debug_selector(|| "activity-context-near".into()).text_ui(TypeSize::Caption).text_color(c.warning)
@@ -1905,16 +1903,16 @@ impl ActivityCard {
         cx.notify();
     }
 
-    /// The pinned card's top: its context (where its box says how full it is) or "Activity", with
-    /// the card's controls.
+    /// The pinned card's top: "Activity" with the card's controls, then its context (where its box
+    /// says how full it is).
     fn pinned_top(&self, bars: &WorkBars, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        self.context_strip(bars, cx).unwrap_or_else(|| {
-            div().px(space::S2).pb(space::S1).flex().items_center().justify_between()
-                .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Activity"))
-                .child(self.pinned_controls(cx))
-                .into_any_element()
-        })
+        // Summary or Full and Unpin on a row of their own, so the context's figures keep the
+        // card's width.
+        let controls = div().px(space::S2).pb(space::S2).flex().items_center().justify_between()
+            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Activity"))
+            .child(self.pinned_controls(cx));
+        div().flex().flex_col().child(controls).children(self.context_strip(bars, cx)).into_any_element()
     }
 
     /// The pinned card's summary: only what's live, as T3 Code's pinned panel keeps its rows: its

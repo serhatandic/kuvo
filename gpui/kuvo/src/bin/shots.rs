@@ -2696,7 +2696,7 @@ fn stand_in_changed(screen: &FirstRunScreen) -> bool {
 }
 
 /// Where the Sessions sidebar's Projects heading is drawn in the stand-in (the add-project shot).
-const PROJECTS_Y: f32 = 120.;
+const PROJECTS_Y: f32 = 237.;
 
 fn main() -> anyhow::Result<()> {
     let only: Vec<String> = std::env::args().skip(1).collect();
@@ -3108,7 +3108,7 @@ fn main() -> anyhow::Result<()> {
                 let used = match screen.slug { "activity-summarize-near" => 372_000, "activity-summarize-unmeasured" => 0, _ => 89_000 };
                 stand_in.set_context(session, json!({ "used": used, "window": 1_000_000, "summarizeAt": 400_000 }));
             }
-            if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {
+            if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") || screen.slug.starts_with("small-1123-b-4") {
                 use serde_json::json;
                 let busy = screen.slug == "activity-pinned-busy";
                 let (used, session) = match screen.slug { "activity-pinned-busy" => (382_000, "ses_signup"), "activity-context-quiet" => (12_000, "ses_recipes"), _ => (184_000, "ses_signup") };
