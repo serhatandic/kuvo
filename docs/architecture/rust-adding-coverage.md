@@ -11,8 +11,9 @@ the races that span removal, backup, moves, and an authority change.
 | C1 | [Two computers agree on membership and a rename travels through the relay](../../protocol/conformance/two-boxes.test.mjs) | A fresh applicant enrolls using an installer code, the computers share the accepted signed roster, and a rename reaches the member. |
 | C2 | [An installer code binds one computer, survives a retry, and keeps its identity](../../protocol/conformance/adding.test.mjs) | The issuer stores a token hash, commits membership before a reply lost by the relay, and resumes the same signed identity after a restart. Activation is durable and a different applicant cannot reuse the code. |
 | C3 | [An unsupported installer code leaves the new computer’s home untouched](../../protocol/conformance/adding.test.mjs) | Both unsupported prefixes fail before any layout or identity write. |
+| C4 | [A Rust applicant leaves an older home for the move](../../protocol/conformance/adding.test.mjs) | A valid code reaches the applicant's layout gate. The older marker stays byte for byte and the applicant does not start migration. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
-| U2 | [A TypeScript computer completes the signed unlink handshake](../../protocol/conformance/removal.test.mjs) | The main signs an instruction for the removed member’s challenge and records completion. The member starts a standalone setup. |
+| U2 | [A released computer enrolls again after usage settings follow its standalone setup](../../protocol/conformance/removal.test.mjs) | The main signs an instruction for the removed member’s challenge and records completion. The member starts a standalone setup and renews its identity when it rejoins. |
 
 ## Stored and inherited cases
 
@@ -21,8 +22,9 @@ the races that span removal, backup, moves, and an authority change.
   in `ownershipRecovery`. The applicant adopts a signed roster and reads the
   main’s checkpoint and shared replica through the existing peer exchange.
 - The Rust installer writes machine identity under the resident’s home lock.
-  Helper-owned identity rotation, released-work fingerprints, installer recovery
-  receipts and the cleanup handshake on a Rust member remain in 2.3.
+  Rust reads the TypeScript release baseline when the physical inventory still
+  matches. Logical SQLite fingerprints, Helper-owned identity rotation, installer
+  recovery receipts and Rust-side unlink cleanup remain in 2.3.
 - The existing card writer has process coverage under [setup R1 and R2](rust-setup-coverage.md).
   Multi-install discovery, probes, verdicts and missing or future cards remain in
   2.3 and 2.6.
@@ -35,12 +37,16 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-On macOS, TypeScript passes C1–C3 and U1–U2. Rust passes C1–C3 and U1.
+On macOS, TypeScript passes C1–C3 and U1–U2. Rust passes C1–C4 and U1.
 C2 passes in both mixed directions. U1 and U2 pass with a Rust main and a
-TypeScript member. The Rust workspace compile check passes. Native Windows and
-static x86-64 Linux musl under WSL 2 on Ubuntu 24.04 each pass C1–C3 and U1.
-U2 requires a TypeScript member. No SSH enrollment was run on the PC, and
-lokum was left alone.
+TypeScript member. U2 also passes with a Rust applicant taking over the stopped
+TypeScript home for re-enrollment, with either main. It refuses a new work file
+until that file is removed, then starts the new Rust member. The Rust workspace compile check passes. Native Windows passes C1–C4 and
+U1. The Mac-built static x86-64 Linux musl binary passes C1–C4 and U1 on
+Ubuntu 24.04 under WSL 2 and on lokum. Both Linux runs also pass U2 with a
+TypeScript member and a Rust applicant. Lokum ran one capped container with
+the copied executable and tests. No SSH enrollment was run on the PC. The
+TypeScript fake SSH host scenario passes as a reference regression check.
 
 The differential runner compared stopped TypeScript homes without a file
 allowlist. Installer validation refusals and unlink receipt replay, including
@@ -48,16 +54,20 @@ a conflicting request, gave equal answers. The positive code issuance differed
 in its random bearer token and expiry. Both boxes returned the expected code
 scope and saved the invitation under the token hash in C2. The complete home
 inventories still differed. The refusal, issuance, and unlink replay runs had
-63, 65, and 61 differing leaves respectively. These include startup service
+60, 68, and 61 differing leaves respectively. These include startup service
 files and compatibility projections. The issuance run also differed in the
 invitation hash entries and the TypeScript `run/link.needed` marker.
 
-A separate re-enrollment check continued U2 by issuing a new code and giving it
-to the same released TypeScript computer. Both a TypeScript main and a Rust main
-reproduced the refusal, “This computer has setup data. Use a setup merge to bring
-that data along.” The released member had no user edits, and its card had
-reported `used: false`. The standalone resident was tried both running and
-restarted. The specific retained-work input causing the refusal is unconfirmed.
+Re-enrollment after a TypeScript member's unlink originally failed against
+either main. The released baseline hashed the inode and change time for
+`agents/usage/settings.json`. The Usage worker rewrote that file when the
+member became standalone. U2 now waits for the rewrite and re-enrolls the same
+computer with fresh keys. The TypeScript fix retains the previous baseline
+format and adds a companion that compares Usage separately from retained work.
+Older TypeScript baselines without the companion still take the historical
+path. The Rust applicant validates the usage digest and checks other retained
+files with the store's native file stamps. It requires an exact physical match.
+The logical SQLite fallback and saved work using relocated paths remain open.
 
 The Rust setup actor owns invitation saves, roster changes and unlink delivery.
 The relay adapter authenticates installer packets on the existing connection,
@@ -66,7 +76,42 @@ compare under the shared link lock protects against an intervening TypeScript
 write. Layout 23 recovery commitments and the membership change share one
 durable write. Unlink completion saves its acknowledgment and delivery status
 in the same write before replying. The installer currently requires a stopped
-Rust resident and conservatively refuses existing work it cannot classify.
+resident to take over its home and conservatively refuses work it cannot
+classify. Startup runs the move opener. Applicant enrollment uses the store's
+layout gate after code validation so a bad code leaves the home untouched and an
+older layout is kept for the move.
+
+## Home inventory verdicts
+
+The three part-two differential runs compared the full stopped-home inventories
+with the existing normalization. The runs differed on 59 distinct paths in
+total. Every path is listed below. An owner row means a live reader or writer
+exists. The directory entries are included with the respective files.
+
+| Paths | Verdict and evidence |
+| --- | --- |
+| `run/link.json` | **2.3** owns the invitation entries. The code's random bearer token changes the hash used as the entry key. C2 checks that the hash, expiry and scope agree with the reply. **2.1** owns the remaining empty `left`, `macMoved`, `macPeers`, `removalRevisions`, `removed` and `removedHere` compatibility projections. `setup/membership.ts` and the Rust setup actor write these from the accepted roster. |
+| `run/setup-card.json` | **2.3, 5.2.** The SSH probe in `add/scripts.ts` and the local reader in `setup/judge.ts` consume the card. The `used` and item-count fields depend on the work inventory and queue. |
+| `run/wipe-preparation` | **2.3, 2.5.** `setup/before-wipe.ts` stores durable preparation and export state here. |
+| `run/link.needed` | **7.1.** `box/src/keeper/kuvo-start` uses it to start the link. The agents' fence and browser also check the marker. |
+| `run/link.version` | **Identical encoding.** Both write a plain build identifier. The identifier reflects the executable. Keeper version selection is **7.1**. |
+| `run/route/ssh` | **1.4.** `server/ssh-pipe.ts` selects the TypeScript local SSH endpoint. |
+| `run/agents.json` | **2.2.** The peer directory consumes the kept local agent announcement. |
+| `run/moves`, `run/outbox`, `run/outbox/sending` | **2.4.** The move worker and `letters/outbox.ts` read the journals and pending letters. |
+| `config`, `config/opencode`, `config/opencode/plugins`, `config/opencode/plugins/kuvo-defaults.js` | **3.1.** `engine/defaults.ts` supplies the startup layer and generated plugin. |
+| `run/lists/sessions.json`, `run/queues-scanned.json` | **3.2.** Session-list writers and `engine/queue.ts` keep the projection and scan cursor. Port and timestamps can vary, while missing records and stable fields still count. |
+| `agents` | **4.1.** `agents/main.ts` initializes the bridge's local home. |
+| `bots`, `wakes`, `run/bots-seen`, `run/glance`, `run/glance/asks.json`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json` | **5.1.** Bot discovery, wake-up scheduling, the glance writer and notice replay use these. `bots/seen.ts`, `work/background.ts` and `notices/told.ts` read the cursors or kept state. |
+| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward` | **5.2.** Queue forwarding and service startup use the saved queue state and sign-in staging. |
+| `chats` | **5.3.** The shared chats store uses the home directory named in `link/home.ts`. |
+| `agents/limits.json`, `agents/usage`, `agents/usage/claude-files`, `agents/usage/codex-files`, `agents/usage/grok-files`, `agents/usage/insights.sqlite`, `agents/usage/insights.sqlite-shm`, `agents/usage/insights.sqlite-wal`, `agents/usage/settings.json`, `agents/usage/usage.json`, `run/usage-attribution.json` | **5.4.** The usage worker writes the scans, settings, Insights database and attribution. `agents/box-services.ts` reads attribution. SQLite journal presence and stable settings still count. Enrollment's use of the settings scope is **2.3**. |
+| `artifacts`, `artifacts/citations-v1.json`, `artifacts/copies`, `artifacts/index-v1.sqlite`, `artifacts/key`, `artifacts/log`, `library`, `library/backfill.json`, `box/marketplace`, `box/marketplace/mcp-relay-v1.json` | **5.5.** The artifact store, library backfill and Marketplace relay consume these. The index and kept records belong to their own services. |
+| `box`, `box/approval.json`, `run/fence`, `run/fence/agents.md` | **6.1.** Startup materializes approval and sandbox defaults, and `fence/state.ts` projects the sandbox note. |
+| `run/socket.key`, `run/ssh-for`, `run/vault.sock` | **1.4, 6.2.** `kuvo_server/src/ssh.rs` uses the rendezvous key. The TypeScript browser and shared setup client also read it. `link/home.ts` and the fence name the per-session SSH credentials and vault broker paths. |
+
+No path in this inventory was declared unread. The source search covered the
+box, Rust crates and desktop. The [move's machine differential](rust-move-coverage.md#verdicts-for-the-machine-differentials)
+covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
@@ -169,7 +214,7 @@ This map lists 194 reference cases, including expanded parameterized cases. One 
 | [a merge reserves Work Queue numbers through the relay lease](../../box/bridge-tests/installer-enrollment.test.js#L494) | Open | 2.3, 5.2 |
 | [installer retries a saved join after a lost answer and rejects code reuse by a different computer](../../box/bridge-tests/installer-enrollment.test.js#L538) | C2 covers interrupted plain enrollment, single-use binding and identity replay. Selected sign-ins, seed replay and credential receipts are open. | 2.3 |
 | [a computer enrolled by installer code receives a verified backup over Relay](../../box/bridge-tests/installer-enrollment.test.js#L919) | Open | 2.3, 2.5 |
-| [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 covers the preceding unlink with a Rust main and a TypeScript member. Re-enrollment and released-work baselines are open. | 2.3 |
+| [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 covers a TypeScript unlink and re-enrollment through either main. Rust-originated member cleanup and the logical SQLite retained-work reader remain open. | 2.3 |
 | [probe, SSH and installer code protect independent work and grants](../../box/bridge-tests/installer-enrollment.test.js#L1067) | Installer admission checks pairing and work. Probe and SSH proof, SQLite and retained work are open. | 2.3, 2.6 |
 | [a post-claim edit cancels only the provisional installer roster entry](../../box/bridge-tests/installer-enrollment.test.js#L1134) | Open | 2.3 |
 | [an expired installer claim can retire its exact entry after a member takes over the issuer’s relay lease](../../box/bridge-tests/installer-enrollment.test.js#L1208) | Open | 2.3 |

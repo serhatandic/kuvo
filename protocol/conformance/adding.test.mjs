@@ -115,3 +115,29 @@ test("an unsupported installer code leaves the new computer’s home untouched",
     assert.deepEqual(fs.readdirSync(home), []);
   }
 });
+
+test("a Rust applicant leaves an older home for the move", {
+  skip: boxBinary().typescript,
+}, async t => {
+  const root = fs.realpathSync(scratch());
+  const home = path.join(root, "box");
+  fs.mkdirSync(home);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const layout = '{"version":22}\n';
+  fs.writeFileSync(path.join(home, "folder-version.json"), layout);
+  const code = {
+    setup: "set_" + Buffer.alloc(16, 1).toString("base64url"),
+    expires: Date.now() + 60000,
+    relay: "ws://127.0.0.1:1",
+    address: Buffer.alloc(16, 2).toString("base64url"),
+    primary: Buffer.alloc(32, 3).toString("base64url"),
+    token: Buffer.alloc(24, 4).toString("base64url"),
+  };
+  const process = boxCommand(boxBinary(), home, isolatedEnv(root), { url: code.relay }, ["install", "--join"]);
+  t.after(() => process.stop());
+  process.child.stdin.end("kuvo-add-1." + Buffer.from(JSON.stringify(code)).toString("base64url") + "\n");
+  assert.equal((await process.exited).code, 1);
+  assert.match(process.log(), /Kuvo folder layout 22 requires the move to layout 23/);
+  assert.deepEqual(fs.readdirSync(home), ["folder-version.json"]);
+  assert.equal(fs.readFileSync(path.join(home, "folder-version.json"), "utf8"), layout);
+});

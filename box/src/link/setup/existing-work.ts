@@ -207,7 +207,7 @@ function pendingSessionWork(): boolean {
     || Object.values(readQueues(sessionQueues, true)).some(state => showsQueue(state) || state.handoff?.length || state.inboxMoved?.length);
 }
 
-function workInventory() {
+function workInventory(omitUsage = false) {
   const hash = createHash("sha256");
   function stamp(file: string, stable?: Hash, skipEmpty = false): bigint {
     const info = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
@@ -225,7 +225,7 @@ function workInventory() {
     if (!skipEmpty || info.size > 0n) stable?.update(entry);
     return info.size;
   }
-  for (const file of [...settings(), ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) stamp(file);
+  for (const file of [...settings(), ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) if (!omitUsage || file !== usageFile) stamp(file);
   const content = hash.copy();
   const stable = hash.copy();
   const files = databases();
@@ -239,7 +239,7 @@ function workInventory() {
       size += journal.size;
     }
   }
-  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size };
+  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size, omitUsage };
 }
 
 let lastDatabaseStamp: { stability: string; logical: string } | undefined;
@@ -255,23 +255,52 @@ function databaseStamp(inventory: ReturnType<typeof workInventory>) {
     throw error;
   }
   // The link lock doesn't cover the database, session, or bot writers.
-  const after = workInventory();
+  const after = workInventory(inventory.omitUsage);
   if (after.stability !== stability) throw new Error("Retained work changed during the check.");
   const logical = content.digest("base64url");
   lastDatabaseStamp = { stability, logical };
   return { physical: after.physical, logical };
 }
 
-/** Keep the historical stamp for preceding Boxes. An additional digest can prove that
- * database storage changed while its contents and the rest of the inventory stayed the same. */
-export function releasedWorkBaseline(): Pick<LinkState, "releasedWork" | "releasedDatabaseWork"> {
+function usageWork() {
+  // Validate the JSON before UsageSettings reads it. Its ordinary UI reader can
+  // recover from malformed files, but enrollment must keep unreadable work.
+  jsonFile(usageFile);
+  const usage = new UsageSettings(usageFile);
+  return { scope: usage.setup, digest: usage.digest(), imported: usage.imported };
+}
+
+function workStamp(omitUsage: boolean) {
+  const inventory = workInventory(omitUsage);
+  const stamped = databaseStamp(inventory);
+  return { physical: stamped?.physical ?? inventory.physical, logical: stamped?.logical };
+}
+
+/** Keep the historical stamp for earlier boxes. The companion compares the
+ * inventory separately from Usage's setup-scoped projection. */
+export function releasedWorkBaseline(): Pick<LinkState, "releasedWork" | "releasedDatabaseWork" | "releasedScopedWork"> {
   try {
-    const inventory = workInventory();
-    const stamped = databaseStamp(inventory);
-    return { releasedWork: stamped?.physical ?? inventory.physical, releasedDatabaseWork: stamped?.logical };
+    const before = workStamp(false);
+    return {
+      releasedWork: before.physical, releasedDatabaseWork: before.logical,
+      releasedScopedWork: { ...workStamp(true), usage: usageWork() },
+    };
   } catch {
     return { releasedWork: null };
   }
+}
+
+function scopedWorkChanged(baseline: NonNullable<LinkState["releasedScopedWork"]>): boolean {
+  const before = baseline.usage;
+  const now = usageWork();
+  const same = now.digest === before.digest && now.imported === before.imported;
+  // Usage resets on a scope change, except the first time it binds unscoped settings.
+  const reset = before.scope !== undefined && now.scope !== before.scope
+    && !now.imported && now.digest === new UsageSettings().digest();
+  if (!same && !reset) return true;
+  const inventory = workInventory(true);
+  return inventory.physical !== baseline.physical
+    && (!baseline.logical || databaseStamp(inventory)?.logical !== baseline.logical);
 }
 
 /** The probe and both ordinary enrollment paths use the same work test. Historical
@@ -306,6 +335,7 @@ export function hasSetupWork(link: LinkState | null): boolean {
       || engineHasSessions(files);
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork === null) return true;
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork) {
+      if (link.releasedScopedWork) return scopedWorkChanged(link.releasedScopedWork);
       // Compare even if the work is now empty: a deletion after unlink is also a change.
       const inventory = workInventory();
       return inventory.physical !== link.releasedWork && (!link.releasedDatabaseWork || databaseStamp(inventory)?.logical !== link.releasedDatabaseWork);

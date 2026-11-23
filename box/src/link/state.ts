@@ -58,6 +58,11 @@ export interface LinkState {
   releasedSetup?: string;
   releasedWork?: string | null;
   releasedDatabaseWork?: string;
+  releasedScopedWork?: {
+    physical: string;
+    logical?: string;
+    usage: { scope?: string | null; digest: string; imported: boolean };
+  };
   /** The old enrollment's key, retained for unlink acknowledgement and SSH discovery. */
   departedKey?: string;
   formerPhoneIssuers?: Record<string, string[]>;
