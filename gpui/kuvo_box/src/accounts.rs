@@ -323,6 +323,9 @@ pub struct Status {
     pub url: Option<String>,
     #[serde(default)]
     pub instructions: Option<String>,
+    /// How it ends, once that's known (`code`: on a code to paste back), where the box says.
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(default, rename = "pasteAddress")]
     pub paste_address: bool,
     #[serde(default, rename = "userCode")]

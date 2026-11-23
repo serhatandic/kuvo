@@ -2,7 +2,8 @@
 // `grok login`): it opens its maker's page in your browser and finishes by itself. The page it
 // would open is caught (its BROWSER is a little script that writes it down), so the app opens it,
 // once, and can open it again. Some also print a page to use when no browser opens, which ends on
-// a code to paste back (Claude Code's): that's taken too, typed into the command.
+// a code to paste back (Claude Code's): that's taken too, typed into the command. The attempt says
+// which it is (`mode`: `code` while the page in use is the printed one, else `auto`).
 
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { privateFolder, writeSecret } from "../shared/files"
@@ -21,7 +22,11 @@ export interface CommandSignInOptions {
   temporary: string
   /** Whether you're signed in now (asked once the command ends). */
   signedIn: () => Promise<boolean>
+  /** What to do, in a line: for a sign-in that comes back by itself. */
   instructions: string
+  /** The line for one that ends on a code to paste here (`mode: "code"`: its printed page, with a
+   * `codePrompt`); `instructions` where it isn't given. */
+  codeInstructions?: string
   /** The command's prompt for a code from its page, when it takes one: a pasted code is typed there. */
   codePrompt?: RegExp
   /** Signed in: what that changes (an ended sign-in is behind it). */
@@ -167,12 +172,16 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
   // taken when nothing reaches the browser a few seconds after it.
   let url = ""
   let printedAt: number | undefined
-  const look = (waited: number) => {
+  // Whether the page in use is the one it printed: one that ends on a code to paste here.
+  let printedInUse = options.printedPage === true
+  const look = (waited: number): string => {
     const printed = firstURL(output)
     if (options.printedPage) return printed ?? ""
     if (existsSync(urlFile)) return readFileSync(urlFile, "utf8").split("\n")[0].trim()
     if (printed) printedAt ??= waited
-    return printed && waited - printedAt! >= 3_000 ? printed : ""
+    if (!printed || waited - printedAt! < 3_000) return ""
+    printedInUse = true
+    return printed
   }
   let waited = 0
   for (; waited < (options.pageWait ?? 15_000) && !url; waited += 200) {
@@ -199,11 +208,18 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
     await Bun.sleep(200)
   }
   const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""))
+  // How it ends, as it stands (a late page decides it): on a code to paste here, or by itself.
+  const mode = (): "auto" | "code" => (codePrompt && printedInUse ? "code" : "auto")
+  const instructions = () => (mode() === "code" ? options.codeInstructions ?? options.instructions : options.instructions)
   return {
     url,
     userCode,
-    instructions: options.instructions,
-    mode: "auto",
+    get instructions() {
+      return instructions()
+    },
+    get mode() {
+      return mode()
+    },
     acceptsCode: Boolean(codePrompt),
     complete: codePrompt
       ? async (code: string) => {
@@ -231,7 +247,7 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
     status: () => {
       if (status.status !== "pending") return status
       const code = userCode ?? options.userCode?.exec(output)?.[1]
-      return { ...status, ...(late ? { url: late, instructions: options.instructions } : {}), ...(code ? { userCode: code } : {}) }
+      return { ...status, ...(late ? { url: late, instructions: instructions() } : {}), ...(code ? { userCode: code } : {}) }
     },
     cancel() {
       if (status.status === "pending") status = { status: "failed", message: "Cancelled." }

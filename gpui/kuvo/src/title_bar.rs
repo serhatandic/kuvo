@@ -428,11 +428,23 @@ fn fleet_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyEleme
     let c = cx.theme().colors.clone();
     let open = workspace.fleet_card_open();
     let failed = summary.warning == Some(true);
+    // (Grey while they get ready, blue once they're ready and as they switch, green only when
+    // every one is up to date; an empty ring while the rest wait on one that's off.)
+    use crate::fleet::SetupPhase;
+    let phase = crate::fleet::setup_phase(&summary);
     let leading = if failed {
         Icon::new(IconName::Warning).size(IconSize::Nav).color(c.warning).into_any_element()
     } else {
-        spinner("fleet-chip-spinner", IconSize::Nav, c.accent).into_any_element()
+        match phase {
+            SetupPhase::Done => Icon::new(IconName::Check).size(IconSize::Nav).color(c.success).into_any_element(),
+            SetupPhase::Waiting => crate::fleet::ring(c.text_muted),
+            SetupPhase::Ready => kuvo_ui::small::status_dot(c.accent).into_any_element(),
+            SetupPhase::Switching => spinner("fleet-chip-spinner", IconSize::Nav, c.accent).into_any_element(),
+            SetupPhase::GettingReady => spinner("fleet-chip-spinner", IconSize::Nav, c.text_muted).into_any_element(),
+        }
     };
+    let selector = format!("fleet-chip-phase-{phase:?}");
+    let leading = div().debug_selector(move || selector).flex_none().flex().items_center().child(leading);
     let chip = div()
         .id("fleet-chip")
         .debug_selector(|| "fleet-chip".into())
@@ -459,19 +471,21 @@ fn fleet_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyEleme
 
 /// Each computer’s update progress, with Try Again only where the box says it can be fixed.
 fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSummary, cx: &Context<Workspace>) -> AnyElement {
-    use crate::fleet::Tone;
     let theme = cx.theme().clone();
     let c = &theme.colors;
     let rows = workspace.fleet_rows();
     let retrying = workspace.fleet_retrying().map(str::to_owned);
     let segments = rows.iter().map(|row| {
-        let color = match row.standing.line.tone {
-            Tone::Done => c.success,
-            Tone::Working => c.accent,
-            Tone::Warning | Tone::Blocked => c.warning,
-            Tone::Off => c.border_strong,
-        };
-        div().flex_1().rounded(radius::PILL).bg(color)
+        let (fill, shade) = crate::fleet::segment(&row.standing.line);
+        let color = crate::fleet::shade(shade, cx);
+        let selector = format!("fleet-segment-{}-{shade:?}", row.key);
+        div()
+            .debug_selector(move || selector)
+            .flex_1()
+            .h_full()
+            .rounded(radius::PILL)
+            .bg(c.text.opacity(0.1))
+            .child(div().h_full().w(gpui::relative(fill)).rounded(radius::PILL).bg(color))
     });
     let count = rows.len();
     let busy = retrying.is_some();

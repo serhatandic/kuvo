@@ -2211,6 +2211,15 @@ conversation is summarized by itself: Claude Code, Codex and Grok, unless the ch
 agent's own margin decides. Where it's absent, a client draws no mark. Clients draw used of window
 with a mark at `summarizeAt` (the desktop app's Activity, as a strip and on its pinned card).
 
+It also adds `data.summarize` (at the top of `data`, there before anything is measured too) where
+that setting applies to the session's agent (Claude Code, Codex and Grok): `{value, label, choices:
+[{id, title, line?}], line}`, the setting to offer on the conversation, in the box's words
+(`label` "Summarize at"; `choices` "200k", "400k" with `line` "Default", "600k", "Never"; `line`
+"All conversations"). `value` is the current choice's `id` (`"200000"`, `"400000"`, `"600000"`,
+`"never"`). A client changes it with `PATCH kuvo/settings/conversations {row: "compaction", value,
+was}`, which changes it for every conversation on that computer: the setting is the computer's own
+(`box/conversation-compaction.json`), not shared across a setup.
+
 ### Session lists
 
 What each session is, and where every client's lists show it (`sessions.list`): the box decides it
@@ -3954,11 +3963,23 @@ did: the box keeps working as itself ("For released Macs").
     `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
     `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
     computer that has not reported its progress can still be shown behind.
-    - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
-      `line` `{words, tone, short?}` is what the row shows, all the box's: `words` ("Ready for
+    - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?, fill?, seen?}`. `current` can be null.
+      `fill` is how far a `getting-ready` computer is in getting the release ready, 0 to 1, where
+      it's known (the box pulls it part by part from another of your computers; another computer's
+      as it last told it, for the same target). It never steps back for a target. `seen` is when an
+      `off` computer was last heard from, in Unix milliseconds.
+      `line` `{words, tone, short?, phase?, fill?}` is what the row shows, all the box's: `words` ("Ready for
       beta.41", "beta.40 · Can’t be reached: updates when it’s back"), `tone` (`done`, `working`, `warning`
       where it can't update for a reason you can fix, `blocked` where it can't until the next
-      release, `off`), and on `warning` the few words a narrow place shows (`short`). `canRetry`
+      release, `off`), and on `warning` the few words a narrow place shows (`short`). `phase` is
+      where the row is, which only goes forward: `getting-ready` ("Getting ready · 72%" with
+      `fill` under 1, else "Getting ready…"), `ready` ("Ready for beta.44"), `switching`
+      ("Switching to beta.44…"), `done` (up to date, "beta.44 · Up to date", and only then), or
+      `off` ("beta.43 · seen 2h ago" where `seen` is known: "seen just now", "seen 5 min ago",
+      "seen 2h ago", "seen yesterday", "seen 3 days ago"; else "Can’t be reached: updates when it’s
+      back"). A row that can't update has no `phase`; its `tone` says. `tone` stays as older
+      clients read it (`done` for ready too). The words of an off row change with time: the
+      computers stream sends a new line when they do (it reads again every 15 seconds). `canRetry`
       says Try Again is offered on the row. A client draws these and decides neither.
       `requiresUpdate` is a predecessor compatibility field. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
@@ -3985,11 +4006,27 @@ did: the box keeps working as itself ("For released Macs").
       retry after failure or five minutes without progress. Its relay owner consumes the request
       and starts the same no-cut path used by automatic updates. In a setup with an accepted
       release, `POST kuvo/update {now: true}` uses the same eligibility rule.
-    - The summary's `shown`, `title`, `detail` and `warning` are the words to draw: shown while
-      computers get ready ("Updating to beta.41 · 2 of 3 ready", off computers left out; `detail`
-      "Everything works on beta.40 while your computers get ready.") or where one can't update for
-      a reason you can fix (`warning`: "spare-linux can't update to beta.41", `detail` its name and
-      reason, Try Again on its row). Hidden otherwise.
+    - The summary's `shown`, `title`, `detail`, `warning` and `phase` are what to draw. `phase` says
+      where the setup's update is, counting every computer with an update state (T, off ones
+      included), the ones up to date (D) and the ones ready (R):
+      - `getting-ready`: none up to date or switching, some getting ready. "Getting beta.44
+        ready", or "Getting beta.44 ready · R of T" once some are ready; `detail` "Your computers
+        stay on beta.43 meanwhile." (or "Your computers keep what they run meanwhile." where they
+        run different versions).
+      - `ready`: every one that can be reached is ready, none switched. "beta.44 is ready · R of
+        T", "They switch next."
+      - `switching`: some up to date or switching, others not yet. "Switching to beta.44 · D of T
+        done", "N still on beta.43." (or "N still to switch." where they run different versions).
+      - `waiting`: nothing in progress, some up to date, some off. "beta.44 · D of T up to date",
+        "spare-linux updates when it’s back." (or "N computers update when they’re back.").
+      - `done`: all up to date. "All T on beta.44" ("Up to date on beta.44" for one computer), no
+        `detail`.
+      It's shown while in progress (`getting-ready`, `ready`, `switching`), where one can't update
+      for a reason you can fix (`warning`: "spare-linux can't update to beta.41", `detail` its name
+      and reason, Try Again on its row; `phase` still says where the rest are), and, `waiting` or
+      `done`, for ten minutes after the update finished, on a box that saw it in progress. The box
+      keeps that in `run/fleet-finished.json` (`{target, finishedAt?}`); one that never saw it
+      under way doesn't show it. Hidden otherwise, with no `detail`. `stage` is as before.
     - Check for Updates (`POST kuvo/update {now: true}`) on a member answers `202` with `message`
       (its main checks now, or once it's back) and keeps the request in `run/fleet-check.json`; its
       relay owner sends the main peer mail `release` `{check: true}` once the main is reached, and
@@ -5035,14 +5072,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
-    …/connect/oauth/<attempt>` → its status (`pending`, with `url`, `instructions`, `userCode` and
-    `message` as they come;
+    …/connect/oauth/<attempt>` → its status (`pending`, with `mode` and `acceptsCode`, and `url`,
+    `instructions`, `userCode` and `message` as they come;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
-    {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
+    {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. `mode` says
+    how it ends as it stands: `code` where it ends on a code to paste here (the page in use is the
+    one the agent's command printed: on another device, or taken because nothing reached the
+    browser, a page that comes late included, so a status can turn it to `code`), with
+    `instructions` to match (Claude Code: "Sign in on Claude’s page, then paste its code here.");
+    else `auto`, it comes back by itself (Claude Code: "Finish signing in on Claude’s page."). A
+    client shows the code field for `code`. `acceptsCode` stays as before, for older clients: a
+    code can be pasted (Claude Code's page may still give one where it can't come back). A key:
     `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With
     `remote: true` the page is for another computer or the phone,
     so it doesn't come back to the computer's `localhost`: Claude Code's ends on a code to paste
-    back (`acceptsCode`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
+    back (`mode: "code"`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
     to copy), Cursor's finishes by itself, and Antigravity's Google page comes back to
     `http://127.0.0.1:<port>/?…` on the computer: open it in a web view, stop where it's sent
     there, and hand that address to the computer with `kuvo/sign-in/return` (below); the attempt
@@ -5359,7 +5403,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     computer doing the sign-in, which the box explains.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
-    `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
+    `instructions?`, `userCode?`, and, pending on the bridge, `mode` and `acceptsCode`, above), with
+    `failure` once it's `failed` or `expired`: what a client
     shows, the page's OAuth code in words (`access_denied`: turned down on its page) and the
     a plain fallback message otherwise. A client asks it as the sign-in goes (every second or so), in
     place of the engine's status route. With `wait` (at most 25), the box asks the engine each

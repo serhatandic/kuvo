@@ -23,12 +23,27 @@ pub enum Tone {
     Off,
 }
 
+/// How far along its way a computer is, as the box says it (`phase`). Colours only go forward:
+/// grey while it gets ready, blue once ready (a spinner on it while it switches), green only when
+/// it's up to date.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Phase {
+    /// Getting the release ready, this far (0 to 1) where the box knows.
+    GettingReady(Option<f32>),
+    Ready,
+    Switching,
+    Done,
+    Off,
+}
+
 /// A computer's row in the setup's update, in the box's words.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub words: String,
     pub tone: Tone,
     pub short: Option<String>,
+    /// None where it can't update (its tone says so).
+    pub phase: Option<Phase>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,8 +67,22 @@ pub fn standing(computer: &Computer) -> Option<Standing> {
         "off" => Tone::Off,
         _ => return None,
     };
+    let phase = match line.phase.as_deref() {
+        Some("getting-ready") => Some(Phase::GettingReady(line.fill.map(|fill| fill as f32 / 1000.))),
+        Some("ready") => Some(Phase::Ready),
+        Some("switching") => Some(Phase::Switching),
+        Some("done") => Some(Phase::Done),
+        Some("off") => Some(Phase::Off),
+        // (A box from before phases: its tone, as near as it says.)
+        _ => match tone {
+            Tone::Done => Some(Phase::Done),
+            Tone::Working => Some(Phase::GettingReady(None)),
+            Tone::Off => Some(Phase::Off),
+            Tone::Warning | Tone::Blocked => None,
+        },
+    };
     Some(Standing {
-        line: Line { words: line.words.clone(), tone, short: line.short.clone() },
+        line: Line { words: line.words.clone(), tone, short: line.short.clone(), phase },
         can_update: update.can_retry,
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
@@ -79,12 +108,7 @@ pub fn dot(line: &Line, cx: &App) -> Option<Hsla> {
 
 pub fn status_line(id: &str, line: &Line, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    let leading: AnyElement = match line.tone {
-        Tone::Done => Icon::new(IconName::Check).size(IconSize::XSmall).color(c.success).into_any_element(),
-        Tone::Working => spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, c.accent).into_any_element(),
-        Tone::Warning => Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element(),
-        Tone::Blocked | Tone::Off => div().pt(px(2.)).child(status_dot(c.border_strong)).into_any_element(),
-    };
+    let leading = mark(id, line, cx);
     let selector = format!("fleet-line-{id}");
     div()
         .debug_selector(move || selector)
@@ -94,10 +118,69 @@ pub fn status_line(id: &str, line: &Line, cx: &App) -> AnyElement {
         .items_start()
         .gap(space::S1_5)
         .text_ui(TypeSize::Small)
-        .text_color(color(line, cx))
-        .child(div().pt(px(3.)).flex_none().child(leading))
+        .text_color(if line.phase == Some(Phase::Off) { c.text_faint } else { color(line, cx) })
+        .child(div().pt(px(3.)).w(px(12.)).flex_none().flex().justify_center().child(leading))
         .child(div().flex_1().min_w_0().child(words(line)))
         .into_any_element()
+}
+
+/// A row's mark: a grey spinner while it gets ready, a blue dot once ready, a blue spinner while it
+/// switches, a green check only when it's up to date, an empty ring while it's off.
+fn mark(id: &str, line: &Line, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let spin = |color| spinner(SharedString::from(format!("fleet-spin-{id}")), IconSize::XSmall, color).into_any_element();
+    match (line.tone, line.phase) {
+        (Tone::Warning, _) => Icon::new(IconName::Warning).size(IconSize::XSmall).color(c.warning).into_any_element(),
+        (Tone::Blocked, _) => div().pt(px(2.)).child(status_dot(c.border_strong)).into_any_element(),
+        (_, Some(Phase::Done)) => Icon::new(IconName::Check).size(IconSize::XSmall).color(c.success).into_any_element(),
+        (_, Some(Phase::Ready)) => div().pt(px(2.)).child(status_dot(c.accent)).into_any_element(),
+        (_, Some(Phase::Switching)) => spin(c.accent),
+        (_, Some(Phase::Off) | None) => div().pt(px(2.)).child(ring(c.border_strong)).into_any_element(),
+        (_, Some(Phase::GettingReady(_))) => spin(c.text_muted),
+    }
+}
+
+/// An empty ring: off.
+pub fn ring(color: Hsla) -> AnyElement {
+    div().size(px(7.)).flex_none().rounded(kuvo_ui::theme::radius::PILL).border_1().border_color(color).into_any_element()
+}
+
+/// The colour of a computer's piece of the card's bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shade {
+    /// Getting ready.
+    Grey,
+    /// Ready, or switching.
+    Blue,
+    /// Up to date.
+    Green,
+    /// It can't update.
+    Amber,
+    /// Off: the bare track.
+    Track,
+}
+
+/// A computer's piece of the card's bar: how full, and in what colour (grey getting ready, blue
+/// ready or switching, green up to date; amber where it can't update; the bare track while off).
+pub fn segment(line: &Line) -> (f32, Shade) {
+    match (line.tone, line.phase) {
+        (Tone::Warning | Tone::Blocked, _) => (1., Shade::Amber),
+        (_, Some(Phase::GettingReady(fill))) => (fill.unwrap_or(0.), Shade::Grey),
+        (_, Some(Phase::Ready | Phase::Switching)) => (1., Shade::Blue),
+        (_, Some(Phase::Done)) => (1., Shade::Green),
+        (_, Some(Phase::Off) | None) => (0., Shade::Track),
+    }
+}
+
+pub fn shade(shade: Shade, cx: &App) -> Hsla {
+    let c = &cx.theme().colors;
+    match shade {
+        Shade::Grey => c.text_faint,
+        Shade::Blue => c.accent,
+        Shade::Green => c.success,
+        Shade::Amber => c.warning,
+        Shade::Track => c.border,
+    }
 }
 
 pub fn header_shown(summary: Option<&FleetUpdateSummary>) -> bool {
@@ -106,6 +189,32 @@ pub fn header_shown(summary: Option<&FleetUpdateSummary>) -> bool {
 
 pub fn summary_words(summary: &FleetUpdateSummary) -> String {
     summary.title.clone().unwrap_or_default()
+}
+
+/// Where the setup's update is, as the box says it (`phase`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupPhase {
+    GettingReady,
+    Ready,
+    Switching,
+    /// The rest up to date, some off.
+    Waiting,
+    Done,
+}
+
+pub fn setup_phase(summary: &FleetUpdateSummary) -> SetupPhase {
+    match summary.phase.as_deref() {
+        Some("ready") => SetupPhase::Ready,
+        Some("switching") => SetupPhase::Switching,
+        Some("waiting") => SetupPhase::Waiting,
+        Some("done") => SetupPhase::Done,
+        // (A box from before phases says only its stage.)
+        _ => match summary.stage.as_str() {
+            "switching" => SetupPhase::Switching,
+            "waiting" => SetupPhase::Ready,
+            _ => SetupPhase::GettingReady,
+        },
+    }
 }
 
 #[cfg(test)]

@@ -546,6 +546,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "sign-in-form", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_form) },
     Screen { slug: "sign-in-browser", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_browser) },
     Screen { slug: "sign-in-device", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_device) },
+    Screen { slug: "sign-in-code", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_code) },
+    Screen { slug: "sign-in-by-itself", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_by_itself) },
     Screen { slug: "sign-in-paste", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_paste) },
     Screen { slug: "sign-in-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_done) },
     Screen { slug: "sign-in-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_failed) },
@@ -570,6 +572,12 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "activity-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Let's also check how the warning reads in dark mode near 400k."), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    // The summarize point picked in Activity (2026-11-23, option B): early, its menu open, near
+    // it, and before anything's measured.
+    Screen { slug: "activity-summarize-early", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "activity-summarize-picking", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_picking) },
+    Screen { slug: "activity-summarize-near", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "activity-summarize-unmeasured", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "floating-composer-end", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // The same in a long group chat and a long side chat: the last message clear of the composer at
@@ -749,6 +757,11 @@ fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mu
 fn activity_pinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.pin_now(window, cx));
+}
+
+fn conversation_activity_picking(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_activity_picking_summarize(window, cx));
 }
 
 fn conversation_activity_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1380,7 +1393,19 @@ fn sign_in_browser(w: &mut Workspace, window: &mut Window, cx: &mut Context<Work
 fn sign_in_device(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     signing_in(w, Side::Engine, "github-copilot", "GitHub Copilot", window, cx);
 }
-/// Claude Code's, which may end on a code to paste back: the field opened, a code turned down.
+/// Claude Code's, which ends on a code to paste back: the field there at once, focused.
+fn sign_in_code(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    signing_in(w, Side::Agents, "claude-code", "Claude Code", window, cx);
+}
+/// Codex's in the browser, which comes back by itself: only a quiet wait.
+fn sign_in_by_itself(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let sheet = signing_in(w, Side::Agents, "codex-cli", "Codex", window, cx);
+    sheet.update(cx, |sheet, cx| {
+        let way = sheet.ways().methods[0].clone();
+        sheet.pick(way, cx);
+    });
+}
+/// Claude Code's, which ends on a code to paste back: a code turned down.
 fn sign_in_paste(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let sheet = signing_in(w, Side::Agents, "claude-code", "Claude Code", window, cx);
     sheet.update(cx, |sheet, cx| {
@@ -3019,6 +3044,20 @@ fn main() -> anyhow::Result<()> {
                 let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None, None, &[]);
                 stand_in.set_queue("ses_signup", vec![]);
             }
+            if screen.slug.starts_with("activity-summarize") {
+                use serde_json::json;
+                stand_in.add_settings_section(
+                    json!({ "id": "conversations", "title": "Conversations", "group": "Agents & Tools", "icon": "message", "line": "When supported agents summarize long conversations on this computer." }),
+                    json!({ "id": "conversations", "title": "Conversations", "groups": [{ "id": "context", "title": "Context", "rows": [{
+                        "id": "compaction", "title": "Summarize long conversations at", "kind": "choice", "value": "400000", "can": true,
+                        "choices": [{ "id": "200000", "title": "200k tokens" }, { "id": "400000", "title": "400k tokens" }, { "id": "600000", "title": "600k tokens" }, { "id": "never", "title": "Never (large windows)" }] }] }] }),
+                );
+                let choices = json!([{ "id": "200000", "title": "200k" }, { "id": "400000", "title": "400k", "line": "Default" }, { "id": "600000", "title": "600k" }, { "id": "never", "title": "Never" }]);
+                let session = if screen.slug == "activity-summarize-unmeasured" { "ses_recipes" } else { "ses_signup" };
+                stand_in.set_summarize(session, json!({ "value": "400000", "label": "Summarize at", "choices": choices, "line": "All conversations" }));
+                let used = match screen.slug { "activity-summarize-near" => 372_000, "activity-summarize-unmeasured" => 0, _ => 89_000 };
+                stand_in.set_context(session, json!({ "used": used, "window": 1_000_000, "summarizeAt": 400_000 }));
+            }
             if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {
                 use serde_json::json;
                 let busy = screen.slug == "activity-pinned-busy";
@@ -3870,7 +3909,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed"] {
+    for slug in ["elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed", "fleet-phase-1", "fleet-phase-2", "fleet-phase-3", "fleet-phase-4", "fleet-phase-5", "fleet-phase-6"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -3903,7 +3942,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 }
             }
             // The setup updating to beta.38 (#848's notifier and Computers' update states).
-            if let Some(fleet) = slug.strip_prefix("fleet-") {
+            if let Some(phase) = slug.strip_prefix("fleet-phase-") {
+                // (2026-11-23, option A: each of an update's phases, its card open.)
+                stand_in.fleet_phase(phase.parse::<usize>().unwrap_or(1) - 1);
+            } else if let Some(fleet) = slug.strip_prefix("fleet-") {
                 stand_in.fleet_sample(fleet.ends_with("failed"), fleet == "header-done", NOW);
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
@@ -3996,6 +4038,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     }
                     match slug {
                         "fleet-header-updating" | "fleet-header-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_fleet_card(cx)),
+                        _ if slug.starts_with("fleet-phase-") => home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_fleet_card(cx)),
                         "fleet-overview" | "fleet-overview-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Computers, window, cx)),
                         "fleet-detail-behind" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_more_0", None, window, cx)),
                         "fleet-detail-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_devbox", None, window, cx)),
@@ -4010,7 +4053,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
-            if slug.starts_with("fleet-header-") {
+            if slug.starts_with("fleet-header-") || slug.starts_with("fleet-phase-") {
                 // (The notifier's card, its entry motion run to its end.)
                 cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
                 cx.run_until_parked();

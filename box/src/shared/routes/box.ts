@@ -383,14 +383,21 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 /** What a computer's row in the setup's update shows, all the box's: its words, its tone (`done`:
  * up to date or ready; `working`: getting ready; `warning`: it can't update for a reason you can
  * fix; `blocked`: it can't until the next release; `off`) and, where it's `warning`, the few words a
- * narrow place shows (`short`). */
-export const FLEET_LINE = object({ words: string, tone: words("done", "working", "warning", "blocked", "off"), "short?": string });
+ * narrow place shows (`short`). `phase`: where it is on the way, only ever forward (`getting-ready`,
+ * `ready`, `switching`, `done`: up to date, and only then), or `off`; none where it can't update
+ * (its tone says). `fill`: how far it is in getting the release ready, 0..1, where known. */
+export const FLEET_LINE = object({
+  words: string, tone: words("done", "working", "warning", "blocked", "off"), "short?": string,
+  "phase?": words("getting-ready", "ready", "switching", "done", "off"), "fill?": number,
+});
 export type FleetLine = Infer<typeof FLEET_LINE>;
 
 /** A computer's progress towards its setup's accepted release. Timestamps are in ms. `canRetry`:
- * Try Again is offered on its row (`POST kuvo/update/retry` with its `key`). */
+ * Try Again is offered on its row (`POST kuvo/update/retry` with its `key`). `fill`: how far it is
+ * in getting the release ready, 0..1, where known; `seen`: when it was last heard from (on `off`). */
 const FLEET_PROGRESS = {
   current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
+  "fill?": number, "seen?": number,
   "line?": FLEET_LINE,
 } as const;
 export const FLEET_UPDATE = oneOf(
@@ -403,10 +410,14 @@ export const FLEET_UPDATE = oneOf(
 );
 export type FleetUpdate = Infer<typeof FLEET_UPDATE>;
 
+/** The setup's update, in the box's words (`title`, `detail`), and where it is (`phase`: computers
+ * getting it ready, all ready, switching, done but for ones that are off, or done), PROTOCOL.md
+ * "Updates". */
 export const FLEET_SUMMARY = object({
   target: string, "targetSha256?": string, done: number, updating: number, behind: number, failed: number,
   stage: words("behind", "downloading", "waiting", "switching", "failed", "finished"), dismissed: bool, failures: list(string),
   "shown?": bool, "title?": string, "detail?": string, "warning?": bool,
+  "phase?": words("getting-ready", "ready", "switching", "waiting", "done"),
 });
 export type FleetSummary = Infer<typeof FLEET_SUMMARY>;
 

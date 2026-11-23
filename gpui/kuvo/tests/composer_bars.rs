@@ -823,6 +823,34 @@ fn activity_shows_the_boxs_context_with_its_summarize_mark(cx: &mut TestAppConte
     assert!(shown(cx, "activity-context-words-12k of 1M") && !shown(cx, "activity-context-near"));
 }
 
+/// The summarize point is picked right in Activity, under the context bar: the box's setting
+/// (Settings › Conversations), sent to the conversation's box, which then puts the mark there. The
+/// bar shows from 0 before anything's measured.
+#[gpui::test]
+fn picking_a_summarize_point_in_activity_sends_it_to_the_box(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(
+        json!({ "id": "conversations", "title": "Conversations", "group": "Agents & Tools", "icon": "message", "line": "When supported agents summarize long conversations on this computer." }),
+        json!({ "id": "conversations", "title": "Conversations", "groups": [{ "id": "context", "title": "Context", "rows": [{
+            "id": "compaction", "title": "Summarize long conversations at", "kind": "choice", "value": "400000", "can": true,
+            "choices": [{ "id": "200000", "title": "200k tokens" }, { "id": "400000", "title": "400k tokens" }, { "id": "600000", "title": "600k tokens" }, { "id": "never", "title": "Never (large windows)" }] }] }] }),
+    );
+    let choices = json!([{ "id": "200000", "title": "200k" }, { "id": "400000", "title": "400k", "line": "Default" }, { "id": "600000", "title": "600k" }, { "id": "never", "title": "Never" }]);
+    stand_in.set_summarize("ses_signup", json!({ "value": "400000", "label": "Summarize at", "choices": choices, "line": "All conversations" }));
+    stand_in.set_context("ses_signup", json!({ "used": 0, "window": 1_000_000, "summarizeAt": 400_000 }));
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-context-words-0 of 1M") && shown(cx, "activity-context-bar"), "the bar shows from 0");
+    assert!(shown(cx, "activity-summarize-at-400k"), "the point in use, in the box's words");
+
+    click(cx, "activity-summarize-at-400k");
+    assert!(shown(cx, "menu-item-200k") && shown(cx, "menu-item-Never"));
+    click(cx, "menu-item-600k");
+    assert!(shown(cx, "conversation-activity-popover"), "picking keeps Activity open");
+    assert!(shown(cx, "activity-summarize-at-600k"), "the box's setting is 600k now, as it reads it");
+    assert!(!shown(cx, "activity-summarize-failure"));
+}
+
 /// Pinned, Activity is a slim card at the conversation's top right that stays as you chat, beside
 /// the column, never over it; Unpin, its one control, brings back the popover.
 #[gpui::test]

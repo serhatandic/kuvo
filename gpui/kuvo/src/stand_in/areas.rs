@@ -565,7 +565,8 @@ fn listed(areas: &Areas) -> Vec<Value> {
             }
             if computer["key"] == "key_old" {
                 computer["compatibility"] = json!({ "state": "behind", "missing": ["usage.insights"] });
-                if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()) {
+                // (Unless a sample says how its update stands.)
+                if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()).filter(|_| !areas.fleet_rows.iter().any(|(key, _)| key == "key_old")) {
                     computer["fleetUpdate"] = json!({
                         "current": null, "target": target, "state": "behind", "canRetry": false,
                         "line": { "words": "Getting beta.38 ready…", "tone": "working" },

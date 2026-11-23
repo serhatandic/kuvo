@@ -80,6 +80,56 @@ fn the_header_draws_preparing_ready_off_and_current_rows(cx: &mut TestAppContext
     assert_eq!(line("key_stand_in"), "beta.38 · Up to date");
 }
 
+/// Through an update's phases, as the box says them, each computer's piece of the bar only moves
+/// forward: grey while it gets ready, blue once ready and as it switches, green only when it's up
+/// to date (never green for ready, never back to grey). The chip follows, and an off computer
+/// says when it was seen.
+#[gpui::test]
+fn an_updates_colours_only_move_forward(cx: &mut TestAppContext) {
+    use kuvo::fleet::Shade;
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.fleet_phase(0);
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "fleet-chip");
+    let keys = ["key_stand_in", "key_devbox", "key_studio", "key_old"];
+    let shades = [Shade::Track, Shade::Grey, Shade::Blue, Shade::Green];
+    let shade_of = |cx: &mut VisualTestContext, key: &str| {
+        let found: Vec<Shade> = shades.iter().copied().filter(|shade| shown(cx, &format!("fleet-segment-{key}-{shade:?}"))).collect();
+        assert_eq!(found.len(), 1, "{key} draws one piece of the bar");
+        found[0]
+    };
+    // (Off is the bare track: it says where it was, not a step back.)
+    let rank = |shade: Shade| match shade { Shade::Grey => 0, Shade::Blue => 1, Shade::Green => 2, Shade::Track | Shade::Amber => -1 };
+    let mut was: Vec<i32> = keys.iter().map(|key| rank(shade_of(cx, key))).collect();
+    assert!(was.iter().all(|rank| *rank == 0), "all grey while they get ready");
+    let chips = ["GettingReady", "GettingReady", "Ready", "Switching", "Waiting", "Done"];
+    for phase in 1..6 {
+        stand_in.fleet_phase(phase);
+        read_again(&home, cx);
+        assert!(shown(cx, "fleet-card"), "the card stays open as the update goes on");
+        assert!(shown(cx, &format!("fleet-chip-phase-{}", chips[phase])), "the chip at phase {phase}");
+        for (ix, key) in keys.iter().enumerate() {
+            let now = rank(shade_of(cx, key));
+            if now >= 0 {
+                assert!(now >= was[ix], "{key} went back at phase {phase}");
+                was[ix] = now;
+            }
+        }
+        let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
+        for row in &rows {
+            let ready = kuvo::fleet::words(&row.standing.line).starts_with("Ready for");
+            let (_, shade) = kuvo::fleet::segment(&row.standing.line);
+            assert!(!ready || shade == Shade::Blue, "ready is blue, never green");
+        }
+        if phase == 4 {
+            assert_eq!(shade_of(cx, "key_old"), Shade::Track, "the off one is the bare track");
+            let off = rows.iter().find(|row| row.key == "key_old").map(|row| kuvo::fleet::words(&row.standing.line));
+            assert_eq!(off.as_deref(), Some("beta.43 · seen 2h ago"));
+        }
+    }
+    assert!(keys.iter().all(|key| shade_of(cx, key) == Shade::Green), "green when all are up to date");
+}
+
 #[gpui::test]
 fn the_box_can_hide_the_notifier_and_show_a_fixable_failure(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

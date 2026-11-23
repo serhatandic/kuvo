@@ -136,6 +136,7 @@ struct State {
     model_states: HashMap<String, Value>,
     /// What each session's `data.context` says (`{used, window?, summarizeAt?}`), where a test said.
     contexts: HashMap<String, Value>,
+    summarize: HashMap<String, Value>,
     /// The coding agents' bridge can't say its models now (it's starting again).
     agents_unknown: bool,
     /// Your starred models, as `kuvo/models/starred` keeps them.
@@ -746,6 +747,45 @@ impl StandIn {
         self.fleet_update(summary, rows);
     }
 
+    /// The setup's update at one of its six phases (0 to 5), in the box's wire format: all getting
+    /// ready, some ready, all ready, switching, up to date but one off, all up to date.
+    pub fn fleet_phase(&self, phase: usize) {
+        let (target, current) = ("0.8.0-beta.44", "0.8.0-beta.43");
+        let row = |step: &str| -> Value {
+            let (state, words, tone, phase, fill): (&str, String, &str, &str, Option<f64>) = match step {
+                "ready" => ("ready", "Ready for beta.44".into(), "done", "ready", None),
+                "switching" => ("updating", "Switching to beta.44…".into(), "working", "switching", None),
+                "done" => ("up-to-date", "beta.44 · Up to date".into(), "done", "done", None),
+                "off" => ("off", "beta.43 · seen 2h ago".into(), "off", "off", None),
+                filling => {
+                    let fill: f64 = filling.parse().unwrap_or(0.);
+                    ("getting-ready", format!("Getting ready · {}%", (fill * 100.).round()), "working", "getting-ready", Some(fill))
+                }
+            };
+            let mut line = json!({ "words": words, "tone": tone, "phase": phase });
+            if let Some(fill) = fill { line["fill"] = json!(fill); }
+            let mut row = json!({ "current": if state == "up-to-date" { target } else { current }, "target": target, "state": state, "canRetry": false, "line": line });
+            if state == "updating" { row["stage"] = json!("switching"); }
+            row
+        };
+        let (steps, summary_phase, title, detail): ([&str; 4], &str, &str, Option<&str>) = match phase {
+            0 => (["0.72", "0.40", "0.15", "0.58"], "getting-ready", "Getting beta.44 ready", Some("Your computers stay on beta.43 meanwhile.")),
+            1 => (["ready", "0.81", "ready", "0.64"], "getting-ready", "Getting beta.44 ready · 2 of 4", Some("Your computers stay on beta.43 meanwhile.")),
+            2 => (["ready"; 4], "ready", "beta.44 is ready · 4 of 4", Some("They switch next.")),
+            3 => (["done", "switching", "ready", "ready"], "switching", "Switching to beta.44 · 1 of 4 done", Some("3 still on beta.43.")),
+            4 => (["done", "done", "done", "off"], "waiting", "beta.44 · 3 of 4 up to date", Some("old-mini updates when it’s back.")),
+            _ => (["done"; 4], "done", "All 4 on beta.44", None),
+        };
+        let keys = ["key_stand_in", "key_devbox", "key_studio", "key_old"];
+        let rows = keys.iter().zip(steps).map(|(key, step)| (*key, row(step))).collect();
+        let done = steps.iter().filter(|step| **step == "done").count();
+        let mut summary = json!({ "target": target, "stage": "downloading", "done": done, "updating": 0, "behind": 0, "failed": 0,
+            "dismissed": false, "failures": [], "shown": true, "warning": false, "title": title, "phase": summary_phase });
+        if let Some(detail) = detail { summary["detail"] = json!(detail); }
+        self.more_computers(0);
+        self.fleet_update(summary, rows);
+    }
+
     /// Try Again for a computer is refused with `words`, as a box whose release moved on says.
     pub fn retry_refused(&self, words: &str) {
         self.state().areas.retry_refused = Some(words.to_owned());
@@ -1257,6 +1297,13 @@ impl StandIn {
     /// "Session context"): `{used, window?, summarizeAt?}`.
     pub fn set_context(&self, session: &str, context: Value) {
         self.state().contexts.insert(session.to_owned(), context);
+    }
+
+    /// What `session`'s `GET api/session/<id>` offers of where it's summarized (`data.summarize`),
+    /// its choice in use following this stand-in's Settings › Conversations, where a test added it
+    /// (`add_settings_section`).
+    pub fn set_summarize(&self, session: &str, summarize: Value) {
+        self.state().summarize.insert(session.to_owned(), summarize);
     }
 
     /// `session`'s subagents that are done, newest first (as `kuvo/work/subagents/<session>` lists
@@ -3054,10 +3101,19 @@ impl StandIn {
                 let active: serde_json::Map<String, Value> = state.running.iter().map(|session| (session.clone(), json!({}))).collect();
                 answer(200, json!({ "data": active }))
             }
-            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => match state.contexts.get(*session) {
-                Some(context) => answer(200, json!({ "data": { "id": session, "context": context } })),
-                None => answer(200, json!({ "id": session })),
-            },
+            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => {
+                let mut data = json!({ "id": session });
+                if let Some(context) = state.contexts.get(*session) { data["context"] = context.clone(); }
+                if let Some(mut summarize) = state.summarize.get(*session).cloned() {
+                    // (Its choice in use is the setting's, as a box reads it.)
+                    if let Some(value) = state.settings.row_value("conversations", "compaction") { summarize["value"] = value; }
+                    data["summarize"] = summarize;
+                }
+                match state.contexts.contains_key(*session) || state.summarize.contains_key(*session) {
+                    true => answer(200, json!({ "data": data })),
+                    false => answer(200, json!({ "id": session })),
+                }
+            }
             ("GET", ["api", "session", session, "message"]) if state.sessions.contains_key(*session) => {
                 let all = state.messages.get(*session).cloned().unwrap_or_default();
                 let limit: usize = query(path, "limit").and_then(|limit| limit.parse().ok()).unwrap_or(100);
