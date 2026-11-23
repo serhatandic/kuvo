@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+mod artifacts;
 mod check;
 mod database;
 mod engine;
@@ -214,6 +215,7 @@ pub fn stage(
             files::rewrite_mac_entry(&file, &next)?;
         }
     }
+    artifacts::rewrite(&staging_disk, &map)?;
     paths::repoint_links(&staging, &map)?;
     files::sync_tree(&staging, &disk.0)?;
     completed(AppStep::Rewrite);

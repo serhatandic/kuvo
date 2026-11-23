@@ -23,6 +23,23 @@ impl PathMap {
         })
     }
 
+    pub(super) fn names_old(&self, value: &str) -> bool {
+        let mentions = |prefix: &str| {
+            value.match_indices(prefix).any(|(at, _)| {
+                let tail = &value[at + prefix.len()..];
+                tail.is_empty()
+                    || tail.starts_with(['/', '"', '\'', '\n', '\r', '}', '\\', '?', '#'])
+            })
+        };
+        self.0.iter().any(|(from, _)| {
+            mentions(from)
+                || Url::from_file_path(from)
+                    .ok()
+                    .and_then(|url| url.as_str().strip_prefix("file://").map(str::to_owned))
+                    .is_some_and(|encoded| mentions(&encoded))
+        })
+    }
+
     pub(super) fn uri(&self, uri: &str) -> Option<String> {
         let rest = uri.strip_prefix("file://")?;
         self.0.iter().find_map(|(from, to)| {

@@ -305,6 +305,49 @@ fn a_change_to_the_source_after_cloning_refuses_the_stage() {
     );
 }
 
+#[test]
+fn staged_artifact_paths_and_ids_move_with_their_files() {
+    use sha2::{Digest, Sha256};
+
+    let root = tempfile::tempdir().unwrap();
+    let app = example(root.path());
+    let from = app.source.join("Chats/c1/notes.md");
+    let to = app.destination.join("chats/c1/notes.md");
+    let id = |path: &Path| {
+        let sum = Sha256::digest(path.to_str().unwrap());
+        format!("art_{}", hex::encode(&sum[..12]))
+    };
+    let log = "artifacts/log/2026-11.jsonl";
+    let record = |path: &Path, version| serde_json::json!({"a":{"id":id(path),"path":path},"formatVersion":version});
+    let original = format!("{}\n", record(&from, 1));
+    let source = app.source.join("box").join(log);
+    put(&source, original.as_bytes());
+    let staged = app.stage(|_| {});
+    let actual = fs::read_to_string(staged.path.join(log)).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&actual).unwrap(),
+        record(&to, 1)
+    );
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+
+    let future = format!("{}{}\n", original, record(&from, 2));
+    put(&source, future.as_bytes());
+    let home = Home::new(app.destination.clone()).unwrap();
+    let error = stage(
+        &home,
+        &app.home,
+        &app.bundle,
+        &app.release,
+        &app.engine,
+        |_| {},
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("Artifact index"));
+    assert_eq!(fs::read_to_string(source).unwrap(), future);
+    assert_eq!(fs::read_to_string(staged.path.join(log)).unwrap(), future);
+    assert!(!app.destination.join(layout::FILE).exists());
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
