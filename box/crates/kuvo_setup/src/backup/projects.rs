@@ -58,15 +58,15 @@ pub(super) fn selected(
             .ok_or(Error::Message(
                 "Choose project folders by their absolute paths.",
             ))?;
-        let real = path.canonicalize()?;
+        let real = canonical(path)?;
         let tmp = std::env::temp_dir();
         let mut standalone = [account, tmp.as_path()]
             .into_iter()
-            .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+            .map(|path| canonical(path).unwrap_or_else(|_| path.to_path_buf()));
         if !real.is_dir()
             || standalone.any(|root| root.starts_with(&real))
             || roots.locations().any(|root| {
-                let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+                let root = canonical(root).unwrap_or_else(|_| root.to_path_buf());
                 real.starts_with(&root) || root.starts_with(&real)
             })
         {
@@ -81,6 +81,13 @@ pub(super) fn selected(
     Ok(chosen)
 }
 
+fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let real = path.canonicalize()?;
+    #[cfg(windows)]
+    let real = kuvo_os::platform::windows_conventional_path(&real).unwrap_or(real);
+    Ok(real)
+}
+
 pub(super) fn capture(projects: &[PathBuf], entries: &mut Vec<Entry>) -> Result<()> {
     if projects.is_empty() {
         return Ok(());
@@ -90,7 +97,7 @@ pub(super) fn capture(projects: &[PathBuf], entries: &mut Vec<Entry>) -> Result<
         omissions: Vec::new(),
     };
     for (number, project) in projects.iter().enumerate() {
-        if project.canonicalize()? != *project || !project.is_dir() {
+        if canonical(project)? != *project || !project.is_dir() {
             return Err(Error::Message("A selected project folder is unavailable."));
         }
         collect(project, format!("projects/{number}"), &mut index, entries)?;

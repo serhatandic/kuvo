@@ -13,6 +13,8 @@ use super::{
 /// Implemented by the vault owner with Helper Keychain on Mac and the unlocked
 /// wrapped-key file store elsewhere.
 pub trait VaultBackend: Send + Sync {
+    /// Whether this resident currently owns the vault service.
+    fn holds_vault(&self) -> bool;
     fn state(&self) -> Result<VaultState>;
     fn items(&self) -> Result<Vec<VaultItem>>;
     fn values(&self, id: &str) -> Result<BTreeMap<String, String>>;

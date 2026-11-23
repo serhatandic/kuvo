@@ -47,6 +47,43 @@ struct Act {
     at: i64,
 }
 
+impl Act {
+    fn clock_refusal(&self, now: i64, own: &str, other: &str) -> Option<Reply> {
+        (now.saturating_sub(self.at) > 600_000 || self.at.saturating_sub(now) > 60_000)
+            .then(|| Reply {
+                status: 409,
+                value: json!({ "message": format!("{own}'s clock and {other}'s are too far apart to take it: check both computers' time.") }),
+            })
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn relay_backup_rejects_a_bad_clock_at_both_edges() {
+    let now = 1_795_046_400_000;
+    let incoming = |at| {
+        serde_json::from_value::<Act>(json!({
+            "id": "wqa_00000000000000000000", "area": "backup",
+            "method": "GET", "item": "b_aaaaaaaaaaaaaaaaaaaaaa", "body": {}, "at": at,
+        }))
+        .unwrap()
+        .clock_refusal(now, "Receiving", "Sending")
+    };
+    for at in [now - 600_001, now + 60_001, i64::MIN, i64::MAX] {
+        let reply = incoming(at).unwrap();
+        assert_eq!(reply.status, 409);
+        assert_eq!(
+            reply.value,
+            json!({
+                "message": "Receiving's clock and Sending's are too far apart to take it: check both computers' time."
+            })
+        );
+    }
+    for at in [now - 600_000, now, now + 60_000] {
+        assert!(incoming(at).is_none());
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct Acted {
     id: String,
@@ -411,13 +448,12 @@ pub fn start(
                     let finished = flight.clone();
                     let task = tokio::spawn(async move {
                         let now = jiff::Timestamp::now().as_millisecond();
-                        let id = act.id;
-                        let reply = if now.saturating_sub(act.at) > 600_000 || act.at.saturating_sub(now) > 60_000 {
-                            Reply { status: 409, value: json!({ "message": format!("{own}'s clock and {other}'s are too far apart to take it: check both computers' time.") }) }
+                        let reply = if let Some(refusal) = act.clock_refusal(now, &own, &other) {
+                            refusal
                         } else {
                             apply_message(receiver, setup, who, act.area, act.method, act.item, act.body).await
                         };
-                        let _ = send(&sender, &host, json!({ "acted": Acted { id, reply } })).await;
+                        let _ = send(&sender, &host, json!({ "acted": Acted { id: act.id, reply } })).await;
                         let _ = done.send(finished).await;
                     });
                     pending.insert(flight, task);
