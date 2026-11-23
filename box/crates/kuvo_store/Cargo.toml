@@ -7,3 +7,24 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+getrandom = "0.4"
+hex = "0.4"
+kuvo_os = { path = "../kuvo_os" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+
+[dev-dependencies]
+base64 = "0.22"
+sha2 = "0.10"
