@@ -19,6 +19,7 @@ use kuvo_protocol::routes::{
     post_kuvo_sessions_id_stop as stop,
 };
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteCall, RouteReply};
+use kuvo_store::format;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +35,7 @@ use crate::{
 const ARRIVING_FOR: u64 = 120_000;
 
 mod limit;
+mod views;
 
 #[derive(Clone)]
 pub(crate) struct QueueStore {
@@ -41,6 +43,7 @@ pub(crate) struct QueueStore {
     edits: Arc<Semaphore>,
     changes: watch::Sender<u64>,
     limits: limit::Classifier,
+    views: views::Views,
 }
 
 type Index = BTreeMap<String, Queue>;
@@ -184,20 +187,26 @@ impl QueueStore {
             edits: Arc::new(Semaphore::new(1)),
             changes: watch::channel(0).0,
             limits: limit::Classifier::new(),
+            views: views::Views::new(),
         }
     }
 
     async fn index(&self) -> io::Result<Index> {
-        let index: Index = disk::read(&self.run.join("queues.json"))
+        let index: BTreeMap<String, Value> = disk::read(&self.run.join("queues.json"))
             .await?
             .unwrap_or_default();
-        if let Some(queue) = index.values().find(|queue| queue.format_version > 1) {
-            return Err(io::Error::other(format!(
-                "Conversation queue format version {} is unsupported (this build writes 1).",
-                queue.format_version
-            )));
-        }
-        Ok(index)
+        index
+            .into_iter()
+            .map(|(session, mut row)| {
+                let version =
+                    format::check_version("Conversation queue", row.get("formatVersion"), 0, 1)
+                        .map_err(io::Error::other)?;
+                if let Some(fields) = row.as_object_mut() {
+                    fields.insert("formatVersion".into(), json!(version));
+                }
+                Ok((session, serde_json::from_value(row)?))
+            })
+            .collect()
     }
 
     pub(crate) async fn get(&self, session: &str) -> io::Result<Queue> {
@@ -206,9 +215,7 @@ impl QueueStore {
 
     pub(crate) async fn discard(&self, session: &str) -> io::Result<()> {
         let prior = self.get(session).await?;
-        for row in &prior.waiting {
-            self.waiting_prompt(&row.id).await?;
-        }
+        self.verify_waiting(&prior).await?;
         self.put(session, |state| *state = Queue::default()).await?;
         for row in prior.waiting {
             match tokio::fs::remove_file(self.waiting_file(&row.id)?).await {
@@ -276,14 +283,18 @@ impl QueueStore {
         let stored = disk::read::<Value>(&self.waiting_file(id)?).await?;
         stored
             .map(|value| {
-                if let Some(format) = value.get("formatVersion")
-                    && !matches!(format.as_u64(), Some(0 | 1))
-                {
-                    return Err(io::Error::other("Unsupported waiting message format."));
-                }
+                format::check_version("Waiting message", value.get("formatVersion"), 0, 1)
+                    .map_err(io::Error::other)?;
                 serde_json::from_value(value).map_err(io::Error::from)
             })
             .transpose()
+    }
+
+    async fn verify_waiting(&self, queue: &Queue) -> io::Result<()> {
+        for item in &queue.waiting {
+            self.waiting_prompt(&item.id).await?;
+        }
+        Ok(())
     }
 
     async fn save_waiting(&self, prompt: &Prompt) -> io::Result<()> {
@@ -577,7 +588,25 @@ async fn with_items(engine: &Engine, queue: &Queue, inbox: &[Inbox]) -> Result<V
     Ok(shown)
 }
 
+pub(crate) fn format_refusal(error: &io::Error) -> Option<Refusal> {
+    use kuvo_protocol::version::{FormatRefusalCode, UnsupportedFormatVersion};
+
+    let format = error.get_ref()?.downcast_ref::<format::Error>()?;
+    matches!(format, format::Error::Unsupported { .. }).then(|| {
+        Refusal::json(
+            StatusCode::CONFLICT,
+            json!(UnsupportedFormatVersion {
+                code: FormatRefusalCode::UnsupportedFormatVersion,
+                message: error.to_string(),
+            }),
+        )
+    })
+}
+
 fn save_failed(error: io::Error) -> Refusal {
+    if let Some(refusal) = format_refusal(&error) {
+        return refusal;
+    }
     Refusal::new(
         StatusCode::BAD_GATEWAY,
         format!("This computer couldn’t save the queue: {error}"),
@@ -966,6 +995,12 @@ pub(crate) async fn resume_move(
 }
 
 async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Value, Refusal> {
+    let current = engine.queues.get(session).await.map_err(save_failed)?;
+    engine
+        .queues
+        .verify_waiting(&current)
+        .await
+        .map_err(save_failed)?;
     let saved = engine
         .queues
         .put(session, Queue::release)
@@ -1304,9 +1339,12 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         async move {
             let session = sessions::id(&call)?;
             let wants = crate::query(&call.request.path, "items").as_deref() == Some("1");
-            Ok(RouteReply::json::<200>(sessions::typed(
-                snapshot(&engine, &session, wants).await?,
-            )?))
+            let mut shown = snapshot(&engine, &session, false).await?;
+            if wants {
+                let seen = engine.queues.views.refresh(&engine, &session).await;
+                shown["items"] = seen.items.as_deref().cloned().unwrap_or_default();
+            }
+            Ok(RouteReply::json::<200>(sessions::typed(shown)?))
         }
     });
 
@@ -1321,10 +1359,14 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
-                    let value = snapshot(&engine, &session, true).await.map_err(|_| io::Error::other("The queue could not be read."))?;
-                    if value["items"].is_array() && previous.as_ref() != Some(&value) {
-                        previous = Some(value.clone());
-                        yield JsonLine::new(serde_json::from_value::<events::Status200>(value)?)?;
+                    updates.borrow_and_update();
+                    let seen = engine.queues.views.refresh(&engine, &session).await.complete().await;
+                    if updates.has_changed().unwrap_or_default() {
+                        continue;
+                    }
+                    if let Some(value) = seen && previous.as_ref() != Some(&value) {
+                        yield JsonLine::new(serde_json::from_value::<events::Status200>(value.as_ref().clone())?)?;
+                        previous = Some(value);
                     }
                     tokio::select! {
                         () = call.cancel.cancelled() => break,

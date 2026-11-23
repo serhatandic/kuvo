@@ -192,6 +192,8 @@ export async function standInEngine(root, env) {
         const inbox = engine.inboxes.get(session) ?? [];
         if (!waiting[2] && request.method === "GET") {
           if (engine.inboxUnavailable?.has(session)) return send({}, 503);
+          const reply = engine.inboxReplies?.get(session);
+          if (reply) return send(reply.body, reply.status);
           return send({ data: inbox });
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));

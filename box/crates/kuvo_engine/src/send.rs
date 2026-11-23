@@ -98,6 +98,9 @@ fn receipt_path(engine: &Engine, session: &str, id: &str) -> PathBuf {
 }
 
 fn disk_failure(error: io::Error) -> Refusal {
+    if let Some(refusal) = queue::format_refusal(&error) {
+        return refusal;
+    }
     Refusal::new(
         StatusCode::SERVICE_UNAVAILABLE,
         format!("This computer couldn’t save the message receipt: {error}"),

@@ -176,6 +176,7 @@ async fn release(engine: &Engine, session: &str, reset: u64) -> io::Result<()> {
     let Ok(_admitted) = crate::session_move::admit(engine, session, None).await else {
         return Ok(());
     };
+    engine.queues.verify_waiting(&saved).await?;
     let Some(lease) = engine.acquire(Demand::Passive).await else {
         return Ok(());
     };

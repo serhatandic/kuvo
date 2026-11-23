@@ -265,6 +265,100 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
     [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
+test("queue reads keep the last complete inbox and the live line skips unreadable inboxes", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-queue-incomplete");
+  const session = "ses_queue";
+  const pathToQueue = "kuvo/sessions/" + session + "/queue";
+  const inboxPath = "/api/session/" + session + "/inbox";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const first = { id: "msg_first", type: "user", delivery: "steer", payload: { text: "Up next" } };
+  const second = { id: "msg_second", type: "user", delivery: "queue", payload: { text: "Afterwards" } };
+  here.engine.inboxes.set(session, [first, second]);
+  const record = await here.start().ready();
+  const reading = await openLine(record, "", pathToQueue + "/events");
+  t.after(() => reading.close());
+  const frames = reading.frames();
+  assert.deepEqual((await frames.next()).value.items.map(item => item.id), [first.id, second.id]);
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the inbox");
+  const next = frames.next();
+  next.catch(() => {});
+  const persisted = await request(record, "GET", pathToQueue);
+  assert.deepEqual(persisted.json, { paused: false, held: [] });
+  here.engine.inboxReplies = new Map();
+  const reads = () => here.engine.asked.filter(call => call.path === inboxPath).length;
+  for (const failure of [{ status: 200, body: { data: "not an inbox" } }, { status: 503, body: {} }, { status: 404, body: {} }]) {
+    const before = reads();
+    here.engine.inboxReplies.set(session, failure);
+    here.engine.emit({ type: "session.inbox.delivery.changed", data: { sessionID: session } });
+    await until(() => reads() > before, "the line to refresh its inbox");
+    const response = await request(record, "GET", pathToQueue + "?items=1");
+    assert.deepEqual(response.json.items.map(item => item.id), [first.id, second.id]);
+    assert.deepEqual({ paused: response.json.paused, held: response.json.held }, persisted.json);
+  }
+  here.engine.inboxReplies.clear();
+  here.engine.inboxes.set(session, [second]);
+  here.engine.emit({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: first.id } });
+  const recovered = (await next).value;
+  assert.deepEqual(recovered.items.map(item => item.id), [second.id]);
+  reading.close();
+  const reconnect = await openLine(record, "", pathToQueue + "/events");
+  t.after(() => reconnect.close());
+  assert.deepEqual((await reconnect.frames().next()).value.items.map(item => item.id), [second.id]);
+
+  here.engine.inboxReplies.set("ses_missing", { status: 404, body: {} });
+  const missing = await request(record, "GET", "kuvo/sessions/ses_missing/queue?items=1");
+  assert.equal(missing.status, 200, missing.text);
+  assert.deepEqual(missing.json, { paused: false, held: [], items: null });
+});
+
+test("legacy waiting queues read and future formats are refused before removal or Resume", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-queue-format");
+  const session = "ses_queue";
+  const id = "msg_saved";
+  const base = "kuvo/sessions/" + session;
+  const queue = base + "/queue";
+  const app = { "x-kuvo-from": "app" };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const record = await here.start().ready();
+  assert.equal((await request(record, "POST", base + "/stop", {}, app)).status, 200);
+  const saved = await request(record, "POST", base + "/send", { id, words: "Keep the notes.", delivery: "queue" }, app);
+  assert.deepEqual(saved.json, { waits: true });
+  const payload = path.join(here.home, "run", "waiting", id + ".json");
+  const index = path.join(here.home, "run", "queues.json");
+  const prompt = readJSON(payload);
+  const book = readJSON(index);
+  assert.equal(prompt.formatVersion, 1);
+  assert.equal(book[session].formatVersion, 1);
+  delete prompt.formatVersion;
+  delete book[session].formatVersion;
+  write(payload, JSON.stringify(prompt));
+  const older = JSON.stringify(book);
+  write(index, older);
+  await until(async () => (await request(record, "GET", queue + "?items=1")).json.items?.some(item => item.id === id),
+    "the legacy waiting row to be read");
+
+  const future = JSON.stringify({ ...prompt, formatVersion: 2 });
+  write(payload, future);
+  for (const [method, route] of [["DELETE", queue + "/" + id], ["POST", queue + "/resume"]]) {
+    const refused = await request(record, method, route, undefined, app);
+    assert.equal(refused.status, 409, refused.text);
+    assert.equal(refused.json.code, "unsupportedFormatVersion");
+    assert.equal(fs.readFileSync(payload, "utf8"), future);
+    assert.equal(fs.readFileSync(index, "utf8"), older);
+  }
+  assert.deepEqual(here.engine.messages.get(session) ?? [], []);
+  book[session].formatVersion = 2;
+  const futureIndex = JSON.stringify(book);
+  write(index, futureIndex);
+  const refused = await request(record, "POST", queue + "/hold", {}, app);
+  assert.equal(refused.status, 409, refused.text);
+  assert.equal(refused.json.code, "unsupportedFormatVersion");
+  assert.equal(fs.readFileSync(index, "utf8"), futureIndex);
+});
+
 test("a restart beside the same engine scans its queues and preserves an explicit stop", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("queue-scan");
