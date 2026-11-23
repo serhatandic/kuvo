@@ -3355,7 +3355,9 @@ client shows it from the same routes.
     client's Output shows it, read where the command runs (the engine in its `folder`, a coding
     agent's through their bridge) and cut on the box, so a client sends only the two ids and reads
     or cuts nothing itself. `command`: `{id, command, started, folder?, agents?}` as the list above
-    has it (one that ended and left it is still read where it was, while the box remembers it),
+    has it (one that ended and left it is still read where it was, while the box remembers it.
+    The bridge can also resolve its own shell by ID and verifies it belongs to the requested
+    session),
     null for one the box doesn't know. `output`: the end of what it printed, its last 24,000 bytes,
     from the first whole line in them (with none, all but a character the cut left half of), without
     newlines at either end; `cut` when there was more before. `state`: `running`; `ended` once it
@@ -3445,12 +3447,17 @@ client shows it from the same routes.
   - **Which agents can say**: the engine's own agents say all of it (`GET api/shell` one folder at
     a time, `shell.created`, `shell.exited`, and child sessions in `/api/session/active`). Only
     folders with something at work are asked, because asking starts a folder's tools. Claude Code:
-    commands, subagents and tasks. Codex: subagents, and commands it left running in background
-    terminals as tasks (listed again every 30 seconds while any runs: Codex doesn't say when one
-    ends, and isn't woken by it, as in its own CLI). Grok: what it keeps going in the background
-    (its commands and subagents) as tasks. Antigravity: subagents, which is how its own timers run.
-    Cursor: subagents only within a turn. What an agent can't report doesn't count: the session
-    shows as not at work, and its lead is told at the end of its turn, so nothing hangs on it.
+    commands, subagents and tasks. The bridge reads a Claude Code Bash task's live output through
+    the SDK and its final output from the file named in the completion notification, when readable.
+    Codex: subagents and background terminal commands. The bridge uses the terminal list for
+    liveness and any output Codex streams for the command's item. Codex reports no exit code when
+    a terminal drops out of that list, and a terminal recovered after reconnect may have no
+    captured output. The bridge rechecks the terminal list every 30 seconds while any runs.
+    Grok reports background commands and subagents as tasks. Its ACP interface names output files
+    but supplies neither readable output through ACP nor per-command stop. Antigravity reports
+    subagents, which is how its own timers run. Cursor reports subagents within a turn. Activity
+    clears the turn's working state when the bridge reports `session.idle` after saving its work.
+    Background work that still counts keeps the session working.
   - **Kept going, and lost**: a session's agent process is kept while what it left running goes
     (it isn't closed 15 minutes after its last turn), since that work goes with it. For the agents
     that are woken as such work ends (Claude Code, Grok), when it ends unfinished with their process

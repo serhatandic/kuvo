@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 57b26b3e0f73
+// Kuvo folder layout 23 81ecbe8e9171
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "57b26b3e0f73";
+var BRIDGE_VERSION = "81ecbe8e9171";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -75956,17 +75956,28 @@ async function readOnce(command, target, signal) {
     return { state: isGone2(error) ? "ended" : "unread" };
   }
 }
-function commandOf(session, id, file = WORK_BACKGROUND) {
-  const key = JSON.stringify([session, id]);
-  const found = readSessionBackground(session, file).commands.find((each) => each.id === id);
-  if (!found)
-    return listed4.get(key) ?? null;
-  const command = { id: found.id, command: found.command, started: found.started, ...found.folder ? { folder: found.folder } : {}, ...found.agents ? { agents: true } : {} };
-  listed4.delete(key);
-  listed4.set(key, command);
-  if (listed4.size > 200)
+function rememberCommands(session, commands) {
+  for (const { id, command, started, folder, agents } of commands) {
+    const key = JSON.stringify([session, id]);
+    listed4.delete(key);
+    listed4.set(key, { id, command, started, ...folder ? { folder } : {}, ...agents ? { agents: true } : {} });
+  }
+  while (listed4.size > 200)
     listed4.delete(listed4.keys().next().value);
-  return command;
+}
+function commandOf(session, id, file = WORK_BACKGROUND) {
+  const found = readSessionBackground(session, file).commands.find((each) => each.id === id);
+  if (found)
+    rememberCommands(session, [found]);
+  return listed4.get(JSON.stringify([session, id])) ?? null;
+}
+async function bridgeCommand(session, id, target, signal) {
+  if (!target || !id.startsWith("shl_"))
+    return null;
+  const job = await call(target, "GET", `/api/shell/${encodeURIComponent(id)}`, undefined, signal).catch(() => null);
+  if (job?.metadata?.sessionID !== session || typeof job.command !== "string" || typeof job.time?.started !== "number")
+    return null;
+  return { id, command: job.command, started: job.time.started, agents: true };
 }
 function outputReader(command, places, signal) {
   return async (last) => {
@@ -76298,6 +76309,7 @@ async function* workRoute(context, match) {
     const session = decodeURIComponent(match[1]);
     const now = () => {
       const { commands, subagents } = readSessionBackground(session);
+      rememberCommands(session, commands);
       const list = keptList();
       const listed = list?.sessions ?? {};
       const facts = listed[session]?.facts;
@@ -76359,7 +76371,9 @@ async function* commandOutputRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const command = commandOf(decodeURIComponent(match[1]), decodeURIComponent(match[2]));
+  const session = decodeURIComponent(match[1]);
+  const id = decodeURIComponent(match[2]);
+  const command = commandOf(session, id) ?? await bridgeCommand(session, id, bridge(), signal ?? undefined);
   const places = () => {
     let engine = null;
     try {
@@ -108721,14 +108735,16 @@ async function readOnce2(name, target) {
   let running;
   let facts;
   try {
-    const listed = readSessions(target);
+    const listed = readSessions(target).then(async (sessions) => {
+      if (sessions)
+        await discoverProjects(sessions);
+      return sessions;
+    });
     [sessions, running, facts] = await Promise.all([
       listed,
       readRunningSnapshot(name, target, listed),
       name === "engine" ? readEngineFacts() : undefined
     ]);
-    if (sessions)
-      await discoverProjects(sessions);
   } finally {
     if (reading3.get(name) === touched)
       reading3.delete(name);
@@ -108845,6 +108861,7 @@ async function noteListEvent(name, target, event) {
   if (!keepsList() || typeof event?.type !== "string")
     return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
+  const finishes = ENDS2.has(event.type) || name === "bridge" && event.type === "session.idle";
   if (typeof id !== "string" || !id.startsWith("ses"))
     return;
   if (event.type === "session.created")
@@ -108862,12 +108879,12 @@ async function noteListEvent(name, target, event) {
     return;
   }
   const moment = moments.hear(event.type, id, event.data);
-  if (moment && event.type !== "session.deleted" && event.type !== STARTS && !ENDS2.has(event.type))
+  if (moment && event.type !== "session.deleted" && event.type !== STARTS && !finishes)
     return;
-  if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS2.has(event.type) && !RELOADS.has(event.type))
+  if (event.type !== "session.deleted" && event.type !== STARTS && !finishes && !RELOADS.has(event.type))
     return;
   reading3.get(name)?.add(id);
-  if (event.type === STARTS || ENDS2.has(event.type) || event.type === "session.deleted")
+  if (event.type === STARTS || finishes || event.type === "session.deleted")
     runningReads.get(name)?.add(id);
   const mine = ++eventCount;
   asked8.set(`${name} ${id}`, mine);
@@ -108890,7 +108907,7 @@ async function noteListEvent(name, target, event) {
     place.running.add(id);
     if ((known3 ??= readBoxKnows()).botSessions.has(id))
       readWakeTurn(place, target, id);
-  } else if (ENDS2.has(event.type)) {
+  } else if (finishes) {
     place.running.delete(id);
     clearWakeTurn(place, id);
   }

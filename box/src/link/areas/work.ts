@@ -37,7 +37,7 @@ import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
 import { BOTS, HERE } from "../home";
 import { backgroundFollowers, readBackground, readSessionBackground, readStopped } from "../work/background";
-import { commandOf, followOutput, outputReader } from "../work/command-output";
+import { bridgeCommand, commandOf, followOutput, outputReader, rememberCommands } from "../work/command-output";
 import { subagentsOf } from "../work/subagents";
 import type { Target } from "../../shared/records";
 import { keptList, LIST_FILE, listFollowers, listNow } from "../lists/sessions";
@@ -214,6 +214,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     const session = decodeURIComponent(match[1]);
     const now = () => {
       const { commands, subagents } = readSessionBackground(session);
+      rememberCommands(session, commands);
       const list = keptList();
       const listed = list?.sessions ?? {};
       const facts = listed[session]?.facts;
@@ -269,7 +270,9 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
 export async function* commandOutputRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const command = commandOf(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
+  const session = decodeURIComponent(match[1]!);
+  const id = decodeURIComponent(match[2]!);
+  const command = commandOf(session, id) ?? await bridgeCommand(session, id, bridge(), signal ?? undefined);
   // (Where it runs found again each time: its engine started again on another port.)
   const places = () => {
     let engine: Target | null = null;

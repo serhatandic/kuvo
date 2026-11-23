@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Activity shows finished bot sessions and opens command output even if the command finishes as you open it. Claude Code keeps its final command output, and Codex background terminals appear under Processes.
+
 - Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
 - Editing or deleting a bot that’s gone tells you the bot is no longer there.
 
