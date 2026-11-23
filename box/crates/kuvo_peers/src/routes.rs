@@ -42,6 +42,7 @@ const CONVERSATION_NOT_READY: &str = "The conversation’s engine isn’t answer
 const CONVERSATION_GONE: &str = "That conversation isn’t there any more.";
 
 pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
+    crate::moves::register(registry, &peers);
     follow::<get_kuvo_setup_sessions_events::Spec>(
         registry,
         &peers,
@@ -229,7 +230,7 @@ pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
     register_attention(registry);
 }
 
-fn query(path: &str, key: &str) -> Option<String> {
+pub(crate) fn query(path: &str, key: &str) -> Option<String> {
     form_urlencoded::parse(path.split_once('?')?.1.as_bytes())
         .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
 }
@@ -267,10 +268,14 @@ fn read<R>(
     });
 }
 
-fn follow<R>(
+pub(crate) fn follow<R>(
     registry: &mut Registry,
     peers: &Reader,
-    snapshot: fn(&View, Millis) -> Option<<R as JsonStatus<200>>::Body>,
+    snapshot: impl Fn(&View, Millis) -> Option<<R as JsonStatus<200>>::Body>
+    + Clone
+    + Send
+    + Sync
+    + 'static,
     refuse_initial: Option<&'static str>,
 ) where
     R: JsonStatus<200> + kuvo_protocol::RouteSpec<Body = ()> + 'static,
@@ -282,26 +287,30 @@ fn follow<R>(
         let answer = if let (None, Some(message)) = (&initial, refuse_initial) {
             Err(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, message))
         } else {
+            let snapshot = snapshot.clone();
             let states = stream::unfold(
                 (peers.clone(), Some(initial), None),
-                move |(mut peers, mut initial, mut before)| async move {
-                    loop {
-                        let next = if let Some(first) = initial.take() {
-                            first
-                        } else {
-                            if peers.changed().await.is_err() {
-                                return None;
+                move |(mut peers, mut initial, mut before)| {
+                    let snapshot = snapshot.clone();
+                    async move {
+                        loop {
+                            let next = if let Some(first) = initial.take() {
+                                first
+                            } else {
+                                if peers.changed().await.is_err() {
+                                    return None;
+                                }
+                                snapshot(&peers.view(), peers.now())
+                            };
+                            let Some(next) = next else {
+                                continue;
+                            };
+                            if before.as_ref() == Some(&next) {
+                                continue;
                             }
-                            snapshot(&peers.view(), peers.now())
-                        };
-                        let Some(next) = next else {
-                            continue;
-                        };
-                        if before.as_ref() == Some(&next) {
-                            continue;
+                            before = Some(next.clone());
+                            return Some((JsonLine::<R, 200>::new(next), (peers, initial, before)));
                         }
-                        before = Some(next.clone());
-                        return Some((JsonLine::<R, 200>::new(next), (peers, initial, before)));
                     }
                 },
             );

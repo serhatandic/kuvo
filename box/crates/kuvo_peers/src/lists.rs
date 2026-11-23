@@ -262,60 +262,9 @@ impl Local {
     }
 }
 
-#[derive(Deserialize)]
-struct JournalEntry {
-    session: String,
-    key: String,
-    queue: Option<String>,
-    #[serde(default = "version_one", rename = "formatVersion")]
-    version: u32,
-}
-
-fn version_one() -> u32 {
-    1
-}
-
 fn load_ownership(run: &Path) -> Ownership {
-    let entries =
-        kept::read::<Vec<serde_json::Value>>(&run.join("moves/moved.json")).unwrap_or_default();
     let mut ownership = Ownership::default();
-    for entry in entries
-        .into_iter()
-        .filter_map(|entry| serde_json::from_value::<JournalEntry>(entry).ok())
-    {
-        if entry.queue.is_some() || entry.version != 1 {
-            continue;
-        }
-        let Some(key) = kuvo_wire::keys::decode_exact(&entry.key) else {
-            continue;
-        };
-        ownership
-            .journal
-            .entry(record(&entry.session))
-            .or_insert(key);
-    }
-    let mut active: Vec<_> = matching_paths(&run.join("moves"), "mov_", Some(".json"))
-        .filter_map(|(_, path)| kept::read::<MoveRecord>(&path))
-        .filter(|record| record.version == 1 && record.failed.as_deref().is_none_or(str::is_empty))
-        .collect();
-    active.sort_by_key(|record| record.started);
-    for movement in active {
-        let affected = std::iter::once(movement.thing).chain(movement.sessions);
-        let switching = matches!(movement.stage, MoveStage::Switching | MoveStage::Finishing);
-        let destination = if switching && movement.role == MoveRole::From {
-            kuvo_wire::keys::decode_exact(&movement.peer)
-        } else {
-            None
-        };
-        for id in affected {
-            if movement.step.as_deref() != Some("check") {
-                ownership.frozen.insert(id.clone());
-            }
-            if let Some(destination) = destination {
-                ownership.journal.insert(record(&id), destination);
-            }
-        }
-    }
+    crate::moves::locate(run, &mut ownership);
     if let Some(home) = run.parent() {
         for (id, folder) in matching_paths(&home.join("bots"), "bot_", None) {
             let Some(bot) = kept::read::<BotDescription>(&folder.join("bot.json")) else {
@@ -339,36 +288,6 @@ fn load_ownership(run: &Path) -> Ownership {
     ownership
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum MoveRole {
-    From,
-    To,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum MoveStage {
-    Switching,
-    Finishing,
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct MoveRecord {
-    thing: String,
-    peer: String,
-    role: MoveRole,
-    stage: MoveStage,
-    sessions: Vec<String>,
-    step: Option<String>,
-    started: Millis,
-    failed: Option<String>,
-    #[serde(default = "version_one", rename = "formatVersion")]
-    version: u32,
-}
-
 #[derive(Deserialize)]
 struct BotDescription {
     id: String,
@@ -378,11 +297,11 @@ struct BotDescription {
     _name: String,
 }
 
-fn matching_paths<'a>(
+pub(crate) fn matching_paths<'a>(
     directory: &Path,
     prefix: &'a str,
     extension: Option<&'a str>,
-) -> impl Iterator<Item = (String, PathBuf)> + 'a {
+) -> impl Iterator<Item = (String, PathBuf)> + use<'a> {
     fs::read_dir(directory)
         .into_iter()
         .flatten()
@@ -399,7 +318,7 @@ fn matching_paths<'a>(
         })
 }
 
-fn record(id: &str) -> (RecordScope, String) {
+pub(crate) fn record(id: &str) -> (RecordScope, String) {
     let scope = if id.starts_with("bot_") {
         RecordScope::Bot
     } else if id.starts_with("grp_") {

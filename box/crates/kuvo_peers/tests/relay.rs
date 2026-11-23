@@ -526,3 +526,67 @@ async fn activity_from_other_addresses_does_not_evict_a_live_session() {
         assert_eq!(test.frame().await, (Kind::Close, 99, vec![]));
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_destination_replays_only_the_committed_bundles_receipt() {
+    use kuvo_peers::{
+        directory::{Member, Roster},
+        moves::receipt::{Bundle, Decided, Decision, Payloads, Receipts},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_wire::keys::encode;
+    use std::sync::Arc;
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let home = tempfile::tempdir().unwrap();
+        let receipt = Decision {
+            decided: Decided::Switched,
+            at: 10,
+            bundle: Bundle { generation: Some(2), hash: Some("P".repeat(43)) },
+            peer: Some(encode(&public(PEER_KEY))),
+            payloads: Some(Payloads { sessions: vec![], queue: vec![] }),
+            last: None,
+        };
+        Receipts::open(&home.path().join("run"))
+            .record("mov_committed", &receipt, &["ses_committed".into()]).unwrap();
+        let (relay, mut wire) = TestRelay::connect().await;
+        let _resident = ResidentPeers::start(
+            home.path(), Roster {
+                here: Some(public(RUST_KEY)),
+                main: Some(public(RUST_KEY)),
+                name: "Destination".into(),
+                members: vec![Member {
+                    key: public(PEER_KEY), address: Some(PEER_ADDRESS), name: "Source".into(),
+                    kind: ComputerKind::Machine,
+                }],
+            }, Some(relay), None, false, Arc::new(|| 12),
+        ).await.unwrap();
+
+        // The accepted sender tries a different generation and a move for which there is
+        // no decision. The following valid retry is the first reply that can prove ownership.
+        for (id, generation, hash) in [
+            ("mov_committed", 1, "P".repeat(43)),
+            ("mov_committed", 2, "Q".repeat(43)),
+            ("mov_missing", 2, "P".repeat(43)),
+            ("mov_committed", 2, "P".repeat(43)),
+        ] {
+            let value = json!({"at": 12, "move": {"op": "switch", "safeSwitch": true, "id": id, "generation": generation, "hash": hash}});
+            let bytes = Envelope(value.as_object().unwrap().clone()).seal(&PEER_KEY, &public(RUST_KEY)).unwrap();
+            wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+        }
+        loop {
+            let (kind, _, body) = wire.frame().await;
+            if kind != Kind::Mail {
+                continue;
+            }
+            let opened = Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap();
+            if let Some(proof) = opened.0.get("move") {
+                assert_eq!(*proof, json!({
+                    "op": "switched", "id": "mov_committed", "generation": 2,
+                    "hash": "P".repeat(43), "verifiedPayloads": true,
+                }));
+                break;
+            }
+        }
+    }).await.unwrap();
+}

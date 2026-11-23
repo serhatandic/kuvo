@@ -61,6 +61,7 @@ pub struct View {
     pub(crate) lists: BTreeMap<ComputerKey, Arc<Copy<Lists>>>,
     pub(crate) notice_copies: BTreeMap<ComputerKey, Arc<Copy<History>>>,
     pub(crate) notices: Arc<History>,
+    pub(crate) move_notices: Arc<crate::moves::Notices>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
@@ -385,6 +386,7 @@ impl Resident {
             activities,
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
+            move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
             endpoint,
@@ -413,7 +415,7 @@ impl Resident {
         round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone()));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone()));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
         let mut setup_rosters = None;
@@ -486,10 +488,14 @@ impl Resident {
                             Ok((resident, result)) => {
                                 self = resident;
                                 match result {
-                                    Ok(Some(key)) => if let Some(publisher) = &mut publisher {
-                                        publisher.request(self.view.clone(), now, Refresh::Peer(key));
+                                    Ok(received) => {
+                                        if let (Some(key), Some(publisher)) = (received.refresh, &mut publisher) {
+                                            publisher.request(self.view.clone(), now, Refresh::Peer(key));
+                                        }
+                                        if let (Some((host, reply)), Some(relay)) = (received.reply, &relay) {
+                                            let _ = relay.sender.mail(host, reply).await;
+                                        }
                                     },
-                                    Ok(None) => {},
                                     Err(error) => eprintln!("Keeping peer state: {error}"),
                                 }
                             }
@@ -510,15 +516,21 @@ impl Resident {
                         publisher = None;
                     }
                 },
-                _ = round.tick() => if let Some(publisher) = &mut publisher {
-                    publisher.request(self.view.clone(), clock(), Refresh::None);
+                _ = round.tick() => {
+                    let now = clock();
+                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
+                        eprintln!("Keeping moves on other computers: {error}");
+                    }
+                    if let Some(publisher) = &mut publisher {
+                        publisher.request(self.view.clone(), now, Refresh::None);
+                    }
                 },
             }
             publish.send_replace(Arc::new(self.view.clone()));
         }
     }
 
-    fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Option<ComputerKey>> {
+    fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
         match event {
             relay::Event::Unreachable(address) => {
                 if let Some(peer) = self.view.roster.at_address(address) {
@@ -535,7 +547,7 @@ impl Resident {
                 ..
             } => {
                 let Some(peer) = self.view.roster.member(&key) else {
-                    return Ok(None);
+                    return Ok(Received::default());
                 };
                 let id = encode(&key);
                 let back = Arc::make_mut(&mut self.view.reach).heard(&self.run, &id)?;
@@ -559,7 +571,7 @@ impl Resident {
                     })
                 }) {
                     let mut all = (*self.view.announced).clone();
-                    all.insert(id, entry);
+                    all.insert(id.clone(), entry);
                     kept::write(&self.run.join("peer-agents.json"), &all)?;
                     self.view.announced = Arc::new(all);
                 }
@@ -591,12 +603,32 @@ impl Resident {
                         &mut self.activity_parts,
                     )?;
                 }
+                if let Some(moving) = payload.remove("moving") {
+                    Arc::make_mut(&mut self.view.move_notices).take(
+                        &self.run,
+                        &self.view.roster,
+                        key,
+                        moving,
+                        now,
+                    )?;
+                }
                 let ask = payload.get("ask").and_then(Value::as_str) == Some("agents");
-                return Ok((back || was_quiet || ask).then_some(key));
+                let reply = if let (Some(movement), Some(host)) = (payload.get("move"), peer.host())
+                {
+                    crate::moves::receipt::replay(&self.run, &id, movement, now)
+                        .map_err(io::Error::other)?
+                        .map(|reply| (host, reply))
+                } else {
+                    None
+                };
+                return Ok(Received {
+                    refresh: (back || was_quiet || ask).then_some(key),
+                    reply,
+                });
             }
             _ => {}
         }
-        Ok(None)
+        Ok(Received::default())
     }
 }
 
@@ -702,6 +734,12 @@ fn take_copy<T: DeserializeOwned + Serialize>(
     Ok(())
 }
 
+#[derive(Default)]
+struct Received {
+    refresh: Option<ComputerKey>,
+    reply: Option<(Host, Envelope)>,
+}
+
 enum Refresh {
     None,
     All,
@@ -720,7 +758,7 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender) -> Self {
+    fn start(relay: relay::Sender, run: PathBuf) -> Self {
         let (tx, mut rx) = mpsc::channel(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
@@ -729,6 +767,7 @@ impl Publisher {
                 publish_round(
                     &relay,
                     view,
+                    &run,
                     now,
                     refresh,
                     &mut previous,
@@ -748,11 +787,13 @@ impl Publisher {
 async fn publish_round(
     relay: &relay::Sender,
     view: View,
+    run: &Path,
     now: Millis,
     refresh: Refresh,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
 ) {
+    let moving = crate::moves::announcement(run);
     let lists = &view.local_lists;
     let mut older_lists = None;
     let activity = activity::local(&view.local);
@@ -870,6 +911,19 @@ async fn publish_round(
             }
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
                 announcements.insert(peer.key, (announcement_digest, at));
+            }
+        }
+        if let Some(moving) = &moving {
+            let key = (peer.key, "moving");
+            if forced
+                || previous.get(&key).is_none_or(|(digest, at)| {
+                    *digest != moving.digest || (moving.active && now.saturating_sub(*at) >= 60_000)
+                })
+            {
+                let message = envelope(json!({"at": now, "moving": {"moves": moving.moves}}));
+                if relay.mail(host.clone(), message).await.is_ok() {
+                    previous.insert(key, (moving.digest, now));
+                }
             }
         }
         let activity_key = (peer.key, "activity");
