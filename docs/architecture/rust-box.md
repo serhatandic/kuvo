@@ -397,7 +397,7 @@ parallel.
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
-| 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home Storage compatibility from `setup-shared` and `setup-handover`. | store | 0.4, 0.2 | 6 | C |
+| 1.2 | **Done.** `kuvo_store`: home paths, envelopes, atomic writes, locks, layout 23 gate, policy declarations and SQLite. [Coverage](rust-store-coverage.md) | store | 0.4, 0.2 | 6 | C |
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |
@@ -429,7 +429,7 @@ parallel.
 | 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote Released Mac coexistence, legacy roster mail and leave-running integration from `documents`, `setup-mac`, and tagged `compat.test.mjs`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
-| 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback | move, keeper | all | 6 | A |
+| 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback. Cross-process link writer handoff from `setup-mac` and `setup-handover` | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
 | 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust; the rollback drill once Mixed binaries, rollback, real Helper and released Mac cases from `setup-handover`, `setup-mac`, and `setup-two-boxes`. | — | 9.2 | 7 ×2 | A |
 | 9.4 | Four weeks after the user's computers switched: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
