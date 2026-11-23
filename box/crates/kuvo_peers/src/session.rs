@@ -62,7 +62,7 @@ pub struct Message {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Event {
     Accepted(Id, Device),
     Confirmed(Id),

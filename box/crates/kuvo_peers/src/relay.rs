@@ -1,7 +1,7 @@
 //! The Tokio owner of one reconnecting relay socket. An accepted send has been written to the
 //! socket. Peer mail still needs an authenticated application receipt before it can be retired.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use kuvo_wire::{
@@ -11,7 +11,7 @@ use kuvo_wire::{
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
     time::{self, Instant},
 };
@@ -61,6 +61,77 @@ pub enum Event {
         hinted_key: [u8; 32],
         envelope: Envelope,
     },
+}
+
+/// An observation of the resident's one relay connection. Lossless session ownership remains
+/// with the resident. Subscribers can recover after lag from the next full peer exchange.
+#[derive(Debug)]
+pub enum RelayEvent {
+    Connected(Address),
+    Disconnected(String),
+    Unreachable(Address),
+    Gone {
+        address: Address,
+        replaced: bool,
+    },
+    Session(session::Event),
+    Mail {
+        from: Address,
+        key: [u8; 32],
+        envelope: Envelope,
+    },
+    Removal {
+        from: Address,
+        hinted_key: [u8; 32],
+        envelope: Envelope,
+    },
+}
+
+impl From<&Event> for RelayEvent {
+    fn from(event: &Event) -> Self {
+        match event {
+            Event::Connected(address) => Self::Connected(*address),
+            Event::Disconnected(reason) => Self::Disconnected(reason.to_string()),
+            Event::Unreachable(address) => Self::Unreachable(*address),
+            Event::Gone { address, replaced } => Self::Gone {
+                address: *address,
+                replaced: *replaced,
+            },
+            Event::Session(event) => Self::Session(event.clone()),
+            Event::Mail {
+                from,
+                key,
+                envelope,
+            } => Self::Mail {
+                from: *from,
+                key: *key,
+                envelope: envelope.clone(),
+            },
+            Event::Removal {
+                from,
+                hinted_key,
+                envelope,
+            } => Self::Removal {
+                from: *from,
+                hinted_key: *hinted_key,
+                envelope: envelope.clone(),
+            },
+        }
+    }
+}
+
+/// Access for the setup and engine crates to the existing connection. A handle can subscribe
+/// and send, but does not keep a stopped connection or its event stream alive.
+#[derive(Clone)]
+pub struct RelayHandle {
+    pub sender: Sender,
+    events: broadcast::WeakSender<Arc<RelayEvent>>,
+}
+
+impl RelayHandle {
+    pub fn subscribe(&self) -> Option<broadcast::Receiver<Arc<RelayEvent>>> {
+        self.events.upgrade().map(|events| events.subscribe())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -177,6 +248,7 @@ impl Sender {
 pub struct Relay {
     pub sender: Sender,
     pub events: mpsc::Receiver<Event>,
+    handle: RelayHandle,
     task: JoinHandle<()>,
 }
 
@@ -190,20 +262,32 @@ impl Relay {
     pub fn start(config: Config) -> Self {
         let (commands, rx) = mpsc::channel(64);
         let (events, event_rx) = mpsc::channel(128);
+        let (observations, _) = broadcast::channel(128);
+        let sender = Sender(commands);
+        let handle = RelayHandle {
+            sender: sender.clone(),
+            events: observations.downgrade(),
+        };
         let task = tokio::spawn(
             Owner {
                 config,
                 rx,
                 events,
+                observations,
                 sessions: Sessions::default(),
             }
             .run(),
         );
         Self {
-            sender: Sender(commands),
+            sender,
             events: event_rx,
+            handle,
             task,
         }
+    }
+
+    pub fn handle(&self) -> RelayHandle {
+        self.handle.clone()
     }
 }
 
@@ -211,6 +295,7 @@ struct Owner {
     config: Config,
     rx: mpsc::Receiver<Command>,
     events: mpsc::Sender<Event>,
+    observations: broadcast::Sender<Arc<RelayEvent>>,
     sessions: Sessions,
 }
 
@@ -226,8 +311,7 @@ impl Owner {
                 Some(Ok(Ok(mut socket))) => {
                     since = Some(Instant::now());
                     if self
-                        .events
-                        .send(Event::Connected(address_of(&self.config.secret)))
+                        .emit_wait(Event::Connected(address_of(&self.config.secret)))
                         .await
                         .is_err()
                     {
@@ -246,12 +330,13 @@ impl Owner {
                 // stream also wakes every waiter even if its queue has no room for a close.
                 return;
             }
-            for event in self.sessions.reset() {
-                if self.events.send(Event::Session(event)).await.is_err() {
+            let ended: Vec<_> = self.sessions.reset().collect();
+            for event in ended {
+                if self.emit_wait(Event::Session(event)).await.is_err() {
                     return;
                 }
             }
-            if self.events.send(Event::Disconnected(reason)).await.is_err() {
+            if self.emit_wait(Event::Disconnected(reason)).await.is_err() {
                 return;
             }
             let healthy = since.is_some_and(|since| since.elapsed() >= Duration::from_secs(60));
@@ -463,7 +548,23 @@ impl Owner {
     }
 
     fn emit(&self, event: Event) -> Result<(), Error> {
-        self.events.try_send(event).map_err(|_| Error::EventQueue)
+        let permit = self.events.try_reserve().map_err(|_| Error::EventQueue)?;
+        self.observe(&event);
+        permit.send(event);
+        Ok(())
+    }
+
+    async fn emit_wait(&self, event: Event) -> Result<(), Error> {
+        let permit = self.events.reserve().await.map_err(|_| Error::EventQueue)?;
+        self.observe(&event);
+        permit.send(event);
+        Ok(())
+    }
+
+    fn observe(&self, event: &Event) {
+        if self.observations.receiver_count() > 0 {
+            let _ = self.observations.send(Arc::new(RelayEvent::from(event)));
+        }
     }
 }
 
