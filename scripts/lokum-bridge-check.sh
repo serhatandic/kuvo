@@ -164,6 +164,6 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
 fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests box/test/fixtures protocol/vectors catalog box/.bun-version \
-    protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
+    protocol/PROTOCOL.md protocol/compat-kinds.txt protocol/gate-required.txt box/src box/dist box/package.json box/bun.lock \
     "${sources[@]}" "${history[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"
