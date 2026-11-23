@@ -41,10 +41,10 @@ fn the_handshake_and_transport_match_the_noise_vectors() {
     let payload = |index: usize| hex(messages[index]["payload"].as_str().unwrap());
     let ciphertext = |index: usize| hex(messages[index]["ciphertext"].as_str().unwrap());
 
-    let first = initiator.write_message_1(&payload(0));
+    let first = initiator.write_message_1(&payload(0)).unwrap();
     assert_eq!(first, ciphertext(0));
     assert_eq!(responder.read_message_1(&first).unwrap(), payload(0));
-    let (second, mut answering) = responder.write_message_2(&payload(1));
+    let (second, mut answering) = responder.write_message_2(&payload(1)).unwrap();
     assert_eq!(second, ciphertext(1));
     let (read, mut asking) = initiator.read_message_2(&second).unwrap();
     assert_eq!(read, payload(1));
