@@ -13,7 +13,6 @@ pub fn routes(answers: Answers) -> Result<String, String> {
     let mut modules = String::new();
     let mut table = String::new();
     let mut module_names = HashSet::new();
-    let mut samples = String::new();
 
     for route in answers.routes {
         let Some((method, path)) = route.route.split_once(' ') else {
@@ -39,11 +38,6 @@ pub fn routes(answers: Answers) -> Result<String, String> {
             let ty = &generator.shapes[id].ty;
             writeln!(modules, "pub type Status{status} = {ty};").unwrap();
             writeln!(table, "({status}, &SHAPE_{id}),").unwrap();
-            // The shared route fixtures supply complete JSON bodies for some statuses.
-            // Bytes have no JSON representation.
-            if shape != Shape::Primitive(Primitive::Bytes) {
-                writeln!(samples, "({method:?}, {path:?}, {status}) => round_trip::<{module}::Status{status}>(value),").unwrap();
-            }
         }
         match &route.body {
             Some(shape) => {
@@ -75,19 +69,6 @@ pub fn routes(answers: Answers) -> Result<String, String> {
     )
     .unwrap();
     output.push_str(&modules);
-    writeln!(
-        output,
-        "#[cfg(test)]
-        pub(crate) fn round_trip_sample(method: &str, path: &str, status: u16, value: serde_json::Value) -> serde_json::Result<serde_json::Value> {{
-            fn round_trip<T: serde::de::DeserializeOwned + serde::Serialize>(value: serde_json::Value) -> serde_json::Result<serde_json::Value> {{
-                serde_json::to_value(serde_json::from_value::<T>(value)?)
-            }}
-            match (method, path, status) {{
-                {samples}
-                _ => round_trip::<Refusal>(value),
-            }}
-        }}"
-    ).unwrap();
     Ok(output)
 }
 

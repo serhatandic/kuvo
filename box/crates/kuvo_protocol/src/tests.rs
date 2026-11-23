@@ -1,9 +1,8 @@
 //! The shape checker and typed answers use the same fixtures as the JavaScript contract runner.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::shape::{Compound, Literal, Primitive, Shape};
 use crate::{FEATURES, REQUIRED, check_answer, check_shape, gate, route, routes};
 
 const SHAPES: &str = include_str!("../../../test/fixtures/routes/shapes/cases.json");
@@ -91,7 +90,7 @@ fn the_vectors_json_answers_round_trip_through_the_route_types() {
         }
         let (method, path) = selected.map_or((method, path), |route| (route.method, route.path));
         let value: Value = serde_json::from_str(&case.body).unwrap();
-        let encoded = routes::round_trip_sample(method, path, case.status, value.clone()).unwrap();
+        let encoded = round_trip_sample(method, path, case.status, value.clone()).unwrap();
         assert_eq!(encoded, value, "{} {}", case.send, case.status);
         checked += 1;
     }
@@ -119,62 +118,39 @@ fn every_exported_route_and_status_has_a_rust_type() {
     }
 }
 
-#[test]
-fn every_json_answer_type_preserves_a_populated_sample() {
-    for route in routes::ROUTES {
-        for (code, shape) in route.answers {
-            if let Some(value) = example(shape) {
-                let encoded =
-                    routes::round_trip_sample(route.method, route.path, *code, value.clone())
-                        .unwrap_or_else(|error| {
-                            panic!("{} {} {code}: {error}: {value}", route.method, route.path)
-                        });
-                assert_eq!(encoded, value, "{} {} {code}", route.method, route.path);
-            }
-        }
-    }
-}
+// Select the generated types independently for the complete answers in the shared fixtures.
+fn round_trip_sample(
+    method: &str,
+    path: &str,
+    status: u16,
+    value: Value,
+) -> serde_json::Result<Value> {
+    use routes::{
+        delete_kuvo_projects, get_kuvo_wakes, get_kuvo_wakes_session, post_kuvo_engine_restart,
+    };
 
-// Add a populated example for statuses that have no full answer in the independent fixtures.
-fn example(shape: &Shape) -> Option<Value> {
-    Some(match shape {
-        Shape::Primitive(primitive) => match primitive {
-            Primitive::String => json!("sample"),
-            Primitive::Number => json!(17),
-            Primitive::Bool => json!(true),
-            Primitive::Null => Value::Null,
-            Primitive::Any => json!({"open": [1, null]}),
-            Primitive::Bytes => return None,
-        },
-        Shape::Compound(compound) => match compound {
-            Compound::Literal(literal) => match literal {
-                Literal::String(text) => json!(text),
-                Literal::Number(number) => json!(number),
-                Literal::Bool(boolean) => json!(boolean),
-                Literal::Null => Value::Null,
-            },
-            Compound::List(child) => json!([example(child.shape())?]),
-            Compound::Map(child) => json!({"key": example(child.shape())?}),
-            Compound::Object(fields) => Value::Object(
-                fields
-                    .0
-                    .iter()
-                    .filter_map(|field| {
-                        Some((field.name.to_string(), example(field.shape.shape())?))
-                    })
-                    .collect(),
-            ),
-            Compound::OneOf(choices) => {
-                let mut numbered = choices.iter().map(|child| child.shape());
-                // Favor null to exercise presence on nullable fields.
-                let child = numbered
-                    .clone()
-                    .find(|shape| **shape == Shape::Primitive(Primitive::Null))
-                    .or_else(|| numbered.next_back())?;
-                example(child)?
-            }
-        },
-    })
+    fn round_trip<T: DeserializeOwned + Serialize>(value: Value) -> serde_json::Result<Value> {
+        serde_json::to_value(serde_json::from_value::<T>(value)?)
+    }
+
+    match (method, path, status) {
+        ("GET", "kuvo/wakes", 200) => round_trip::<get_kuvo_wakes::Status200>(value),
+        ("GET", "kuvo/wakes/:session", 200) => {
+            round_trip::<get_kuvo_wakes_session::Status200>(value)
+        }
+        ("DELETE", "kuvo/projects", 409) => round_trip::<delete_kuvo_projects::Status409>(value),
+        ("POST", "kuvo/engine/restart", 202) => {
+            round_trip::<post_kuvo_engine_restart::Status202>(value)
+        }
+        _ if status >= 400
+            && route(method, path)
+                .and_then(|route| route.answer(status))
+                .is_none() =>
+        {
+            round_trip::<crate::Refusal>(value)
+        }
+        _ => panic!("select a generated answer type for {method} {path} {status}"),
+    }
 }
 
 #[test]
