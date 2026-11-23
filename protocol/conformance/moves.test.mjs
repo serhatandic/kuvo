@@ -521,6 +521,38 @@ test("a dropped copy stays held through an engine failure and a late switch", {
   assert.deepEqual(await ask(drop), proof);
 });
 
+test("an expired partial copy is discarded without making a conversation", {
+  timeout: 35000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("expired-copy");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const id = "mov_expiredCopy", session = "ses_expiredCopy", hash = "A".repeat(43), generation = 1;
+  const journal = "run/moves/" + id + ".json";
+  save(journal, {
+    formatVersion: 1, id, thing: session, name: "Partial copy", kind: "chat", from: member.key,
+    to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [],
+    started: Date.now() - 8 * 86400000, safeSwitch: true, twoComputers: true,
+    generation, hash, size: 60000, sent: 30000, createdSessions: [],
+  });
+  const ready = "mov_waitingForSwitch";
+  save("run/moves/" + ready + ".json", {
+    formatVersion: 1, id: ready, thing: "ses_waitingForSwitch", name: "Ready copy", kind: "chat",
+    from: member.key, to: main.key, peer: member.key, role: "to", stage: "copying", sessions: ["ses_waitingForSwitch"],
+    started: Date.now() - 8 * 86400000, safeSwitch: true, twoComputers: true,
+    generation, hash, size: 30000, sent: 30000, complete: true, setUpAt: Date.now() - 8 * 86400000,
+  });
+  const resident = here.start();
+  await resident.ready();
+  await until(() => !fs.existsSync(path.join(here.home, journal)),
+    () => "The destination kept the expired partial copy\n" + resident.log());
+  assert.equal(here.engine.sessions.length, 0);
+  assert.deepEqual(await ask({ op: "decision?", id, generation, hash }),
+    { op: "dropped", id, generation, hash, neverSwitched: true });
+  assert.equal((await ask({ op: "arrive", id: ready, generation, hash })).op, "arrived");
+});
+
 test("a destination refuses an oversized offer before creating a copy", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

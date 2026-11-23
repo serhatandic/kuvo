@@ -56,6 +56,7 @@ const QUIET_BEFORE_SWITCH: Duration = Duration::from_secs(10 * 60);
 const SET_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
 const WAITING_AFTER: Duration = Duration::from_secs(90);
 const WAITING_FOR_SWITCH: Duration = Duration::from_secs(150);
+const HELD_AT_MOST: Millis = 7 * 24 * 60 * 60_000;
 const DROP_AT_MOST: Millis = 24 * 3_600_000;
 
 #[derive(Deserialize)]
@@ -300,6 +301,7 @@ impl Driver {
 
     async fn round(&mut self) -> io::Result<()> {
         let view = self.reader.view();
+        let now = self.reader.now();
         let rows = journals(self.run_dir()).map_err(io::Error::other)?;
         self.refresh_waiting(&rows);
         self.check_trash(&view, &rows).await?;
@@ -317,6 +319,10 @@ impl Driver {
                     })
             {
                 self.resume_destination(&view, &mut row).await
+            } else if now.saturating_sub(row.started) > HELD_AT_MOST
+                && let Some(peer) = decode_exact(&row.peer)
+            {
+                self.drop_copy(&view, peer, &mut row, false).await
             } else {
                 Ok(())
             };
