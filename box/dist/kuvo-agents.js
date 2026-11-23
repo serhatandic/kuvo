@@ -864,6 +864,16 @@ function compactionChoice(home = process.env.KUVO_HOME) {
   } catch {}
   return DEFAULT_COMPACTION;
 }
+function summarizeSetting(kind, choice = compactionChoice()) {
+  if (!kind || !choosing.has(kind))
+    return;
+  return {
+    value: choice,
+    label: "Summarize at",
+    choices: compactionChoices.map((id) => ({ id, title: id === "never" ? "Never" : `${Number(id) / 1000}k`, ...id === DEFAULT_COMPACTION ? { line: "Default" } : {} })),
+    line: "All conversations"
+  };
+}
 function summarizeAt(kind, window, choice = compactionChoice()) {
   if (!kind || !choosing.has(kind))
     return;
@@ -10617,6 +10627,7 @@ async function commandSignIn(options) {
   })();
   let url = "";
   let printedAt;
+  let printedInUse = options.printedPage === true;
   const look = (waited) => {
     const printed = firstURL(output);
     if (options.printedPage)
@@ -10626,7 +10637,10 @@ async function commandSignIn(options) {
 `)[0].trim();
     if (printed)
       printedAt ??= waited;
-    return printed && waited - printedAt >= 3000 ? printed : "";
+    if (!printed || waited - printedAt < 3000)
+      return "";
+    printedInUse = true;
+    return printed;
   };
   let waited = 0;
   for (;waited < (options.pageWait ?? 15000) && !url; waited += 200) {
@@ -10654,11 +10668,17 @@ async function commandSignIn(options) {
     await Bun.sleep(200);
   }
   const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
+  const mode = () => codePrompt && printedInUse ? "code" : "auto";
+  const instructions = () => mode() === "code" ? options.codeInstructions ?? options.instructions : options.instructions;
   return {
     url,
     userCode,
-    instructions: options.instructions,
-    mode: "auto",
+    get instructions() {
+      return instructions();
+    },
+    get mode() {
+      return mode();
+    },
     acceptsCode: Boolean(codePrompt),
     complete: codePrompt ? async (code) => {
       if (status.status !== "pending")
@@ -10687,7 +10707,7 @@ async function commandSignIn(options) {
       if (status.status !== "pending")
         return status;
       const code = userCode ?? options.userCode?.exec(output)?.[1];
-      return { ...status, ...late ? { url: late, instructions: options.instructions } : {}, ...code ? { userCode: code } : {} };
+      return { ...status, ...late ? { url: late, instructions: instructions() } : {}, ...code ? { userCode: code } : {} };
     },
     cancel() {
       if (status.status === "pending")
@@ -13132,7 +13152,8 @@ class ClaudeAgent {
       env,
       home: this.context.home,
       temporary: this.context.temporary,
-      instructions: "Finish signing in on Claude\u2019s page. If it gives you a code, paste it here.",
+      instructions: "Finish signing in on Claude\u2019s page.",
+      codeInstructions: "Sign in on Claude\u2019s page, then paste its code here.",
       signedIn: async () => (await this.readStatus(env)).loggedIn === true,
       codePrompt: /Paste code here if prompted >\s*/g,
       onComplete: () => {
@@ -32043,11 +32064,13 @@ async function integration(agent, accounts, fresh = false, auto, note = maintain
   };
 }
 function withSummarizeAt(session) {
+  const kind = parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind;
+  const choice = compactionChoice();
+  const summarize = summarizeSetting(kind, choice);
   const context = session.context;
-  if (!context)
-    return session;
-  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window);
-  return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } };
+  const at = context && summarizeAt(kind, context.window, choice);
+  const measured = context && at !== undefined ? { ...session, context: { ...context, summarizeAt: at } } : session;
+  return summarize ? { ...measured, summarize } : measured;
 }
 function page(items, url) {
   const limit = Number(url.searchParams.get("limit") ?? 100) || 100;
@@ -34470,4 +34493,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 1b298772af7a6e489cbdb22328d141a688fc69d3acda4d64b82cff95e7eb3468
+// Built from Packages/Box/src/agents 4c45d29548041e86f11a4d31213c00368d0a1f277e896383bf571c1a560449f4

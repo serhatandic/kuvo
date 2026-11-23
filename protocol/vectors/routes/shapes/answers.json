@@ -6165,6 +6165,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6187,7 +6189,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6209,6 +6231,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6231,7 +6255,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6263,6 +6307,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6285,7 +6331,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6309,6 +6375,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6331,7 +6399,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6354,6 +6442,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6376,7 +6466,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6417,6 +6527,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6439,7 +6551,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6724,7 +6856,26 @@
         "shown?": "bool",
         "title?": "string",
         "detail?": "string",
-        "warning?": "bool"
+        "warning?": "bool",
+        "phase?": {
+         "oneOf": [
+          {
+           "literal": "getting-ready"
+          },
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        }
        }
       },
       "wipePending?": {
@@ -7055,6 +7206,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7077,7 +7230,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7099,6 +7272,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7121,7 +7296,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7153,6 +7348,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7175,7 +7372,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7199,6 +7416,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7221,7 +7440,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7244,6 +7483,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7266,7 +7507,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7307,6 +7568,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7329,7 +7592,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7409,7 +7692,26 @@
         "shown?": "bool",
         "title?": "string",
         "detail?": "string",
-        "warning?": "bool"
+        "warning?": "bool",
+        "phase?": {
+         "oneOf": [
+          {
+           "literal": "getting-ready"
+          },
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        }
        }
       },
       "wipePending?": {
@@ -7740,6 +8042,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7762,7 +8066,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7784,6 +8108,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7806,7 +8132,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7838,6 +8184,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7860,7 +8208,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7884,6 +8252,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7906,7 +8276,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7929,6 +8319,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7951,7 +8343,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7992,6 +8404,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -8014,7 +8428,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -21480,6 +21914,8 @@
       "message?": "string",
       "url?": "string",
       "instructions?": "string",
+      "mode?": "string",
+      "acceptsCode?": "bool",
       "userCode?": "string",
       "pasteAddress?": "bool",
       "returnToBox?": "string",
