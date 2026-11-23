@@ -1,6 +1,12 @@
 //! Signed plain unlink, as the main computer's writer. A removed peer uses
 //! removal mail for the final handshake after ordinary peer trust is revoked.
 
+mod cleanup;
+
+use std::time::Duration;
+
+use tokio::time::Instant;
+
 use kuvo_wire::{
     documents::{self, Kind},
     keys::{Host, decode_exact, encode},
@@ -14,7 +20,10 @@ use crate::{
     Error,
     edits::Submitter,
     installer,
-    model::{Membership, Peer, Role, SharedKind, receipt, safe_token},
+    model::{
+        ComputerKind, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
+        safe_token,
+    },
     object, random,
 };
 
@@ -55,6 +64,22 @@ impl Removal {
     fn host(&self) -> Option<Host> {
         Host::from_text(&self.peer.key, &self.peer.address)
     }
+}
+
+pub(super) struct Challenge {
+    position: Position,
+    operation: String,
+    nonce: String,
+    expires: Instant,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct LocalUnlink {
+    setup: String,
+    operation: String,
+    primary: Peer,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    completed: bool,
 }
 
 impl Owner {
@@ -228,6 +253,14 @@ impl Owner {
         sender: [u8; 32],
         envelope: &Envelope,
     ) -> Result<(), Error> {
+        if self.link.extra.contains_key("localUnlink")
+            || self
+                .link
+                .setup()
+                .is_ok_and(|setup| setup.role == Role::Member)
+        {
+            return self.take_member_unlink(sender, envelope).await;
+        }
         if self.can_write().is_err() {
             return Ok(());
         }
@@ -291,6 +324,193 @@ impl Owner {
         Ok(())
     }
 
+    async fn take_member_unlink(
+        &mut self,
+        sender: [u8; 32],
+        envelope: &Envelope,
+    ) -> Result<(), Error> {
+        if self.kind != ComputerKind::Machine {
+            return Ok(());
+        }
+        let message = &envelope.0;
+        let source = encode(&sender);
+        if let Some(pending) = self.local_unlink()? {
+            if pending.completed
+                && pending.primary.key == source
+                && message.get("setup").and_then(Value::as_str) == Some(&pending.setup)
+                && message.get("recorded").and_then(Value::as_str) == Some(&pending.operation)
+            {
+                let mut next = self.link.clone();
+                next.extra.shift_remove("localUnlink");
+                self.commit(next).await?;
+                self.next = Instant::now();
+            }
+            return Ok(());
+        }
+        let setup = self.link.setup()?.clone();
+        if setup.role != Role::Member
+            || setup.position.primary != source
+            || ["localWipe", "removalSource", "setupMerge"]
+                .iter()
+                .any(|field| self.link.extra.contains_key(*field))
+        {
+            return Ok(());
+        }
+        let roster = self.roster()?;
+        let Some(primary) = roster.boxes.into_iter().find(|peer| peer.key == source) else {
+            return Ok(());
+        };
+        let Some(host) = Host::from_text(&primary.key, &primary.address) else {
+            return Ok(());
+        };
+        let key = self.own()?.public.clone();
+        let Some((kind, signed)) = message
+            .get("offer")
+            .map(|signed| ("offer", signed))
+            .or_else(|| {
+                message
+                    .get("instruction")
+                    .map(|signed| ("instruction", signed))
+            })
+        else {
+            return Ok(());
+        };
+        let Some(doc) = serde_json::from_value(signed.clone())
+            .ok()
+            .and_then(|doc| documents::verify(doc).ok())
+        else {
+            return Ok(());
+        };
+        let position = &setup.position;
+        let body = &doc.body;
+        if doc.kind != Kind::SetupShared
+            || encode(&doc.origin) != setup.sign
+            || doc.n != position.epoch
+            || body.get("removal").and_then(Value::as_str) != Some(kind)
+            || body.get("setup").and_then(Value::as_str) != Some(&position.id)
+            || body.get("primary").and_then(Value::as_str) != Some(&position.primary)
+            || body.get("key").and_then(Value::as_str) != Some(&key)
+        {
+            return Ok(());
+        }
+        let Some(operation) = body
+            .get("operation")
+            .and_then(Value::as_str)
+            .filter(|op| safe_token(op, 22, 43))
+        else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        let matches = |challenge: &Challenge| {
+            challenge.position == *position
+                && challenge.operation == operation
+                && now < challenge.expires
+        };
+        if kind == "offer" {
+            if !self.unlink_challenge.as_ref().is_some_and(matches) {
+                self.unlink_challenge = Some(Challenge {
+                    position: position.clone(),
+                    operation: operation.into(),
+                    nonce: encode(&random::<16>()?),
+                    expires: now + Duration::from_secs(30),
+                });
+            }
+            let nonce = &self.unlink_challenge.as_ref().ok_or(Error::Conflict)?.nonce;
+            self.send_removal(
+                &host,
+                json!({"request": operation, "setup": position.id, "nonce": nonce}),
+            )
+            .await;
+        } else if self.unlink_challenge.as_ref().is_some_and(|challenge| {
+            matches(challenge)
+                && body.get("nonce").and_then(Value::as_str) == Some(&challenge.nonce)
+        }) && body.get("wipe") == Some(&Value::Bool(false))
+            && !["plan", "generation", "requiresPreparation"]
+                .iter()
+                .any(|field| body.contains_key(*field))
+        {
+            let pending = LocalUnlink {
+                setup: position.id.clone(),
+                operation: operation.into(),
+                primary,
+                completed: false,
+            };
+            let mut next = self.link.clone();
+            next.extra.insert("localUnlink".into(), json!(pending));
+            next.extra.insert("phones".into(), json!([]));
+            next.extra.shift_remove("pairing");
+            next.extra.shift_remove("appPairing");
+            self.commit(next).await?;
+            self.unlink_challenge = None;
+            self.resume_local_unlink().await?;
+        }
+        Ok(())
+    }
+
+    fn local_unlink(&self) -> Result<Option<LocalUnlink>, Error> {
+        self.link
+            .extra
+            .get("localUnlink")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| Error::Invalid("local unlink journal"))
+    }
+
+    pub(super) async fn resume_local_unlink(&mut self) -> Result<(), Error> {
+        if self.kind != ComputerKind::Machine {
+            return Ok(());
+        }
+        let Some(mut pending) = self.local_unlink()? else {
+            return Ok(());
+        };
+        let Some(host) = Host::from_text(&pending.primary.key, &pending.primary.address) else {
+            return Err(Error::Invalid("unlink issuer"));
+        };
+        if !pending.completed {
+            let files = self.files.clone();
+            let before = self.link.clone();
+            let position = before.setup()?.clone();
+            if position.role != Role::Member
+                || position.position.id != pending.setup
+                || position.position.primary != pending.primary.key
+            {
+                return Err(Error::Conflict);
+            }
+            let kind = self.kind;
+            pending.completed = true;
+            let saved = pending.clone();
+            let next = tokio::task::spawn_blocking(move || {
+                cleanup::clear(&files).map_err(|source| Error::File {
+                    action: "clearing credentials at",
+                    path: files.path(""),
+                    source,
+                })?;
+                let identity = crate::model::Identity::read(&before)?;
+                let mut after = released_link(&before, &position, &identity.public);
+                crate::installer::released::keep_baseline(&files, &mut after);
+                super::bootstrap(&files, &mut after, &identity, kind)?;
+                let new_setup = after.setup()?.position.id.clone();
+                after.extra.insert("releasedSetup".into(), json!(new_setup));
+                after.extra.insert("localUnlink".into(), json!(saved));
+                Ok::<_, Error>(after)
+            })
+            .await
+            .map_err(|_| Error::Invalid("unlink cleanup task"))??;
+            self.commit(next).await?;
+            self.lease.seen = None;
+            self.exports.clear();
+            self.manifests.clear();
+            self.pending_tips.clear();
+        }
+        self.send_removal(
+            &host,
+            json!({"done": pending.operation, "setup": pending.setup}),
+        )
+        .await;
+        Ok(())
+    }
+
     async fn send_removal(&self, target: &Host, message: Value) {
         if let Some(network) = &self.network {
             let _ = network
@@ -299,6 +519,70 @@ impl Owner {
                 .await;
         }
     }
+}
+
+fn released_link(before: &Link, setup: &Setup, key: &str) -> Link {
+    let mut link = Link {
+        key: before.key.clone(),
+        sign: before.sign.clone(),
+        secret: before.secret.clone(),
+        relay: before.relay.clone(),
+        name: before.name.clone(),
+        devices_disabled: before.devices_disabled,
+        ..Link::default()
+    };
+    for field in [
+        "startsFromOthers",
+        "formerDeviceRevocations",
+        "formerPhoneIssuers",
+        "installerCancellations",
+    ] {
+        if let Some(value) = before.extra.get(field) {
+            link.extra.insert(field.into(), value.clone());
+        }
+    }
+    link.extra.insert("phones".into(), json!([]));
+    link.extra.insert("departedKey".into(), json!(key));
+
+    let issuers = link
+        .extra
+        .entry("formerPhoneIssuers")
+        .or_insert_with(|| json!({}));
+    let prior = &mut issuers[&setup.sign];
+    if !prior.is_array() {
+        *prior = json!([]);
+    }
+    if let Some(scopes) = prior.as_array_mut()
+        && !scopes.iter().any(|item| item == &setup.position.id)
+    {
+        scopes.push(json!(setup.position.id));
+    }
+    if let Some(removed) = before
+        .extra
+        .get("removed")
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())
+    {
+        let history = link
+            .extra
+            .entry("formerDeviceRevocations")
+            .or_insert_with(|| json!({}));
+        let prior = &mut history[&setup.position.id];
+        if !prior.is_array() {
+            *prior = json!([]);
+        }
+        if let Some(revoked) = prior.as_array_mut() {
+            for row in removed {
+                if !revoked
+                    .iter()
+                    .any(|old| old["key"] == row["key"] && old["pairing"] == row["pairing"])
+                {
+                    revoked.push(row.clone());
+                }
+            }
+        }
+    }
+    link
 }
 
 fn retire_computer(

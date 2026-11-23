@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxBinary, readJSON, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
@@ -73,6 +74,11 @@ test("a released computer enrolls again after usage settings follow its standalo
   const first = await other.join(firstCode.json.code);
   assert.equal(first.code, 0, first.log);
   const readLink = home => readJSON(path.join(home, "run", "link.json"));
+  const database = path.join(other.home, "data", "opencode", "opencode.db");
+  fs.mkdirSync(path.dirname(database), { recursive: true });
+  const initialize = new DatabaseSync(database);
+  initialize.exec("PRAGMA journal_mode=WAL; CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT); INSERT INTO session VALUES ('kept', 'Before unlink');");
+  initialize.close();
   const resident = other.start();
   const local = other.connect(await resident.ready());
   const usageFile = path.join(other.home, "agents", "usage", "settings.json");
@@ -100,8 +106,20 @@ test("a released computer enrolls again after usage settings follow its standalo
   const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
     ? boxBinary(process.env.KUVO_CONFORMANCE_REJOIN_BIN) : applicant;
   const standalone = readLink(other.home);
+  assert.match(standalone.releasedScopedWork?.logical ?? "", /^[A-Za-z0-9_-]{43}$/,
+    "unlink records the logical snapshot of a closed WAL database");
   if (!joinWith.typescript) {
     await resident.stop();
+    const db = new DatabaseSync(database);
+    db.exec("UPDATE session SET title = 'After unlink'");
+    db.close();
+    const changed = await other.join(next.json.code, { joinWith });
+    assert.equal(changed.code, 1, changed.log);
+    assert.match(changed.log, /This computer has setup data/);
+    assert.equal(readLink(other.home).key, standalone.key);
+    const restored = new DatabaseSync(database);
+    restored.exec("UPDATE session SET title = 'Before unlink'; ANALYZE; PRAGMA wal_checkpoint(TRUNCATE)");
+    restored.close();
     // A write after unlink must still be protected by the Rust applicant.
     const payload = path.join(other.home, "artifacts", "retained-work.json");
     fs.writeFileSync(payload, '{"title":"Written after unlink"}', { flag: "wx" });
@@ -135,4 +153,74 @@ test("a released computer enrolls again after usage settings follow its standalo
     assert.equal(view.json.you.role, "member");
     assert.equal(view.json.you.key, accepted.boxes[1].key);
   }
+});
+
+test("a departing member clears credentials and keeps its work before acknowledging unlink", { timeout: 90000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const main = await computer("Studio");
+  const member = await computer("Desk", applicant);
+  const ask = main.connect(await main.start().ready());
+  const initial = (await ask("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(initial.setup), "The main computer did not claim a relay lease.");
+  const offered = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
+  assert.equal(offered.status, 201, offered.text);
+  const joined = await member.join(offered.json.code);
+  assert.equal(joined.code, 0, joined.log);
+
+  const data = path.join(member.home, "data", "opencode");
+  const database = path.join(data, "opencode.db");
+  fs.mkdirSync(data, { recursive: true });
+  const db = new DatabaseSync(database);
+  db.exec("PRAGMA journal_mode=WAL; CREATE TABLE credential (secret TEXT); INSERT INTO credential VALUES ('test-secret'); CREATE TABLE session (title TEXT); INSERT INTO session VALUES ('Keep this session');");
+  db.close();
+  fs.writeFileSync(path.join(data, "auth.json"), "{}");
+  const keys = path.join(member.home, "box", "keys");
+  fs.mkdirSync(keys, { recursive: true });
+  fs.writeFileSync(path.join(keys, "TEST_KEY"), "test-key");
+
+  let resident = member.start();
+  const local = member.connect(await resident.ready());
+  const key = (await local("GET", "kuvo/setup")).json.you.key;
+  // An invalid journal blocks cleanup. The departing Rust computer must keep
+  // its removal fence across a resident restart and resume once it can scrub.
+  const journal = database + "-journal";
+  if (!applicant.typescript) fs.mkdirSync(journal);
+  const removed = await ask("POST", `kuvo/computers/${key}/unlink`, {}, fromMac);
+  assert.equal(removed.status, 200, removed.text);
+  if (!applicant.typescript) {
+    await until(() => readJSON(path.join(member.home, "run", "link.json")).localUnlink,
+      () => `The member did not save the unlink fence.\n${resident.log()}`);
+    assert.equal(readJSON(path.join(main.home, "run", "link.json"))
+      .shared.membershipAndAccess.value.removals[key].delivered, undefined);
+    await resident.stop();
+    fs.rmdirSync(journal);
+    resident = member.start();
+    await resident.ready();
+  }
+  await until(() => {
+    const mainState = readJSON(path.join(main.home, "run", "link.json"));
+    const state = readJSON(path.join(member.home, "run", "link.json"));
+    return state.setup.role === "primary" && state.setup.id !== initial.setup
+      && !state.localUnlink && mainState.shared.membershipAndAccess.value.removals[key].delivered;
+  }, () => `Unlink did not finish.\n${resident.log()}`, 30000);
+  assert.equal(fs.existsSync(keys), false);
+  assert.equal(fs.existsSync(path.join(data, "auth.json")), false);
+  const kept = new DatabaseSync(database, { readOnly: true });
+  try {
+    assert.deepEqual(kept.prepare("SELECT secret FROM credential").all(), []);
+    assert.equal(kept.prepare("SELECT title FROM session").get().title, "Keep this session");
+  } finally {
+    kept.close();
+  }
+  const next = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
+  assert.equal(next.status, 201, next.text);
+  const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
+    ? boxBinary(process.env.KUVO_CONFORMANCE_REJOIN_BIN) : applicant;
+  if (!joinWith.typescript) await resident.stop();
+  const rejoined = await member.join(next.json.code, { resident: joinWith.typescript, joinWith });
+  assert.equal(rejoined.code, 0, rejoined.log);
+  const returned = readJSON(path.join(member.home, "run", "link.json"));
+  assert.equal(returned.setup.id, initial.setup);
+  assert.equal(returned.setup.role, "member");
+  assert.notEqual(returned.key, key);
 });

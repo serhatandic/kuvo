@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
+- A computer with a retained session database can rejoin after unlinking when its saved work hasn't changed. A Rust computer clears its machine sign-ins and keys before completing unlink.
 
 - A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.

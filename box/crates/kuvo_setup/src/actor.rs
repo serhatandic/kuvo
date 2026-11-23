@@ -305,6 +305,7 @@ impl PreparedSetup {
             manifests: VecDeque::new(),
             pending_tips: VecDeque::new(),
             pending_handover: None,
+            unlink_challenge: None,
             pending_devices: HashMap::new(),
             forwarded_handover: None,
             next: Instant::now(),
@@ -455,6 +456,17 @@ fn open(
     }
     link.name.get_or_insert_with(|| name.into());
     let own = Identity::read(&link)?;
+    bootstrap(files, &mut link, &own, kind)?;
+    write_link(files, &link, kind)?;
+    Ok((link, Some(own)))
+}
+
+fn bootstrap(
+    files: &Files,
+    link: &mut Link,
+    own: &Identity,
+    kind: ComputerKind,
+) -> Result<(), Error> {
     let position = Position {
         id: format!("set_{}", encode(&random::<16>()?)),
         epoch: 1,
@@ -477,14 +489,13 @@ fn open(
             offline_edits: None,
         },
     );
-    let cert = checkpoint::build(files, &own, position.clone(), None, 1, &link)?;
+    let cert = checkpoint::build(files, own, position.clone(), None, 1, &link)?;
     link.leadership.insert(1, cert.envelope);
     link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
     link.format_version = 1;
     link.extra.entry("phones").or_insert_with(|| json!([]));
-    remember_link_key(&mut link, &own, kind);
-    write_link(files, &link, kind)?;
-    Ok((link, Some(own)))
+    remember_link_key(link, own, kind);
+    Ok(())
 }
 
 pub(crate) fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> bool {
@@ -772,6 +783,7 @@ struct Owner {
     manifests: VecDeque<(String, Document)>,
     pending_tips: VecDeque<Document>,
     pending_handover: Option<Handover>,
+    unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
     forwarded_handover: Option<Handover>,
     next: Instant,
@@ -810,6 +822,9 @@ impl Owner {
                 () = time::sleep_until(until) => {
                     if self.next <= Instant::now() {
                         self.next = Instant::now() + Duration::from_secs(2);
+                        if let Err(error) = self.resume_local_unlink().await {
+                            eprintln!("setup unlink cleanup: {error}");
+                        }
                         if let Err(error) = self.offer_unlinks().await {
                             eprintln!("setup removal delivery: {error}");
                         }

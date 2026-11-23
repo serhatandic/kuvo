@@ -1126,6 +1126,7 @@ dependencies = [
  "kuvo_wire",
  "percent-encoding",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
