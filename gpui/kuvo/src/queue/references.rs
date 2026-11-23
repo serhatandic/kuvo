@@ -21,6 +21,13 @@ pub(super) fn ranges<'a>(text: &str, mentions: &'a [Mention]) -> Vec<(Range<usiz
     }).collect()
 }
 
+/// `range` (an item's mention) with the parentheses directly round it, where there are: its chip
+/// stands in for them, as `(#975)` would read doubled round one.
+pub(super) fn with_parentheses(text: &str, range: Range<usize>) -> Range<usize> {
+    let wrapped = range.start > 0 && text[..range.start].ends_with('(') && text[range.end..].starts_with(')');
+    if wrapped { range.start - 1..range.end + 1 } else { range }
+}
+
 pub(super) fn completion(text: &str, selection: Range<usize>) -> Option<(Range<usize>, &str)> {
     if !selection.is_empty() { return None; }
     let end = selection.end;
@@ -153,7 +160,7 @@ impl QueueView {
         let mut edits: Vec<_> = ranges(text, mentions).into_iter().filter(|(_, mention)| self.mentioned_item(mention).is_some())
             .map(|(range, mention)| {
                 let label = &text[range.clone()];
-                (range, format!("[{label}](kuvo-item:{})", mention_key(mention)))
+                (with_parentheses(text, range.clone()), format!("[{label}](kuvo-item:{})", mention_key(mention)))
             }).collect();
         edits.extend(super::attachments::anchors(text, files).into_iter()
             .filter_map(|(range, url)| {

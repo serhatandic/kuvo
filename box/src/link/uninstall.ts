@@ -32,6 +32,7 @@ import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
 import { macLink, readLink, updateLink } from "./state";
+import { installedWslTask, removeWslTask } from "./windows";
 import { forwardAct, takesForwarded } from "./work-queue/forward";
 
 import type { AnswerPiece, RouteContext } from "./server/context";
@@ -102,12 +103,14 @@ function crontab(tools: { crontab: string }): string | null {
 /** What starts the box from outside its folder: the launch agent's file, and its crontab line. */
 function starts() {
   const tools = launchTools();
-  if (!tools) return { launchAgent: false, crontab: false, checked: false };
+  const windowsTask = installedWslTask() !== undefined;
+  if (!tools) return { launchAgent: false, crontab: false, checked: windowsTask, ...(windowsTask ? { windowsTask } : {}) };
   const table = crontab(tools);
   return {
     launchAgent: process.platform === "darwin" && fs.existsSync(path.join(tools.agents, `${LAUNCH_AGENT}.plist`)),
     crontab: table !== null && table.includes(REBOOT_TAG),
     checked: true,
+    ...(windowsTask ? { windowsTask } : {}),
   };
 }
 
@@ -202,6 +205,8 @@ export function uninstall(): Uninstalled {
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain: string[] = [];
+  try { removeWslTask(); }
+  catch (error) { logCleanup(error); startsAgain.push("its Windows sign-in task"); }
   // Its start at login first, so nothing starts it again as it stops.
   if (tools && process.platform === "darwin") for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
     const plist = path.join(tools.agents, `${label}.plist`);

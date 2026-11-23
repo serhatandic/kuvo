@@ -338,6 +338,13 @@ else
   fi
 fi
 if [ "$pubkey" = no ] || [ -f "$F/refuse" ]; then echo "you@$dest: Permission denied (publickey)." >&2; exit 255; fi
+if [ -f "$F/windows-$dest" ]; then
+  case "$cmd" in
+    cmd.exe*) printf 'KUVO-WINDOWS-DESKTOP-TEST\\r\\n'; exit 0 ;;
+    'wsl.exe --list --verbose') printf '  NAME  STATE  VERSION\\r\\n* Ubuntu  Stopped  1\\r\\n' | iconv -f UTF-8 -t UTF-16LE; exit 0 ;;
+    *) echo "'exec' is not recognized as an internal or external command." >&2; exit 255 ;;
+  esac
+fi
 [ -f "$F/home-$dest" ] && FAKE_SSH_HOME=$(cat "$F/home-$dest")
 # A detached simulated SSH command stays identifiable by its script even when macOS
 # hides the environment of /bin/sh and its SSH parent has gone away.
@@ -690,6 +697,23 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   // which a test's deep home can be too long for, and then each script connects by itself.)
   const shares = process.platform === "darwin" || Buffer.byteLength(path.join(home, "run", "ssh")) <= 55;
   assert.equal(sshLog().at(-1), shares ? "studio  exit" : "studio yes run");
+});
+
+test("adding a Windows PC with only WSL 1 tells you how to get WSL 2 before copying Kuvo Code", async t => {
+  const destination = "windows-no-wsl2";
+  const folder = path.join(base, destination);
+  fs.mkdirSync(folder);
+  write(path.join(fake, `home-${destination}`), folder);
+  write(path.join(fake, `windows-${destination}`), "");
+  t.after(() => fs.rmSync(path.join(fake, `windows-${destination}`)));
+  const begun = await ask("POST", "kuvo/computers/add", { destination });
+  assert.equal(begun.status, 202);
+  const id = begun.body.try.id;
+  const asking = await until(id, found => found?.state === "asking");
+  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { at: asking.question.at, answer: "trust" })).status, 200);
+  const failed = await over(id);
+  assert.equal(failed.failure?.message, "Install Ubuntu with WSL 2 on desktop-test, then open Ubuntu once and try again.");
+  assert.deepEqual(fs.readdirSync(folder), []);
 });
 
 test("the same computer under another address is the one already here, not a second one", async () => {

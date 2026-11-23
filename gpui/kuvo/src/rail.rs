@@ -162,11 +162,17 @@ pub struct Rings {
     on_card: bool,
     opening: Option<Task<()>>,
     closing: Option<Task<()>>,
+    /// The rings past the rail's room, open in a popover beside "+N"; whether the pointer is on
+    /// "+N" or that popover; how many rings the rail drew (the rest are the popover's).
+    more: bool,
+    on_more: bool,
+    more_closing: Option<Task<()>>,
+    drawn: usize,
 }
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, live, accounts: None, rail: None, picked: None, confirming: None, resetting: None, reset_said: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None };
+        let mut rings = Rings { client, live, accounts: None, rail: None, picked: None, confirming: None, resetting: None, reset_said: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None, more: false, on_more: false, more_closing: None, drawn: 0 };
         if live {
             if rings.client.streams() {
                 let follow = rings.client.follow_usage();
@@ -406,6 +412,42 @@ impl Rings {
         } else {
             self.closing = None;
         }
+        // The rings behind "+N" stay out while the pointer is on "+N", their popover, one of them
+        // or its card; off all of them, they go after the same moment.
+        let drawn = self.drawn;
+        if self.more && !self.on_more && !self.on_card && !self.on_ring.is_some_and(|ix| ix >= drawn) {
+            if self.more_closing.is_none() {
+                self.more_closing = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(CARD_GRACE).await;
+                    this.update(cx, |this, cx| {
+                        this.more_closing = None;
+                        if !this.on_more && !this.on_card && !this.on_ring.is_some_and(|ix| ix >= this.drawn) {
+                            this.more = false;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }));
+            }
+        } else {
+            self.more_closing = None;
+        }
+        cx.notify();
+    }
+
+    /// The pointer came onto "+N" or its popover, or left: the rest of the rings open at once.
+    fn more_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.on_more = hovered;
+        if hovered {
+            self.more = true;
+        }
+        self.settle(cx);
+    }
+
+    /// Opens the rings behind "+N" (a click, or shots).
+    pub fn show_more(&mut self, cx: &mut Context<Self>) {
+        self.more = true;
+        self.more_closing = None;
         cx.notify();
     }
 
@@ -425,6 +467,9 @@ impl Rings {
         self.opening = None;
         self.closing = None;
         self.on_card = false;
+        self.more = false;
+        self.on_more = false;
+        self.more_closing = None;
         cx.notify();
     }
 }
@@ -454,7 +499,13 @@ impl Render for Rings {
         let most = if accounts.len() <= room.min(MOST_RINGS) { accounts.len() } else { room.saturating_sub(1).min(MOST_RINGS) };
         // A ring gone since (its account left the list, or behind "+N" now) takes its card along,
         // and what the pointer was on: its card's or ring's leaving is never heard once it's gone.
-        if self.card.is_some_and(|ix| ix >= most) || self.on_ring.is_some_and(|ix| ix >= most) {
+        self.drawn = most;
+        if accounts.len() <= most {
+            self.more = false;
+            self.on_more = false;
+            self.more_closing = None;
+        }
+        if self.card.is_some_and(|ix| ix >= accounts.len()) || self.on_ring.is_some_and(|ix| ix >= accounts.len()) {
             self.card = None;
             self.on_ring = None;
             self.on_card = false;
@@ -466,14 +517,18 @@ impl Render for Rings {
         let updating = self.agents.as_ref().filter(|_| restarting).map(|state| state.message.clone());
         let state = CardState { picked: self.picked.clone(), confirming: self.confirming.clone(), resetting: self.resetting.is_some(), said: self.reset_said.clone() };
         let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, shown)| ring_button(ix, shown, now, card == Some(ix), updating.clone(), &state, cx)).collect();
-        // Past the rail's room: "+N", opening Insights.
+        // Past the rail's room: "+N", opening the rest beside it, laid out as the rail lays them
+        // out; each opens its card as a rail ring does.
         if accounts.len() > most {
             let more = accounts.len() - most;
             let hover = c.hover;
+            let open = self.more;
+            let rest: Vec<AnyElement> = accounts.iter().enumerate().skip(most).map(|(ix, shown)| ring_button(ix, shown, now, card == Some(ix), updating.clone(), &state, cx)).collect();
             rings.push(
                 div()
                     .id("more-rings")
                     .debug_selector(|| "more-rings".into())
+                    .relative()
                     .flex()
                     .flex_none()
                     .items_center()
@@ -483,13 +538,16 @@ impl Render for Rings {
                     .border_1()
                     .border_color(c.border)
                     .cursor_pointer()
+                    .when(open, |d| d.bg(hover))
                     .hover(move |s| s.bg(hover))
                     .text_ui(TypeSize::Caption)
                     .medium()
                     .text_color(c.text_muted)
                     .child(format!("+{more}"))
-                    .tooltip(move |_, cx| Tooltip::new(format!("{more} more in Insights")).build(cx))
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowUsage), cx))
+                    .when(!open, |d| d.tooltip(move |_, cx| Tooltip::new(format!("{more} more")).build(cx)))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.more_hovered(*hovered, cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.show_more(cx)))
+                    .when(open, |d| d.child(more_beside(rest, cx)))
                     .into_any_element(),
             );
         }
@@ -557,6 +615,22 @@ fn state_ring(state: &Refusal, open: bool, trying: bool, cx: &mut Context<Rings>
         }))
         .when(open, |ring| ring.child(state_card_beside(state, trying, cx)))
         .into_any_element()
+}
+
+/// The rings behind "+N": beside it, in a column as the rail has them, each opening its card.
+fn more_beside(rest: Vec<AnyElement>, cx: &mut Context<Rings>) -> impl IntoElement {
+    let column = div().debug_selector(|| "more-rings-popover".into()).flex().flex_col().items_center().gap(space::S2).children(rest);
+    let content = div()
+        .id("more-rings-card")
+        .occlude()
+        .pl(space::S2)
+        .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.more_hovered(*hovered, cx)))
+        .child({
+            // (A ring's room each, like the rail: not a card's width.)
+            let theme = cx.theme();
+            div().p(space::S1_5).rounded(radius::CARD).bg(theme.colors.elevated).border_1().border_color(theme.colors.border).shadow(theme.elevated_shadow()).child(column)
+        });
+    Popover::new("more-rings-motion", Placement::beside().flush(), content)
 }
 
 /// The state ring's card: the box's sentence, and its Try Again where it offers one (busy while
