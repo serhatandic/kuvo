@@ -129,8 +129,9 @@ test("an old departure still routes the conversation to its owner", { timeout: 4
 
 test("a newer move announcement leads to the next computer until it expires", { timeout: 45000 }, async t => {
   const { computer, relay } = await bench(t);
-  const here = await computer("previous-owner");
-  const { member, spare, save } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const here = await computer("previous-owner"), there = await computer("newest-owner");
+  const { main, member, spare, save } = seedPeerSetup(here.home, relay.url, 1, 3);
+  seedPeerSetup(there.home, relay.url, 3, 3);
   const now = Date.now();
   const recent = "ses_recentHop", expired = "ses_expiredHop", local = "ses_localHop";
   save("run/moves/moved.json", [recent, expired].map(session => ({
@@ -141,8 +142,9 @@ test("a newer move announcement leads to the next computer until it expires", { 
     { session: expired, key: spare.key, at: now - 3 * 86400000 },
     { session: local, key: spare.key, at: now },
   ] } });
-  here.engine.sessions.push(sessionOf({ id: local, directory: path.join(here.home, "chats") }));
-  const resident = await here.start().ready();
+  here.engine.sessions.push(sessionOf({ id: local, title: "Trip plans", directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: recent, directory: path.join(there.home, "chats") }));
+  const [resident, target] = await Promise.all([here.start().ready(), there.start().ready()]);
   const locate = id => request(resident, "GET", "kuvo/sessions/" + id + "/location");
   const own = await until(async () => {
     const result = await locate(local);
@@ -154,6 +156,15 @@ test("a newer move announcement leads to the next computer until it expires", { 
     assert.equal(result.status, 200, result.text);
     assert.equal(result.json.on?.id, peer.key, result.text);
   }
+  await until(async () => (await request(target, "GET", "api/session/" + recent)).status === 200 &&
+    fs.existsSync(path.join(there.home, "run/peer-agents.json")) &&
+    readJSON(path.join(there.home, "run/peer-agents.json"))[main.key]?.list.some(row => row.session === local),
+  "The new owner did not learn the letter's sender");
+  const letter = path.join(here.home, "run/outbox/sending/ltr_followSecondMove.json");
+  write(letter, JSON.stringify({ from: local, to: recent, text: "What changed?", peer: member.key, wait: false, at: Date.now() }));
+  const received = await until(() => there.engine.messages.get(recent), "The letter did not follow the newer announcement", 15000);
+  assert.equal(received.length, 1);
+  assert.match(received[0].text, /^\[Message from Trip plans · ses_localHop\][^\n]*\n\nWhat changed\?$/);
 });
 
 const mixed = process.env.KUVO_CONFORMANCE_MOVE_PEER;
