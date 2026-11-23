@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Reopening the app goes back to the bot's conversation you left, on this computer or another, instead of the bot's settings page when its computer took a moment to answer. A conversation you'd scrolled up in opens where you were reading, and the side panel opens again if you'd left it open.
 - The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.

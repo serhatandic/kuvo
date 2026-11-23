@@ -198,6 +198,24 @@ pub struct Spot {
     pub bot: Option<String>,
     #[serde(deserialize_with = "or_default")]
     pub picked: std::collections::BTreeMap<String, String>,
+    /// Where each conversation open (Sessions', a bot's) was read up to, by its session: none
+    /// for one at its latest, following it.
+    #[serde(deserialize_with = "or_default")]
+    pub reading: std::collections::BTreeMap<String, ReadAt>,
+    /// The side panel open beside the conversation, and its width (none: as it first opens).
+    #[serde(deserialize_with = "or_default")]
+    pub panel_open: bool,
+    #[serde(deserialize_with = "or_default")]
+    pub panel_width: Option<f32>,
+}
+
+/// A conversation scrolled up from its latest: the row at the top of its view (by its key, as
+/// `Entry::key` names it), and how far down that row the view starts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadAt {
+    pub row: String,
+    pub offset: f32,
 }
 
 /// All of your settings, a field a page.
