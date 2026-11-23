@@ -196,7 +196,7 @@ const TURN_PAGES = 20;
 
 /** What began a session's latest turn, from its messages (newest first): you (your message, or your
  * answer, approval or pick passed on), another agent (its letter or work for it), the session's own
- * accord (its wake-up or watch, a goal's word to its bot), what it left running or started
+ * accord (its wake-up or watch), what it left running or started
  * (a command or subagent done, its sessions' news: `follow`), or `unknown`, its start out of reach. */
 export type TurnBegan = "you" | "agent" | "own" | "follow" | "unknown";
 
@@ -252,7 +252,7 @@ export function turnFor(messages: unknown, whole = true): TurnBegan {
 }
 
 /** NOTIFY_RULE: whether a reply is news for you. A reply to you is; one to another agent, or of the
- * session's own accord (a wake-up, a watch, a goal's word), isn't. What it left running or started
+ * session's own accord (a wake-up, a watch), isn't. What it left running or started
  * coming back is, in a conversation of yours (not a bot's, nor one an agent started), and so is a
  * turn whose start is out of reach there. A question, a permission or a failure always is, and so
  * is an agent's notify_user. */
@@ -328,8 +328,7 @@ export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Not
       if (!asker) return null;
       const where = await shown(asker);
       if (isHiddenRun(where)) return null;
-      // On Autopilot nothing waits for you, unless it's still asked once the box has looked (its goal
-      // paused, or the engine didn't take the answer).
+      // On Autopilot nothing waits for you, unless it's still asked once the box has looked.
       if (isAutopilot(where) && !await stillAsked(form, get, event.location?.directory)) return null;
       const full = describeForm(form);
       const body = shortWords(full);

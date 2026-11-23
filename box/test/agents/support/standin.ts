@@ -1,13 +1,13 @@
-// A stand-in engine for the box's keywords (goals, side questions, handoffs, reviews): its HTTP API
+// A stand-in engine for side questions, handoffs, and reviews: its HTTP API
 // and live event feed, a turn for each note to the agent as `turns` script them, and one-off
-// answers in turn (a goal's check's verdicts, others' answers).
+// answers in turn.
 
 import { emit } from "../../../src/agents/events"
 
 /** `steps`: model calls before its last, each a message of its own, as a long turn has them. */
 export type Turn = { text?: string; tool?: boolean; steps?: number; outcome?: "succeeded" | "failed" | "interrupted"; error?: string }
 
-/** The engine: a turn for each note, as `turns` script them, and the goal check's verdicts in turn. */
+/** The engine: a turn for each note, as `turns` script them, and one-off answers in turn. */
 export class StandIn {
   readonly conversations = new Map<string, any[]>()
   readonly synthetic: { session: string; text: string; description?: string }[] = []
@@ -20,13 +20,10 @@ export class StandIn {
   }
   /** Sessions made through it (`POST /api/session`), with what they were made with. */
   readonly made: any[] = []
-  verdicts: string[] = []
-  /** A goal's check fails with these words (a model's limit, say), rather than answering. */
-  verdictError?: string
   turns: Turn[] = []
   /** Turns that wait for `finish` rather than ending at once. */
   holding = false
-  /** Goal checks that wait for `answerChecks`. */
+  /** One-off answers that wait for `answerChecks`. */
   holdingChecks = false
   /** Reads of a conversation's messages that wait for `answerReads` (a look under way). */
   holdingReads = false
@@ -293,7 +290,7 @@ export class StandIn {
     }
   }
 
-  /** What a one-off answer says when it isn't a goal's check (a side question's answer, a handoff's note, a review), in turn. */
+  /** One-off answers, in order. */
   answers: string[] = []
 
   /** A review's part read in its session: counted with the checks, held with them, its answer the next one scripted. */
@@ -357,10 +354,7 @@ export class StandIn {
     this.checks.push({ kind, prompt, ...(model ? { model } : {}), ...(session ? { session } : {}) })
     this.beat()
     if (this.holdingChecks) await new Promise<void>((resolve) => this.heldChecks.push(resolve))
-    if (this.verdictError && prompt.includes("<goal>")) return Response.json({ message: this.verdictError }, { status: 429 })
-    // Met, once the script runs out.
-    if (!prompt.includes("<goal>") && this.answers.length) return Response.json({ data: { text: this.answers.shift() } })
-    return Response.json({ data: { text: this.verdicts.shift() ?? `{"verdict": "met", "reason": "Done."}` } })
+    return Response.json({ data: { text: this.answers.shift() ?? "Done." } })
   }
 }
 

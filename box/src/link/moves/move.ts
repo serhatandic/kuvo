@@ -45,7 +45,6 @@ import { takesForwarded } from "../work-queue/forward";
 import { offlineEditsReady } from "../ownership/store";
 import { mayActivate } from "../ownership/resolve";
 import { moveReference } from "../ownership/resolve";
-import { goalRuns, proposedGoals } from "../work/goals";
 import { workAsks } from "../work/asks";
 import { ofBot, under, workSessions } from "../work/tree";
 import { readBackground } from "../work/background";
@@ -142,7 +141,6 @@ export const say = {
   modelNotThere: (name: string, place: string) => `${name}’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
   notSame: (name: string) => `${name}’s conversation didn’t come out the same on the other computer, so it stayed here. Try again.`,
   background: (name: string, what: string) => `${name} has ${what} running. Wait for it to finish, or stop it, then move ${name}.`,
-  onGoal: (name: string) => `${name} is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.`,
   waiting: (name: string) => `${name} still has messages on their way. Try again in a moment.`,
   notPlain: (name: string, what: { path: string; link: boolean }) => `${name}’s folder has ${what.link ? "a link that wouldn’t work on another computer" : "something that isn’t a file"} (${what.path}), which can’t move to another computer. Remove it, then move ${name}.`,
   busy: (name: string) => `${name} kept getting messages while it moved, so it stayed where it is. Try again in a moment.`,
@@ -162,7 +160,6 @@ export const say = {
 const note = {
   inProject: "Works in a project",
   noAgents: "Its coding agents aren’t running",
-  onGoal: "Working on a goal",
   background: "Running something",
   notPlain: { link: "Has a link that can’t move", other: "Has something that isn’t a file" },
   inBoxGroup: "In a group chat that lives here",
@@ -315,19 +312,7 @@ interface Packed {
   left: unknown[];
 }
 
-/** Whether the chat `session` has its own goal (`/goal`) working or paused: the agents bridge keeps
- * it here, and it would end with the conversation as it leaves. Undefined when the bridge didn't
- * answer, so it can't say. */
-async function chatGoalRuns(session: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  let bridge: Target;
-  try { bridge = readBridgeFile(); } catch { return false; }
-  const goal = await call(bridge, "GET", `/api/kuvo/goals/${encodeURIComponent(session)}`, undefined, engineWait(signal)).then(
-    data => data,
-    (error: { status?: number }) => (error?.status === 404 ? null : undefined),
-  );
-  if (goal === undefined) return undefined;
-  return isObject(goal) && (goal.state === "working" || goal.state === "paused");
-}
+
 
 async function movable(kind: MoveKind, thing: string, signal?: AbortSignal, strict = false): Promise<Movable | null> {
   if (kind === "bot") {
@@ -336,7 +321,6 @@ async function movable(kind: MoveKind, thing: string, signal?: AbortSignal, stri
     const name = here.described.name;
     if (here.described.project) return { name, why: say.inProject(name), note: note.inProject };
     if (here.agents && !bridgeTarget()) return { name, why: say.noAgents(HERE), note: note.noAgents };
-    if (goalRuns(thing)) return { name, why: say.onGoal(name), note: note.onGoal };
     const running = runningOf([here.session]);
     if (running) return { name, why: say.background(name, running), note: note.background };
     // Found now, not by the computer it goes to once it's all there. (A folder too big to look
@@ -363,9 +347,6 @@ async function movable(kind: MoveKind, thing: string, signal?: AbortSignal, stri
     const title = typeof session.title === "string" && session.title.trim() ? `“${session.title.trim()}”` : "This chat";
     const directory = isObject(session.location) ? session.location.directory : session.directory;
     if (!isChatsFolder(directory)) return null;
-    const goal = await chatGoalRuns(thing, signal);
-    if (goal === undefined && strict) return null;
-    if (goal) return { name: title, why: say.onGoal(title), note: note.onGoal };
     const running = runningOf([thing]);
     if (running) return { name: title, why: say.background(title, running), note: note.background };
     return { name: title, root: thing, ...(lane ? { lane: true } : {}), ...(modelOf(session.model) ?? {}) };
@@ -428,8 +409,6 @@ async function staysOf(kind: MoveKind, thing: string, what: Movable, signal?: Ab
   const own = (session: string | undefined, bot: string | undefined) => (kind === "bot" ? bot === thing : session === what.root);
   const asks = workAsks().filter(ask => own(ask.session, ask.bot)).length;
   if (asks) stays.asks = asks;
-  const goals = proposedGoals().filter(goal => own(goal.session, goal.bot)).length;
-  if (goals) stays.goals = goals;
   // Its coding agent's own conversation: kept here as the way back where it goes too; one that can't
   // go stays, and the agent starts a new one there, handed what was said so far.
   const agent = what.model?.providerID.split("@")[0] ?? "";
@@ -449,7 +428,6 @@ function question(kind: MoveKind, name: string, peer: Peer, place: string, sourc
   if (stays?.agent) words.push(`A copy of the coding agent’s conversation stays on ${source} until a week after it first runs on ${place}.`);
   if (stays?.sessions) words.push(`Sessions it started stay on ${source}. It can still reach them from ${place}.`);
   if (stays?.asks) words.push(`Its unanswered questions stay on ${source}.`);
-  if (stays?.goals) words.push(`Its proposed goals stay on ${source}.`);
   if (kind !== "group") words.push(`Vault items, integrations and browser sign-ins stay on ${source}.`);
   const trash = IS_MAC ? "the Trash" : "Kuvo Code’s trash folder";
   words.push(kind === "group" ? "The group opens on the new computer after the move." : `The original goes to ${trash} on ${source}.`);
@@ -709,14 +687,6 @@ async function carryOn(id: string): Promise<void> {
     const members = isObject(contents.group?.group) && Array.isArray(contents.group.group.members) ? contents.group.group.members : [];
     record.members = members.filter((member): member is string => typeof member === "string");
   } else {
-    // A goal set as it was asked to move (goals stay where they started): it stays. Asked before
-    // waiting for it to settle, which a goal at work never lets it do; one the bridge can't say
-    // of now isn't taken for none.
-    if (record.kind === "chat") {
-      const goal = await chatGoalRuns(record.thing);
-      if (goal) throw new Refused(say.onGoal(record.name));
-      if (goal === undefined) throw new Refused(`${record.name}’s goal couldn’t be checked on ${HERE}. Try again in a moment.`);
-    }
     const target = record.lane ? readBridgeFile() : readEngineFile();
     const known = new Set(record.sessions);
     await waitForPromptWrites(record.sessions);
@@ -772,8 +742,6 @@ async function carryOn(id: string): Promise<void> {
     if (packed.queues) contents.workQueue = packed.queues;
     if (record.folder) contents.folder = path.basename(record.folder);
     if (record.kind === "bot") {
-      // A goal started as it was asked to move (goals stay where they started): it stays.
-      if (goalRuns(record.thing)) throw new Refused(say.onGoal(record.name));
     }
   }
   contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id,

@@ -283,8 +283,8 @@ the TypeScript box for the computers that still need it.
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
 | Folder layout steps (20 of 23 empty) | 500 | Frozen layout, per-file versions. |
 | `kuvo/data/owner`, `data/messages`, `data/edits*` adapters | 60 | No desktop caller. Storage stays. |
-| Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | A dropped feature, being removed from the TypeScript box. |
-| Typed keywords and slash commands: `areas/typed.ts`, `routes/typed.ts`, and their leftovers | 310 | Removed on 22 November. |
+| Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | Removed from the TypeScript box on 23 November. |
+| Typed keywords and slash commands | 310 | Removed on 22 November. Composer draft delivery and the 0.7.x `/typed` compatibility route remain. |
 | Letters' `peerOf` and `moved` | 100 | Ported onto `ownerOf` instead. |
 | The bridge as its own process: its API, `forward-version`, handover, `BRIDGE_VERSION`, tool forwarder, `kuvo-fence.js` | 2,500 | Folded into the resident and `kuvo-box` modes. |
 

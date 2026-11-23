@@ -2267,7 +2267,7 @@ export class Sessions {
   /**
    * One answer to a prompt from the session's model (Auto's first that can run), outside the
    * conversation: a commit message, say. Coding agents that can't answer one so say why, or with
-   * `orAnother`, another agent you're signed in to answers (a goal's check).
+   * `orAnother`, another agent you're signed in to answers.
    */
   async generate(id: string, prompt: string, { orAnother = false, model: given }: { orAnother?: boolean; model?: ModelRef } = {}): Promise<string> {
     const model = this.record(id).session.model
@@ -4012,12 +4012,12 @@ function promptFile(file: { uri: string; name?: string }): PromptFile {
 /**
  * Your words in a message, without the blocks the app adds at its end (that it's from your phone,
  * the note of attached files, your comments on the changes, the agents you named with "&", the
- * widget it answers, the keyword it was sent with), as the app's SentMessage reads it.
+ * widget it answers), as the app's SentMessage reads it.
  */
 export function ownWords(message: string): string {
   let text = message.trimEnd()
   for (;;) {
-    const tag = ["from-phone", "attached-files", "review-comments", "named-agents", "from-widget", "sent-with"].find((name) => text.endsWith(`\n</${name}>`))
+    const tag = ["from-phone", "attached-files", "review-comments", "named-agents", "from-widget"].find((name) => text.endsWith(`\n</${name}>`))
     if (!tag) return text
     const open = text.lastIndexOf(`<${tag}>\n`, text.length - tag.length - 4)
     if (open < 0 || (open > 0 && text[open - 1] !== "\n")) return text

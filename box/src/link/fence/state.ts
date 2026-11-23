@@ -59,8 +59,7 @@ export interface FenceState {
   /** While it's on, what it can't keep commands from on this computer: `services`, the services
    * your login runs (systemd, your keyring, your SSH agent), and git's own files in the repositories
    * they write (fence/landlock.ts, KEEP_GIT), where commands can't have a namespace of their own
-   * (`needs` says what for). The vault isn't open to agents there, nor do goals go on
-   * alone: `fenceWhole`. And `git`: on a Linux machine where a folder can't be made read-only in a
+   * (`needs` says what for). The vault is closed to agents there (`fenceWhole`). And `git`: on a Linux machine where a folder can't be made read-only in a
    * command's namespace (fence/landlock.ts, `readOnlyHere`), each command in a repository refuses
    * rather than run with git's own files open to it. */
   gaps?: FenceGap[];
@@ -187,7 +186,7 @@ export function fenceState(): FenceState {
 /** What a sandbox that's on says while commands can still reach your login's services (`gaps`): why, and the page on what the machine needs. */
 export function servicesWhy(needs: string | undefined): string {
   const fix = needs === "util-linux" ? "has util-linux" : "allows user namespaces";
-  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
+  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here.`;
 }
 
 /** The checks failed in a row from which a client offers Report a Problem with the sandbox's row (`report`). */
@@ -239,8 +238,8 @@ const PENDING_WHY = "Its check didn't finish in time (this computer may be busy)
 /** Whether commands here are kept from all it hides, Kuvo Code's own included, by the sandbox as
  * any of the box's processes can tell: a Mac's always; a Linux machine's only where each command
  * has a namespace of its own (`run/fence/namespace` names its unshare), or one could have the
- * services your login runs start anything outside it (`systemd-run --user`). What the vault and a
- * goal going on alone ask for besides `on`. */
+ * services your login runs start anything outside it (`systemd-run --user`). What the vault and
+ * Auto require besides `on`. */
 export function fenceWhole(): boolean {
   return platform === "darwin" || (textOf(path.join(FOLDER, "namespace")) ?? "").startsWith("/");
 }

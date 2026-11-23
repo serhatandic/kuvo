@@ -258,7 +258,7 @@ export async function deliveryItems(context: RouteContext, session: string, comp
     viewer && sameReceiptAuthor(record.submitter, viewer)).map(({ op }) => ({
     id: op.body.id, words: typeof op.body.quotedText === "string" ? op.body.quotedText : String(op.body.text),
     files: draftFiles(op).flatMap(file => isObject(file) && typeof file.name === "string" ? [file.name] : []),
-    keyword: null, from: null, on: "box", delivery: "queue", held: false,
+    from: null, on: "box", delivery: "queue", held: false,
   }));
 }
 

@@ -63,7 +63,7 @@ const REFUSED = object({ message: string });
 
 /** A message waiting on the box while its conversation is paused: who it's from (none for yours),
  * what it says as shown, its files' names, and when it began to wait (ms). */
-export const WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+export const WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), at: number });
 
 /** A session's queue: whether it waits for Resume, what Stop held, in the order it goes, and what
  * waits on the box (left out when nothing does). */
@@ -75,16 +75,16 @@ const ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITIN
 
 /** What `DELETE …/queue/<item>` took away, whole, for Undo to add back (`queue/add` with `kept`),
  * where it was: ahead of `before`, what came after it (none: it was last). */
-const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any, "attached?": list(object({ uri: string, "name?": string })) });
+const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, draft: string, "before?": string, "receipt?": string, "metadata?": any, "attached?": list(object({ uri: string, "name?": string })) });
 
 export type SessionQueue = Infer<typeof QUEUE>;
 
 /** One message waiting, as clients show it in the queue (`queue.items`): what you wrote (without
- * what the box added for the agent), its files' names, the keyword it was sent with, who it's from
+ * what the box added for the agent), its files' names, who it's from
  * (null for yours), where it waits (the engine's or the coding agents' bridge's inbox, or the box),
  * how it goes, and whether Stop held it. */
 export const QUEUE_ITEM = object({
-  id: string, words: string, files: list(string), keyword: nullable(string), from: nullable(string),
+  id: string, words: string, files: list(string), from: nullable(string),
   on: words("engine", "box"), delivery: words("steer", "queue"), held: bool,
 });
 

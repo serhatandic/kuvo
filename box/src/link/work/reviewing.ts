@@ -1,6 +1,6 @@
 // Auto's reviewer for a conversation here (`reviewer.ts` judges): which conversation an ask is in
 // (a subagent's is its own conversation's), whether it's in Auto (or Full Access) here now, what you
-// said in it (or its bot's goal), and the small model of the maker it runs on: the engine's
+// said in it, and the small model of the maker it runs on: the engine's
 // provider's own (its Haiku, Flash, mini…) through the engine, a coding agent's (Claude Code's
 // Haiku, Codex's Luna) through the agents bridge, so it's counted on that account. One that isn't
 // in Auto isn't reviewed: what it asks goes to you as before. A refusal goes back to the agent,
@@ -18,7 +18,6 @@ import { boxNote } from "../../shared/queues";
 import { messageID } from "../engine/sessions";
 import { approvalOf } from "./approval";
 import { asksIn, callOf } from "./answers";
-import { pauseGoal, REVIEW_PAUSE, runningGoal } from "./goals";
 import { usableModels, type Usable } from "./models";
 import { review, clearPlaces, keptFromSessions, walledForOwn, type Decision, type ReviewedAction, type ReviewContext, type SmallModel, type Verdict } from "./reviewer";
 import { botOfConversation, startedByOf, worksFor } from "./tree";
@@ -107,23 +106,12 @@ export async function heldUnreached(session: string, action: ReviewedAction, sig
   return review(action, { session, said: [] }, { model: unanswered, signal, own });
 }
 
-/** The bot whose conversation or work this is, and its goal while it has one running, with the
- * plan you approved by starting it (what it publishes or deploys there is what you asked for). */
-function botOf(data: EngineSession): ReviewContext["bot"] | undefined {
-  const bot = botOfConversation(data.id) ?? worksFor(data);
-  if (!bot) return undefined;
-  const running = runningGoal(bot.bot);
-  const plan = running?.steps.map((step, at) => `${at + 1}. ${step.text}`).join(" ");
-  const goal = running ? `${running.goal}${plan ? `\n(The plan the user approved by starting it: ${plan})` : ""}` : undefined;
-  return { id: bot.bot, name: bot.name, ...(goal ? { goal } : {}) };
-}
-
 /** Whether a conversation, where it is, is in Full Access here now: nothing is reviewed or asked. */
 export const inFullAccess = (at: Conversation): boolean =>
   approvalOf(at.data, { agents: at.agents, bot: Boolean(botOfConversation(at.data.id) ?? worksFor(at.data)) }).effective === "fullAccess";
 
 /** Whether a conversation is in Auto, where its reviewer decides (as `reviewIn` finds it). */
-export const inAuto = (at: Conversation): boolean => approvalOf(at.data, { agents: at.agents, bot: Boolean(botOf(at.data)) }).effective === "auto";
+export const inAuto = (at: Conversation): boolean => approvalOf(at.data, { agents: at.agents, bot: Boolean(botOfConversation(at.data.id) ?? worksFor(at.data)) }).effective === "auto";
 
 /** What you wrote in a conversation, oldest first: never what the box, another agent or a
  * wake-up put there. */
@@ -177,19 +165,19 @@ export async function reviewModelOf(at: Conversation, signal?: AbortSignal): Pro
 export async function reviewIn(session: string, action: ReviewedAction, signal?: AbortSignal, found?: Conversation | null, pin = true): Promise<(Verdict & { paused?: boolean; conversation: Conversation }) | null> {
   const at = found === undefined ? await conversationOf(session) : found;
   if (!at) return null;
-  const bot = botOf(at.data);
+  const ownBot = botOfConversation(at.data.id);
+  const bot = ownBot ?? worksFor(at.data);
   if (!inAuto(at)) {
     // (Out of Auto, the folders it allowed edits in go with it.)
     try { clearPlaces(at.data.id); } catch {}
     return null;
   }
-  // (In a bot's, what you wrote in its conversation counts beside its goal; in its work, what you
-  // wrote to the bot too, which the work is for.)
-  const own = bot && !botOfConversation(at.data.id) ? botHere(bot.id)?.session : undefined;
+  // Include what the user told the bot that started this work.
+  const own = bot && !ownBot ? botHere(bot.bot)?.session : undefined;
   const ownAt = own && own !== at.data.id ? await conversationOf(own).catch(() => null) : null;
   const said = [...(ownAt ? await yourMessages(ownAt, signal) : []), ...await yourMessages(at, signal)];
   const [folders, task] = await Promise.all([workFolders(at), taskOf(at, signal)]);
-  const context: ReviewContext = { session: at.data.id, said, ...(bot ? { bot } : {}), ...(folders.length ? { folders } : {}), ...(task ? { task } : {}) };
+  const context: ReviewContext = { session: at.data.id, said, ...(folders.length ? { folders } : {}), ...(task ? { task } : {}) };
   let verdict: Verdict & { paused?: boolean };
   try {
     verdict = await review(action, context, { model: await reviewModelOf(at, signal), signal, pin, own: await ownFolders(at) });
@@ -199,8 +187,6 @@ export async function reviewIn(session: string, action: ReviewedAction, signal?:
   }
   if (verdict.paused) {
     await stopSession(at.target, at.data.id, false).catch(() => {});
-    // A bot's: on its goal's card too.
-    if (bot) try { pauseGoal(bot.id, { why: REVIEW_PAUSE, session: at.data.id }); } catch {}
   }
   return { ...verdict, conversation: at };
 }
@@ -423,7 +409,7 @@ const attachedOf = (session: string): string[] => attachmentRoots().map(root => 
 /** The folders a conversation works in as its own: its project's, its commands' temporary folder
  * (their TMPDIR, in Kuvo Code's), the files sent with its messages (and with its parent's, for a
  * subagent's), its project's worktrees (`projectTrees`), and for a bot's conversation or work, the
- * bot's own folder, the projects it made and its running goal's. */
+ * bot's own folder, and the projects it made. */
 async function ownFolders(at: Conversation, withTrees = true): Promise<string[]> {
   const folder = at.data.location?.directory;
   const folders = typeof folder === "string" ? [folder, commandTemporary(folder)].filter((each): each is string => Boolean(each)) : [];
@@ -433,7 +419,7 @@ async function ownFolders(at: Conversation, withTrees = true): Promise<string[]>
   if (!bot) return folders;
   const own = botHere(bot.bot)?.folder;
   const made = readProjects().filter(project => !project.removed && project.madeBy?.bot === bot.bot).map(project => project.directory);
-  return [...folders, ...(own ? [own] : []), ...made, ...(runningGoal(bot.bot)?.projects ?? [])];
+  return [...folders, ...(own ? [own] : []), ...made];
 }
 
 /** A conversation's project's linked worktrees, wherever they are, where it works in the project's
@@ -683,7 +669,7 @@ async function answerPermission(source: Target, id: string, sessionID: string, s
     await reply({ decision: "once" }, "allowed");
     return { decision: "allow", reason: "Its own files.", by: "code" };
   }
-  // Its own project, and a bot's (one it made, its goal's), are its to work in as its folder is:
+  // Its own project, and a bot's, are its to work in as its folder is:
   // nothing there is reviewed, by where each path really is (a link to it, /tmp as /private/tmp).
   if (!inAuto(at)) {
     noteReview(id, sessionID, "yours", call);

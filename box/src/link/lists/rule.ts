@@ -201,7 +201,7 @@ export function needsYou(sessions: Readonly<Record<string, SessionFacts>>, asks?
 
 /** How many sessions wait on you, for a client's one badge of them (`kuvo/waiting`'s `sessions`):
  * those "Needs you" lists, and the bots' own conversations that wait (a permission or a question
- * there, a goal it put to you, what it asks before it does it), which the lists file under their
+ * there, what it asks before it does it), which the lists file under their
  * bots. Each session once, whatever it asks and however many times; not archived, this box's own
  * copy. */
 export function waitingSessions(sessions: Readonly<Record<string, SessionFacts>>): number {

@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Bots no longer offer goal cards or keep working toward goals from old cards.
+
+- Old engine command messages show the text the engine received.
+
 - Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.

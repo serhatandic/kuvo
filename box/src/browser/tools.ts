@@ -1,6 +1,6 @@
 // The tools `kuvo-browser.js mcp` gives agents, as models see them: each one's name, what it's for
 // and its input schema. The browser's own (`browser_…`), and Kuvo Code's own, which the box carries
-// out (`letters/own-tools.ts`: writing to other agents, sessions, wake-ups, goals…). The vault's,
+// out (`letters/own-tools.ts`: writing to other agents, sessions, wake-ups…). The vault's,
 // the sandbox's and the Work Queue's come from the box itself as they're listed.
 // Each has its words (WORDS, below): its MCP `title`, sent with it, and what a step of it says
 // done and while it runs, which the box adds to the messages clients read (shared/message-words.ts).
@@ -207,10 +207,6 @@ const DEFINED: Tool[] = [
         type: "boolean",
         description: "A bot's session is told to review its work with reviewer subagents before its report: false for a task that needs no review, told only to report. true by default.",
       },
-      step: {
-        type: "integer",
-        description: "For your goal: the step it works on, by number, so that step's track follows it.",
-      },
       item: {
         type: ["string", "integer"],
         description: "Work Queue item this session will work on, such as #243. Links the session if the open item is kept on the computer where it starts. By default, uses the first Work Queue reference in the task.",
@@ -245,7 +241,7 @@ const DEFINED: Tool[] = [
     }, ["session", "ask", "reason"]),
   tool("list_models", "List the models sessions can start on here or on another computer (computer), the ones the user has an account for, as provider/model, with their efforts.",
     { computer: { type: "string" } }),
-  tool("make_project", "Make a new project: a folder named after it, in the folder the user picked for projects (or one they named for it), with a new git repository (or a clone), added to Kuvo Code's sidebar. Make every new project with it, never with mkdir or git init. The user is asked first (once for a bot, if they say Always; not for a project in the goal they started); if they haven't answered in ten minutes it stays asked, and you're told when they answer. Then start sessions in it with start_session.",
+  tool("make_project", "Make a new project: a folder named after it, in the folder the user picked for projects (or one they named for it), with a new git repository (or a clone), added to Kuvo Code's sidebar. Make every new project with it, never with mkdir or git init. The user is asked first (once for a bot, if they say Always); if they haven't answered in ten minutes it stays asked, and you're told when they answer. Then start sessions in it with start_session.",
     {
       clone: { type: "string", description: "A repository to clone into it instead: an https or ssh address." },
       folder: { type: "string", description: "Only where the user named one: its full path (~/Desktop/tidepool)." },
@@ -262,205 +258,7 @@ const DEFINED: Tool[] = [
         description: "The account, as plan_limits names it (its account id, or its name like Codex).",
       },
     }, ["account"]),
-  tool("propose_goal", "For a bot, when the user's message is a goal of many steps (hours, days or weeks of work), or was sent with /goal: plan it, check what it needs, and put its plan to them on one card. Never for a small or quick request. The user starts it from the card, or says not now; you're told [Goal started] when they start it, and never start before. Proposing again replaces the card.",
-    {
-      checks: {
-        type: "array",
-        description: "What you checked the goal needs: tools, keys, sign-ins, services, and what only the user can do (pay on their own account, sign in, make an account, hand over a key). Never a check to approve your work or to make a choice your research can settle: Start approves the plan.",
-        items: {
-          type: "object",
-          properties: {
-            button: { type: "string", description: "The button's word for that page, like Add or Open Stripe." },
-            detail: { type: "string", description: "A few words more, like what it's for." },
-            ok: { type: "boolean", description: "true when it's ready; leave it out for what the user must do." },
-            site: { type: "string", description: "The service's site, when there's no url." },
-            text: {
-              type: "string",
-              description: "What's checked, like \"Stripe key works\", or what the user must do, like \"Add a Cloudflare API token\".",
-            },
-            url: { type: "string", description: "An https page where the user does it." },
-          },
-          required: ["text"],
-        },
-      },
-      digest: {
-        type: "string",
-        description: "How often the user hears how it goes: by the plan's size unless they said.",
-        enum: ["day", "week", "none"],
-      },
-      ends: {
-        type: "string",
-        description: "An end the user named, as a date and time (2026-11-30T18:00); leave it out otherwise.",
-      },
-      goal: { type: "string", description: "The goal, in the user's words." },
-      projects: {
-        type: "array",
-        description: "New projects the plan makes, by name, or by the folder the user named for one, as a full path: made with make_project, without asking, once the goal starts.",
-        items: { type: "string" },
-      },
-      spend: {
-        type: "array",
-        description: "What you'd spend yourself, each with a cap. Nothing else may be spent. What the user pays for themselves (a membership they join, a fee on their own account) is a check for them instead, its price in detail.",
-        items: {
-          type: "object",
-          properties: {
-            cap: { type: "number" },
-            currency: { type: "string", description: "USD by default." },
-            per: {
-              type: "string",
-              description: "goal (the whole goal) by default.",
-              enum: ["day", "week", "month", "goal"],
-            },
-            what: { type: "string" },
-          },
-          required: ["what", "cap"],
-        },
-      },
-      steps: {
-        type: "array",
-        description: "The plan's steps, in order, each one session's whole task with a short name of a few words, never a sentence. Steps that don't wait for each other run side by side.",
-        items: {
-          anyOf: [
-            { type: "string" },
-            {
-              type: "object",
-              properties: {
-                after: {
-                  type: "array",
-                  description: "The steps it waits for, by number; leave it out for one that can start now.",
-                  items: { type: "integer" },
-                },
-                app: {
-                  type: "string",
-                  description: "The app on the computer it's done in, by the app's own name, like Xcode or Figma; leave it out for work in the browser or the terminal.",
-                },
-                detail: {
-                  type: "string",
-                  description: "What's in it, about 30 characters at most, like \"SDK, paywall, test config\": never a sentence.",
-                },
-                site: {
-                  type: "string",
-                  description: "The site it's done at in the browser, like appstoreconnect.apple.com for submitting an app; leave it out for work on the computer (code, Xcode, a build), and never give a maker's site for its products.",
-                },
-                text: {
-                  type: "string",
-                  description: "Its short name, a few words on one line, like \"Photo scan engine\" or \"Submit for review\": never a sentence or a list of what's in it.",
-                },
-              },
-              required: ["text"],
-            },
-          ],
-        },
-      },
-      title: {
-        type: "string",
-        description: "The goal's name in two to four words, like \"Landing page\": never a sentence.",
-      },
-    }, ["goal", "steps"]),
-  tool("goal_progress", "During your goal: mark its steps as they start, move and end, add steps as the plan changes, keep what only the user can fix or decide (or what's outside the plan) as waiting, keep a call you made yourself (decided), report what you spent, and say what you're still watching. It tells you whether the user is here.",
-    {
-      add: {
-        type: "array",
-        description: "New steps, as the plan changes, like propose_goal's: a short name of a few words, never a sentence; detail about 30 characters at most; site only for work in the browser, app only for work in an app on the computer.",
-        items: {
-          anyOf: [
-            { type: "string" },
-            {
-              type: "object",
-              properties: {
-                after: { type: "array", items: { type: "integer" } },
-                app: { type: "string" },
-                detail: { type: "string" },
-                site: { type: "string" },
-                text: { type: "string" },
-              },
-              required: ["text"],
-            },
-          ],
-        },
-      },
-      decided: {
-        type: "object",
-        description: "A call you made yourself, kept for the user to see; they may change it later.",
-        properties: {
-          choice: { type: "string", description: "What you chose, in a few words." },
-          options: {
-            type: "array",
-            description: "The choices there were, yours among them: the user may pick another of these.",
-            items: { type: "string" },
-          },
-          text: { type: "string", description: "The call, as a question, like \"Which hosting?\"." },
-          why: { type: "string", description: "Why, in a few words, like \"free tier covers it\"." },
-        },
-        required: ["text", "choice"],
-      },
-      spent: {
-        type: "array",
-        description: "What you spent, by the plan's spend line.",
-        items: {
-          type: "object",
-          properties: { amount: { type: "number" }, what: { type: "string" } },
-          required: ["what", "amount"],
-        },
-      },
-      steps: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            app: {
-              type: ["string", "null"],
-              description: "The app on the computer it's done in, by its own name, where that changed; null takes it away.",
-            },
-            note: {
-              type: "string",
-              description: "A few words the user sees: what you counted (\"3 of 8 pages\"), or like \"looks again at 2:40\".",
-            },
-            progress: {
-              type: "number",
-              description: "From 0 to 1, only where you can count it, with what you counted in note (3 of 8 pages is 0.375).",
-            },
-            state: { type: "string", enum: ["todo", "doing", "done", "waiting", "paused", "skipped"] },
-            step: { type: "integer", description: "The step's number, from 1." },
-            until: {
-              type: "string",
-              description: "For a step that can only start at a time (a weekly run on Monday): that time, like 2026-11-02T09:00. Set a wake-up for it too; you aren't told to carry on before then. null takes it away.",
-            },
-          },
-          required: ["step"],
-        },
-      },
-      waiting: {
-        type: "object",
-        properties: {
-          app: { type: "string", description: "The app on the computer it's done in, by its own name." },
-          detail: { type: "string" },
-          kind: {
-            type: "string",
-            description: "you: only the user can fix it; judgment: a call only they can make; outside: not in the plan.",
-            enum: ["you", "judgment", "outside"],
-          },
-          site: { type: "string", description: "The service's site, when there's no url." },
-          step: { type: "integer", description: "The step it holds up: settled once you go on with that step." },
-          text: { type: "string", description: "What it is, like \"Finish Stripe's identity check\"." },
-          url: { type: "string", description: "An https page where the user does it." },
-        },
-        required: ["kind", "text"],
-      },
-      watching: {
-        type: "array",
-        description: "All you're still watching, as it is now, like \"DNS for driftwood.coffee\".",
-        items: { type: "string" },
-      },
-    }),
-  tool("may_spend", "During your goal: whether a purchase fits the plan's cap for it, in its period now. Ask before every purchase.",
-    { amount: { type: "number" }, what: { type: "string", description: "The plan's spend line it's for." } }, ["what", "amount"]),
-  tool("finish_goal", "End your goal with the report: what needs the user first, then what got done and where, what it spent, and what you're still watching.",
-    {
-      report: { type: "string", description: "A few lines." },
-      watching: { type: "array", items: { type: "string" } },
-    }, ["report"]),
-  tool("notify_user", "Send the user a notification, on their phone and their Mac, when you need them and they may not be looking: a decision only they can make, something blocked until they act, or news they asked to be told. A reply notifies them only when it answers something they asked; when you work on your own (a wake-up, a watch, another agent's message, a goal), nothing reaches them unless you use this. Not for progress or routine results: those go in your reply. A few an hour at most; the same text isn't sent twice.",
+  tool("notify_user", "Send the user a notification, on their phone and their Mac, when you need them and they may not be looking: a decision only they can make, something blocked until they act, or news they asked to be told. A reply notifies them only when it answers something they asked; when you work on your own (a wake-up, a watch, another agent's message), nothing reaches them unless you use this. Not for progress or routine results: those go in your reply. A few an hour at most; the same text isn't sent twice.",
     {
       text: {
         type: "string",
@@ -517,10 +315,6 @@ export const WORDS: Record<string, ToolWords> = {
   list_projects: { title: "List projects", done: "Listed the projects", doing: "Listing the projects" },
   plan_limits: { title: "Check plan limits", done: "Checked the plan's limits", doing: "Checking the plan's limits" },
   use_limit_reset: { title: "Use a limit reset", done: "Used a limit reset", doing: "Using a limit reset" },
-  propose_goal: { title: "Propose a goal", done: "Proposed a goal", doing: "Proposing a goal" },
-  goal_progress: { title: "Update the goal", done: "Updated the goal's progress", doing: "Updating the goal's progress" },
-  may_spend: { title: "Check a purchase", done: "Checked a purchase", doing: "Checking a purchase" },
-  finish_goal: { title: "Finish the goal", done: "Finished the goal", doing: "Finishing the goal" },
   notify_user: { title: "Send a notification", done: "Sent you a notification", doing: "Sending you a notification" },
 };
 

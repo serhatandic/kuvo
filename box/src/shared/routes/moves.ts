@@ -15,10 +15,9 @@ export const MOVE_CONFIRM = object({ title: string, message: string, label: stri
  * (with why not, in words to show, and `note`, the same in a few words, for beside its name). */
 export const MOVE_PLACE = object({ key: string, name: string, kind: words("mac", "machine"), ok: bool, "why?": string, "note?": string, "confirm?": MOVE_CONFIRM });
 /** What of a bot or chat stays on this computer as it moves (each left out when none): the sessions
- * it started (it still reaches them from there), what it asked you that's unanswered, the goals it
- * proposed, and `agent` when its coding agent's own copy of its conversation is kept here as the way
+ * it started (it still reaches them from there), what it asked you that's unanswered, and `agent` when its coding agent's own copy of its conversation is kept here as the way
  * back, until a week after it first runs there. */
-export const MOVE_STAYS = object({ "sessions?": number, "asks?": number, "goals?": number, "agent?": bool, "startsOver?": string });
+export const MOVE_STAYS = object({ "sessions?": number, "asks?": number, "agent?": bool, "startsOver?": string });
 export const MOVE_PLACES = object({ places: list(MOVE_PLACE), "stays?": MOVE_STAYS });
 
 /** A move under way, as either box says it: what moves (`thing`, `name`), from which box to which

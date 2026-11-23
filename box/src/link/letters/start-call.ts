@@ -28,7 +28,6 @@ import { ownKey, peersOf } from "../peers/known";
 import { macLink, readLink } from "../state";
 import { approvalOf, isApproval, otherComputersAllowed } from "../work/approval";
 import { isAutopilot } from "../work/autopilot";
-import { runningGoal } from "../work/goals";
 import { homesOf, noteHomes } from "../work/homes";
 import { noteStartedOn } from "../work/elsewhere";
 import { botLimits, limitsFrom } from "../work/limits";
@@ -48,7 +47,7 @@ import type { Caller, Lead } from "../work/tools";
 import type { MadeTree, Making, RemoteLead, Starter, StartGiven, StartPlace } from "./start";
 import type { ToolAnswer, ToolPlace } from "./tools";
 
-/** What a start's call asks for, as start_session takes it: never a step of a goal, nor where. */
+/** What a start's call asks for, as start_session takes it, without its destination. */
 export const START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review", "item"] as const;
 
 /** What a box's agents' mail says when it takes starts, and reads of its models and projects, from
@@ -159,7 +158,7 @@ export async function readElsewhere(tool: "list_models" | "list_projects", peer:
 }
 
 /** start_session on another of your computers (`peer`), from the conversation `caller` here: checked
- * here first as a start is (a seat, a goal, its mode and approval, where it works, the limits you
+ * here first as a start is (a seat, its mode and approval, where it works, the limits you
  * set and the net against a runaway), then sent there with who's calling as this box knows it. */
 export async function startElsewhere(peer: Peer, args: Record<string, unknown>, caller: Caller, lead: Lead, place: ToolPlace, callPeer: CallPeer): Promise<ToolAnswer> {
   const no = (words: string): ToolAnswer => ({ text: words, isError: true });
@@ -170,8 +169,6 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
   const data = caller.place.data;
   const ownBot = botOfConversation(caller.session);
   const bot = ownBot ?? worksFor(data);
-  // (Until goals reach across computers, a goal's sessions are started on its bot's own.)
-  if (bot && runningGoal(bot.bot)) return no(`Your goal's sessions start on ${HERE} for now: a goal can't follow work on ${name} yet. Start it here, or once the goal is done.`);
   if (args.mode !== undefined && args.mode !== null && args.mode !== "build" && args.mode !== "plan") return no("mode is build or plan.");
   if (args.mode === "build" && data.agent === "plan") return no("This conversation is in Plan mode, so the sessions it starts plan too. Start it in plan mode, or ask the user to switch to Build.");
   if (args.approval !== undefined && args.approval !== null && !isApproval(args.approval)) return no("approval is askFirst, acceptEdits, auto or fullAccess.");
@@ -191,7 +188,7 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
   const bridge = place.bridge();
   if (bridge) targets.push(bridge);
   // The limits you set for its bot, counting its sessions here and on your other computers.
-  const limited = bot && limits ? await heldByLimits(bot, limits, depth, false, targets, place.signal) : null;
+  const limited = bot && limits ? await heldByLimits(bot, limits, depth, targets, place.signal) : null;
   if (limited && "refused" in limited) return no(limited.refused.message);
   const went = limited?.went ?? (() => {});
   const kind = bot ? "botSessions" : "sessions";

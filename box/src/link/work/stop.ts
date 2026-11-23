@@ -16,11 +16,10 @@ import { leaveCall } from "../letters/calls";
 import { stopBotWorkElsewhere } from "../letters/start-call";
 import type { Target } from "../../shared/records";
 
-/** How many of `bot`'s sessions were stopped. `tell`: their leads hear it (not for a goal whose end
- * came, which the bot was told of). */
-export async function stopBotWork(bot: string, targets: Target[], signal?: AbortSignal, { tell = true }: { tell?: boolean } = {}): Promise<number> {
+/** Stop the bot’s work and tell the leads of the sessions it stopped. */
+export async function stopBotWork(bot: string, targets: Target[], signal?: AbortSignal): Promise<number> {
   // A due reset must not start the owner while we're still stopping its children.
-  const startingOwner = tell ? botHere(bot)?.session : undefined;
+  const startingOwner = botHere(bot)?.session;
   if (startingOwner) await pauseForUser(startingOwner, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
@@ -36,7 +35,7 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
     // (What waits is held only where a turn stopped: with none running, its next message just goes.)
     if (!await stopWork(each.target, each.data.id, turns.has(each.data.id) || Boolean(asking)).then(() => true, () => false)) continue;
     stopped += 1;
-    if (lead && tell) told.push({ starter: lead, line: stoppedLine(each.data) });
+    if (lead) told.push({ starter: lead, line: stoppedLine(each.data) });
   }
   const own = botHere(bot)?.session;
   if (own) {

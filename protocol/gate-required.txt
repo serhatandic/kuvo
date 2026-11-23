@@ -49,7 +49,6 @@ line
 line.merged-library
 line.merged-waiting
 marketplace
-messages.commands
 messages.compaction-words
 messages.send
 models.offered
@@ -60,7 +59,6 @@ models.readiness
 names.titles
 pty.socket
 queue.items
-queue.removed.keyword
 queue.stop.arriving
 sandbox.needsYou
 sandbox.opens

@@ -3,7 +3,7 @@ import type { Compatibility } from "../../shared/routes/box";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
 
 const REQUIRED = Array.from(new Set(required.split("\n").map(line => line.trim()).filter(line => line && !line.startsWith("#")))).sort();
-const BASELINE = ["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"];
+const BASELINE = ["clients.kind", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"];
 
 /** Compatibility is for display. Progress toward a release does not affect which routes may run. */
 export function computerCompatibility(features: readonly string[]): Compatibility {

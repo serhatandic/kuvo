@@ -4,7 +4,7 @@
 // is marked (`kuvo.handoffFrom`), so every client shows it under that one (PROTOCOL.md,
 // "Branches").
 
-import type { GoalPlaces } from "./goals"
+import type { SessionPlaces } from "./session-places"
 import { sameJSON } from "../shared/json"
 import { rewriteVia } from "./notes"
 import { at, sessionInfo } from "./oneoff"
@@ -26,7 +26,7 @@ export class BranchError extends Error {
 }
 
 /** A new conversation with `session`'s words before `before`, marked as branched from it: as its place answers it, with the mark. */
-export async function branch(places: GoalPlaces, session: string, before: string): Promise<any> {
+export async function branch(places: SessionPlaces, session: string, before: string): Promise<any> {
   const place = places.isBridge(session) ? places.bridge : places.engine
   const info = await sessionInfo(place.api, session).catch((error: any) => {
     throw new BranchError(error?.status === 404 ? 404 : 503, error?.status === 404 ? "There's no such conversation here." : "The conversation can't be reached now.")
@@ -64,7 +64,7 @@ export async function branch(places: GoalPlaces, session: string, before: string
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 
-export async function branchRoutes(places: GoalPlaces | undefined, method: string, parts: string[], body: () => Promise<any>): Promise<Response> {
+export async function branchRoutes(places: SessionPlaces | undefined, method: string, parts: string[], body: () => Promise<any>): Promise<Response> {
   if (!places) return json({ message: "Branches aren't running on this computer." }, 503)
   const [session] = parts
   if (!session || method !== "POST") return json({ message: "Not allowed" }, 405)

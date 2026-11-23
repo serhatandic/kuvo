@@ -12,7 +12,6 @@ import { BOX } from "../home";
 import { bridgeTarget, engineGet, readEngineFile } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
 import { allowFullAccess, allowOtherComputers, APPROVALS, APPROVAL_WORDS, approvalOf, approvalRules, approvalsSince, defaultApproval, effectiveApproval, fullAccessAllowed, heldOf, isApproval, madeBefore, otherComputersAllowed, rememberApproval, unavailable } from "../work/approval";
-import { resumeReviewedSession } from "../work/goals";
 import { heldMark, nothingCountsOnIt } from "../fence/state";
 import { sandboxOn } from "../work/sandbox";
 import { approveHeld, clearFetched, clearPlaces, resumeReviews, reviewLog, revokePlace, seeHeld, shownReviews } from "../work/reviewer";
@@ -419,7 +418,6 @@ export async function* approvalRoute(context: RouteContext): AsyncGenerator<Answ
       try { approved = approveHeld(decisions, given.approve); }
       catch (error) { return yield* json(500, { message: `It couldn't be kept: ${String((error as Error)?.message ?? error).slice(0, 120)}` }); }
       if (!approved) return yield* json(404, { message: "That isn't held back here: it was approved already, or it's gone." });
-      resumeReviewedSession(decisions);
       await tellApproved(decisions, approved).catch(() => false);
       return yield* json(200, shownReviews(reviewLog(decisions)));
     }
@@ -434,7 +432,6 @@ export async function* approvalRoute(context: RouteContext): AsyncGenerator<Answ
     if (given.resume !== true) return yield* json(400, { message: "Say approve: <id> to approve one held back, revoke: <id> to take back a folder Auto allowed edits in, resume: true to let Auto go on here, or seen: true once you've looked." });
     try { resumeReviews(decisions); }
     catch (error) { return yield* json(500, { message: `It couldn't be kept: ${String((error as Error)?.message ?? error).slice(0, 120)}` }); }
-    resumeReviewedSession(decisions);
     return yield* json(200, shownReviews(reviewLog(decisions)));
   }
   const id = idOf(route.match(SESSION_APPROVAL_ROUTE)?.[1]);
