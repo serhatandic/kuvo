@@ -23,6 +23,7 @@ the races that span removal, backup, moves, and an authority change.
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
 | U4 | [A main with incoming devices off still revokes a device and delivers a machine unlink](../../box/crates/kuvo_setup/tests/live.test.mjs) | A Rust main reads the persisted off setting through the Mac Helper path. It refuses a new pairing, publishes a signed desktop revocation and finishes a machine unlink while the setting stays off. |
+| U5 | [Uninstalling a stopped machine clears its desktop identity and sign-ins but retains work](../../protocol/conformance/removal.test.mjs) | `uninstall --check` inspects a stopped machine. Uninstall retires the desktop and credential files, marks the machine off, preserves work and can be repeated. Live shutdown, startup entries, backup preparation and remote uninstall remain open. |
 
 ## Stored and inherited cases
 
@@ -151,7 +152,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 27 have partial coverage, and 163 are open. Of the open cases, 132 list 2.3 as an owner.
+This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 28 have partial coverage, and 162 are open. Of the open cases, 131 list 2.3 as an owner.
 
 ### computers-add
 
@@ -303,7 +304,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [uninstall deletes the desktop identity even if the engine and link are already gone](../../box/test/add-uninstall.test.ts#L9) | Open | 2.3 |
+| [uninstall deletes the desktop identity even if the engine and link are already gone](../../box/test/add-uninstall.test.ts#L9) | U5 covers stopped local uninstall. The SSH wrapper and confirmation after a remote failure remain open. | 2.3, 7.1 |
 | [uninstall reports incomplete cleanup if the desktop folder cannot be deleted without an engine](../../box/test/add-uninstall.test.ts#L30) | Open | 2.3 |
 | [disconnecting a shared box reports a failed departure and keeps its identity](../../box/test/add-uninstall.test.ts#L52) | Open | 2.3 |
 

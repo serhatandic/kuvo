@@ -8,7 +8,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::storage::Files;
 
-pub(super) fn clear(files: &Files) -> io::Result<()> {
+pub(crate) fn clear(files: &Files) -> io::Result<()> {
     let _copy = crate::seed::lock(files)?;
     for name in [
         "KUVO_ENGINE_DATA",

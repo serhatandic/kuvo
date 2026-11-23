@@ -35,6 +35,15 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         _ => None,
     };
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
+    let uninstall = if word(0) == Some("uninstall") {
+        if args[1..].iter().any(|word| word != "--check") {
+            eprintln!("Usage: kuvo-box uninstall [--check]");
+            return Ok(ExitCode::from(2));
+        }
+        Some(args.len() > 1)
+    } else {
+        None
+    };
     let recovery = match (word(0), word(1), args.len()) {
         (Some("installer-recovery"), Some("issue"), 2) => Some(false),
         (Some("installer-recovery"), Some("apply"), 2) => Some(true),
@@ -42,7 +51,15 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
-        _ if join || ssh_enroll.is_some() || seed || recovery.is_some() || identity => None,
+        _ if join
+            || ssh_enroll.is_some()
+            || seed
+            || recovery.is_some()
+            || identity
+            || uninstall.is_some() =>
+        {
+            None
+        }
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
@@ -54,7 +71,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | uninstall [--check] | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -64,6 +81,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
+    if let Some(check) = uninstall {
+        let outcome = kuvo_setup::uninstall::run(&home, check);
+        println!("{}", outcome.value);
+        if let Some(note) = outcome.note {
+            eprintln!("{note}");
+        }
+        return Ok(ExitCode::from(outcome.status));
+    }
     if identity {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
         return Ok(ExitCode::SUCCESS);

@@ -3,6 +3,7 @@
 mod actor;
 pub mod backup;
 mod checkpoint;
+mod cleanup;
 mod discovery;
 mod document;
 mod edits;
@@ -85,3 +86,5 @@ pub use discovery::locate;
 pub use model::{Receipt, SharedKind};
 
 pub use preferences::{project_app_personalities, project_kit_personalities};
+
+pub mod uninstall;

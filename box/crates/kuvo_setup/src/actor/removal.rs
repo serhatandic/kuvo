@@ -1,7 +1,7 @@
 //! Signed plain unlink, as the main computer's writer. A removed peer uses
 //! removal mail for the final handshake after ordinary peer trust is revoked.
 
-mod cleanup;
+use crate::cleanup;
 
 use std::time::Duration;
 

@@ -5,12 +5,58 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, readJSON, until } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, readJSON, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 const fromMac = { "x-kuvo-from": "mac" };
 const applicant = process.env.KUVO_CONFORMANCE_JOIN_BIN
   ? boxBinary(process.env.KUVO_CONFORMANCE_JOIN_BIN) : boxBinary();
+
+test("uninstalling a stopped machine clears its desktop identity and sign-ins but retains work", async t => {
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "box");
+  const env = isolatedEnv(root);
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "run", "link.json"), '{"phones":[],"name":"Test machine"}\n');
+  write(path.join(home, "desktop", "identity"), "fixture identity");
+  write(path.join(home, "box", "keys", "KUVO_KEY_SAMPLE"), "fixture key");
+  write(path.join(home, "run", "launch.notes"), "fixture launch notes");
+  write(path.join(home, "data", "retained.txt"), "saved work");
+  write(path.join(home, "bots", "bot_test", "bot.json"), '{"kuvo":1,"id":"bot_test","name":"Test"}');
+  write(path.join(home, "bots", "bot_test", "session"), "ses_bot");
+  write(path.join(home, "bots", "bot_test", "watches", "watch", "check"), "a check");
+  write(path.join(home, "bots", "bot_old", "session"), "ses_old");
+  write(path.join(home, "wakes", "ses_local", "session"), "ses_local");
+  write(path.join(home, "wakes", "ses_local", "wakes", "1700000000.2-test"), "a wake");
+  write(path.join(home, "wakes", "ses_local", "wakes", "unrecognized"), "ignore");
+  write(path.join(home, "wakes", "ses_away", "session"), "ses_away");
+  write(path.join(home, "wakes", "ses_away", "wakes", "1700000001-test"), "a moved wake");
+  write(path.join(home, "run", "moves", "mov_test.json"),
+    '{"formatVersion":1,"id":"mov_test","thing":"ses_away","peer":"peer","role":"from","stage":"switching","sessions":["ses_away"]}');
+  const run = async (...argv) => {
+    const proc = boxCommand(boxBinary(), home, env, { url: "ws://127.0.0.1:1" }, ["uninstall", ...argv], {}, "pipe");
+    t.after(() => proc.stop());
+    let stdout = "";
+    proc.child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
+    proc.child.stdin.end();
+    assert.equal((await proc.exited).code, 0, proc.log());
+    return JSON.parse(stdout.trim());
+  };
+  const before = await run("--check");
+  assert.equal(before.folder, home);
+  assert.deepEqual(before.running, []);
+  assert.equal(before.bots, 1);
+  assert.equal(before.wakes, 2);
+  assert.equal(fs.existsSync(path.join(home, "desktop", "identity")), true);
+  await run();
+  assert.ok(fs.existsSync(path.join(home, "run", "off")));
+  for (const file of ["desktop", "box/keys", "run/launch.notes"]) {
+    assert.equal(fs.existsSync(path.join(home, file)), false, file);
+  }
+  assert.equal(fs.readFileSync(path.join(home, "data", "retained.txt"), "utf8"), "saved work");
+  assert.equal((await run()).result, "uninstalled");
+});
 
 test("the main revokes an offline computer once and keeps the unlink receipt after restart", { timeout: 90000 }, async t => {
   const { computer, leases } = await bench(t);
