@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 5b859cecafad
+// Kuvo folder layout 23 20e785b7eaae
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5b859cecafad";
+var BRIDGE_VERSION = "20e785b7eaae";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -50976,23 +50976,30 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+# OpenSSH can register with an elevated token while the task runs as the same
+# user with a limited token. Give that user SID control of this task directly.
+$scheduler = New-Object -ComObject 'Schedule.Service'
+$scheduler.Connect()
+$task = $scheduler.GetFolder('\\').GetTask($name)
+$acl = [Security.AccessControl.RawSecurityDescriptor]::new($task.GetSecurityDescriptor(4))
+$ace = [Security.AccessControl.CommonAce]::new('None', 'AccessAllowed', 0x1f01ff, [Security.Principal.SecurityIdentifier]::new($user), $false, $null)
+$acl.DiscretionaryAcl.InsertAce(0, $ace)
+$task.SetSecurityDescriptor($acl.GetSddlForm('Access'), 0)
 Start-ScheduledTask -TaskName $name`);
   return true;
 }
 function removeWslTask() {
   const name = installedWslTask();
   if (!name)
-    return true;
-  try {
-    windows(`$name = ${literal2(name)}
-if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskName $name -Confirm:$false
+    return;
+  windows(`$name = ${literal2(name)}
+$task = Get-ScheduledTask -TaskName $name -TaskPath '\\' -ErrorAction SilentlyContinue -ErrorVariable lookup
+if ($task) {
+  $task | Unregister-ScheduledTask -Confirm:$false
+} elseif ($lookup | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' }) {
+  throw $lookup[0]
 }`);
-    fs130.rmSync(taskFile, { force: true });
-    return true;
-  } catch {
-    return false;
-  }
+  fs130.rmSync(taskFile, { force: true });
 }
 function keepWindowsAwake(busy) {
   if (!isWsl2())
@@ -53103,8 +53110,12 @@ function uninstall2() {
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain = [];
-  if (!removeWslTask())
+  try {
+    removeWslTask();
+  } catch (error) {
+    logCleanup(error);
     startsAgain.push("its Windows sign-in task");
+  }
   if (tools && process.platform === "darwin")
     for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
       const plist = path145.join(tools.agents, `${label}.plist`);

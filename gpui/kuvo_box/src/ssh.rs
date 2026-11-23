@@ -144,7 +144,7 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
         if distro.len() > 80 || !distro.starts_with(|c: char| c.is_ascii_alphanumeric())
             || !distro.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
         {
-            return Err(Error::BadAnswer("Invalid SSH entry.".into()));
+            return Err(Error::BadAnswer(format!("Kuvo Code on {} didn't answer as it should.", self.destination)));
         }
         let verb = if self.computer.is_some() { "route-to" } else { "route" };
         Ok(format!("wsl.exe -d {distro} --cd ~ --exec /bin/sh .kuvo-code/bin/kuvo-start {verb}"))

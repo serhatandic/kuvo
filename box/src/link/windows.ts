@@ -46,24 +46,33 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+# OpenSSH can register with an elevated token while the task runs as the same
+# user with a limited token. Give that user SID control of this task directly.
+$scheduler = New-Object -ComObject 'Schedule.Service'
+$scheduler.Connect()
+$task = $scheduler.GetFolder('\\').GetTask($name)
+$acl = [Security.AccessControl.RawSecurityDescriptor]::new($task.GetSecurityDescriptor(4))
+$ace = [Security.AccessControl.CommonAce]::new('None', 'AccessAllowed', 0x1f01ff, [Security.Principal.SecurityIdentifier]::new($user), $false, $null)
+$acl.DiscretionaryAcl.InsertAce(0, $ace)
+$task.SetSecurityDescriptor($acl.GetSddlForm('Access'), 0)
 Start-ScheduledTask -TaskName $name`);
   return true;
 }
 
 /** Remove only the task registered for this installation, leaving its distro and account alone. */
-export function removeWslTask(): boolean {
+export function removeWslTask(): void {
   const name = installedWslTask();
-  if (!name) return true;
-  try {
-    // Let Linux's ordinary stop command shut the keeper down, including on a relay wipe.
-    // Unregistering the task prevents a new start during that stop.
-    windows(`$name = ${literal(name)}
-if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-  Unregister-ScheduledTask -TaskName $name -Confirm:$false
+  if (!name) return;
+  // Let Linux's ordinary stop command shut the keeper down, including on a relay wipe.
+  // Unregistering the task prevents a new start during that stop.
+  windows(`$name = ${literal(name)}
+$task = Get-ScheduledTask -TaskName $name -TaskPath '\\' -ErrorAction SilentlyContinue -ErrorVariable lookup
+if ($task) {
+  $task | Unregister-ScheduledTask -Confirm:$false
+} elseif ($lookup | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' }) {
+  throw $lookup[0]
 }`);
-    fs.rmSync(taskFile, { force: true });
-    return true;
-  } catch { return false; }
+  fs.rmSync(taskFile, { force: true });
 }
 
 const POWER_HOLD = `

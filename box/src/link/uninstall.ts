@@ -205,7 +205,8 @@ export function uninstall(): Uninstalled {
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain: string[] = [];
-  if (!removeWslTask()) startsAgain.push("its Windows sign-in task");
+  try { removeWslTask(); }
+  catch (error) { logCleanup(error); startsAgain.push("its Windows sign-in task"); }
   // Its start at login first, so nothing starts it again as it stops.
   if (tools && process.platform === "darwin") for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
     const plist = path.join(tools.agents, `${label}.plist`);
