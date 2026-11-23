@@ -466,14 +466,30 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
     use GetKuvoComputersStatus200ComputersItemReach4 as Reach;
     use GetKuvoComputersStatus200ComputersItemVia3 as Via;
     let here = view.roster.local();
-    let mut rows = vec![computer_row(
+    let mut local = computer_row(
         here.id,
         here.name.clone(),
         Reach::Connected,
         Via::Here,
         true,
         &here.name,
-    )];
+    );
+    if let Some(endpoint) = &view.endpoint {
+        local.address = Some(encode(&endpoint.address));
+        local.relay = Some(endpoint.url.clone());
+        local.engine = endpoint.hello.engine.clone();
+        if endpoint.hello.kind == crate::session::ComputerKind::Mac {
+            local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
+        }
+    }
+    local.system = Some(crate::setup_lists::system_name().into());
+    local.features = Some(view.features().into_iter().map(str::to_owned).collect());
+    let mut active = view.at_work();
+    local.working = Some(active.len().into());
+    local.working_title = Some(working_title(active.len() as u64));
+    active.truncate(20);
+    local.at_work = Some(active);
+    let mut rows = vec![local];
     let mut peers: Vec<_> = view.roster.members.iter().collect();
     peers.sort_by(|a, b| {
         a.name
@@ -493,6 +509,8 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             Reach::Connected
         };
         let mut row = computer_row(id, peer.name.clone(), reach, Via::Relay, false, &here.name);
+        row.address = peer.address.as_ref().map(|address| encode(address));
+        row.relay = view.endpoint.as_ref().map(|endpoint| endpoint.url.clone());
         if peer.kind == crate::session::ComputerKind::Mac {
             row.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
@@ -500,17 +518,14 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             .filter(|said| !said.features_cut)
             .and_then(|said| said.features.clone());
         if let Some(facts) = said.and_then(|said| said.computer.as_ref()) {
-            let text = |key| {
-                facts
-                    .facts
-                    .get(key)
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned)
+            let text = |key, limit| {
+                let text = facts.facts.get(key)?.as_str()?;
+                (!text.is_empty() && text.encode_utf16().count() <= limit).then(|| text.to_owned())
             };
-            row.version = text("version");
-            row.engine = text("engine");
-            row.system = text("system");
-            row.kuvo = text("kuvo");
+            row.version = text("version", 40);
+            row.engine = text("engine", 40);
+            row.system = text("system", 80);
+            row.kuvo = text("kuvo", 40);
             let gone = reach == Reach::Away
                 && heard.is_none_or(|heard| {
                     now.saturating_sub(heard) > 30 * 60_000
@@ -520,14 +535,9 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             row.working = facts
                 .facts
                 .get("working")
-                .and_then(|value| value.as_number())
-                .map(|value| {
-                    if gone {
-                        Number::from(0u64)
-                    } else {
-                        value.clone()
-                    }
-                });
+                .and_then(|value| value.as_u64())
+                .filter(|working| *working <= 10_000)
+                .map(|working| Number::from(if gone { 0 } else { working }));
             row.at_work = row.working.as_ref().and_then(|_| {
                 if gone {
                     Some(vec![])
@@ -535,16 +545,11 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
                     serde_json::from_value(facts.facts.get("atWork")?.clone()).ok()
                 }
             });
-            row.working_title = row.working.as_ref().map(|working| {
-                format!(
-                    "{working} {} at work",
-                    if working.as_u64() == Some(1) {
-                        "session"
-                    } else {
-                        "sessions"
-                    }
-                )
-            });
+            row.working_title = row
+                .working
+                .as_ref()
+                .and_then(Number::as_u64)
+                .map(working_title);
         }
         rows.push(row);
     }
@@ -553,6 +558,11 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
         fleet_update: None,
         wipe_pending: None,
     }
+}
+
+fn working_title(count: u64) -> String {
+    let noun = if count == 1 { "session" } else { "sessions" };
+    format!("{count} {noun} at work")
 }
 
 fn computer_row(

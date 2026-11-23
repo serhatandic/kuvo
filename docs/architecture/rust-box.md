@@ -401,32 +401,32 @@ parallel.
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |
-| 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities | setup | 1.4, 1.5 | 5 ×2 | A |
-| 2.2 | Peer reach, merged lists, record lookup, notice history and standalone device grants implemented. Managed device writes and engine integration remain. [Coverage](rust-peers-coverage.md) | peers | 1.5 | 6 | C |
-| 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment | setup | 2.1 | 5 ×2 | A |
-| 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
+| 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities<br>Inherits `peers.test.js`, `owner-mutations.test.js`. | setup | 1.4, 1.5 | 5 ×2 | A |
+| 2.2 | Peer reach, merged lists, record lookup, notice history, standalone grants and cross-computer calls/rows. Managed device grants and the remaining peer cases are open. [Coverage](rust-peers-coverage.md)<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `mac-peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | peers | 1.5 | 6 | C |
+| 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment<br>Inherits `peers.test.js`. | setup | 2.1 | 5 ×2 | A |
+| 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf`<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `owner-mutations.test.js`, `mac-peers.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
-| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes | move | 1.2, 2.1 | 6 ×2 | C |
+| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes<br>Inherits `peers.test.js`, `mac-peers.test.js`. | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
-| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
+| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
-| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals | work | 3.2 | 5 ×2 | C |
-| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub | work | 2.2 | 5 ×2 | C |
-| 5.3 | Group chats and seats, autopilot | work | 4.6, 2.2 | 4 ×2 | B |
-| 5.4 | Usage, limits, Insights (SQLite), pricing | services | 4.1, 2.2 | 5 ×2 | C |
-| 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog | services | 2.2 | 4 ×2 | A |
+| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals<br>Inherits `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`. | work | 3.2 | 5 ×2 | C |
+| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub<br>Inherits `setup-lists.test.ts`. | work | 2.2 | 5 ×2 | C |
+| 5.3 | Group chats and seats, autopilot<br>Inherits `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
+| 5.4 | Usage, limits, Insights (SQLite), pricing<br>Inherits `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
+| 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog<br>Inherits `setup-lists.test.ts`. | services | 2.2 | 4 ×2 | A |
 | 6.1 | Settings pages and flows, permissions, sandbox (Seatbelt, `fence-exec`) | services | 4.1 | 5 ×2 | D |
 | 6.2 | Vault: Helper Keychain, wrapped-key files, broker, SSH agent | services | 1.3 | 6 | D |
 | 6.3 | Files, Git, Changes, worktrees, projects, folders | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
 | 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest | keeper | 1.3 | 5 ×2 | D |
-| 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
-| 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote | move | 7.1, 2.4 | 6 | D |
+| 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint<br>Inherits `devices-two-boxes.test.js`. | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
+| 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote<br>Inherits `peers.test.js`, `mac-peers.test.js`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
 | 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback | move, keeper | all | 6 | A |

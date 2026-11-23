@@ -9,6 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemAtWorkItem;
 use kuvo_wire::{
     keys::{Host, encode},
     mail::{Envelope, MAX_PLAINTEXT},
@@ -34,7 +35,7 @@ use crate::{
     parts::{self, Part, Parts},
     reach::{Millis, Reach, Standing},
     relay::{self, Relay},
-    relay_routes,
+    relay_routes, remote_work,
 };
 
 const LIST_FILE: &str = "lists-v1.json";
@@ -62,6 +63,8 @@ pub struct View {
     pub(crate) notices: Arc<History>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
+    work_calls: bool,
+    pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
 }
 
 impl View {
@@ -93,6 +96,51 @@ impl View {
         ownership.owner_of(scope, id, &self.roster, &self.announced, &self.reach, now)
     }
 
+    pub(crate) fn features(&self) -> Vec<&'static str> {
+        let mut features = crate::routes::FEATURES.to_vec();
+        if self.work_calls {
+            features.push(crate::calls::FEATURE);
+        }
+        if self
+            .local_lists
+            .as_ref()
+            .is_some_and(|lists| lists.bots.is_some())
+        {
+            features.push(lists::BOT_FEATURE);
+        }
+        features
+    }
+
+    pub(crate) fn at_work(&self) -> Vec<GetKuvoComputersStatus200ComputersItemAtWorkItem> {
+        let Some(lists) = self.local_lists.as_ref() else {
+            return vec![];
+        };
+        let mut running: Vec<_> = lists
+            .sessions
+            .iter()
+            .filter(|row| {
+                row.facts.parent.is_none()
+                    && row.facts.archived != Some(true)
+                    && row.facts.running == Some(true)
+                    && !row.actions.is_empty()
+            })
+            .collect();
+        running.sort_by(|a, b| {
+            b.facts
+                .updated
+                .as_f64()
+                .unwrap_or_default()
+                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
+        });
+        running
+            .into_iter()
+            .map(|row| GetKuvoComputersStatus200ComputersItemAtWorkItem {
+                id: row.id.clone(),
+                title: row.facts.title.clone(),
+            })
+            .collect()
+    }
+
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
         let ownership = &self.local.ownership;
         if let Some(key) = ownership.journal.get(&(RecordScope::Session, id.into())) {
@@ -113,6 +161,15 @@ impl View {
 
     pub(crate) fn lists_owner(&self, id: &str, computer: &str, now: Millis) -> bool {
         self.moved(id, now).is_none_or(|owner| owner == computer)
+    }
+}
+
+pub(crate) fn system_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        other => other,
     }
 }
 
@@ -149,17 +206,22 @@ enum Change {
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
+    WorkCalls,
 }
 
 pub struct ResidentPeers {
     reader: Reader,
     changes: mpsc::Sender<Change>,
     relay: Option<relay::RelayHandle>,
+    work_task: Option<JoinHandle<()>>,
     task: JoinHandle<()>,
 }
 
 impl Drop for ResidentPeers {
     fn drop(&mut self) {
+        if let Some(work) = &self.work_task {
+            work.abort();
+        }
         self.task.abort();
     }
 }
@@ -176,8 +238,10 @@ impl ResidentPeers {
     ) -> io::Result<Self> {
         let run = home.join("run");
         let files = Arc::new(run.clone());
+        let endpoint = relay.as_ref().map(|relay| Arc::new(relay.endpoint.clone()));
         let resident =
-            tokio::task::spawn_blocking(move || Resident::load(run, roster, telling)).await?;
+            tokio::task::spawn_blocking(move || Resident::load(run, roster, telling, endpoint))
+                .await?;
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
         let (changes, change_rx) = mpsc::channel(16);
         let handle = relay.as_ref().map(Relay::handle);
@@ -190,12 +254,39 @@ impl ResidentPeers {
             },
             changes,
             relay: handle,
+            work_task: None,
             task,
         })
     }
 
     pub fn relay_handle(&self) -> Option<relay::RelayHandle> {
         self.relay.clone()
+    }
+
+    /// Enable remote work on this resident's relay once the session engine is available.
+    pub async fn attach_work(
+        &mut self,
+        work: Arc<dyn crate::calls::RemoteWork>,
+    ) -> io::Result<remote_work::WorkHandle> {
+        if self.work_task.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Remote work already attached",
+            ));
+        }
+        let relay = self.relay_handle().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "Remote work requires the resident relay",
+            )
+        })?;
+        let (handle, task) = remote_work::start(self.reader(), relay, work)?;
+        self.work_task = Some(task);
+        self.changes
+            .send(Change::WorkCalls)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))?;
+        Ok(handle)
     }
 
     pub fn reader(&self) -> Reader {
@@ -224,7 +315,12 @@ struct Resident {
 }
 
 impl Resident {
-    fn load(run: PathBuf, roster: Roster, telling: bool) -> Self {
+    fn load(
+        run: PathBuf,
+        roster: Roster,
+        telling: bool,
+        endpoint: Option<Arc<relay::Endpoint>>,
+    ) -> Self {
         let lists = read_copies(&run, &roster, LIST_FILE);
         let notice_copies = read_copies(&run, &roster, NOTICE_FILE);
         let activities = roster
@@ -244,6 +340,8 @@ impl Resident {
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
             relay_connected: false,
+            work_calls: false,
+            endpoint,
         };
         Self {
             run,
@@ -280,6 +378,12 @@ impl Resident {
                     }
                     Some(Change::Notices(notices)) => self.view.notices = notices,
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
+                    Some(Change::WorkCalls) => {
+                        self.view.work_calls = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    },
                     None => return,
                 },
                 () = grants_changed(&mut devices) => {
@@ -615,13 +719,9 @@ async fn publish_round(
         owned.extend(sessions.into_iter().map(|row| row.id.as_str()));
     }
     let owns: String = owned.into_iter().take(5000).map(owned_digest).collect();
-    let mut features = crate::routes::FEATURES.to_vec();
+    let features = view.features();
     let mut agents = vec![];
-    let mut active = vec![];
     if let Some(lists) = lists {
-        if lists.bots.is_some() {
-            features.push(lists::BOT_FEATURE);
-        }
         let mut sessions: Vec<_> = lists
             .sessions
             .iter()
@@ -638,17 +738,6 @@ async fn publish_round(
                 .unwrap_or_default()
                 .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
         });
-        active = sessions
-            .iter()
-            .filter(|row| row.facts.running == Some(true))
-            .map(|row| {
-                let mut record = json!({"id":row.id});
-                if let Some(title) = &row.facts.title {
-                    record["title"] = json!(title);
-                }
-                record
-            })
-            .collect();
         agents = sessions
             .into_iter()
             .filter_map(|row| {
@@ -666,11 +755,19 @@ async fn publish_round(
             .take(120)
             .collect();
     }
+    let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);
-    let state = json!({"list": agents, "owns": owns, "features": features, "computer": {
-        "working":working, "atWork":active, "system":std::env::consts::OS,
+    let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
+        "working":working, "atWork":active, "system":system_name(),
     }});
+    if let Some(engine) = view
+        .endpoint
+        .as_ref()
+        .and_then(|endpoint| endpoint.hello.engine.as_ref())
+    {
+        state["computer"]["engine"] = json!(engine);
+    }
     let announcement_digest: [u8; 32] = Sha256::digest(state.to_string()).into();
     for peer in &view.roster.members {
         let Some(host) = peer.host() else {

@@ -245,10 +245,18 @@ impl Sender {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct Endpoint {
+    pub address: Address,
+    pub url: String,
+    pub hello: BoxHello,
+}
+
 pub struct Relay {
     pub sender: Sender,
     pub events: mpsc::Receiver<Event>,
     handle: RelayHandle,
+    pub(crate) endpoint: Endpoint,
     task: JoinHandle<()>,
 }
 
@@ -268,6 +276,11 @@ impl Relay {
             sender: sender.clone(),
             events: observations.downgrade(),
         };
+        let endpoint = Endpoint {
+            address: address_of(&config.secret),
+            url: config.url.clone(),
+            hello: config.hello.clone(),
+        };
         let task = tokio::spawn(
             Owner {
                 config,
@@ -282,6 +295,7 @@ impl Relay {
             sender,
             events: event_rx,
             handle,
+            endpoint,
             task,
         }
     }
