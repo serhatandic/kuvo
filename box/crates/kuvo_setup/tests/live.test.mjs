@@ -817,6 +817,9 @@ test("a main with incoming devices off still revokes a device and delivers a mac
   await studio.stop();
   configuration(false);
   await studio.start();
+  await until(async () => (await get(studio)).json.leadershipWarning
+    === "The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.",
+    "Studio did not resume its relay lease.");
   const refused = await post(studio, "kuvo/devices/pair", { key: Buffer.alloc(32, 80).toString("base64url"), kind: "desktop", name: "Another desktop" });
   assert.equal(refused.status, 409, refused.text);
   const release = relay.pause(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"));

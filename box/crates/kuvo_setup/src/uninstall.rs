@@ -171,15 +171,22 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
         remove_file_synced(&files.path("run/launch.env"))?;
         remove_file_synced(&files.path("run/launch.notes"))
     });
-    let mut note = STOPPED.to_owned();
-    for (failure, message) in [(desktop, DESKTOP), (credentials, CREDENTIALS)] {
-        if let Err(error) = failure {
-            eprintln!("uninstall cleanup: {error}");
-            note.push(' ');
-            note.push_str(message);
-        }
+    for error in [&desktop, &credentials]
+        .into_iter()
+        .filter_map(|result| result.as_ref().err())
+    {
+        eprintln!("uninstall cleanup: {error}");
     }
-    let complete = note == STOPPED;
+    let problem = match (desktop, credentials) {
+        (Err(_), _) => Some(DESKTOP),
+        (_, Err(_)) => Some(CREDENTIALS),
+        (Ok(()), Ok(())) => None,
+    };
+    let note = problem.map_or_else(
+        || STOPPED.to_owned(),
+        |problem| format!("{STOPPED} {problem}"),
+    );
+    let complete = problem.is_none();
     Ok(Outcome {
         status: u8::from(!complete),
         value: json!({"result": if complete { "uninstalled" } else { "unfinished" }, "stopped": true,

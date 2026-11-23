@@ -380,6 +380,7 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     {
         return Err(io::Error::other("The folder to erase has changed."));
     }
+    journal.format_version = 1;
     if journal.phase == Some(Phase::Erasing) {
         if old.is_none() {
             if identity(&root)? != journal.source {

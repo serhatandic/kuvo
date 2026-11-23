@@ -58,6 +58,41 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   assert.equal(fs.existsSync(path.join(home, "run", "link.json")), false);
 });
 
+test("uninstall reports the desktop identity failure first and can be retried", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async t => {
+  const { computer } = await bench(t);
+  const local = await computer("Studio");
+  fs.unlinkSync(path.join(local.home, "run", "engine.json"));
+  const desktop = path.join(local.home, "desktop");
+  const identity = path.join(desktop, "identity");
+  const launch = path.join(local.home, "run", "launch.env");
+  const work = path.join(local.home, "data", "retained.txt");
+  write(identity, "local desktop identity");
+  write(work, "saved work");
+  fs.mkdirSync(launch);
+  fs.chmodSync(desktop, 0o500);
+  try {
+    const result = await local.command(["uninstall"]);
+    assert.equal(result.code, 1, result.log);
+    assert.deepEqual(JSON.parse(result.text), {
+      result: "unfinished", stopped: true, launchAgent: false, crontab: false,
+      startsAgain: [], left: [local.home],
+      message: "Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings. Kuvo Code couldn’t delete this desktop’s local identity.",
+    });
+    assert.equal(fs.readFileSync(identity, "utf8"), "local desktop identity");
+    assert.equal(fs.existsSync(path.join(local.home, "run", "off")), true);
+  } finally {
+    fs.chmodSync(desktop, 0o700);
+    fs.rmdirSync(launch);
+  }
+  const retried = await local.command(["uninstall"]);
+  assert.equal(retried.code, 0, retried.log);
+  assert.equal(JSON.parse(retried.text).result, "uninstalled");
+  assert.equal(fs.existsSync(identity), false);
+  assert.equal(fs.readFileSync(work, "utf8"), "saved work");
+});
+
 test("local uninstall refuses a running main computer before clearing its identity", { timeout: 45000 }, async t => {
   const { computer, leases } = await bench(t);
   const main = await computer("Studio");
@@ -74,6 +109,14 @@ test("local uninstall refuses a running main computer before clearing its identi
   const followed = await other("GET", "kuvo/setup");
   assert.equal(followed.json.you.role, "member", followed.text);
   assert.equal(followed.json.setup, original.setup);
+  const device = Buffer.alloc(32, 47).toString("base64url");
+  const paired = await ask("POST", "kuvo/devices/pair", { key: device, kind: "desktop", name: "Studio desktop" },
+    { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const listed = async at => (await at("GET", "kuvo/phones")).json.phones
+    .find(phone => phone.key === device);
+  const onMember = await until(() => listed(other), "Lab did not see the paired desktop.");
+  assert.equal(onMember.pairing, paired.json.pairing);
   const before = (await ask("GET", "kuvo/setup")).json;
   const identity = path.join(main.home, "desktop", "identity");
   write(identity, "keep this identity");
@@ -88,6 +131,8 @@ test("local uninstall refuses a running main computer before clearing its identi
   assert.equal(active.child.exitCode, null);
   assert.deepEqual((await ask("GET", "kuvo/setup")).json, before);
   assert.equal((await other("GET", "kuvo/setup")).json.setup, followed.json.setup);
+  assert.equal((await listed(ask)).pairing, paired.json.pairing);
+  assert.deepEqual(await listed(other), onMember);
 });
 
 test("the only computer commits a wipe and erases only its old installation", {
@@ -220,6 +265,7 @@ test("the installer waits for an authorized wipe before offering reinstall", {
     assert.equal(fs.existsSync(old), false);
     assert.equal(fs.readFileSync(replacement, "utf8"), "new work");
     assert.equal(fs.existsSync(link), false);
+    assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
   }
 });
 
@@ -401,6 +447,18 @@ test("a released computer enrolls again when its retained work is unchanged", {
   }
   const old = await local("GET", "kuvo/setup");
   const key = old.json.you.key;
+  const priorSign = readLink(main.home).shared.membershipAndAccess.value.boxes
+    .find(peer => peer.key === key).sign;
+  const desktop = Buffer.alloc(32, 67).toString("base64url");
+  const paired = await ask("POST", "kuvo/devices/pair", { key: desktop, kind: "desktop", name: "Retired desktop" },
+    { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const revoked = { key: desktop, pairing: paired.json.pairing };
+  const revoke = await ask("POST", "kuvo/phones/remove", { phones: [revoked] }, fromMac);
+  assert.equal(revoke.status, 200, revoke.text);
+  await until(() => readLink(other.home).shared?.membershipAndAccess?.value.devices?.removed
+    ?.some(grant => grant.key === desktop && grant.pairing === revoked.pairing),
+    "The departing computer did not receive the device revocation.");
   const operation = Buffer.alloc(16, 21).toString("base64url");
   const removed = await ask("POST", `kuvo/computers/${key}/unlink`, { operation }, fromMac);
   assert.equal(removed.status, 200, removed.text);
@@ -423,6 +481,7 @@ test("a released computer enrolls again when its retained work is unchanged", {
   const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
     ? boxBinary(process.env.KUVO_CONFORMANCE_REJOIN_BIN) : applicant;
   const standalone = readLink(other.home);
+  assert.deepEqual(standalone.formerDeviceRevocations[setup], [revoked]);
   assert.match(standalone.releasedScopedWork?.logical ?? "", /^[A-Za-z0-9_-]{43}$/,
     "unlink records the logical snapshot of a closed WAL database");
   if (!joinWith.typescript) {
@@ -461,8 +520,13 @@ test("a released computer enrolls again when its retained work is unchanged", {
   }
   const accepted = readLink(main.home).shared.membershipAndAccess.value;
   assert.deepEqual(accepted.left, [key]);
+  assert.deepEqual(accepted.devices.removed, [revoked]);
+  assert.ok(accepted.computerHistory.retiredSigns.includes(priorSign));
   assert.deepEqual(accepted.boxes.map(peer => peer.name), ["Studio", "Lab"]);
   assert.notEqual(accepted.boxes[1].key, key);
+  const repeated = await other.join(next.json.code, { resident: joinWith.typescript, joinWith });
+  assert.equal(repeated.code, 0, repeated.log);
+  assert.equal(readLink(other.home).key, member.key);
   if (!joinWith.typescript) {
     const connect = other.connect(await other.start(joinWith).ready());
     const view = await connect("GET", "kuvo/setup");
