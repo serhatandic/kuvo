@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::error::{Error, Refusal, Result};
 use crate::gate::Gate;
 use crate::info::BoxInfo;
-use crate::messages::{self, Message, Page, Where};
+use crate::messages::{self, Location, Message, Page, Runtime, Where};
 use crate::sessions::{self, Line};
 use crate::ssh::SshBox;
 use crate::transport::{Closer, Request, Response, Socket, Stream, Transport};
@@ -449,25 +449,31 @@ impl BoxClient {
 
     // MARK: A conversation
 
-    /// Where `session` lives on this box: its engine, else its coding agents' bridge. Neither has
-    /// it: a `404` refusal saying so.
-    pub fn where_is(&self, session: &str) -> Result<Where> {
-        for place in [Where::Engine, Where::Agents] {
-            let response = self.send(&Request::get(place.session_route(session, "")))?;
-            if response.is_success() {
-                return Ok(place);
-            }
-            // The agents bridge not running (503) is "not known", not "not there".
-            if response.status != 404 {
-                return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
-            }
-        }
-        Err(Error::Refused(self.not_here()))
+    /// The setup's location for this conversation, or the box's refusal.
+    pub fn where_is(&self, session: &str) -> Result<Location> {
+        self.get(&format!("kuvo/sessions/{}/location", crate::paths::segment(session)))
     }
 
-    /// A conversation that isn't on this box (any more).
-    pub(crate) fn not_here(&self) -> Refusal {
-        Refusal { status: 404, message: format!("This conversation isn’t on {} any more.", self.describe()), title: None, reason: None, older_box: false, action: None }
+    /// The conversation's runtime, as the owner reports it.
+    pub fn conversation_runtime(&self, session: &str, location: &Location) -> Result<Runtime> {
+        match location {
+            Location::Here(runtime) => Ok(*runtime),
+            Location::Peer { on } => self.get(&messages::peer_route(&on.id, session, "location")),
+        }
+    }
+
+    /// The owner used for conversation actions.
+    pub fn conversation_owner(&self, location: &Location) -> Option<Self> {
+        match location {
+            Location::Here(_) => Some(self.clone()),
+            Location::Peer { on } if on.opens() => self.peer(&on.id),
+            Location::Peer { .. } => None,
+        }
+    }
+
+    /// The conversation's latest page, through this box.
+    pub fn conversation_page(&self, session: &str, location: &Location, place: Where, limit: usize) -> Result<Page> {
+        self.get(&location.message_route(session, messages::newest_route(place, session, limit)))
     }
 
     /// The conversation's newest `limit` messages, oldest first.

@@ -687,6 +687,21 @@ async function recentEngineActivity(target: Target, id: string, created: number,
   return page.data[0]?.time?.created ?? created;
 }
 
+// A start answers before the list's next read. Keep the runtime the box already heard
+// during that gap, including when it heard the engine's event before the start answered.
+const justCreated = new Map<string, { place: "engine" | "agents"; at: number }>();
+
+export function noteSessionCreated(id: string, place: "engine" | "agents", now = Date.now()): void {
+  justCreated.set(id, { place, at: now });
+  if (justCreated.size > 256) justCreated.delete(justCreated.keys().next().value!);
+}
+
+export function createdRuntime(id: string, now = Date.now()) {
+  const created = justCreated.get(id);
+  if (created && now - created.at < 60_000) return { place: created.place, running: false };
+  return undefined;
+}
+
 /** Takes in an event from `name` (the engine, or the bridge, at `target`): a session read again as
  * it's made or changes, its run starting or ending; dropped as it's deleted. What it says from
  * moment to moment (thinking, blocked, `moments.ts`) and a look at it on any client
@@ -697,6 +712,8 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (!keepsList() || typeof event?.type !== "string") return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
   if (typeof id !== "string" || !id.startsWith("ses")) return;
+  if (event.type === "session.created") noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
+  if (event.type === "session.deleted") justCreated.delete(id);
   if (event.type === "session.viewed") {
     // (Read whole now: it's read again once that's in, so the look isn't lost.)
     reading.get(name)?.add(id);

@@ -16,7 +16,8 @@ use crate::parts::Parts;
 use crate::paths;
 
 /// Where a conversation lives on its box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Where {
     /// The box's engine (`api/…`).
     Engine,
@@ -41,6 +42,42 @@ impl Where {
     /// Its event stream.
     pub fn events_route(self) -> String {
         format!("{}api/event", self.prefix())
+    }
+}
+
+/// The setup's answer about which computer has a conversation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Location {
+    Here(Runtime),
+    Peer { on: crate::sessions::OnComputer },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Runtime {
+    pub place: Where,
+    pub running: bool,
+}
+
+pub(crate) fn peer_route(computer: &str, session: &str, resource: &str) -> String {
+    format!("kuvo/peer-session/{}/{}/{resource}", paths::segment(computer), paths::segment(session))
+}
+
+impl Location {
+    pub(crate) fn read_route(&self, session: &str, local: String, resource: &str) -> String {
+        match self {
+            Self::Here(_) => local,
+            Self::Peer { on } => peer_route(&on.id, session, resource),
+        }
+    }
+
+    pub(crate) fn message_route(&self, session: &str, local: String) -> String {
+        if let Self::Peer { on } = self
+            && let Some((_, query)) = local.split_once('?')
+        {
+            return peer_route(&on.id, session, &format!("messages?{query}"));
+        }
+        local
     }
 }
 

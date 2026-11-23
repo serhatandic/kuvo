@@ -280,11 +280,21 @@ box returns `409` before creating anything. A local start can omit `computer` or
 
 #### Opening a conversation through another box
 
+Feature `sessions.location`. Ask the nearest box for `GET kuvo/sessions/<session>/location`
+when opening a session by ID. The box uses its kept session list, newly confirmed starts,
+recorded moves and peer lists. It does not contact a runtime or another box for this lookup. A local conversation
+returns `{place, running}`, with `place` either `engine` or `agents`. A peer conversation
+returns `{on: {id, name, away, actions, lastSeen?, updating?}}`, using the merged-list
+computer and actions. A known away conversation still returns `200`. A lookup returns `404`
+with the box's message only if the session is unknown, or `503` if its local list cannot yet
+say. Use the peer's ID to address live reads and the owner's actions.
+
 Feature `line.peer-conversation`. A bot's existing `session` is the ID of its conversation.
 On the nearest box, use `kuvo/peer-session/<computer>/<session>/<resource>` as a GET or a line
 topic, where the computer is the owning box's ID. Use the bot's home computer or the session
 row's `computer.id`.
 
+- With `sessions.location`, `location` gives the owner's `{place, running}` from its kept list.
 - `session` and `messages` return the owner's session and message page. The page takes the
   usual message query.
 - `events` streams that conversation's live events. The owner chooses the runtime and filters
