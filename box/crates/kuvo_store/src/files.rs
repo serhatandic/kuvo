@@ -227,6 +227,12 @@ fn sync_entry(path: &Path, meta: Metadata) -> io::Result<()> {
     }
 }
 
+/// Flush a directory and its ancestors using the platform's directory policy.
+pub fn sync_folder_through(folder: &Path, through: &Path) -> io::Result<()> {
+    check_ancestor(folder, through)?;
+    sync_directories(folder, through)
+}
+
 pub fn sync_file_through(file: &Path, through: &Path) -> io::Result<()> {
     let folder = parent(file)?;
     check_ancestor(folder, through)?;

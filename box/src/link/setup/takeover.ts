@@ -52,7 +52,7 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
     if (give.length) sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
-  // COMPAT(beta.40): answer an old standby's ping, so it doesn't start a takeover of its own while it can reach this main.
+  // COMPAT(layout.4 setup): answer an old standby's ping while it can reach this main. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
   if (given.kind === "ping" && typeof given.token === "string" && /^[\w-]{22}$/.test(given.token) &&
     (relayLease(link)?.holder ?? setup.primary) === setup.primary) {
     send(host, link, sender.key, { kind: "pong", token: given.token, reply: crypto.randomBytes(16).toString("base64url") });

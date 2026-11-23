@@ -22,10 +22,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
+    let identity = (word(0), args.len()) == (Some("backup-identity"), 1);
     let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
-        _ if join => None,
+        _ if join || identity => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
@@ -47,6 +48,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
+    if identity {
+        println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
+        return Ok(ExitCode::SUCCESS);
+    }
     if !join {
         let platform = Platform::current();
         let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;

@@ -22,7 +22,8 @@ import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 // What's under way, as `kuvo/moves` says it (not what moved away lately, `moved`, which stays two days).
-const underWay = ({ moved: _moved, ...rest } = {}) => rest;
+// Move ownership here is independent of when the first peer snapshot arrives.
+const underWay = ({ moved: _moved, pendingComputers: _pending, ...rest } = {}) => rest;
 
 const script = fileURLToPath(LINK_BUNDLE);
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-moves-")));
@@ -687,7 +688,8 @@ ${pathToFileURL(old[0]).href}`;
     await eventually(() => fs.existsSync(path.join(macHome, "run", "moves", `${started.json.move.id}.outcome.json`)));
     assert.equal(macEngine.sessions.has(root), false, "the source recovered the dropped activation acknowledgement");
   } finally { dropReply(); }
-  const reconnect = relay.disconnect(link.addressOf(macSecret));
+  const sourceAddress = link.addressOf(macSecret);
+  const reconnect = relay.disconnect(sourceAddress);
   t.after(reconnect);
   for (const oldFile of [...old, macOnly, sourceQueued]) fs.unlinkSync(oldFile);
   assert.equal(macEngine.sessions.has(root), false);
@@ -711,6 +713,9 @@ ${pathToFileURL(old[0]).href}`;
     assert.equal(opened.status, 200, JSON.stringify(opened.json));
     assert.deepEqual(opened.bytes, bytes);
   }
+  // Releasing the relay hold only permits reconnect. Wait until the source can send again.
+  reconnect();
+  await eventually(() => relay.has(sourceAddress) && link.macLink.host?.welcomed);
 });
 
 test("an expired referenced attachment refuses a move and leaves its source conversation", { timeout: 30_000 }, async t => {

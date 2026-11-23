@@ -746,3 +746,27 @@ fn capture_output<T>(
         }
     }
 }
+
+/// Free bytes available to the current account on the filesystem containing a folder.
+#[cfg(unix)]
+pub fn available_space(folder: &Path) -> io::Result<u64> {
+    let stats = rustix::fs::statvfs(folder)?;
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(windows)]
+pub fn available_space(folder: &Path) -> io::Result<u64> {
+    use std::{os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let path: Vec<_> = folder.as_os_str().encode_wide().chain([0]).collect();
+    let mut bytes = 0;
+    // SAFETY: path is NUL-terminated and bytes points to a writable u64. The
+    // other output parameters are optional.
+    let ok =
+        unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut bytes, ptr::null_mut(), ptr::null_mut()) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(bytes)
+}

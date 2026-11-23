@@ -127,6 +127,15 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
+    BackupMatch {
+        source: crate::backup::Source,
+        previous: String,
+        replacement: String,
+    },
+    BackupApproval {
+        sender: String,
+        request: crate::backup::boundary::Approval,
+    },
     InstallerCode(Option<Value>, edits::Submitter),
     RenameComputer(String, String, edits::Submitter),
     UnlinkComputer(String, Unlink, bool, edits::Submitter),
@@ -1086,6 +1095,48 @@ impl Owner {
 
     async fn execute(&mut self, command: Command) -> Result<Response, Error> {
         match command {
+            Command::BackupMatch {
+                source,
+                previous,
+                replacement,
+            } => {
+                self.can_write()?;
+                let own = &self.own()?.public;
+                match crate::backup::boundary::match_replacement(
+                    &self.link,
+                    own,
+                    &source,
+                    &previous,
+                    &replacement,
+                ) {
+                    Ok(Some(value)) => {
+                        let receipt = self
+                            .save(SharedKind::OwnershipRecovery, value, None, None)
+                            .await?;
+                        Ok(Response::ok(json!({"matched": true, "save": receipt})))
+                    }
+                    Ok(None) => Ok(Response::ok(json!({"matched": true}))),
+                    Err(error) => Ok(Response {
+                        status: 409,
+                        value: json!({"message": error.to_string()}),
+                    }),
+                }
+            }
+            Command::BackupApproval { sender, request } => {
+                let refused = || Response {
+                    status: 409,
+                    value: json!({"message": "The main computer has no current match for this replacement."}),
+                };
+                if self.can_write().is_err() {
+                    return Ok(refused());
+                }
+                Ok(
+                    match crate::backup::boundary::proof(&self.link, &sender, &request) {
+                        Ok(boundary) => Response::ok(json!({"boundary": boundary})),
+                        Err(_) => refused(),
+                    },
+                )
+            }
             Command::InstallerCode(credentials, by) => {
                 self.issue_installer_code(credentials, by).await
             }

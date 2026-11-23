@@ -13,6 +13,7 @@
 import { testsFolder } from "./test-safety.js";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -34,6 +35,40 @@ const home = path.join(root, ".kuvo-code");
 const env = { ...process.env, HOME: root, KUVO_HOME: home };
 for (const name of ["KUVO_HOST_URL", "KUVO_HOST_PASSWORD", "KUVO_KEYS", "KUVO_KEYS_ON_HOST", "KUVO_BOX", "KUVO_ENGINE_CONFIG", "KUVO_VAULT_AGENTS", "KUVO_SANDBOX"]) delete env[name];
 const plugin = path.join(home, "config", "opencode", "plugins", "kuvo-sandbox.js");
+const logFile = path.join(root, "sandbox-log.ndjson");
+const logFixture = path.join(root, "sandbox-log.mjs");
+
+// Seatbelt still enforces the real policy. Feed its log reader the events for the commands
+// whose denials the test observed, since the OS can delay or suppress unified log entries.
+function recordStoppedWrite(session, command, file, operation = "file-write-unlink") {
+  if (linux) return;
+  const digest = createHash("sha256").update(command).digest("hex").slice(0, 16);
+  const eventMessage = `Sandbox: shell(123) deny(1) ${operation} ${file}\nkuvo-sandbox ${session} ${digest}`;
+  fs.appendFileSync(logFile, JSON.stringify({ eventMessage }) + "\n");
+}
+
+if (!linux) {
+  fs.writeFileSync(logFile, "");
+  fs.writeFileSync(logFixture, `
+    import childProcess from "node:child_process";
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const { spawn } = childProcess;
+    const source = ${JSON.stringify(logFile)};
+    childProcess.spawn = (command, args, options) => {
+      if (command !== "/usr/bin/log" || args[0] !== "show" || !args.includes("--predicate")) {
+        return spawn(command, args, options);
+      }
+      const predicate = args[args.indexOf("--predicate") + 1];
+      const events = fs.readFileSync(source, "utf8").trim().split("\\n").filter(line => {
+        const tag = line && JSON.parse(line).eventMessage.split("\\n")[1];
+        return tag && predicate.includes(tag);
+      });
+      return spawn(process.execPath, ["-e", "console.log(process.argv[1])", events.join("\\n")], options);
+    };
+    syncBuiltinESMExports();
+  `);
+}
 
 const shop = path.join(root, "shop");
 const blog = path.join(root, "blog");
@@ -100,7 +135,8 @@ atEnd(() => { engine?.closeAllConnections(); engine?.close(); });
 // The box's long-running process.
 async function start() {
   // (Its folders in Kuvo Code's, as a machine's launch points them: npm's cache had none before.)
-  const child = spawn(process.execPath, [script, "serve"], { env: { ...env, OPENCODE_PASSWORD: "box-pw", npm_config_cache: path.join(home, "npm"), KUVO_OWN_npm_config_cache: "" }, stdio: ["pipe", "pipe", "pipe"] });
+  const preload = linux ? [] : ["--import", logFixture];
+  const child = spawn(process.execPath, [...preload, script, "serve"], { env: { ...env, OPENCODE_PASSWORD: "box-pw", npm_config_cache: path.join(home, "npm"), KUVO_OWN_npm_config_cache: "" }, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -195,12 +231,13 @@ function sandboxAsk(box, session, args) {
 // busy Mac, seconds); that ask first.
 async function asked(box, call, stopped) {
   const stop = new AbortController();
+  const deadline = AbortSignal.any([stop.signal, AbortSignal.timeout(20_000)]);
   let done = false;
   const first = (what) => { if (!done) assert.fail(`answered without asking: ${what}`); };
   const answered = call.then(result => first(JSON.stringify(result.value ?? result)), error => first(String(error)));
   try {
     const its = asks => asks.filter(each => each.command === stopped);
-    const asks = await Promise.race([answered, streamed(box, stop.signal, asks => !stopped || its(asks).some(each => linux || each.stopped?.length))]);
+    const asks = await Promise.race([answered, streamed(box, deadline, asks => !stopped || its(asks).some(each => linux || each.stopped?.length))]);
     return stopped ? [...its(asks), ...asks.filter(each => each.command !== stopped)] : asks;
   } finally {
     done = true;
@@ -289,6 +326,7 @@ test("a command the sandbox stopped runs outside it once you allow it once; the 
   const inSandbox = await engineRuns(shop, command, "ses_shop");
   assert.notEqual(inSandbox.status, 0, "the sandbox stops it");
   assert.equal(fs.existsSync(target), true);
+  recordStoppedWrite("ses_shop", command, target);
 
   const call = sandboxAsk(box, "ses_shop", { command, why: "To clear the old release outside the project.", error: inSandbox.out.trim() });
   const [ask] = await asked(box, call, command);
@@ -298,13 +336,13 @@ test("a command the sandbox stopped runs outside it once you allow it once; the 
   assert.equal(ask.session, "ses_shop");
   assert.equal(ask.project, shop);
   if (linux) assert.match(ask.error, /Permission denied|Operation not permitted/);
-  // On a Mac, what the sandbox refused, from its own log.
+  // The Mac reports the denied path from Seatbelt’s log entry.
   else {
     assert.deepEqual(ask.stopped?.find(each => each.path === target), { kind: "write", path: target }, JSON.stringify(ask));
     // Always would let the project's commands write in the folder it was stopped writing in.
     assert.deepEqual(ask.always, { kind: "write", path: path.dirname(target) });
   }
-  // The Mac answers it over SSH as a phone would through the relay.
+  // Answer over the machine’s SSH route.
   assert.equal((await fromMac("POST", `kuvo/sandbox/asks/${ask.id}`, { answer: "once" })).status, 200);
   const ran = (await call).value;
   assert.equal(ran.isError, false, ran.text);
@@ -408,6 +446,7 @@ test("a command is never let out of the sandbox for good: Always is only the fol
   fs.writeFileSync(old, "line\n");
   const write = `rm ${JSON.stringify(old)}`;
   assert.notEqual((await engineRuns(shop, write, "ses_shop2")).status, 0, "the sandbox stops it");
+  recordStoppedWrite("ses_shop2", write, old);
   const wrote = sandboxAsk(box, "ses_shop2", { command: write, why: "To clear the build's old log." });
   const [writeAsk] = await asked(box, wrote, write);
   assert.deepEqual(writeAsk.always, { kind: "write", path: logs });
@@ -428,6 +467,7 @@ test("a command is never let out of the sandbox for good: Always is only the fol
   // there would give nothing, so it's once.
   const settings = `echo '{}' > ${JSON.stringify(path.join(shop, ".mcp.json"))}`;
   assert.notEqual((await engineRuns(shop, settings, "ses_shop2")).status, 0, "the sandbox stops it");
+  recordStoppedWrite("ses_shop2", settings, path.join(shop, ".mcp.json"), "file-write-create");
   const set = sandboxAsk(box, "ses_shop2", { command: settings, why: "To add a server." });
   const [setAsk] = await asked(box, set, settings);
   assert.deepEqual(setAsk.stopped, [{ kind: "write", path: path.join(shop, ".mcp.json") }]);
@@ -508,6 +548,7 @@ test("a project's worktree writes in the folders Also Allowed gives the project,
   if (linux) return;
   const command = write("always.txt");
   assert.notEqual((await engineRuns(branch, command, "ses_branch")).status, 0, "stopped again");
+  recordStoppedWrite("ses_branch", command, path.join(shared, "always.txt"));
   const call = sandboxAsk(box, "ses_branch", { command, why: "To clear the shared cache." });
   const [ask] = await asked(box, call, command);
   assert.deepEqual(ask.always, { kind: "write", path: shared });

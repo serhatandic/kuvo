@@ -107,8 +107,33 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
     setup.handle().register(&mut routes);
+    let account = kuvo_os::platform::Account::current()?.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let (backup_mail, _backup_receiver) = if let Some(relay) = peers.relay_handle()
+        && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
+            home.to_owned(),
+            account.clone(),
+            setup.handle(),
+            peers.reader(),
+            relay,
+        ) {
+        peers.advertise_backup_receiver().await;
+        (Some(mail), Some(receiver))
+    } else {
+        (None, None)
+    };
+    let _daily_backups = kuvo_setup::backup::routes::register(
+        &mut routes,
+        kuvo_store::home::Home::new(home.to_owned())?,
+        account,
+        setup.handle(),
+        backup_mail,
+    );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     peers.register_moves(&mut routes, engine.clone());
+    kuvo_services::files::register(&mut routes);
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();
@@ -183,12 +208,13 @@ fn info(
     fs::create_dir_all(&chats)?;
     let is_mac = kind == ComputerKind::Mac;
     // Advertise the implemented routes while the desktop remains behind its update gate.
-    let mut features = vec!["info", "line", "engine.restart"];
+    let mut features = vec!["info", "line", "engine.restart", "box.backups.status"];
     if !is_mac {
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
+    features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }

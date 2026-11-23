@@ -1,7 +1,6 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -263,20 +262,22 @@ for (const change of ["added", "changed"]) test(`failure bench: a session attach
   assert.deepEqual(fs.readFileSync(path.join(owner.home, changed)), bytes);
 });
 
-test("failure bench: a deleted member retries a lost completion from outside its folder", { timeout: 40_000 }, async t => {
+test("failure bench: a deleted member retries a lost completion from outside its folder", { timeout: 55_000 }, async t => {
   const { a, b, relay } = await network(t, false, undefined, false, undefined, true);
   const operation = operationID();
-  let dropped = 0;
+  let reporting;
   const release = relay.intercept(null, a.address, packet => {
     if (removalMessage(packet, a, b)?.done !== operation) return false;
-    dropped++;
+    reporting ??= packet.from;
     return true;
   });
   t.after(release);
   assert.equal((await a.route("POST", wipeRoute(b), { operation })).status, 200);
   await waitForWipe(b, t.signal);
-  await until("completion dropped", () => dropped, t.signal);
-  await delay(8_300);
+  const sender = await until("completion dropped", () => reporting, t.signal);
+  // End the unacknowledged connection so only a new attempt can reach the primary.
+  const reconnect = relay.disconnect(sender);
+  t.after(reconnect);
   assert.equal(removalOf(a, b).delivered, undefined);
   const receipt = path.join(b.env.HOME, ".kuvo-code-removal-receipts", operation + ".json");
   const saved = JSON.parse(fs.readFileSync(receipt, "utf8"));
@@ -284,6 +285,7 @@ test("failure bench: a deleted member retries a lost completion from outside its
   assert.equal(JSON.stringify(saved).includes(b.identity.key), false);
   assert.equal(JSON.stringify(saved).includes(b.identity.sign), false);
   release();
+  reconnect();
   await until("completion accepted", () => removalOf(a, b)?.delivered, t.signal);
   await until("completion acknowledged", () => !fs.existsSync(receipt), t.signal);
   assert.equal((await a.route("POST", wipeRoute(b), { operation })).value.removal.state, "wiped");

@@ -871,6 +871,7 @@ takes in has been taken in.
   rehome`). <!-- compat: 0.7 move -->
 - A box still in the retired app's folder, whose app ran the coding agents' bridge and wrote why it
   gave up (`run/agents-stopped`). <!-- compat: 0.7 app-agents-stopped -->
+- Account discovery at first launch through `kuvo/accounts/found` and `kuvo/accounts/found/use`. <!-- compat: 0.7 first-launch -->
 
 **Kuvo Code 0.8.0-beta.1:**
 - Its letters and the messages it kept for an away machine, handed to the box's outbox. <!-- compat: beta.1 mac-letters -->

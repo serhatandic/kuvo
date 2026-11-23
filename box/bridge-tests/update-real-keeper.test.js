@@ -401,6 +401,14 @@ registerHooks({ load(url, context, next) {
   assert.deepEqual(read(marker), { version: 23 }, "the keeper commits the layout once the baseline judge confirms");
   assert.deepEqual(read(linkFile).phones, [device], "the migration preserves the existing device pairing");
   assert.equal(Object.hasOwn(read(linkFile), "vouchBlocked"), false);
+  const probe = spawnSync(process.execPath, [installed, "box", "route"], {
+    env, input: '{"method":"GET","path":"kuvo/info"}', encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(probe.status, 0, probe.stderr);
+  const info = JSON.parse(probe.stdout);
+  assert.equal(info.status, 200);
+  assert.deepEqual(JSON.parse(info.body).features.filter(feature => feature === "goals" || feature.startsWith("work.goals")
+    || feature === "messages.commands" || feature === "queue.removed.keyword"), [], "the retired features disappear when the trial ends");
   assert.equal(fs.existsSync(engineFile), false, "stopped on purpose, its keeper starts none");
   const again = realKeeper("start");
   assert.equal(again.status, 0, again.stderr);

@@ -338,7 +338,9 @@ atEnd(async () => {
   await relay.close();
 });
 
-const bare = which => ({ moves: [], away: [] });
+// Finishing a move is independent of when the first peer snapshot arrives.
+const withoutPending = ({ pendingComputers: _pending, ...rest }) => rest;
+const emptyMoves = { moves: [], away: [] };
 
 test("a Claude Code bot moves with its conversation and memory, and comes back the same", { timeout: 120_000 }, async t => {
   signal = t.signal;
@@ -379,9 +381,9 @@ test("a Claude Code bot moves with its conversation and memory, and comes back t
   // And this box says so, with where they went, for a client that still has a row of them from here
   // (the Mac app open through the move): it leaves those out, and finds them on the machine.
   const { moved: movedAway, ...rest } = (await ask("GET", "kuvo/moves")).json;
-  assert.deepEqual(rest, bare());
+  assert.deepEqual(withoutPending(rest), emptyMoves);
   assert.deepEqual(movedAway.map(each => [each.session, each.key]).sort(), [["ses_ada", machine.key], ["ses_adasub", machine.key]]);
-  assert.deepEqual((await askMachine("GET", "kuvo/moves")).json, bare());
+  assert.deepEqual(withoutPending((await askMachine("GET", "kuvo/moves")).json), emptyMoves);
   // On Claude Code's default, which is Opus here and Sonnet there: it goes on there on Opus, as it
   // ran here, and so does the bot's own model (#306).
   assert.deepEqual(there.json.data.model, { id: "opus", providerID: "claude-code" });
