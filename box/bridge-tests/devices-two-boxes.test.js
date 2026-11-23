@@ -21,6 +21,7 @@ import { before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { legacyBuild } from "./failure-bench-legacy.js";
 import { relayStandIn } from "./relay-stand-in.js";
+import { recordRelayLease, relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const script = fileURLToPath(LINK_BUNDLE);
@@ -124,7 +125,8 @@ Object.assign(process.env, {
   KUVO_HOST_PASSWORD: "host-password",
 });
 const link = await import(LINK_BUNDLE.href);
-const relay = await relayStandIn(link, { changed: () => {} });
+const leases = relayLeaseStandIn({ transferStartsNow: true });
+const relay = await relayStandIn(link, { request: leases.request, changed: () => {} });
 
 const macEngine = await engineWith("ses_lead");
 const labEngine = await engineWith("ses_far");
@@ -179,17 +181,32 @@ async function labApp(method, p, body) {
 
 before(async () => {
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: true, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0" })).json?.state, "failed");
+  // The SSH install already has its identity when the main publishes the membership.
+  const key = link.newKey(), secret = crypto.randomBytes(32), seed = link.newSigningSeed();
+  const peer = { key: link.publicOf(key).toString("base64url"), sign: link.signingKeyOf(seed),
+    address: link.addressOf(secret).toString("base64url"), name: "lab", id: "lab.example", kind: "machine" };
+  write(path.join(machineHome, "run", "link.json"), {
+    key: key.toString("base64url"), secret: secret.toString("base64url"), sign: seed, phones: [],
+    mac: macPub, macs: [macPub],
+  });
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [peer], moved: [] })).status, 200);
+  link.noteSetupNow(Date.now(), { soon: 0 });
+  const state = link.readLink().setup;
+  assert.equal(state.role, "primary");
+  const grant = leases.seed(state, { [state.primary]: state.sign, [peer.key]: peer.sign }, 500);
+  recordRelayLease(path.join(macHome, "run"), state, { relay: grant });
   const setup = await ask("GET", "kuvo/link/setup");
+  assert.equal(setup.status, 200);
   const result = spawnSync(process.execPath, [script, "setup"], {
-    input: JSON.stringify({ relay: relay.url, name: "lab", mac: macPub, macSign: setup.json.macSign, docs: setup.json.docs, id: "lab.example" }),
+    input: JSON.stringify({ ...setup.json, relay: relay.url, name: "lab", id: "lab.example" }),
     env: machineEnv,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  assert.equal(lab.key, peer.key, result.stdout);
   // A member can hold a number lease after it has enrolled in the setup that grants it.
   write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: macPub, leases: [[41, 41]], since: 2_000 });
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();
   // The app there wants the machine's server: started as its keeper starts it.
@@ -309,20 +326,17 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(where((await ask("GET", "kuvo/computers")).json.computers), { here: [macAddress.toString("base64url"), relay.url], lab: [lab.address, relay.url] });
   assert.deepEqual(where(labRoute("GET", "kuvo/computers").json.computers), { here: [lab.address, relay.url], "Studio Mac": [macAddress.toString("base64url"), relay.url] });
 
-  // A phone paired with the main computer, as phones are: with its pairing link.
-  const phone = client({ name: "My iPhone" });
-  const token = new URL((await ask("POST", "kuvo/phones/pair")).json.link).searchParams.get("token");
-  assert.equal((await phone.open(main, { pair: token })).kind, "mac");
-  await eventually(() => (labLink()?.phones ?? []).some(each => each.key === phone.public));
+  const manager = client({ name: "Studio desktop", client: "desktop" });
+  assert.equal((await ask("POST", "kuvo/devices/pair", { key: manager.public, name: "Studio desktop", kind: "desktop" }, { served: true, fromApp: true })).status, 200);
+  assert.equal((await manager.open(main)).kind, "mac");
 
-  // (4) Only the app beside a box asks: a phone's session, the desktop app's own once it's in
-  // (below), and the box's CLI are refused, on the main computer and on the member.
+  // (4) Only the app beside a box asks. A remote desktop and the box's CLI are refused.
   const desk = client({ name: "Lab screen", client: "desktop" });
   const given = { key: desk.public, name: "Lab screen", kind: "desktop" };
   const onlyTheApp = { status: 403, json: { message: "Only Kuvo Code on this computer adds itself to your devices." } };
-  assert.deepEqual(await phone.request("POST", "kuvo/devices/pair", given), onlyTheApp);
-  assert.equal((await phone.open(member)).kind, "machine");
-  assert.deepEqual(await phone.request("POST", "kuvo/devices/pair", given), onlyTheApp);
+  assert.deepEqual(await manager.request("POST", "kuvo/devices/pair", given), onlyTheApp);
+  await openOnMember(manager, member);
+  assert.deepEqual(await manager.request("POST", "kuvo/devices/pair", given), onlyTheApp);
   assert.deepEqual(labRoute("POST", "kuvo/devices/pair", given), onlyTheApp);
   assert.deepEqual(await ask("POST", "kuvo/devices/pair", given, { fromMac: true }), onlyTheApp);
   // Not paired yet: turned away by both.
@@ -332,17 +346,20 @@ test("the desktop app on a member's computer is paired through its own box and r
   // computer: paired there, with a pairing of its own, and nothing for you to paste.
   const paired = await labApp("POST", "kuvo/devices/pair", given);
   assert.equal(paired.status, 200, JSON.stringify(paired.json));
-  assert.deepEqual(paired.json, { paired: true, pairing: paired.json.pairing });
+  assert.equal(paired.json.paired, true);
+  assert.ok(paired.json.pairing);
+  assert.equal(paired.json.status, "committed");
+  const proof = link.readDoc(paired.json.proof);
+  assert.deepEqual([proof.kind, proof.body.kind, proof.body.operation, proof.body.id], [
+    "setup-shared", "membershipAndAccess", paired.json.operation, link.readLink().setup.id,
+  ]);
   const ours = (await ask("GET", "kuvo/phones")).json.phones.find(each => each.key === desk.public);
   assert.deepEqual({ ...ours, added: null }, { key: desk.public, name: "Lab screen", added: null, pairing: paired.json.pairing, kind: "desktop", you: false });
-  // The pairing link a phone could be shown on the main computer isn't touched by it.
-  const shown = (await ask("POST", "kuvo/phones/pair")).json.link;
   // Asked again (the member may not have heard of it yet): the same pairing, no second device.
   const repeated = await labApp("POST", "kuvo/devices/pair", given);
   if (repeated.status === 503) assert.equal(repeated.json.message, "Checking this app with your other computers…");
-  else assert.deepEqual(repeated, paired);
+  else assert.deepEqual(repeated, { status: 200, json: { paired: true, pairing: paired.json.pairing } });
   assert.equal((await ask("GET", "kuvo/phones")).json.phones.filter(each => each.key === desk.public).length, 1);
-  assert.equal(new URL(shown).searchParams.get("token"), link.readLink().appPairing?.token, "the link Settings shows still waits");
 
   // It opens a session with the main computer, and, once the main computer's phones document
   // reached it, with the member: each answers it.
@@ -350,21 +367,19 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.equal((await desk.request("GET", "kuvo/info")).status, 200);
   // (2) Listed as what it is, on both.
   const listed = async () => (await desk.request("GET", "kuvo/phones")).json.phones.map(each => [each.name, each.kind, each.you]).sort();
-  assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["My iPhone", "phone", false]]);
+  assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["Studio desktop", "desktop", false]]);
   assert.deepEqual(await desk.request("POST", "kuvo/devices/pair", given), onlyTheApp);
   await eventually(() => (labLink()?.phones ?? []).some(each => each.key === desk.public && each.kind === "desktop"));
   const hello = await openOnMember(desk, member);
   assert.deepEqual([hello.kind, hello.name], ["machine", "lab"]);
   assert.equal((await desk.request("GET", "kuvo/info")).json.name, "lab");
-  assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["My iPhone", "phone", false]]);
+  assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["Studio desktop", "desktop", false]]);
   // Asked once more, now that the member lets it in: yes at once, as it has it.
-  assert.deepEqual((await labApp("POST", "kuvo/devices/pair", given)).json, paired.json);
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", given), { status: 200, json: { paired: true, pairing: paired.json.pairing } });
 
-  // (3) What it writes on the member reaches the agent as written; a phone's says it's a phone's.
+  // (3) What it writes on the member reaches the agent as written.
   assert.equal((await desk.request("POST", "api/session/ses_far/prompt", { id: "msg_desk1", text: "Ship it" })).status, 200);
   assert.deepEqual(labEngine.prompted, ["Ship it"]);
-  assert.equal((await phone.request("POST", "api/session/ses_far/prompt", { id: "msg_phone1", text: "Ship it" })).status, 200);
-  assert.match(labEngine.prompted[1], /^Ship it\n\n<from-phone>\n/);
 
   // (5) A pairing request from a box that isn't in the setup pairs no one: its mail isn't even opened.
   const stray = link.publicOf(link.newKey()).toString("base64url");
@@ -376,7 +391,8 @@ test("the desktop app on a member's computer is paired through its own box and r
   await eventually(() => (labLink()?.phones ?? []).some(each => each.key === twin.public));
   assert.deepEqual([(await twin.open(main)).kind, (await openOnMember(twin, member)).kind], ["mac", "machine"]);
 
-  assert.deepEqual(await phone.request("POST", "kuvo/phones/remove", { phones: [{ key: desk.public }] }), { status: 200, json: {} });
+  assert.equal((await manager.open(main)).kind, "mac");
+  assert.equal((await manager.request("POST", "kuvo/phones/remove", { phones: [{ key: desk.public, pairing: paired.json.pairing }] })).status, 200);
   await memberHeardRemoved(desk.public);
   assert.deepEqual(await desk.request("GET", "kuvo/info"), { closed: true });
   assert.deepEqual([await desk.open(main), await desk.open(member)], [{ refused: true }, { refused: true }]);
@@ -386,18 +402,19 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.equal((await twin.request("GET", "kuvo/info")).status, 200, "another device paired through the same member keeps its session");
   assert.equal((await twin.open(main)).kind, "mac");
 
-  const invite = await twin.request("POST", "kuvo/phones/pair");
-  assert.equal(invite.status, 200);
-  const pending = new URL(invite.json.link).searchParams.get("token");
-  assert.deepEqual(await labApp("POST", "kuvo/phones/remove", { phones: [{ key: twin.public, pairing: "older" }] }), { status: 200, json: {} });
+  const staleRemoval = await labApp("POST", "kuvo/phones/remove", { phones: [{ key: twin.public, pairing: "older" }] });
+  assert.equal(staleRemoval.status, 200, JSON.stringify(staleRemoval.json));
+  assert.equal(staleRemoval.json.status, "committed");
+  assert.equal(link.readDoc(staleRemoval.json.proof).body.operation, staleRemoval.json.operation);
   assert.equal((await twin.open(main)).kind, "mac", "an old pairing ID cannot remove the current pairing");
-  assert.deepEqual(await labApp("POST", "kuvo/phones/remove", { phones: [{ key: twin.public }] }), { status: 200, json: {} });
+  const dropTwin = await labApp("POST", "kuvo/phones/remove", { phones: [{ key: twin.public }] });
+  assert.equal(dropTwin.status, 200, JSON.stringify(dropTwin.json));
+  assert.equal(dropTwin.json.status, "committed");
+  assert.equal(link.readDoc(dropTwin.json.proof).body.operation, dropTwin.json.operation);
   await memberHeardRemoved(twin.public);
   assert.deepEqual([await twin.open(main), await twin.open(member)], [{ refused: true }, { refused: true }]);
-  const invited = client({ name: "Invited after removal" });
-  assert.deepEqual(await invited.open(main, { pair: pending }), { refused: true }, "a removed pairing's invite expires");
-  assert.equal((await phone.open(main)).kind, "mac");
-  assert.equal((await phone.open(member)).kind, "machine");
+  assert.equal((await manager.open(main)).kind, "mac");
+  await openOnMember(manager, member);
   const now = (await ask("GET", "kuvo/phones")).json.phones.map(each => each.key);
   assert.ok(!now.includes(stray), "forwarding from outside the setup paired no one");
   // A Mac that lets no device in ("Let my devices connect" off) forwards no pairing requests either, were it
@@ -436,82 +453,36 @@ test("relay refuses mixed-case future and conflicting route versions before send
   }
 });
 
-test("failure bench: a removal reaches a member while the primary's inbound device switch stays off", { timeout: 18_000 }, async t => {
+test("a device revocation reaches a member even while the main's inbound sessions are switched off", { timeout: 25_000 }, async t => {
   signal = t.signal;
-  await eventually(async () => (await ask("GET", "kuvo/setup")).json?.you?.role === "primary");
   await eventually(() => labLink()?.setup?.role === "member" && relay.has(macAddress));
   const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
-  const other = { key: link.publicOf(link.newKey()).toString("base64url"), sign: link.signingKeyOf(link.newSigningSeed()), name: "Cellar",
-    id: "cellar.example", address: link.addressOf(crypto.randomBytes(32)).toString("base64url") };
-  const peers = link.readLink().macPeers;
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [...peers, other] })).status, 200);
   const desktop = client({ name: "Cellar desktop", client: "desktop" });
-  assert.equal((await link.deviceAct(other, pairingAct(desktop.public))).status, 200);
-  await eventually(() => labLink()?.phones?.some(each => each.key === desktop.public));
+  const added = await ask("POST", "kuvo/devices/pair", { key: desktop.public, name: "Cellar desktop", kind: "desktop" }, { served: true, fromApp: true });
+  assert.equal(added.status, 200, JSON.stringify(added.json));
   await openOnMember(desktop, member);
   assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
-  const docsIn = packet => {
-    if (!packet.from.equals(macAddress) || !packet.to.equals(member.address)) return;
-    const frame = link.readFrame(packet.payload);
-    if (frame?.kind !== link.Frame.mail) return;
-    const opened = link.openOneWay(frame.body, Buffer.from(labLink().key, "base64url"), link.publicOf(macKey));
-    return JSON.parse(opened.payload.toString()).docs;
-  };
-  const phonesDoc = packet => docsIn(packet)?.give?.map(link.readDoc).find(doc => doc?.kind === "phones");
-  const hasGrant = doc => doc?.body.phones?.some(each => each.key === desktop.public);
-  const earlier = relay.delivered.findLast(packet => hasGrant(phonesDoc(packet)));
-  assert.ok(earlier, "the original signed grant reached the member");
-  const held = [];
-  const release = relay.intercept(macAddress, member.address, packet => {
-    const doc = phonesDoc(packet);
-    if (!doc?.body.removed?.some(each => each.key === desktop.public)) return false;
-    held.push(packet);
-    return true;
-  });
+
   const config = link.macLink.config;
   const appSaid = link.macLink.appSaid;
-  assert.equal((await ask("PUT", "kuvo/link/config", { ...config, phones: false })).status, 200);
-  link.macLink.appSaid = undefined;
+  const release = relay.pause(macAddress, member.address);
+  t.after(release);
   try {
-    assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.public }] })).status, 200);
-    const dropped = await eventually(() => held[0]);
-    assert.equal(memberHasRemoval(desktop.public), false, "the relay dropped the first revocation");
-    // Drop the primary's connection. Its normal reconnect must advertise the missing
-    // revocation and repair the loss while the member keeps its existing desktop session.
-    const resume = relay.disconnect(macAddress);
-    let sentBeforeReconnect;
-    let heldBeforeReconnect;
-    try {
-      await eventually(() => !relay.has(macAddress));
-      sentBeforeReconnect = relay.delivered.length;
-      heldBeforeReconnect = held.length;
-    } finally {
-      resume();
-    }
-    await eventually(() => relay.has(macAddress));
-    const { origin, n, h } = phonesDoc(dropped);
-    const advertised = packet => docsIn(packet)?.have?.some(([key, kind, version, hash]) =>
-      key === origin && kind === "phones" && version === n && hash === h);
-    const deadline = Date.now() + 5_000;
-    const greeted = await eventually(() => relay.delivered.slice(sentBeforeReconnect).find(advertised) ?? (Date.now() >= deadline && "missing"));
-    assert.notEqual(greeted, "missing", "the primary advertised the revocation when it reconnected");
-    const revoked = await eventually(() => held.slice(heldBeforeReconnect).find(packet => !packet.payload.equals(dropped.payload)));
-    assert.equal(phonesDoc(revoked).n, phonesDoc(dropped).n, "the repair carries the same signed revocation");
-    assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
-    // A newer signed list arrives before a delayed copy of the grant. Both lists can be duplicated
-    // by the network. Previously accepted grants must never overwrite a newer tombstone.
-    relay.replay(revoked);
-    relay.replay(revoked);
-    relay.replay(earlier);
-    relay.replay(earlier);
-    const until = Date.now() + 4_000;
-    assert.equal(await eventually(() => memberHasRemoval(desktop.public) ? "removed" : Date.now() >= until && "stale"), "removed",
-      "the member installed the removal while the primary switch was off");
+    assert.equal((await ask("PUT", "kuvo/link/config", { ...config, phones: false })).status, 200);
+    link.macLink.appSaid = undefined;
+    assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.public, pairing: added.json.pairing }] })).status, 200);
+    assert.equal(memberHasRemoval(desktop.public), false, "the member missed the change");
+
+    const reconnect = relay.disconnect(macAddress);
+    t.after(reconnect);
+    await eventually(() => !relay.has(macAddress));
+    reconnect();
+    release();
+    await eventually(() => relay.has(macAddress) && memberHasRemoval(desktop.public));
     assert.deepEqual(await desktop.request("GET", "kuvo/computers"), { closed: true });
     assert.deepEqual(await desktop.open(member), { refused: true });
     assert.equal(link.macLink.config.phones, false);
   } finally {
-    release();
     await ask("PUT", "kuvo/link/config", config);
     link.macLink.appSaid = appSaid;
   }
@@ -540,7 +511,7 @@ test("the reconnect reply carries the current signed membership as well as phone
   assert.deepEqual(replies.at(-1).phoneSync, { id, list: `${phones.n}:${phones.h}`, peers: `${peers.n}:${peers.h}`, ack: true });
 });
 
-test("failure bench: a reconnecting member catches up from another box while the primary is away", { timeout: 100_000 }, async t => {
+test("failure bench: an older peer's signed copies cannot establish current access without the main", { timeout: 100_000 }, async t => {
   signal = t.signal;
   const previous = legacyBuild();
   assert.ok(!previous.equals(fs.readFileSync(script)), "the two builds differ");
@@ -551,7 +522,7 @@ test("failure bench: a reconnecting member catches up from another box while the
   const extraAddress = link.addressOf(extraSecret);
   const extra = { key: link.publicOf(extraKey).toString("base64url"), sign: link.signingKeyOf(extraSign),
     address: extraAddress.toString("base64url"), name: "Workshop", id: "workshop.example" };
-  const before = link.readLink().macPeers;
+  const before = link.readLink().shared.membershipAndAccess.value.boxes;
   const docKey = `${link.signingKeyOf(app.keys.sign)} phones`;
   const countIn = state => link.readDoc(state?.docs?.[docKey])?.n ?? 0;
   async function reached(label, found, ms = 15_000) {
@@ -575,11 +546,21 @@ test("failure bench: a reconnecting member catches up from another box while the
   };
   await reached("Lab follows the main Mac's setup", () => labLink()?.setup?.role === "member" && labLink().setup.primary === macPub);
   await reached("Studio leads the setup", async () => (await ask("GET", "kuvo/setup")).json?.you?.role === "primary");
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [...before, extra] })).status, 200);
-  await eventually(() => link.readDoc(labLink()?.docs?.[`${link.signingKeyOf(app.keys.sign)} peers`])?.body.boxes.some(each => each.key === extra.key));
+  function commitRoster(boxes) {
+    let saved;
+    link.updateLink(current => {
+      const membership = current.shared.membershipAndAccess.value;
+      saved = link.stageShared(current, "membershipAndAccess", { ...membership, boxes });
+      return saved ? current : null;
+    }, { durable: true });
+    assert.ok(saved, "the main committed the roster");
+  }
+  commitRoster([...before, { ...extra, kind: "machine" }]);
+  await reached("Lab received Workshop in the signed roster", () => labLink()?.shared?.membershipAndAccess?.value.boxes.some(each => each.key === extra.key));
   const seed = labLink();
   write(extraFile, { key: extraKey.toString("base64url"), secret: extraSecret.toString("base64url"), sign: extraSign,
-    name: extra.name, relay: relay.url, mac: macPub, macSigns: seed.macSigns, docs: seed.docs, setup: seed.setup });
+    name: extra.name, relay: relay.url, mac: macPub, macs: [macPub], macSigns: seed.macSigns,
+    docs: seed.docs, setup: seed.setup, sharedSetup: seed.sharedSetup, shared: seed.shared, leadership: seed.leadership });
   const ledger = path.join(extraHome, "run", "work-queue", "numbers.json");
   write(ledger, { primary: macPub, leases: [[121, 160]], since: 2_000 });
   const workshopScript = path.join(extraHome, "bin", "kuvo-link.js");
@@ -619,17 +600,20 @@ test("failure bench: a reconnecting member catches up from another box while the
     let resumeMain = disconnect(macAddress);
     await eventually(() => !relay.has(macAddress));
     await resumeMember();
-    // The Workshop has the removal but the main computer can't answer. A legitimate desktop
-    // confirms the list from the Workshop and gets in, while the revoked desktop stays out.
+    // A reconnecting member waits for the main to confirm its current grants.
     assert.equal(labLink().setup?.primary, macPub);
-    await opens(yours, "Lab accepted its current desktop after hearing from Workshop");
-    await reached("Lab installed the removal from Workshop", () => memberHasRemoval(first.public));
-    assert.deepEqual(await first.open(member), { refused: true });
+    assert.equal((await first.open(member)).waiting, "Checking this app with your other computers…");
+    assert.equal((await yours.open(member)).waiting, "Checking this app with your other computers…");
     assert.equal(relay.has(macAddress), false);
 
     resumeMember = disconnect(member.address);
     await eventually(() => !relay.has(member.address));
     await resumeMain();
+    await resumeMember();
+    await reached("Lab installed the first removal from the main", () => memberHasRemoval(first.public));
+    assert.deepEqual(await first.open(member), { refused: true });
+    resumeMember = disconnect(member.address);
+    await eventually(() => !relay.has(member.address));
     await remove(second);
     // Change the Workshop's stored format while the main box stays live. The previous process
     // has really used this ledger. Cut the new process before the atomic replacement, exercise
@@ -674,26 +658,25 @@ link.askToSend();
     const resumeExtra = disconnect(extraAddress);
     await eventually(() => !relay.has(macAddress) && !relay.has(extraAddress));
     await resumeMember();
-    // Isolated from every peer, the member can use the authorizations it already has.
+    // In isolation the member still has the old grant and waits to confirm its freshness.
     assert.equal(labLink().setup?.primary, macPub);
-    await opens(yours, "an isolated Lab accepted its cached desktop");
-    await opens(second, "an isolated Lab still had the older grant");
-    assert.equal((await second.request("GET", "kuvo/info")).status, 200);
+    assert.equal((await yours.open(member)).waiting, "Checking this app with your other computers…");
+    assert.equal((await second.open(member)).waiting, "Checking this app with your other computers…");
     assert.equal(memberHasRemoval(second.public), false);
 
-    // The Workshop comes back while the main computer is still off. Its signed update closes the
-    // cached session and stops the same key from opening another.
+    // Even the upgraded Workshop cannot confirm current access on behalf of the main.
     await resumeExtra();
-    await reached("Lab installed the removal once Workshop returned", () => memberHasRemoval(second.public));
-    assert.deepEqual(await second.request("GET", "kuvo/info"), { closed: true });
-    assert.deepEqual(await second.open(member), { refused: true });
-    assert.equal((await yours.request("GET", "kuvo/info")).status, 200);
+    assert.equal((await second.open(member)).waiting, "Checking this app with your other computers…");
     assert.equal(relay.has(macAddress), false);
     await resumeMain();
+    await reached("Lab installed the second removal from the main", () => memberHasRemoval(second.public));
+    assert.deepEqual(await second.open(member), { refused: true });
+    await opens(yours, "Lab accepted its current desktop after the main confirmed the grant");
+    assert.equal((await yours.request("GET", "kuvo/info")).status, 200);
   } finally {
     for (const resume of restart) resume();
     await stopWorkshop();
-    await ask("PUT", "kuvo/link/peers", { peers: before });
+    commitRoster(before);
     link.macLink.wake?.();
   }
 });

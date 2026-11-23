@@ -252,7 +252,7 @@ export { askMainToCheck, consumeFleetCheck, fleetFacts, fleetWith, followPeers, 
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, receiveRelease, releaseRound, requestUpdateNow, startUpdate, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { activationAllowed, fleetTarget, STAGE_WAIT } from "./updates/fleet";
 export { keepLegacyRelease } from "./updates/keep";
-export { publishedShared } from "./setup/shared";
+export { publishedShared, stageShared } from "./setup/shared";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
