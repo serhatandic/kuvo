@@ -18,6 +18,7 @@ import { takesForwarded } from "../work-queue/forward";
 import { localLabels, setupLabels } from "../work-queue/labels";
 import { mailsFor } from "../work-queue/parts";
 import { localZoneForSeed, publishZoneSetting, readZoneSetting, seedZoneOf } from "../zone/setting";
+import { mergeStarred, noStars, starredForSeed } from "../areas/models-starred";
 import { primaryFenced } from "./lease";
 import { followedSetup, usesAcceptedSaves } from "./record";
 import { MAX_SHARED_BYTES, seedSources, SharedCapacity, sharedValue, stageShared, withSeedSources, type Receipt, type SeedSnapshot, type SharedValues } from "./shared";
@@ -127,6 +128,13 @@ const preferences: Record<SeedKind, SeedPolicy> = {
         ? proposed : prior;
       return { value, fields: value ? { zone: object(value).zone } : {} };
     },
+  },
+  // Each computer's own stars (`box/models.json`), joined in the order the setup has them, then each
+  // copy's others. A star a copy had when it was taken before, unstarred in the setup since, stays so.
+  setupStarredModels: {
+    read: () => starredForSeed(),
+    empty: value => noStars(value),
+    merge: (prior, incoming, field) => mergeStarred(prior, incoming, (key, accepted, proposed) => field(key, accepted, proposed)),
   },
   setupUsageDisplay: {
     read: link => {

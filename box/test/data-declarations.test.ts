@@ -92,8 +92,10 @@ const REQUIRED_KINDS = [
   "libraryIndex",
   "libraryThumbnails",
 
+  "marketplaceInstallations",
   "setupPersonalities",
   "setupTimeZone",
+  "setupStarredModels",
   "setupUsageDisplay",
   "localSettingsAndPermissions",
   "modelsAndReusableTools",

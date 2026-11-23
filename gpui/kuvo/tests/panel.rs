@@ -793,9 +793,9 @@ fn a_side_chat_asks_on_the_model_picked_with_a_file_attached_and_leaves_the_conv
     cx.simulate_keystrokes("cmd-alt-0");
     cx.run_until_parked();
     click(cx, "tile-side-chat");
-    // The conversation's composer's paperclip and chips: on the conversation's own model and effort.
+    // The conversation's composer's paperclip and its one model chip: on the conversation's own model.
     assert!(bounds(cx, "side-chat-attach").is_some());
-    assert!(bounds(cx, "side-chat-effort").is_some());
+    assert!(bounds(cx, "side-chat-model").is_some() && bounds(cx, "effort-chip").is_none());
     let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).side_chat()).unwrap();
     assert_eq!(view.read_with(cx, |view, _| view.chip_label()).as_deref(), Some("Claude Opus 5.5"));
 
@@ -803,6 +803,9 @@ fn a_side_chat_asks_on_the_model_picked_with_a_file_attached_and_leaves_the_conv
     click(cx, "side-chat-model");
     click(cx, "model-row-anthropic/claude-sonnet-5-5");
     assert_eq!(view.read_with(cx, |view, _| view.chip_label()).as_deref(), Some("Claude Sonnet 5.5"));
+    // And its effort, in the picker's Reasoning, said on the chip.
+    click(cx, "side-chat-model");
+    click(cx, "model-effort-low");
 
     // A file dropped on it, shown above the field.
     let folder = tempfile::tempdir().unwrap();
@@ -829,6 +832,7 @@ fn a_side_chat_asks_on_the_model_picked_with_a_file_attached_and_leaves_the_conv
     assert_eq!(asked[0]["question"], json!("Which delay?"));
     assert_eq!(asked[0]["model"]["providerID"], json!("anthropic"));
     assert_eq!(asked[0]["model"]["id"], json!("claude-sonnet-5-5"));
+    assert_eq!(asked[0]["model"]["variant"], json!("low"));
     assert_eq!(asked[0]["files"].as_array().map(Vec::len), Some(1));
     assert_eq!(asked[0]["files"][0]["name"], json!("notes.md"));
     // Shown with its file, the composer emptied; the conversation stays on its own model.

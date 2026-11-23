@@ -5,6 +5,7 @@ import { isObject, parsed } from "../../shared/json";
 import { LABEL_RESTORE_FEATURE, LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { groupsRoute, listedGroups } from "../areas/groups";
 import { personalityRoute } from "../areas/personalities";
+import { MODELS_STARRED_ROUTE, modelsStarredRoute, STARRED_KIND } from "../areas/models-starred";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { ARCHIVE_PEER_ACTION, SETTINGS_PAGE_ROUTE, archivedPeerAction, settingsPageRoute } from "../areas/settings-pages";
 import { answerWakes, type WakeAction } from "../areas/wakes";
@@ -15,7 +16,7 @@ import { awaySessions, frozen } from "../moves/records";
 import { ownKey, peersOf, type MailSender } from "../peers/known";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { collected } from "../server/sent-once";
-import { followedSetup } from "../setup/record";
+import { followedSetup, usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
 import { forwardAct, runForwardDecision, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { type DataReference, type Owner } from "./resolve";
@@ -38,6 +39,9 @@ export function ownerWrite(method: string, path: string, body: unknown): Write |
   if (archive) return { ref: { kind: "conversations", id: archive[1] }, method: "POST", path, answer: context => archivedPeerAction(context, archive[1]!, archive[2]!) };
   const settings = method === "PATCH" && path === "kuvo/settings/clock" ? path.match(SETTINGS_PAGE_ROUTE) : null;
   if (settings) return { ref: { kind: "setupTimeZone" }, method: "PATCH", path, answer: context => settingsPageRoute(context, settings) };
+  // Your starred models are the setup's, once it saves setup-wide values: a star saved on a member
+  // is saved by the main computer. (Before, each box keeps its own.)
+  if (method === "POST" && path === MODELS_STARRED_ROUTE && usesAcceptedSaves(followedSetup(readLink()))) return { ref: { kind: STARRED_KIND }, method, path, answer: modelsStarredRoute };
   const personality = /^(?:kuvo\/personalities)(?:\/([A-Za-z0-9_-]{1,100}))?$/.exec(path);
   if (personality && (method === "PATCH" || method === "POST" || method === "DELETE"))
     return { ref: { kind: "setupPersonalities" }, method, path, answer: context => personalityRoute(context, personality) };

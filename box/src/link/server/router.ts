@@ -65,6 +65,7 @@ import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComput
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
 import { MODELS_STARRED_ROUTE, modelsStarredRoute } from "../areas/models-starred";
+import { MODELS_SPEED_ROUTE, modelsSpeedRoute } from "../areas/models-speed";
 import { READ_ALL_ROUTE, readAllRoute } from "../areas/read-all";
 import { workQueueClient, WORK_QUEUE_ROUTE, workQueueRoute } from "../areas/work-queue";
 import { pluginSearchRoute } from "../areas/plugins";
@@ -262,6 +263,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "models.offered", when: route => route === MODELS_OFFERED_ROUTE, answer: modelsOfferedRoute },
   // Your starred models, shared by every client's picker (PROTOCOL.md, "The models offered").
   { feature: "models.starred", when: route => route === MODELS_STARRED_ROUTE, answer: modelsStarredRoute },
+  // The speed you picked for each provider (Codex's Fast), which its turns run at (PROTOCOL.md, "The models offered").
+  { feature: "models.speed", when: route => route === MODELS_SPEED_ROUTE, answer: modelsSpeedRoute },
   // Mark All as Read (PROTOCOL.md, "What's been read").
   { feature: "sessions.read", when: route => route === READ_ALL_ROUTE, answer: readAllRoute },
   // The Work Queue (PROTOCOL.md, "The Work Queue"), before a bot's work, whose routes it starts like.

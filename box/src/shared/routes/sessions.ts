@@ -237,16 +237,18 @@ export type ModelAction = Infer<typeof MODEL_ACTION>;
  * picker; a picker leaves either out, though a conversation on it carries on; `side`, where a
  * conversation on it runs, the engine or the coding agents' bridge, Custom Auto's too; `efforts`, its
  * variants; `aliases`, other ids a conversation may name it by; `free`, it needs no account:
- * OpenCode Zen's free models); whether the engine's and the coding agents' could be said
+ * OpenCode Zen's free models; `speeds`, those it runs at besides its standard one, Codex's Fast,
+ * with each provider's picked `speed`, `models.speed`); whether the engine's and the coding agents' could be said
  * (`known`); the coding agents' accounts still listing theirs (`listing`: one of theirs not
  * listed may still run); and the model a new session starts on, for the one wanted (`starting`: null for none
  * that runs; left out while the engine can't say). */
 const MODEL_REF = object({ providerID: string, id: string, "variant?": string });
 const STARRED = object({ providerID: string, id: string });
+const SPEED = object({ id: string, name: string, "description?": string });
 export const MODELS_OFFERED = object({
-  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
+  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool, "speeds?": list(SPEED) })),
   known: object({ engine: bool, agents: bool }),
-  "providers?": list(object({ id: string, name: string, "label?": string })),
+  "providers?": list(object({ id: string, name: string, "label?": string, "speed?": string })),
   "starred?": list(STARRED),
   "listing?": list(string),
   "unavailable?": list(object({ id: string })),
@@ -258,6 +260,8 @@ export const MODELS_OFFERED = object({
 });
 /** Your starred models, as `kuvo/models/starred` keeps them (`models.starred`). */
 export const MODELS_STARRED = object({ starred: list(STARRED) });
+/** The speed picked for a provider, as `kuvo/models/speed` keeps it (`models.speed`): null for Standard. */
+export const MODELS_SPEED = object({ providerID: string, speed: nullable(string) });
 
 /** What a session is, as every client's lists go by it (`kuvo/sessions/list`, PROTOCOL.md "Session
  * lists"): a project's session, a chat, a bot's conversation, a bot's seat in a group chat, a run
@@ -473,7 +477,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/models/offered", feature: "models.offered", answers: { 200: MODELS_OFFERED, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED } },
-  { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED } },
+  { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/models/speed", feature: "models.speed", answers: { 200: MODELS_SPEED, 400: REFUSED } },
   { route: "GET kuvo/sessions/:id/queue", feature: "queue.items", answers: { 200: QUEUE_READ } },
   { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
   { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
