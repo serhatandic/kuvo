@@ -22,6 +22,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
+    if word(0) == Some("install") && args.iter().any(|arg| arg == "--status") {
+        return install_status(&args[1..]);
+    }
     let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
@@ -84,49 +87,89 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
-    let usage =
-        "usage: kuvo-box rehome <root> --run --app <bundle> --release <folder> --engine <folder>";
+    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --back | --run --app <bundle> --release <folder> --engine <folder>";
+    let invalid = || {
+        eprintln!("{usage}");
+        Ok(ExitCode::from(2))
+    };
     let Some((root, options)) = args.split_first() else {
-        return Err(usage.into());
+        return invalid();
     };
     let name = Path::new(root);
     if name.file_name() != Some(root.as_os_str()) {
-        return Err(usage.into());
+        return invalid();
+    }
+    let account = Account::current()?;
+    let folder = account.home_folder(Platform::current(), &env::vars_os().collect())?;
+    let target = folder.join(root);
+    if options == [OsStr::new("--status")] {
+        println!("{}", kuvo_move::rehome_status(&Home::new(target)?));
+        return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if options == [OsStr::new("--resume")] {
+        let outcome = kuvo_move::mac::resume(&Home::new(target)?, &folder, &account.home)?;
+        println!("{}", serde_json::to_string(&outcome)?);
+        return Ok(ExitCode::from(outcome.exit_code()));
+    }
+    #[cfg(target_os = "macos")]
+    if options == [OsStr::new("--back")] {
+        let outcome = kuvo_move::mac::back(&Home::new(target)?)?;
+        println!("{}", serde_json::to_string(&outcome)?);
+        return Ok(ExitCode::from(outcome.exit_code()));
+    }
+    #[cfg(target_os = "macos")]
+    if options == [OsStr::new("--settle")] {
+        let selected = env::var_os("KUVO_HOME")
+            .filter(|path| !path.is_empty())
+            .map_or_else(|| folder.join(".kuvo-code"), PathBuf::from);
+        let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.into());
+        if located(&selected) != located(&target) {
+            return invalid();
+        }
+        let outcome = kuvo_move::mac::settle(&Home::new(target)?, &folder, &account.home)?;
+        println!("{}", serde_json::to_string(&outcome)?);
+        return Ok(ExitCode::from(outcome.exit_code()));
     }
     let mut options = options.iter();
     let mut run = false;
     let (mut app, mut release, mut engine) = (None, None, None);
     while let Some(word) = options.next() {
-        let target = match word.to_str().ok_or(usage)? {
-            "--run" if !run => {
+        let target = match word.to_str() {
+            Some("--run") if !run => {
                 run = true;
                 continue;
             }
-            "--app" if app.is_none() => &mut app,
-            "--release" if release.is_none() => &mut release,
-            "--engine" if engine.is_none() => &mut engine,
-            _ => return Err(usage.into()),
+            Some("--app") if app.is_none() => &mut app,
+            Some("--release") if release.is_none() => &mut release,
+            Some("--engine") if engine.is_none() => &mut engine,
+            _ => return invalid(),
         };
-        *target = Some(
-            options
-                .next()
-                .map(Path::new)
-                .filter(|path| path.is_absolute())
-                .ok_or(usage)?,
-        );
+        *target = options
+            .next()
+            .map(Path::new)
+            .filter(|path| path.is_absolute());
+        if target.is_none() {
+            return invalid();
+        }
     }
     let (true, Some(app), Some(release), Some(engine)) = (run, app, release, engine) else {
-        return Err(usage.into());
+        return invalid();
     };
-    let account = Account::current()?;
-    let folder = account.home_folder(Platform::current(), &env::vars_os().collect())?;
-    let target = folder.join(root);
-    let home = env::var_os("KUVO_HOME")
+    let Some(home) = env::var_os("KUVO_HOME")
         .filter(|path| path != OsStr::new(""))
         .map(PathBuf::from)
-        .ok_or("KUVO_HOME must name the destination of the app move")?;
-    if !home.is_absolute() || home.canonicalize()? != target.canonicalize()? {
-        return Err("KUVO_HOME must name the destination of the app move".into());
+    else {
+        return invalid();
+    };
+    if !home.is_absolute()
+        || home
+            .canonicalize()
+            .ok()
+            .zip(target.canonicalize().ok())
+            .is_none_or(|(home, target)| home != target)
+    {
+        return invalid();
     }
     #[cfg(target_os = "macos")]
     {
@@ -149,10 +192,98 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
         println!(
             "{}",
             serde_json::json!({"result":"refused","message":
-            "Kuvo on this machine is in its own home already: there's nothing to move."})
+            "Kuvo on this machine is in its own home already: there's nothing to move.",
+            "status":kuvo_move::rehome_status(&Home::new(target)?)})
         );
         Ok(ExitCode::FAILURE)
     }
+}
+
+fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use std::{ffi::OsStr, path::Path};
+
+    let usage = || {
+        eprintln!("usage: kuvo-box install --status --root <name> [--app <bundle>]");
+        Ok(ExitCode::from(2))
+    };
+    let mut words = args.iter().filter(|word| *word != "--status");
+    let (mut root, mut bundle) = (None, None);
+    while let Some(word) = words.next() {
+        let slot = match word.to_str() {
+            Some("--root") if root.is_none() => &mut root,
+            Some("--app") if bundle.is_none() => &mut bundle,
+            _ => return usage(),
+        };
+        *slot = words.next().map(Path::new);
+        if slot.is_none() {
+            return usage();
+        }
+    }
+    let Some(root) = root.filter(|root| root.file_name() == Some(root.as_os_str())) else {
+        return usage();
+    };
+    let platform = Platform::current();
+    let account = Account::current()?;
+    let folder = account.home_folder(platform, &env::vars_os().collect())?;
+    let home = Home::new(folder.join(root))?;
+    let selected = env::var_os("KUVO_HOME")
+        .filter(|path| path != OsStr::new(""))
+        .map_or_else(|| folder.join(".kuvo-code"), PathBuf::from);
+    let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.into());
+    if located(home.root()) != located(&selected) {
+        return usage();
+    }
+    #[cfg(target_os = "macos")]
+    let source = {
+        let Some(id) = bundle
+            .filter(|path| path.is_absolute())
+            .and_then(|app| kuvo_move::mac::bundle_id(app).ok())
+        else {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "result":"refused","message":"Kuvo couldn't tell which app started it. Open Kuvo again."
+                })
+            );
+            return Ok(ExitCode::FAILURE);
+        };
+        let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
+        if real != (id == "run.kuvo.code") {
+            let message = if real {
+                "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."
+            } else {
+                "Kuvo itself sets up ~/.kuvo-code only."
+            };
+            println!(
+                "{}",
+                serde_json::json!({"result":"refused","message":message})
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        Some(folder.join("Library/Application Support").join(id))
+    };
+    #[cfg(not(target_os = "macos"))]
+    let source: Option<PathBuf> = {
+        let _ = bundle;
+        None
+    };
+    let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, None)?;
+    if judge.verdict == kuvo_move::install::Verdict::Stuck
+        && judge.status["step"].is_null()
+        && let Some(message) = judge.status["failed"]["message"].as_str()
+    {
+        println!(
+            "{}",
+            serde_json::json!({"result":"refused","message":message})
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    let mut reply = serde_json::to_value(judge)?;
+    if reply["verdict"] == "two" {
+        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
+    }
+    println!("{reply}");
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn shutdown() {

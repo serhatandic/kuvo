@@ -1,5 +1,11 @@
-use super::{AppStep, BESIDE, StagedApp, bundle_id, invalid, prepare, source};
-use crate::{Disk, Error, entries, json_at, metadata};
+use super::{
+    AppStep, BESIDE, ChangePoint, StagedApp, bundle_id, history, invalid, merge, preferences,
+    prepare, processes, source,
+};
+use crate::{
+    Disk, Error, entries, json_at, metadata,
+    status::{UNREADABLE_JOURNAL, progress, status},
+};
 use kuvo_store::{files, format, home::Home, layout, locks::OwnedLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,6 +31,14 @@ const SAVED_PASSWORDS: &str = "Passwords the earlier Kuvo Code saved for website
 const COPY_START: &str = "It's moved, and starts by itself only in ~/.kuvo-code.";
 const DEFERRED_START: &str =
     "Your sessions are moved, but Kuvo couldn't be started on this Mac. Try again.";
+const STUCK: &str = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
+const FAILED: &str =
+    "Kuvo couldn't move your sessions this time, and left everything as it was. Try again.";
+const TWO: &str = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+const OURS: &str = "Kuvo is set up on this Mac already, so nothing was moved over it. An earlier Kuvo Code's sessions are still in its own folder.";
+const NOT_BACK: &str = "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back.";
+const NOT_MOVED: &str = "Kuvo on this Mac hasn't moved: there's nothing to move back.";
+const ROUNDS: usize = 3;
 const VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +50,7 @@ pub enum CutoverStep {
     FirstPlacement,
     Placed,
     FirstGitRepair,
+    FirstHistory,
     Git,
     Layout,
     Published,
@@ -56,7 +71,7 @@ pub struct Outcome {
 impl Outcome {
     pub fn exit_code(&self) -> u8 {
         match self.result {
-            "done" => 0,
+            "done" | "nothing" => 0,
             "stuck" => 3,
             _ => 1,
         }
@@ -93,6 +108,10 @@ struct Publication {
     identities: BTreeMap<usize, EntryIdentity>,
     input: String,
     repairs: git::Repairs,
+    #[serde(default)]
+    history: history::External,
+    #[serde(default)]
+    merged: Vec<merge::Merged>,
     counts: super::counts::Comparison,
     leftovers: Vec<String>,
     dropped: Vec<String>,
@@ -155,6 +174,22 @@ struct Placement {
     installed: bool,
 }
 
+struct Progress(PathBuf);
+
+impl Progress {
+    fn show(&self, step: &str) {
+        // The journal itself is authoritative for recovery. The phase is
+        // only a hint while an authenticated mover holds the lock.
+        let _ = files::write_atomic(&self.0, step.as_bytes());
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        let _ = files::remove_file_synced(&self.0);
+    }
+}
+
 fn not_set(value: &bool) -> bool {
     !value
 }
@@ -164,9 +199,160 @@ fn has_pending(home: &Home) -> Result<bool, Error> {
     Ok(metadata(&disk.path(PENDING)?)?.is_some())
 }
 
-pub fn blocks_open(home: &Home) -> Result<bool, Error> {
+pub fn unfinished(home: &Home) -> Result<Option<PathBuf>, Error> {
     let disk = Disk(home.root().into());
-    Ok(read_pending(&disk.path(PENDING)?)?.is_some_and(|saved| saved.phase != Phase::Settle))
+    let pending = disk.path(PENDING)?;
+    if let Some(saved) = read_pending(&pending)? {
+        return Ok((saved.phase != Phase::Settle).then_some(pending));
+    }
+    Ok(legacy_fence(&disk)?.map(|_| home.root().join(JOURNAL)))
+}
+
+/// Resume a Rust publication using the installer's original inputs. The
+/// mover validates the saved paths again after it has taken the lock.
+pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outcome, Error> {
+    let disk = Disk(home.root().into());
+    let pending = disk.path(PENDING)?;
+    let publication = match read_pending(&pending) {
+        Ok(Some(publication)) => publication,
+        Ok(None) => {
+            if let Some(outcome) = legacy_fence(&disk)? {
+                return Ok(outcome);
+            }
+            return Ok(Outcome {
+                result: "nothing",
+                status: crate::rehome_status(home),
+                started: None,
+                message: None,
+            });
+        }
+        Err(error) => {
+            eprintln!("The move could not read its publication record: {error}");
+            return Ok(Outcome {
+                result: "stuck",
+                status: crate::rehome_status(home),
+                started: None,
+                message: Some(STUCK.into()),
+            });
+        }
+    };
+    let plan = &publication.plan;
+    Ok(Run {
+        home,
+        account,
+        system_account,
+        bundle: &plan.app.bundle,
+        release: &plan.release,
+        engine: &plan.engine,
+    }
+    .execute(|_| {}))
+}
+
+/// The standalone move keeps its predecessor where it was. A legacy move
+/// that relocated the predecessor needs its own rollback protocol.
+pub fn back(home: &Home) -> Result<Outcome, Error> {
+    let disk = Disk(home.root().into());
+    let status = crate::rehome_status(home);
+    let state = format::ObjectFormat::additive("Rehome state").read(&disk.path(STATE)?)?;
+    let moved = status["state"] == "done" && status["way"] == "move";
+    let standalone =
+        state.is_some_and(|record| record.fields.get("app").is_some_and(Value::is_object));
+    let (result, message) = if unfinished(home)?.is_some() || (moved && !standalone) {
+        ("stuck", STUCK)
+    } else if moved {
+        ("refused", NOT_BACK)
+    } else {
+        ("refused", NOT_MOVED)
+    };
+    Ok(Outcome {
+        result,
+        status,
+        started: None,
+        message: Some(message.into()),
+    })
+}
+
+/// Settle what a moved home has left without reading a saved sign-in. For a
+/// real account Helper's authenticated startup owns retiring original keys.
+pub fn settle(home: &Home, account: &Path, system_account: &Path) -> Result<Outcome, Error> {
+    let disk = Disk(home.root().into());
+    let nothing = || Outcome {
+        result: "nothing",
+        status: crate::rehome_status(home),
+        started: None,
+        message: None,
+    };
+    if unfinished(home)?.is_some() {
+        return Ok(nothing());
+    }
+    let state = disk.path(STATE)?;
+    let format = format::ObjectFormat::additive("Rehome state");
+    let Some(record) = format.read(&state)? else {
+        return Ok(nothing());
+    };
+    let record = Value::Object(record.fields);
+    if record["state"] != "done"
+        || record["way"] != "move"
+        || record["owed"].as_array().is_none_or(Vec::is_empty)
+    {
+        return Ok(nothing());
+    }
+    let Ok(app) = serde_json::from_value::<App>(record["app"].clone()) else {
+        return Ok(nothing());
+    };
+    let real = is_account_home(home, system_account)?;
+    if real != (app.id == "run.kuvo.code")
+        || !app.bundle.is_absolute()
+        || !bundle_id(&app.bundle).is_ok_and(|id| id == app.id)
+    {
+        return Ok(nothing());
+    }
+    let origin = account.join("Library/Application Support").join(&app.id);
+    if record["from"].as_str().map(Path::new) != Some(origin.as_path()) {
+        return Ok(nothing());
+    }
+    let _layout = layout::lock_for_move(home, Duration::from_secs(3))?;
+    let _handover =
+        OwnedLock::acquire_rehome(&disk.path("updates/rehome/lock")?, Duration::from_secs(3))?;
+    let Some(record) = format.read(&state)? else {
+        return Ok(nothing());
+    };
+    let mut record = Value::Object(record.fields);
+    if record["state"] != "done"
+        || record["way"] != "move"
+        || record["app"] != json!(app)
+        || record["from"].as_str().map(Path::new) != Some(origin.as_path())
+    {
+        return Ok(nothing());
+    }
+    let Some(owed) = record["owed"].as_array_mut() else {
+        return Ok(nothing());
+    };
+    let keys = app.bundle.join("Contents/MacOS/kuvo-keys");
+    if !real
+        && !owed.iter().any(|each| each == "start")
+        && owed.iter().any(|each| each == "keychain")
+        && metadata(&keys)?.is_some_and(|meta| meta.is_file())
+        && keychain::delete_at(&keys, home.root(), account)
+    {
+        owed.retain(|each| each != "keychain");
+    }
+    if saved_sign_ins_were_imported(&origin) {
+        owed.retain(|each| each != "passwords");
+    }
+    record["formatVersion"] = json!(1);
+    write_json(&state, &record, true)?;
+    Ok(Outcome {
+        result: "done",
+        status: status(Some(&record)),
+        started: None,
+        message: None,
+    })
+}
+
+fn saved_sign_ins_were_imported(source: &Path) -> bool {
+    preferences::read(source)
+        .is_ok_and(|prefs| prefs.get("passwords.movedToVault") == Some(&Value::Bool(true)))
 }
 
 /// Called by the resident once it has the transferred identity from Helper.
@@ -221,27 +407,32 @@ impl Run<'_> {
     /// The layout lock excludes startup until the marker commits. Hold the
     /// rehome lock as well for the signed key tool and any legacy caller.
     pub fn execute(&self, mut complete: impl FnMut(CutoverStep)) -> Outcome {
-        match self.run(&mut complete) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                let pending = has_pending(self.home).unwrap_or(true);
-                Outcome {
-                    result: if pending { "stuck" } else { "refused" },
-                    status: status(None),
-                    started: None,
-                    message: Some(error.to_string()),
-                }
+        self.run(&mut complete).unwrap_or_else(|error| {
+            let pending = has_pending(self.home).unwrap_or(true);
+            Outcome {
+                result: if pending {
+                    "stuck"
+                } else if matches!(error, Error::Format(_) | Error::Layout(_)) {
+                    "failed"
+                } else {
+                    "refused"
+                },
+                status: status(None),
+                started: None,
+                message: Some(error.to_string()),
             }
-        }
+        })
     }
 
     fn run(&self, complete: &mut impl FnMut(CutoverStep)) -> Result<Outcome, Error> {
         let id = bundle_id(self.bundle)?;
         let real = is_account_home(self.home, self.system_account)?;
         if real != (id == "run.kuvo.code") {
-            return Err(invalid(
-                "Only Kuvo itself moves its data in ~/.kuvo-code. A copy of the app uses a home of its own.",
-            ));
+            return Ok(refused(if real {
+                "Only Kuvo itself moves into ~/.kuvo-code: a copy moves into a home of its own."
+            } else {
+                "Kuvo itself moves into ~/.kuvo-code only."
+            }));
         }
         let app = App {
             bundle: self.bundle.into(),
@@ -252,37 +443,135 @@ impl Run<'_> {
         let pending = disk.path(PENDING)?;
         let lock = disk.path("updates/rehome/lock")?;
         let _handover = OwnedLock::acquire_rehome(&lock, Duration::from_secs(3))?;
-        if let Some(mut publication) = read_pending(&pending)? {
-            publication.validate(self, &app)?;
-            return publication.finish(self, &disk, real, complete);
+        let progress = Progress(disk.path("updates/rehome/run.phase")?);
+        // A legacy record is a startup fence in its own right, even when
+        // there is no Rust publication record beside it.
+        if metadata(&pending)?.is_none() {
+            let layout = layout::inspect(self.home)?;
+            if layout == layout::Layout::Unmarked {
+                recover_unplaced_legacy(&disk, self.account, &app.id)?;
+            }
+            if let Some(outcome) = legacy_fence(&disk)? {
+                return Ok(outcome);
+            }
+            if layout == layout::Layout::Current
+                && let Some(answer) = published_answer(&disk, &app)?
+            {
+                return Ok(answer);
+            }
+            if let Some(message) = occupied_home(&disk)? {
+                return Ok(refused(message));
+            }
+            if layout != layout::Layout::Unmarked {
+                return Err(Error::UnknownHome(disk.0));
+            }
         }
-        if layout::inspect(self.home)? == layout::Layout::Current {
-            return published_answer(&disk, &app);
+
+        for round in 1..=ROUNDS {
+            let attempt = if let Some(mut publication) = read_pending(&pending)? {
+                publication.validate(self, &app)?;
+                if publication.phase == Phase::Settle {
+                    progress.show("settle");
+                }
+                publication.finish(self, &disk, real, complete)
+            } else {
+                progress.show("plan");
+                self.attempt(&disk, &app, real, &progress, complete)
+            };
+            match attempt {
+                Err(error @ Error::SourceChanged(point)) => {
+                    files::remove_tree_synced(&disk.path(super::STAGE)?)?;
+                    if round == ROUNDS {
+                        let step = match point {
+                            ChangePoint::Check => "check",
+                            ChangePoint::Keys => "keys",
+                            ChangePoint::Place => "place",
+                            ChangePoint::Fix => "fix",
+                        };
+                        return note_failure(&disk, "failed", step, &error.to_string());
+                    }
+                    eprintln!(
+                        "Running the move again ({} of {ROUNDS}): the source changed while it was copied.",
+                        round + 1
+                    );
+                }
+                outcome => return outcome,
+            }
         }
-        if layout::inspect(self.home)? != layout::Layout::Unmarked {
-            return Err(Error::UnknownHome(disk.0));
-        }
+        unreachable!("the last move round always returns");
+    }
+
+    fn attempt(
+        &self,
+        disk: &Disk,
+        app: &App,
+        real: bool,
+        progress: &Progress,
+        complete: &mut impl FnMut(CutoverStep),
+    ) -> Result<Outcome, Error> {
         let source = self
             .account
             .join("Library/Application Support")
             .join(&app.id);
-        release::check(self, real)?;
-        source::no_open_database(&source)?;
+        source::validate_legacy(&source)?;
+        super::engine::check_marker_path(&source.join("box"))?;
+        let work = disk.path("updates/rehome")?;
+        if let Err(error) = release::check(self, real)
+            .and_then(|_| super::engine::admit_schema(&source, &work))
+            .and_then(|_| processes::quiesce(&source, &app.bundle, &app.id, real))
+            .and_then(|_| source::require_quiet(&Disk(source.join("box"))))
+        {
+            return note_failure(disk, "refused", "plan", &error.to_string());
+        }
+        if !source::recorded_workers(disk)?.is_empty() {
+            return note_failure(
+                disk,
+                "refused",
+                "plan",
+                "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.",
+            );
+        }
         let began = now();
         let input = source::fingerprint(&source)?;
-        let staged = prepare(
+        let mut at = "clone";
+        progress.show(at);
+        let staged = match prepare(
             self.home,
             self.account,
             self.bundle,
             self.release,
             self.engine,
-            |step| complete(CutoverStep::Staging(step)),
-        )?;
-        let plan = Plan::new(self, source, app, began)?;
-        let mut prepared = Publication::prepare(plan, staged, input, &disk)?;
-        prepared.write(&disk)?;
+            |step| {
+                at = match step {
+                    AppStep::Clone => "upgrade",
+                    AppStep::Import => "database",
+                    AppStep::Database => "rewrite",
+                    AppStep::Rewrite | AppStep::Check => "check",
+                };
+                progress.show(at);
+                complete(CutoverStep::Staging(step));
+            },
+        ) {
+            Ok(staged) => staged,
+            Err(error @ Error::SourceChanged(_)) => return Err(error),
+            Err(error) => {
+                files::remove_tree_synced(&disk.path(super::STAGE)?)?;
+                let message = match error {
+                    Error::AppPreferences(_) => error.to_string(),
+                    _ => {
+                        eprintln!("The move stopped at {at}: {error}");
+                        FAILED.into()
+                    }
+                };
+                return note_failure(disk, "failed", at, &message);
+            }
+        };
+        let plan = Plan::new(self, source, app.clone(), began)?;
+        let mut prepared = Publication::prepare(plan, staged, input, disk)?;
+        prepared.history.validate(self.account)?;
+        prepared.write(disk)?;
         complete(CutoverStep::Prepared);
-        prepared.finish(self, &disk, real, complete)
+        prepared.finish(self, disk, real, complete)
     }
 }
 
@@ -405,18 +694,16 @@ impl Publication {
         files::remove_tree_synced(&staged.path)?;
         let repairs = git::plan(&plan, &placed, disk)?;
         layout::publish(&Home::new(target.join("work"))?)?;
-        let mut dropped = Vec::new();
-        if staged.dropped_waiting_messages > 0 {
-            dropped.push(format!(
-                "{} messages waiting in the earlier engine couldn't come along.",
-                staged.dropped_waiting_messages
-            ));
+        let mut dropped = staged.dropped;
+        match staged.dropped_letters {
+            0 => {}
+            1 => dropped.push("A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along.".into()),
+            count => dropped.push(format!("{count} messages one of your agents sent to an agent on a machine that was away weren't delivered, and aren't brought along.")),
         }
-        if staged.dropped_letters > 0 {
-            dropped.push(format!(
-                "{} old letters couldn't come along.",
-                staged.dropped_letters
-            ));
+        match staged.dropped_waiting_messages {
+            0 => {}
+            1 => dropped.push("A message still waiting to reach an agent when the earlier Kuvo Code last quit wasn't kept: send it again.".into()),
+            count => dropped.push(format!("{count} messages still waiting to reach an agent when the earlier Kuvo Code last quit weren't kept: send them again.")),
         }
         files::sync_tree(&target, &disk.0)?;
         Ok(Self {
@@ -427,6 +714,8 @@ impl Publication {
             identities,
             input,
             repairs,
+            history: staged.history,
+            merged: staged.merged,
             counts: staged.counts,
             leftovers: staged.leftovers,
             dropped,
@@ -486,6 +775,7 @@ impl Publication {
                 return Err(invalid("A saved placement is missing its file identity."));
             }
         }
+        self.history.validate(run.account)?;
         self.repairs.validate()
     }
 
@@ -504,14 +794,17 @@ impl Publication {
         if self.phase == Phase::Keys {
             self.plan.write_journal(disk, "keys")?;
             let checked = self
-                .source_is_unchanged()
-                .and_then(|_| source::no_open_database(&self.plan.from));
+                .source_is_unchanged(ChangePoint::Keys)
+                .and_then(|_| processes::no_open_writers(&self.plan.from));
             if let Err(error) = checked.and_then(|_| {
                 keychain::copy(&self.plan, run.account, || complete(CutoverStep::KeyCopies))
             }) {
                 self.advance(Phase::Abort, disk)?;
                 self.rollback(disk, run.account)?;
-                return Err(error);
+                if matches!(error, Error::SourceChanged(_)) {
+                    return Err(error);
+                }
+                return note_failure(disk, "failed", "keys", &error.to_string());
             }
             clean_key_tool_lock(disk)?;
             self.advance(Phase::Place, disk)?;
@@ -519,34 +812,20 @@ impl Publication {
         }
         if self.phase == Phase::Place {
             self.plan.write_journal(disk, "place")?;
-            if let Err(error) = self.source_is_unchanged() {
+            if let Err(error) = self.source_is_unchanged(ChangePoint::Place) {
                 self.advance(Phase::Abort, disk)?;
                 self.rollback(disk, run.account)?;
                 return Err(error);
             }
-            for (position, &index) in self.placed.iter().enumerate() {
-                let item = &self.plan.placements[index];
-                let to = disk.path(placement_name(item)?)?;
-                let from = disk.path(Path::new(STAGING).join(staged_name(item)?))?;
-                let identity = self.identities[&index];
-                match (metadata(&from)?, metadata(&to)?) {
-                    (Some(meta), None) if EntryIdentity::from(&meta) == identity => {
-                        files::place_mac_entry(&from, &to)?
-                    }
-                    (None, Some(meta)) if EntryIdentity::from(&meta) == identity => {}
-                    _ => return Err(Error::Busy(to)),
-                }
-                if position == 0 {
-                    complete(CutoverStep::FirstPlacement);
-                }
-            }
-            let kind = disk.path("box/kind")?;
-            if files::read(&kind)?.as_deref() != Some(b"mac\n") {
-                files::write_atomic(&kind, b"mac\n")?;
+            if let Err(error) = self.place(disk, complete) {
+                self.advance(Phase::Abort, disk)?;
+                self.rollback(disk, run.account)?;
+                eprintln!("The move stopped at place: {error}");
+                return note_failure(disk, "failed", "place", FAILED);
             }
             if let Err(error) = self
-                .source_is_unchanged()
-                .and_then(|_| source::no_open_database(&self.plan.from))
+                .source_is_unchanged(ChangePoint::Place)
+                .and_then(|_| processes::no_open_writers(&self.plan.from))
             {
                 self.advance(Phase::Abort, disk)?;
                 self.rollback(disk, run.account)?;
@@ -557,13 +836,26 @@ impl Publication {
         }
         if self.phase == Phase::Fix {
             self.plan.write_journal(disk, "fix")?;
-            self.repairs
-                .apply(|| complete(CutoverStep::FirstGitRepair))?;
+            if let Err(error) = self
+                .repairs
+                .apply(|| complete(CutoverStep::FirstGitRepair))
+                .and_then(|_| self.history.apply(|| complete(CutoverStep::FirstHistory)))
+                .and_then(|_| self.source_is_unchanged(ChangePoint::Fix))
+            {
+                self.advance(Phase::Abort, disk)?;
+                self.rollback(disk, run.account)?;
+                if matches!(error, Error::SourceChanged(_)) {
+                    return Err(error);
+                }
+                eprintln!("The move stopped at fix: {error}");
+                return note_failure(disk, "failed", "fix", FAILED);
+            }
             self.advance(Phase::Clear, disk)?;
             complete(CutoverStep::Git);
         }
         if self.phase == Phase::Clear {
             self.plan.write_journal(disk, "clear")?;
+            self.history.retire_caches()?;
             self.moved_at.get_or_insert_with(now);
             self.write(disk)?;
             self.write_actions(disk)?;
@@ -601,6 +893,30 @@ impl Publication {
         Err(invalid("The saved move is at an invalid step."))
     }
 
+    fn place(&self, disk: &Disk, complete: &mut impl FnMut(CutoverStep)) -> Result<(), Error> {
+        for (position, &index) in self.placed.iter().enumerate() {
+            let item = &self.plan.placements[index];
+            let to = disk.path(placement_name(item)?)?;
+            let from = disk.path(Path::new(STAGING).join(staged_name(item)?))?;
+            let identity = self.identities[&index];
+            match (metadata(&from)?, metadata(&to)?) {
+                (Some(meta), None) if EntryIdentity::from(&meta) == identity => {
+                    files::place_mac_entry(&from, &to)?;
+                }
+                (None, Some(meta)) if EntryIdentity::from(&meta) == identity => {}
+                _ => return Err(Error::Busy(to)),
+            }
+            if position == 0 {
+                complete(CutoverStep::FirstPlacement);
+            }
+        }
+        let kind = disk.path("box/kind")?;
+        if files::read(&kind)?.as_deref() != Some(b"mac\n") {
+            files::write_atomic(&kind, b"mac\n")?;
+        }
+        Ok(())
+    }
+
     fn write_actions(&self, disk: &Disk) -> Result<(), Error> {
         let mut log = String::new();
         let mut record = |value: Value| {
@@ -618,21 +934,23 @@ impl Publication {
             "to":self.plan.to.join(layout::FILE),"formatVersion":1}),
         );
         record(json!({"act":"made","path":self.plan.to.join("box/kind"),"formatVersion":1}));
-        for effect in self.repairs.actions() {
+        for effect in self.repairs.actions().chain(self.history.actions()) {
             record(effect);
         }
         files::write_atomic(&disk.path(ACTS)?, log.as_bytes())?;
         Ok(())
     }
 
-    fn source_is_unchanged(&self) -> Result<(), Error> {
+    fn source_is_unchanged(&self, point: ChangePoint) -> Result<(), Error> {
         if source::fingerprint(&self.plan.from)? != self.input {
-            return Err(invalid("The app's data changed during the staged move."));
+            return Err(Error::SourceChanged(point));
         }
         Ok(())
     }
 
     fn rollback(&self, disk: &Disk, account: &Path) -> Result<(), Error> {
+        self.history.undo()?;
+        self.repairs.undo_outside()?;
         for &index in self.placed.iter().rev() {
             let item = &self.plan.placements[index];
             let staged = disk.path(Path::new(STAGING).join(staged_name(item)?))?;
@@ -661,13 +979,15 @@ impl Publication {
             if keys_owed {
                 owed.push("keychain");
             }
-            owed.push("passwords");
-            dropped.push(SAVED_PASSWORDS.into());
+            if !saved_sign_ins_were_imported(&self.plan.from) {
+                owed.push("passwords");
+                dropped.push(SAVED_PASSWORDS.into());
+            }
         }
         let state = json!({
             "state":"done","way":"move","from":self.plan.from,"to":self.plan.to,
             "failed":null,"dropped":dropped,"leftovers":self.leftovers,"counts":self.counts.report(),
-            "movedBack":false,"movedAt":self.moved_at,"app":self.plan.app,"merged":[],
+            "movedBack":false,"movedAt":self.moved_at,"app":self.plan.app,"merged":self.merged,
             "owed":owed,"tries":0,"nextTry":null,"asked":null,"waitingSince":null,"formatVersion":1
         });
         write_json(&disk.path(STATE)?, &state, true)?;
@@ -720,6 +1040,111 @@ fn read_pending(path: &Path) -> Result<Option<Publication>, Error> {
     json_at(path)
 }
 
+fn legacy_fence(disk: &Disk) -> Result<Option<Outcome>, Error> {
+    let path = disk.path(JOURNAL)?;
+    let Some(meta) = metadata(&path)? else {
+        return Ok(None);
+    };
+    let journal = meta
+        .is_file()
+        .then(|| json_at::<Value>(&path).ok().flatten())
+        .flatten()
+        .filter(|record| record["v"] == 1 && record["step"].is_string());
+    let (state, message) = match journal {
+        Some(ref record) if record["step"] == "done" => return Ok(None),
+        // The TypeScript action log has its own replay protocol. Keep
+        // startup fenced until this journal has been recovered.
+        Some(record) => (record, STUCK),
+        None => (Value::Null, UNREADABLE_JOURNAL),
+    };
+    let mut status = status(None);
+    status["state"] = json!(if state["step"] == "clear" {
+        "clearing"
+    } else {
+        "moving"
+    });
+    status["failed"] = json!({ "at": now(), "step": null, "message": message });
+    for name in ["step", "way", "from", "to"] {
+        status[name] = state[name].clone();
+    }
+    Ok(Some(Outcome {
+        result: "stuck",
+        status,
+        started: None,
+        message: Some(message.into()),
+    }))
+}
+
+/// A predecessor could stop while making its private copy, before logging
+/// any file actions or creating a Keychain receipt. The source is still
+/// authoritative then. A journal with effects needs its own replay.
+fn recover_unplaced_legacy(disk: &Disk, account: &Path, app: &str) -> Result<(), Error> {
+    let journal = disk.path(JOURNAL)?;
+    if !metadata(&journal)?.is_some_and(|meta| meta.is_file()) {
+        return Ok(());
+    }
+    let Some(record) = json_at::<Value>(&journal).ok().flatten() else {
+        return Ok(());
+    };
+    let source = account.join("Library/Application Support").join(app);
+    let planned_for =
+        |field: &str, expected: &Path| record[field].as_str().map(Path::new) == Some(expected);
+    if record["v"] != 1
+        || record["way"] != "move"
+        || !matches!(
+            record["step"].as_str(),
+            Some("plan" | "install" | "clone" | "upgrade" | "database" | "rewrite" | "check")
+        )
+        || !planned_for("from", &source)
+        || !planned_for("to", &disk.0)
+        || metadata(&disk.path("updates/rehome/keychain.json")?)?.is_some()
+    {
+        return Ok(());
+    }
+    let actions = disk.path(ACTS)?;
+    if metadata(&actions)?.is_some_and(|meta| !meta.is_file() || meta.len() != 0) {
+        return Ok(());
+    }
+    files::remove_tree_synced(&disk.path(STAGING)?)?;
+    files::remove_file_synced(&actions)?;
+    files::remove_file_synced(&journal)?;
+    Ok(())
+}
+
+fn note_failure(
+    disk: &Disk,
+    result: &'static str,
+    step: &str,
+    message: &str,
+) -> Result<Outcome, Error> {
+    let path = disk.path(STATE)?;
+    let mut record = format::ObjectFormat::additive("Rehome state")
+        .read(&path)?
+        .map(|record| Value::Object(record.fields))
+        .unwrap_or_else(|| json!({}));
+    record["state"] = json!("failed");
+    record["way"] = json!("move");
+    record["tries"] = json!(
+        record["tries"]
+            .as_u64()
+            .unwrap_or_default()
+            .saturating_add(1)
+    );
+    record["nextTry"] = Value::Null;
+    record["asked"] = Value::Null;
+    record["failed"] = json!({ "at": now(), "step": step, "message": message });
+    record["formatVersion"] = json!(1);
+    write_json(&path, &record, true)?;
+    let mut status = status(Some(&record));
+    status["progress"] = progress("plan");
+    Ok(Outcome {
+        result,
+        status,
+        started: None,
+        message: Some(message.into()),
+    })
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -745,20 +1170,40 @@ fn write_json(path: &Path, value: &impl Serialize, pretty: bool) -> Result<(), E
     Ok(())
 }
 
-fn published_answer(disk: &Disk, app: &App) -> Result<Outcome, Error> {
+fn published_answer(disk: &Disk, app: &App) -> Result<Option<Outcome>, Error> {
     let state = format::ObjectFormat::additive("Rehome state")
         .read(&disk.path(STATE)?)?
         .map(|record| Value::Object(record.fields))
         .filter(|record| {
             record["state"] == "done" && record["way"] == "move" && record["app"] == json!(app)
-        })
-        .ok_or_else(|| Error::UnknownHome(disk.0.clone()))?;
-    Ok(Outcome {
+        });
+    Ok(state.map(|state| Outcome {
         result: "done",
         status: status(Some(&state)),
         started: None,
         message: None,
-    })
+    }))
+}
+
+fn occupied_home(disk: &Disk) -> Result<Option<&'static str>, Error> {
+    let facts = crate::install::HomeFacts::read(disk)?;
+    if facts.is("mac") {
+        return Ok(Some(OURS));
+    }
+    Ok(facts
+        .machine_owned(disk, kuvo_os::platform::Platform::Mac)?
+        .then_some(TWO))
+}
+
+fn refused(message: &str) -> Outcome {
+    let mut status = status(None);
+    status["progress"] = progress("plan");
+    Outcome {
+        result: "refused",
+        status,
+        started: None,
+        message: Some(message.into()),
+    }
 }
 
 fn done(state: &Value, real: bool) -> Outcome {
@@ -768,28 +1213,4 @@ fn done(state: &Value, real: bool) -> Outcome {
         started: Some(false),
         message: Some(if real { DEFERRED_START } else { COPY_START }.into()),
     }
-}
-
-fn status(state: Option<&Value>) -> Value {
-    const STEPS: &[(&str, &str)] = &[
-        ("plan", "Checking this Mac"),
-        ("install", "Getting ready"),
-        ("keys", "Handing over your keys"),
-        ("clone", "Copying your sessions and settings"),
-        ("upgrade", "Bringing your settings along"),
-        ("database", "Bringing your sessions up to date"),
-        ("rewrite", "Pointing everything at its new place"),
-        ("check", "Checking nothing is missing"),
-        ("place", "Putting everything in place"),
-        ("fix", "Reconnecting your worktrees"),
-        ("clear", "Finishing up"),
-    ];
-    let state = state.unwrap_or(&Value::Null);
-    json!({
-        "state":state["state"],"way":state["way"],"step":null,"tries":0,"nextTry":null,
-        "waitingSince":null,"overdue":false,"failed":null,"movedAt":state["movedAt"],"keptUntil":null,
-        "owed":state["owed"].as_array().cloned().unwrap_or_default(),"asked":null,"from":state["from"],
-        "to":state["to"],"progress":null,"dropped":state["dropped"].as_array().cloned().unwrap_or_default(),
-        "steps":STEPS.iter().map(|&(step,title)|json!({"step":step,"title":title})).collect::<Vec<_>>(),"signIns":null
-    })
 }

@@ -24,10 +24,30 @@ pub(super) fn preference_path(source: &Path) -> Result<std::path::PathBuf, Error
 }
 
 /// Project app-owned preferences into the same files the box opens at startup.
-pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> Result<(), Error> {
+pub(super) fn take(
+    source: &Path,
+    stage: &Disk,
+    account: &Path,
+    home: &Path,
+) -> Result<Vec<String>, Error> {
+    let given = read(source)?;
+    projects(source, stage, &given)?;
+    worktrees(stage, &given)?;
+    machines(stage, &given)?;
+    engine_settings(stage, &given, account, home)?;
+    box_preferences(stage, &given)?;
+    mac_link(stage, &given, home)?;
+    personalities(source, stage)?;
+    let dropped = super::work::take(source, stage, &given)?;
+    super::usage::take(stage, &given)?;
+    Ok(dropped)
+}
+
+pub(super) fn read(source: &Path) -> Result<Fields, Error> {
     let path = preference_path(source)?;
-    let given = files::read(&path)?
-        .map(|bytes| {
+    let given = files::read(&path)
+        .map_err(|error| Error::AppPreferences(error.into()))?
+        .map(|bytes| -> Result<Fields, Error> {
             let pref =
                 plist::Value::from_reader(Cursor::new(bytes)).map_err(std::io::Error::other)?;
             as_json(pref)?
@@ -35,15 +55,10 @@ pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> 
                 .cloned()
                 .ok_or_else(|| invalid("The app's property list must hold a dictionary."))
         })
-        .transpose()?
+        .transpose()
+        .map_err(|error| Error::AppPreferences(error.into()))?
         .unwrap_or_default();
-    projects(source, stage, &given)?;
-    worktrees(stage, &given)?;
-    machines(stage, &given)?;
-    engine_settings(stage, &given, account, home)?;
-    box_preferences(stage, &given)?;
-    mac_link(stage, &given, home)?;
-    personalities(source, stage)
+    Ok(given)
 }
 
 fn mac_link(stage: &Disk, prefs: &Fields, home: &Path) -> Result<(), Error> {

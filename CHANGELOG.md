@@ -18,6 +18,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
 - The Mac migration command now carries sessions, attachments, settings, and keys from older Kuvo Code installations.
+- The Mac move carries older bots and group chats, retries when the source changes, and identifies an app that still has a file open for writing.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 

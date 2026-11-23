@@ -87,12 +87,16 @@ pub(super) fn uncopy(plan: &Plan, account: &Path) -> Result<(), Error> {
 
 pub(super) fn delete_originals(plan: &Plan, account: &Path) -> bool {
     let Some(keys) = &plan.keys else { return true };
+    delete_at(keys, &plan.to, account)
+}
+
+pub(super) fn delete_at(keys: &Path, home: &Path, account: &Path) -> bool {
     call(
         keys,
         &[
             "delete-originals".into(),
             "--home".into(),
-            plan.to.as_os_str().to_owned(),
+            home.as_os_str().to_owned(),
         ],
         account,
         SHORT_TIMEOUT,
