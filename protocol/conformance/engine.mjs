@@ -69,6 +69,7 @@ export async function standInEngine(root, env) {
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);
       if (one && request.method === "GET") {
+        if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
         return found ? send({ data: found }) : send({ message: "No such session." }, 404);
       }
@@ -107,6 +108,7 @@ export async function standInEngine(root, env) {
         const pending = items.get(location) ?? [];
         const index = pending.findIndex(item => item.id === decodeURIComponent(key));
         if (index < 0) return send({}, 404);
+        if (engine.refusedAsk === decodeURIComponent(key)) return send({ message: "It can't take that now." }, 400);
         const [answered] = pending.splice(index, 1);
         if (global && request.method === "DELETE") engine.dismissedGlobalForms.push({ id: answered.id, folder: location });
         publish({ type: type + (request.method === "DELETE" ? ".cancelled" : ".replied"),

@@ -597,24 +597,24 @@ impl Permission {
             return None;
         }
         let id = self.source["id"].as_str()?;
-        let message = self.source["messageID"].as_str()?;
-        let message = engine
-            .call::<Value>(
+        let message = self.source["messageID"].as_str();
+        let messages = engine
+            .call::<Vec<Value>>(
                 lease,
                 Method::GET,
-                &format!("{at}/message/{}", api::segment(message)),
+                &format!("{at}/message?limit=30&order=desc"),
                 None,
             )
             .await
             .ok()?;
-        let part = message["parts"]
-            .as_array()
-            .or_else(|| message["content"].as_array())?
+        let part = messages
             .iter()
-            .find(|part| part["callID"] == id || part["id"] == id)?;
+            .filter(|row| message.is_none_or(|id| row["id"] == id))
+            .filter_map(|row| row["content"].as_array())
+            .flatten()
+            .find(|part| part["type"] == "tool" && part["id"] == id)?;
         part["state"]["input"]["command"]
             .as_str()
-            .or_else(|| part["input"]["command"].as_str())
             .map(str::to_owned)
     }
 }
@@ -713,9 +713,9 @@ async fn found_on(
             });
         }
     }
-    if found.iter().any(|ask| ask.at == 0) {
+    if !found.is_empty() {
         let heard = restore(engine, (lease.record.pid, lease.record.port)).await;
-        for ask in found.iter_mut().filter(|ask| ask.at == 0) {
+        for ask in &mut found {
             if let Some(pending) = heard.get(&ask.id) {
                 ask.at = pending.at;
             }

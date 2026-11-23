@@ -1,10 +1,127 @@
 // An OpenCode question comes from a child, reaches the line, and accepts the child's answer.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { openLine, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
+
+test("ask cards use first observation order and show the subagent’s whole command", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-ask-cards");
+  const parent = sessionOf({ id: "ses_parent", directory: here.home });
+  const child = sessionOf({ id: "ses_child", directory: here.home, parent: parent.id });
+  here.engine.sessions.push(parent, child);
+  const outside = { id: "per_out", sessionID: parent.id, action: "external_directory",
+    resources: [path.join(here.home, "..", "account") + "/notes/*"] };
+  const file = here.home + "/src/app.txt";
+  const patch = { file, patch: "@@ -1 +1 @@\n-a\n+b\n", additions: 1, deletions: 1, status: "modified" };
+  const edit = { id: "per_edit", sessionID: parent.id, action: "edit", time: { created: 1 },
+    resources: [file, "b.txt", "c.txt"], save: ["*"], metadata: { files: [patch] } };
+  const shell = { id: "per_shell", sessionID: child.id, action: "shell", time: { created: 3 },
+    resources: ["git status --short"], save: ["git status *"], source: { type: "tool", id: "call_shell" },
+    message: "It wants to check the working tree." };
+  const question = { id: "que_color", sessionID: parent.id, title: "Pick", metadata: { kind: "question" },
+    time: { created: 2 }, fields: [{ key: "color", type: "string", title: "Color", description: "Which color?",
+      required: true, options: [{ value: "blue", label: "Blue", description: "Calm" }] }] };
+  const other = { id: "frm_other", sessionID: parent.id, title: "Repository",
+    metadata: { kind: "mcp-elicitation", server: "example", message: "Which repository?" },
+    fields: [{ key: "repo", type: "number" }] };
+  here.engine.permissions.set(parent.id, [edit, outside]);
+  here.engine.permissions.set(child.id, [shell]);
+  here.engine.forms.set(parent.id, [question, other]);
+  here.engine.messages.set(child.id, [{ id: "msg_shell", type: "assistant",
+    content: [{ id: "call_shell", type: "tool", name: "shell",
+      state: { status: "running", input: { command: "cd app && git status --short" } } }] }]);
+
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow asks");
+  const saved = path.join(here.home, "run", "glance", "asks.json");
+  for (const ask of [other, question, shell, edit]) {
+    here.engine.emit(ask.action ? { type: "permission.asked", data: ask } : { type: "form.created", data: { form: ask } });
+    await until(() => fs.existsSync(saved) && JSON.parse(fs.readFileSync(saved, "utf8")).asks[ask.id], "the resident to record " + ask.id);
+  }
+  const route = `kuvo/sessions/${parent.id}/asks`;
+  const listed = await request(record, "GET", route);
+  assert.equal(listed.status, 200, listed.text);
+  const [out, pick, command, change, dismiss] = listed.json.asks;
+  assert.deepEqual(listed.json.asks.map(ask => ask.id), [outside.id, question.id, shell.id, edit.id, other.id]);
+  assert.equal(out.title, "Allow working outside the project?");
+  assert.deepEqual(out.resources, ["~/notes"]);
+  assert.deepEqual(pick.questions, [{ key: "color", title: "Color", question: "Which color?",
+    options: [{ value: "blue", label: "Blue", description: "Calm" }], multiple: false, custom: false, required: true }]);
+  assert.equal(command.session, child.id);
+  assert.equal(command.title, "Allow running this command?");
+  assert.equal(command.message, shell.message);
+  assert.equal(command.command, "cd app && git status --short");
+  assert.deepEqual(command.choices[1], { answer: "always", title: "Always Allow", named: "git status", placeholder: null,
+    help: "Don’t ask again before running git status commands in this project", spoken: "Always allow git status commands" });
+  assert.equal(change.title, "Allow editing src/app.txt and 2 more?");
+  assert.deepEqual(change.resources, ["src/app.txt", "b.txt", "c.txt"]);
+  assert.deepEqual(change.files, [patch]);
+  assert.deepEqual(dismiss, { id: other.id, session: parent.id, kind: "other",
+    title: other.title, message: "Which repository?", dismiss: true });
+
+  const answer = (id, body) => request(record, "POST", route + "/" + id, body, { "x-kuvo-from": "app" });
+  assert.equal((await answer(other.id, { answers: { repo: 1 } })).status, 400);
+  assert.equal((await answer(other.id, { dismiss: true })).status, 200);
+  assert.deepEqual(here.engine.asked.filter(row => row.method !== "GET" && row.path.includes(other.id)),
+    [{ method: "DELETE", path: `/api/session/${parent.id}/form/${other.id}`, json: {} }]);
+});
+
+test("asks report a missing conversation, a busy engine, and the engine’s own reply refusal", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-ask-errors");
+  const parent = sessionOf({ id: "ses_parent", directory: here.home });
+  here.engine.sessions.push(parent);
+  const ask = { id: "per_edit", sessionID: parent.id, action: "edit", resources: ["example.txt"] };
+  here.engine.permissions.set(parent.id, [ask]);
+  const record = await here.start().ready();
+  const read = id => request(record, "GET", `kuvo/sessions/${id}/asks`);
+  assert.equal((await read("ses_missing")).status, 404);
+  here.engine.unavailableSession = parent.id;
+  assert.equal((await read(parent.id)).status, 503);
+  here.engine.unavailableSession = null;
+  here.engine.sessionListUnavailable = true;
+  const busy = await read(parent.id);
+  assert.equal(busy.status, 503, busy.text);
+  assert.match(busy.json.message, /isn't answering/);
+  here.engine.sessionListUnavailable = false;
+  here.engine.refusedAsk = ask.id;
+  const refused = await request(record, "POST", `kuvo/sessions/${parent.id}/asks/${ask.id}`,
+    { answer: "once" }, { "x-kuvo-from": "app" });
+  assert.equal(refused.status, 502, refused.text);
+  assert.deepEqual(refused.json, { message: "It can't take that now." });
+  assert.deepEqual((await read(parent.id)).json.asks.map(item => item.id), [ask.id]);
+});
+
+test("OpenCode permission cards preserve the shared Always button words", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-ask-words");
+  const session = sessionOf({ id: "ses_words", directory: here.home });
+  const account = path.join(here.home, "..", "account");
+  const fixture = JSON.parse(fs.readFileSync(new URL("../../box/test/fixtures/always-words.json", import.meta.url)));
+  const cases = fixture.cases.map(({ action, save, resources, home, plain, help, spoken }, index) => {
+    const useAccount = words => words.map(word => home && word.startsWith(home + "/") ? account + word.slice(home.length) : word);
+    return { ask: { id: "per_words_" + index, sessionID: session.id, action,
+      ...(save ? { save: useAccount(save) } : {}), resources: useAccount(resources) }, plain, help, spoken };
+  });
+  here.engine.sessions.push(session);
+  here.engine.permissions.set(session.id, cases.map(each => each.ask));
+  const resident = await here.start().ready();
+  const reply = await request(resident, "GET", `kuvo/sessions/${session.id}/asks`);
+  assert.equal(reply.status, 200, reply.text);
+  const cards = new Map(reply.json.asks.map(ask => [ask.id, ask]));
+  for (const { ask, plain, help, spoken } of cases) {
+    const choice = cards.get(ask.id)?.choices.find(choice => choice.answer === "always");
+    assert.ok(choice, JSON.stringify(ask));
+    assert.deepEqual({
+      plain: choice.named === null ? choice.title : choice.title + " " + choice.named,
+      help: choice.help, spoken: choice.spoken,
+    }, { plain, help, spoken }, JSON.stringify(ask));
+  }
+});
 
 test("a child question changes the parent’s asks and waiting counts through the resident", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
