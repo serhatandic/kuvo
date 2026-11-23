@@ -347,6 +347,12 @@ impl BoxClient {
     /// Follows one conversation: its messages now, the words it streams as they come, and its
     /// messages read again as each step, tool call or turn ends.
     pub fn follow_conversation(&self, session: &str, timing: Timing) -> Follow<ConversationUpdate> {
+        self.follow_conversation_carried(session, timing, None)
+    }
+
+    /// The same, for a conversation on another computer, its newest messages read through the
+    /// client's own box (`carried`): while its computer isn't answering, that box's last copy.
+    pub fn follow_conversation_carried(&self, session: &str, timing: Timing, carried: Option<Carried>) -> Follow<ConversationUpdate> {
         let client = self.clone();
         let session = session.to_owned();
         let wants = Arc::new(Wants::default());
@@ -357,7 +363,7 @@ impl BoxClient {
             if stop.is_stopped() {
                 return;
             }
-            follow_conversation(client, session, timing, latest, &stop, &theirs);
+            follow_conversation(client, carried, session, timing, latest, &stop, &theirs);
         });
         follow.wants = Some(wants);
         follow
@@ -420,6 +426,71 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
     while !stop.wait(Duration::from_secs(3600)) {}
 }
 
+/// The feature of a client's own box that keeps the newest page it carried of each conversation on
+/// another computer, and answers it while that computer is away.
+pub const KEPT_FEATURE: &str = "line.kept-conversation";
+
+/// The client's own box, carrying a conversation on another of your computers (`computer`, its
+/// key) to this client: its newest messages read there, kept there, and said there as the last
+/// copy while that computer is restarting, updating or off.
+#[derive(Clone)]
+pub struct Carried {
+    client: BoxClient,
+    computer: String,
+}
+
+impl Carried {
+    /// Through `client` (the client's own box), where it keeps what it carries.
+    pub fn new(client: BoxClient, computer: Option<String>) -> Option<Carried> {
+        let computer = computer.filter(|computer| !computer.is_empty() && computer != "here")?;
+        client.advertises(KEPT_FEATURE).then_some(Carried { client, computer })
+    }
+
+    pub fn client(&self) -> &BoxClient {
+        &self.client
+    }
+
+    fn newest(&self, session: &str) -> crate::Result<Page> {
+        self.client.get(&format!("kuvo/peer-session/{}/{}/messages?limit={READ}&order=desc", crate::paths::segment(&self.computer), crate::paths::segment(session)))
+    }
+}
+
+/// The conversation's newest page: through the client's own box where it carries it (an older one,
+/// or one restarting itself, falls back to the conversation's own box), else from its own box.
+fn newest_page(client: &BoxClient, carried: Option<&Carried>, place: Where, session: &str) -> crate::Result<Page> {
+    if let Some(page) = carried.and_then(|carried| carried.newest(session).ok()) {
+        return Ok(page);
+    }
+    client.get(&messages::newest_route(place, session, READ))
+}
+
+/// A last copy as a conversation: its messages, said to be its computer's last.
+fn last_copy(session: &str, place: Where, page: Page) -> Conversation {
+    let mut conversation = Conversation::new(session, place);
+    conversation.catch_up(page.data, None, &[], Some(false));
+    conversation.away = page.away;
+    conversation
+}
+
+/// `session` read at once, as a follow first reads it (for shots and tests): through the client's
+/// own box where it carries it, its last copy while its computer is away.
+pub fn read_at_once(client: &BoxClient, carried: Option<&Carried>, session: &str) -> crate::Result<Conversation> {
+    let place = match client.where_is(session) {
+        Ok(place) => place,
+        Err(Error::Refused(refusal)) if refusal.status == 404 => return Err(Error::Refused(refusal)),
+        Err(error) => return carried.and_then(|carried| carried.newest(session).ok()).map(|page| last_copy(session, Where::Engine, page)).ok_or(error),
+    };
+    let page = newest_page(client, carried, place, session)?;
+    if page.away.is_some() {
+        return Ok(last_copy(session, place, page));
+    }
+    let running: Option<bool> = is_running(client, place, session);
+    let earlier = page.earlier(READ);
+    let mut conversation = Conversation::new(session, place);
+    conversation.catch_up(page.data, earlier, &[], running);
+    Ok(conversation)
+}
+
 /// A followed conversation: what's shown, and while a read is on its way, the events that came
 /// meanwhile (to apply again on top of it).
 struct Shown {
@@ -428,6 +499,9 @@ struct Shown {
     reconnecting: Option<ReconnectAnchor>,
     /// The parts read of its messages from before, kept here (not in each copy handed on).
     parts: ReadParts,
+    /// Whether its computer has answered a read since it was shown: a last copy then only says
+    /// it's away, leaving what was shown as it is.
+    live: bool,
 }
 
 /// The transcript boundary at disconnect, before a new feed can add messages.
@@ -488,6 +562,8 @@ fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, k
 /// What a read made of the conversation.
 enum Read {
     Shown,
+    /// Its computer isn't answering: its last copy is shown, and it's read again in a while.
+    Away,
     /// It isn't on the box (any more): the follow ends.
     Gone,
     Failed(Error),
@@ -496,15 +572,40 @@ enum Read {
 /// Reads the conversation, and shows it with what came meanwhile: under the lock, so no older
 /// copy is ever handed on after a newer one. The parts of messages from before are read first, so
 /// the page shows as written.
-fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> Read {
+fn read(client: &BoxClient, carried: Option<&Carried>, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> Read {
     let (session, place, known) = {
         let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         now.during = Some(Vec::new());
         (now.conversation.session.clone(), now.conversation.place, now.reconnecting.take())
     };
-    let read = client.get(&messages::newest_route(place, &session, READ)).and_then(|page| reconnect_page(client, place, &session, page, known.as_ref()));
+    let page = match newest_page(client, carried, place, &session) {
+        Ok(page) if page.away.is_some() => page,
+        page => return show_read(client, page, place, &session, known, shown, latest),
+    };
+    {
+        let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        now.during = None;
+        if known.is_some() {
+            now.reconnecting = known;
+        }
+        // (What its computer last said stays as it is: only that it's away now is added.)
+        if now.live {
+            now.conversation.away = page.away;
+        } else {
+            let away = page.away.clone();
+            now.conversation.catch_up(page.data, None, &[], Some(false));
+            now.conversation.away = away;
+        }
+        latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
+    }
+    Read::Away
+}
+
+/// A newest page its computer answered (or why it couldn't be read), shown.
+fn show_read(client: &BoxClient, page: crate::Result<Page>, place: Where, session: &str, known: Option<ReconnectAnchor>, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> Read {
+    let read = page.and_then(|page| reconnect_page(client, place, session, page, known.as_ref()));
     let (parts, running) = match &read {
-        Ok((messages, _)) => (read_parts(client, shown, messages), is_running(client, place, &session)),
+        Ok((messages, _)) => (read_parts(client, shown, messages), is_running(client, place, session)),
         Err(_) => (Vec::new(), None),
     };
     let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -513,6 +614,8 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
         Ok((messages, earlier)) => {
             now.parts.take(parts);
             now.conversation.catch_up(messages, earlier, &during, running);
+            now.conversation.away = None;
+            now.live = true;
             let Shown { conversation, parts, .. } = &mut *now;
             conversation.take_parts(parts);
             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
@@ -577,7 +680,7 @@ fn is_running(client: &BoxClient, place: Where, session: &str) -> Option<bool> {
 
 /// Reads as it's asked to (and on its timer while one's set), until it's ended or the conversation's
 /// gone. A read that fails is tried again, and said only once it's failed a while.
-fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Wants, timing: Timing) {
+fn reader(client: &BoxClient, carried: Option<&Carried>, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Wants, timing: Timing) {
     let mut backoff = Backoff::new(timing);
     let mut patience = Patience::new(timing);
     while let Some((again, earlier)) = wants.next() {
@@ -590,10 +693,17 @@ fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<Conversation
         if !again {
             continue;
         }
-        match read(client, shown, latest) {
+        match read(client, carried, shown, latest) {
             Read::Shown => {
                 backoff.reset();
                 patience.came();
+            }
+            // (Read again in a while, to catch up as soon as it answers.)
+            Read::Away => {
+                if backoff.wait(stop) {
+                    return;
+                }
+                wants.again();
             }
             Read::Gone => {
                 stop.stop();
@@ -612,9 +722,10 @@ fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<Conversation
     }
 }
 
-fn follow_conversation(client: BoxClient, session: String, timing: Timing, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Arc<Wants>) {
+fn follow_conversation(client: BoxClient, carried: Option<Carried>, session: String, timing: Timing, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Arc<Wants>) {
     let mut backoff = Backoff::new(timing);
     let mut patience = Patience::new(timing);
+    let carried = carried.as_ref();
     // Where it lives, once.
     let place = loop {
         match client.where_is(&session) {
@@ -624,7 +735,10 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
                 return;
             }
             Err(error) => {
-                if patience.says(&error) {
+                // Its computer not answering: the last copy its own box carried, meanwhile.
+                if let Some(page) = carried.and_then(|carried| carried.newest(&session).ok()) {
+                    latest.put(ConversationUpdate::Conversation(last_copy(&session, Where::Engine, page)));
+                } else if patience.says(&error) {
                     latest.put(ConversationUpdate::Failed(error));
                 }
                 if backoff.wait(stop) {
@@ -633,13 +747,13 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
             }
         }
     };
-    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: None, parts: ReadParts::default() }));
+    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: None, parts: ReadParts::default(), live: false }));
 
     if !client.streams() {
         // Read now, then again on the timer, and earlier ones as asked.
         wants.read_every(timing.conversation_again);
         wants.again();
-        reader(&client, &shown, latest, stop, wants, timing);
+        reader(&client, carried, &shown, latest, stop, wants, timing);
         return;
     }
 
@@ -680,7 +794,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
     });
     stop.keep(watch);
     wants.again();
-    reader(&client, &shown, latest, stop, wants, timing);
+    reader(&client, carried, &shown, latest, stop, wants, timing);
 }
 
 impl BoxClient {

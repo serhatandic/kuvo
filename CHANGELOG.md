@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
+- While a computer switches to a new Kuvo release, its bots and sessions keep their usual look, saying "Updating…", instead of turning grey. A computer that's quiet for under a minute is shown as live; "seen …" is only for one that's really off.
+
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.

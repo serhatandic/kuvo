@@ -600,6 +600,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bots-sessions-unreachable", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     // A bot on studio-mini, off for three hours: when it was last seen.
     Screen { slug: "bots-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    // A bot on another computer: its conversation while that computer is off (its last transcript
+    // with one quiet line, the composer still there), and once it answers again.
+    Screen { slug: "bot-chat-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(remote_bot_chat) },
+    Screen { slug: "bot-chat-computer-back", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(remote_bot_chat) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
@@ -817,6 +821,10 @@ fn landing_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Con
         composer.read_at_once(cx);
         composer.set_worktree(true, cx);
     });
+}
+fn remote_bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    workspace.open_bot_chat("bot_release", "ses_releases", None, window, cx);
 }
 fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_area(Area::Bots, window, cx);
@@ -3080,6 +3088,19 @@ fn main() -> anyhow::Result<()> {
             // (The box still reading its first figures.)
             if screen.slug == "insights-loading" {
                 stand_in.set_insights(kuvo::stand_in::insights::Sample::Reading);
+            }
+            if matches!(screen.slug, "bot-chat-computer-away" | "bot-chat-computer-back") {
+                stand_in.share_setup_lists();
+                stand_in.enable_delivery();
+                stand_in.move_bot("bot_release", "devbox");
+                stand_in.set_elsewhere_session("bot_release", "ses_releases");
+                if screen.slug == "bot-chat-computer-away" {
+                    // (Read here while devbox answered, then it went off five minutes ago.)
+                    stand_in.carry("key_devbox", "ses_releases");
+                    stand_in.peer_box("key_devbox").expect("devbox").set_down(true);
+                    stand_in.setup_away("key_devbox", NOW - 5.0 * 60_000.0, false);
+                    stand_in.bot_computer_away("bot_release", Some(NOW - 5.0 * 60_000.0));
+                }
             }
             if screen.slug == "bots-computer-away" {
                 stand_in.move_bot("bot_release", "studio-mini");

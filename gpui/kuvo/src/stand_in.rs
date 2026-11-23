@@ -87,6 +87,9 @@ struct State {
     /// It serves the setup's lists (`line.setup-lists`): its own rows and its peers'.
     setup_lists: bool,
     delivery_enabled: bool,
+    /// The newest page it carried of each conversation on another computer, by computer and
+    /// session: answered, as its last copy, while that computer is away (`line.kept-conversation`).
+    carried: HashMap<(String, String), Value>,
     delivery_waiting: Vec<(String, String, Value)>,
     delivery_done: HashSet<String>,
     /// How each peer stands in the setup's lists, by key (none: answering): away since when, and
@@ -345,13 +348,13 @@ impl StandIn {
         let state = self.state();
         let here = json!({ "id": "key_stand_in", "name": state.name() });
         let rows = |line: &Value, computer: &Value, standing: Option<(f64, bool)>, local: bool| -> (Vec<Value>, Vec<Value>) {
-            let away = standing.is_some();
+            // (As a box says it: one only switching to a new release isn't away, but updating.)
+            let away = standing.is_some_and(|(_, updating)| !updating);
             let mut origin = json!({ "computer": computer, "away": away });
-            if let Some((since, updating)) = standing {
-                origin["lastSeen"] = json!(since);
-                if updating {
-                    origin["updating"] = json!(true);
-                }
+            match standing {
+                Some((_, true)) => origin["updating"] = json!(true),
+                Some((since, false)) => origin["lastSeen"] = json!(since),
+                None => {}
             }
             if local {
                 origin["here"] = json!(true);
@@ -996,6 +999,38 @@ impl StandIn {
                     row.remove("away");
                     row.remove("lastSeen");
                 }
+            }
+        }
+        state.sync_bots();
+    }
+
+    /// `bot`, on another computer, has `session` as its conversation there.
+    pub fn set_elsewhere_session(&self, bot: &str, session: &str) {
+        let mut state = self.state();
+        if let Some(row) = state.bots.elsewhere.iter_mut().find(|each| each["id"] == json!(bot)) {
+            row["session"] = json!(session);
+        }
+        state.sync_bots();
+    }
+
+    /// This box carried `session` from the computer `key` once (its newest page, kept as it keeps
+    /// it), as though it was read here before that computer went away.
+    pub fn carry(&self, key: &str, session: &str) {
+        let _ = Transport::send(self, &Request::get(format!("kuvo/peer-session/{key}/{session}/messages?limit=100&order=desc")));
+    }
+
+    /// The computer `bot` lives on switches to a new release (`true`): not away, said to be updating.
+    pub fn bot_computer_updating(&self, bot: &str, updating: bool) {
+        let mut state = self.state();
+        if let Some(row) = state.bots.elsewhere.iter_mut().find(|each| each["id"] == json!(bot))
+            && let Some(row) = row.as_object_mut()
+        {
+            if updating {
+                row.remove("away");
+                row.remove("lastSeen");
+                row.insert("updating".into(), json!(true));
+            } else {
+                row.remove("updating");
             }
         }
         state.sync_bots();
@@ -2467,7 +2502,7 @@ impl StandIn {
                 if state.areas.fleet.is_some() { features.push(crate::fleet::FEATURE); }
                 // (A machine's box shows its browser live; a Mac's has none of its own.)
                 if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
-                if state.delivery_enabled { features.push(kuvo_box::queue::DELIVERY_FEATURE); }
+                if state.delivery_enabled { features.extend([kuvo_box::queue::DELIVERY_FEATURE, kuvo_box::follow::KEPT_FEATURE]); }
                 if state.setup_lists { features.extend([kuvo_box::sessions::SETUP_LISTS, kuvo_box::sessions::MERGED_SESSIONS]); }
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
@@ -2493,6 +2528,36 @@ impl StandIn {
                     state.delivery_waiting.push((owner.clone(), (*session).into(), body.clone()));
                 }
                 answer(202, json!({ "operation": id, "owner": owner, "status": "pending" }))
+            }
+            // Another computer's conversation, carried: its newest page as that computer answers
+            // it, kept; while it's away, the copy kept, said to be its last.
+            ("GET", ["kuvo", "peer-session", computer, session, "messages"]) if state.delivery_enabled => {
+                let (computer, session) = ((*computer).to_owned(), (*session).to_owned());
+                let peer = state.peers.get(&computer).cloned();
+                let standing = state.setup_standing.get(&computer).copied();
+                drop(state);
+                let Some(peer) = peer else { return answer(404, json!({ "message": "There’s no such computer in this setup." })) };
+                let (down, name) = { let there = peer.state(); (there.down, there.name()) };
+                let page = path.split_once('?').map_or("", |(_, query)| query);
+                if !down {
+                    for prefix in ["", "kuvo/agents/"] {
+                        let read = Transport::send(&peer, &Request::get(format!("{prefix}api/session/{session}/message?{page}")));
+                        if let Ok(response) = read && response.is_success() {
+                            if let Ok(page) = serde_json::from_slice::<Value>(&response.body) {
+                                self.state().carried.insert((computer.clone(), session.clone()), page);
+                            }
+                            return Ok(response);
+                        }
+                    }
+                }
+                let kept = self.state().carried.get(&(computer.clone(), session.clone())).map(|page| page["data"].clone());
+                let mut away = json!({ "computer": { "id": computer, "name": name } });
+                match standing {
+                    Some((_, true)) => away["updating"] = json!(true),
+                    Some((since, false)) => away["lastSeen"] = json!(since),
+                    None => {}
+                }
+                answer(200, json!({ "data": kept.unwrap_or_else(|| json!([])), "away": away }))
             }
             ("GET", ["kuvo", "data", "messages", id]) if state.delivery_enabled => {
                 let status = if state.delivery_done.contains(*id) { "committed" } else { "pending" };

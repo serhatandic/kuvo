@@ -189,6 +189,12 @@ impl DeliveryBox {
         client.advertises(DELIVERY_FEATURE).then_some(Self { client, computer })
     }
 
+    /// Its reading of the conversation's newest messages, where it carries them from another
+    /// computer and keeps its last copy ([`crate::follow::Carried`]).
+    pub fn carried(&self) -> Option<crate::follow::Carried> {
+        crate::follow::Carried::new(self.client.clone(), self.computer.clone())
+    }
+
     fn path(&self, session: &str, suffix: &str) -> String {
         let computer = self.computer.as_deref().unwrap_or("here");
         format!("kuvo/sessions/{}/delivery{suffix}?computer={}", paths::segment(session), paths::query_value(computer))
