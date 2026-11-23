@@ -1,6 +1,7 @@
 // The link owns usage, artifacts, and Work Queue sign-in. The old bridge URLs forward there,
 // and the link can serve these concerns when the agents bridge has no process at all.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -14,7 +15,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 
 const bun = testBun();
-const linkScript = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const linkScript = fileURLToPath(LINK_BUNDLE);
 const bridgeScript = fileURLToPath(new URL("../dist/kuvo-agents.js", import.meta.url));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 

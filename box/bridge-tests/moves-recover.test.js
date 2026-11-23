@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/moves-recover.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { moveTime, scriptedMoves } from "./move-script.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -33,7 +34,7 @@ Object.assign(process.env, {
   KUVO_HOME: home, KUVO_BOTS: bots, KUVO_WAKES: wakes, KUVO_BOX: "mac",
   KUVO_ENGINE_CONFIG: path.join(support, "opencode"), KUVO_KEYS: path.join(support, "keys"),
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 removeAtEnd(support);
 
 function reading(request) {

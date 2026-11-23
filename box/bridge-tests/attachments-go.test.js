@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/attachments-go.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -25,7 +26,7 @@ const mac = path.join(home, "Mac Attachments");
 process.env.KUVO_HOME = home;
 process.env.KUVO_MAC_ATTACHMENTS = mac;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const kept = path.join(home, "attachments");
 // A process the box takes for its coding agents' bridge's (by its name), which it looks for
 // running before it judges anything gone.

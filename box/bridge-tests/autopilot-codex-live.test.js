@@ -15,6 +15,7 @@
 // that model. Run with
 // `KUVO_TEST_CODEX_AUTH=~/.codex/auth.json KUVO_TEST_CODEX_MODEL=<id> node --test box/bridge-tests/autopilot-codex-live.test.js`.
 import { allowRealAgents, REAL_PATH } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -56,8 +57,8 @@ test("Autopilot in the Codex lane on a real Codex", { skip, timeout: 900_000 }, 
   const codexHome = path.join(home, "codex-home");
   for (const folder of ["tmp", "work", "agents", "run", "bin", "codex-home"]) fs.mkdirSync(path.join(home, folder), { recursive: true });
   process.env.KUVO_HOME = home;
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = await import(LINK_BUNDLE.href);
+  const script = fileURLToPath(LINK_BUNDLE);
   // (`describe` says where it stood, for a wait that ran out.)
   let describe = async () => "";
   const waitFor = async (wanted, what) => {

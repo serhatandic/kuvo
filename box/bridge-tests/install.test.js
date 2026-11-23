@@ -8,6 +8,7 @@
 // crontab, nor anything fetched from the network (the engine's "download" is a file here).
 // Run with `node --test box/bridge-tests/install.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -20,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
 const mac = process.platform === "darwin";
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-install-")));
 removeAtEnd(scratch);
@@ -57,7 +58,7 @@ const sources = path.join(scratch, "sources");
 for (const file of ["box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
   write(path.join(sources, file), fs.readFileSync(path.join(checkout, file)));
 }
-write(path.join(sources, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+write(path.join(sources, "box/dist/kuvo-link.js"), fs.readFileSync(script));
 write(path.join(sources, "box/src/keeper/kuvo-start"), `#!/bin/sh\n# A stand-in for the keeper, for engine @ENGINE@: it notes what it's asked.\necho "$*" >>"$HOME/keeper-asked"\nif [ -f "$HOME/keeper-fails" ]; then mkdir -p "$HOME/.kuvo-code/box/keys" "$HOME/.kuvo-code/run"; echo '{"mac":"${"A".repeat(43)}","macs":["${"A".repeat(43)}"],"phones":[]}' >"$HOME/.kuvo-code/run/link.json"; echo "its engine didn't come up" >"$HOME/.kuvo-code/run/engine.log"; exit 3; fi\n`);
 const build = { url: pathToFileURL(engineTar).href, integrity: "sha512-" + crypto.createHash("sha512").update(engineBytes).digest("base64") };
 write(path.join(sources, "box/src/shared/engine-pin.json"), JSON.stringify({ version: ENGINE, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }));

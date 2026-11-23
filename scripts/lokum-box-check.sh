@@ -1,14 +1,6 @@
 #!/bin/bash
 # Usage: scripts/lokum-box-check.sh <checkout> <name> [bun test args…]
-# Runs the box tests under the newest engine Bun, in an isolated scratch folder, and exits as they did.
-# It sends the repo's own layout, so the tests that read files beside box find them:
-# the catalog snapshot and bot words, the protocol's vectors, scripts/route-shapes.sh and build-browser.sh with what they run,
-# and
-# build-browser.sh's file (route-shapes.test.ts, browser-built.test.ts), and
-# the bridge's tests' folder: test-safety.js, which every box test imports first, and the stand-ins
-# some box tests start (browser-source-stand-in.js, relay-stand-in.js); and what a release is packed
-# from (the link and the bridge as built, box-release.sh, sign-box.mjs), for the test that installs a
-# box from one and starts it with the engine itself (fresh-box-start.test.ts).
+# Builds locally, then runs the box tests on the pinned engine's Bun in an isolated scratch folder.
 # It prints what failed and skipped, with the counts; FULL=1 prints all the run says. HOST defaults
 # to lokum-local (`HOST=lokum-tailscale` away from home).
 set -eo pipefail
@@ -18,6 +10,7 @@ case "$NAME" in ''|*[!a-zA-Z0-9_-]*) echo 'name must contain only letters, digit
 # (The guard removes folders in ~/.kuvo-code-test named like a run of its own whose process is gone.)
 if [[ "$NAME" =~ ^(ku|sb|sa|kv|outside)-[0-9]+(-|$) ]]; then echo "name mustn't look like a test run's own folder: $NAME" >&2; exit 64; fi
 cd "$REPO"
+scripts/build-built.sh
 IFS= read -r -d '' remote <<'REMOTE' || true
 set -eo pipefail
 name=$1 full=$2; shift 2
@@ -56,8 +49,6 @@ mkdir -p "$T/repo" "$T/tmp" "$T/cache"
 printf '%s\n' "$tmp_before" > "$T/tmp-before"
 printf '%s\n' "$home_before" > "$T/home-before"
 tar xzf - -C "$T/repo"
-# Discover/execute only the engine binary; no live box state is inspected.
-engine=$(printf '%s\n' "$real_home"/.kuvo-code/engine/*/opencode | sort -V | tail -1)
 for var in $(compgen -e); do
     case "$var" in KUVO_*|OPENCODE_*|XDG_*|SSH_AUTH_SOCK|CLAUDE*|CODEX_HOME|BUN_*|NODE_OPTIONS) unset "$var";; esac
 done
@@ -69,13 +60,25 @@ export TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache KUVO_TEST_WRAPPER_PID=$$
 export BUN_INSTALL_CACHE_DIR=$T/cache/bun npm_config_cache=$T/cache/npm UV_CACHE_DIR=$T/cache/uv
 export BUN_RUNTIME_TRANSPILER_CACHE_PATH=$T/cache/transpiler
 export PATH=/usr/local/bin:/usr/bin:/bin
+# Run the same engine as a new box, copied into this run from its pinned package.
+# The installed engine and the live box's files are outside this run.
+pin="$T/repo/box/src/shared/engine-pin.json"
+build=$(python3 -c 'import json, platform, sys; data = json.load(open(sys.argv[1])); build = data["linux"][platform.machine()]; print(build["url"], build["integrity"], sep="\n")' "$pin")
+url=${build%%$'\n'*}
+integrity=${build##*$'\n'}
+curl -fsSL "$url" -o "$T/engine.tgz"
+[ "$integrity" = "sha512-$(openssl dgst -sha512 -binary "$T/engine.tgz" | openssl base64 -A)" ]
+mkdir "$T/bin"
+tar xzf "$T/engine.tgz" -C "$T/bin" --strip-components=2 package/bin/opencode
+engine="$T/bin/opencode"
+export BUN_BE_BUN=1
 cd "$T/repo/box"
 if [ "$full" = 1 ]; then
-    BUN_BE_BUN=1 "$engine" install --frozen-lockfile
-    BUN_BE_BUN=1 "$engine" test --timeout 120000 "$@"
+    "$engine" install --frozen-lockfile
+    "$engine" test --timeout 120000 "$@"
 else
-    BUN_BE_BUN=1 "$engine" install --frozen-lockfile > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
-    BUN_BE_BUN=1 "$engine" test --timeout 120000 "$@" 2>&1 | grep -E '^\(fail\)|^\(skip\)|error:|Expected|Received|^ [0-9]+ (pass|fail|skip)|^Ran '
+    "$engine" install --frozen-lockfile > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
+    "$engine" test --timeout 120000 "$@" 2>&1 | grep -E '^\(fail\)|^\(skip\)|error:|Expected|Received|^ [0-9]+ (pass|fail|skip)|^Ran '
 fi
 
 REMOTE
@@ -86,13 +89,11 @@ inventory=docs/architecture/stored-formats.md
 extra=()
 if [[ -f "$inventory" ]]; then extra+=("$inventory"); fi
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
-    box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
-    box/src box/test box/eval catalog \
-    protocol/vectors protocol/gate-required.txt \
-    box/bridge-tests \
-    scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
-    scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js \
-    box/dist/kuvo-agents.js swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js \
-    swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json \
+    box/.bun-version box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
+    box/src box/test box/eval catalog box/dist box/bridge-tests \
+    protocol/ROUTES.md protocol/vectors protocol/gate-required.txt \
+    scripts/build-built.sh scripts/build-bun.sh scripts/build-box.sh scripts/build-agents.sh \
+    scripts/build-browser.sh scripts/build-browser.ts scripts/real-app-guard.sh \
+    scripts/route-shapes.sh scripts/route-shapes.ts scripts/routes-md.ts \
     scripts/box-release.sh scripts/sign-box.mjs ${extra[@]+"${extra[@]}"} |
     ssh -o BatchMode=yes "$HOST" "$command"

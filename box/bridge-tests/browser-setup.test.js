@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/browser-setup.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -18,7 +19,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { makeRpm, makeZip, served, startSource } from "./browser-source-stand-in.js";
 
 const script = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
-const link = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const link = fileURLToPath(LINK_BUNDLE);
 const kind = os.arch() === "arm64" ? "aarch64" : "x86_64";
 
 /** A machine's folder with nothing in it but the box's script, as a box set up without a Mac has it. */

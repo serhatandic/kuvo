@@ -3,19 +3,8 @@ CHANGELOG.md merge=union
 # added instead of a conflict (CONTRIBUTING.md, "What branches don't edit by hand"). Only where
 # each line of the list is whole by itself (a trailing comma on each) and nothing else in the file
 # changes often. features.ts: a union that leaves its list out of order, or a name twice, fails the
-# box's tests (test/features.test.ts) and `route-shapes.sh --check`. The update gate's lists: a name
+# box's tests (test/features.test.ts) and `route-shapes.sh`. The update gate's lists: a name
 # twice, or one missing from another, fails gpui's (kuvo_box/tests/vectors.rs); two names side by
 # side in either order are fine.
 box/src/shared/features.ts merge=union
 protocol/gate-required.txt merge=union
-# What's built from sources and kept in git: two branches that both built one conflict on it, and
-# neither side is right after the merge. The kuvo-built driver keeps the side checked out, so the
-# merge (or rebase, or cherry-pick) goes on; then scripts/check-built.sh says whether they match
-# their sources, and `--build` builds them again to commit. The driver is set up once
-# per clone by scripts/merge-setup.sh; a clone without it merges these as text, conflicting as
-# before. Never union here: it can leave a file that reads but is wrong.
-swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js merge=kuvo-built
-box/dist/kuvo-agents.js merge=kuvo-built
-box/dist/kuvo-browser.js merge=kuvo-built
-protocol/vectors/routes/features.json merge=kuvo-built
-protocol/vectors/routes/shapes/answers.json merge=kuvo-built

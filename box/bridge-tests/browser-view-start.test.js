@@ -1,6 +1,7 @@
 // The panel's live view wakes the browser on a cold box and after a release switch.
 // The box's route and keeper are real. Only Chrome's DevTools pipe is a stand-in.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -16,7 +17,7 @@ process.env.KUVO_HOME = home;
 const run = path.join(home, "run");
 const pidFile = path.join(run, "browser.pid");
 const browser = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
-const link = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url);
+const link = LINK_BUNDLE;
 const { engineConnect } = await import(link.href);
 
 function release(version) {

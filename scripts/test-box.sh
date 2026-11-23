@@ -4,15 +4,22 @@ set -u
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 mode=${1:-all}
 case "$mode" in box|bridge|all) [ $# -eq 0 ] || shift ;; *) echo 'Usage: scripts/test-box.sh [box|bridge|all] [extra test args...]' >&2; exit 64 ;; esac
-if ! "$root/scripts/heavy.sh" --holds box; then
-    exec "$root/scripts/heavy.sh" box "$0" "$mode" "$@"
+heavy=${KUVO_HEAVY_SH:-$root/scripts/heavy.sh}
+if ! "$heavy" --holds box; then
+    exec "$heavy" box "$root/scripts/test-box.sh" "$mode" "$@"
 fi
-bun=${KUVO_TEST_BUN:-$HOME/.bun/bin/bun}
+cd "$root" || exit 1
+# BUN selects the build runtime. KUVO_TEST_BUN can exercise a different runtime.
+build_bun=$(. scripts/build-bun.sh && printf "%s\n" "$BUN") || exit 1
+bun=${KUVO_TEST_BUN:-$build_bun}
+if [[ "${bun##*/}" == opencode ]]; then export BUN_BE_BUN=1; fi
 export KUVO_TEST_BUN="$bun" BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 box="$root/box"
-if [ ! -d "$box/node_modules" ] || [ "$box/bun.lock" -nt "$box/node_modules" ]; then
-    echo 'Installing locked box dependencies...'
-    (cd "$box" && "$bun" install --frozen-lockfile) || { echo 'Dependency installation failed; suites not run.' >&2; exit 1; }
+BUN="$build_bun" scripts/build-built.sh || exit 1
+if [ ! -f "$box/node_modules/typescript/package.json" ] ||
+   [ "$box/bun.lock" -nt "$box/node_modules" ] || [ "$box/package.json" -nt "$box/node_modules" ]; then
+    echo 'Installing locked box test dependencies...'
+    (cd "$box" && BUN_BE_BUN=1 "$build_bun" install --frozen-lockfile && touch node_modules) || exit 1
 fi
 logs=$(mktemp -d /tmp/kuvo-test-box.XXXXXXXX) || exit 1
 export TMPDIR="$logs" KUVO_TEST_WRAPPER_PID=$$

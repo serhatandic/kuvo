@@ -82,7 +82,7 @@ try {
     $baselineEmpty = [TestCredentials]::BeginRun()
     if (!$baselineEmpty) { throw 'Windows Credential Manager already holds credentials. Use an empty disposable account.' }
 
-    $bunVersion = $pins.bun.version
+    $bunVersion = (Get-Content (Join-Path $repo 'box/.bun-version') -Raw).Trim()
     $nodeVersion = $pins.node.version
     $bun = Install-Tool bun $bunVersion "https://github.com/oven-sh/bun/releases/download/bun-v$bunVersion/bun-windows-x64.zip" $pins.bun.'windows-x64' 'bun-windows-x64'
     $node = Install-Tool node $nodeVersion "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-win-x64.zip" $pins.node.'windows-x64' "node-v$nodeVersion-win-x64"

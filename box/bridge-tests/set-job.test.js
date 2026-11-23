@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/set-job.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -22,7 +23,7 @@ const write = (file, text) => {
   fs.writeFileSync(file, text);
 };
 const tool = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
-write(path.join(home, "bin", "kuvo-link.js"), fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)));
+write(path.join(home, "bin", "kuvo-link.js"), fs.readFileSync(LINK_BUNDLE));
 
 // The engine: the bot's conversation, a subagent it started, and what each was told.
 const told = [];

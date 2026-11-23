@@ -110,7 +110,7 @@ esac
   // This release, packed as the release workflow does, for the same engine.
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const root = path.join(scratch, "sources");
-  for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js", "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"]) {
+  for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js", "box/dist/kuvo-link.js"]) {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
   const integrity = "sha512-" + crypto.createHash("sha512").update("unused").digest("base64");

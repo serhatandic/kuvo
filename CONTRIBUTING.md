@@ -20,8 +20,7 @@ macOS in `mac/helper/`.
 ## Maintainer development setup
 
 Desktop development needs an Apple silicon Mac with macOS 26 or later, Xcode
-27 or later, Rust, and the Bun version pinned by `scripts/build-box.sh`. In the
-maintainer checkout, run `scripts/merge-setup.sh` once. From `gpui/`, build with
+27 or later, Rust, and the Bun version in `box/.bun-version`. From `gpui/`, build with
 `../scripts/cargo-locked.sh build -p kuvo`.
 
 From the repository root, `scripts/build-desktop-app.sh` packages the desktop app
@@ -54,10 +53,7 @@ The keeper's files are plain files: edit them in `box/src/keeper`, where the bri
 `kuvo-wake` from. Where one names the engine's version it says `@ENGINE@`, which the release
 writes the pinned version over. `kuvo-start`, `kuvo-launch` and `kuvo-setsid` end without a last
 newline, as every release has had them; a newline added there is a change to the file like any
-other (a box takes it as a new keeper). What's in
-`box/src/shared` (the table, the bots' words, the engine's pin) is among what the agents' bridge
-is stamped with, so after a change there `scripts/check-built.sh` asks for
-`scripts/build-agents.sh` again (only its last line changes).
+other (a box takes it as a new keeper). The release builds its bundles before packing them.
 
 ### Tests
 
@@ -75,7 +71,7 @@ Read [the testing guide](docs/testing.md) and run focused checks for the area yo
   `scripts/heavy.sh box scripts/test-linux.sh <ssh-host> <test file>` for a Linux
   bridge check. The scripts keep test data in scratch directories.
 - Kuvo Helper: `scripts/heavy.sh mac-build swift test --package-path mac/helper`.
-- Generated files: `BUN="$HOME/.bun/bin/bun" scripts/check-built.sh`.
+- Generate the bundles and route vectors with `scripts/build-built.sh`.
 
 The build scheduler gives desktop Rust (`rust`) and box Rust (`rust-box`) one slot
 each, and gives `mac-build` and `box` two slots each. `scripts/heavy.sh status` shows their holders and queues.
@@ -114,13 +110,12 @@ runners. To add a scenario:
   file an area, with each field an answer can have (one ending in `?` may be left out) and its
   type, which the box's code takes its types from too. A new route, or a new field in an answer,
   goes there first, with a one-line comment above the route saying what it's for where its path
-  doesn't: routes are documented in their definition, and `scripts/check-built.sh --build` writes
+  doesn't: routes are documented in their definition, and `scripts/build-built.sh` writes
   `protocol/ROUTES.md` for a readable list (not kept in git). Add to `protocol/PROTOCOL.md` only a
   rule a client must know that the route can't say, in a few lines. `./scripts/route-shapes.sh`
   writes `routes/shapes/answers.json` for both runners, and `routes/features.json` from the box's
   advertised capabilities.
-  `test/route-shapes.test.ts` checks the generated files. The runners check
-  answers against `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
+  The runners check answers against `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
   is JSON, `{}` at least.
 - Run the runners. `./scripts/route-vectors.sh` refreshes the integration and
   MCP catalogs in `routes/box` from `box/src/shared/integrations`.
@@ -129,7 +124,7 @@ runners. To add a scenario:
 
 | Path | What's there |
 | --- | --- |
-| `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); the keeper's shell files (`src/keeper`), the engine's plugin (`src/plugins`) and what writes its release's files (`src/release`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
+| `box/` | The box (TypeScript): its link, built to `dist/kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); the keeper's shell files (`src/keeper`), the engine's plugin (`src/plugins`) and what writes its release's files (`src/release`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
 | `mac/helper/` | Kuvo Helper (Swift, macOS only): the signed program this Mac's box runs under, and `kuvo-keys`, the one-time hand-over of 0.7's Keychain items to it. Built on its own by `scripts/build-helper.sh`; its tests are `swift test` there |
 | `protocol/` | How boxes and clients talk (`PROTOCOL.md`: only what a route can't say), and the vectors every side is held to (`vectors/`) |
 | `gpui/` | The GPUI app, in Rust (its `README.md`) |
@@ -182,9 +177,8 @@ every machine.
 
 Its source is `box/src/browser/kuvo-browser.js`; the scripts it runs in pages
 (`page.ts`, with `page/` and browser-use's `buildDomTree.js`), the agents' tools (`tools.ts`) and
-what they're told (`instructions.ts`) are filled in by `./scripts/build-browser.sh`, which you run
-and commit after changing them (the box suite checks it too). It
-writes `KEEPER` too, a hash of the source, so a copy built from changed sources replaces the keeper
+what they're told (`instructions.ts`) are filled in by `scripts/build-built.sh`. It also writes
+`KEEPER`, a hash of the source, so a copy built from changed sources replaces the keeper
 that's running. To update the historical browser tools fixture, see
 `box/bridge-tests/browser-tools-built.test.js`.
 
@@ -223,9 +217,7 @@ retains `kuvo/agents/api/…` for compatible readers.
   downloaded from Google, checked against its pinned SHA-256, into `agents/antigravity`.
 
 The SDKs are installed from npm the first time each is needed (`runtime/<agent>`), at the
-versions in the agents' files, and aren't part of the app. After changing `box/src/agents`, run
-`./scripts/build-agents.sh` and commit `box/dist/kuvo-agents.js`, the bundle a box's release
-carries. Use `scripts/build-agents.sh --check` to verify it is current.
+versions in the agents' files. The release carries the generated bundle `box/dist/kuvo-agents.js`.
 
 ### Dependencies
 
@@ -238,8 +230,7 @@ or assets and commit its updated notices.
 
 1. Work on a branch in a separate worktree and keep commits focused. Follow
    [CLAUDE.md](CLAUDE.md) for design decisions, tests, and handover.
-2. Run focused local checks. CI is paused for session work. AI review passes
-   run only when requested.
+2. Run focused local checks. AI review passes run only when requested.
 3. For changes people notice, add a line under Unreleased in [CHANGELOG.md](CHANGELOG.md)
    and update the matching site docs in a separate local commit. See
    [the docs map](docs/docs-map.md).
@@ -278,24 +269,11 @@ and the lists they add to merge line by line:
   old lines conflict as they always did, and puts its names back one a line, in order. Merged the
   other way, into main, `features.ts`'s union takes its old line whole beside the new ones: it
   still builds, with names twice, and only the tests and `route-shapes.sh` catch it.
-- **What's written from those**: `./scripts/route-shapes.sh` writes `routes/shapes/answers.json`
-  and `routes/features.json` (each box's `kuvo/info` features, which both route runners check);
-  `./scripts/build-box.sh`, `./scripts/build-agents.sh` and `./scripts/build-browser.sh` write
-  `kuvo-link.js`, `kuvo-agents.js` and `kuvo-browser.js` (with its keeper's version, `KEEPER`, a
-  hash: never bump it). Never edit them. They stay in git, because what builds the app, the
-  release takes them as they are,
-  with no Bun. Two branches that both built one would always conflict on it, and neither side is
-  right after a merge, so git keeps the side checked out (`merge=kuvo-built` in `.gitattributes`;
-  in a rebase or cherry-pick that's the branch replayed onto, not the commit replayed) and goes
-  on, saying so for each. **After a merge, rebase or cherry-pick, run `scripts/check-built.sh`**
-  (each script's `--check`): it fails on one that isn't what its sources build, and
-  `scripts/check-built.sh --build` builds all four again, to commit. The desktop
-  bundle build runs the check too.
-- **Setting up the merge driver**: git needs the driver named in each clone's own config, once:
-  run `scripts/merge-setup.sh` after cloning. It writes `merge.kuvo-built` into `.git/config`,
-  which every worktree of that clone shares, so a new worktree needs nothing more. A clone without
-  it merges these files as text, and they conflict as they always did: then take either side and
-  build again.
+- **Generated files**: `scripts/build-built.sh` builds the three bundles in `box/dist/`,
+  writes the route vectors and `protocol/ROUTES.md`, and checks the committed catalog snapshot
+  (`catalog/index.json`). Keep the generated bundles and route files out of commits. The build
+  stamps `BRIDGE_VERSION` and `KEEPER` from their contents. After a merge, the build and test
+  entry points regenerate their inputs before use.
 - **`CHANGELOG.md`**: add lines; it's merged by union too.
 
 ## License

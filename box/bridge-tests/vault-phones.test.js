@@ -11,11 +11,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { script } from "./box-stand-ins.js";
+import { script, LINK_BUNDLE } from "./box-stand-ins.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // (A short folder: the vault's socket lives in it.)
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "kvp-"));

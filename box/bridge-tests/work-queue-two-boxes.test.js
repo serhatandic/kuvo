@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/work-queue-two-boxes.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -21,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-work-queue-two-")));
 removeAtEnd(support);
 const macHome = path.join(support, "mac");
@@ -114,7 +115,7 @@ Object.assign(process.env, {
   KUVO_HOST_URL: `http://127.0.0.1:${appHost.address().port}`,
   KUVO_HOST_PASSWORD: "host-password",
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const relay = await relayStandIn(link, { changed: () => {} });
 
 // A bot here, and a session on the machine.

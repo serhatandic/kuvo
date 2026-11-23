@@ -1,36 +1,12 @@
 #!/bin/sh
-# Builds the box's link (box/src/link) into swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js,
-# which the box release installs on each computer and runs with the engine's Bun. Run it after changing anything
-# in box/src, and commit the result.
-# `--check` builds it again and says whether that's what's here, byte for byte, as CI checks: so a
-# change made to kuvo-link.js itself, or merged into it, never passes for one made in its sources.
-# It builds with one Bun, the one CI has (BUN_VERSION), so every computer builds the same file.
-#   BUN   the Bun to build with (default: `bun` on PATH if it's that version, else the engine of a
-#         demo, perf or e2e copy that has it, which is Bun with BUN_BE_BUN=1; never the real
-#         Kuvo Code's)
+# Build the box's link (box/src/link) for the engine and the Node bridge tests.
 set -eu
 cd "$(dirname "$0")/.."
+[ "$#" -eq 0 ] || { echo "Usage: scripts/build-box.sh" >&2; exit 2; }
+. scripts/build-bun.sh
 
-OUT=swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js
-# The same as CI's setup-bun (.github/workflows/ci.yml).
-BUN_VERSION=1.4.2
-
-. scripts/real-app-guard.sh
-version() { BUN_BE_BUN=1 "$1" --version 2>/dev/null || true; }
-if [ -z "${BUN:-}" ]; then
-  if command -v bun >/dev/null 2>&1 && [ "$(version bun)" = "$BUN_VERSION" ]; then
-    BUN=bun
-  else
-    for engine in "$HOME/Library/Application Support/run.kuvo.code."*/engine/*/opencode; do
-      [ -x "$engine" ] && [ "$(version "$engine")" = "$BUN_VERSION" ] && BUN=$engine
-    done
-  fi
-fi
-if [ -z "${BUN:-}" ] || [ "$(version "$BUN")" != "$BUN_VERSION" ]; then
-  echo "scripts/build-box.sh builds with Bun $BUN_VERSION, as CI does: install it, or launch a demo copy of Kuvo Code whose engine has it, or name one with BUN=." >&2
-  exit 1
-fi
-real_app_guard "scripts/build-box.sh" "$BUN"
+OUT=box/dist/kuvo-link.js
+mkdir -p box/dist
 BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file catalog/build.ts --check
 
 # For Node too, not only Bun: the bridge's tests import it with Node, and it uses Node's modules only.
@@ -39,7 +15,7 @@ BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file catalog/build.ts --check
 # with every change to the link, the same on every computer, and no branch bumps it by hand.
 SOURCE_VERSION=0.0.0-from-its-sources
 raw=$(mktemp "${TMPDIR:-/tmp}/kuvo-link-raw.XXXXXX")
-built=$(mktemp "${TMPDIR:-/tmp}/kuvo-link.XXXXXX")
+built=$(mktemp "$OUT.XXXXXX")
 trap 'rm -f "$raw" "$built"' EXIT
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 build() {
@@ -80,12 +56,7 @@ BUILD
   } >"$1"
 }
 
-if [ "${1:-}" = "--check" ]; then
-  build "$built"
-  cmp -s "$built" "$OUT" && exit 0
-  echo "$OUT isn't what box/src builds: change the sources, not it, then run ./scripts/build-box.sh and commit it." >&2
-  exit 1
-fi
-
-build "$OUT"
+build "$built"
+chmod 644 "$built"
+mv -f "$built" "$OUT"
 echo "Built $OUT"

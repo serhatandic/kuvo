@@ -3,6 +3,7 @@
 // so each notice comes once, from the machine. Run with
 // `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -15,7 +16,7 @@ import { removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-box-work-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const run = path.join(home, "run");
 fs.mkdirSync(run, { recursive: true });

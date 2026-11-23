@@ -40,7 +40,7 @@ function sources(engine: string): string {
   for (const folder of ["box/src/keeper", "box/src/plugins"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
   cpSync(join(checkout, "box/src/shared/bot-words.json"), join(root, "box/src/shared/bot-words.json"))
   const body = "// the browser\n"
-  const built = { "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js": "// the link\n", "box/dist/kuvo-agents.js": "// the bridge\n", "box/dist/kuvo-browser.js": `// kuvo-browser ${createHash("sha256").update(body).digest("hex").slice(0, 16)}\n${body}` }
+  const built = { "box/dist/kuvo-link.js": "// the link\n", "box/dist/kuvo-agents.js": "// the bridge\n", "box/dist/kuvo-browser.js": `// kuvo-browser ${createHash("sha256").update(body).digest("hex").slice(0, 16)}\n${body}` }
   for (const [file, text] of Object.entries(built)) {
     mkdirSync(dirname(join(root, file)), { recursive: true })
     writeFileSync(join(root, file), text)

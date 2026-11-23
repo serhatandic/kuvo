@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/work-queue.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -25,9 +26,9 @@ removeAtEnd(home);
 fs.mkdirSync(path.join(home, "bin"), { recursive: true });
 fs.writeFileSync(path.join(home, "bin", "gh"), "#!/bin/sh\necho 'gh auth login' >&2\nexit 1\n", { mode: 0o755 });
 process.env.PATH = `${path.join(home, "bin")}${path.delimiter}${process.env.PATH}`;
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const write = (file, text) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);

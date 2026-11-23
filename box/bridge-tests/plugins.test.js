@@ -2,6 +2,7 @@
 // the ones a word finds, the package you name exactly first, and a name npm doesn't have said
 // so. npm is a stand-in, as a box reaches it.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -37,7 +38,7 @@ const npm = http.createServer((request, response) => {
 });
 await new Promise(resolve => npm.listen(0, "127.0.0.1", resolve));
 process.env.KUVO_TEST_NPM = `http://127.0.0.1:${npm.address().port}`;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 removeAtEnd(home);
 atEnd(() => {
   npm.close();
@@ -133,7 +134,7 @@ test("this Mac's real box asks npm itself, whatever its environment names instea
   fs.mkdirSync(path.join(app, "box"), { recursive: true });
   const before = searched.length;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
-    const link = await import(${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)});
+    const link = await import(${JSON.stringify(LINK_BUNDLE.href)});
     await link.searchPlugins("waka").catch(() => {});
     process.exit(0);
   `], { env: { ...process.env, KUVO_HOME: path.join(app, "box"), KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(app, "config") }, stdio: "ignore" });

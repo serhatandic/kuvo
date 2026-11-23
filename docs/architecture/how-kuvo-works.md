@@ -87,7 +87,7 @@ creation. Letters still have their own peer locator.
   cross-computer proofs, wipe generations and merge admission remain follow-ups.
   The archived check records their rationale and suggested changes.
 - **20:** the protocol now starts with the current desktop and peer paths.
-  The generated asset's historical Swift path stays in use by the build.
+  The build generates the link bundle in `box/dist/`.
 
 Sparkle updates the installed desktop client. The fleet update runs on the boxes.
 

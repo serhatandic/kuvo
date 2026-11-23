@@ -2,6 +2,7 @@
 // agents' bridge beside its engine, as a Mac passes them to its own. Run with
 // `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -14,7 +15,7 @@ import { runningAs } from "./running-as.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-agents-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 async function ask(handle, method, p, { headers = {}, body } = {}) {
   const parts = [];

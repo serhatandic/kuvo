@@ -18,7 +18,7 @@ for (const name of ["kuvo-start", "kuvo-launch", "kuvo-setsid"]) {
   const file = fs.readFileSync(path.join(root, "box/src/keeper", name), "utf8");
   fs.writeFileSync(path.join(K, "bin", name), file.replaceAll("@ENGINE@", version), { mode: 0o755 });
 }
-fs.copyFileSync(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), path.join(K, "bin", "kuvo-link.js"));
+fs.copyFileSync(path.join(root, "box/dist/kuvo-link.js"), path.join(K, "bin", "kuvo-link.js"));
 const runtime = JSON.stringify(process.execPath);
 fs.writeFileSync(path.join(K, "engine", version, "opencode"), `#!/bin/bash
 export BUN_BE_BUN=1

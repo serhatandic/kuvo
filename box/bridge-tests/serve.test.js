@@ -2,6 +2,7 @@
 // beside the engine (PROTOCOL.md, "This Mac's box"). Run with
 // `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -17,7 +18,7 @@ import { removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-serve-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const script = new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url);
+const script = LINK_BUNDLE;
 const link = await import(script);
 
 const auth = password => `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;

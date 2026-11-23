@@ -4,6 +4,7 @@
 //
 // Run with `node --test box/bridge-tests/naming.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -15,7 +16,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-naming-"));
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 // (Once the list a message started working out is written: it would write it again in a folder
 // just removed.)
 removeAtEnd(home);

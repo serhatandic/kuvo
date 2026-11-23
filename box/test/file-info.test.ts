@@ -108,7 +108,7 @@ test("the file info route is served by the other computer's box route command", 
   mkdirSync(remoteHome);
   const file = join(remoteHome, "remote.txt");
   writeFileSync(file, "from the remote box");
-  const link = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = fileURLToPath(new URL("../dist/kuvo-link.js", import.meta.url));
   const result = spawnSync(process.execPath, [link, "box", "route"], {
     input: JSON.stringify({ method: "GET", path: route(file) }),
     env: { ...process.env, HOME: remoteHome, KUVO_HOME: join(remoteHome, ".kuvo-code") },
@@ -126,7 +126,7 @@ test("remote downloads can opt into the source's execute bits with the bytes", a
   const textFile = join(root, "report.txt");
   writeFileSync(file, "echo extensionless", { mode: 0o700 });
   writeFileSync(textFile, "normal text", { mode: 0o600 });
-  const link = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = fileURLToPath(new URL("../dist/kuvo-link.js", import.meta.url));
   for (const [source, executable, body] of [[file, "1", "echo extensionless"], [textFile, "0", "normal text"]]) {
     const result = spawnSync(process.execPath, [link, "box", "route"], {
       input: JSON.stringify({ method: "GET", path: route(source, "") + "&withMode=1" }),

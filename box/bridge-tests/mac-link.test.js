@@ -6,6 +6,7 @@
 //
 // Run with `node --test box/bridge-tests/mac-link.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -85,7 +86,7 @@ Object.assign(process.env, {
 });
 fs.mkdirSync(process.env.KUVO_HOME, { recursive: true });
 fs.writeFileSync(path.join(process.env.KUVO_HOME, "folder-version.json"), '{"version":11}\n');
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const relay = await relayStandIn(link, { changed: poke });
 atEnd(() => relay.close());

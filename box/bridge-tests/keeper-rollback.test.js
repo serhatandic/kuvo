@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/keeper-rollback.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -147,7 +148,7 @@ test("an update taken by a Mac's box from before: the server still on the old co
   // The new link, put there after that server started, with the release's own time on it (a
   // release's files all say 2026-01-01, and a Mac's disk clones a big file with its time): only
   // when it was put there (its change time) is now.
-  write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)), "utf8"));
+  write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(fileURLToPath(LINK_BUNDLE), "utf8"));
   const released = new Date("2026-01-01T00:00:00Z");
   fs.utimesSync(path.join(K, "bin", "kuvo-link.js"), released, released);
 
@@ -247,7 +248,7 @@ test("one rollback at a time: a second, while the first runs, leaves without tou
 
 test("the current keeper holds an unknown update record before executing saved rollback", () => {
   const { folder, K, R, env } = home();
-  const link = fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const link = fs.readFileSync(LINK_BUNDLE);
   write(path.join(K, "bin", "kuvo-link.js"), link);
   write(path.join(K, "bin", "package.json"), '{"type":"module"}');
   write(path.join(K, "engine", "1.0.0", "opencode"), `#!/bin/sh\nshift 2\nexec '${process.execPath}' "$@"\n`, 0o700);

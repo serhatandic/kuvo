@@ -3,6 +3,7 @@
 // file back with anything in its way in Kuvo Code's trash, a picture's old side whole, a commit and a
 // push, and a branch's work brought back: Merge into… and Create Pull Request.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -12,7 +13,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-changes-")));
 const home = path.join(root, "box");
 const trash = path.join(root, "trash");

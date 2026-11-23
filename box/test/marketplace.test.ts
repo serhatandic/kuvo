@@ -215,7 +215,7 @@ test("OAuth exchanges a state-checked PKCE code and keeps the resulting tokens i
 
 test("Add Agent creates a bot with the selected account, its job and a paused routine", async () => {
   fs.mkdirSync(path.join(K, "bin"), { recursive: true });
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(K, "bin/bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(K, "bin/bot-words.json"));
   const session = { id: "ses_marketplace", metadata: {}, permissions: [] };
   const messages: any[] = [];
   useNetwork((url, init) => {
@@ -245,7 +245,7 @@ test("Add Agent creates a bot with the selected account, its job and a paused ro
 
 test("an agent's routine turned on in Add runs from the start, and the sheet's words come from the box", async () => {
   fs.mkdirSync(path.join(K, "bin"), { recursive: true });
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(K, "bin/bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(K, "bin/bot-words.json"));
   const session = { id: "ses_marketplace_routine", metadata: {}, permissions: [] };
   useNetwork(url => {
     if (url.pathname === "/api/provider") return Response.json([{ id: "test-account" }]);

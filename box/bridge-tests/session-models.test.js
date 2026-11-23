@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/session-models.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -17,7 +18,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-session-models-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // A stand-in on a free port, answering `routes[url]` (or 404; `FAILS`, 500), its `data` as their
 // APIs give it; the folders it was asked about, as the engine reads them (`x-opencode-directory`),

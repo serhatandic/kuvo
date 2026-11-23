@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/computers-add.test.js`.
 import { removeTestHomeAtExit } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -41,7 +42,7 @@ process.env.FAKE_SSH_HOME = there;
 process.env.PATH = `${tools}${path.delimiter}${process.env.PATH}`;
 
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const write = (file, text, mode = 0o644) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text, { mode });
@@ -236,7 +237,7 @@ const builtLink = fs.readFileSync(script, "utf8");
 // These boxes test SSH updates. A real release check must not take their update lock.
 const offlineLink = builtLink.replace(/^(\s*UPDATE_KEYS = )\[[^\n]*\];$/m, "$1[];");
 assert.notEqual(offlineLink, builtLink);
-write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), offlineLink);
+write(path.join(root, "box/dist/kuvo-link.js"), offlineLink);
 write(path.join(root, "box/dist/kuvo-agents.js"), `
 import fs from "node:fs";
 import http from "node:http";
@@ -465,7 +466,7 @@ const secrets = ["secret-notion-token", "sk-ant-secret-key", "gho_stays_the_same
 
 const migrated = spawnSync(process.execPath, [script, "folder-upgrade"], { env: process.env, encoding: "utf8", timeout: 15_000 });
 assert.equal(migrated.status, 0, migrated.stderr);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const k = key => key.toString("base64url");
 const mac = link.newKey();
 link.macLink.overlay = { key: k(mac), secret: k(crypto.randomBytes(32)), sign: link.newSigningSeed(), relay: "ws://127.0.0.1:1", name: "Studio" };

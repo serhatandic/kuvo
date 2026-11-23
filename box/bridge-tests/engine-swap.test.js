@@ -24,7 +24,7 @@ import { CODEX_STAND_IN } from "./codex-stand-in.js";
 
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
-const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const builtLink = path.join(checkout, "box/dist/kuvo-link.js");
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-engine-swap-")));
 const home = path.join(base, ".kuvo-code");

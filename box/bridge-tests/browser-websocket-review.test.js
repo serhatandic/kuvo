@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +11,7 @@ import { test } from "node:test";
 import { removeAtEnd } from "./at-end.js";
 process.env.KUVO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "kv-ws-"));
 removeAtEnd(process.env.KUVO_HOME);
-const { viewUpgrade } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const { viewUpgrade } = await import(LINK_BUNDLE.href);
 async function server(t) {
   const server = http.createServer();
   const calls = [];

@@ -6,6 +6,7 @@
 //
 // Run with `node --test box/bridge-tests/moves-lanes-races.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { moveTime, scriptedMoves } from "./move-script.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -149,7 +150,7 @@ atEnd(() => { engine.closeAllConnections(); engine.close(); });
 write(path.join(home, "run", "engine.json"), { port: engine.address().port, password: "pw" });
 
 Object.assign(process.env, { KUVO_HOME: home, KUVO_BOTS: bots, KUVO_WAKES: path.join(support, "wakes"), KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(support, "opencode"), KUVO_KEYS: path.join(support, "keys") });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const labKey = link.publicOf(link.newKey()).toString("base64url");
 const lab = { key: labKey, address: link.addressOf(crypto.randomBytes(32)).toString("base64url"), kind: "machine", name: "lab", id: "lab", sign: link.signingKeyOf(link.newSigningSeed()) };
 link.writeLink({ macPeers: [lab] });

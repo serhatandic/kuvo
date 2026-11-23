@@ -22,8 +22,7 @@ import { ledSetup, usesAcceptedSaves } from "./setup/record";
 //
 // It keeps its state in ~/.kuvo-code/run/link.json (mode 600), reads the engine's port and
 // password from run/engine.json, and connects out to the relay; it never listens. The protocol
-// is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
-// the phone.
+// is documented in protocol/PROTOCOL.md.
 
 import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
 import { ROUTE_VERSION } from "../shared/route-version";

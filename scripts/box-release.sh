@@ -24,8 +24,7 @@
 # The same files pack to the same bytes, whenever they're packed (on one system: a Mac's tar and
 # Linux's write their headers their own ways): each entry in name order, with one fixed time and
 # no owner, and gzip keeping neither a name nor a time.
-# What's built and kept in git (kuvo-link.js, kuvo-agents.js, kuvo-browser.js) goes in as it is:
-# scripts/check-built.sh says whether it's what the sources build.
+# Build this checkout before packing. BOX_SOURCES supplies already prepared test fixtures.
 set -eu
 
 usage() {
@@ -54,6 +53,9 @@ else
         esac
     fi
 fi
+# Keep the key in this shell until the manifest signer needs it.
+signing_key=${KUVO_BOX_SIGNING_KEY:-}
+unset KUVO_BOX_SIGNING_KEY
 OUT_GIVEN=$1
 shift
 # The bundles, by their own paths, before going to the checkout (and before anything is made).
@@ -74,10 +76,17 @@ OUT=$(cd "$OUT_GIVEN" && pwd -P)
 NODE=${NODE:-node}
 cd "$(dirname "$0")/.."
 
+if [ -z "${BOX_SOURCES:-}" ]; then
+    . scripts/build-bun.sh
+    scripts/build-built.sh
+fi
+
 . scripts/real-app-guard.sh
 if [ -z "${BUN:-}" ]; then
     if command -v bun >/dev/null 2>&1; then
         BUN=bun
+    elif [ -x "$HOME/.bun/bin/bun" ]; then
+        BUN="$HOME/.bun/bin/bun"
     else
         for engine in "$HOME/Library/Application Support/run.kuvo.code."*/engine/*/opencode; do
             [ -x "$engine" ] && BUN=$engine
@@ -90,7 +99,7 @@ real_app_guard "scripts/box-release.sh" "$BUN"
 # (Never with the key: writing the files needs none.)
 # (ENGINE_CHECK, where given: what scripts/engine-check.mjs found, for box.json's `engines` and
 # `downgradeSafe`; without it, box.json names the pinned engine alone.)
-files() { env -u KUVO_BOX_SIGNING_KEY BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1"; }
+files() { BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1"; }
 
 if [ "$ONLY_FILES" = 1 ]; then
     files "$OUT"
@@ -111,7 +120,7 @@ for bundle in "$@"; do
     [ ! -e "$box/bin/$(basename "$bundle")" ] || { echo "Two bundles named $(basename "$bundle")." >&2; exit 2; }
     cp -Rp "$bundle" "$box/bin/"
 done
-env -u KUVO_BOX_SIGNING_KEY "$NODE" --input-type=module - "$box" <<'EOF'
+"$NODE" --input-type=module - "$box" <<'EOF'
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -169,7 +178,7 @@ if command -v codesign >/dev/null 2>&1 && [ $# -gt 0 ]; then
 fi
 # Signed before either is put in place: a signing that fails leaves no pack without its
 # boxes.json, nor a new pack beside an older one's.
-"$NODE" scripts/sign-box.mjs "$VERSION" "$pack.new" "$URL" "$box/box.json" > "$OUT/boxes.json.new"
+KUVO_BOX_SIGNING_KEY="$signing_key" "$NODE" scripts/sign-box.mjs "$VERSION" "$pack.new" "$URL" "$box/box.json" > "$OUT/boxes.json.new"
 mv -f "$pack.new" "$pack"
 mv -f "$OUT/boxes.json.new" "$OUT/boxes.json"
 # The installer beside them, for an app that carries the release to run on a computer with no box
