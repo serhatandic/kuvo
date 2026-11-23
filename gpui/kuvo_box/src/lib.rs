@@ -26,6 +26,7 @@ pub mod find;
 pub mod folders;
 pub mod follow;
 pub mod gate;
+pub use kuvo_protocol::FEATURES;
 pub mod git;
 pub mod groups;
 pub mod ids;

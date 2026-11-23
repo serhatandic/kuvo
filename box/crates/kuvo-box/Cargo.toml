@@ -12,6 +12,7 @@ workspace = true
 base64 = "0.22"
 getrandom = "0.4"
 hostname = "0.4"
+kuvo_protocol = { path = "../kuvo_protocol" }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

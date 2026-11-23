@@ -2,6 +2,7 @@ import "./safety"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { computerCompatibility } from "../src/link/areas/compatibility"
 import { FEATURES } from "../src/shared/features"
 import { MAC_FEATURES, MACHINE_FEATURES, macFeatures } from "../src/shared/routes/mac"
 
@@ -33,16 +34,26 @@ test("a Mac's box names every box's but a machine's own, and the Mac's own, each
   for (const name of MACHINE_FEATURES) expect(mac).not.toContain(name)
 })
 
-test("the protocol and Rust gate agree and both kinds of Box advertise the required names", () => {
+test("both kinds of Box advertise the protocol gate requirements", () => {
   const root = join(import.meta.dir, "../..")
-  const protocol = readFileSync(join(root, "protocol/gate-required.txt"), "utf8")
-    .split("\n").map(line => line.trim()).filter(line => line && !line.startsWith("#"))
-  const rust = readFileSync(join(root, "gpui/kuvo_box/src/gate/required.rs"), "utf8")
-    .split("\n").map(line => /^\s*"([^"]+)",$/.exec(line)?.[1]).filter(name => name !== undefined)
+  const lines = readFileSync(join(root, "protocol/gate-required.txt"), "utf8").split("\n")
+  const protocol = lines.map(line => line.trim()).filter(line => line && !line.startsWith("#"))
+  const baseline = lines.find(line => line.startsWith("# Baseline: "))!.slice("# Baseline: ".length).trim().split(/\s+/)
+  expect(baseline.length).toBeGreaterThan(0)
+  for (const name of baseline) expect(protocol).toContain(name)
   expect(protocol.length).toBeGreaterThan(0)
   expect(new Set(protocol).size).toBe(protocol.length)
-  expect([...rust].sort()).toEqual([...protocol].sort())
   const machine = new Set<string>(FEATURES)
   const mac = new Set(macFeatures())
   expect(protocol.filter(name => !machine.has(name) || !mac.has(name))).toEqual([])
+})
+
+test("a computer only holds the gate when a baseline capability is missing", () => {
+  expect(computerCompatibility(FEATURES)).toEqual({ state: "open" })
+  expect(computerCompatibility(FEATURES.filter(name => name !== "bots.state"))).toEqual({
+    state: "behind", missing: ["bots.state"],
+  })
+  expect(computerCompatibility(FEATURES.filter(name => name !== "messages.send"))).toEqual({
+    state: "held", missing: ["messages.send"],
+  })
 })

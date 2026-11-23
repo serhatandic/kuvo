@@ -3,6 +3,8 @@
 
 use serde::Deserialize;
 
+pub use kuvo_protocol::gate::Compatibility;
+
 /// A box's `kuvo/info`, the fields a client reads; anything else it says is left as it is.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BoxInfo {
@@ -46,41 +48,5 @@ impl BoxInfo {
 
     pub fn has(&self, feature: &str) -> bool {
         self.features.iter().any(|name| name == feature)
-    }
-}
-
-/// How the box says it stands with this client (`compatibility`): every client draws it as it is,
-/// the box's word alone. `missing`: what this client draws that it lacks.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(tag = "state", rename_all = "kebab-case")]
-pub enum Compatibility {
-    Open,
-    /// Used as it is, what it lacks drawn without.
-    Behind {
-        #[serde(default)]
-        missing: Vec<String>,
-    },
-    /// This client can't use it until it's updated.
-    Held {
-        #[serde(default)]
-        missing: Vec<String>,
-    },
-    /// It didn't say (a box from before it did).
-    #[default]
-    #[serde(other)]
-    Unknown,
-}
-
-impl Compatibility {
-    pub fn is_held(&self) -> bool {
-        matches!(self, Self::Held { .. })
-    }
-
-    pub fn is_older(&self) -> bool {
-        matches!(self, Self::Behind { .. } | Self::Held { .. })
-    }
-
-    pub fn is_behind(&self) -> bool {
-        matches!(self, Self::Behind { .. })
     }
 }

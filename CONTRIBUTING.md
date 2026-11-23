@@ -271,10 +271,9 @@ and the lists they add to merge line by line:
 - **Other lists a feature adds to** are one entry a line, in order, so they merge the same way
   (without union): the bridge's test of each name's route (`routes` in
   `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES` and `MACHINE_FEATURES`.
-- **Compatibility requirement lists** are kept in sync between
-  `gpui/kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt`. Keep
-  entries sorted and check removals after a merge. The lists describe expected
-  capabilities, while the box decides whether to refuse a request.
+- **Compatibility requirements** live in `protocol/gate-required.txt`. Keep entries sorted and
+  check removals after a merge. The TypeScript box reads this list and `kuvo_protocol` generates
+  the Rust constant from it. The box decides whether to refuse a request.
 - **A branch from before these were one a line** (#396) merges main into itself first, where the
   old lines conflict as they always did, and puts its names back one a line, in order. Merged the
   other way, into main, `features.ts`'s union takes its old line whole beside the new ones: it

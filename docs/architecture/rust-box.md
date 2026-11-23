@@ -193,7 +193,8 @@ setup, so nothing has to match byte for byte between them on the wire.
 **Route shapes: TypeScript stays the source until the TypeScript box is removed.** The shapes are
 already exported as data (`protocol/vectors/routes/shapes/answers.json`, from
 `scripts/route-shapes.sh`). `kuvo_protocol` generates Rust types and the checker from that file
-into a built, never-hand-edited `routes.rs`. Its checker is held to `shapes/cases.json`, like the
+into Cargo's build directory. It reads the advertised names from `protocol/vectors/routes/features.json`
+and the update gate requirements from `protocol/gate-required.txt`. Its checker is held to `box/test/fixtures/routes/shapes/cases.json`, like the
 JavaScript one. The TypeScript box remains the reference and keeps getting fixes, so a source of
 truth anywhere else would mean two places to edit for months. At removal (session 9.4) this flips:
 the shapes become hand-written Rust, and `answers.json` is generated from them for the
@@ -329,7 +330,7 @@ parallel.
 | 0.2 | Conformance through binaries: older Macs' vectors, `hold/1` with a TypeScript holder, the four golden homes, digests | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
-| 1.1 | `kuvo_protocol`: codegen from shapes, checker held to `cases.json`, `FEATURES`; desktop takes the features and gate from it | protocol | 0.4 | 5 | B |
+| 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
 | 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home | store | 0.4, 0.2 | 6 | C |
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | Server: dispatcher, local HTTP, refusals, the line with replay, SSH `route` and `route-to` | server | 1.1, 1.3 | 6 ×2 | B |

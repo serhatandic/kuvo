@@ -2797,6 +2797,7 @@ dependencies = [
  "hmac",
  "image",
  "kuvo_box",
+ "kuvo_protocol",
  "libc",
  "percent-encoding",
  "rustls",
@@ -2817,6 +2818,14 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "kuvo_ui",
+]
+
+[[package]]
+name = "kuvo_protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
