@@ -1,0 +1,1234 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
+
+use kuvo_peers::{
+    directory::{Member, Roster},
+    relay,
+    session::{BoxHello, ComputerKind as PeerKind},
+};
+use kuvo_server::ssh::{Grant, IdentityRefusal, Pairings};
+use kuvo_wire::{
+    documents::{self, Document, Kind, Parts},
+    keys::{decode_exact, encode},
+};
+use serde_json::{Value, json};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot, watch},
+    task::JoinHandle,
+    time::{self, Instant},
+};
+
+use crate::{
+    Error, checkpoint, edits, lease, mac_host,
+    model::{
+        ComputerKind, Identity, Link, Membership, Position, Role, Setup, SharedKind, safe_token,
+        validate_position, validate_shared,
+    },
+    object, preferences, random,
+    storage::Files,
+};
+
+mod device_access;
+mod edit_delivery;
+mod handover;
+mod replication;
+
+pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
+use handover::{Handover, HandoverReply};
+
+const LINK: &str = "run/link.json";
+const CARD: &str = "run/setup-card.json";
+const WELCOME: &str = "run/welcomed.json";
+const ATTACHED: &str = "run/app-attached.json";
+
+pub struct SetupRuntime {
+    handle: SetupHandle,
+    task: JoinHandle<()>,
+}
+
+#[derive(Clone)]
+pub struct SetupHandle {
+    pub(crate) inbox: mpsc::Sender<Request>,
+    pub(crate) views: watch::Receiver<View>,
+    rosters: watch::Receiver<Option<Arc<Roster>>>,
+}
+
+impl SetupHandle {
+    pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
+        self.rosters.clone()
+    }
+}
+
+struct SetupLink {
+    sender: relay::Sender,
+    events: broadcast::Receiver<Arc<relay::RelayEvent>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PairedAccess {
+    key: Option<[u8; 32]>,
+    public: Option<String>,
+    disabled: bool,
+    grants: HashMap<[u8; 32], Grant>,
+}
+
+impl Pairings for SetupHandle {
+    fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        let view = self.views.borrow();
+        let access = &view.access;
+        if access.public.as_deref() != Some(computer) {
+            return Err(IdentityRefusal::WrongComputer);
+        }
+        if access.disabled {
+            return Err(IdentityRefusal::Disabled);
+        }
+        access.key.ok_or(IdentityRefusal::Unavailable)
+    }
+
+    fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
+        self.views.borrow().access.grants.get(key).cloned()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct View {
+    pub setup: Value,
+    pub personalities: Value,
+    pub clock: Value,
+    access: PairedAccess,
+}
+
+pub(crate) struct Request {
+    pub command: Command,
+    pub reply: oneshot::Sender<Result<Response, Error>>,
+}
+
+pub(crate) enum Command {
+    Welcome(bool),
+    DeviceChange(device_access::Mutation),
+    ReadEdit(edits::Target),
+    SubmitEdit(edits::Edit, edits::Submitter),
+    EditReceipt(String),
+    EditOutbox,
+    Attached,
+    Personalities(preferences::PersonalityChange),
+    Zone {
+        zone: String,
+        revision: Option<String>,
+    },
+    Handover {
+        primary: String,
+        epoch: Option<u64>,
+        submitter: edits::Submitter,
+    },
+    Usage {
+        id: String,
+        epoch: u64,
+        sequence: u64,
+        operation: Option<String>,
+        value: Value,
+    },
+}
+
+pub(crate) struct Response {
+    pub status: u16,
+    pub value: Value,
+}
+
+impl Response {
+    pub(crate) fn ok(value: Value) -> Self {
+        Self { status: 200, value }
+    }
+}
+
+impl SetupRuntime {
+    pub async fn prepare(
+        home: &Path,
+        name: String,
+        mac: bool,
+        relay: Option<String>,
+    ) -> Result<PreparedSetup, Error> {
+        let files = Files::new(home.to_owned());
+        let kind = if mac {
+            ComputerKind::Mac
+        } else {
+            ComputerKind::Machine
+        };
+        let test_clock = relay
+            .as_deref()
+            .and_then(|value| reqwest::Url::parse(value).ok())
+            .is_some_and(|url| matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost")));
+        let overlay = if mac {
+            validate_disk(&files)?;
+            mac_host::read(&files, &name, relay.clone()).await?
+        } else {
+            None
+        };
+        let (link, identity) = tokio::task::spawn_blocking({
+            let (home, files, name) = (home.to_owned(), files.clone(), name.clone());
+            move || open(&home, &files, &name, kind, relay, overlay)
+        })
+        .await
+        .map_err(|_| Error::Invalid("setup startup task"))??;
+        let lease = lease::Client::new(&files, &link, test_clock)?;
+        let welcomed = read_welcome(&files)?;
+        Ok(PreparedSetup {
+            files,
+            link,
+            identity,
+            kind,
+            name,
+            lease,
+            welcomed,
+        })
+    }
+
+    pub fn handle(&self) -> SetupHandle {
+        self.handle.clone()
+    }
+}
+
+pub struct PreparedSetup {
+    files: Files,
+    link: Link,
+    identity: Option<Identity>,
+    kind: ComputerKind,
+    name: String,
+    lease: lease::Client,
+    welcomed: bool,
+}
+
+impl PreparedSetup {
+    pub fn relay_config(&self) -> Result<Option<relay::Config>, Error> {
+        self.identity
+            .as_ref()
+            .zip(self.link.relay.as_ref())
+            .filter(|_| self.link.setup().is_ok())
+            .map(|(own, url)| relay_config(&self.link, own, url, self.kind))
+            .transpose()
+    }
+
+    pub fn peer_roster(&self) -> Option<Roster> {
+        peer_roster(&self.link, self.identity.as_ref())
+    }
+
+    pub fn start(self, relay: Option<relay::RelayHandle>) -> Result<SetupRuntime, Error> {
+        let network = relay.and_then(|relay| {
+            let events = relay.subscribe()?;
+            Some(SetupLink {
+                sender: relay.sender,
+                events,
+            })
+        });
+        let Self {
+            files,
+            mut link,
+            identity,
+            kind,
+            name,
+            lease,
+            welcomed,
+        } = self;
+        let (tx, rx) = mpsc::channel(32);
+        let view = make_view(
+            &files,
+            &link,
+            identity.as_ref(),
+            &lease,
+            kind,
+            &name,
+            welcomed,
+        )?;
+        let (views, view_rx) = watch::channel(view);
+        let (rosters, roster_rx) =
+            watch::channel(peer_roster(&link, identity.as_ref()).map(Arc::new));
+        for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
+            link.extra.shift_remove(field);
+        }
+        let actor = Owner {
+            files,
+            link,
+            identity,
+            kind,
+            name,
+            lease,
+            welcomed,
+            network,
+            rx,
+            views,
+            rosters,
+            exports: vec![],
+            parts: Parts::default(),
+            manifests: VecDeque::new(),
+            pending_tips: VecDeque::new(),
+            pending_handover: None,
+            pending_devices: HashMap::new(),
+            forwarded_handover: None,
+            next: Instant::now(),
+            next_edits: Instant::now(),
+        };
+        actor.write_card()?;
+        let task = tokio::spawn(actor.run());
+        Ok(SetupRuntime {
+            handle: SetupHandle {
+                inbox: tx,
+                views: view_rx,
+                rosters: roster_rx,
+            },
+            task,
+        })
+    }
+}
+
+impl Drop for SetupRuntime {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn validate_disk(files: &Files) -> Result<(), Error> {
+    if let Some(layout) = files.read::<Value>("folder-version.json")?
+        && (layout
+            .get("version")
+            .and_then(Value::as_u64)
+            .is_none_or(|version| version > 23)
+            || layout.get("upgradingTo").is_some())
+    {
+        return Err(Error::Version("setup folder layout"));
+    }
+    let link = files.read::<Link>(LINK)?;
+    if link.as_ref().is_some_and(|link| link.format_version > 1) {
+        return Err(Error::Version("link state"));
+    }
+    if link
+        .as_ref()
+        .and_then(|link| link.setup.as_ref())
+        .is_some_and(|setup| !setup.aside && (!setup.managed || !setup.checkpointed))
+    {
+        return Err(Error::Version("unconverted setup"));
+    }
+    Ok(())
+}
+
+fn open(
+    home: &Path,
+    files: &Files,
+    name: &str,
+    kind: ComputerKind,
+    relay: Option<String>,
+    overlay: Option<mac_host::Overlay>,
+) -> Result<(Link, Option<Identity>), Error> {
+    validate_disk(files)?;
+    let mut link = files.read::<Link>(LINK)?.unwrap_or_default();
+    let native = overlay.is_some();
+    if let Some(overlay) = overlay {
+        overlay.apply(&mut link);
+    }
+    if link.relay.is_none() {
+        link.relay = relay;
+    }
+    if let Some(setup) = &link.setup {
+        validate_position(&setup.position)?;
+        if kind == ComputerKind::Mac && !native {
+            return Ok((link, None));
+        }
+        let identity = Identity::read(&link)?;
+        if !setup.aside {
+            validate_shared(&link.shared)?;
+            let members = link.member_list()?;
+            if !members.boxes.iter().any(|peer| {
+                peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
+            }) || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
+            {
+                return Err(Error::Invalid("local setup membership"));
+            }
+            if let Some(envelope) = link.leadership.get(&setup.position.epoch) {
+                let doc = documents::verify(envelope.clone())?;
+                let cert = checkpoint::certificate(&doc)?;
+                if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
+                    return Err(Error::Invalid("stored leadership"));
+                }
+                checkpoint::resolve(files, &doc, &cert)?;
+            } else if setup.role == Role::Primary
+                || !setup
+                    .extra
+                    .get("leadershipHash")
+                    .and_then(Value::as_str)
+                    .is_some_and(|h| safe_token(h, 11, 11))
+            {
+                return Err(Error::Invalid("missing stored leadership"));
+            }
+        }
+        return Ok((link, Some(identity)));
+    }
+
+    if (kind == ComputerKind::Mac && !native)
+        || [
+            "localUnlink",
+            "localWipe",
+            "removalSource",
+            "macRotation",
+            "mac",
+        ]
+        .iter()
+        .any(|key| link.extra.get(*key).is_some_and(|v| !v.is_null()))
+        || link
+            .extra
+            .get("macs")
+            .and_then(Value::as_array)
+            .is_some_and(|macs| !macs.is_empty())
+        || installer_pending(&link)
+        || home
+            .parent()
+            .is_some_and(|parent| parent.join(".kuvo-code-adding").symlink_metadata().is_ok())
+    {
+        return Ok((link, None));
+    }
+    if link.key.is_none() {
+        link.key = Some(encode(&random::<32>()?));
+    }
+    if link.sign.is_none() {
+        link.sign = Some(encode(&random::<32>()?));
+    }
+    if link.secret.is_none() {
+        link.secret = Some(encode(&random::<32>()?));
+    }
+    link.name.get_or_insert_with(|| name.into());
+    let own = Identity::read(&link)?;
+    let position = Position {
+        id: format!("set_{}", encode(&random::<16>()?)),
+        epoch: 1,
+        primary: own.public.clone(),
+    };
+    let roster = json!({
+        "boxes": [own.self_peer(kind, link.name.as_deref().unwrap_or_default())], "left": [], "moved": [],
+        "devices": { "phones": link.extra.get("phones").cloned().unwrap_or_else(|| json!([])), "removed": [] },
+        "removalRevisions": {},
+    });
+    link.shared.clear();
+    link.shared_outcomes.clear();
+    link.leadership.clear();
+    link.shared_setup = Some(position.id.clone());
+    link.shared.insert(
+        SharedKind::MembershipAndAccess,
+        crate::model::Entry {
+            sequence: 1,
+            value: roster,
+            offline_edits: None,
+        },
+    );
+    let cert = checkpoint::build(files, &own, position.clone(), None, 1, &link)?;
+    link.leadership.insert(1, cert.envelope);
+    link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
+    link.format_version = 1;
+    link.extra.entry("phones").or_insert_with(|| json!([]));
+    write_link(files, &link, kind)?;
+    Ok((link, Some(own)))
+}
+
+fn write_link(files: &Files, link: &Link, kind: ComputerKind) -> Result<(), Error> {
+    if kind == ComputerKind::Mac {
+        let mut kept = link.clone();
+        kept.key = None;
+        kept.secret = None;
+        kept.sign = None;
+        kept.name = None;
+        kept.relay = None;
+        files.write(LINK, &kept)
+    } else {
+        files.write(LINK, link)
+    }
+}
+
+fn new_setup(position: Position, sign: String, role: Role) -> Setup {
+    Setup {
+        position,
+        sign,
+        role,
+        aside: false,
+        managed: true,
+        checkpointed: true,
+        extra: Default::default(),
+    }
+}
+
+fn peer_roster(link: &Link, identity: Option<&Identity>) -> Option<Roster> {
+    let own = identity?;
+    let setup = link.setup().ok()?;
+    let roster = link.member_list().ok()?;
+    let named = link.value(SharedKind::SetupNames);
+    let mut name = link.name.clone().unwrap_or_default();
+    let mut members = Vec::new();
+    for peer in roster.boxes {
+        let title = named
+            .and_then(|names| names.get(&peer.key))
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&peer.name)
+            .to_owned();
+        if peer.key == own.public {
+            name = title;
+        } else if let Some(key) = decode_exact(&peer.key) {
+            members.push(Member {
+                key,
+                address: decode_exact(&peer.address),
+                name: title,
+                kind: if peer.kind == ComputerKind::Mac {
+                    PeerKind::Mac
+                } else {
+                    PeerKind::Machine
+                },
+            });
+        }
+    }
+    Some(Roster {
+        here: decode_exact(&own.public),
+        name,
+        main: decode_exact(&setup.position.primary),
+        members,
+    })
+}
+
+fn relay_config(
+    link: &Link,
+    identity: &Identity,
+    url: &str,
+    kind: ComputerKind,
+) -> Result<relay::Config, Error> {
+    let roster = link.member_list()?;
+    let grants = if link.devices_disabled {
+        HashMap::new()
+    } else {
+        link.grants(&roster, &identity.public)
+    };
+    Ok(relay::Config {
+        url: url.into(),
+        secret: identity.secret,
+        key: identity.key,
+        peers: roster.hosts(&identity.public).collect(),
+        grants: grants
+            .into_iter()
+            .map(|(key, grant)| (key, grant.id))
+            .collect(),
+        hello: BoxHello {
+            v: 1,
+            kind: match kind {
+                ComputerKind::Mac => kuvo_peers::session::ComputerKind::Mac,
+                ComputerKind::Machine => kuvo_peers::session::ComputerKind::Machine,
+            },
+            name: link.name.clone().unwrap_or_default(),
+            app: env!("CARGO_PKG_VERSION").into(),
+            engine: None,
+        },
+    })
+}
+
+fn read_welcome(files: &Files) -> Result<bool, Error> {
+    versioned_marker(files, WELCOME)
+}
+
+fn versioned_marker(files: &Files, path: &str) -> Result<bool, Error> {
+    let entry = files.read::<Value>(path)?;
+    if entry
+        .as_ref()
+        .and_then(|entry| entry.get("formatVersion"))
+        .is_some_and(|v| !matches!(v.as_f64(), Some(0.0 | 1.0)))
+    {
+        return Err(Error::Version("setup marker"));
+    }
+    Ok(entry.is_some())
+}
+
+fn installer_pending(link: &Link) -> bool {
+    link.extra.get("installerClaim").is_some_and(|claim| {
+        let adopted = claim.get("adopted").and_then(Value::as_bool) == Some(true);
+        let active = claim
+            .get("until")
+            .and_then(Value::as_u64)
+            .is_some_and(|until| until > lease::wall());
+        let already_member = link.setup().is_ok_and(|setup| {
+            setup.role == Role::Member
+                && claim.get("setup").and_then(Value::as_str) == Some(&setup.position.id)
+        });
+        active && !adopted && !already_member
+    })
+}
+
+fn make_view(
+    files: &Files,
+    link: &Link,
+    own: Option<&Identity>,
+    lease: &lease::Client,
+    kind: ComputerKind,
+    name: &str,
+    welcomed: bool,
+) -> Result<View, Error> {
+    let setup = link.setup().ok().filter(|_| own.is_some());
+    let mut view = json!({
+        "setup": null, "epoch": null, "primary": null,
+        "you": { "key": own.map(|own| &own.public), "role": null },
+        "computers": [], "heldBy": [], "welcomed": welcomed,
+        "startsFromOthers": {
+            "value": link.extra.get("startsFromOthers").and_then(Value::as_str).filter(|value| matches!(*value, "on" | "off")),
+            "default": if setup.map_or(kind == ComputerKind::Mac, |s| s.role == Role::Primary) { "off" } else { "on" },
+        },
+    });
+    if let Some(setup) = setup {
+        let mut roster = link.member_list()?.boxes;
+        roster.sort_by_key(|peer| peer.key != setup.position.primary);
+        let mut computers = Vec::new();
+        for peer in roster.into_iter().take(65) {
+            let name = link
+                .value(SharedKind::SetupNames)
+                .and_then(|names| names.get(&peer.key))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&peer.name);
+            let primary = peer.key == setup.position.primary;
+            if primary {
+                view["primary"] = json!({"key": peer.key, "name": name, "kind": peer.kind});
+            }
+            computers.push(json!({
+                "key": peer.key, "name": name, "kind": peer.kind,
+                "role": if primary { Role::Primary } else { Role::Member }, "app": peer.kind == ComputerKind::Mac,
+            }));
+        }
+        view["setup"] = json!(setup.position.id);
+        view["epoch"] = json!(setup.position.epoch);
+        view["you"]["role"] = json!(setup.role);
+        view["computers"] = json!(computers);
+        if let Some(conflict) = setup.extra.get("conflict") {
+            view["conflict"] = conflict.clone();
+        }
+        if lease
+            .seen
+            .as_ref()
+            .is_none_or(|l| l.holder == setup.position.primary)
+        {
+            let warning = if setup.role == Role::Primary && !lease.holds(link) {
+                Some(Error::Fenced.to_string())
+            } else if lease.seen.as_ref().is_some_and(|l| l.relay_host) {
+                Some("The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.".into())
+            } else {
+                None
+            };
+            if let Some(warning) = warning {
+                view["leadershipWarning"] = json!(warning);
+            }
+        }
+    }
+    let access = match (setup, own) {
+        (Some(_), Some(own)) => {
+            let roster = link.member_list()?;
+            PairedAccess {
+                key: Some(own.key),
+                public: Some(own.public.clone()),
+                disabled: link.devices_disabled || link.disabled(&roster, &own.public),
+                grants: if link.devices_disabled {
+                    HashMap::new()
+                } else {
+                    link.grants(&roster, &own.public)
+                },
+            }
+        }
+        _ => PairedAccess {
+            key: None,
+            public: None,
+            disabled: true,
+            grants: HashMap::new(),
+        },
+    };
+    Ok(View {
+        setup: view,
+        access,
+        personalities: preferences::library(files, link)?.document(),
+        clock: preferences::clock(files, link, name)?,
+    })
+}
+
+struct Owner {
+    files: Files,
+    link: Link,
+    identity: Option<Identity>,
+    kind: ComputerKind,
+    name: String,
+    lease: lease::Client,
+    welcomed: bool,
+    network: Option<SetupLink>,
+    rx: mpsc::Receiver<Request>,
+    views: watch::Sender<View>,
+    rosters: watch::Sender<Option<Arc<Roster>>>,
+    exports: Vec<(Kind, documents::Envelope)>,
+    parts: Parts,
+    manifests: VecDeque<(String, Document)>,
+    pending_tips: VecDeque<Document>,
+    pending_handover: Option<Handover>,
+    pending_devices: HashMap<String, device_access::Pending>,
+    forwarded_handover: Option<Handover>,
+    next: Instant,
+    next_edits: Instant,
+}
+
+impl Owner {
+    async fn run(mut self) {
+        loop {
+            let until = self.next.min(self.next_edits);
+            let event = self.network.as_mut().map(|relay| &mut relay.events);
+            tokio::select! {
+                command = self.rx.recv() => {
+                    let Some(request) = command else { return; };
+                    self.request(request).await;
+                }
+                incoming = async {
+                    match event {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match incoming {
+                    Ok(event) => {
+                        if let Err(error) = self.receive(&event).await {
+                            eprintln!("setup relay message: {error}");
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // The lease and the next availability round recover missed state.
+                        self.next = Instant::now();
+                    }
+                    Err(broadcast::error::RecvError::Closed) => self.network = None,
+                },
+                () = time::sleep_until(until) => {
+                    if self.next <= Instant::now() {
+                        self.next = Instant::now() + Duration::from_secs(2);
+                        if let Err(error) = self.tick().await
+                            && !matches!(error, Error::Relay(_) | Error::Conflict) {
+                            eprintln!("setup heartbeat: {error}");
+                        }
+                    }
+                    if self.next_edits <= Instant::now() {
+                        self.next_edits = Instant::now() + Duration::from_secs(5);
+                        if let Err(error) = self.flush_edits().await {
+                            eprintln!("setup edit delivery: {error}");
+                        }
+                    }
+                    self.expire_handover().await;
+                    self.expire_device_changes();
+                    self.refresh();
+                }
+            }
+        }
+    }
+
+    fn refresh(&self) {
+        if let Ok(view) = make_view(
+            &self.files,
+            &self.link,
+            self.identity.as_ref(),
+            &self.lease,
+            self.kind,
+            &self.name,
+            self.welcomed,
+        ) {
+            self.views.send_if_modified(|old| {
+                if old.setup == view.setup
+                    && old.personalities == view.personalities
+                    && old.clock == view.clock
+                    && old.access == view.access
+                {
+                    return false;
+                }
+                *old = view;
+                true
+            });
+        }
+    }
+
+    fn write_card(&self) -> Result<(), Error> {
+        versioned_marker(&self.files, CARD)?;
+        let view = &self.views.borrow().setup;
+        let own = view["you"]["key"].as_str();
+        let self_peer = view["computers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|peer| peer["key"].as_str() == own);
+        let primary = view["primary"].as_object().map(|primary| {
+            let heard = self
+                .link
+                .extra
+                .get("macSeen")
+                .and_then(|seen| seen.get(view["primary"]["key"].as_str().unwrap_or_default()));
+            json!({"key": primary["key"], "name": primary["name"], "heard": heard})
+        });
+        let card = json!({
+            "formatVersion": 1, "setup": view["setup"], "epoch": view["epoch"], "role": view["you"]["role"],
+            "primary": primary, "self": { "key": own, "name": self_peer.and_then(|p| p["name"].as_str()).or(self.link.name.as_deref()).unwrap_or_default(), "kind": self.kind },
+            "app": self.kind == ComputerKind::Mac || self.files.path(ATTACHED).is_file(),
+            "computers": view["computers"].as_array().map_or(0, Vec::len), "items": 0,
+            "used": self.link.shared_outcomes.values().next().is_some(), "heldBy": [],
+            "macs": if view["you"]["role"] == "member" { primary.into_iter().map(|p| json!({"key": p["key"], "name": p["name"]})).collect::<Vec<_>>() } else { vec![] },
+        });
+        if self.files.read::<Value>(CARD)?.as_ref() != Some(&card) {
+            self.files.write(CARD, &card)?;
+        }
+        Ok(())
+    }
+
+    fn roster(&self) -> Result<Membership, Error> {
+        self.link.member_list()
+    }
+
+    fn own(&self) -> Result<&Identity, Error> {
+        self.identity.as_ref().ok_or(Error::Conflict)
+    }
+
+    fn can_write(&self) -> Result<(), Error> {
+        let setup = self.link.setup()?;
+        let own = self.own()?;
+        let roster = self.roster()?;
+        if self.link.disabled(&roster, &own.public)
+            || setup.role != Role::Primary
+            || setup.position.primary != own.public
+            || setup.sign != own.sign
+        {
+            return Err(Error::Conflict);
+        }
+        if installer_pending(&self.link)
+            || ["macRotation", "setupMerge", "localWipe"]
+                .iter()
+                .any(|field| self.link.extra.get(*field).is_some_and(|v| !v.is_null()))
+            || (roster.boxes.len() > 1 && !self.lease.holds(&self.link))
+        {
+            return Err(Error::Fenced);
+        }
+        Ok(())
+    }
+
+    async fn commit(&mut self, mut next: Link) -> Result<(), Error> {
+        next.format_version = 1;
+        let membership_changed = self
+            .link
+            .shared
+            .get(&SharedKind::MembershipAndAccess)
+            .map(|entry| entry.sequence)
+            != next
+                .shared
+                .get(&SharedKind::MembershipAndAccess)
+                .map(|entry| entry.sequence);
+        let position_changed = self.link.setup().ok().map(|setup| &setup.position)
+            != next.setup().ok().map(|setup| &setup.position);
+        if (membership_changed || position_changed)
+            && let (Ok(roster), Some(own)) = (next.member_list(), &self.identity)
+        {
+            project_membership(&mut next, &roster, own)?;
+        }
+        let names_changed = self
+            .link
+            .shared
+            .get(&SharedKind::SetupNames)
+            .map(|entry| entry.sequence)
+            != next
+                .shared
+                .get(&SharedKind::SetupNames)
+                .map(|entry| entry.sequence);
+        let files = self.files.clone();
+        let zone_changed = self
+            .link
+            .shared
+            .get(&SharedKind::SetupTimeZone)
+            .map(|entry| &entry.value)
+            != next
+                .shared
+                .get(&SharedKind::SetupTimeZone)
+                .map(|entry| &entry.value);
+        let kind = self.kind;
+        let written = tokio::task::spawn_blocking(move || {
+            write_link(&files, &next, kind)?;
+            if zone_changed
+                && let Err(error) = preferences::zone(&files, &next).and_then(|zone| {
+                    zone.as_ref()
+                        .map_or(Ok(()), |zone| preferences::apply_zone(&files, zone))
+                })
+            {
+                eprintln!("applying accepted time zone: {error}");
+            }
+            Ok::<_, Error>(next)
+        })
+        .await
+        .map_err(|_| Error::Invalid("setup write task"))??;
+        self.link = written;
+        if position_changed || membership_changed || names_changed {
+            self.rosters
+                .send_replace(peer_roster(&self.link, self.identity.as_ref()).map(Arc::new));
+        }
+        self.refresh();
+        if let Err(error) = self.write_card() {
+            eprintln!("setup card: {error}");
+        }
+        if let (Some(network), Some(own), Ok(roster)) =
+            (&self.network, &self.identity, self.roster())
+        {
+            let grants = self
+                .views
+                .borrow()
+                .access
+                .grants
+                .iter()
+                .map(|(key, grant)| (*key, grant.id.clone()))
+                .collect();
+            let _ = network
+                .sender
+                .trust(grants, roster.hosts(&own.public).collect())
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn request(&mut self, request: Request) {
+        let Request { command, reply } = request;
+        if let Command::Handover {
+            primary,
+            epoch,
+            submitter,
+        } = command
+        {
+            self.begin_handover(primary, epoch, submitter, HandoverReply::Local(reply))
+                .await;
+            return;
+        }
+        if let Command::DeviceChange(mutation) = command {
+            self.ask_device_change(mutation, reply).await;
+            return;
+        }
+        let result = self.execute(command).await;
+        let _ = reply.send(result);
+    }
+
+    async fn execute(&mut self, command: Command) -> Result<Response, Error> {
+        match command {
+            Command::ReadEdit(target) => {
+                let setup = self.link.setup()?;
+                let stale = setup.role == Role::Member && !self.lease.holds(&self.link);
+                Ok(Response::ok(edits::view(
+                    &self.files,
+                    &self.link,
+                    target,
+                    stale,
+                )?))
+            }
+            Command::SubmitEdit(edit, submitter) => {
+                if !submitter.current(&self.link) {
+                    return Ok(Response {
+                        status: 403,
+                        value: json!({"message": "Open this from a paired Kuvo Code client."}),
+                    });
+                }
+                let mut outgoing = edits::Outgoing::stage(
+                    &self.files,
+                    &self.link,
+                    &self.own()?.public,
+                    edit,
+                    submitter,
+                )?;
+                self.deliver_edit(&mut outgoing).await?;
+                Ok(outgoing.answer())
+            }
+            Command::EditReceipt(operation) => {
+                let setup = &self.link.setup()?.position;
+                let record = edits::read_outgoing(&self.files, &operation)?
+                    .filter(|record| record.setup == setup.id);
+                match record {
+                    Some(record) => Ok(Response::ok(
+                        json!({"receipt": record.receipt, "recovery": record.recovery}),
+                    )),
+                    None => Ok(Response {
+                        status: 404,
+                        value: json!({"message": "There is no such edit on this computer."}),
+                    }),
+                }
+            }
+            Command::EditOutbox => {
+                let setup = &self.link.setup()?.position;
+                let entries: Vec<_> = edits::rows(&self.files)?.into_iter()
+                    .filter(|row| row.setup == setup.id && (row.queued_edit.is_some() || !row.recovery.is_empty()))
+                    .map(|row| json!({"ref": row.reference, "owner": row.owner, "receipt": row.receipt})).collect();
+                Ok(Response::ok(json!({"entries": entries})))
+            }
+            Command::Welcome(value) => {
+                if value != self.welcomed {
+                    if value {
+                        self.files
+                            .write(WELCOME, &json!({"formatVersion": 1, "at": lease::wall()}))?;
+                    } else {
+                        self.files.remove(WELCOME)?;
+                    }
+                    self.welcomed = value;
+                    self.refresh();
+                }
+                Ok(Response::ok(json!({"welcomed": value})))
+            }
+            Command::Attached => {
+                if !self.files.path(ATTACHED).exists() {
+                    self.files.write(ATTACHED, &json!({"at": lease::wall()}))?;
+                    self.write_card()?;
+                }
+                Ok(Response::ok(json!({})))
+            }
+            Command::Personalities(change) => {
+                let before = preferences::library(&self.files, &self.link)?;
+                let (after, response) = before.change(change)?;
+                if response.status != 200 {
+                    return Ok(response);
+                }
+                if self.link.setup.is_none() {
+                    preferences::keep_local_library(&self.files, &after)?;
+                    self.refresh();
+                    return Ok(response);
+                }
+                let receipt = self
+                    .save(SharedKind::SetupPersonalities, after.shared(), None, None)
+                    .await?;
+                Ok(Response::ok(with_receipt(response.value, receipt)))
+            }
+            Command::Zone { zone, revision } => {
+                let page = preferences::clock(&self.files, &self.link, &self.name)?;
+                let row = &page["groups"][0]["rows"][0];
+                if revision
+                    .as_ref()
+                    .is_some_and(|revision| row["revision"].as_str() != Some(revision))
+                {
+                    return Ok(Response {
+                        status: 409,
+                        value: json!({"message": "It changed since you read it.", "page": page}),
+                    });
+                }
+                if !row["choices"]
+                    .as_array()
+                    .is_some_and(|choices| choices.iter().any(|choice| choice["id"] == zone))
+                {
+                    return Ok(Response {
+                        status: 400,
+                        value: json!({"message": "Pick one of its choices."}),
+                    });
+                }
+                let before = preferences::zone(&self.files, &self.link)?;
+                if zone == "own-clock"
+                    || before
+                        .as_ref()
+                        .is_some_and(|before| before.zone == zone && !before.carried)
+                {
+                    return Ok(Response::ok(page));
+                }
+                if self
+                    .link
+                    .setup()
+                    .is_ok_and(|setup| setup.role == Role::Member)
+                {
+                    return Ok(Response {
+                        status: 409,
+                        value: json!({"message": "Change your setup's time zone on its main computer."}),
+                    });
+                }
+                let choice = preferences::Zone::choose(&zone, before.as_ref())?;
+                if self.link.setup.is_none() {
+                    preferences::keep_local_zone(&self.files, &choice)?;
+                    preferences::apply_zone(&self.files, &choice)?;
+                    self.refresh();
+                    return Ok(Response::ok(preferences::clock(
+                        &self.files,
+                        &self.link,
+                        &self.name,
+                    )?));
+                }
+                let receipt = self
+                    .save(SharedKind::SetupTimeZone, json!(choice), None, None)
+                    .await?;
+                Ok(Response::ok(with_receipt(
+                    preferences::clock(&self.files, &self.link, &self.name)?,
+                    receipt,
+                )))
+            }
+            Command::Usage {
+                id,
+                epoch,
+                sequence,
+                operation,
+                value,
+            } => {
+                let setup = self.link.setup()?;
+                if setup.position.id != id || setup.position.epoch != epoch {
+                    return Err(Error::Conflict);
+                }
+                if value.get("units").and_then(Value::as_object).is_none()
+                    || value.get("imported").and_then(Value::as_bool).is_none()
+                {
+                    return Err(Error::Invalid("usage display settings"));
+                }
+                let receipt = self
+                    .save(
+                        SharedKind::SetupUsageDisplay,
+                        value,
+                        Some(sequence),
+                        operation,
+                    )
+                    .await?;
+                Ok(Response::ok(json!(receipt)))
+            }
+            Command::Handover { .. } | Command::DeviceChange(_) => {
+                unreachable!("this request can wait on relay mail")
+            }
+        }
+    }
+
+    async fn save(
+        &mut self,
+        kind: SharedKind,
+        value: Value,
+        expected: Option<u64>,
+        operation: Option<String>,
+    ) -> Result<crate::Receipt, Error> {
+        if let Some(operation) = operation.as_deref()
+            && let Some(receipt) =
+                self.link
+                    .retry(self.own()?, kind, operation, expected, &value)?
+        {
+            return Ok(receipt);
+        }
+        self.can_write()?;
+        let mut next = self.link.clone();
+        let receipt = next.put(self.own()?, kind, value, expected, operation)?;
+        self.commit(next).await?;
+        if let Err(error) = self.publish(false).await {
+            eprintln!("publishing saved setup values: {error}");
+        }
+        Ok(receipt)
+    }
+}
+
+fn project_membership(link: &mut Link, roster: &Membership, own: &Identity) -> Result<(), Error> {
+    let setup = link.setup()?.clone();
+    let primary = &setup.position.primary;
+    let here = setup.role == Role::Primary;
+    if here {
+        for key in ["mac", "macNames", "macSeen", "macSigns"] {
+            link.extra.shift_remove(key);
+        }
+        link.extra.insert("macs".into(), json!([]));
+        link.extra.insert(
+            "macPeers".into(),
+            json!(
+                roster
+                    .boxes
+                    .iter()
+                    .filter(|peer| peer.key != own.public)
+                    .collect::<Vec<_>>()
+            ),
+        );
+        link.extra.insert(
+            "left".into(),
+            json!(roster.left.iter().rev().take(64).rev().collect::<Vec<_>>()),
+        );
+        link.extra.insert("removedHere".into(), json!(roster.left));
+        for (field, portable) in [
+            ("macMoved", "moved"),
+            ("removalRevisions", "removalRevisions"),
+            ("memberRemovals", "removals"),
+            ("wipePreparations", "wipePreparations"),
+            ("mergedComputers", "mergedComputers"),
+            ("installerRecoveries", "installerRecoveries"),
+        ] {
+            if let Some(value) = roster.extra.get(portable) {
+                link.extra.insert(field.into(), value.clone());
+            } else {
+                link.extra.shift_remove(field);
+            }
+        }
+    } else {
+        let name = roster
+            .boxes
+            .iter()
+            .find(|entry| &entry.key == primary)
+            .map(|peer| &peer.name);
+        link.extra.insert("mac".into(), json!(primary));
+        link.extra.insert("macs".into(), json!([primary]));
+        link.extra
+            .insert("macNames".into(), json!({(primary): name}));
+        link.extra
+            .insert("macSigns".into(), json!({(primary): setup.sign}));
+        for field in ["macPeers", "macMoved", "left", "removedHere"] {
+            link.extra.shift_remove(field);
+        }
+    }
+    let grants = link.grants(roster, &own.public);
+    let mut projected = Vec::new();
+    for device in roster.devices() {
+        let Some(key) = device
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(decode_exact::<32>)
+        else {
+            continue;
+        };
+        if let Some(grant) = grants.get(&key)
+            && device
+                .get("pairing")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                == grant.id
+        {
+            let old = link
+                .extra
+                .get("phones")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|old| old.get("key") == device.get("key"));
+            let mut row = json!({
+                "key": encode(&key), "name": grant.name, "pairing": grant.id,
+                "from": if here { "pair" } else { "mac" },
+                "added": old.and_then(|row| row.get("added")).and_then(Value::as_u64).unwrap_or_else(|| lease::wall() / 1000),
+            });
+            if let Some(address) = old
+                .and_then(|row| row.get("address"))
+                .or_else(|| device.get("address"))
+            {
+                row["address"] = address.clone();
+            }
+            if device.get("kind").and_then(Value::as_str) == Some("desktop") {
+                row["kind"] = json!("desktop");
+            }
+            if !here {
+                row["mac"] = json!(primary);
+            }
+            projected.push(row);
+        }
+    }
+    link.extra.insert("phones".into(), json!(projected));
+    if let Some(removed) = roster
+        .extra
+        .get("devices")
+        .and_then(|devices| devices.get("removed"))
+    {
+        link.extra.insert("removed".into(), removed.clone());
+    }
+    if let Some(history) = roster
+        .extra
+        .get("computerHistory")
+        .filter(|history| history.get("setup").and_then(Value::as_str) == Some(&setup.position.id))
+    {
+        link.extra.insert("computerHistory".into(), history.clone());
+    } else {
+        link.extra.shift_remove("computerHistory");
+    }
+    Ok(())
+}
+
+fn with_receipt(mut value: Value, receipt: crate::Receipt) -> Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.extend(object(json!(receipt)));
+    }
+    value
+}
