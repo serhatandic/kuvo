@@ -48,3 +48,26 @@ test("a request over SSH runs on the keeper's engine, not the newest one there",
   write(path.join(K, "run", "engine-back"), `1.1.0 1.0.0 ${Math.floor(Date.now() / 1000)}\n`);
   assert.match(route("route").stdout, /^1\.0\.0 /);
 });
+
+test("the selected release manifest gives SSH and the Mac helper to the Rust box", { skip: process.platform === "win32" }, () => {
+  const { K, route } = box();
+  const target = "versions/0.8.0-000000000000/bin";
+  fs.mkdirSync(path.dirname(path.join(K, target)), { recursive: true });
+  fs.renameSync(path.join(K, "bin"), path.join(K, target));
+  fs.symlinkSync(target, path.join(K, "bin"));
+  write(path.join(K, target, "kuvo-box"), '#!/bin/sh\nprintf "%s %s\\n" "$*" "$(cat)"\n', 0o700);
+  write(path.join(K, "box", "kind"), "mac\n");
+  const manifest = path.join(K, target, "..", "box.json");
+  write(manifest, '{"kuvo":"box/1","files":{"launch":"rust"}}');
+  assert.match(route("route").stdout, /^1\.1\.0 /);
+
+  write(manifest, '{ "kuvo": "box/1",\n  "launch" : "rust", "files":{} }');
+  for (const verb of ["route", "route-to"]) {
+    const answered = route(verb);
+    assert.equal(answered.status, 0, answered.stderr);
+    assert.equal(answered.stdout, `${verb} the request\n`);
+  }
+  const served = route("serve");
+  assert.equal(served.status, 0, served.stderr);
+  assert.equal(fs.readFileSync(path.join(K, "run", "serve.log"), "utf8"), "serve the request\n");
+});

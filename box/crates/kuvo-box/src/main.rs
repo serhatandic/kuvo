@@ -51,6 +51,22 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("installer-recovery"), Some("apply"), 2) => Some(true),
         _ => None,
     };
+    let keeper = match (word(0), word(1), args.len()) {
+        (Some("keep"), _, 1) => Some(kuvo_keeper::Command::Run),
+        (Some("keep"), Some("select"), 3) => Some(kuvo_keeper::Command::Select(
+            word(2).ok_or("Expected a release target")?.parse()?,
+        )),
+        (Some("keep"), Some("pause"), 2) => Some(kuvo_keeper::Command::Pause),
+        (Some("keep"), Some("off"), 2) => Some(kuvo_keeper::Command::Off),
+        (Some("keep"), Some("handover"), 2) => Some(kuvo_keeper::Command::Handover),
+        _ => None,
+    };
+    let probe = match (word(0), word(1), args.len()) {
+        (Some("resident-info"), Some(pid), 2) => Some(pid.parse::<u32>()?),
+        _ => None,
+    };
+    let supervised =
+        cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
     let command = match (word(0), word(1), args.len()) {
         _ if serve || wipe => None,
         _ if join
@@ -58,7 +74,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || seed
             || recovery.is_some()
             || identity
-            || uninstall.is_some() =>
+            || uninstall.is_some()
+            || keeper.is_some()
+            || probe.is_some()
+            || supervised =>
         {
             None
         }
@@ -73,7 +92,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | uninstall [--check] | wipe-member | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | keep [select <release> | handover | pause | off] | install --join | installer-recovery issue|apply | box seed | uninstall [--check] | wipe-member | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -102,7 +121,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
         return Ok(ExitCode::SUCCESS);
     }
-    if !join && ssh_enroll.is_none() && !seed && recovery.is_none() {
+    if !join && ssh_enroll.is_none() && !seed && recovery.is_none() && keeper.is_none() && probe.is_none() {
         let platform = Platform::current();
         let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
         kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
@@ -112,7 +131,16 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        if seed {
+        if let Some(keeper) = keeper {
+            kuvo_keeper::execute(&home, env::vars_os().collect(), keeper, shutdown()).await?;
+            Ok(())
+        } else if let Some(pid) = probe {
+            let reply = kuvo_keeper::resident_info(home.root(), pid)
+                .await?
+                .ok_or("The resident has not answered for this start")?;
+            println!("{reply}");
+            Ok(())
+        } else if seed {
             use std::io::Read as _;
             let mut input = Vec::new();
             io::stdin().lock().read_to_end(&mut input)?;
@@ -153,7 +181,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(())
         } else {
-            serve::run(home.root()).await
+            serve::run(home.root(), resident_shutdown(home.root(), supervised)).await
         }
     });
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
@@ -241,6 +269,13 @@ fn here(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Err
             eprintln!("{message}");
             Ok(ExitCode::from(2))
         }
+    }
+}
+
+async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
+    tokio::select! {
+        () = shutdown() => {},
+        () = kuvo_keeper::wait_for_stop(home), if supervised => {},
     }
 }
 

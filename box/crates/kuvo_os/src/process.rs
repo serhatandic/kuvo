@@ -138,12 +138,22 @@ impl Spawn {
     }
 
     pub fn spawn(&self) -> io::Result<ChildGroup> {
-        self.launch(None)
+        self.launch(None, false)
+    }
+
+    /// Supervise this resident while leaving nested workers to their own owners.
+    /// On Windows the job is kill-on-close, with silent breakaway for descendants.
+    pub fn spawn_resident(&self, job_name: &str) -> io::Result<ChildGroup> {
+        self.launch_named(job_name, true)
     }
 
     /// Start a worker that can be handed over to the next resident after it is recorded.
     /// The unique recovery name identifies the process tree on Windows.
     pub fn spawn_recoverable(&self, recovery_name: &str) -> io::Result<ChildGroup> {
+        self.launch_named(recovery_name, false)
+    }
+
+    fn launch_named(&self, recovery_name: &str, resident: bool) -> io::Result<ChildGroup> {
         if recovery_name.is_empty()
             || !recovery_name
                 .bytes()
@@ -154,10 +164,10 @@ impl Spawn {
                 "invalid recovery name",
             ));
         }
-        self.launch(Some(recovery_name))
+        self.launch(Some(recovery_name), resident)
     }
 
-    fn launch(&self, recovery_name: Option<&str>) -> io::Result<ChildGroup> {
+    fn launch(&self, recovery_name: Option<&str>, resident: bool) -> io::Result<ChildGroup> {
         let valid = |value: &OsStr| !value.as_encoded_bytes().contains(&0);
         if !self.executable.path().is_absolute()
             || self.cwd.as_deref().is_some_and(|path| !path.is_absolute())
@@ -174,7 +184,7 @@ impl Spawn {
                 "process requires an absolute executable and valid arguments, directory and environment",
             ));
         }
-        sys::spawn(self, recovery_name)
+        sys::spawn(self, recovery_name, resident)
     }
 }
 
@@ -262,6 +272,24 @@ impl AdoptedProcess {
 
     pub fn identity(&self) -> &ProcessIdentity {
         self.0.identity()
+    }
+
+    /// On Windows, retain the job before asking the previous supervisor to leave.
+    /// An open process handle alone does not keep the job alive.
+    pub fn open_resident(
+        identity: &ProcessIdentity,
+        matches_executable: impl FnOnce(&Path) -> bool,
+        job_name: &str,
+    ) -> io::Result<Option<Self>> {
+        let resident = Self::open(
+            identity.pid,
+            Some(&identity.start_identity),
+            matches_executable,
+            Some(job_name),
+        )?;
+        #[cfg(windows)]
+        let resident = resident.filter(|resident| resident.0.has_job());
+        Ok(resident)
     }
 
     pub fn stop(&mut self, grace: Duration) -> io::Result<()> {
