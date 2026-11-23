@@ -575,6 +575,13 @@ const SCREENS: &[Screen] = &[
     // Activity with the conversation's context (#963): open, pinned beside the chat, busy, quiet.
     Screen { slug: "activity-context-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "activity-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Let's also check how the warning reads in dark mode near 400k."), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    // Small fixes B: Add Project at Projects (the heading hovered), the search without its filter
+    // button, and the pinned Activity card's Summary, Full and after Unpin.
+    Screen { slug: "small-1123-b-1-add-project", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "small-1123-b-2-search", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "small-1123-b-4-pinned-summary", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    Screen { slug: "small-1123-b-4-pinned-full", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned_full) },
+    Screen { slug: "small-1123-b-4-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_unpinned) },
     Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     // The summarize point picked in Activity (2026-11-23, option B): early, its menu open, near
@@ -762,6 +769,24 @@ fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mu
 fn activity_pinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.pin_now(window, cx));
+}
+
+/// Pinned, in Full.
+fn activity_pinned_full(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.pin_now(window, cx);
+        activity.show_full_now(true, cx);
+    });
+}
+
+/// Pinned, then unpinned: the card gone, nothing in its place.
+fn activity_unpinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.pin_now(window, cx);
+        activity.unpin_now(cx);
+    });
 }
 
 fn conversation_activity_picking(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2670,6 +2695,9 @@ fn stand_in_changed(screen: &FirstRunScreen) -> bool {
     screen.slug == "first-run-held"
 }
 
+/// Where the Sessions sidebar's Projects heading is drawn in the stand-in (the add-project shot).
+const PROJECTS_Y: f32 = 120.;
+
 fn main() -> anyhow::Result<()> {
     let only: Vec<String> = std::env::args().skip(1).collect();
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
@@ -3568,6 +3596,14 @@ fn main() -> anyhow::Result<()> {
                     }
                     window.refresh();
                 })?;
+                cx.run_until_parked();
+            }
+            if screen.slug == "small-1123-b-1-add-project" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                // On the Projects heading, where its + shows.
+                cx.update_window(any, |_, window, cx| mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gpui::point(px(150.), px(PROJECTS_Y)), pressed_button: None, modifiers: Modifiers::default(),
+                })))?;
                 cx.run_until_parked();
             }
             if screen.slug == "bot-wake-badge-hover" {

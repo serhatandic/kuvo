@@ -8,6 +8,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - **+** next to Projects in the Sessions sidebar, and **File › Open Folder…** (⌘O), pick a folder on this Mac and add it as a project.
 - The filter button beside the sidebar's search is gone; archived sessions are in **Settings › Archived Sessions**.
+- A pinned Activity card stays pinned as you switch conversations and after a restart.
+- The pinned Activity card shows only what's live (context, sessions, subagents and processes running), with **Summary** and **Full** to switch between that and everything. Rows open inside the card, so the conversation no longer jumps, and **Unpin** just closes it.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.
 
