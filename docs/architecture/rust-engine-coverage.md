@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 130 of
-411 declarations are covered, 92 are partial and 189 are gaps.
-Row 3.2 retains 153 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 147 of
+411 declarations are covered, 87 are partial and 177 are gaps.
+Row 3.2 retains 133 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -107,12 +107,12 @@ owners on the same case each own the part described by their phase.
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
 | `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | 3 | — | 3.2 · 3 |
-| `box/test/queue-items.test.ts` (25) | 7, 9–10, 22, 24 | 1–6, 12–14, 21, 23 | 8, 11, 15–20, 25 | 3.2 · 1–6, 8, 11–21, 23<br>4.1 · 25<br>5.1 · 21 |
+| `box/test/queue-items.test.ts` (25) | 2, 4–11, 13, 15–16, 18–20, 22, 24 | 1, 3, 12, 14, 17, 21, 23 | 25 | 3.2 · 1, 3, 12, 14, 17, 21, 23<br>4.1 · 25<br>5.1 · 21 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
-| `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
+| `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20, 23, 26 | 2, 6–8, 10–13, 15–19, 21–22, 24 | 3.2 · 6–8, 10, 15–16, 20, 24<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
 | `box/test/session-lists.test.ts` (47) | 1, 4–6, 10, 22, 24, 26–27 | 3, 15–16, 19–20, 23, 29, 46 | 2, 7–9, 11–14, 17–18, 21, 25, 28, 30–45, 47 | 3.2 · 2–3, 7–9, 11–17, 19–21, 23, 28, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 28–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
-| `box/test/session-notes.test.ts` (8) | 2 | 6 | 1, 3–5, 7–8 | 3.2 · 1, 3–8 |
+| `box/test/session-notes.test.ts` (8) | 1–3, 6 | — | 4–5, 7–8 | 3.2 · 4–5, 7–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
@@ -136,8 +136,8 @@ Each row uses the same one-based numbering and ownership rule.
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
 | `box/test/session-asks.test.ts` (19) | 1, 3–5, 14–18 | 2, 6–11, 19 | 12–13 | 3.2 · 13, 19<br>4.1 · 2<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
-| `box/test/model-readiness.test.ts` (1) | — | 1 | — | 3.2 · 1 |
-| `box/test/models-offered.test.ts` (15) | 3–4, 6–7, 13 | 1–2, 5, 8–12, 14–15 | — | 3.2 · 10–11<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
+| `box/test/model-readiness.test.ts` (1) | 1 | — | — | — |
+| `box/test/models-offered.test.ts` (15) | 3–4, 6–7, 10, 13 | 1–2, 5, 8–9, 11–12, 14–15 | — | 4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
 | `box/test/models-starred.test.ts` (7) | 1–2, 4–7 | — | 3 | 7.3 · 3 |
 | `box/test/models-speed.test.ts` (3) | 2–3 | 1 | — | 4.2 · 1 |
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
@@ -159,7 +159,13 @@ receipt key. A dropped caller releases its turn, and an unrelated session
 can write while one is waiting on OpenCode. Forwarded session PATCH requests
 use the same turn as resident writers. An owned permit serializes durable
 queue index replacement off the resident executor. Removal and Undo leave a spent token
-so a retry cannot take a new occurrence. Direct sends journal the original
+so a retry cannot take a new occurrence. An inbox Edit keeps its original
+draft and neighbor through a failed read. It checks the inbox and exact
+transcript ID before returning the recovery copy and avoids repeating a
+confirmed removal. Edit includes retained files alongside carried files.
+A queued handoff records its native POST in the queue index. A reply and
+matching inbox or transcript establish acceptance. The view hides a
+delivered message while its handoff backup persists. Direct sends journal the original
 request before posting. On retry the resident checks the saved answer, the
 box queue, the OpenCode inbox and then the exact transcript ID. The journal has
 its own `run/prompt-receipts` family. Fresh session facts publish to the peer

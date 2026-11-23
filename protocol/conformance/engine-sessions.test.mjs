@@ -237,11 +237,14 @@ test("concurrent session note writes keep earlier notes and a failed writer rele
   const next = await edit(id, "pinned", true);
   assert.equal(next.status, 200, next.text);
   assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": true, "kuvo.pinned": true });
+  const changed = await Promise.all([edit(id, "pinned", false), edit(id, "archived", false)]);
+  assert.deepEqual(changed.map(answer => answer.status), [200, 200]);
+  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": false, "kuvo.pinned": false });
   const writes = () => here.engine.asked.filter(row => row.method === "PATCH" && row.path.endsWith("/" + id)).length;
-  assert.equal(writes(), 3);
-  assert.equal((await edit(id, "pinned", true)).status, 200);
+  assert.equal(writes(), 5);
+  assert.equal((await edit(id, "pinned", false)).status, 200);
   assert.equal((await edit("ses_absent", "pinned", true)).status, 404);
-  assert.equal(writes(), 3);
+  assert.equal(writes(), 5);
 });
 
 test("Delete with an earlier revision refuses a session that vanishes during the request", { timeout: 45000 }, async t => {
@@ -469,6 +472,29 @@ test("Edit refuses an inbox draft when delivery wins and the exact lookup fails"
   assert.deepEqual(here.engine.messages.get(session), [{ id, type: "user", ...payload }]);
 });
 
+test("Edit distinguishes an already delivered message from an inbox that refuses removal", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-edit-refused");
+  const session = "ses_editRefused";
+  const queue = `kuvo/sessions/${session}/queue`;
+  const delivered = { id: "msg_gone", type: "user", text: "Already delivered." };
+  const waiting = { id: "msg_waits", type: "user", delivery: "queue", payload: { text: "Still waiting." } };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  here.engine.messages.set(session, [delivered]);
+  here.engine.inboxes.set(session, [waiting]);
+  here.engine.refuseRemoval = new Set([waiting.id]);
+  const resident = await here.start().ready();
+  const gone = await request(resident, "DELETE", queue + "/" + delivered.id);
+  assert.equal(gone.status, 404, gone.text);
+  assert.equal(gone.json.removed, undefined);
+  const refused = await request(resident, "DELETE", queue + "/" + waiting.id);
+  assert.equal(refused.status, 502, refused.text);
+  assert.equal(refused.json.removed, undefined);
+  assert.deepEqual(here.engine.messages.get(session), [delivered]);
+  assert.deepEqual(here.engine.inboxes.get(session), [waiting]);
+});
+
 test("Send Now keeps the waiting payload until OpenCode confirms the exact message", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("queue-unconfirmed");
@@ -639,7 +665,14 @@ test("queue reads keep the last complete inbox and the live line skips unreadabl
   reading.close();
   const reconnect = await openLine(record, "", pathToQueue + "/events");
   t.after(() => reconnect.close());
-  assert.deepEqual((await reconnect.frames().next()).value.items.map(item => item.id), [second.id]);
+  const changes = reconnect.frames();
+  assert.deepEqual((await changes.next()).value.items.map(item => item.id), [second.id]);
+  const third = { id: "msg_third", type: "user", delivery: "queue", payload: { text: "One more thing." } };
+  here.engine.inboxes.set(session, [second, third]);
+  here.engine.emit({ type: "session.inbox.enqueued", data: { sessionID: session, inboxID: third.id, item: third } });
+  assert.deepEqual((await changes.next()).value.items.map(({ id, words, on }) => [id, words, on]), [
+    [second.id, second.payload.text, "engine"], [third.id, third.payload.text, "engine"],
+  ]);
 
   here.engine.inboxReplies.set("ses_missing", { status: 404, body: {} });
   const missing = await request(record, "GET", "kuvo/sessions/ses_missing/queue?items=1");
