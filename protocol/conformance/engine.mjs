@@ -35,7 +35,14 @@ export async function standInEngine(root, env) {
       }
       if (route === "GET /api/session") {
         const parent = url.searchParams.get("parentID");
-        return send({ data: engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent)) });
+        const data = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
+        const limit = Number(url.searchParams.get("limit"));
+        if (parent && parent !== "null" && limit > 0) {
+          const start = Number(url.searchParams.get("cursor"));
+          const end = start + limit;
+          return send({ data: data.slice(start, end), ...(end < data.length ? { cursor: { next: String(end) } } : {}) });
+        }
+        return send({ data });
       }
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {

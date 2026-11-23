@@ -159,18 +159,22 @@ function cutMoveMail(relay, opens, source, destination, main, member) {
         relay.replay(next.get(op));
       }
     },
-    async recoverSwitch() {
+    async recoverSwitch(waitForOwner) {
       await ready();
+      next.delete("switched");
       const reconnect = relay.disconnect(addresses[0]);
       try {
         await until(() => !relay.has(addresses[0]), "The source relay connection did not close");
-        held.delete("switched");
       } finally {
         reconnect();
       }
       // The original acknowledgement stays lost. A new switch request from
       // the reconnecting source must recover it from the durable receipt.
       await ready();
+      await waitForOwner();
+      await until(() => next.has("switched"), "The restarted destination did not answer the retried switch");
+      held.delete("switched");
+      relay.replay(next.get("switched"));
     },
     close() { for (const cancel of remove) cancel(); },
   };
@@ -273,6 +277,32 @@ test("a destination rolls back the import that lost its engine reply during rest
   assert.ok(source.engine.sessions.some(row => row.id === root));
 });
 
+test("a restarted source drives a request saved before its first check", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("requested-source"), there = await computer("requested-target");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "mov_recentRequest", session = "ses_recentRequest";
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const destination = await there.start().ready();
+  assert.equal((await request(destination, "GET", "kuvo/moves")).status, 200);
+  save("run/moves/" + id + ".json", {
+    id, thing: session, name: "A saved request", kind: "chat", from: main.key,
+    to: member.key, peer: member.key, role: "from", stage: "holding", sessions: [session],
+    step: "check", started: Date.now(), wasPaused: false, tries: 0, twoComputers: true, formatVersion: 1,
+  });
+  const source = await here.start().ready();
+  const completed = await until(async () => {
+    const reply = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+    return ["done", "failed"].includes(reply.json?.state) && reply.json;
+  }, "The resident did not drive the saved request", 20000);
+  assert.equal(completed.state, "done", JSON.stringify(completed));
+  assert.ok(there.engine.sessions.some(record => record.id === session));
+  await until(() => !here.engine.sessions.some(record => record.id === session), "The retired source was not removed");
+});
+
 test("an older incoming copy without import proof stays held after a drop", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -308,7 +338,7 @@ test("an older incoming copy without import proof stays held after a drop", {
 });
 
 for (const reverse of binary.typescript ? [false] : [false, true]) {
-  test(`a live chat, a held queue, and letters ${reverse ? "move back" : "move to the other computer"}`, { timeout: 165000 }, async t => {
+  test(`a live chat, a held queue, and letters ${reverse ? "move back" : "move to the other computer"}`, { timeout: 200000 }, async t => {
     const { computer, relay } = await bench(t);
     const source = await computer("live-source");
     const destination = await computer("live-destination");
@@ -323,6 +353,8 @@ for (const reverse of binary.typescript ? [false] : [false, true]) {
     fs.mkdirSync(chats, { recursive: true });
     source.engine.sessions.push(sessionOf({ id: job, title: "Live transfer", directory: chats }));
     source.engine.sessions.push(sessionOf({ id: child, title: "Live child", directory: chats, parent: job }));
+    const siblings = Array.from({length: 100}, (_, index) => `ses_liveSibling${index}`);
+    for (const id of siblings) source.engine.sessions.push(sessionOf({ id, directory: chats, parent: job }));
     const transcript = [{ id: "msg_originalMessage", type: "user", content: [{ type: "text", text: "Keep this conversation." }] }];
     const queued = { id: waiting, text: "Wait for a resume after the move.", delivery: "queue" };
     source.engine.messages.set(job, transcript);
@@ -351,8 +383,12 @@ for (const reverse of binary.typescript ? [false] : [false, true]) {
         return readJSON(path.join(source.home, "run/peer-agents.json"))[to.key]?.features?.includes("moves.two-computers");
       } catch { return false; }
     }, () => "The source did not hear the destination's move capability\n" + destProcess.log(), 15000);
-    const begin = await request(src, "POST", "kuvo/moves", { kind: "chat", id: job, to: to.key, receipt: true });
-    assert.equal(begin.status, 202, begin.text);
+    const beginMove = () => request(src, "POST", "kuvo/moves", { kind: "chat", id: job, to: to.key, receipt: true });
+    const simultaneous = await Promise.all([beginMove(), beginMove()]);
+    assert.deepEqual(simultaneous.map(reply => reply.status).sort(), [202, 409],
+      simultaneous.map(reply => reply.text).join("\n"));
+    const begin = simultaneous.find(reply => reply.status === 202);
+    assert.match(simultaneous.find(reply => reply.status === 409).json.message, /moving to another computer/);
     const id = begin.json.move.id;
     if (cuts) {
       await cuts.resume();
@@ -364,7 +400,14 @@ for (const reverse of binary.typescript ? [false] : [false, true]) {
       dest = await destination.start().ready();
       const online = await request(dest, "GET", "kuvo/moves");
       assert.equal(online.status, 200, online.text);
-      await cuts.recoverSwitch();
+      await cuts.recoverSwitch(async () => {
+        const waiting = await until(async () => {
+          const state = await request(src, "GET", "kuvo/moves/receipt?id=" + id);
+          assert.equal(state.json?.state, "moving", state.text);
+          return state.json.move.waiting && state.json.move;
+        }, "The source never reported waiting for the switch acknowledgement", 105000, 200);
+        assert.equal(waiting.progress, `Waiting for ${to.name}…`);
+      });
     }
     const completed = await until(async () => {
       const answer = await request(src, "GET", "kuvo/moves/receipt?id=" + id);
@@ -380,6 +423,7 @@ for (const reverse of binary.typescript ? [false] : [false, true]) {
     assert.match(decision.hash, /^[A-Za-z0-9_-]{43}$/);
     assert.deepEqual(destination.engine.messages.get(job), transcript);
     assert.equal(destination.engine.sessions.find(each => each.id === child)?.parentID, job);
+    assert.deepEqual(destination.engine.sessions.filter(each => siblings.includes(each.id)).map(each => each.id).sort(), siblings.sort());
     await until(() => source.engine.sessions.length === 0, () => "The retired original was not removed\n" + srcProcess.log());
     assert.deepEqual(readJSON(path.join(destination.home, `run/waiting/${waiting}.json`)), { ...queued, formatVersion: 1 });
     assert.equal(readJSON(path.join(destination.home, "run/queues.json"))[job].userPaused, true);

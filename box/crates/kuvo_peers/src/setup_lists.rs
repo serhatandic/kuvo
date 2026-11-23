@@ -2,7 +2,7 @@
 //! immutable views. Loading the kept copies precedes publishing the first view.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -62,6 +62,7 @@ pub struct View {
     pub(crate) notice_copies: BTreeMap<ComputerKey, Arc<Copy<History>>>,
     pub(crate) notices: Arc<History>,
     pub(crate) move_notices: Arc<crate::moves::Notices>,
+    pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
@@ -308,6 +309,7 @@ pub struct ResidentPeers {
     relay: Option<relay::RelayHandle>,
     work_task: Option<JoinHandle<()>>,
     transfers: Option<(crate::moves::Handle, JoinHandle<()>)>,
+    move_waiting: watch::Sender<Arc<BTreeSet<String>>>,
     letters: Option<JoinHandle<()>>,
     task: JoinHandle<()>,
 }
@@ -345,8 +347,16 @@ impl ResidentPeers {
                 .await?;
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
         let (changes, change_rx) = mpsc::channel(16);
+        let (move_waiting, waiting_updates) = watch::channel(resident.view.move_waiting.clone());
         let handle = relay.as_ref().map(Relay::handle);
-        let task = tokio::spawn(resident.run(relay, devices, publish, change_rx, clock.clone()));
+        let task = tokio::spawn(resident.run(
+            relay,
+            devices,
+            publish,
+            change_rx,
+            waiting_updates,
+            clock.clone(),
+        ));
         Ok(Self {
             reader: Reader {
                 views,
@@ -357,6 +367,7 @@ impl ResidentPeers {
             relay: handle,
             work_task: None,
             transfers: None,
+            move_waiting,
             letters: None,
             task,
         })
@@ -419,6 +430,7 @@ impl ResidentPeers {
             relay.clone(),
             engine.clone(),
             ownership.clone(),
+            self.move_waiting.clone(),
         )?);
         self.letters = Some(crate::letters::start(
             self.reader(),
@@ -500,6 +512,7 @@ impl Resident {
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
+            move_waiting: Arc::default(),
             relay_connected: false,
             work_calls: false,
             transfers: false,
@@ -524,6 +537,7 @@ impl Resident {
         mut devices: Option<Devices>,
         publish: watch::Sender<Arc<View>>,
         mut changes: mpsc::Receiver<Change>,
+        mut waiting_updates: watch::Receiver<Arc<BTreeSet<String>>>,
         clock: Clock,
     ) {
         let mut paired = relay_routes::Routes::default();
@@ -538,6 +552,12 @@ impl Resident {
         let mut setup_rosters = None;
         loop {
             tokio::select! {
+                Ok(()) = waiting_updates.changed() => {
+                    self.view.move_waiting = waiting_updates.borrow_and_update().clone();
+                    if let Some(publisher) = &mut publisher {
+                        publisher.request(self.view.clone(), clock(), Refresh::None);
+                    }
+                }
                 change = changes.recv() => match change {
                     Some(Change::Local(local)) => {
                         self.view.local_lists = local.publication().map(Arc::new);
@@ -920,7 +940,11 @@ impl Publisher {
             let mut moves = crate::moves::Announcer::default();
             while let Some((view, now, refresh)) = rx.recv().await {
                 match refresh {
-                    Refresh::None => moves.announce(&run, &view.roster, &relay, now).await,
+                    Refresh::None => {
+                        moves
+                            .announce(&run, &view.roster, &view.move_waiting, &relay, now)
+                            .await
+                    }
                     Refresh::Peer { ask: true, .. } => moves.repeat(),
                     _ => {}
                 }

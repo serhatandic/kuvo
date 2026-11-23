@@ -17,6 +17,7 @@ for addressed work and receipt lookup.
 | Live transfer | Two Rust residents move a chat, its child, a paused queue, an ordinary note and a replay fence in each direction between the main computer and a member. The former computer's outbox still names its old owner. The letter reaches the new owner once. The TypeScript reference runs the same transfer and checks the records it leaves. |
 | Lost arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source retries arrival after a minute and receives a fresh reply. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
+| Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
 | Prompt fence | A journal survives a resident restart and refuses direct prompts, commands, sends and queue resumes. The Rust composer keeps a saved draft pending during the hold, then delivers it once after release. |
@@ -43,13 +44,13 @@ move reads the durable fence and waits for existing writers before comparing
 its final snapshot. `kuvo_store` seals bytes before their part acknowledgement
 and publishes activation receipts under a scoped lock.
 
-The full move area passed 11 scenarios on macOS and 10 each on WSL2 with
-GNU libc and static Linux musl on WSL2. The native Windows run before the
-attachment extension passed nine. The two-binary reach comparison ran on macOS.
-Focused transfer, relay, receipt and engine tests passed on all four platforms.
-The TypeScript resident passed the seven shared scenarios before the attachment
-extension and the attachment scenario separately. The tests use disposable
-residents, a loopback relay and an OpenCode stand-in.
+The full move area passed 12 scenarios on macOS and 11 on WSL2 with GNU libc.
+Static Linux musl on WSL2 passed 10 before the waiting extension. Native
+Windows passed the first nine plus the focused managed attachment scenario.
+The two-binary reach comparison ran on macOS. Focused transfer, relay, receipt
+and engine tests passed on all four platforms. The TypeScript resident passed
+all nine applicable scenarios. The tests use disposable residents, a loopback
+relay and an OpenCode stand-in.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -80,16 +81,17 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Seven have full scenario coverage, 19 have partial proof,
-and 186 remain open or assigned to their existing owner. Mixed-only portions are recorded
+below counts 212 declarations. Ten have full scenario coverage, 19 have partial proof,
+and 183 remain open or assigned to their existing owner. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
 |---|---|---|
-| [moves](../../box/bridge-tests/moves.test.js) | 3, 7, 11 | Partial, an ordinary letter follows a live move, a child moves over the relay, and a paused prompt queue still delivers after resume. The exact message tool path, transfer of the paginated tree and multiple-item queue order are 2.4 and 3.2. |
+| [moves](../../box/bridge-tests/moves.test.js) | 3, 11 | Partial, an ordinary letter follows a live move and a paused prompt queue still delivers after resume. The exact message tool path and multiple-item queue order are 2.4 and 3.2. |
+| | 7–8 | Covered by the live transfer of a tree with more children than one engine page and by two simultaneous requests competing for the same chat. |
 | | 12, 14 | Partial, typed managed files travel with the root, its child and a held prompt. Engine-held order with multiple attachments, duplicate basenames, and the Mac app's separate attachment root are still 2.4 and 3.2. |
 | | 15–16 | Covered by a live source refusing an expired attachment and a file path outside its managed roots. |
-| | 1–2, 4–6, 8–10, 13 | Open, 2.4 destination choices, wake-ups, concurrent starts, Autopilot and other transfer shapes. Engine queue effects are 3.2. Bot and group runtime parts are 4.6, 5.1 and 5.3. |
+| | 1–2, 4–6, 9–10, 13 | Open, 2.4 destination choices, wake-ups, Autopilot and other transfer shapes. Engine queue effects are 3.2. Bot and group runtime parts are 4.6, 5.1 and 5.3. |
 | [moves-elsewhere](../../box/bridge-tests/moves-elsewhere.test.js) | 1 | Partial, authenticated snapshots and a stream removal are exercised. Add both parties' successive clear and independent projections in 2.4. |
 | | 2 | Partial, filtering one's own moves is exercised. Add malformed inputs, non-members, sender clock changes and injected expiry in 2.4. |
 | | 3 | Open, prove expiry on a quiet peer with an injected clock in 2.4. |
@@ -100,10 +102,12 @@ separately where they appear.
 | | 19 | Partial, Rust loads durable departures and source switch journals into peer lookup. Add the reference's multi-hop and advertisement expiry scenarios in 2.4. |
 | | 20, 34 | Partial, switch recovery or terminal client receipt is exercised with seeded state. Add removal fencing (2.3 and 2.4) and source cleanup against a failing engine (2.4 and 3.2). |
 | | 37 | Partial, live progress names come from accepted membership in the third-computer scenario. Add source and recipient progress during an initiated transfer in 2.4. |
+| | 39 | Covered by a live source whose durable switch is unanswered for 90 seconds and whose repeated switch later recovers the destination receipt. |
 | | 45 | Partial, a live chat returns to the same computer and discards the earlier move's backup. The pre-activation retention and timed cleanup checks remain 2.4. |
-| | 1–8, 10–18, 21–23, 25, 27–30, 32–33, 35–36, 38–44, 46–55 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| | 1–8, 10–18, 21–23, 25, 27–30, 32–33, 35–36, 38, 40–44, 46–55 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5, 7, 21 | Covered by the fresh arrival reply after a lost reply, an interrupted engine import and its rollback, and an older held copy without import ownership. |
-| | 1–4, 6, 8–12, 15–17, 22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
+| | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
+| | 1–4, 6, 8–9, 11–12, 15–17, 22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
 | | 13–14, 18–20, 23–24 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3, 9–18 | Open, 2.4 owner mutation claims, observations, replay and handoff evidence. Queue and session effects depend on 5.2 and 3.2. |
 | | 4–6 | Setup-owned, 2.1. See [setup coverage](rust-setup-coverage.md). |

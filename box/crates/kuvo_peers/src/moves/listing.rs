@@ -82,11 +82,11 @@ pub(super) fn name_of<'a>(roster: &'a Roster, key: &str) -> Option<&'a str> {
     roster.member(&key).map(|member| member.name.as_str())
 }
 
-fn show(record: &Journal, roster: &Roster) -> Option<WithWords> {
+fn show(record: &Journal, view: &View) -> Option<WithWords> {
     Some(
         record
-            .shown()?
-            .with_words(name_of(roster, &record.peer), None),
+            .shown_waiting(&view.move_waiting)?
+            .with_words(name_of(&view.roster, &record.peer), None),
     )
 }
 
@@ -102,7 +102,7 @@ fn list(view: &View, run: &Path, now: Millis) -> Result<Value, Refusal> {
     let moves: Vec<_> = records
         .iter()
         .filter(|record| record.listed())
-        .filter_map(|record| show(record, &view.roster))
+        .filter_map(|record| show(record, view))
         .collect();
     let moved: Vec<_> = departures(run)
         .map_err(format_refusal)?
@@ -180,7 +180,12 @@ fn report(view: &View, run: &Path, id: &str) -> Result<Value, Refusal> {
         } else {
             record.note.clone()
         };
-        (record.shown(), done, note)
+        let movement = if done {
+            record.shown()
+        } else {
+            record.shown_waiting(&view.move_waiting)
+        };
+        (movement, done, note)
     } else {
         return Err(result_unavailable());
     };
@@ -309,7 +314,7 @@ pub(crate) fn register_start(
             let immediate = request.receipt;
             let row = driver.begin(request).await?;
             if immediate {
-                let move_view = show(&row, &peers.view().roster).ok_or_else(result_unavailable)?;
+                let move_view = show(&row, &peers.view()).ok_or_else(result_unavailable)?;
                 return Ok(RouteReply::json::<202>(route_shape(json!({"move":move_view}))?));
             }
             loop {

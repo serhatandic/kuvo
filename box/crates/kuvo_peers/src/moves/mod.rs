@@ -198,6 +198,12 @@ impl Journal {
             waiting: None,
         })
     }
+
+    fn shown_waiting(&self, waiting: &BTreeSet<String>) -> Option<Shown> {
+        let mut movement = self.shown()?;
+        movement.waiting = waiting.contains(&self.id).then_some(true);
+        Some(movement)
+    }
 }
 
 fn journal_file(run: &Path, id: &str) -> std::path::PathBuf {

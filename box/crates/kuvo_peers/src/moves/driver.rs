@@ -2,9 +2,10 @@
 //! The durable journal separates a complete copy from an ownership decision.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -22,7 +23,7 @@ use kuvo_wire::{
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{self, Instant},
 };
@@ -43,12 +44,15 @@ use crate::{
     setup_lists::{Reader, View},
 };
 
-const MOVING: &str = "It’s moving already.";
+const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
 const CHECK_WAIT: Millis = 45_000;
+const STARTING_ON_RESTART: Millis = 30_000;
 const STEP_AGAIN: Millis = 60_000;
 const NO_OFFER_ANSWER: Duration = Duration::from_secs(30);
 const QUIET_BEFORE_SWITCH: Duration = Duration::from_secs(10 * 60);
 const SET_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
+const WAITING_AFTER: Duration = Duration::from_secs(90);
+const WAITING_FOR_SWITCH: Duration = Duration::from_secs(150);
 const DROP_AT_MOST: Millis = 24 * 3_600_000;
 
 #[derive(Deserialize)]
@@ -84,6 +88,7 @@ pub(crate) fn start(
     relay: RelayHandle,
     engine: Engine,
     ownership: ownership::Handle,
+    waiting: watch::Sender<Arc<BTreeSet<String>>>,
 ) -> io::Result<(Handle, JoinHandle<()>)> {
     let events = relay
         .subscribe()
@@ -98,6 +103,9 @@ pub(crate) fn start(
         sending: HashMap::new(),
         retry: HashMap::new(),
         owned: HashSet::new(),
+        heard: HashMap::new(),
+        looking_since: Instant::now(),
+        waiting,
         asked_trash: None,
     };
     Ok((Handle(tx), tokio::spawn(driver.run(events, commands))))
@@ -108,7 +116,6 @@ struct Sending {
     bundle: OutgoingBundle,
     flight: Flight,
     since: Instant,
-    heard: Instant,
 }
 
 struct RetryClock {
@@ -125,6 +132,9 @@ struct Driver {
     sending: HashMap<String, Sending>,
     retry: HashMap<String, RetryClock>,
     owned: HashSet<String>,
+    heard: HashMap<String, Instant>,
+    looking_since: Instant,
+    waiting: watch::Sender<Arc<BTreeSet<String>>>,
     asked_trash: Option<Instant>,
 }
 
@@ -192,6 +202,13 @@ impl Driver {
         }
         if !view.relay_connected {
             return Err(unavailable());
+        }
+        if journals(self.run_dir())
+            .map_err(|error| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?
+            .iter()
+            .any(|row| row.live() && row.covers(&request.id))
+        {
+            return Err(Refusal::new(StatusCode::CONFLICT, MOVING));
         }
         let session = chat(&self.engine, self.run_dir(), &request.id).await?;
         let scope = self
@@ -263,6 +280,7 @@ impl Driver {
     async fn round(&mut self) -> io::Result<()> {
         let view = self.reader.view();
         let rows = journals(self.run_dir()).map_err(io::Error::other)?;
+        self.refresh_waiting(&rows);
         self.check_trash(&view, &rows).await?;
         for mut row in rows {
             let result = if row.role == Role::From {
@@ -286,6 +304,36 @@ impl Driver {
             }
         }
         Ok(())
+    }
+
+    fn refresh_waiting(&mut self, rows: &[Journal]) {
+        let ticks = Instant::now();
+        let wall = self.reader.now();
+        self.heard
+            .retain(|_, time| ticks.duration_since(*time) <= QUIET_BEFORE_SWITCH);
+        let waiting: BTreeSet<_> = rows
+            .iter()
+            .filter(|row| {
+                let last = self
+                    .heard
+                    .get(&row.id)
+                    .copied()
+                    .unwrap_or(self.looking_since);
+                let sent = self
+                    .sending
+                    .get(&row.id)
+                    .map(|sending| ticks.duration_since(sending.since));
+                waiting_on_peer(row, wall, sent, ticks.duration_since(last))
+            })
+            .map(|row| row.id.clone())
+            .collect();
+        self.waiting.send_if_modified(|before| {
+            if **before == waiting {
+                return false;
+            }
+            *before = Arc::new(waiting);
+            true
+        });
     }
 
     async fn source_step(&mut self, view: &View, row: &mut Journal) -> io::Result<()> {
@@ -316,15 +364,26 @@ impl Driver {
             return Ok(());
         }
         if !self.owned.contains(&row.id) {
-            return self
-                .fail_source(
-                    view,
-                    key,
-                    row,
-                    format!("{} didn’t get there. Try again.", row.display_name()),
-                    409,
-                )
-                .await;
+            let just_requested = row.stage == Stage::Holding
+                && matches!(row.step.as_deref(), None | Some("check"))
+                && now.saturating_sub(row.started) < STARTING_ON_RESTART;
+            if !just_requested {
+                return self
+                    .fail_source(
+                        view,
+                        key,
+                        row,
+                        format!("{} didn’t get there. Try again.", row.display_name()),
+                        409,
+                    )
+                    .await;
+            }
+            if !view.relay_connected {
+                return Ok(());
+            }
+            self.owned.insert(row.id.clone());
+            row.extra.shift_remove("sentAt");
+            row.extra.shift_remove("againAt");
         }
         if row.step.as_deref() == Some("check") {
             if now.saturating_sub(row.started) >= CHECK_WAIT {
@@ -372,7 +431,10 @@ impl Driver {
                 let quiet = (matches!(step, Some("parts" | "arrive"))
                     || step == Some("offer") && tries > 0)
                     && sending.since.elapsed() > QUIET_BEFORE_SWITCH
-                    && sending.heard.elapsed() > QUIET_BEFORE_SWITCH;
+                    && self
+                        .heard
+                        .get(&row.id)
+                        .is_none_or(|last| last.elapsed() > QUIET_BEFORE_SWITCH);
                 if no_answer || quiet {
                     let message = if no_answer {
                         format!("{place} isn’t connected. Connect to it, then try again.")
@@ -433,6 +495,15 @@ impl Driver {
         if stored.as_ref().is_some_and(|row| row.peer != peer) {
             return Ok(());
         }
+        if stored
+            .as_ref()
+            .is_some_and(|row| op == "checked" || row.bundle.matches(given))
+        {
+            self.heard.insert(id.into(), Instant::now());
+            self.waiting.send_if_modified(|waiting| {
+                waiting.contains(id) && Arc::make_mut(waiting).remove(id)
+            });
+        }
         if op == "check" {
             let plain = given["kind"].as_str() == Some("chat") && given["lane"] != true;
             let ready = match self.engine.session_move().await {
@@ -482,9 +553,6 @@ impl Driver {
                 handoff::remove_completed(self.run_dir(), &row)?;
             }
             return Ok(());
-        }
-        if let Some(sending) = self.sending.get_mut(id) {
-            sending.heard = Instant::now();
         }
         match op {
             "checked" if row.stage == Stage::Holding && row.step.as_deref() == Some("check") => {
@@ -718,7 +786,6 @@ impl Driver {
             bundle: OutgoingBundle::open(&path, bytes.clone())?,
             flight: Flight::new(&bytes),
             since: now,
-            heard: now,
         };
         row.bundle = Bundle {
             generation: Some(identity),
@@ -828,6 +895,9 @@ impl Driver {
         row.extra
             .insert("switchSince".into(), self.reader.now().into());
         self.step(row, "switch")?;
+        if let Some(sending) = self.sending.get_mut(&row.id) {
+            sending.since = Instant::now();
+        }
         self.mark_retry(row);
         self.tell(view, key, row, "switch", json!({"safeSwitch":true}))
             .await;
@@ -1095,6 +1165,7 @@ impl Driver {
         self.retry.remove(id);
         self.owned.remove(id);
         self.sending.remove(id);
+        self.heard.remove(id);
     }
 
     async fn accept_offer(
@@ -1936,6 +2007,38 @@ fn session_id(id: &str) -> bool {
 fn index(given: &Value) -> Option<u32> {
     let value = given["i"].as_f64()?;
     (value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0).then_some(value as u32)
+}
+
+fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> bool {
+    if !row.live() {
+        return false;
+    }
+    let stamp = |key| row.extra.get(key).and_then(Value::as_i64);
+    let (asked, delay) = match row.role {
+        Role::To if row.dropping || row.set_up_since.is_some() => return false,
+        Role::To if row.complete => (
+            Some(row.set_up_at.unwrap_or(row.started)),
+            WAITING_FOR_SWITCH,
+        ),
+        Role::To => (Some(row.started), WAITING_AFTER),
+        Role::From => {
+            let asked = match row.step.as_deref() {
+                Some("switch") => stamp("switchSince"),
+                Some("drop") if row.stage == Stage::Switching => stamp("switchSince"),
+                Some("parts" | "arrive") => stamp("sentAt"),
+                Some("offer") if stamp("tries").is_some_and(|tries| tries > 0) => stamp("sentAt"),
+                _ => None,
+            };
+            (asked, WAITING_AFTER)
+        }
+    };
+    heard > delay
+        && asked.is_some_and(|asked| {
+            sent.map_or_else(
+                || asked > now || now.saturating_sub(asked) > delay.as_millis() as Millis,
+                |sent| sent > delay,
+            )
+        })
 }
 
 fn new_journal(
