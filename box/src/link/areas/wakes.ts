@@ -203,21 +203,32 @@ export function nextWake(): number | null {
   return soonest;
 }
 
+interface WakeSchedule {
+  watch?: typeof watchSchedules;
+  schedule?: (run: () => void, ms: number) => unknown;
+  cancel?: (timer: unknown) => void;
+}
+
 /** This computer's wake-ups and watches sent by its box, as a machine's keeper sends its own with
  * the same `kuvo-wake fire` (which keeps two runs apart itself): at the soonest one's time, at
  * least each minute (for watches), and again as they change, here or by an agent's kuvo-wake. One
  * still due after a run that was due before it (it couldn't go, or its conversation is archived)
  * waits for the next minute; one that came due during it goes right after. The returned function
  * stops it: nothing runs after, and its promise settles once a run already going is over. */
-export function sendWakes(): () => Promise<void> {
-  let timer: NodeJS.Timeout | null = null, settling: NodeJS.Timeout | null = null, running = false, again = false, stopped = false, started = 0, said = false, over: (() => void) | null = null, ending: Promise<void> | null = null;
+export function sendWakes({
+  schedule: later = setTimeout,
+  cancel = clearTimeout as (timer: unknown) => void,
+  watch = watchSchedules,
+}: WakeSchedule = {}): () => Promise<void> {
+  let timer: unknown, settling: unknown;
+  let running = false, again = false, stopped = false, started = 0, said = false, over: (() => void) | null = null, ending: Promise<void> | null = null;
   const schedule = (afterFire = false) => {
     if (stopped) return;
-    clearTimeout(timer!);
+    cancel(timer);
     const due = nextWake(), now = Date.now() / 1000;
     const missed = afterFire && due !== null && due <= now && due <= started;
     const wait = due === null || missed ? 60_000 : Math.min(60_000, Math.max(500, (due + 1 - now) * 1000));
-    timer = setTimeout(fire, wait);
+    timer = later(fire, wait);
   };
   const fire = async () => {
     if (stopped) return;
@@ -253,16 +264,16 @@ export function sendWakes(): () => Promise<void> {
   };
   // A change, here or beside it, once the folders settle (a wake-up is a file or two).
   const changed = () => {
-    clearTimeout(settling!);
-    settling = setTimeout(() => schedule(), 200);
+    cancel(settling);
+    settling = later(schedule, 200);
   };
   wakeFollowers.add(changed);
-  const watching = watchSchedules(changed);
+  const watching = watch(changed);
   schedule();
   return () => {
     stopped = true;
-    clearTimeout(timer!);
-    clearTimeout(settling!);
+    cancel(timer);
+    cancel(settling);
     wakeFollowers.delete(changed);
     watching.close();
     if (!running) return Promise.resolve();
