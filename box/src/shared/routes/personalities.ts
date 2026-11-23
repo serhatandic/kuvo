@@ -1,4 +1,4 @@
-// Personalities you make (PROTOCOL.md, "Personalities"): the box's copy of the library, changed by
+// Personalities you make (PROTOCOL.md, "Per area"): the box's copy of the library, changed by
 // any client, and the library whole for the app beside the box, which meets it with your other
 // computers' copies.
 
@@ -25,11 +25,16 @@ export type PersonalityLibraryDocument = Infer<typeof LIBRARY>;
 export type PersonalitiesTaken = Infer<typeof TAKEN>;
 
 export const PERSONALITY_ROUTES: RouteShape[] = [
+  // The personalities you made, on the computer asked (Kuvo Code's own presets aren't listed).
   { route: "GET kuvo/personalities", feature: "personalities", answers: { 200: PERSONALITIES } },
   { route: "GET kuvo/personalities/events", feature: "personalities.events", answers: { 200: PERSONALITIES } },
+  // Makes one (`{name, description}`, id `custom.<uuid>`).
   { route: "POST kuvo/personalities", feature: "personalities", answers: { 200: PERSONALITY } },
+  // The library whole, as the box keeps and signs it; only for the app beside the box (`x-kuvo-from: app`).
   { route: "GET kuvo/personalities/document", feature: "personalities", answers: { 200: LIBRARY } },
+  // Meets another computer's copy (`{document}`) with this one's; app only; answers the ids that changed here.
   { route: "POST kuvo/personalities/take", feature: "personalities", answers: { 200: TAKEN } },
   { route: "PATCH kuvo/personalities/:id", feature: "personalities", answers: { 200: PERSONALITY } },
+  // Removes one you made; kept as removed so no other copy brings it back.
   { route: "DELETE kuvo/personalities/:id", feature: "personalities", answers: { 200: NOTHING } },
 ];

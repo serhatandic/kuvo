@@ -34,10 +34,16 @@ const SUBMISSION_PAGE = object({ currentOwner: nullable(string), complete: bool,
     "acceptedAt?": number, "effect?": any, "decision?": any, "draft?": any, "draftAvailable?": bool, "recoveryComputer?": string })) });
 
 export const TYPED_ROUTES: RouteShape[] = [
+  // Send what's typed in the composer, once per `id`; the box checks the model or sends it back.
   { route: "POST kuvo/sessions/:id/draft", feature: "typed.draft", answers: DRAFT_ANSWERS },
+  // The same send through another computer, kept as a submission whose outcome can be recovered.
   { route: "POST kuvo/sessions/:id/submit", feature: "typed.submission-recovery", answers: DRAFT_ANSWERS },
+  // A conversation's submissions and their outcomes, for a send whose answer was lost.
   { route: "GET kuvo/sessions/:id/submissions", feature: "typed.submission-recovery", answers: { 200: SUBMISSION_PAGE, 400: REFUSED, 403: REFUSED, 503: REFUSED } },
+  // One submission's outcome.
   { route: "GET kuvo/sessions/:id/submissions/:submission", feature: "typed.submission-recovery", answers: { 200: SUBMISSION_PAGE, 400: REFUSED, 403: REFUSED, 503: REFUSED } },
+  // For 0.7.x clients: nothing is offered after "/" (Kuvo has no typed keywords).
   { route: "GET kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED_OFFERS, 404: REFUSED } },
+  // For 0.7.x clients: what a typed text means; the client then sends the message itself.
   { route: "POST kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED, 400: REFUSED, 404: SEND_REFUSED, 503: SEND_REFUSED } },
 ];

@@ -1,4 +1,4 @@
-// Projects (PROTOCOL.md, "Projects"): the box's own list, which every client reads and changes.
+// Projects: the box's own list, which every client reads and changes.
 
 import { bool, type Infer, list, map, number, object, type RouteShape, string } from "../shape";
 
@@ -27,7 +27,9 @@ export type Projects = Infer<typeof PROJECTS>;
 export const PROJECT_ROUTES: RouteShape[] = [
   { route: "GET kuvo/projects", feature: "projects", answers: { 200: PROJECTS } },
   { route: "GET kuvo/projects/events", feature: "projects", answers: { 200: PROJECTS } },
+  // Add a project or change one (its name, other folders, Run command).
   { route: "PUT kuvo/projects", feature: "projects", answers: { 200: object({ project: PROJECT }) } },
+  // Remove Project: off the list, its sessions archived, its settings kept.
   // Removed: how many of its sessions were archived, and which (each client's lists hide them at once).
   // (A project with sessions that couldn't be archived stays, and says how many were and weren't.)
   { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } },

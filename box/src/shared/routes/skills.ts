@@ -1,4 +1,4 @@
-// Skills (PROTOCOL.md, "Skills"): each box's own skills folder, its Recently Deleted, and GitHub's
+// Skills (PROTOCOL.md, "Per area"): each box's own skills folder, its Recently Deleted, and GitHub's
 // collections, which a box reaches for every client.
 
 import { bool, type Infer, list, map, NOTHING, number, object, type RouteShape, string } from "../shape";
@@ -43,14 +43,24 @@ export type SkillAbout = Infer<typeof SKILL_ABOUT>;
 export type SkillCollection = Infer<typeof SKILL_COLLECTION>;
 
 export const SKILL_ROUTES: RouteShape[] = [
+  // This computer's skills folder, the folders in it, and which skills came from GitHub.
   { route: "GET kuvo/skills", feature: "skills", answers: { 200: SKILLS } },
+  // A skill's SKILL.md, by its folder's name.
   { route: "GET kuvo/skills/:name", feature: "skills", answers: { 200: SKILL_TEXT } },
+  // Writes a skill's SKILL.md (`{text, new?, was?}`); a `was` that no longer matches is a 409.
   { route: "PUT kuvo/skills/:name", feature: "skills", answers: { 200: NOTHING } },
+  // Puts a skill's folder in Recently Deleted for 30 days (`{was?}`).
   { route: "DELETE kuvo/skills/:name", feature: "skills", answers: { 200: NOTHING } },
+  // Recently Deleted, newest first, with when each goes.
   { route: "GET kuvo/skill-trash", feature: "skills.trash", answers: { 200: SKILL_TRASH } },
+  // Brings a skill back whole under its name; 409 when a skill has that name now.
   { route: "POST kuvo/skill-trash/:id/restore", feature: "skills.trash", answers: { 200: SKILL_NAMED } },
+  // The well-known skill collections on GitHub, which the box reaches for every client.
   { route: "GET kuvo/skill-library", feature: "skills", answers: { 200: SKILL_LIBRARY } },
+  // Installs a skill from GitHub (`{repository, path}`) under its folder's name.
   { route: "POST kuvo/skill-library/install", feature: "skills", answers: { 200: SKILL_NAMED } },
+  // A GitHub repository's skills, each with what its SKILL.md says it is.
   { route: "GET kuvo/skill-library/:owner/:name", feature: "skills", answers: { 200: SKILL_COLLECTION } },
+  // What one skill's SKILL.md says it is (`path=`).
   { route: "GET kuvo/skill-library/:owner/:name/about", feature: "skills", answers: { 200: SKILL_ABOUT } },
 ];

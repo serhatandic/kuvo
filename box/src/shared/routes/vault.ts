@@ -1,4 +1,4 @@
-// The vault (PROTOCOL.md, "Vault"): sign-ins, keys, files and notes this box keeps for its agents,
+// The vault (PROTOCOL.md, "Per area"): sign-ins, keys, files and notes this box keeps for its agents,
 // who may use which, what was used, what agents ask for, and the agents' own door to it. No answer
 // an agent can get holds a value; those that do (`…/values`, `kuvo/vault/key`) answer only clients.
 
@@ -127,21 +127,37 @@ export type VaultAsk = Infer<typeof VAULT_ASK>;
 export type VaultFill = Infer<typeof VAULT_FILL>;
 
 export const VAULT_ROUTES: RouteShape[] = [
+  // Everything a Vault page shows: its state, its items without their values, and its grants.
   { route: "GET kuvo/vault", feature: "vault", answers: { 200: VAULT } },
+  // Adds an item (`{kind, name, values, …}`); names are unique; a sign-in needs a site.
   { route: "POST kuvo/vault/items", feature: "vault", answers: { 200: VAULT_ITEM_ANSWER } },
+  // Changes an item; a value `null` takes it away.
   { route: "PATCH kuvo/vault/items/:id", feature: "vault", answers: { 200: VAULT_ITEM_ANSWER } },
+  // Removes an item, with its values and grants.
   { route: "DELETE kuvo/vault/items/:id", feature: "vault", answers: { 200: NOTHING } },
+  // An item's values, for Show on a client (noted `shown`); never answered to an agent.
   { route: "GET kuvo/vault/items/:id/values", feature: "vault", answers: { 200: VAULT_VALUES } },
+  // Who may use which item, and how (on its own, or asking you each time).
   { route: "GET kuvo/vault/grants", feature: "vault", answers: { 200: VAULT_GRANTS } },
+  // Grants an item (`{item, who, how}`); `how: null` takes the grant away.
   { route: "POST kuvo/vault/grants", feature: "vault", answers: { 200: VAULT_GRANTS } },
+  // What happened with the vault, newest first, never a value; `mine` marks what the asking client did.
   { route: "GET kuvo/vault/activity", feature: "vault", answers: { 200: VAULT_ACTIVITIES } },
+  // Pauses or resumes agents' use (`{paused, bot?}`): everyone's, or one bot's or conversation's.
   { route: "POST kuvo/vault/pause", feature: "vault", answers: { 200: VAULT_STATE } },
+  // The machine vault's unlock key, for a client to keep; makes the vault if there's none. 409 on a Mac.
   { route: "POST kuvo/vault/key", feature: "vault", answers: { 200: VAULT_KEY } },
+  // Unlocks a machine's vault after a restart (`{key}`); 403 for a key that isn't this vault's.
   { route: "POST kuvo/vault/unlock", feature: "vault", answers: { 200: VAULT_STATE } },
+  // What agents wait on you for: to use an item they may only use by asking, or one they need.
   { route: "GET kuvo/vault/asks", feature: "vault", answers: { 200: VAULT_ASKS } },
   { route: "GET kuvo/vault/asks/events", feature: "vault", answers: { 200: VAULT_ASKS } },
+  // Answers one (`{answer: once | always | no, item?}`); unanswered after 15 minutes counts as no.
   { route: "POST kuvo/vault/asks/:id", feature: "vault", answers: { 200: NOTHING } },
+  // The agents' vault tools, for a tool server to list; none where agents' commands aren't all sandboxed.
   { route: "GET kuvo/vault/tools", feature: "vault", answers: { 200: VAULT_TOOL_LIST } },
+  // Runs an agent's vault tool call (`{name, arguments, session}`), only while that conversation is making it.
   { route: "POST kuvo/vault/tools", feature: "vault", answers: { 200: VAULT_TOOL } },
+  // Values for the browser's own process to fill, only on an https page of the item's sites, under its grants.
   { route: "POST kuvo/vault/fill", feature: "vault", answers: { 200: VAULT_FILL } },
 ];

@@ -1,4 +1,4 @@
-// Group chats (PROTOCOL.md, `kuvo/groups`): those that live on the box asked, one chat's messages,
+// Group chats (PROTOCOL.md, "Per area"): those that live on the box asked, one chat's messages,
 // who can be in one, and what a client does to them. The coding agents' bridge there runs them and
 // answers (src/agents/groups/link.ts), and the box passes its answers on as they are: these are
 // the shapes it answers in.
@@ -126,17 +126,28 @@ export type Joinable = Infer<typeof JOINABLE>;
 export const GROUP_ROUTES: RouteShape[] = [
   { route: "GET kuvo/groups", feature: "groups", answers: { 200: GROUPS } },
   { route: "GET kuvo/groups/events", feature: "groups", answers: { 200: GROUPS } },
+  // Makes a group chat here (`{name, members, purpose?, meeting?}`, at least two of the joinable bots).
   { route: "POST kuvo/groups", feature: "groups.make", answers: { 201: GROUP_CHANGED } },
+  // Who can be in a chat made here: offer exactly these in New and Edit Group Chat.
   { route: "GET kuvo/groups/joinable", feature: "groups.joinable", answers: { 200: JOINABLE } },
+  // One chat's latest messages, who's talking and what they're doing.
   { route: "GET kuvo/groups/:id", feature: "groups", answers: { 200: CHAT } },
+  // One chat as it changes; a line without `messages` means they're as they were.
   { route: "GET kuvo/groups/:id/events", feature: "groups", answers: { 200: CHAT } },
+  // Writes to the chat (`{text}`, only the words: the chat's computer adds the named-agents block).
   { route: "POST kuvo/groups/:id", feature: "groups", answers: { 200: oneOf(NOTHING, OWNER_MESSAGE_COMMITTED), 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 409: oneOf(OWNER_MESSAGE_INTERRUPTED, REFUSED), 503: REFUSED } },
   { route: "PATCH kuvo/groups/:id", feature: "groups.edit", answers: { 200: GROUP_CHANGED } },
   { route: "DELETE kuvo/groups/:id", feature: "groups.delete", answers: { 200: NOTHING } },
+  // Stops the discussion; the bot talking stops mid-sentence.
   { route: "POST kuvo/groups/:id/stop", feature: "groups", answers: { 200: NOTHING } },
+  // After the limit of turns, lets the bots go on talking.
   { route: "POST kuvo/groups/:id/keep-going", feature: "groups", answers: { 200: NOTHING } },
+  // Marks the chat read, on every client.
   { route: "POST kuvo/groups/:id/viewed", feature: "groups", answers: { 200: NOTHING } },
+  // Takes a message of yours back (`{message}`) and answers what it said.
   { route: "POST kuvo/groups/:id/undo", feature: "groups", answers: { 200: UNDONE } },
+  // Hands each proposed part of a wrap-up (`{message}`) to its bot's own conversation.
   { route: "POST kuvo/groups/:id/start", feature: "groups", answers: { 200: NOTHING } },
+  // What "&" offers in this chat: its bots, then guests.
   { route: "GET kuvo/groups/:id/mentions", feature: "groups.mentions", answers: { 200: MENTIONS, 404: REFUSED, 503: REFUSED } },
 ];
