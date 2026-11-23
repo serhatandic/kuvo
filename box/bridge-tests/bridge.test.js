@@ -1772,6 +1772,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "models.offered.sides": ["GET", "kuvo/models/offered"],
     // (What a model that can't run means for a composer, on kuvo/sessions/models.)
     "models.readiness": ["GET", "kuvo/sessions/models?sessions=ses_x"],
+    // (The speed picked for each provider, kept by the box: its own route.)
+    "models.speed": ["POST", "kuvo/models/speed"],
     // (Your starred models, kept by the box: its own route.)
     "models.starred": ["GET", "kuvo/models/starred"],
     moves: ["GET", "kuvo/moves"],

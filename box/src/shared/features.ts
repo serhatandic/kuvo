@@ -176,6 +176,7 @@ export const FEATURES = [
   "models.offered.providers",
   "models.offered.sides",
   "models.readiness",
+  "models.speed",
   "models.starred",
   "moves",
   "moves.agents",
