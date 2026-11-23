@@ -462,9 +462,28 @@ impl Run<'_> {
             bundle: self.bundle.into(),
             id,
         };
-        let _layout = layout::lock_for_move(self.home, Duration::from_secs(3))?;
         let disk = Disk(self.home.root().into());
         let pending = disk.path(PENDING)?;
+        let origin = self
+            .account
+            .join("Library/Application Support")
+            .join(&app.id);
+        let preflight = layout::inspect(self.home)
+            .map_err(Error::from)
+            .and_then(|_| super::engine::check_marker_path(&origin.join("box")))
+            .and_then(|_| source::validate_legacy(&origin));
+        if let Err(error) = preflight {
+            if legacy_fence(&disk)?.is_some() {
+                return Ok(Outcome {
+                    result: "stuck",
+                    status: crate::rehome_status(self.home),
+                    started: None,
+                    message: Some(error.to_string()),
+                });
+            }
+            return Err(error);
+        }
+        let _layout = layout::lock_for_move(self.home, Duration::from_secs(3))?;
         let lock = disk.path("updates/rehome/lock")?;
         let _handover = OwnedLock::acquire_rehome(&lock, Duration::from_secs(3))?;
         let progress = Progress(disk.path("updates/rehome/run.phase")?);
@@ -472,10 +491,10 @@ impl Run<'_> {
         // there is no Rust publication record beside it.
         if metadata(&pending)?.is_none() {
             let mut layout = layout::inspect(self.home)?;
-            let origin = self
-                .account
-                .join("Library/Application Support")
-                .join(&app.id);
+            if legacy::previous(&disk, self.account)?.is_some() {
+                super::engine::check_marker_path(&origin.join("box"))?;
+                source::validate_legacy(&origin)?;
+            }
             match legacy::undo(&disk, &origin, layout) {
                 Ok(Some(_)) => layout = layout::inspect(self.home)?,
                 Ok(None) => {}

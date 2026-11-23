@@ -479,6 +479,20 @@ keeper.listen(0, "127.0.0.1", () => console.log(keeper.address().port));
     assert.match(reply.message, /Legacy Mac import list format version 2 is unsupported/);
     assert.equal(fs.readFileSync(bots, "utf8"), bytes);
     untouched();
+
+    const rehome = path.join(app.K, "updates/rehome");
+    const staged = path.join(rehome, "staging/unfinished");
+    write(staged, "private draft");
+    const journal = JSON.stringify({
+      v: 1, way: "move", began: 1, step: "clone", from: app.S, to: app.K,
+      placements: [], clearing: [], kept: path.join(rehome, "kept/interrupted"),
+    });
+    write(path.join(rehome, "journal.json"), journal);
+    const stuck = move(3);
+    assert.equal(stuck.result, "stuck");
+    assert.match(stuck.message, /Legacy Mac import list format version 2 is unsupported/);
+    assert.equal(fs.readFileSync(path.join(rehome, "journal.json"), "utf8"), journal);
+    assert.equal(fs.readFileSync(staged, "utf8"), "private draft");
   });
 
   await t.test("a failed engine upgrade leaves the source intact", () => {
