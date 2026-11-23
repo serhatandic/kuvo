@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- One-shot SSH requests can report whether coding agents need a restart to enter the sandbox.
 - Removing Kuvo reports when other computers have yet to receive the desktop’s revocation.
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
