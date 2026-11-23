@@ -145,7 +145,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         },
@@ -203,7 +205,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         }
@@ -341,7 +345,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         },
@@ -399,7 +405,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         }
@@ -527,7 +535,9 @@
            },
            "why": "string"
           }
-         }
+         },
+         "title?": "string",
+         "detail?": "string"
         }
        }
       },
@@ -658,7 +668,9 @@
            },
            "why": "string"
           }
-         }
+         },
+         "title?": "string",
+         "detail?": "string"
         }
        }
       },
@@ -11947,6 +11959,9 @@
             "literal": "models.readiness"
            },
            {
+            "literal": "models.speed"
+           },
+           {
             "literal": "models.starred"
            },
            {
@@ -12958,6 +12973,9 @@
            },
            {
             "literal": "models.readiness"
+           },
+           {
+            "literal": "models.speed"
            },
            {
             "literal": "models.starred"
@@ -29096,7 +29114,16 @@
               },
               "retiring?": "bool",
               "hidden?": "bool",
-              "free?": "bool"
+              "free?": "bool",
+              "speeds?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "name": "string",
+                 "description?": "string"
+                }
+               }
+              }
              }
             }
            },
@@ -29111,7 +29138,8 @@
              "object": {
               "id": "string",
               "name": "string",
-              "label?": "string"
+              "label?": "string",
+              "speed?": "string"
              }
             }
            },
@@ -29363,7 +29391,16 @@
          },
          "retiring?": "bool",
          "hidden?": "bool",
-         "free?": "bool"
+         "free?": "bool",
+         "speeds?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "name": "string",
+            "description?": "string"
+           }
+          }
+         }
         }
        }
       },
@@ -29378,7 +29415,8 @@
         "object": {
          "id": "string",
          "name": "string",
-         "label?": "string"
+         "label?": "string",
+         "speed?": "string"
         }
        }
       },
@@ -29468,6 +29506,38 @@
          "id": "string"
         }
        }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/models/speed",
+   "feature": "models.speed",
+   "answers": {
+    "200": {
+     "object": {
+      "providerID": "string",
+      "speed": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
       }
      }
     },

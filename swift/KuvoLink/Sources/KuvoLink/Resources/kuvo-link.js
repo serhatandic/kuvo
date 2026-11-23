@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 f2a0b1ad580c
+// Kuvo folder layout 23 1c50af5fd864
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f2a0b1ad580c";
+var BRIDGE_VERSION = "1c50af5fd864";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -3127,6 +3127,7 @@ var init_data_declarations = __esm(() => {
     marketplaceInstallations: { shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, backupVia: "accepted setup", restore: "portable", families: ["Signed documents"] },
     setupPersonalities: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["bots/personalities.json"], families: ["Personalities", "Signed documents"] },
     setupTimeZone: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/time-zone.json"], families: ["Time zone"] },
+    setupStarredModels: { backupVia: "accepted setup", shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", families: ["Computer settings and local tools"] },
     setupUsageDisplay: { shared: { seed: "member copies", publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["agents/usage/settings.json"], families: ["Usage settings"] },
     localSettingsAndPermissions: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/settings.json", "home/box/settings-flows.json", "home/box/work.json", "home/box/auto.json", "home/box/approval.json", "home/box/commands.json", { pattern: "home/box/permissions.json", restore: "needs fresh approval" }, { pattern: "home/box/permissions-later.json", restore: "needs fresh approval" }], families: ["Computer settings and local tools", "Local fences and audit"] },
     modelsAndReusableTools: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/models.json", "home/box/model-names.json", "home/box/kuvo-models.json"], families: ["Computer settings and local tools", "Engine/plugin/MCP configuration"] },
@@ -3208,6 +3209,7 @@ function readForwardEvidence(value, key) {
       "sessionSchedules",
       "setupNames",
       "setupTimeZone",
+      "setupStarredModels",
       "setupPersonalities",
       "membershipAndAccess",
       "clientIdentity",
@@ -21564,7 +21566,7 @@ function approvalOf(session, where = {}, since = approvalsSince(), byDefault) {
   const { approval, held } = effectiveApproval(guessed, where);
   return { approval: guessed, stored: false, applied: null, effective: approval, ...held ? { held } : {}, ...pending ? { pending } : {} };
 }
-var APPROVALS, isApproval = (value) => APPROVALS.includes(value), RANK, lowerOf = (a, b) => RANK[a] <= RANK[b] ? a : b, APPROVAL_FILE, keptHere = (file) => {
+var APPROVALS, isApproval = (value) => APPROVALS.includes(value), APPROVAL_WORDS, RANK, lowerOf = (a, b) => RANK[a] <= RANK[b] ? a : b, APPROVAL_FILE, keptHere = (file) => {
   try {
     const read = JSON.parse(textOf(file) ?? "");
     if (isObject(read))
@@ -21580,6 +21582,12 @@ var init_approval = __esm(() => {
   init_state2();
   init_sandbox();
   APPROVALS = ["askFirst", "acceptEdits", "auto", "fullAccess"];
+  APPROVAL_WORDS = {
+    askFirst: { title: "Ask First", detail: "Asks before it edits files or runs commands." },
+    acceptEdits: { title: "Accept Edits", detail: "Edits files in the project on its own; asks before commands." },
+    auto: { title: "Auto", detail: "Works on its own inside the sandbox; asks before anything beyond it." },
+    fullAccess: { title: "Full Access", detail: "Runs everything outside the sandbox and never asks." }
+  };
   RANK = { askFirst: 0, acceptEdits: 1, auto: 2, fullAccess: 3 };
   APPROVAL_FILE = path39.join(BOX, "approval.json");
   SANDBOX_WHY = {
@@ -24507,7 +24515,7 @@ var init_work2 = __esm(() => {
 });
 
 // box/src/shared/routes/sessions.ts
-var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, REMOTE_LIST_COMPUTER, CONVERSATION_TOOLS, LOCAL_CONVERSATION_LOCATION, CONVERSATION_LOCATION, SESSION_FACTS, SHOW_MORE, LISTED_PROJECT, SESSION_PAGE, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, LIST_ORIGIN, SETUP_SESSION, SETUP_PROJECT, SETUP_WAIT, SETUP_QUEUE, OFFERED_AGENT, START_CATALOG, SETUP_SESSIONS, SETUP_WAITING, SETUP_QUEUES, RUNS_ON, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, SPEED, MODELS_OFFERED, MODELS_STARRED, MODELS_SPEED, SESSION_KINDS, REMOTE_LIST_COMPUTER, CONVERSATION_TOOLS, LOCAL_CONVERSATION_LOCATION, CONVERSATION_LOCATION, SESSION_FACTS, SHOW_MORE, LISTED_PROJECT, SESSION_PAGE, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, LIST_ORIGIN, SETUP_SESSION, SETUP_PROJECT, SETUP_WAIT, SETUP_QUEUE, OFFERED_AGENT, START_CATALOG, SETUP_SESSIONS, SETUP_WAITING, SETUP_QUEUES, RUNS_ON, SIDE_QUESTION, SIDE_THREADS, SESSION_ROUTES;
 var init_sessions2 = __esm(() => {
   init_shape();
   init_list_computers();
@@ -24638,10 +24646,11 @@ var init_sessions2 = __esm(() => {
   SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
   MODEL_REF = object({ providerID: string, id: string, "variant?": string });
   STARRED = object({ providerID: string, id: string });
+  SPEED = object({ id: string, name: string, "description?": string });
   MODELS_OFFERED = object({
-    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
+    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool, "speeds?": list(SPEED) })),
     known: object({ engine: bool, agents: bool }),
-    "providers?": list(object({ id: string, name: string, "label?": string })),
+    "providers?": list(object({ id: string, name: string, "label?": string, "speed?": string })),
     "starred?": list(STARRED),
     "listing?": list(string),
     "unavailable?": list(object({ id: string })),
@@ -24652,6 +24661,7 @@ var init_sessions2 = __esm(() => {
     "startChoice?": object({ label: string, refusal: string })
   });
   MODELS_STARRED = object({ starred: list(STARRED) });
+  MODELS_SPEED = object({ providerID: string, speed: nullable(string) });
   SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
   REMOTE_LIST_COMPUTER = object({
     ...LIST_COMPUTER.object,
@@ -24819,7 +24829,8 @@ var init_sessions2 = __esm(() => {
     { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/models/offered", feature: "models.offered", answers: { 200: MODELS_OFFERED, 404: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED } },
-    { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED2 } },
+    { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED2, 409: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/models/speed", feature: "models.speed", answers: { 200: MODELS_SPEED, 400: REFUSED2 } },
     { route: "GET kuvo/sessions/:id/queue", feature: "queue.items", answers: { 200: QUEUE_READ } },
     { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
     { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
@@ -25309,6 +25320,7 @@ var init_features = __esm(() => {
     "models.offered.providers",
     "models.offered.sides",
     "models.readiness",
+    "models.speed",
     "models.starred",
     "moves",
     "moves.agents",
@@ -30990,6 +31002,39 @@ function failureWords(status, message) {
   return "Signing in didn’t work.";
 }
 
+// box/src/shared/model-speeds.ts
+import { readFileSync } from "node:fs";
+function pickedSpeeds(file) {
+  const out = {};
+  if (!file)
+    return out;
+  try {
+    const kept = JSON.parse(readFileSync(file, "utf8"));
+    if (!isObject(kept) || !isObject(kept.speeds))
+      return out;
+    for (const [provider, speed] of Object.entries(kept.speeds)) {
+      if (isSpeedProvider(provider) && (speed === null || isSpeedID(speed)))
+        out[provider] = speed;
+    }
+  } catch {}
+  return out;
+}
+function speedsIn(listed) {
+  if (!Array.isArray(listed))
+    return [];
+  const out = [];
+  for (const each of listed) {
+    if (!isObject(each) || !isSpeedID(each.id) || out.some((other) => other.id === each.id))
+      continue;
+    const name = typeof each.name === "string" && each.name.trim() ? each.name.trim() : each.id;
+    const description = typeof each.description === "string" && each.description.trim() ? each.description.trim() : undefined;
+    out.push({ id: each.id, name, ...description ? { description } : {} });
+  }
+  return out;
+}
+var LONGEST = 300, isSpeedProvider = (value) => typeof value === "string" && value !== "" && value.length <= LONGEST, isSpeedID = (value) => typeof value === "string" && /^[\w.-]{1,64}$/.test(value);
+var init_model_speeds = () => {};
+
 // box/src/shared/subagents.ts
 function modelRef(value) {
   if (typeof value !== "string")
@@ -31579,6 +31624,7 @@ function modelsListed(listed) {
     const aliases = Array.isArray(each.aliases) ? each.aliases.filter((alias) => typeof alias === "string") : [];
     const released = isObject(each.time) && typeof each.time.released === "number" ? each.time.released : 0;
     const efforts = Array.isArray(each.variants) ? each.variants.flatMap((variant) => isObject(variant) && typeof variant.id === "string" ? [variant.id] : []) : [];
+    const speeds = speedsIn(each.speeds);
     return [{
       providerID: each.providerID,
       id: each.id,
@@ -31589,7 +31635,8 @@ function modelsListed(listed) {
       provisional: each.provisional === true,
       hidden: each.hidden === true,
       retiring: each.status === "deprecated",
-      released
+      released,
+      ...speeds.length ? { speeds } : {}
     }];
   });
 }
@@ -31723,7 +31770,7 @@ function offeredHere(lists) {
   const agents = (lists.bridge?.models ?? []).filter((model) => withAgents(model, lists.bridge)?.runs === true);
   const auto = (lists.bridge?.auto ?? []).filter((list) => list.entries > 0);
   return [
-    ...[...engine, ...agents].map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, aliases: model.aliases, efforts: model.efforts, provisional: model.provisional, retiring: model.retiring, hidden: model.hidden, agents: onAgents(model), free: model.free })),
+    ...[...engine, ...agents].map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, aliases: model.aliases, efforts: model.efforts, provisional: model.provisional, retiring: model.retiring, hidden: model.hidden, agents: onAgents(model), free: model.free, ...model.speeds?.length ? { speeds: model.speeds } : {} })),
     ...auto.map((list) => ({ providerID: "auto", id: list.id, name: list.name, aliases: [], efforts: [], provisional: false, retiring: false, hidden: false, agents: true, free: false }))
   ];
 }
@@ -31784,6 +31831,7 @@ var ASK_WAIT = 5000, PLANS, planHides = (provider, method) => PLANS[provider]?.h
 }), KEPT_FOR2 = 1e4, kept5, PICKER_REOPEN = 2000, pickerReads, CHANGES, lastNames, nameKey = (ref) => `${ref.providerID}\x00${ref.id}`, NAMES_FILE, SAVED_MOST = 2000, savedNames, noted2, saving, lastName = (ref) => lastNames.get(nameKey(ref)) ?? saved().get(nameKey(ref)), named2 = (ref, models) => models.find((model) => model.providerID === ref.providerID && model.id === ref.id) ?? models.find((model) => model.providerID === ref.providerID && model.aliases.includes(ref.id)), accountOf = (account) => ({ id: account.id, name: account.name, ...account.label ? { label: account.label } : {} }), onAgents = (ref) => !isEngineModel(ref) || ref.providerID === "auto";
 var init_model_rule = __esm(() => {
   init_files();
+  init_model_speeds();
   init_subagents();
   init_client();
   init_models();
@@ -35426,7 +35474,7 @@ var init_notices = __esm(() => {
 
 // box/src/usage/settings.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync2, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname as dirname2 } from "node:path";
 function newer(a, b) {
   if (!!a.imported !== !!b.imported)
@@ -35582,7 +35630,7 @@ class UsageSettings {
     if (!file)
       return;
     try {
-      const saved = JSON.parse(readFileSync(file, "utf8"));
+      const saved = JSON.parse(readFileSync2(file, "utf8"));
       checkSettingsFormat(saved);
       this.units = unitsFrom(saved?.units);
       this.imported = saved?.imported === true;
@@ -35761,7 +35809,7 @@ class UsageSettings {
       return;
     try {
       try {
-        checkSettingsFormat(JSON.parse(readFileSync(this.file, "utf8")));
+        checkSettingsFormat(JSON.parse(readFileSync2(this.file, "utf8")));
       } catch (error) {
         if (error instanceof UnsupportedFormatVersion)
           throw error;
@@ -36912,7 +36960,7 @@ function serveAgent(socket, source) {
       held = Buffer.concat([held, chunk]);
       while (held.length >= 4) {
         const length = held.readUInt32BE(0);
-        if (length === 0 || length > LONGEST || waiting >= WAITING2)
+        if (length === 0 || length > LONGEST2 || waiting >= WAITING2)
           return void connection.destroy();
         if (held.length < 4 + length)
           break;
@@ -36970,7 +37018,7 @@ function serveAgent(socket, source) {
   server.unref();
   return server;
 }
-var FAILURE = 5, REQUEST_IDENTITIES = 11, IDENTITIES_ANSWER = 12, SIGN_REQUEST = 13, SIGN_RESPONSE = 14, RSA_SHA2_256 = 2, RSA_SHA2_512 = 4, LONGEST, u32 = (value) => {
+var FAILURE = 5, REQUEST_IDENTITIES = 11, IDENTITIES_ANSWER = 12, SIGN_REQUEST = 13, SIGN_RESPONSE = 14, RSA_SHA2_256 = 2, RSA_SHA2_512 = 4, LONGEST2, u32 = (value) => {
   const out = Buffer.alloc(4);
   out.writeUInt32BE(value);
   return out;
@@ -37000,7 +37048,7 @@ var FAILURE = 5, REQUEST_IDENTITIES = 11, IDENTITIES_ANSWER = 12, SIGN_REQUEST =
 }, WAITING2 = 4;
 var init_ssh_agent = __esm(() => {
   init_home();
-  LONGEST = 256 * 1024;
+  LONGEST2 = 256 * 1024;
   CURVES = {
     nistp256: { jwk: "P-256", size: 32, hash: "sha256" },
     nistp384: { jwk: "P-384", size: 48, hash: "sha384" },
@@ -43679,7 +43727,7 @@ function shown(at) {
     plan: at.data.agent === "plan",
     options: APPROVALS.map((each) => {
       const not = unavailable(each, where);
-      return { approval: each, ...not ? not.reason === "sandbox" ? { held: not } : { unavailable: not } : {} };
+      return { approval: each, ...APPROVAL_WORDS[each], ...not ? not.reason === "sandbox" ? { held: not } : { unavailable: not } : {} };
     })
   };
 }
@@ -43795,7 +43843,7 @@ function approvalHere() {
   };
   const options = (agents) => APPROVALS.map((each) => {
     const not = unavailable(each, { agents });
-    return { approval: each, ...not ? not.reason === "sandbox" ? { held: not } : { unavailable: not } : {} };
+    return { approval: each, ...APPROVAL_WORDS[each], ...not ? not.reason === "sandbox" ? { held: not } : { unavailable: not } : {} };
   });
   return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, options: { engine: options(false), agents: options(true) }, otherComputers: otherComputersAllowed() };
 }
@@ -58999,14 +59047,14 @@ var init_wipe = __esm(() => {
 });
 
 // box/src/shared/context.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join6 } from "node:path";
 function isCompactionChoice(value) {
   return compactionChoices.some((choice) => choice === value);
 }
 function compactionChoice(home = process.env.KUVO_HOME) {
   try {
-    const value = home && JSON.parse(readFileSync2(compactionFile(home), "utf8"));
+    const value = home && JSON.parse(readFileSync3(compactionFile(home), "utf8"));
     if (isCompactionChoice(value))
       return value;
   } catch {}
@@ -59029,11 +59077,11 @@ var init_context = __esm(() => {
 });
 
 // box/src/shared/agent-updates.ts
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 import { join as join7 } from "node:path";
 function agentsUpdateThemselves(home = process.env.KUVO_HOME) {
   try {
-    return Boolean(home) && JSON.parse(readFileSync3(agentUpdatesFile(home), "utf8")) === true;
+    return Boolean(home) && JSON.parse(readFileSync4(agentUpdatesFile(home), "utf8")) === true;
   } catch {
     return false;
   }
@@ -64345,26 +64393,42 @@ var init_glance = __esm(() => {
 // box/src/link/areas/models-starred.ts
 var exports_models_starred = {};
 __export(exports_models_starred, {
+  MODELS_FILE: () => MODELS_FILE,
   MODELS_STARRED_ROUTE: () => MODELS_STARRED_ROUTE,
+  STARRED_KIND: () => STARRED_KIND,
+  mergeStarred: () => mergeStarred,
   modelsStarredRoute: () => modelsStarredRoute,
+  noStars: () => noStars,
   setStarred: () => setStarred,
+  starredForSeed: () => starredForSeed,
   starredFromKeys: () => starredFromKeys,
   starredModels: () => starredModels
 });
 import path174 from "node:path";
-function starredModels(file = MODELS_FILE) {
+function listOf5(kept) {
+  if (!isObject(kept) || !Array.isArray(kept.starred))
+    return [];
+  const out = [];
+  for (const each of kept.starred)
+    if (isStarred(each) && !out.some((other) => same4(other, each)))
+      out.push({ providerID: each.providerID, id: each.id });
+  return out.slice(-MOST5);
+}
+function localStarred(file = MODELS_FILE) {
   try {
-    const kept = JSON.parse(textOf(file) ?? "");
-    if (!isObject(kept) || !Array.isArray(kept.starred))
-      return [];
-    const out = [];
-    for (const each of kept.starred)
-      if (isStarred(each) && !out.some((other) => same4(other, each)))
-        out.push({ providerID: each.providerID, id: each.id });
-    return out;
+    return listOf5(JSON.parse(textOf(file) ?? ""));
   } catch {
     return [];
   }
+}
+function starredModels(file = MODELS_FILE) {
+  const link = setupWide();
+  const shared = link ? sharedValue(link, STARRED_KIND) : undefined;
+  return shared !== undefined ? listOf5(shared) : localStarred(file);
+}
+function withStar(list, model, starred) {
+  const without = list.filter((each) => !same4(each, model));
+  return !starred ? without : without.length < list.length ? list : [...list, { providerID: model.providerID, id: model.id }].slice(-MOST5);
 }
 function setStarred(model, starred, file = MODELS_FILE) {
   return locked(`${file}.lock`, () => {
@@ -64374,13 +64438,27 @@ function setStarred(model, starred, file = MODELS_FILE) {
       if (isObject(read))
         kept = read;
     } catch {}
-    const was = starredModels(file);
-    const without = was.filter((each) => !same4(each, model));
-    const now = !starred ? without : without.length < was.length ? was : [...was, { providerID: model.providerID, id: model.id }].slice(-MOST5);
-    if (now.length !== was.length || now.some((each, ix) => !same4(each, was[ix])))
+    const was = localStarred(file);
+    const now = withStar(was, model, starred);
+    if (!sameList(now, was))
       writePrivate(file, JSON.stringify({ ...kept, starred: now }, null, 2));
     return now;
   });
+}
+function starredForSeed(file = MODELS_FILE) {
+  const list = localStarred(file);
+  return list.length ? { starred: list } : undefined;
+}
+function mergeStarred(prior, incoming, take) {
+  const list = listOf5(prior);
+  for (const each of listOf5(incoming)) {
+    if (list.some((other) => same4(other, each)))
+      continue;
+    if (take(fieldOf2(each), undefined, true) === true)
+      list.push(each);
+  }
+  const value = prior !== undefined || list.length ? { starred: list.slice(-MOST5) } : undefined;
+  return { value, fields: Object.fromEntries((value?.starred ?? []).map((each) => [fieldOf2(each), true])) };
 }
 function starredFromKeys(keys) {
   const out = [];
@@ -64394,7 +64472,34 @@ function starredFromKeys(keys) {
   }
   return out.slice(-MOST5);
 }
-async function* modelsStarredRoute({ request, json }) {
+async function starSetupWide(context, model, starred) {
+  const refused = (status, message) => ({ status, value: { message } });
+  if (followedSetup(readLink())?.role !== "primary")
+    return refused(409, "Your setup's main computer keeps your starred models, and this computer couldn't reach it. Try again in a moment.");
+  await Promise.resolve().then(() => init_seed2());
+  const seed = await setupSeedRefusal(STARRED_KIND);
+  if (seed)
+    return refused(seed.status, seed.message);
+  const veto = context.admitQueued?.();
+  if (veto)
+    return { status: veto.status, value: isObject(veto.value) && typeof veto.value.message === "string" ? { message: veto.value.message } : { message: "The change could not be admitted." } };
+  const made = {};
+  const save = changeShared(STARRED_KIND, (value) => {
+    const was = listOf5(value);
+    const now = made.now = withStar(was, model, starred);
+    if (sameList(now, was) && value !== undefined)
+      return;
+    return { starred: now };
+  });
+  if (save && made.now)
+    return { status: 200, value: { starred: made.now } };
+  const after = sharedValue(readLink(), STARRED_KIND);
+  if (made.now && after !== undefined && sameList(listOf5(after), made.now))
+    return { status: 200, value: { starred: listOf5(after) } };
+  return refused(409, "The main computer couldn't save your starred models just now. Try again in a moment.");
+}
+async function* modelsStarredRoute(context) {
+  const { request, json } = context;
   const method = request.method.toUpperCase();
   if (method === "GET")
     return yield* json(200, { starred: starredModels() });
@@ -64404,14 +64509,70 @@ async function* modelsStarredRoute({ request, json }) {
   if (!isStarred(given) || typeof given.starred !== "boolean") {
     return yield* json(400, { message: "Say which model (providerID, id) and whether it's starred (starred, true or false)." });
   }
-  return yield* json(200, { starred: await settingsDisk.run("setStarred", given, given.starred) });
+  const starred = given.starred;
+  const model = { providerID: given.providerID, id: given.id };
+  if (setupWide()) {
+    const answer = await starSetupWide(context, model, starred);
+    return yield* json(answer.status, answer.value);
+  }
+  return yield* json(200, { starred: await settingsDisk.run("setStarred", model, starred) });
 }
-var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST5 = 200, LONGEST2 = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST2 && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST2, same4 = (a, b) => a.providerID === b.providerID && a.id === b.id;
+var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, STARRED_KIND = "setupStarredModels", MOST5 = 200, LONGEST3 = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST3 && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST3, same4 = (a, b) => a.providerID === b.providerID && a.id === b.id, setupWide = () => {
+  const link = readLink();
+  return usesAcceptedSaves(followedSetup(link)) ? link : null;
+}, sameList = (a, b) => a.length === b.length && a.every((each, ix) => same4(each, b[ix])), noStars = (value) => !listOf5(value).length, fieldOf2 = (model) => JSON.stringify([model.providerID, model.id]);
 var init_models_starred = __esm(() => {
   init_files2();
   init_disk_worker();
   init_home();
+  init_record();
+  init_shared();
+  init_state();
   MODELS_FILE = path174.join(BOX, "models.json");
+});
+
+// box/src/link/areas/models-speed.ts
+var exports_models_speed = {};
+__export(exports_models_speed, {
+  MODELS_SPEED_ROUTE: () => MODELS_SPEED_ROUTE,
+  modelSpeeds: () => modelSpeeds,
+  modelsSpeedRoute: () => modelsSpeedRoute,
+  setSpeed: () => setSpeed
+});
+function modelSpeeds(file = MODELS_FILE) {
+  return pickedSpeeds(file);
+}
+function setSpeed(providerID, speed, file = MODELS_FILE) {
+  return locked(`${file}.lock`, () => {
+    let kept = {};
+    try {
+      const read = JSON.parse(textOf(file) ?? "");
+      if (isObject(read))
+        kept = read;
+    } catch {}
+    const was = pickedSpeeds(file);
+    if (!(Object.hasOwn(was, providerID) && was[providerID] === speed)) {
+      const others = Object.entries(was).filter(([provider]) => provider !== providerID).slice(-(MOST6 - 1));
+      writePrivate(file, JSON.stringify({ ...kept, speeds: Object.fromEntries([...others, [providerID, speed]]) }, null, 2));
+    }
+    return { providerID, speed };
+  });
+}
+async function* modelsSpeedRoute({ request, json }) {
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const given = parsed(request.body);
+  if (!isObject(given) || !isSpeedProvider(given.providerID) || !(given.speed === null || isSpeedID(given.speed))) {
+    return yield* json(400, { message: "Say which provider (providerID) and its speed (speed: a speed's id, or null for Standard)." });
+  }
+  return yield* json(200, await settingsDisk.run("setSpeed", given.providerID, given.speed));
+}
+var MODELS_SPEED_ROUTE = "kuvo/models/speed", MOST6 = 200;
+var init_models_speed = __esm(() => {
+  init_model_speeds();
+  init_files2();
+  init_disk_worker();
+  init_models_starred();
 });
 
 // box/src/link/work/model-words.ts
@@ -64521,7 +64682,7 @@ async function* modelsOfferedRoute(context) {
       listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
       plansHere(signal)
     ]);
-    const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
+    const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans, modelSpeeds());
     if (query.get("for") === "defaults") {
       const models = answer.models.filter((model) => model.side === "engine" && !model.hidden && !model.retiring);
       return yield* json(200, { ...answer, models, scoped: true });
@@ -64583,13 +64744,13 @@ async function plansHere(signal) {
   } catch {}
   return plans;
 }
-function offeredAnswer(lists, wanted, starred = [], plans = new Map) {
+function offeredAnswer(lists, wanted, starred = [], plans = new Map, speeds = {}) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
   const offered = offeredHere(lists);
   return {
-    models: offered.map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {} })),
-    providers: providersOf(offered, lists, plans),
+    models: offered.map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {}, ...model.speeds?.length ? { speeds: model.speeds } : {} })),
+    providers: providersOf(offered, lists, plans).map((provider) => speeds[provider.id] ? { ...provider, speed: speeds[provider.id] } : provider),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...lists.bridge?.generations ? { generations: lists.bridge.generations } : {},
@@ -64609,6 +64770,7 @@ var init_models_offered = __esm(() => {
   init_tools5();
   init_model_rule();
   init_models_starred();
+  init_models_speed();
   init_holder();
   init_model_words();
   init_box_services();
@@ -64616,7 +64778,7 @@ var init_models_offered = __esm(() => {
 });
 
 // box/src/link/engine/context.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { join as join8 } from "node:path";
 function rememberWindow(ref, live) {
   const key = JSON.stringify([ref.providerID, ref.id]);
@@ -64676,7 +64838,7 @@ async function currentEngineContext(url, headers, signal, session) {
 }
 var file4, cached3 = () => {
   try {
-    const value = JSON.parse(readFileSync4(file4, "utf8"));
+    const value = JSON.parse(readFileSync5(file4, "utf8"));
     if (isObject(value))
       return value;
   } catch {}
@@ -74368,6 +74530,8 @@ function ownerWrite(method, path, body) {
   const settings = method === "PATCH" && path === "kuvo/settings/clock" ? path.match(SETTINGS_PAGE_ROUTE) : null;
   if (settings)
     return { ref: { kind: "setupTimeZone" }, method: "PATCH", path, answer: (context) => settingsPageRoute(context, settings) };
+  if (method === "POST" && path === MODELS_STARRED_ROUTE && usesAcceptedSaves(followedSetup(readLink())))
+    return { ref: { kind: STARRED_KIND }, method, path, answer: modelsStarredRoute };
   const personality = /^(?:kuvo\/personalities)(?:\/([A-Za-z0-9_-]{1,100}))?$/.exec(path);
   if (personality && (method === "PATCH" || method === "POST" || method === "DELETE"))
     return { ref: { kind: "setupPersonalities" }, method, path, answer: (context) => personalityRoute(context, personality) };
@@ -74486,6 +74650,7 @@ var init_write = __esm(() => {
   init_work_queue();
   init_groups();
   init_personalities();
+  init_models_starred();
   init_queue2();
   init_settings_pages2();
   init_wakes2();
@@ -78854,7 +79019,7 @@ var init_kinds = __esm(() => {
 });
 
 // box/src/agents/machine.ts
-import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync5, rmSync as rmSync2, statSync as statSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync6, rmSync as rmSync2, statSync as statSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join9 } from "node:path";
 var onMachine, machineHome, onMacBox, groupsMemoryKey;
 var init_machine = __esm(() => {
@@ -78862,7 +79027,7 @@ var init_machine = __esm(() => {
   machineHome = process.env.KUVO_HOME;
   onMacBox = onMachine && !!machineHome && (() => {
     try {
-      return readFileSync5(join9(machineHome, "box", "kind"), "utf8").trim() === "mac";
+      return readFileSync6(join9(machineHome, "box", "kind"), "utf8").trim() === "mac";
     } catch {
       return false;
     }
@@ -79059,7 +79224,7 @@ var init_library_format = __esm(() => {
 
 // box/src/link/library/store.ts
 import { createHash as createHash13 } from "node:crypto";
-import { appendFileSync, closeSync as closeSync4, mkdirSync as mkdirSync3, openSync as openSync4, readFileSync as readFileSync6, readSync as readSync4, renameSync as renameSync3, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { appendFileSync, closeSync as closeSync4, mkdirSync as mkdirSync3, openSync as openSync4, readFileSync as readFileSync7, readSync as readSync4, renameSync as renameSync3, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { basename as basename4, extname as extname2, join as join11, sep as sep5 } from "node:path";
 function libraryKind(path) {
   const ext = extname2(path).slice(1).toLowerCase();
@@ -79219,7 +79384,7 @@ class LibraryStore {
   load() {
     let text = "";
     try {
-      text = readFileSync6(join11(this.root, "log.jsonl"), "utf8");
+      text = readFileSync7(join11(this.root, "log.jsonl"), "utf8");
     } catch (error) {
       if (error.code !== "ENOENT")
         throw error;
@@ -79424,8 +79589,8 @@ function merged2(parts) {
   }
   items.sort((a, b) => Number(b.at) - Number(a.at) || String(a.id).localeCompare(String(b.id)));
   return {
-    items: items.slice(0, MOST6),
-    more: more || items.length > MOST6,
+    items: items.slice(0, MOST7),
+    more: more || items.length > MOST7,
     sources: { bots, you },
     computers: parts.map(({ computer, part: _, ...state }) => ({ key: computer.key, name: computer.name, ...computer.here ? { here: true } : {}, ...state }))
   };
@@ -79647,7 +79812,7 @@ async function* followLibrary(query, signal, asking = {}) {
     signal?.removeEventListener("abort", ended);
   }
 }
-var LIBRARY_FEATURE = "library", MERGED_LIBRARY_FEATURE = "line.merged-library", MERGED_LIBRARY_ROUTE = "kuvo/setup/library/events", copyShape, libraryCopies, publishing2 = false, LIBRARY_ROUTE, PEER_ITEM, PEERS_AGAIN = 20000, MOST6 = 1000, LIBRARY_PEERS, MOST_KEPT3 = 8, keptFile2 = (key) => path206.join(LIBRARY_PEERS, `${key}.json`), lastSeen = (name) => `${name} isn’t answering now, so its part of the Library is as it was when last seen.`, servicesAway = "This computer’s Library can’t be read right now. Try again in a moment.", askByMail = (computer, act, signal) => forwardAct(computer, "The Library", act, signal, readLink(), Date.now(), { memory: act.method === "GET" && takesForwarded(computer.key, MEMORY_READ_FEATURE) }), computerOf2 = (peer) => ({ key: peer.key, name: computerName2(peer), kind: peer.kind, ...peer.id ? { id: peer.id } : {} }), peersAsking = ({ peers = peersOf(readLink()), ask = askByMail, has = (key) => takesForwarded(key, LIBRARY_FEATURE), away = (key) => awaySince(key) !== null || offRelay(), now = Date.now }) => ({ peers, ask, has, away, now });
+var LIBRARY_FEATURE = "library", MERGED_LIBRARY_FEATURE = "line.merged-library", MERGED_LIBRARY_ROUTE = "kuvo/setup/library/events", copyShape, libraryCopies, publishing2 = false, LIBRARY_ROUTE, PEER_ITEM, PEERS_AGAIN = 20000, MOST7 = 1000, LIBRARY_PEERS, MOST_KEPT3 = 8, keptFile2 = (key) => path206.join(LIBRARY_PEERS, `${key}.json`), lastSeen = (name) => `${name} isn’t answering now, so its part of the Library is as it was when last seen.`, servicesAway = "This computer’s Library can’t be read right now. Try again in a moment.", askByMail = (computer, act, signal) => forwardAct(computer, "The Library", act, signal, readLink(), Date.now(), { memory: act.method === "GET" && takesForwarded(computer.key, MEMORY_READ_FEATURE) }), computerOf2 = (peer) => ({ key: peer.key, name: computerName2(peer), kind: peer.kind, ...peer.id ? { id: peer.id } : {} }), peersAsking = ({ peers = peersOf(readLink()), ask = askByMail, has = (key) => takesForwarded(key, LIBRARY_FEATURE), away = (key) => awaySince(key) !== null || offRelay(), now = Date.now }) => ({ peers, ask, has, away, now });
 var init_library3 = __esm(() => {
   init_files();
   init_library2();
@@ -84744,7 +84909,7 @@ var init_read = __esm(() => {
   init_resolve();
   init_store();
   MAX_READ = 512 * 1024;
-  primaryReads = ["setupNames", "setupTimeZone", "setupPersonalities", "setupUsageDisplay", "queueLabels"];
+  primaryReads = ["setupNames", "setupTimeZone", "setupStarredModels", "setupPersonalities", "setupUsageDisplay", "queueLabels"];
 });
 
 // box/src/link/add/address.ts
@@ -84753,7 +84918,7 @@ import path219 from "node:path";
 function addressProblem(address) {
   if (!address)
     return "Give a host name, or user@host.";
-  if (address.length > LONGEST3)
+  if (address.length > LONGEST4)
     return "That's too long for a host's name.";
   if (address.startsWith("-") || /[\s/:]/.test(address) || !/^[A-Za-z0-9._@%+=,~-]+$/.test(address) || (address.match(/@/g) ?? []).length > 1 || address.startsWith("@") || address.endsWith("@")) {
     return "Give a host name, or user@host. For a port or an IPv6 address, add a Host for the machine to ~/.ssh/config and give its name.";
@@ -84823,7 +84988,7 @@ function suggestedHosts(taken, hosts = configHosts()) {
   const has = new Set([...taken].map((each) => each.toLowerCase()));
   return hosts.filter((host) => !has.has(host.toLowerCase())).slice(0, MOST_HOSTS);
 }
-var LONGEST3 = 320, MOST_HOSTS = 50, THIS_COMPUTER = "this-mac.localhost", cleanAddress = (given) => typeof given === "string" ? given.replace(/^[ \t]+|[ \t]+$/g, "") : "";
+var LONGEST4 = 320, MOST_HOSTS = 50, THIS_COMPUTER = "this-mac.localhost", cleanAddress = (given) => typeof given === "string" ? given.replace(/^[ \t]+|[ \t]+$/g, "") : "";
 var init_address = __esm(() => {
   init_home();
 });
@@ -85047,7 +85212,7 @@ function gitIn2(folder, depth, found) {
     found.repositories.push(folder);
   if (kind || depth <= 0)
     return;
-  for (const name of listOf5(folder)) {
+  for (const name of listOf6(folder)) {
     if (NOT_WORKTREES.has(name))
       continue;
     const each = path221.join(folder, name);
@@ -85095,7 +85260,7 @@ function repairWorktrees(placed, map, journal) {
       links.push({ worktree, record: mapped(record, map) });
   }
   for (const repository of found.repositories) {
-    for (const name of listOf5(path221.join(repository, ".git", "worktrees"))) {
+    for (const name of listOf6(path221.join(repository, ".git", "worktrees"))) {
       const record = path221.join(repository, ".git", "worktrees", name);
       let gitdir = "";
       try {
@@ -85121,7 +85286,7 @@ function repairWorktrees(placed, map, journal) {
     keep(path221.join(record, "gitdir"));
     keep(path221.join(worktree, ".git"));
     const records = path221.join(commonOf(record), "worktrees");
-    for (const name of listOf5(records)) {
+    for (const name of listOf6(records)) {
       const each = path221.join(records, name);
       keep(path221.join(each, "gitdir"));
       try {
@@ -85246,7 +85411,7 @@ function renameClaudeHistory(settings, folders, map, rename) {
 function renameGrokSessions(home, map, rename) {
   const sessions = path221.join(home, "sessions");
   let renamed = 0;
-  for (const name of listOf5(sessions)) {
+  for (const name of listOf6(sessions)) {
     let folder;
     try {
       folder = decodeURIComponent(name);
@@ -85286,7 +85451,7 @@ function rewriteAgents(staged, folders, map) {
   const list = [...folders];
   for (const settings of claudeAccounts(staged))
     renameClaudeHistory(settings, list, map, (from, to) => fs209.renameSync(from, to));
-  for (const name of listOf5(path221.join(staged, "grok", "accounts"))) {
+  for (const name of listOf6(path221.join(staged, "grok", "accounts"))) {
     const home = path221.join(staged, "grok", "accounts", name);
     if (renameGrokSessions(home, map, (from, to) => fs209.renameSync(from, to)))
       for (const each of GROK_INDEX)
@@ -85294,7 +85459,7 @@ function rewriteAgents(staged, folders, map) {
   }
   const records = [
     path221.join(staged, "cursor", "agents", "agents.ndjson"),
-    ...listOf5(path221.join(staged, "cursor", "accounts")).map((name) => path221.join(staged, "cursor", "accounts", name, "agents", "agents.ndjson"))
+    ...listOf6(path221.join(staged, "cursor", "accounts")).map((name) => path221.join(staged, "cursor", "accounts", name, "agents", "agents.ndjson"))
   ];
   for (const file of records) {
     let text;
@@ -85321,7 +85486,7 @@ function rewriteAgents(staged, folders, map) {
   }
 }
 function claudeAccounts(agents) {
-  return [path221.join(agents, "claude", "console"), ...listOf5(path221.join(agents, "claude", "accounts")).map((name) => path221.join(agents, "claude", "accounts", name))].filter(isFolder2);
+  return [path221.join(agents, "claude", "console"), ...listOf6(path221.join(agents, "claude", "accounts")).map((name) => path221.join(agents, "claude", "accounts", name))].filter(isFolder2);
 }
 var ASIDE = ".before-kuvo-move", exists3 = (file) => {
   try {
@@ -85330,7 +85495,7 @@ var ASIDE = ".before-kuvo-move", exists3 = (file) => {
   } catch {
     return false;
   }
-}, listOf5 = (folder) => {
+}, listOf6 = (folder) => {
   try {
     return fs209.readdirSync(folder);
   } catch {
@@ -85586,8 +85751,8 @@ function rewriteDataFolders(data, database, projects, map) {
       fs210.rmdirSync(was);
     }
   }
-  for (const project of listOf6(path222.join(data, "snapshot"))) {
-    for (const repository of listOf6(path222.join(data, "snapshot", project))) {
+  for (const project of listOf7(path222.join(data, "snapshot"))) {
+    for (const repository of listOf7(path222.join(data, "snapshot", project))) {
       for (const name of ["config", "opencode.gitconfig", path222.join("objects", "info", "alternates")]) {
         const file = path222.join(data, "snapshot", project, repository, name);
         let text;
@@ -85746,7 +85911,7 @@ function quietCopy(file, to) {
     db.close();
   }
 }
-var KNOWN_SCHEMAS, PATH_COLUMNS, JSON_COLUMNS, FILES_COLUMNS, PROJECT_ID_COLUMNS, tables = (db) => new Set(db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name)), listOf6 = (folder) => {
+var KNOWN_SCHEMAS, PATH_COLUMNS, JSON_COLUMNS, FILES_COLUMNS, PROJECT_ID_COLUMNS, tables = (db) => new Set(db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name)), listOf7 = (folder) => {
   try {
     return fs210.readdirSync(folder);
   } catch {
@@ -86142,10 +86307,10 @@ function renameKeptByPath(placements, way, home, folders, map) {
   }
   const slugs = new Map(list.map((folder) => [claudeSlug(folder), claudeSlug(mapped(folder, map))]));
   const usage = stagedAt("agents/usage");
-  for (const kind of usage ? listOf7(usage) : []) {
+  for (const kind of usage ? listOf8(usage) : []) {
     if (!kind.endsWith("-files"))
       continue;
-    for (const name of listOf7(path226.join(usage, kind))) {
+    for (const name of listOf8(path226.join(usage, kind))) {
       const file = path226.join(usage, kind, name);
       let kept;
       try {
@@ -86279,7 +86444,7 @@ function namedElsewhere(placements, way, home, map, most = 50) {
     if (kind.isDirectory()) {
       if (depth > 10)
         return;
-      for (const name of listOf7(file))
+      for (const name of listOf8(file))
         walk(path226.join(file, name), `${relative}/${name}`, depth + 1);
       return;
     }
@@ -86311,7 +86476,7 @@ function namedElsewhere(placements, way, home, map, most = 50) {
 var NOT_OURS, OURS_INSIDE, glob = (pattern) => new RegExp("^" + pattern.split("/").map((part) => part === "*" ? "[^/]+" : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\*", "[^/]*")).join("/") + "(/|$)"), NOT_OURS_RULES, OURS_INSIDE_RULES, mayHold = (relative) => !NOT_OURS_RULES.some((rule) => rule.test(relative)) || OURS_INSIDE.some((pattern) => leadsTo2(pattern, relative)), leadsTo2 = (pattern, relative) => {
   const parts = pattern.split("/"), mine = relative.split("/");
   return mine.length < parts.length && mine.every((part, at) => parts[at] === "*" || parts[at] === part);
-}, homeSide = (placement, way) => way === "move" ? placement.to : placement.from, artifactID = (file) => "art_" + createHash14("sha256").update(file).digest("hex").slice(0, 24), listOf7 = (folder) => {
+}, homeSide = (placement, way) => way === "move" ? placement.to : placement.from, artifactID = (file) => "art_" + createHash14("sha256").update(file).digest("hex").slice(0, 24), listOf8 = (folder) => {
   try {
     return fs214.readdirSync(folder);
   } catch {
@@ -86425,7 +86590,7 @@ function mergeClashes(move) {
         return;
       taken.set(relative, kind);
       if (kind === "dir")
-        for (const name of listOf8(file))
+        for (const name of listOf9(file))
           add(path227.join(file, name), path227.join(relative, name));
     };
     if (kindOf(to))
@@ -86442,7 +86607,7 @@ function mergeClashes(move) {
         if (!kind)
           return;
         if (taken.get(relative) === "dir" && kind === "dir") {
-          for (const name of listOf8(file).sort())
+          for (const name of listOf9(file).sort())
             put(path227.join(file, name), path227.join(relative, name));
         } else if (!taken.has(relative)) {
           add(file, relative);
@@ -86464,7 +86629,7 @@ var reversed = (map) => map.map(({ from, to }) => ({ from: to, to: from })).sort
   } catch {
     return false;
   }
-}, listOf8 = (folder) => {
+}, listOf9 = (folder) => {
   try {
     return fs215.readdirSync(folder);
   } catch {
@@ -86505,7 +86670,7 @@ var init_rewrite = __esm(() => {
             folders.add(folder);
       for (const name of ["chats", "bots"]) {
         const placement = placementOf(move, name);
-        for (const each of placement ? listOf8(placement.from) : [])
+        for (const each of placement ? listOf9(placement.from) : [])
           folders.add(name === "bots" ? path227.join(placement.from, each, "workspace") : path227.join(placement.from, each));
       }
       readFolders(move);
@@ -86625,9 +86790,9 @@ function checkLegacyImport(folder) {
   ]) {
     readLegacy(path228.join(folder, name));
   }
-  for (const bot of listOf9(path228.join(folder, "bots")))
+  for (const bot of listOf10(path228.join(folder, "bots")))
     readLegacy(path228.join(folder, "bots", bot, "bot.json"));
-  for (const chat of listOf9(path228.join(folder, "groups"))) {
+  for (const chat of listOf10(path228.join(folder, "groups"))) {
     if (chat.endsWith(".json"))
       readLegacy(path228.join(folder, "groups", chat));
   }
@@ -86845,7 +87010,7 @@ function engineSettings({ writeWhole, prefs, staged, home, dropped }) {
   if (JSON.stringify(next) !== JSON.stringify(settings))
     writeWhole(file, JSON.stringify(next, null, 2) + `
 `);
-  for (const bot of listOf9(staged("bots"))) {
+  for (const bot of listOf10(staged("bots"))) {
     const own = path228.join(staged("bots"), bot, "workspace", ".opencode", "opencode.json");
     const had = exists5(own) ? readJSON3(own) : undefined;
     if (!isObject(had))
@@ -87197,7 +87362,7 @@ function said7({ S, prefs, dropped }) {
     dropped.push("You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.");
   if (prefs["analytics.enabled"] === false)
     dropped.push("You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.");
-  if (listOf9(S).some((name) => /\.unreadable-.*\.json$/.test(name)))
+  if (listOf10(S).some((name) => /\.unreadable-.*\.json$/.test(name)))
     dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some((name) => exists5(path228.join(S, "Usage", name))))
     dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
@@ -87266,7 +87431,7 @@ var exists5 = (file) => {
   } catch {
     return false;
   }
-}, listOf9 = (folder) => {
+}, listOf10 = (folder) => {
   try {
     return fs216.readdirSync(folder);
   } catch {
@@ -87431,13 +87596,13 @@ function stagedCounts(move) {
   }
   const at = (name) => stagedPlace(move, name) ?? "";
   counts.bots = foldersIn(at("bots")).length;
-  counts.wakeUps = foldersIn(at("wakes")).length + foldersIn(at("bots")).reduce((sum, bot) => sum + listOf10(path229.join(at("bots"), bot, "wakes")).filter((name) => !name.startsWith(".")).length, 0);
+  counts.wakeUps = foldersIn(at("wakes")).length + foldersIn(at("bots")).reduce((sum, bot) => sum + listOf11(path229.join(at("bots"), bot, "wakes")).filter((name) => !name.startsWith(".")).length, 0);
   let records = null;
   try {
     records = JSON.parse(fs217.readFileSync(path229.join(at("box"), "worktrees.json"), "utf8"));
   } catch {}
   counts.worktreeRecords = isObject(records) && Array.isArray(records.worktrees) ? records.worktrees.length : 0;
-  counts.vaultItems = listOf10(path229.join(at("box"), "vault", "items")).filter((name) => name.endsWith(".json")).length;
+  counts.vaultItems = listOf11(path229.join(at("box"), "vault", "items")).filter((name) => name.endsWith(".json")).length;
   counts.accounts = foldersIn(at("agents")).reduce((sum, agent) => sum + foldersIn(path229.join(at("agents"), agent, "accounts")).length, 0);
   counts.groupChats = foldersIn(at("groups")).length;
   counts.brokenLinks = (data ? databasesIn(data) : []).reduce((sum, database) => sum + soundness(database).brokenLinks, 0);
@@ -87503,13 +87668,13 @@ var HELPER_NAME2 = "Kuvo Helper", exists6 = (file) => {
   } catch {
     return false;
   }
-}, listOf10 = (folder) => {
+}, listOf11 = (folder) => {
   try {
     return fs217.readdirSync(folder);
   } catch {
     return [];
   }
-}, foldersIn = (folder) => listOf10(folder).filter((name) => {
+}, foldersIn = (folder) => listOf11(folder).filter((name) => {
   try {
     return !name.startsWith(".") && fs217.statSync(path229.join(folder, name)).isDirectory();
   } catch {
@@ -100595,7 +100760,7 @@ var init_auth2 = __esm(() => {
 
 // box/src/agents/accounts.ts
 import { randomBytes as randomBytes5 } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync7, renameSync as renameSync4, rmSync as rmSync4, statSync as statSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync8, renameSync as renameSync4, rmSync as rmSync4, statSync as statSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { dirname as dirname5, isAbsolute, join as join13 } from "node:path";
 function providerID(kind, id) {
   return id === "default" ? baseProvider[kind] : `${baseProvider[kind]}@${id}`;
@@ -100617,7 +100782,7 @@ class Accounts {
   }
   read() {
     try {
-      const saved = accountFormat.read(JSON.parse(readFileSync7(this.file, "utf8")));
+      const saved = accountFormat.read(JSON.parse(readFileSync8(this.file, "utf8")));
       return saved.filter((record) => kinds2.includes(record?.kind) && record?.id && record.id !== "default" && (record.folder === undefined || typeof record.folder === "string" && !isAbsolute(record.folder) && !record.folder.split(/[\\/]/).includes("..")));
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion)
@@ -102785,7 +102950,7 @@ function snippet(text, at, length) {
   const words = letters.slice(start, end).join("").replace(/[*`#>]/g, "").split(/\s+/).filter(Boolean).join(" ");
   return (start > blockStart ? "…" : "") + words + (end < letters.length ? "…" : "");
 }
-var MOST7 = 50, MOST_TEXT = 400000, MOST_OUTPUT3 = 2000, TEXT_VERSION = 2, texts, reading3, searchReaders, readLimit = (limit) => Math.trunc(Math.min(MOST7, Math.max(1, Number(limit) || 20))), missingWords, FEATURE2 = "search.setup", key3 = (place, id) => `${place}.${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+var MOST8 = 50, MOST_TEXT = 400000, MOST_OUTPUT3 = 2000, TEXT_VERSION = 2, texts, reading3, searchReaders, readLimit = (limit) => Math.trunc(Math.min(MOST8, Math.max(1, Number(limit) || 20))), missingWords, FEATURE2 = "search.setup", key3 = (place, id) => `${place}.${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 var init_search = __esm(() => {
   init_conversations();
   init_sessions();
@@ -104907,6 +105072,7 @@ var init_seed2 = __esm(() => {
   init_labels();
   init_parts3();
   init_setting();
+  init_models_starred();
   init_lease();
   init_record();
   init_shared();
@@ -104971,6 +105137,11 @@ var init_seed2 = __esm(() => {
         const value = proposed && (typeof zone !== "string" || field("zone", zone, proposed.zone) !== zone) ? proposed : prior;
         return { value, fields: value ? { zone: object4(value).zone } : {} };
       }
+    },
+    setupStarredModels: {
+      read: () => starredForSeed(),
+      empty: (value) => noStars(value),
+      merge: (prior, incoming, field) => mergeStarred(prior, incoming, (key, accepted, proposed) => field(key, accepted, proposed))
     },
     setupUsageDisplay: {
       read: (link) => {
@@ -113293,6 +113464,9 @@ var init_disk_worker = __esm(() => {
           case "setStarred":
             value = (await Promise.resolve().then(() => (init_models_starred(), exports_models_starred))).setStarred(...args);
             break;
+          case "setSpeed":
+            value = (await Promise.resolve().then(() => (init_models_speed(), exports_models_speed))).setSpeed(...args);
+            break;
           case "patchConfig":
             value = (await Promise.resolve().then(() => (init_settings5(), exports_settings))).patchConfig(...args);
             break;
@@ -120153,11 +120327,11 @@ var init_session_move = __esm(() => {
 });
 
 // box/src/link/areas/found.ts
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 function readOpencode(file) {
   let entries;
   try {
-    entries = JSON.parse(readFileSync8(file, "utf8"));
+    entries = JSON.parse(readFileSync9(file, "utf8"));
   } catch {
     return [];
   }
@@ -123232,6 +123406,7 @@ var init_router = __esm(() => {
   init_session_models();
   init_models_offered();
   init_models_starred();
+  init_models_speed();
   init_read_all();
   init_work_queue2();
   init_plugins();
@@ -123381,6 +123556,7 @@ var init_router = __esm(() => {
     { feature: "sessions.models", when: (route) => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },
     { feature: "models.offered", when: (route) => route === MODELS_OFFERED_ROUTE, answer: modelsOfferedRoute },
     { feature: "models.starred", when: (route) => route === MODELS_STARRED_ROUTE, answer: modelsStarredRoute },
+    { feature: "models.speed", when: (route) => route === MODELS_SPEED_ROUTE, answer: modelsSpeedRoute },
     { feature: "sessions.read", when: (route) => route === READ_ALL_ROUTE, answer: readAllRoute },
     { feature: "work-queue", when: (route) => route.match(WORK_QUEUE_ROUTE), answer: workQueueRoute },
     { feature: "search", when: (route) => route === "kuvo/search", answer: searchRoute },
@@ -123993,7 +124169,7 @@ var init_api2 = __esm(() => {
 });
 
 // box/src/agents/signin.ts
-import { existsSync as existsSync4, lstatSync as lstatSync2, mkdtempSync, readdirSync as readdirSync5, readFileSync as readFileSync9, rmSync as rmSync5 } from "node:fs";
+import { existsSync as existsSync4, lstatSync as lstatSync2, mkdtempSync, readdirSync as readdirSync5, readFileSync as readFileSync10, rmSync as rmSync5 } from "node:fs";
 import { join as join16 } from "node:path";
 function catcher(temporary) {
   const path = join16(privateFolder(join16(temporary, "bin")), "kuvo-catch-url");
@@ -124008,7 +124184,7 @@ printf '%s\\n' "$1" >> "$KUVO_URL_FILE"
 function ownScript(path, script) {
   try {
     const there = lstatSync2(path);
-    return there.isFile() && there.uid === process.getuid?.() && (there.mode & 511) === 448 && readFileSync9(path, "utf8") === script;
+    return there.isFile() && there.uid === process.getuid?.() && (there.mode & 511) === 448 && readFileSync10(path, "utf8") === script;
   } catch {
     return false;
   }
@@ -124117,7 +124293,7 @@ async function commandSignIn(options) {
     if (options.printedPage)
       return printed ?? "";
     if (existsSync4(urlFile))
-      return readFileSync9(urlFile, "utf8").split(`
+      return readFileSync10(urlFile, "utf8").split(`
 `)[0].trim();
     if (printed)
       printedAt ??= waited;
@@ -124732,7 +124908,7 @@ var init_pricing_supplement = __esm(() => {
 });
 
 // box/src/usage/pricing.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync10, renameSync as renameSync5, writeFileSync as writeFileSync5 } from "node:fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync11, renameSync as renameSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join17 } from "node:path";
 function costDollars(rates, tokens, longContext = true) {
   const above = longContext && promptTokens(tokens) > rates.longContextThreshold;
@@ -125067,7 +125243,7 @@ class PricingStore {
     this.now = now;
     if (folder) {
       try {
-        this.states = JSON.parse(readFileSync10(join17(folder, "state.json"), "utf8"));
+        this.states = JSON.parse(readFileSync11(join17(folder, "state.json"), "utf8"));
       } catch {}
     }
   }
@@ -125130,7 +125306,7 @@ class PricingStore {
     if (!this.folder)
       return;
     try {
-      return JSON.parse(readFileSync10(join17(this.folder, name), "utf8"));
+      return JSON.parse(readFileSync11(join17(this.folder, name), "utf8"));
     } catch {
       return;
     }
@@ -125400,7 +125576,7 @@ var insightKey = (...parts) => createHash17("sha256").update(JSON.stringify(part
 var init_insight_records = () => {};
 
 // box/src/usage/insights-summary.ts
-var cacheRate = (of) => of.input > 0 ? Math.min(1, of.cached / of.input) : null, MOST8 = 200;
+var cacheRate = (of) => of.input > 0 ? Math.min(1, of.cached / of.input) : null, MOST9 = 200;
 var init_insights_summary = __esm(() => {
   init_insights_names();
 });
@@ -125750,7 +125926,7 @@ class Insights {
       { key: "providers", name: "Providers", rows: facts.providers.map((row) => ({ kind: "provider", id: row.provider, name: providerName(row.provider), provider: row.provider, ...measures(row) })) },
       { key: "models", name: "Models", rows: facts.models.map((row) => ({ kind: "model", id: row.key, name: row.name, provider: row.provider, ...measures(row) })) },
       { key: "computers", name: "Computers", rows: facts.computers.map((row) => ({ kind: "computer", id: row.computer, name: named.get(row.computer) ?? "Another computer", ...measures(row) })) }
-    ].map((list, index) => index === 0 ? list : { ...list, rows: list.rows.slice(0, MOST8) });
+    ].map((list, index) => index === 0 ? list : { ...list, rows: list.rows.slice(0, MOST9) });
     const { totals, prior } = facts;
     const change = prior && {
       cost: prior.cost > 0 ? (totals.cost - prior.cost) / prior.cost : null,
@@ -125870,7 +126046,7 @@ var init_insights = __esm(() => {
 
 // box/src/usage/limits-resets.ts
 import { randomBytes as randomBytes9 } from "node:crypto";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync11, renameSync as renameSync6, writeFileSync as writeFileSync6 } from "node:fs";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync6, writeFileSync as writeFileSync6 } from "node:fs";
 import { dirname as dirname7 } from "node:path";
 
 class LimitResets {
@@ -126229,7 +126405,7 @@ class LimitResets {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync11(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync12(this.file, "utf8"));
       this.spends = (Array.isArray(saved.spends) ? saved.spends : []).filter((spend) => spend && typeof spend.id === "string" && typeof spend.request === "string" && typeof spend.row === "string");
       for (const [row, decided] of Object.entries(saved.allowed ?? {}))
         if (row.includes("#") && typeof decided?.on === "boolean" && typeof decided.at === "number")
@@ -127100,7 +127276,7 @@ var init_pace = __esm(() => {
 
 // box/src/usage/limits.ts
 import { createHash as createHash18 } from "node:crypto";
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync12, renameSync as renameSync7, writeFileSync as writeFileSync7 } from "node:fs";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync13, renameSync as renameSync7, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname8 } from "node:path";
 
 class Limits {
@@ -127753,7 +127929,7 @@ class Limits {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync12(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync13(this.file, "utf8"));
       for (const [provider, entry] of Object.entries(saved.accounts ?? {})) {
         if (!entry || !Array.isArray(entry.windows) || typeof entry.next !== "number")
           continue;
@@ -129139,7 +129315,7 @@ self.onmessage = ({ data: { paths, withIndex } }) => {
 });
 
 // box/src/usage/cursor-api.ts
-import { existsSync as existsSync5, readFileSync as readFileSync13 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync14 } from "node:fs";
 import { join as join20 } from "node:path";
 function cursorReachable() {
   return cursorEndpoints.live || cursorEndpoints.api2 !== "https://api2.cursor.sh" && cursorEndpoints.web !== "https://cursor.com";
@@ -129159,7 +129335,7 @@ function cursorKey(folder, own, env = process.env, now = Date.now()) {
   if (fromEnvironment)
     return fromEnvironment;
   try {
-    const saved = JSON.parse(readFileSync13(join20(folder, "auth.json"), "utf8"));
+    const saved = JSON.parse(readFileSync14(join20(folder, "auth.json"), "utf8"));
     const key = typeof saved?.apiKey === "string" ? saved.apiKey.trim() : "";
     if (!key)
       return;
@@ -129175,7 +129351,7 @@ function cursorKeyUnreadable(folder) {
   if (!existsSync5(file))
     return false;
   try {
-    JSON.parse(readFileSync13(file, "utf8"));
+    JSON.parse(readFileSync14(file, "utf8"));
     return false;
   } catch {
     return true;
@@ -129316,7 +129492,7 @@ var init_cursor_api = __esm(() => {
 
 // box/src/usage/cursor-history.ts
 import { createHash as createHash19 } from "node:crypto";
-import { mkdirSync as mkdirSync8, readFileSync as readFileSync14, renameSync as renameSync8, writeFileSync as writeFileSync8 } from "node:fs";
+import { mkdirSync as mkdirSync8, readFileSync as readFileSync15, renameSync as renameSync8, writeFileSync as writeFileSync8 } from "node:fs";
 import { join as join21 } from "node:path";
 function tokenValue(usage, key) {
   if (!(key in usage) || usage[key] === undefined)
@@ -129533,7 +129709,7 @@ ${event.model}`;
     const days = new Map;
     if (this.folder) {
       try {
-        const saved = JSON.parse(readFileSync14(join21(this.folder, `${key}.json`), "utf8"));
+        const saved = JSON.parse(readFileSync15(join21(this.folder, `${key}.json`), "utf8"));
         if (saved?.version === 1 && saved.user === key && saved.days && typeof saved.days === "object") {
           for (const [day, value] of Object.entries(saved.days)) {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !value || typeof value !== "object" || !Array.isArray(value.uses))
@@ -129925,7 +130101,7 @@ var init_jsonl = __esm(() => {
 // box/src/usage/usage.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash21 } from "node:crypto";
-import { lstatSync as lstatSync3, mkdirSync as mkdirSync10, readFileSync as readFileSync15, realpathSync as realpathSync4, renameSync as renameSync10, statSync as statSync8, writeFileSync as writeFileSync10 } from "node:fs";
+import { lstatSync as lstatSync3, mkdirSync as mkdirSync10, readFileSync as readFileSync16, realpathSync as realpathSync4, renameSync as renameSync10, statSync as statSync8, writeFileSync as writeFileSync10 } from "node:fs";
 import { homedir, hostname as hostname3 } from "node:os";
 import { basename as basename6, dirname as dirname9, isAbsolute as isAbsolute3, join as join23, relative as relative4, sep as sep7 } from "node:path";
 function usageRows(boxes) {
@@ -130212,7 +130388,7 @@ class Usage {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync15(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync16(this.file, "utf8"));
       for (const [provider, kept] of Object.entries(saved?.accounts ?? {})) {
         if (!kept || typeof kept !== "object")
           continue;
@@ -130281,7 +130457,7 @@ function placeOf4(computer, folder, part) {
 `).update(part);
   return hash.digest("hex").slice(0, 16);
 }
-function thisComputer(platform = process.platform, read = (path) => readFileSync15(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname3) {
+function thisComputer(platform = process.platform, read = (path) => readFileSync16(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname3) {
   if (platform === "darwin") {
     const uuid = macUUID();
     if (uuid)
@@ -130774,7 +130950,7 @@ var init_usage = __esm(() => {
 
 // box/src/usage/usage-peers.ts
 import { createHash as createHash22 } from "node:crypto";
-import { mkdirSync as mkdirSync11, readFileSync as readFileSync16, renameSync as renameSync11, writeFileSync as writeFileSync11 } from "node:fs";
+import { mkdirSync as mkdirSync11, readFileSync as readFileSync17, renameSync as renameSync11, writeFileSync as writeFileSync11 } from "node:fs";
 import { dirname as dirname10 } from "node:path";
 
 class UsagePeers {
@@ -130998,7 +131174,7 @@ class UsagePeers {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync16(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync17(this.file, "utf8"));
       for (const [key, kept] of Object.entries(saved.peers ?? {})) {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
           continue;
@@ -131134,7 +131310,7 @@ var init_peer_routes = __esm(() => {
 });
 
 // box/src/agents/store.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync12, readdirSync as readdirSync8, readFileSync as readFileSync17, renameSync as renameSync12, rmSync as rmSync7, writeFileSync as writeFileSync12 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync12, readdirSync as readdirSync8, readFileSync as readFileSync18, renameSync as renameSync12, rmSync as rmSync7, writeFileSync as writeFileSync12 } from "node:fs";
 import { join as join24 } from "node:path";
 function* readSavedSessionHeaders(root) {
   let entries;
@@ -131148,10 +131324,10 @@ function* readSavedSessionHeaders(root) {
   for (const id of entries) {
     try {
       const folder = join24(root, id);
-      const session = readSession2(JSON.parse(readFileSync17(join24(folder, "session.json"), "utf8")));
+      const session = readSession2(JSON.parse(readFileSync18(join24(folder, "session.json"), "utf8")));
       let agent = {};
       try {
-        agent = JSON.parse(readFileSync17(join24(folder, "agent.json"), "utf8"));
+        agent = JSON.parse(readFileSync18(join24(folder, "agent.json"), "utf8"));
       } catch {}
       yield { folder, session, agent };
     } catch {}
@@ -131179,7 +131355,7 @@ var init_store5 = __esm(() => {
 
 // box/src/agents/groups/store.ts
 import fs282 from "node:fs";
-import { existsSync as existsSync7, mkdirSync as mkdirSync13, readdirSync as readdirSync9, readFileSync as readFileSync18, renameSync as renameSync13, rmSync as rmSync8, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync13, readdirSync as readdirSync9, readFileSync as readFileSync19, renameSync as renameSync13, rmSync as rmSync8, writeFileSync as writeFileSync13 } from "node:fs";
 import { dirname as dirname11, join as join25 } from "node:path";
 function isTurning(value) {
   return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
@@ -131429,13 +131605,13 @@ class GroupStore {
 }
 var version3 = 1, strings5 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string"), stringMap2 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string"), isDate2 = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)), kinds4, states, forgottenFor, read11 = (file) => {
   try {
-    return JSON.parse(readFileSync18(file, "utf8"));
+    return JSON.parse(readFileSync19(file, "utf8"));
   } catch {
     return;
   }
 }, text17 = (file) => {
   try {
-    return readFileSync18(file, "utf8");
+    return readFileSync19(file, "utf8");
   } catch {
     return;
   }
@@ -131670,7 +131846,7 @@ var init_peer = __esm(() => {
 });
 
 // box/src/agents/groups/post.ts
-import { existsSync as existsSync8, readFileSync as readFileSync19, renameSync as renameSync14, writeFileSync as writeFileSync14 } from "node:fs";
+import { existsSync as existsSync8, readFileSync as readFileSync20, renameSync as renameSync14, writeFileSync as writeFileSync14 } from "node:fs";
 
 class PeerPost {
   file;
@@ -131683,7 +131859,7 @@ class PeerPost {
     let kept = [];
     try {
       if (file && existsSync8(file))
-        kept = JSON.parse(readFileSync19(file, "utf8"));
+        kept = JSON.parse(readFileSync20(file, "utf8"));
     } catch {}
     this.kept = Array.isArray(kept) ? kept.filter((line) => line && typeof line.id === "string" && typeof line.to === "string" && (isSeatMail(line.mail) || usageMail(line.mail?.kind))) : [];
   }
@@ -131874,11 +132050,11 @@ var init_post = __esm(() => {
 });
 
 // box/src/shared/agent-credentials.ts
-import { readFileSync as readFileSync20 } from "node:fs";
+import { readFileSync as readFileSync21 } from "node:fs";
 import { join as join26 } from "node:path";
 function read12(file) {
   try {
-    return JSON.parse(readFileSync20(file, "utf8"));
+    return JSON.parse(readFileSync21(file, "utf8"));
   } catch {
     return;
   }
@@ -131915,7 +132091,7 @@ var init_agent_credentials = __esm(() => {
 
 // box/src/usage/codex-credentials.ts
 import { createHash as createHash23 } from "node:crypto";
-import { readFileSync as readFileSync21, realpathSync as realpathSync5 } from "node:fs";
+import { readFileSync as readFileSync22, realpathSync as realpathSync5 } from "node:fs";
 import { join as join27 } from "node:path";
 function codexKeychainAccount(home) {
   let canonical = home;
@@ -131937,7 +132113,7 @@ class CodexCredentials {
   }
   mode() {
     try {
-      const mode = /^\s*cli_auth_credentials_store\s*=\s*["'](file|keyring|auto)["']/m.exec(readFileSync21(join27(this.home, "config.toml"), "utf8"))?.[1];
+      const mode = /^\s*cli_auth_credentials_store\s*=\s*["'](file|keyring|auto)["']/m.exec(readFileSync22(join27(this.home, "config.toml"), "utf8"))?.[1];
       return mode === "keyring" || mode === "auto" ? mode : "file";
     } catch {
       return "file";
@@ -132936,11 +133112,11 @@ var init_native_usage = __esm(() => {
 });
 
 // box/src/usage/claude-limits.ts
-import { readFileSync as readFileSync22, statSync as statSync9 } from "node:fs";
+import { readFileSync as readFileSync23, statSync as statSync9 } from "node:fs";
 import { join as join28 } from "node:path";
 function credentialsIn(configHome) {
   try {
-    const oauth = JSON.parse(readFileSync22(join28(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth;
+    const oauth = JSON.parse(readFileSync23(join28(configHome, ".credentials.json"), "utf8"))?.claudeAiOauth;
     if (typeof oauth?.accessToken !== "string" || !oauth.accessToken)
       return;
     return {
@@ -132961,7 +133137,7 @@ function claudeIdentity(recordHome) {
     const known = identities.get(file);
     if (known && known.mtimeMs === mtimeMs && known.size === size)
       return known.identity;
-    const identity = identityIn(readFileSync22(file, "utf8"));
+    const identity = identityIn(readFileSync23(file, "utf8"));
     identities.set(file, { mtimeMs, size, identity });
     return identity;
   } catch {
@@ -133744,7 +133920,7 @@ var init_cursor_plan = __esm(() => {
 });
 
 // box/src/usage/antigravity-plan.ts
-import { readFileSync as readFileSync23, readdirSync as readdirSync10, readlinkSync, rmSync as rmSync9 } from "node:fs";
+import { readFileSync as readFileSync24, readdirSync as readdirSync10, readlinkSync, rmSync as rmSync9 } from "node:fs";
 import { join as join30 } from "node:path";
 function antigravitySummary(bodies) {
   const lists = bodies.map(groupsOf).filter((g) => g !== undefined);
@@ -133845,10 +134021,10 @@ async function discoverAntigravity(profile, platform = process.platform, procRoo
     }
     for (const pid of names.filter((n) => /^\d+$/.test(n))) {
       try {
-        const argv = readFileSync23(join30(procRoot, pid, "cmdline"), "utf8").split("\x00").filter(Boolean);
+        const argv = readFileSync24(join30(procRoot, pid, "cmdline"), "utf8").split("\x00").filter(Boolean);
         if (!argv[0]?.includes("language_server") && !argv[0]?.endsWith("/agy"))
           continue;
-        const env = readFileSync23(join30(procRoot, pid, "environ"), "utf8").split("\x00");
+        const env = readFileSync24(join30(procRoot, pid, "environ"), "utf8").split("\x00");
         if (!env.includes(`GEMINI_HOME=${profile}`) && flagValue(argv, "--app_data_dir") !== profile)
           continue;
         const inodes = new Set(readdirSync10(join30(procRoot, pid, "fd")).flatMap((fd) => {
@@ -133861,7 +134037,7 @@ async function discoverAntigravity(profile, platform = process.platform, procRoo
         }));
         const tables = ["tcp", "tcp6"].flatMap((name) => {
           try {
-            return [readFileSync23(join30(procRoot, pid, "net", name), "utf8")];
+            return [readFileSync24(join30(procRoot, pid, "net", name), "utf8")];
           } catch {
             return [];
           }
@@ -133929,7 +134105,7 @@ class AntigravityPlan {
     if (this.refusalsLoaded)
       return;
     try {
-      const saved = JSON.parse(readFileSync23(join30(this.stateFolder(), "refusals.json"), "utf8"));
+      const saved = JSON.parse(readFileSync24(join30(this.stateFolder(), "refusals.json"), "utf8"));
       if (saved.refresh === undefined)
         saved.refresh = [];
       for (const name of ["generations", "access", "csrf", "refresh"]) {
@@ -134047,7 +134223,7 @@ class AntigravityPlan {
     if (!antigravityTransport.live && this.bases === productionBases)
       return;
     try {
-      return readFileSync23(join30(this.profile(), "antigravity-acp", "acp_token.json"), "utf8");
+      return readFileSync24(join30(this.profile(), "antigravity-acp", "acp_token.json"), "utf8");
     } catch (e) {
       if (e?.code === "ENOENT")
         return;
@@ -134074,7 +134250,7 @@ class AntigravityPlan {
   }
   agySignIn() {
     try {
-      const id = JSON.parse(readFileSync23(join30(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id;
+      const id = JSON.parse(readFileSync24(join30(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id;
       return typeof id === "string" && id ? fingerprint4(id) : undefined;
     } catch {
       return;
@@ -134511,7 +134687,7 @@ var init_accounts4 = __esm(() => {
 });
 
 // box/src/usage/limits-peers.ts
-import { mkdirSync as mkdirSync14, readFileSync as readFileSync24, renameSync as renameSync15, writeFileSync as writeFileSync15 } from "node:fs";
+import { mkdirSync as mkdirSync14, readFileSync as readFileSync25, renameSync as renameSync15, writeFileSync as writeFileSync15 } from "node:fs";
 import { dirname as dirname12 } from "node:path";
 
 class LimitsPeers {
@@ -134784,7 +134960,7 @@ class LimitsPeers {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync24(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync25(this.file, "utf8"));
       for (const [key, kept] of Object.entries(saved.peers ?? {})) {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
           continue;
@@ -134899,7 +135075,7 @@ var init_limits_peers = __esm(() => {
 });
 
 // box/src/usage/insights-kept.ts
-import { mkdirSync as mkdirSync15, readFileSync as readFileSync25, renameSync as renameSync16, writeFileSync as writeFileSync16 } from "node:fs";
+import { mkdirSync as mkdirSync15, readFileSync as readFileSync26, renameSync as renameSync16, writeFileSync as writeFileSync16 } from "node:fs";
 import { dirname as dirname13 } from "node:path";
 
 class KeptSummaries {
@@ -134913,7 +135089,7 @@ class KeptSummaries {
     if (!file)
       return;
     try {
-      const saved = JSON.parse(readFileSync25(file, "utf8"));
+      const saved = JSON.parse(readFileSync26(file, "utf8"));
       for (const [key, each] of Object.entries(saved ?? {})) {
         if (typeof each?.at === "number" && each.data && typeof each.data === "object")
           this.kept.set(key, each);
@@ -134945,7 +135121,7 @@ class KeptSummaries {
   keep(key, data) {
     this.kept.delete(key);
     this.kept.set(key, { at: this.now(), data });
-    while (this.kept.size > MOST9)
+    while (this.kept.size > MOST10)
       this.kept.delete(this.kept.keys().next().value);
     if (!this.file)
       return;
@@ -134956,7 +135132,7 @@ class KeptSummaries {
     } catch {}
   }
 }
-var MOST9 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
+var MOST10 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
 var init_insights_kept = () => {};
 
 // box/src/link/server/history-worker-entry.ts
@@ -135716,7 +135892,7 @@ var init_insights_scan = __esm(() => {
 });
 
 // box/src/usage/service.ts
-import { mkdirSync as mkdirSync16, readFileSync as readFileSync26 } from "node:fs";
+import { mkdirSync as mkdirSync16, readFileSync as readFileSync27 } from "node:fs";
 import { join as join33 } from "node:path";
 function usageReader({ home, run, box, bots, engineData, bundle, initialPeers, conversationHome }, fixtures) {
   const accounts = new UsageAccounts(home);
@@ -135782,7 +135958,7 @@ function usageReader({ home, run, box, bots, engineData, bundle, initialPeers, c
   const fallback = insightKey("kuvo insight computer", ownComputer2()).slice(0, 32);
   const localKey = () => {
     try {
-      const { insightsAlias } = JSON.parse(readFileSync26(join33(run, "..", "backup", "restore.json"), "utf8"));
+      const { insightsAlias } = JSON.parse(readFileSync27(join33(run, "..", "backup", "restore.json"), "utf8"));
       if (typeof insightsAlias === "string" && /^[0-9a-f]{32}$/.test(insightsAlias))
         return insightsAlias;
     } catch {}
@@ -136397,7 +136573,7 @@ var init_artifacts3 = __esm(async () => {
 
 // box/src/link/artifacts/store.ts
 import { createHash as createHash24, createHmac, randomBytes as randomBytes10 } from "node:crypto";
-import { appendFileSync as appendFileSync2, closeSync as closeSync6, existsSync as existsSync9, fchmodSync, mkdirSync as mkdirSync17, openSync as openSync6, readFileSync as readFileSync27, readSync as readSync5, renameSync as renameSync17, rmSync as rmSync10, statSync as statSync11, writeFileSync as writeFileSync17 } from "node:fs";
+import { appendFileSync as appendFileSync2, closeSync as closeSync6, existsSync as existsSync9, fchmodSync, mkdirSync as mkdirSync17, openSync as openSync6, readFileSync as readFileSync28, readSync as readSync5, renameSync as renameSync17, rmSync as rmSync10, statSync as statSync11, writeFileSync as writeFileSync17 } from "node:fs";
 import { basename as basename8, join as join37, sep as sep10 } from "node:path";
 function* journalLines(fd) {
   const buffer = Buffer.allocUnsafe(65536);
@@ -136481,7 +136657,7 @@ class ArtifactStore {
   static keyIn(root) {
     const file = join37(root, "key");
     try {
-      const key = readFileSync27(file);
+      const key = readFileSync28(file);
       if (key.length === 32)
         return key;
     } catch {}
@@ -136792,7 +136968,7 @@ class ArtifactStore {
     if (!version.kept || version.reason && privateReasons.has(version.reason) || !version.hash?.startsWith("sha256:"))
       return null;
     try {
-      const bytes = readFileSync27(this.copyPath(version.hash));
+      const bytes = readFileSync28(this.copyPath(version.hash));
       return bytes.length === version.size && "sha256:" + createHash24("sha256").update(bytes).digest("hex") === version.hash ? bytes : null;
     } catch {
       return null;
@@ -136919,7 +137095,7 @@ class ArtifactStore {
   readSettings() {
     let saved;
     try {
-      saved = JSON.parse(readFileSync27(join37(this.root, "settings.json"), "utf8"));
+      saved = JSON.parse(readFileSync28(join37(this.root, "settings.json"), "utf8"));
     } catch {
       return {};
     }
@@ -137076,7 +137252,7 @@ class ArtifactStore {
     if (!isText2(type) || !previous.kept || !previous.hash?.startsWith("sha256:") || bytes.length > lineLimit || previous.size > lineLimit)
       return;
     try {
-      return unified(readFileSync27(this.copyPath(previous.hash)).toString("utf8"), bytes.toString("utf8"));
+      return unified(readFileSync28(this.copyPath(previous.hash)).toString("utf8"), bytes.toString("utf8"));
     } catch {
       return;
     }
@@ -137108,7 +137284,7 @@ class ArtifactStore {
     if (stat.size > copyLimit)
       return stampOf3(stat);
     try {
-      const bytes = readFileSync27(path);
+      const bytes = readFileSync28(path);
       return { ...stampOf3(stat), size: bytes.length, bytes };
     } catch (error) {
       return error?.code === "ENOENT" ? undefined : null;
@@ -137337,7 +137513,7 @@ var init_store7 = __esm(async () => {
 });
 
 // box/src/link/artifacts/folders.ts
-import { promises as fs285, readdirSync as readdirSync12, readFileSync as readFileSync28, statSync as statSync12 } from "node:fs";
+import { promises as fs285, readdirSync as readdirSync12, readFileSync as readFileSync29, statSync as statSync12 } from "node:fs";
 import { join as join38, relative as relative5, sep as sep11 } from "node:path";
 function recordable(path) {
   const parts = path.split(sep11);
@@ -137569,7 +137745,7 @@ class BotFolders {
         const stat = statSync12(file);
         if (!stat.isFile() || stat.size > copyLimit)
           return;
-        this.store.before(file, readFileSync28(file), { bot });
+        this.store.before(file, readFileSync29(file), { bot });
       } catch {}
     };
     before(join38(folder, "MEMORY.md"));
@@ -137792,7 +137968,7 @@ var around = 3, rewritten = 0.6, leastContext = 3;
 var init_changes3 = () => {};
 
 // box/src/link/artifacts/recorder.ts
-import { readdirSync as readdirSync13, readFileSync as readFileSync29 } from "node:fs";
+import { readdirSync as readdirSync13, readFileSync as readFileSync30 } from "node:fs";
 import { isAbsolute as isAbsolute4, join as join39, relative as relative6, resolve as resolve3, sep as sep12 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 
@@ -138026,7 +138202,7 @@ class Recorder {
   async seedBefore(path, patch, deleted = false) {
     let now;
     try {
-      now = deleted ? "" : readFileSync29(path, "utf8");
+      now = deleted ? "" : readFileSync30(path, "utf8");
     } catch {
       return;
     }
@@ -138087,7 +138263,7 @@ class Recorder {
         if (!bot.startsWith("bot_"))
           continue;
         try {
-          if (readFileSync29(join39(bots, bot, "session"), "utf8").trim() === id)
+          if (readFileSync30(join39(bots, bot, "session"), "utf8").trim() === id)
             return bot;
         } catch {}
       }
@@ -138474,7 +138650,7 @@ var init_routes4 = __esm(() => {
 // box/src/link/library/thumbnails.ts
 import { execFile as execFile19 } from "node:child_process";
 import { createHash as createHash25 } from "node:crypto";
-import { mkdirSync as mkdirSync18, mkdtempSync as mkdtempSync2, readdirSync as readdirSync14, readFileSync as readFileSync30, renameSync as renameSync18, rmSync as rmSync11, statSync as statSync13 } from "node:fs";
+import { mkdirSync as mkdirSync18, mkdtempSync as mkdtempSync2, readdirSync as readdirSync14, readFileSync as readFileSync31, renameSync as renameSync18, rmSync as rmSync11, statSync as statSync13 } from "node:fs";
 import { basename as basename9, join as join40 } from "node:path";
 
 class Thumbnails {
@@ -138506,7 +138682,7 @@ class Thumbnails {
       if (item.kind !== "image" || stat.size > asItIs)
         return null;
       try {
-        return { bytes: readFileSync30(item.path), type: item.type };
+        return { bytes: readFileSync31(item.path), type: item.type };
       } catch {
         return null;
       }
@@ -138514,7 +138690,7 @@ class Thumbnails {
     const key = `${item.id}-${createHash25("sha256").update(`${stat.size}:${stat.mtimeMs}:${stat.ino}`).digest("hex").slice(0, 16)}`;
     const file = join40(this.folder, key + ".png");
     try {
-      return { bytes: readFileSync30(file), type: "image/png" };
+      return { bytes: readFileSync31(file), type: "image/png" };
     } catch {}
     let making = this.made.get(key);
     if (!making) {
@@ -138547,7 +138723,7 @@ class Thumbnails {
         await run8("/usr/bin/qlmanage", ["-t", "-s", String(thumbnailSide), "-o", scratch, item.path]);
         made = join40(scratch, basename9(item.path) + ".png");
       }
-      const bytes = readFileSync30(made);
+      const bytes = readFileSync31(made);
       for (const name of readdirSync14(this.folder))
         if (name.startsWith(item.id + "-"))
           rmSync11(join40(this.folder, name), { force: true });
@@ -138571,7 +138747,7 @@ var init_thumbnails = __esm(() => {
 });
 
 // box/src/link/library/service.ts
-import { existsSync as existsSync10, readFileSync as readFileSync31, statSync as statSync14, writeFileSync as writeFileSync18 } from "node:fs";
+import { existsSync as existsSync10, readFileSync as readFileSync32, statSync as statSync14, writeFileSync as writeFileSync18 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join41, relative as relative7, resolve as resolve4, sep as sep14 } from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 function libraryService(root, options, prepared) {
@@ -138585,7 +138761,7 @@ function libraryService(root, options, prepared) {
     let name;
     let look;
     try {
-      const said = JSON.parse(readFileSync31(join41(options.bots, id, "bot.json"), "utf8"));
+      const said = JSON.parse(readFileSync32(join41(options.bots, id, "bot.json"), "utf8"));
       if (typeof said?.name === "string")
         name = said.name;
       if (said?.look && typeof said.look === "object" && !Array.isArray(said.look)) {
@@ -138606,7 +138782,7 @@ function libraryService(root, options, prepared) {
       try {
         const stat = statSync14(item.path);
         if (stat.isFile() && stat.size <= copyLimit)
-          return readFileSync31(item.path);
+          return readFileSync32(item.path);
         if (stat.isFile())
           return null;
       } catch {}
@@ -138668,7 +138844,7 @@ function backfill(store, root, options, saved) {
 }
 function backfilled(root) {
   try {
-    return JSON.parse(readFileSync31(join41(root, "backfill.json"), "utf8"))?.done >= BACKFILL;
+    return JSON.parse(readFileSync32(join41(root, "backfill.json"), "utf8"))?.done >= BACKFILL;
   } catch {
     return false;
   }
@@ -138799,7 +138975,7 @@ var init_prepare = __esm(async () => {
 });
 
 // box/src/link/artifacts/service.ts
-import { readFileSync as readFileSync32 } from "node:fs";
+import { readFileSync as readFileSync33 } from "node:fs";
 import { join as join42 } from "node:path";
 function startupError(unsupported) {
   return (request) => libraryPath.test(new URL(request.url).pathname) ? Promise.resolve(Response.json({ message: "This computer's Library isn't running. Try again in a moment." }, { status: 503 })) : unsupported ? Promise.resolve(Response.json({ code: "unsupportedFormatVersion", message: unsupported }, { status: 409 })) : artifactRoutes(undefined, request.method, [], new URLSearchParams, async () => ({}));
@@ -138831,7 +139007,7 @@ function artifactService(root, bots, sessions, { library, computer } = {}) {
         if (!/^ses_[A-Za-z0-9_-]+$/.test(id))
           return;
         try {
-          const session = readSession2(JSON.parse(readFileSync32(join42(sessions, id, "session.json"), "utf8")));
+          const session = readSession2(JSON.parse(readFileSync33(join42(sessions, id, "session.json"), "utf8")));
           return parseProvider(session.model?.providerID ?? "")?.kind ?? "engine";
         } catch {
           return;
