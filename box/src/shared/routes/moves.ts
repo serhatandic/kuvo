@@ -1,8 +1,8 @@
-import { PENDING_COMPUTERS } from "./list-computers";
-// Move to Computer (PROTOCOL.md, `kuvo/moves`): a bot, a chat or a group chat moved whole to another
+// Move to Computer (PROTOCOL.md, "Moves"): a bot, a chat or a group chat moved whole to another
 // of your computers, the boxes doing it between themselves; clients ask once and watch.
 
 import { bool, type Infer, list, literal, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 /** What can move: a bot (by its ID), a chat (by its session) or a group chat (by its ID). */
 export const MOVE_KIND = words("bot", "chat", "group");
@@ -81,9 +81,13 @@ export type Moves = Infer<typeof MOVES>;
 export type MoveReceipt = Infer<typeof MOVE_RECEIPT>;
 
 export const MOVE_ROUTES: RouteShape[] = [
+  // Moves under way here, conversations listed here that don't live here (`away`), and recent ones.
   { route: "GET kuvo/moves", feature: "moves", answers: { 200: MOVES } },
   { route: "GET kuvo/moves/events", feature: "moves", answers: { 200: MOVES } },
+  // Your other computers a bot, chat or group chat could move to now, with why not, and what stays here.
   { route: "GET kuvo/moves/places", feature: "moves", answers: { 200: MOVE_PLACES } },
+  // How a move begun with `receipt: true` stands (`?id=`): moving, done or failed; kept 90 days.
   { route: "GET kuvo/moves/receipt", feature: "moves", answers: { 200: MOVE_RECEIPT } },
+  // Move it to another computer: answers once it ends, or at once (202) with `receipt: true`.
   { route: "POST kuvo/moves", feature: "moves", answers: { 200: MOVED, 202: MOVE_ACCEPTED } },
 ];

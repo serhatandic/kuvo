@@ -1,8 +1,8 @@
-// A conversation carried on with the coding agents (PROTOCOL.md, `kuvo/sessions/<id>/agents`), as
+// A conversation carried on with the coding agents (`kuvo/sessions/<id>/agents`; PROTOCOL.md, "Models"), as
 // picking one of their models in it does; a session started with a task (`kuvo/sessions`), and the
-// agents' tools every box answers (`kuvo/agent-tools`; PROTOCOL.md, "Agents' tools"). A
+// agents' tools every box answers (`kuvo/agent-tools`; PROTOCOL.md, "Work"). A
 // conversation's queue, what it asks you ("A conversation's asks"), what "@" and "&" suggest in
-// it ("Mentions"), and its side threads ("Side questions, handoffs and reviews").
+// it, and its side threads.
 
 import { any, bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
@@ -339,8 +339,8 @@ export const SESSION_PAGE = object({ project: string, sessions: list(string), to
 export const ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
 /** A session waiting on you, as "Needs you" lists it. */
 export const NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
-/** The one state a bot is in, as the box states it (`bots.state`; PROTOCOL.md, "What a bot is
- * doing now"), first that holds: one of its sessions waits on you, one is blocked, every one at work
+/** The one state a bot is in, as the box states it (`bots.state`; PROTOCOL.md, "What
+ * waits on you"), first that holds: one of its sessions waits on you, one is blocked, every one at work
  * is thinking, one is at work, one has a turn you haven't seen, it's paused or its next wake-up is
  * more than 12 hours away, else idle. A client adds `offline` itself. */
 export const BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"] as const;
@@ -411,7 +411,7 @@ export type Glance = Infer<typeof GLANCE>;
 export type GlancePull = Infer<typeof GLANCE_PULL>;
 export type GlanceChecks = Infer<typeof GLANCE_CHECKS>;
 
-/** A side question about a conversation (PROTOCOL.md, "Side questions, handoffs and reviews"), as
+/** A side question about a conversation (PROTOCOL.md, "Conversations"), as
  * its box's agents bridge keeps it: the side thread it's in (`thread`, its first question's id),
  * where it stands, its answer or why it couldn't be answered, and when it was asked and answered (ms). */
 export const SIDE_QUESTION = object({
@@ -430,71 +430,127 @@ export const SIDE_THREADS = object({
 export type SideThreads = Infer<typeof SIDE_THREADS>;
 
 export const SESSION_ROUTES: RouteShape[] = [
+  // Carry a conversation on with the coding agents, as picking one of their models does.
   { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
+  // Give a conversation its project's other folders as a client opens it.
   { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string }), 404: REFUSED, 405: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Move a conversation into a project, given its folders; one at work moves at its next step.
   { route: "POST kuvo/sessions/:id/move", feature: "sessions.move", answers: { 200: SESSION_MOVED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Delete All's question for several sessions, in the box's words; then DELETE each.
   { route: "POST kuvo/sessions/deletes", feature: "sessions.actions", answers: { 200: CONFIRM, 400: REFUSED, 404: REFUSED, 405: REFUSED, 503: REFUSED } },
+  // What a session's menu offers now, each with any confirm in the box's words; `held` while it moves.
   { route: "GET kuvo/sessions/:id/actions", feature: "sessions.actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 503: REFUSED } },
+  // Archive or bring back (`archived`); with `was`, refused (409) if it changed since it was read.
   { route: "POST kuvo/sessions/:id/archive", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  // Pin or unpin (`pinned`); with `was`, refused (409) if it changed since it was read.
   { route: "POST kuvo/sessions/:id/pin", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/rename", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  // Delete a session where it runs, with its wake-ups and watches; one already gone counts as done.
   { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string }), 400: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  // Start a session here, with a task or empty for your first message; Runs on asks the chosen box.
   { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: oneOf(object({ message: string, reason: words("fullAccessOff") }), object({ message: string, computer: LIST_COMPUTER })), 429: REFUSED, 502: object({ message: string, "session?": string }), 503: REFUSED } },
+  // Answer one of Kuvo Code's own agent tools for a conversation; tool servers only pass calls on.
   { route: "POST kuvo/agent-tools", feature: "agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED } },
+  // Every session here whose queue is paused or holds something, now and at each change.
   { route: "GET kuvo/sessions/queues/events", feature: "queue.items", answers: { 200: object({ queues: map(QUEUE) }) } },
+  // Each session's branch, pull request, account and since when it waits on you (`?sessions=`, ≤200).
   { route: "GET kuvo/sessions/glance", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED, 503: REFUSED } },
+  // Mark All as Read: every conversation on this box marked read.
   { route: "POST kuvo/sessions/read", feature: "sessions.read", answers: { 200: object({ read: number }), 503: REFUSED } },
   { route: "GET kuvo/sessions/glance/events", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED, 503: REFUSED } },
+  // This box's sessions as every client's lists go by them: facts, projects, Needs you.
   { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
+  // The list now, then a line as anything changes; `since` resumes from a line's `at`.
   { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
+  // A project's list as far as "Show more"'s cursor goes, in the order it shows.
   { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED, 405: REFUSED, 503: REFUSED } },
+  // Where a session lives, from this box's kept lists: a runtime here, or the computer it's on.
   { route: "GET kuvo/sessions/:session/location", feature: "sessions.location", answers: { 200: CONVERSATION_LOCATION, 404: REFUSED, 405: REFUSED, 503: REFUSED } },
+  // Where the owning computer runs its session (`place`, `running`), read through this box.
   { route: "GET kuvo/peer-session/:computer/:session/location", feature: "sessions.location", answers: { 200: LOCAL_CONVERSATION_LOCATION, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // A session on another computer, as its owner has it, read through this box.
   { route: "GET kuvo/peer-session/:computer/:session/session", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // A page of a session's messages from its owning computer (the usual message query).
   { route: "GET kuvo/peer-session/:computer/:session/messages", feature: "line.peer-conversation", answers: { 200: any, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // A session's live events from its owning computer, through this box.
   { route: "GET kuvo/peer-session/:computer/:session/events", feature: "line.peer-conversation", answers: { 200: BYTES, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // What a session on another computer asks you; answer on the owner's own routes.
   { route: "GET kuvo/peer-session/:computer/:session/asks", feature: "line.peer-conversation", answers: { 200: SESSION_ASKS, 403: REFUSED, 404: oneOf(REFUSED, SESSION_ASKS), 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/asks/events", feature: "line.peer-conversation", answers: { 200: SESSION_ASKS, 403: REFUSED, 404: oneOf(REFUSED, SESSION_ASKS), 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // A session's queue from its owning computer; queue actions go to the owner's routes.
   { route: "GET kuvo/peer-session/:computer/:session/queue", feature: "line.peer-conversation", answers: { 200: QUEUE_READ, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/queue/events", feature: "line.peer-conversation", answers: { 200: QUEUE_SHOWN, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // Follow a message receipt kept on this box, as `GET kuvo/data/messages/:operation` says it.
   { route: "GET kuvo/data/messages/:operation/events", feature: "typed.delivery", answers: { 200: any, 404: REFUSED, 405: REFUSED } },
+  // Leave a composer draft with this box to deliver to its owner (`?computer=`), once per id.
   { route: "POST kuvo/sessions/:id/delivery", feature: "typed.delivery", answers: { 200: any, 202: any, 400: REFUSED, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // The drafts still waiting at this box to reach the conversation's owner.
   { route: "GET kuvo/sessions/:id/delivery", feature: "typed.delivery", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 403: REFUSED, 404: REFUSED } },
+  // The owner's queue plus drafts waiting here; `deliveryLine` while the owner is away.
   { route: "GET kuvo/sessions/:id/delivery/events", feature: "typed.delivery", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 403: REFUSED, 404: REFUSED } },
+  // Take back a draft still waiting here; a `receipt` makes the removal replayable.
   { route: "DELETE kuvo/sessions/:id/delivery/:message", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  // Have a draft still waiting here go to its owner as a steer.
   { route: "POST kuvo/sessions/:id/delivery/:message/steer", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  // Clear a removed draft's recovery copy once the client restored it (`receipt`).
   { route: "POST kuvo/sessions/:id/delivery/:message/ack", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED } },
+  // Have a draft still waiting here go to its owner as Send Now.
   { route: "POST kuvo/sessions/:id/delivery/:message/now", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  // The session list merged across your computers, in `kuvo/sessions/list`'s shape.
   { route: "GET kuvo/setup/sessions/list/events", feature: "line.merged-sessions", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
+  // Every computer's sessions and projects as rows naming their computer, whole each time.
   { route: "GET kuvo/setup/sessions/events", feature: "line.setup-lists", answers: { 200: SETUP_SESSIONS, 405: REFUSED } },
+  // What waits on you across the setup, as one total of sessions, bots and Work Queue items.
   { route: "GET kuvo/setup/waiting/counts", feature: "line.merged-waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/setup/waiting/counts/events", feature: "line.merged-waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
+  // Every computer's sessions waiting on you, each with its oldest ask in the box's words.
   { route: "GET kuvo/setup/waiting/events", feature: "line.setup-lists", answers: { 200: SETUP_WAITING, 405: REFUSED } },
+  // Every computer's paused or holding queues, with the actions each row offers.
   { route: "GET kuvo/setup/queues/events", feature: "line.setup-lists", answers: { 200: SETUP_QUEUES, 405: REFUSED } },
+  // Runs on: each computer a new session can start on, with its models and coding agents.
   { route: "GET kuvo/setup/runs-on/events", feature: "line.setup-lists", answers: { 200: RUNS_ON, 405: REFUSED } },
+  // How many things wait on you in each area on this box (sessions, bots, Work Queue), for badges.
   { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
+  // Each session's model, whether it runs, and the composer's refusal and action, in the box's words.
   { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
+  // The models a picker offers here, in order, and the one a new session starts on.
   { route: "GET kuvo/models/offered", feature: "models.offered", answers: { 200: MODELS_OFFERED, 404: REFUSED, 503: REFUSED } },
+  // Your starred models, kept by the box so every picker shows the same stars.
   { route: "GET kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED } },
+  // Star or unstar one model (`starred: true|false`), setup-wide: a member passes it to the main.
   { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED, 409: REFUSED, 503: REFUSED } },
+  // Pick the speed a provider's turns run at on this box (`speed`: a speed's id, null for Standard).
   { route: "POST kuvo/models/speed", feature: "models.speed", answers: { 200: MODELS_SPEED, 400: REFUSED } },
+  // A session's queue: paused, held, what waits on the box; `?items=1` adds every message in order.
   { route: "GET kuvo/sessions/:id/queue", feature: "queue.items", answers: { 200: QUEUE_READ } },
   { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
+  // What a conversation waits on you for, as the cards over its composer show it, oldest first.
   { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/asks/events", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
+  // Answer one ask (a choice, words, or dismiss), sent live to where the session runs.
   { route: "POST kuvo/sessions/:id/asks/:ask", feature: "sessions.asks.box", answers: { 200: NOTHING, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: REFUSED, 423: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // What "@" (`for=files`) or "&" (`for=agents`) suggest for what's typed, ranked by the box.
   { route: "GET kuvo/sessions/:id/mentions", feature: "sessions.mentions", answers: { 200: MENTIONS, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+  // Stop: hold and pause the queue, then stop the run; `items` holds sends still on their way.
   { route: "POST kuvo/sessions/:id/stop", feature: "queue.stop.arriving", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Hold and pause the queue without stopping the run (before an undo or a move).
   { route: "POST kuvo/sessions/:id/queue/hold", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Move a waiting message before or after another (`item`, `anchor`, `before`).
   { route: "POST kuvo/sessions/:id/queue/reorder", feature: "queue.items", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 404: REFUSED, 409: REFUSED, 502: REFUSED, 503: REFUSED, 504: REFUSED } },
+  // Unpause the queue; the next message goes now.
   { route: "POST kuvo/sessions/:id/queue/resume", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Send Now: unpause, send this message, and stop the run under way to go on with it.
   { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Steer: unpause and hand this message to the run under way at its next step.
   { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Add a message to the queue (Undo puts one back with `before`); it waits on the box while paused.
   { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Clear a removal's recovery copy (`receipt`) once the client has used it.
   { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED, 502: REFUSED } },
   // (The coding agents' bridge's, passed on by the box's link as it came.)
   { route: "GET kuvo/agents/api/kuvo/btw/:session/threads", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/agents/api/kuvo/btw/:session/threads/events", feature: "btw.threads.events", answers: { 200: SIDE_THREADS, 404: REFUSED, 503: REFUSED } },
+  // Take a waiting message away, whole, for Edit or Undo; `?receipt=` makes it replayable.
   { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED, 404: object({ message: string, "delivered?": bool }), 409: object({ message: string, "arriving?": bool }), 502: REFUSED, 503: REFUSED } },
 ];

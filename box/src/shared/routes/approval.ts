@@ -1,4 +1,4 @@
-// How much a conversation's agent does on its own, kept on the box (PROTOCOL.md, "Approval").
+// How much a conversation's agent does on its own, kept on the box (PROTOCOL.md, "Per area").
 
 import { bool, type Infer, list, number, object, type RouteShape, string, words } from "../shape";
 
@@ -73,10 +73,16 @@ const REFUSED = object({ message: string });
 const NOT_THAT = object({ message: string, reason: REASON });
 
 export const APPROVAL_ROUTES: RouteShape[] = [
+  // This computer's approval: Full Access confirmed here, the default for new conversations, Auto's state.
   { route: "GET kuvo/approval", feature: "approval", answers: { 200: APPROVAL_HERE } },
+  // Confirms Full Access here (`fullAccess`), or lets your other computers start work here (`otherComputers`).
   { route: "PATCH kuvo/approval", feature: "approval", answers: { 200: APPROVAL_HERE, 400: REFUSED } },
+  // A conversation's approval, what it comes to here now, and what it can be set to (a subagent: its parent's).
   { route: "GET kuvo/sessions/:id/approval", feature: "approval", answers: { 200: SESSION_APPROVAL, 404: REFUSED, 503: REFUSED } },
+  // Sets a conversation's approval (`{approval}`); a subagent's is changed on the conversation that started it.
   { route: "PUT kuvo/sessions/:id/approval", feature: "approval", answers: { 200: SESSION_APPROVAL, 400: REFUSED, 404: REFUSED, 409: NOT_THAT, 502: REFUSED, 503: REFUSED } },
+  // Auto's reviewer's decisions in a conversation, the latest last, and whether Auto is paused there.
   { route: "GET kuvo/sessions/:id/decisions", feature: "approval.reviewer", answers: { 200: REVIEW_DECISIONS } },
+  // `{approve: id}` runs one held back, once; `{revoke: id}` takes a folder back; `{resume}`; `{seen}`.
   { route: "POST kuvo/sessions/:id/decisions", feature: "approval.reviewer", answers: { 200: REVIEW_DECISIONS, 400: REFUSED, 404: REFUSED, 500: REFUSED } },
 ];

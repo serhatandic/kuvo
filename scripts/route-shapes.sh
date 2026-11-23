@@ -2,8 +2,9 @@
 # Writes what's kept from box/src/shared, so it's held by hand in one place only
 # (scripts/route-shapes.ts says how): protocol/vectors/routes/shapes/answers.json, every
 # route's answers, used by both boxes' contract tests (contract-runner.js); and protocol/vectors/routes/features.json,
-# the scenario that holds each box's `kuvo/info` to its features. Run it after changing a shape or a
-# feature, and commit the result. `--check` says whether the files are what the sources write, as
+# the scenario that holds each box's `kuvo/info` to its features; and protocol/ROUTES.md, every route
+# with its comment, for people (not kept in git, and not checked). Run it after changing a route, a
+# shape or a feature, and commit the vectors it writes. `--check` says whether the files are what the sources write, as
 # CI checks. Either refuses a list of features out of order or with a name twice.
 #   BUN   the Bun to run with (as scripts/build-box.sh finds it)
 set -eu

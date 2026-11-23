@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
-const vector = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../protocol/vectors/setup/probe.json", import.meta.url)), "utf8"));
+const vector = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../test/fixtures/setup/probe.json", import.meta.url)), "utf8"));
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-setup-judge-")));
 removeAtEnd(support);
 const home = path.join(support, "box");
@@ -328,7 +328,7 @@ test("a box its Mac removed is no box, whatever's left of it: its keeper still e
 });
 
 test("what in the app's own box folder says a box ran there is the vector's, which the app's tests hold the app's list to", () => {
-  const vector = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../protocol/vectors/routes/setup/own-box-ran.json", import.meta.url)), "utf8"));
+  const vector = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../test/fixtures/routes/setup/own-box-ran.json", import.meta.url)), "utf8"));
   assert.deepEqual(link.OWN_BOX_RAN, vector.files);
 });
 

@@ -106,7 +106,7 @@ Google account): where the per-home sign-in file lands, and macOS.
 
 Built (step 6): the box checks each installed agent's newest version as accounts are read and
 every hour, and keeps its notices in `<agents home>/update-notices.json`, one per program and
-version (`box/src/agents/update-notices.ts`, PROTOCOL.md "Update notices"). Each is told once on
+version (`box/src/agents/update-notices.ts`, PROTOCOL.md "Updates"). Each is told once on
 `kuvo/notices` (category `update`) for macOS and phones, and served at
 `kuvo/agents/api/kuvo/updates/notices` for the notifications bell.
 

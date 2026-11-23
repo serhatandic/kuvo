@@ -1,4 +1,4 @@
-// Integrations (PROTOCOL.md, "Integrations"): Settings › Integrations, each box its own, from the
+// Integrations (PROTOCOL.md, "Per area"): Settings › Integrations, each box its own, from the
 // catalog its Mac leaves in its `bin` (`integrations.json`), with how each is doing there.
 
 import { bool, type Infer, list, NOTHING, object, type RouteShape, string, words } from "../shape";
@@ -55,7 +55,10 @@ export type Integrations = Infer<typeof INTEGRATIONS>;
 export type IntegrationAdded = Infer<typeof INTEGRATION_ADDED>;
 
 export const INTEGRATION_ROUTES: RouteShape[] = [
+  // Every integration this box offers, in the page's order, with how each one added here is doing.
   { route: "GET kuvo/integrations", feature: "integrations", answers: { 200: INTEGRATIONS } },
+  // Adds it, as Connect does (`{keys?}`; those not given stay as kept here); added again, rewrites it.
   { route: "POST kuvo/integrations/:id", feature: "integrations", answers: { 200: INTEGRATION_ADDED } },
+  // Removes it, as Remove… does: it, its sign-in, what its server kept and its keys.
   { route: "DELETE kuvo/integrations/:id", feature: "integrations", answers: { 200: NOTHING } },
 ];

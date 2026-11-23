@@ -1,11 +1,11 @@
-import { PENDING_COMPUTERS } from "./list-computers";
-// What a box's agents made (PROTOCOL.md, `kuvo/artifacts`): a place's list and Timeline, one thing
+// What a box's agents made (PROTOCOL.md, "Per area"): a place's list and Timeline, one thing
 // with its versions, a version's bytes and what it changed, pinning, putting a version back, and
 // what the copies take. The coding agents' bridge keeps the record and answers
 // (src/agents/artifacts/routes.ts), and the box passes its answers on as they are: these are the
 // shapes it answers in. Times are seconds since 1970.
 
 import { bool, BYTES, list, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 const KIND = words("memory", "skill", "image", "page", "document", "download", "code", "file");
 
@@ -82,16 +82,27 @@ export const SETUP_OUTPUTS = object({ ...PENDING_COMPUTERS,
 });
 
 export const ARTIFACT_ROUTES: RouteShape[] = [
+  // Outputs of the conversation and delegated sessions on this setup, from kept owner copies.
   { route: "GET kuvo/setup/outputs", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
 
+  { route: "GET kuvo/setup/outputs/events", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
+  // A scope's things (one of `session=`, `bot=`, `group=`, `project=`), pinned first; page with `before`.
   { route: "GET kuvo/artifacts", feature: "artifacts", answers: { 200: ARTIFACT_LIST } },
+  // Every version made in a scope, newest first, each with its thing; `by=<bot>` for one bot's.
   { route: "GET kuvo/artifacts/timeline", feature: "artifacts", answers: { 200: ARTIFACT_TIMELINE } },
+  // What the copies of versions take on disk, the budget for older ones, and whether free space is low.
   { route: "GET kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },
+  // Sets the budget for older versions' copies (`{budget}`); older ones past it go at once.
   { route: "POST kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },
+  // Clears older versions' copies (`{before?}`, seconds).
   { route: "POST kuvo/artifacts/storage/clear", feature: "artifacts", answers: { 200: object({ cleared: number, copies: number, older: number, budget: number, free: number, floor: number, low: bool }) } },
   { route: "GET kuvo/artifacts/:id", feature: "artifacts", answers: { 200: ARTIFACT } },
+  // Pins it for you, or not (`{pinned, note?}`).
   { route: "POST kuvo/artifacts/:id/pin", feature: "artifacts", answers: { 200: ARTIFACT } },
+  // Writes a version back to the file (`{version}`); what it replaced is kept as a version, to undo it.
   { route: "POST kuvo/artifacts/:id/restore", feature: "artifacts", answers: { 200: ARTIFACT } },
+  // A version's bytes; 410 when it has no copy or was a deletion.
   { route: "GET kuvo/artifacts/:id/versions/:n", feature: "artifacts", answers: { 200: BYTES } },
+  // What a version changed since the one before (or `from=<m>`): words, lines, or a pair to show side by side.
   { route: "GET kuvo/artifacts/:id/versions/:n/changes", feature: "artifacts", answers: { 200: ARTIFACT_CHANGES } },
 ];

@@ -1,4 +1,4 @@
-// A box's folders to choose one from (PROTOCOL.md, `kuvo/folders`), those worth starting in
+// A box's folders to choose one from (`kuvo/folders`), those worth starting in
 // (`kuvo/folders/suggested`), every file under one
 // (`kuvo/folders/tree`), the files under one that what's typed finds (`kuvo/files/find`), npm's plugins its engine can
 // load (`kuvo/plugins/search`), an MCP server's program (`kuvo/programs`), a provider of your
@@ -149,24 +149,41 @@ export const SEARCH_FOUND = object({
 export type SearchFound = Infer<typeof SEARCH_FOUND>;
 
 export const MISC_ROUTES: RouteShape[] = [
+  // The folders in one of this computer's folders, to choose one from (`files=1`: its files too).
   { route: "GET kuvo/folders", feature: "folders", answers: { 200: FOLDER_LIST, 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED } },
+  // Make a new folder where asked.
   { route: "POST kuvo/folders", feature: "folders", answers: { 200: FOLDER_MADE } },
+  // Folders worth starting in here: those agents worked in first, newest first, then repositories.
   { route: "GET kuvo/folders/suggested", feature: "folders.suggested", answers: { 200: FOLDERS_SUGGESTED } },
+  // Every file under a folder, for a project's file filter and "@" (`dated=1`: when each changed).
   { route: "GET kuvo/folders/tree", feature: "folders.tree", answers: { 200: FOLDER_TREE, 400: object({ message: string }), 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED, 503: object({ message: string }) } },
+  // The files under a folder that what's typed finds, best first, and the web address it reads as.
   { route: "GET kuvo/files/find", feature: "files.find", answers: { 200: FILES_FOUND, 400: object({ message: string }), 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED, 503: object({ message: string }) } },
+  // npm packages a search finds, for plugins the engine can load.
   { route: "GET kuvo/plugins/search", feature: "plugins.search", answers: { 200: PLUGIN_SEARCH } },
+  // Whether this computer has the program an MCP server's command names, found as the engine finds it.
   { route: "GET kuvo/programs", feature: "programs", answers: { 200: PROGRAM_FOUND } },
+  // The models a provider of your own lists at its address, asked from this computer.
   { route: "POST kuvo/providers/models", feature: "providers.models", answers: { 200: PROVIDER_MODELS } },
+  // Load a sign-in's return address on the computer it's for, so the sign-in finishes there.
   { route: "POST kuvo/sign-in/return", feature: "sign-in.return", body: object({ url: string, "integration?": string, "attempt?": string, "agents?": bool }), answers: { 200: SIGN_IN_RETURNED, 400: object({ message: string }), 502: object({ message: string }) } },
+  // The ways to sign in to an account, in the order a client offers them.
   { route: "GET kuvo/sign-in/methods", feature: "sign-in.methods", answers: { 200: SIGN_IN_METHODS } },
+  // Every account the engine or the coding agents list, how it stands and what can be done now.
   { route: "GET kuvo/sign-in/accounts", feature: "sign-in.accounts.state", answers: { 200: SIGN_IN_ACCOUNTS } },
+  // One account catalog for Settings and the first run, each source's refusal where it's down.
   { route: "GET kuvo/accounts/catalog", feature: "accounts.catalog", answers: { 200: ACCOUNT_CATALOG } },
+  // Complete or cancel a sign-in, add a key, or connect credentials the computer already has.
   { route: "POST kuvo/sign-in/action", feature: "sign-in.action", body: object({
     action: words("cancel", "complete", "addKey", "external"),
     "attempt?": string, "code?": string, "key?": string, "methodID?": string, "answer?": any,
   }), answers: { 200: any, 400: object({ message: string }) } },
+  // How a started sign-in is going, and what a client says once it ended without signing in.
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
+  // Start signing in by one of an account's ways: its page, code and how it ends.
   { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", body: object({ methodID: string, "answer?": any, "browserReturn?": bool }), answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
+  // Searches reachable computers when asked and names computers whose search could not run.
   { route: "GET kuvo/setup/search", feature: "search.setup", answers: { 200: SEARCH_FOUND } },
+  // Sessions whose conversation has the words searched for, the latest first.
   { route: "GET kuvo/search", feature: "search", answers: { 200: SEARCH_FOUND } },
 ];

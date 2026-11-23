@@ -1,5 +1,5 @@
 // Whether a conversation runs Interactive or on Autopilot, and the calls it made there
-// (PROTOCOL.md, "Autopilot").
+// (PROTOCOL.md, "Per area").
 
 import { bool, type Infer, list, number, object, type RouteShape, string } from "../shape";
 
@@ -27,7 +27,10 @@ const REFUSED = object({ message: string });
 
 export const AUTOPILOT_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 404: REFUSED, 503: REFUSED } },
+  // Turns Autopilot on or off (`{autopilot}`); 502 when the engine didn't take it, and nothing changed.
   { route: "PUT kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Your choice on a call it made (`{decided, choice}`), kept as `yours`; another choice tells the agent.
   { route: "POST kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  // Whether a question heard asked (`{form}`) waits on you; ask before counting or notifying it.
   { route: "POST kuvo/sessions/:id/autopilot/asked", feature: "autopilot", answers: { 200: ASK_WAITING, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
 ];
