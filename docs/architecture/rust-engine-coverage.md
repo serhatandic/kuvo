@@ -211,6 +211,26 @@ Attachment ingest covers the kept bytes and notes. Retention across branch,
 move and removal and the raw-prompt attachment path remain open.
 Engine-swap inbox transfer is independent of the release keeper in 7.2.
 
+### Platform verification
+
+The test builds include `main` through `d967478b2`. Clippy with warnings
+denied passed for the engine, OS and resident crates on macOS, native
+Windows's cross target, WSL GNU and the x86-64 musl build.
+
+| Platform | Binary scenarios | Additional checks |
+| --- | --- | --- |
+| macOS | 27 TypeScript and 27 Rust | Rust resident and session move tests, beta inventory and queue, ten-step differential |
+| WSL GNU | 26 Rust | Rust resident test |
+| Native Windows | 26 Rust | Rust resident test |
+| Linux on Lokum | 26 Rust | Mac-built static musl binary in a foreground container with one CPU, 1 GB and automatic removal |
+
+The live queue test used OpenCode 2.2.6 in scratch homes on all four
+platforms. Lokum's first capped attempt reached the worktree scenarios
+and stopped because the staged Git executable had the wrong basename.
+The passing attempt reused the same prebuilt Rust binary with that
+fixture corrected. The container and both Lokum scratch homes were gone
+afterward. The 16 targeted TypeScript reference tests also passed on macOS.
+
 ### Differential file verdicts
 
 The table assigns all 76 paths reported by the final ten-step desktop comparison.
