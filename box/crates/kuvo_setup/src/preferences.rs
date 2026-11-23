@@ -163,6 +163,32 @@ fn take(value: &Value) -> Option<Take> {
     }
 }
 
+/// Project custom personalities from a retired kit into the local library.
+pub fn project_kit_personalities(kept: &Value, offered: &[Value]) -> Option<Value> {
+    let known: std::collections::HashSet<_> = Library::entries(kept)
+        .map(|entry| entry.id().to_owned())
+        .collect();
+    let imported: Vec<_> = offered
+        .iter()
+        .filter(|entry| entry.get("custom").and_then(Value::as_bool) == Some(true))
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?;
+            if !personality_id(id) || known.contains(id) {
+                return None;
+            }
+            Some(Take::Live(live(
+                id.to_owned(),
+                0,
+                &json!({ "name": entry.get("name"), "description": entry.get("description") }),
+            )?))
+        })
+        .collect();
+    if imported.is_empty() {
+        return None;
+    }
+    Some(Library::merge(Library::entries(kept).chain(imported), 500).document())
+}
+
 impl Library {
     pub fn document(&self) -> Value {
         json!({"kuvo": 1, "personalities": self.personalities, "removed": self.removed})

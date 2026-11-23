@@ -406,7 +406,7 @@ parallel.
 | 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment | setup | 2.1 | 5 ×2 | A |
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
-| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes | move | 1.2, 2.1 | 6 ×2 | C |
+| 2.6 | In progress: repeatable machine-home adoption, beta.1 stored peer projection and layout handoff. Staged Mac app import, setup conversion and golden parity remain. [Coverage](rust-move-coverage.md) | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
 | 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |

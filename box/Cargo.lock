@@ -929,6 +929,8 @@ dependencies = [
  "hostname",
  "http",
  "kuvo_engine",
+ "kuvo_move",
+ "kuvo_os",
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
@@ -977,6 +979,21 @@ dependencies = [
 [[package]]
 name = "kuvo_keeper"
 version = "0.1.0"
+
+[[package]]
+name = "kuvo_move"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "jiff",
+ "kuvo_os",
+ "kuvo_setup",
+ "kuvo_store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "kuvo_os"

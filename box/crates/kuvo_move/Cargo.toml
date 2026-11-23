@@ -1,0 +1,22 @@
+[package]
+name = "kuvo_move"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.22"
+jiff = "0.2"
+kuvo_os = { path = "../kuvo_os" }
+kuvo_setup = { path = "../kuvo_setup" }
+kuvo_store = { path = "../kuvo_store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

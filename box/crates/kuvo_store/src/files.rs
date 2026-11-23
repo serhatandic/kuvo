@@ -133,6 +133,24 @@ pub fn replace_synced(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Retire a file or link without following it. Missing entries are already retired.
+pub fn remove_file_synced(path: &Path) -> io::Result<()> {
+    remove_synced(path, |path| fs::remove_file(path))
+}
+
+/// Retire a directory tree without following its links.
+pub fn remove_tree_synced(path: &Path) -> io::Result<()> {
+    remove_synced(path, platform::remove_tree)
+}
+
+fn remove_synced(path: &Path, remove: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+    match remove(path) {
+        Ok(()) => sync_parent(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(at("retiring", path, error)),
+    }
+}
+
 pub fn sync_parent(file: &Path) -> io::Result<()> {
     let folder = parent(file)?;
     platform::sync_dir(folder).map_err(|error| at("syncing", folder, error))

@@ -69,3 +69,5 @@ pub use actor::{
     SetupRuntime,
 };
 pub use model::{Receipt, SharedKind};
+
+pub use preferences::project_kit_personalities;
