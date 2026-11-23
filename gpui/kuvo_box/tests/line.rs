@@ -181,6 +181,12 @@ impl Transport for StandIn {
                 } })).into_bytes());
             }
         }
+        let local_waiting = "kuvo/waiting/events";
+        let setup_waiting = "kuvo/setup/waiting/counts/events";
+        if let Some(name) = state.names.get(setup_waiting).or_else(|| state.names.get(local_waiting)) {
+            let sessions = usize::from(state.names.contains_key(setup_waiting));
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": { "sessions": sessions, "bots": 0, "queue": 0 } })).into_bytes());
+        }
         state.live = Some(live);
         hold(Closer::nothing());
         Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(BufReader::new(Pipe(receiver, Vec::new()))), closer: Closer::nothing() })
@@ -414,5 +420,15 @@ fn library_follows_a_filtered_setup_topic_on_every_connection() {
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(watch).unwrap();
         let watch: HashMap<String, String> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(watch.values().map(String::as_str).collect::<Vec<_>>(), [expected]);
+    }
+}
+
+#[test]
+fn setup_waiting_counts_include_a_peers_ask_on_first_draw() {
+    let client = BoxClient::new(StandIn::default());
+    let follow = client.follow_waiting();
+    match follow.next_blocking().expect("the waiting count comes") {
+        kuvo_box::follow::Followed::Now(waiting) => assert_eq!(waiting.sessions, 1),
+        kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
     }
 }

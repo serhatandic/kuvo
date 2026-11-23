@@ -728,7 +728,7 @@ fn after_a_gap_a_conversation_starts_again_from_its_newest() {
 
 
 /// What waits on you is followed as the box says it: its counts now, and again as they change
-/// (`kuvo/waiting/events`), with nothing counted here.
+/// (`kuvo/setup/waiting/counts/events`), with nothing counted here.
 #[test]
 fn what_waits_on_you_follows_the_boxs_counts() {
     use kuvo_box::areas::Waiting;
@@ -737,7 +737,7 @@ fn what_waits_on_you_follows_the_boxs_counts() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
         _ => Answer::json(404, json!({})),
     });
-    let lines = stand_in.stream_for("kuvo/waiting/events");
+    let lines = stand_in.stream_for("kuvo/setup/waiting/counts/events");
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_waiting();
     lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();

@@ -631,3 +631,29 @@ test("the Library’s first state includes an away computer’s kept files even 
     } });
   } finally { setup.close(); }
 });
+
+test("the rail’s first waiting count includes a peer’s kept ask", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    const topic = "kuvo/setup/waiting/counts/events";
+    const watch = Buffer.from(JSON.stringify({ waiting: topic })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "waiting", d: { sessions: 1, bots: 0, queue: 0 } });
+  } finally { setup.close(); }
+});
+
+test("the sidebar’s first Needs you list includes a peer’s kept ask", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    const listing = await line(near);
+    expect(listing.listing.needsYou).toEqual([{
+      session: far.session, asks: { kind: "permission", summary: "asks to run a command" },
+    }]);
+  } finally { setup.close(); }
+});

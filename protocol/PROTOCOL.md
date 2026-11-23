@@ -264,13 +264,19 @@ again when opening the line so an existing subscription can switch after a box u
 The merged topic sends full `kuvo/sessions/list` snapshots,
 including the answering box's project order, start project and pending runtimes. Archived
 groups include each peer's archived sessions. If the answering box has no local list yet,
-it can still serve its peers' last snapshots, with a null start project. Every session and
+it can still serve its peers' last snapshots, with a null start project. `needsYou` includes
+peer chat and project asks from the same snapshots. Every session and
 project includes `computer: {id, name}`. Remote rows also carry
 `on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
 `<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
 chooses one row for each session ID. A remote project's `shown`, `total` and `more` are
 computed from the merged rows. Pass the same project key to `GET kuvo/sessions/page` with
 the supplied cursor. The answering box pages its last saved copy even while the peer is away.
+
+Feature `line.merged-waiting` adds `GET kuvo/setup/waiting/counts` and its `/events` topic.
+Each state is `{sessions, bots, queue}`, calculated from the session, bot activity and Work Queue
+copies this box already has, including peer copies in the first state. The count is a setup total.
+The per-computer `kuvo/waiting/events` remains for clients combining per-computer system notifications.
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start

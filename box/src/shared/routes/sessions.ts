@@ -453,6 +453,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/delivery/:message/now", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
   { route: "GET kuvo/setup/sessions/list/events", feature: "line.merged-sessions", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/setup/sessions/events", feature: "line.setup-lists", answers: { 200: SETUP_SESSIONS, 405: REFUSED } },
+  { route: "GET kuvo/setup/waiting/counts", feature: "line.merged-waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/setup/waiting/counts/events", feature: "line.merged-waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/setup/waiting/events", feature: "line.setup-lists", answers: { 200: SETUP_WAITING, 405: REFUSED } },
   { route: "GET kuvo/setup/queues/events", feature: "line.setup-lists", answers: { 200: SETUP_QUEUES, 405: REFUSED } },
   { route: "GET kuvo/setup/runs-on/events", feature: "line.setup-lists", answers: { 200: RUNS_ON, 405: REFUSED } },
