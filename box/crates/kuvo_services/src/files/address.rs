@@ -89,7 +89,7 @@ fn decoded_path(given: &str) -> Option<PathBuf> {
 
 /// An absolute path with `.` and `..` worked out and no trailing separator, as Node's
 /// `path.resolve` gives it.
-fn resolved(path: &Path) -> PathBuf {
+pub(crate) fn resolved(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
