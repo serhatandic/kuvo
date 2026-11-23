@@ -96,6 +96,14 @@ async fn whole(read: &mut BufReader<TcpStream>) -> Value {
     serde_json::from_slice(&rest).unwrap()
 }
 
+async fn advance(duration: Duration) {
+    // A paused runtime can jump to the header timeout while the kernel is
+    // waking a socket. Only pause while changing the clock explicitly.
+    time::pause();
+    time::advance(duration).await;
+    time::resume();
+}
+
 #[tokio::test]
 async fn one_resident_owns_both_listeners_and_replaces_only_its_discovery_record() {
     let home = tempfile::tempdir().unwrap();
@@ -184,7 +192,7 @@ async fn loopback_refuses_without_the_password_or_an_understood_path_and_route_v
     server.stop().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_slow_request_keeps_streaming_http11_alive_without_sending_an_interim_http10_head() {
     let home = tempfile::tempdir().unwrap();
     let mut routes = Registry::new();
@@ -210,11 +218,11 @@ async fn a_slow_request_keeps_streaming_http11_alive_without_sending_an_interim_
         assert!(head(&mut unrelated).await.starts_with("HTTP/1.1 404"));
         if version == "1.1" {
             for _ in 0..2 {
-                time::advance(Duration::from_secs(20)).await;
+                advance(Duration::from_secs(20)).await;
                 assert_eq!(head(&mut held).await, "HTTP/1.1 102 Processing\r\n\r\n");
             }
         } else {
-            time::advance(Duration::from_secs(40)).await;
+            advance(Duration::from_secs(40)).await;
         }
         assert!(
             answer
@@ -231,7 +239,7 @@ async fn a_slow_request_keeps_streaming_http11_alive_without_sending_an_interim_
     server.stop().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_busy_clients_http_connection_lives_past_the_advertised_idle_time() {
     let home = tempfile::tempdir().unwrap();
     let server = Running::start(home.path(), Registry::new().build(LineTiming::default())).await;
@@ -241,7 +249,7 @@ async fn a_busy_clients_http_connection_lives_past_the_advertised_idle_time() {
     let mut body = [0; 2];
     http.read_exact(&mut body).await.unwrap();
     assert_eq!(&body, b"{}");
-    time::advance(Duration::from_secs(7)).await;
+    advance(Duration::from_secs(7)).await;
     let token = STANDARD.encode(format!("opencode:{}", server.record.password));
     http.get_mut().write_all(format!("GET /kuvo/unknown HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic {token}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
     assert!(head(&mut http).await.starts_with("HTTP/1.1 404"));
