@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 621c0437d105
+// Kuvo folder layout 23 ec113a745586
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "621c0437d105";
+var BRIDGE_VERSION = "ec113a745586";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -75639,6 +75639,31 @@ function readForm(name, values, taken) {
   }
   return { ready, fields, name: id, text: skillDocument(id, typeof values.description === "string" ? values.description : "", typeof values.instructions === "string" ? values.instructions : "") };
 }
+async function skillsHere(context) {
+  const known = await facts(context);
+  if (known.problem)
+    return { problem: said6(known.problem, "This computer’s skills couldn’t be read.") };
+  const own = new Set(known.files.map((each) => each.name));
+  const found = known.engine.filter((each) => typeof each.id === "string" && !own.has(each.id)).map((each) => {
+    const where = typeof each.path === "string" ? each.path : undefined;
+    return {
+      id: each.id,
+      title: typeof each.name === "string" && each.name ? each.name : each.id,
+      summary: typeof each.description === "string" ? each.description : "",
+      location: where?.startsWith("/builtin/") ? "Built in" : where
+    };
+  });
+  const trash = await asked5(context, skillsRoute, "GET", "kuvo/skill-trash");
+  const places = valueAt(known.config, ["skills"]);
+  return {
+    problem: undefined,
+    enabled: (name) => !disabled(known.config, name),
+    canSwitch: known.config.permissions === undefined || Array.isArray(known.config.permissions),
+    found,
+    deleted: trash.status === 200 ? trash.value.entries.map((each) => ({ id: String(each.id), title: String(each.name), summary: typeof each.description === "string" ? each.description : "" })) : [],
+    places: Array.isArray(places) ? places.map(String) : []
+  };
+}
 async function page(context) {
   const known = await facts(context);
   if (known.problem)
@@ -80640,8 +80665,7 @@ var init_settings_pages2 = __esm(() => {
     agentsSection.listed,
     vaultSection.listed,
     mcpSection.listed,
-    customAutoSection.listed,
-    skillsSection.listed
+    customAutoSection.listed
   ];
   MODE_NAMES = { askFirst: "Ask First", acceptEdits: "Accept Edits", auto: "Auto", fullAccess: "Full Access" };
   BROWSER_FIELDS = { "search-engine": "searchEngine", tidies: "tidiesAgentTabs", offers: "offersToSave" };
@@ -87974,6 +87998,7 @@ limits.bar
 limits.rings
 limits.titles
 line
+marketplace
 messages.commands
 messages.compaction-words
 messages.send
@@ -97724,7 +97749,7 @@ async function botOptions(agent, engine, bridge) {
 }
 async function addBot(agent, body, readEngine, readBridge) {
   const request = body.request;
-  if (typeof request !== "string" || !requestID.test(request) || !isModel(body.model) || body.model.providerID === "auto" || body.routine !== undefined && typeof body.routine !== "boolean")
+  if (typeof request !== "string" || !requestID.test(request) || !isModel(body.model) || body.model.providerID === "auto" || body.routine !== undefined && typeof body.routine !== "boolean" || body.routines !== undefined && !(Array.isArray(body.routines) && body.routines.every((id) => agent.routines.some((routine) => routine.id === id))))
     return no2(400, "Choose a model and account, and send the original Add request ID.");
   if (body.version !== agent.version)
     return no2(409, "This agent changed. Open its details and review the new version.");
@@ -97760,6 +97785,12 @@ async function addBot(agent, body, readEngine, readBridge) {
       projectBotScope(directory, scope, state);
       if (!agent.routines.length)
         return;
+      const chosen = Array.isArray(body.routines) ? agent.routines.filter((routine) => body.routines.includes(routine.id)) : [];
+      if (chosen.length) {
+        for (const routine of chosen)
+          seedRoutine(folder, routine);
+        return;
+      }
       fs224.writeFileSync(path232.join(folder, "paused"), "paused");
       for (const routine of agent.routines)
         seedRoutine(folder, routine);
@@ -97790,6 +97821,7 @@ var init_bots2 = __esm(() => {
 
 // box/src/link/areas/marketplace.ts
 import fs225 from "node:fs";
+import os22 from "node:os";
 import path233 from "node:path";
 function offerSkill(item) {
   return { name: item.id, origin: "catalog", version: item.version, files: item.files };
@@ -97809,6 +97841,7 @@ function cardSkill(skill) {
 function appCard(app, installed, details = false) {
   const connection = installed ? connectionState(app) : undefined;
   const logo = app.origin === "catalog" && offeredApps().some((each) => each.id === app.id) ? ROOT3 + "/apps/" + app.id + "/logo" : undefined;
+  const status = !installed ? undefined : connection === "ready" ? { words: app.auth === "open" ? "Added" : "Connected", tone: "good" } : connection === "locked" ? { words: "Vault locked", tone: "warning" } : undefined;
   return {
     id: app.id,
     title: app.title,
@@ -97818,6 +97851,7 @@ function appCard(app, installed, details = false) {
     logo,
     installed,
     connection,
+    ...status ? { status } : {},
     ...details ? {
       url: app.url,
       auth: app.auth,
@@ -97887,14 +97921,16 @@ async function catalogView(context, state, query) {
     ...skill,
     origin: "catalog",
     installed: installed.has(skill.id),
-    ...installed.has(skill.id) ? { installedVersion: installed.get(skill.id).version } : {}
+    ...installed.has(skill.id) ? { installedVersion: installed.get(skill.id).version } : { actions: [{ id: "add", title: "Install" }] }
   }));
   const managed = state.skills.filter((skill) => skill.origin !== "catalog" || !catalogNames.has(skill.name)).map((skill) => {
     const shown = cardSkill(skill);
-    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: "Yours" };
+    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: YOUR_SKILLS };
   });
   const local = await localSkills();
   const addedBots = agentBots();
+  const here = await skillsHere(context);
+  const withHere = (items) => here.problem !== undefined ? items : items.map((item) => item.installed ? { ...item, enabled: here.enabled(item.id), ...here.canSwitch ? {} : { switchWhy: "Permissions are set as something other than a list. Change them in the settings file." } } : item);
   return success({
     title: "Marketplace",
     computers: computers(context),
@@ -97909,10 +97945,40 @@ async function catalogView(context, state, query) {
           { id: "auth", title: "Sign-in", choices: [{ id: "open", title: "No sign-in" }, { id: "token", title: "Personal access token" }, { id: "oauth", title: "Sign in with the service" }] }
         ]
       } }]),
-      area("agents", "Agents", offeredAgents().map(({ instructions, ...agent }) => ({ ...agent, botCount: addedBots.get(agent.id)?.length ?? 0 })), query),
-      area("skills", "Skills", [...skills, ...managed, ...local.filter((skill) => !installed.has(skill.id))], query, [{ id: "preview", title: "Preview Skill" }, { id: "create", title: "New Skill" }])
+      area("agents", "Agents", offeredAgents().map(({ instructions, ...agent }) => {
+        const botCount = addedBots.get(agent.id)?.length ?? 0;
+        const needs = agent.apps.map((id) => catalog2().apps.find((app) => app.id === id)?.title ?? id);
+        const detail = [...needs, plural(agent.skills.length, "skill"), ...botCount ? [`${plural(botCount, "bot")} added`] : []].join(" · ");
+        return { ...agent, botCount, detail, actions: [{ id: "add", title: "Add" }] };
+      }), query),
+      {
+        ...area("skills", "Skills", withHere([
+          ...skills,
+          ...managed,
+          ...local.filter((skill) => !installed.has(skill.id)),
+          ...here.problem !== undefined ? [] : here.found.filter((skill) => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some((each) => each.id === skill.id)).map((skill) => ({ ...skill, category: YOUR_SKILLS, origin: "found", installed: true }))
+        ]), query, [{ id: "preview", title: "Add from Link or Folder", form: PREVIEW_FORM }, { id: "create", title: "New Skill", form: CREATE_FORM }]),
+        here: here.problem !== undefined ? { problem: here.problem } : {
+          computer: context.info.name,
+          switchTitle: `Use on ${context.info.name}`,
+          deleted: { title: "Recently Deleted", note: SKILL_DELETION, items: here.deleted, action: { id: "restore", title: "Restore" } },
+          places: {
+            title: "Other Places",
+            note: "A folder, or the address of a skill catalog with an index.json, where agents also find skills.",
+            items: here.places.map((place, index) => ({ id: String(index), title: place })),
+            add: { id: "add", title: "Add Place", form: { title: "Add a Place", submit: "Add", fields: [{ id: "place", title: "A folder, or the address of a skill catalog" }] } },
+            remove: { id: "remove", title: "Remove" }
+          }
+        }
+      }
     ]
   });
+}
+function editForm2(title, markdown) {
+  return { title: `Edit ${title}`, submit: "Save", fields: [
+    { ...USE_IT_WHEN, value: skillAbout(markdown).description ?? "" },
+    { ...INSTRUCTIONS2, value: markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "").trim() }
+  ] };
 }
 function area(id, title, items, query, actions = []) {
   const categories = [...new Set(items.map((item) => item.category))].map((title) => ({ title, count: items.filter((item) => item.category === title).length }));
@@ -97924,6 +97990,7 @@ function area(id, title, items, query, actions = []) {
   return {
     id,
     title,
+    line: LINES[id] ?? "",
     count: items.length,
     categories,
     items: results,
@@ -97949,7 +98016,7 @@ async function localSkills() {
       id,
       title: about.name ?? id,
       summary: about.description ?? "",
-      category: "Yours",
+      category: YOUR_SKILLS,
       origin: "local",
       installed: true,
       source: value.github[id]
@@ -98163,14 +98230,14 @@ async function skillAction(context, id, action, verb, body, skill) {
       ...cardSkill(info),
       title: listed?.title ?? cardSkill(info).name ?? id,
       summary: listed?.summary ?? cardSkill(info).description,
-      category: listed?.category ?? "Yours",
+      category: listed?.category ?? YOUR_SKILLS,
       files: info.files,
       installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
       actions: skill ? [
         { id: "remove", title: "Remove" },
         ...skill.source ? [{ id: "update-preview", title: "Check for Update" }] : [],
-        ...!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit" }] : []
+        ...!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm2(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : []
       ] : [{ id: "add", title: "Install Skill" }]
     });
   }
@@ -98187,7 +98254,25 @@ async function skillAction(context, id, action, verb, body, skill) {
   }
   if (!skill && filesOnThisBox(id)) {
     const legacy = `kuvo/skills/${encodeURIComponent(id)}`;
-    if (verb === "GET" || verb === "DELETE")
+    if (verb === "GET") {
+      const got = await answerSkills("GET", legacy, undefined, null);
+      if (!("text" in got.value))
+        return got;
+      const text = got.value.text;
+      const about = skillAbout(text);
+      return success({
+        id,
+        title: about.name ?? id,
+        summary: about.description ?? "",
+        category: YOUR_SKILLS,
+        origin: "local",
+        installed: true,
+        revision: text,
+        files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha2563(Buffer.from(text)) }],
+        actions: [{ id: "remove", title: "Delete" }, { id: "edit", title: "Edit", form: editForm2(about.name ?? id, text) }]
+      });
+    }
+    if (verb === "DELETE")
       return answerSkills(verb, legacy, body, null);
     if (verb === "PATCH") {
       const old = await answerSkills("GET", legacy, undefined, null);
@@ -98244,7 +98329,12 @@ async function* marketplaceRoute(context) {
       return yield* json(result.status, { ...isObject(result.value) ? result.value : {}, id });
     }
     if (action === "/skills/preview" && verb === "POST") {
-      const skill = typeof body.folder === "string" ? candidate(localSkill(body.folder), "folder") : candidate(await githubSkill(body), "github");
+      const from = typeof body.from === "string" ? body.from.trim() : undefined;
+      const folder = from !== undefined && /^[~/]/.test(from) ? from.replace(/^~(?=\/|$)/, os22.homedir()) : body.folder;
+      if (typeof folder === "string" && !fs225.existsSync(folder))
+        return yield* json(400, { message: "Choose a folder on this computer that contains SKILL.md." });
+      const given = from !== undefined && folder === undefined ? { link: from } : body;
+      const skill = typeof folder === "string" ? candidate(localSkill(folder), "folder") : candidate(await githubSkill(given), "github");
       const preview = stagePreview(skill);
       return yield* json(preview.status, preview.value);
     }
@@ -98256,6 +98346,13 @@ async function* marketplaceRoute(context) {
         return yield* json(409, { message: "A local skill already uses that name." });
       const result = await save5("save-skill", { skill, was: body.was }, context);
       return yield* json(result.status, { ...isObject(result.value) ? result.value : {}, id: skill.name });
+    }
+    if (action === "/skills/restore" && verb === "POST" || action === "/skills/places" && (verb === "POST" || verb === "DELETE")) {
+      const at = action === "/skills/restore" ? `trash-${String(body.id ?? "")}` : verb === "POST" ? "places" : `place-${Number(body.index)}`;
+      if (action === "/skills/places" && verb === "DELETE" && !(Number.isInteger(body.index) && body.index >= 0))
+        return yield* json(400, { message: "Choose a place to remove." });
+      const refused = await skillsSection.act(context, { id: at }, { id: verb === "DELETE" ? "remove" : action === "/skills/restore" ? "restore" : "add", title: "" }, body);
+      return yield* json(refused ? refused.status : 200, refused ? { message: refused.message } : {});
     }
     const match = detailsPath.exec(action);
     if (!match)
@@ -98269,6 +98366,12 @@ async function* marketplaceRoute(context) {
     }
     if (area === "skills" ? !isSkillFolder(id) : !itemID2.test(id))
       return yield* json(404, {});
+    if (area === "skills" && command === "enabled" && verb === "POST") {
+      if (typeof body.on !== "boolean")
+        return yield* json(400, { message: 'Send {"on": true} or false.' });
+      const refused = await skillsSection.change(context, { id: `skill-${id}` }, body.on);
+      return yield* json(refused && "status" in refused ? refused.status : 200, refused && "message" in refused ? { message: refused.message } : { enabled: body.on });
+    }
     if (area === "apps" && command === "logo" && verb === "GET") {
       const logo = offeredApps().find((app) => app.id === id)?.logo;
       if (!logo)
@@ -98292,7 +98395,16 @@ async function* marketplaceRoute(context) {
           bots: agentBots().get(id) ?? [],
           actions: [{ id: "add", title: "Add Agent" }],
           computers: computers(context),
-          labels: { computer: "Runs on", model: "Account and model", routine: "Enable scheduled routines" }
+          labels: {
+            computer: "Runs on",
+            model: "Account and model",
+            routine: "Enable scheduled routines",
+            name: "Name",
+            apps: "Needed apps",
+            routines: "Routines",
+            skills: agent.skills.length ? `Includes ${plural(agent.skills.length, "skill")}: ${agent.skills.join(", ")}` : undefined,
+            off: "Routines stay off until you turn them on."
+          }
         });
       else if (command === "options" && verb === "GET" || command === "add" && verb === "POST") {
         const target = command === "options" ? query.get("computer") : body.computer;
@@ -98309,6 +98421,17 @@ async function* marketplaceRoute(context) {
         }
         const run = command === "options" ? "options" : "add-agent";
         result = peer ? await send2(peer, { method: verb, item: run + "/" + id, body }, context) : await agentAction(agent, run, body, context);
+        if (command === "options" && result.status === 200 && isObject(result.value) && Array.isArray(result.value.missing)) {
+          const name = peer ? computerName2(peer) : local.name;
+          result = success({
+            ...result.value,
+            missing: result.value.missing.map((app) => ({
+              ...app,
+              ...peer ? { connect: false, words: `Connect it on ${name} first` } : { connect: true, words: "Not connected" }
+            })),
+            blocked: result.value.missing.length ? `${plural(result.value.missing.length, "app")} still to connect` : undefined
+          });
+        }
       } else
         result = methodError();
     }
@@ -98330,7 +98453,7 @@ function keepMarketplaceProjection() {
   timer.unref?.();
   return timer;
 }
-var ROOT3 = "kuvo/marketplace", success = (value) => ({ status: 200, value }), missing2 = () => no2(404, "There’s no Marketplace item here."), methodError = () => no2(405, "That action isn’t available."), detailsPath, offeredApps = () => catalog2().apps.filter((app) => app.auth !== "broker"), offeredAgents = () => catalog2().agents.filter((agent) => agent.apps.every((id) => offeredApps().some((app) => app.id === id))), previews, previewID, findPreview = (id) => {
+var ROOT3 = "kuvo/marketplace", success = (value) => ({ status: 200, value }), missing2 = () => no2(404, "There’s no Marketplace item here."), methodError = () => no2(405, "That action isn’t available."), detailsPath, offeredApps = () => catalog2().apps.filter((app) => app.auth !== "broker"), offeredAgents = () => catalog2().agents.filter((agent) => agent.apps.every((id) => offeredApps().some((app) => app.id === id))), YOUR_SKILLS = "Your skills", skillText = (skill) => Buffer.from(skill.files.find((file) => file.path === "SKILL.md").data, "base64").toString("utf8"), USE_IT_WHEN, INSTRUCTIONS2, CREATE_FORM, PREVIEW_FORM, LINES, SKILL_DELETION = "Deleted skills are kept for 30 days, then removed for good.", plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`, previews, previewID, findPreview = (id) => {
   if (typeof id !== "string" || !previewID.test(id))
     return;
   const found = previews.get(id);
@@ -98356,6 +98479,27 @@ var init_marketplace2 = __esm(() => {
   init_forward2();
   init_store3();
   detailsPath = /^\/(apps|agents|skills)\/([^/]+)(?:\/([a-z-]+))?$/;
+  USE_IT_WHEN = {
+    id: "description",
+    title: "Use it when",
+    kind: "lines",
+    placeholder: "Writing release notes from the commits since the last tag",
+    line: "The agent reads this to decide when the skill is needed, and loads the instructions only then."
+  };
+  INSTRUCTIONS2 = {
+    id: "instructions",
+    title: "Instructions",
+    kind: "lines",
+    mono: true,
+    line: "Markdown. Mention any other files in the skill so the agent knows to use them."
+  };
+  CREATE_FORM = { title: "New Skill", submit: "Create Skill", fields: [{ id: "name", title: "Name", placeholder: "release-notes" }, USE_IT_WHEN, INSTRUCTIONS2] };
+  PREVIEW_FORM = { title: "Add a Skill", submit: "Preview", fields: [{ id: "from", title: "GitHub link or folder", placeholder: "https://github.com/owner/repository/tree/main/skill" }] };
+  LINES = {
+    apps: "Connect services once for all your computers.",
+    agents: "Ready-made bots, with their instructions, skills and the apps they need.",
+    skills: "Instructions that teach an agent a task."
+  };
   previews = new Map;
   previewID = /^[0-9a-f]{64}$/;
 });
@@ -104023,7 +104167,7 @@ var init_autopilot = __esm(() => {
 });
 
 // box/src/link/notices/news.ts
-import os22 from "node:os";
+import os23 from "node:os";
 import path243 from "node:path";
 function describePermission(request, home) {
   const what = { edit: "edit files", write: "edit files", patch: "edit files", shell: "run a command", bash: "run a command", read: "read a file", external_directory: "work outside the project", webfetch: "open a web page" }[request.action] ?? request.action;
@@ -104167,7 +104311,7 @@ async function noticeFor(event, get) {
       if (isHiddenRun(where))
         return null;
       const { line: body, whole } = permissionLine(data);
-      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os22.homedir())) }, { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
+      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os23.homedir())) }, { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
     }
     case "form.created": {
       const form = data.form ?? data;
@@ -107145,7 +107289,7 @@ var init_sessions3 = __esm(() => {
 // box/src/link/ownership/resolve.ts
 import { createHash as createHash14 } from "node:crypto";
 import fs237 from "node:fs";
-import os23 from "node:os";
+import os24 from "node:os";
 import path249 from "node:path";
 function replacementOwner(link, key) {
   const roster = acceptedMembership(link);
@@ -107324,7 +107468,7 @@ function announcedBy(link, scope, id) {
 }
 function ownerOf4(ref, {
   link = readLink(),
-  name = os23.hostname()
+  name = os24.hostname()
 } = {}) {
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope)
@@ -113782,7 +113926,7 @@ __export(exports_update, {
 import { spawn as spawn20, spawnSync as spawnSync18 } from "node:child_process";
 import crypto84 from "node:crypto";
 import fs249 from "node:fs";
-import os24 from "node:os";
+import os25 from "node:os";
 import path258 from "node:path";
 function checkRollbackRecords() {
   updateState();
@@ -114226,7 +114370,7 @@ async function update({
     const engineFolder = path258.join(K, "engine", manifest.engine);
     let staged = null;
     if (!fs249.existsSync(path258.join(engineFolder, "opencode"))) {
-      const kind = { x64: "x86_64", arm64: "aarch64" }[os24.arch()];
+      const kind = { x64: "x86_64", arm64: "aarch64" }[os25.arch()];
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
         throw new Error("The release has no engine for this machine.");
@@ -114674,7 +114818,7 @@ var init_update = __esm(() => {
   BACKUP_DAYS = 30 * 86400000;
   OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
   RELEASE_CHECK = 6 * 3600000;
-  ROUND_OFFSET = parseInt(crypto84.createHash("sha256").update(`${os24.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
+  ROUND_OFFSET = parseInt(crypto84.createHash("sha256").update(`${os25.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
 });
 
 // box/src/link/engine/lifetime.ts
@@ -117710,7 +117854,7 @@ var init_zip = __esm(() => {
 import { execFileSync as execFileSync2, spawn as spawn23 } from "node:child_process";
 import crypto87 from "node:crypto";
 import fs257 from "node:fs";
-import os25 from "node:os";
+import os26 from "node:os";
 import path268 from "node:path";
 function allowedSource(url) {
   let parsedURL;
@@ -117742,7 +117886,7 @@ function pinned(system) {
   }
   return PINNED[system];
 }
-function runtimeHere(platform = testSystem() ?? process.platform, arch = os25.arch()) {
+function runtimeHere(platform = testSystem() ?? process.platform, arch = os26.arch()) {
   const system = platform === "linux" ? "linux" : platform === "darwin" ? "darwin" : null;
   if (!system)
     return { unsupported: `The browser runs on Linux and macOS; this machine is ${platform}.` };
@@ -121319,7 +121463,7 @@ var init_bundle2 = __esm(() => {
 
 // box/src/link/areas/info.ts
 import fs272 from "node:fs";
-import os26 from "node:os";
+import os27 from "node:os";
 import path281 from "node:path";
 async function* infoRoute(context) {
   const { readEngine, bridge, info } = context;
@@ -121348,7 +121492,7 @@ function macInfo(engine, started, chats, agents) {
   const moving = movingNow();
   return {
     kind: "mac",
-    name: config?.name || os26.hostname(),
+    name: config?.name || os27.hostname(),
     app: config?.app || MAC_APP_VERSION || "",
     engine: engine.version ?? MAC_ENGINE_VERSION ?? "",
     features: editFeatures(macFeatures()),
@@ -123076,7 +123220,7 @@ var init_computer_backups = __esm(() => {
 });
 
 // box/src/link/server/router.ts
-import os27 from "node:os";
+import os28 from "node:os";
 async function* backupRoutes(context) {
   yield* (await Promise.resolve().then(() => (init_computer_backups(), exports_computer_backups))).computerBackupsRoute(context);
 }
@@ -123091,7 +123235,7 @@ function matchBoxRoute(route, request, phone) {
 function createBoxDispatcher({
   readEngine = readEngineFile,
   readBridge = readBridgeFile,
-  info = { name: os27.hostname() },
+  info = { name: os28.hostname() },
   phonesChanged = () => {},
   hold = null
 } = {}) {
@@ -136116,7 +136260,7 @@ import { once as once3 } from "node:events";
 import { spawn as spawn29 } from "node:child_process";
 import crypto95 from "node:crypto";
 import fs282 from "node:fs";
-import os28 from "node:os";
+import os29 from "node:os";
 import path292 from "node:path";
 import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { parseArgs } from "node:util";
@@ -139973,7 +140117,7 @@ async function run9(owner) {
   });
   const dispatcher = createBoxDispatcher();
   let served;
-  const local = dispatcher.entry({ hold, info: { name: os28.hostname(), ...owner?.info() } });
+  const local = dispatcher.entry({ hold, info: { name: os29.hostname(), ...owner?.info() } });
   if (resident) {
     const password = crypto95.randomBytes(24).toString("hex");
     const server = await listenBox(password, owner.entry(local));
@@ -140165,7 +140309,7 @@ async function run9(owner) {
     const route = (request, actor, signal) => handler(request, actor, signal);
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
-      hello: { v: 1, kind: "machine", name: link.name || os28.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
+      hello: { v: 1, kind: "machine", name: link.name || os29.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
@@ -140174,7 +140318,7 @@ async function run9(owner) {
       send: () => {}
     });
     const handler = dispatcher.entry({
-      info: { name: link.name || os28.hostname() },
+      info: { name: link.name || os29.hostname() },
       phonesChanged: (changed) => host.keepOnly(currentPhonePairings(changed)),
       hold
     });
@@ -140738,7 +140882,7 @@ async function serve(owner) {
   if (IS_MAC)
     macLink.hold = macNoticeHold();
   const dispatcher = createBoxDispatcher();
-  const local = dispatcher.entry({ hold: macLink.hold, info: { name: os28.hostname(), ...owner?.info() } });
+  const local = dispatcher.entry({ hold: macLink.hold, info: { name: os29.hostname(), ...owner?.info() } });
   const server = await listenBox(password, owner ? owner.entry(local) : local);
   const port = server.address().port;
   try {
@@ -141023,7 +141167,7 @@ async function setup() {
     if (!next.phones.length && !peersOf(next).length)
       return current ? next : null;
     next.relay = String(input.relay);
-    next.name = String(input.name || next.name || os28.hostname()).slice(0, 100);
+    next.name = String(input.name || next.name || os29.hostname()).slice(0, 100);
     link = next;
     return next;
   });
@@ -141104,7 +141248,7 @@ function leave(mac) {
 async function pair(relay) {
   if (relay && !IS_MAC && !readLink()?.relay)
     updateLink((current) => {
-      const link = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os28.hostname(), phones: [] };
+      const link = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
       link.sign ??= newSigningSeed();
       link.relay = relay;
       settleOwnSetup(link);
@@ -141118,7 +141262,7 @@ async function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os28.hostname(), phones: [] };
+    const next = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;
