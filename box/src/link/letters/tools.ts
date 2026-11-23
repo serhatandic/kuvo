@@ -79,9 +79,10 @@ const refused = (text: string): ToolAnswer => ({ text, isError: true });
 
 /** Everyone a tool here can name: this box's own agents and its peers', and this box's name among
  * them (null on a Mac, whose agents name no machine). */
+type ToolAgent = ListedAgent & { computer?: string };
 export interface Everyone {
   here: string | null;
-  agents: ListedAgent[];
+  agents: ToolAgent[];
   fresh: boolean;
 }
 
@@ -100,7 +101,14 @@ export async function everyone(place: Pick<ToolPlace, "readEngine">): Promise<Ev
   const link = readLink();
   const fresh = await ownAgentsNow(place.readEngine, link?.id ?? null).catch(() => null);
   const here = IS_MAC ? null : link?.id ?? null;
-  return { here, agents: composeAgents(fresh ?? ownAsLast(link?.id ?? null), here, peersOf(link), readPeerAgents(), movedOf(link)).agents, fresh: fresh !== null };
+  const own = fresh ?? ownAsLast(link?.id ?? null);
+  const peers = peersOf(link), told = readPeerAgents(), moved = movedOf(link);
+  const local = new Set(own.map(agent => agent.session));
+  const agents = composeAgents(own, here, peers, told, moved).agents.map(agent => {
+    const peer = local.has(agent.session) ? null : peerOf(agent.session, peers, told, moved);
+    return peer ? { ...agent, computer: peer.kind === "mac" && agent.machine ? agent.machine : computerName(peer) } : agent;
+  });
+  return { here, agents, fresh: fresh !== null };
 }
 
 /** The conversation a call works for, where it runs: itself, a subagent's (the one that started
@@ -123,13 +131,14 @@ export async function rootOf(session: string | null, targets: Target[]): Promise
 
 /** What an agent is, for one here to read: "bot, on the Mac", "session, here, in api", "session, on
  * devbox". */
-export function whatAgent(agent: ListedAgent, here: string | null): string {
-  const place = (agent.machine ?? null) === here ? (IS_MAC ? "on the Mac" : "here") : agent.machine ? `on ${agent.machine}` : "on the Mac";
+export function whatAgent(agent: ToolAgent, here: string | null): string {
+  const place = agent.computer ? `on ${agent.computer}`
+    : (agent.machine ?? null) === here ? (IS_MAC ? "on the Mac" : "here") : agent.machine ? `on ${agent.machine}` : "on the Mac";
   return `${agent.kind}, ${place}${agent.project ? `, in ${agent.project}` : ""}`;
 }
 
 /** The list, for an agent to read (not the one asking). */
-export function describeAgents(agents: ListedAgent[], caller: string | null, here: string | null): string {
+export function describeAgents(agents: ToolAgent[], caller: string | null, here: string | null): string {
   const others = agents.filter(agent => agent.session !== caller);
   if (!others.length) return "No other agents yet.";
   const lines = others.map(agent => `- ${agent.name} (${whatAgent(agent, here)}) address: ${agent.session}${agent.about ? `: ${agent.about}` : ""}`);
@@ -138,7 +147,7 @@ export function describeAgents(agents: ListedAgent[], caller: string | null, her
 
 const SESSION_ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
 
-type Recipient = { agent: ListedAgent } & ({ local: SessionPlace } | { away: NonNullable<ReturnType<typeof peerFor>> });
+type Recipient = { agent: ToolAgent } & ({ local: SessionPlace } | { away: NonNullable<ReturnType<typeof peerFor>> });
 
 // Names use the directory. An address can also reach a conversation that's older than the last
 // list. Use the same successful lookup for authorization and for the read or send itself.
@@ -165,7 +174,8 @@ async function findAgent(wanted: string, caller: string | null, { agents, here, 
   const abroad = (): Recipient | null => {
     const away = peerFor(session);
     if (!away) return null;
-    return { agent: listed ?? { session, name: rowsBox(session)?.row.title ?? "New session", kind: "session", machine: computerName(away.peer) }, away };
+    const agent = listed ?? { session, name: rowsBox(session)?.row.title ?? "New session", kind: "session" as const };
+    return { agent: { ...agent, computer: listed?.computer ?? computerName(away.peer) }, away };
   };
   const targets = () => targetsOf(place);
   let local: SessionPlace | null;
@@ -229,7 +239,7 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
   const peer = kept?.peer ?? (found && "away" in found ? found.away.peer.key : undefined);
   const at = kept?.at ?? Date.now();
   const id = kept?.id ?? (peer && place.operation ? "ltr_" + place.operation.slice(0, 22) : messageID(at));
-  const machine = kept?.machine ?? found?.agent.machine;
+  const machine = kept?.machine ?? found?.agent.computer;
   const progress = { session: target.session, name: target.name, sender, id, at, peer, machine };
   if (!kept && journal) journal.keep(progress);
   if (kept?.answer) return said(kept.answer);

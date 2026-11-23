@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.
 - Adding a Mac over SSH starts the engine in time to verify the installation and copy sign-ins.
 - The main Mac assigns Work Queue numbers after startup using its saved relay lease.
 - One-shot SSH requests can report whether coding agents need a restart to enter the sandbox.
