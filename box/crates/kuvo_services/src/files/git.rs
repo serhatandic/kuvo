@@ -40,7 +40,10 @@ pub(crate) struct Listed {
 /// The files git has in `folder` (tracked and new, without what it ignores, names as they are), as
 /// many as `limit`, git stopped once there are enough. None where git failed (outside a repository).
 pub(crate) async fn names(folder: &Path, limit: usize) -> Option<Listed> {
-    let mut child = Command::new("git")
+    let mut git = Command::new("git");
+    #[cfg(windows)]
+    git.args(["-c", "core.longpaths=true"]);
+    let mut child = git
         .args(["-c", "core.quotepath=off"])
         .args(OWN)
         .args([
