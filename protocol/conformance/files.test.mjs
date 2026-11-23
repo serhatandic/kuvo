@@ -1,6 +1,6 @@
 // Files and folders (rust-box.md row 6.3a): a file's info, text and bytes, the same from both boxes.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
@@ -181,6 +181,29 @@ test("a file's info, text and bytes", async t => {
     }
     const home = await ask("GET", "kuvo/folders?path=~");
     assert.equal(home.json.path, home.json.home);
+  });
+
+  await t.test("names in other scripts, in the root collation's order", async () => {
+    const names = ["Ölçü", "ıspanak", "İzmir", "ilk", "zebra", "Ärger", "ça", "cz", "日本", "中文", "한국", "Δέλτα", "alpha", "Привет",
+      "ябло", "العربية", "file10", "file9", "_x", "ﬁle", "😀", "a b", "ab"];
+    const top = make(path.join(realpathSync(root), "scripts"), names.map(name => `${name}/x`));
+    const reply = await ask("GET", `kuvo/folders?path=${encodeURIComponent(top)}`);
+    assert.deepEqual(reply.json.folders.map(each => each.name), ["_x", "😀", "a b", "ab", "alpha", "Ärger", "ça", "cz", "ﬁle", "file9", "file10",
+      "ilk", "İzmir", "ıspanak", "Ölçü", "zebra", "Δέλτα", "Привет", "ябло", "العربية", "한국", "中文", "日本"]);
+  });
+
+  await t.test("a folder that can't be read for another reason says the system's words", async () => {
+    const top = path.join(realpathSync(root), "unreadable");
+    mkdirSync(top);
+    const loop = path.join(top, "loop");
+    symlinkSync(loop, loop);
+    const long = path.join(top, "x".repeat(300));
+    for (const [at, reason] of [[loop, "Too many symbolic links encountered"], [long, "Name too long"]]) {
+      for (const route of [`kuvo/folders?path=${encodeURIComponent(at)}`, `kuvo/folders/tree?path=${encodeURIComponent(at)}`]) {
+        const reply = await ask("GET", route);
+        assert.deepEqual([reply.status, reply.json], [500, { message: `${at} can't be read here.`, reason }], route);
+      }
+    }
   });
 
   await t.test("a new folder where asked", async () => {

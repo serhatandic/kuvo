@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::address::{Query, resolved};
 use super::git;
-use super::order::by_name;
+use super::order::FinderOrder;
 
 /// How many files a tree lists at most.
 pub(crate) const TREE_LIMIT: usize = 20_000;
@@ -100,22 +100,84 @@ pub(crate) fn refusal(at: &Path, error: &io::Error) -> Refusal {
     )
 }
 
-/// The system's own words for an error, capitalized, without its number.
+/// The system's reason for an error, as Node says it (libuv's words, capitalized), so a client
+/// shows the same words from either box.
 fn said(error: &io::Error) -> String {
-    let text = error.to_string();
-    let text = text
-        .split(" (os error")
-        .next()
-        .unwrap_or("")
-        .split(',')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_owned();
-    let mut letters = text.chars();
+    let words = platform::libuv_words(error).map_or_else(
+        || {
+            error
+                .to_string()
+                .split(" (os error")
+                .next()
+                .unwrap_or("")
+                .to_owned()
+        },
+        str::to_owned,
+    );
+    let words = words.split(',').next().unwrap_or("").trim();
+    let mut letters = words.chars();
     match letters.next() {
         Some(first) => first.to_uppercase().chain(letters).collect(),
         None => "It couldn't be read".to_owned(),
+    }
+}
+
+#[cfg(unix)]
+mod platform {
+    /// libuv's message for an error number (`uv_strerror`), as Node's errors carry it.
+    pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
+        Some(match error.raw_os_error()? {
+            libc::E2BIG => "argument list too long",
+            libc::EACCES => "permission denied",
+            libc::EAGAIN => "resource temporarily unavailable",
+            libc::EBADF => "bad file descriptor",
+            libc::EBUSY => "resource busy or locked",
+            libc::ECANCELED => "operation canceled",
+            libc::EEXIST => "file already exists",
+            libc::EFAULT => "bad address in system call argument",
+            libc::EFBIG => "file too large",
+            libc::EILSEQ => "illegal byte sequence",
+            libc::EINTR => "interrupted system call",
+            libc::EINVAL => "invalid argument",
+            libc::EIO => "i/o error",
+            libc::EISDIR => "illegal operation on a directory",
+            libc::ELOOP => "too many symbolic links encountered",
+            libc::EMFILE => "too many open files",
+            libc::ENAMETOOLONG => "name too long",
+            libc::ENFILE => "file table overflow",
+            libc::ENODEV => "no such device",
+            libc::ENOENT => "no such file or directory",
+            libc::ENOMEM => "not enough memory",
+            libc::ENOSPC => "no space left on device",
+            libc::ENOSYS => "function not implemented",
+            libc::ENOTDIR => "not a directory",
+            libc::ENOTEMPTY => "directory not empty",
+            libc::ENOTSUP => "operation not supported on socket",
+            libc::ENXIO => "no such device or address",
+            libc::EOVERFLOW => "value too large for defined data type",
+            libc::EPERM => "operation not permitted",
+            libc::EROFS => "read-only file system",
+            libc::ETIMEDOUT => "connection timed out",
+            _ => return None,
+        })
+    }
+}
+
+#[cfg(not(unix))]
+mod platform {
+    use std::io::ErrorKind;
+
+    /// libuv's message for the error libuv maps a Windows error to, by its kind.
+    pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
+        Some(match error.kind() {
+            ErrorKind::FilesystemLoop => "too many symbolic links encountered",
+            ErrorKind::InvalidFilename => "name too long",
+            ErrorKind::ResourceBusy => "resource busy or locked",
+            ErrorKind::OutOfMemory => "not enough memory",
+            ErrorKind::TimedOut => "connection timed out",
+            ErrorKind::InvalidInput => "invalid argument",
+            _ => return None,
+        })
     }
 }
 
@@ -186,8 +248,9 @@ pub(crate) fn list(places: &Places, query: &Query) -> Result<FolderList, Refusal
             files.push(name);
         }
     }
-    folders.sort_by(|a, b| by_name(&a.name, &b.name));
-    files.sort_by(|a, b| by_name(a, b));
+    let order = FinderOrder::new();
+    folders.sort_by(|a, b| order.compare(&a.name, &b.name));
+    files.sort_by(|a, b| order.compare(a, b));
     let (files, file_entries) = if panel {
         let entries = files
             .iter()
