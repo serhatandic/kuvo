@@ -84,15 +84,48 @@ fn publish(
     through: Option<&Path>,
     operation: fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    publish_prepared(path, bytes, through, operation, platform::private_file)
+    publish_prepared(path, through, operation, platform::private_file, |file| {
+        file.write_all(bytes)
+    })
+}
+
+/// Generate a private file without buffering it in memory. Incomplete output
+/// stays in the temporary file and never replaces the destination.
+pub fn write_generated(
+    path: &Path,
+    generate: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    publish_prepared(
+        path,
+        None,
+        platform::replace,
+        platform::private_file,
+        generate,
+    )
+    .map_err(|error| at("generating", path, error))
+}
+
+/// Stream a private file into a new name, leaving any existing entry in place.
+pub fn write_generated_new(
+    path: &Path,
+    generate: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    publish_prepared(
+        path,
+        None,
+        platform::publish_new,
+        platform::private_file,
+        generate,
+    )
+    .map_err(|error| at("generating new file", path, error))
 }
 
 fn publish_prepared(
     path: &Path,
-    bytes: &[u8],
     through: Option<&Path>,
     operation: fn(&Path, &Path) -> io::Result<()>,
     prepare: impl FnOnce(&fs::File) -> io::Result<()>,
+    generate: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let folder = parent(path)?;
     let through = match through {
@@ -107,7 +140,7 @@ fn publish_prepared(
         .prefix(DRAFT_PREFIX)
         .tempfile_in(folder)?;
     prepare(temp.as_file())?;
-    temp.write_all(bytes)?;
+    generate(temp.as_file_mut())?;
     temp.flush()?;
     temp.as_file().sync_all()?;
     // Close the writable handle before replacement. TempPath cleans up the
@@ -141,6 +174,23 @@ pub fn replace_synced(from: &Path, to: &Path) -> io::Result<()> {
         sync_parent(from)?;
     }
     Ok(())
+}
+
+/// Restore a link in a private staged tree before publishing the directory.
+pub fn restore_symbolic_link(path: &Path, relative: &Path, directory: bool) -> io::Result<()> {
+    if relative.has_root() || relative.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected a relative link",
+        ));
+    }
+    platform::restore_symbolic_link(path, relative, directory)?;
+    sync_parent(path)
+}
+
+pub fn restore_hard_link(path: &Path, target: &Path) -> io::Result<()> {
+    fs::hard_link(target, path)?;
+    sync_parent(path)
 }
 
 /// Publish a staged Mac entry without replacing an entry that appeared at its destination.
@@ -284,6 +334,16 @@ pub fn file_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
     }
 }
 
+/// Open a managed payload without following its leaf or reading a file shared
+/// with another path through a hard link.
+pub fn open_payload(path: &Path) -> io::Result<fs::File> {
+    platform::open_payload(path).map_err(|error| at("opening managed file", path, error))
+}
+
+pub fn opened_file_stamp(file: &fs::File) -> io::Result<FileStamp> {
+    platform::opened_file_stamp(file)
+}
+
 /// Copy a legacy Mac entry into private staging, preserving modes and links.
 /// The source is left in place. The caller owns the unpublished staging tree.
 #[cfg(target_os = "macos")]
@@ -328,9 +388,13 @@ pub fn rewrite_mac_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
         ));
     }
     let mode = entry.permissions().mode() & 0o777;
-    publish_prepared(path, bytes, None, platform::replace, |file| {
-        file.set_permissions(fs::Permissions::from_mode(mode))
-    })
+    publish_prepared(
+        path,
+        None,
+        platform::replace,
+        |file| file.set_permissions(fs::Permissions::from_mode(mode)),
+        |file| file.write_all(bytes),
+    )
     .map_err(|error| at("rewriting", path, error))
 }
 
@@ -351,4 +415,57 @@ pub fn repoint_mac_link(path: &Path, target: &Path) -> io::Result<()> {
     replace_synced(&link, path)?;
     draft.close()?;
     sync_parent(path)
+}
+
+/// Seal a byte range in a private staging file. The caller serializes access
+/// and publishes progress separately, after this write has reached disk.
+pub fn write_staged_range(path: &Path, offset: u64, bytes: &[u8]) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    let write = || {
+        let mut file = open_staged(path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    };
+    write().map_err(|error| at("staging bytes in", path, error))
+}
+
+/// Seal a line in a private append-only staging journal. An interrupted
+/// write can leave at most a partial last line, which the next append drops.
+pub fn append_staged_line(path: &Path, complete_length: u64, line: &[u8]) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    let write = || {
+        let mut file = open_staged(path)?;
+        let length = file.metadata()?.len();
+        if length < complete_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "staging journal was shortened",
+            ));
+        }
+        if length > complete_length {
+            file.set_len(complete_length)?;
+        }
+        file.seek(SeekFrom::Start(complete_length))?;
+        file.write_all(line)?;
+        file.sync_all()
+    };
+    write().map_err(|error| at("adding a staging journal entry to", path, error))
+}
+
+fn open_staged(path: &Path) -> io::Result<fs::File> {
+    match fs::symlink_metadata(path) {
+        Ok(entry) if entry.is_file() => fs::OpenOptions::new().write(true).open(path),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular staging file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            write_new(path, &[])?;
+            fs::OpenOptions::new().write(true).open(path)
+        }
+        Err(error) => Err(error),
+    }
 }

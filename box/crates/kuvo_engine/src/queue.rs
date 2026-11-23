@@ -2,12 +2,13 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use http::{Method, StatusCode};
 use kuvo_protocol::routes::{
     delete_kuvo_sessions_id_queue_item as remove, get_kuvo_sessions_id_queue as read,
@@ -21,6 +22,7 @@ use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteCall, RouteReply};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, watch};
 
 use crate::{
@@ -376,6 +378,10 @@ impl QueueStore {
 }
 
 impl Queue {
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused
+    }
+
     fn shown_in_overview(&self) -> bool {
         self.paused || !self.held.is_empty() || !self.waiting.is_empty()
     }
@@ -785,6 +791,7 @@ pub(crate) async fn hold_on(
     given: Vec<String>,
     stopping: bool,
 ) -> Result<Value, Refusal> {
+    let _admitted = crate::session_move::admit(engine, session, None).await?;
     if stopping || !given.is_empty() {
         engine
             .queues
@@ -942,16 +949,32 @@ pub(crate) async fn advance(
 
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
+    let _admitted = crate::session_move::admit(engine, session, None).await?;
     let lease = command_target(engine, session).await?;
+    resume_on(engine, &lease, session).await
+}
+
+pub(crate) async fn resume_move(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    movement: &str,
+) -> Result<(), Refusal> {
+    let _turn = engine.turn(session).await;
+    let _admitted = crate::session_move::admit(engine, session, Some(movement)).await?;
+    resume_on(engine, lease, session).await.map(|_| ())
+}
+
+async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Value, Refusal> {
     let saved = engine
         .queues
         .put(session, Queue::release)
         .await
         .map_err(save_failed)?;
-    let inbox = inbox(engine, &lease, session).await.map_err(queue_failed)?;
+    let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
     let order = saved.order(&inbox);
     if let Some(id) = order.first() {
-        advance(engine, &lease, session, id, true).await?;
+        advance(engine, lease, session, id, true).await?;
     }
     Ok(engine
         .queues
@@ -959,6 +982,303 @@ async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> 
         .await
         .map_err(save_failed)?
         .shown(&engine.home))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CarriedQueue {
+    paused: bool,
+    held: Vec<String>,
+    waiting: Vec<CarriedWaiting>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit_stop: Option<LimitStop>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    user_paused: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CarriedWaiting {
+    shown: Waiting,
+    message: Prompt,
+}
+
+pub(crate) async fn pack_move(
+    engine: &Engine,
+    lease: &Lease,
+    sessions: &[String],
+) -> io::Result<BTreeMap<String, Value>> {
+    let mut packed = BTreeMap::new();
+    for session in sessions {
+        let state = engine.queues.get(session).await?;
+        let entries = inbox(engine, lease, session)
+            .await
+            .map_err(io::Error::other)?;
+        if !state.paused && !entries.is_empty() {
+            return Err(unreadable_move_queue());
+        }
+        if !state.paused && state.waiting.is_empty() {
+            continue;
+        }
+        if state
+            .waiting
+            .iter()
+            .map(|item| &item.id)
+            .collect::<HashSet<_>>()
+            .len()
+            != state.waiting.len()
+        {
+            return Err(unreadable_move_queue());
+        }
+        let mut ids = BTreeMap::new();
+        let mut waiting = Vec::new();
+        for id in state.order(&entries) {
+            let carried = if let Some(shown) = state.waiting.iter().find(|row| row.id == id) {
+                let mut message = engine
+                    .queues
+                    .waiting_prompt(id)
+                    .await?
+                    .ok_or_else(unreadable_move_queue)?;
+                message.files = carry_prompt_files(std::mem::take(&mut message.files)).await?;
+                let mut shown = shown.clone();
+                shown.files = file_names(&message.files);
+                CarriedWaiting { shown, message }
+            } else {
+                let entry = entries
+                    .iter()
+                    .find(|entry| entry.id == id && entry.kind.as_deref() == Some("user"))
+                    .ok_or_else(unreadable_move_queue)?;
+                let own_id = if send::valid_id(id) {
+                    id.into()
+                } else {
+                    format!("msg_{}", &hex::encode(Sha256::digest(id.as_bytes()))[..32])
+                };
+                let files = carry_prompt_files(entry.files().to_owned()).await?;
+                let (words, from) = entry.shown();
+                CarriedWaiting {
+                    shown: Waiting {
+                        id: own_id,
+                        text: words,
+                        from,
+                        files: file_names(&files),
+                        at: disk::now(),
+                    },
+                    message: Prompt {
+                        id: String::new(),
+                        text: entry.text().ok_or_else(unreadable_move_queue)?.into(),
+                        delivery: Delivery::Queue,
+                        files,
+                        metadata: entry.metadata().cloned(),
+                    },
+                }
+            };
+            let mut carried = carried;
+            carried.message.id = carried.shown.id.clone();
+            ids.insert(id, carried.shown.id.clone());
+            waiting.push(carried);
+        }
+        if ids.values().collect::<HashSet<_>>().len() != ids.len() {
+            return Err(unreadable_move_queue());
+        }
+        let carried = CarriedQueue {
+            paused: state.paused,
+            held: state
+                .held
+                .iter()
+                .filter_map(|id| ids.get(id.as_str()).cloned())
+                .collect(),
+            order: if state.order.is_empty() {
+                Vec::new()
+            } else {
+                waiting.iter().map(|entry| entry.shown.id.clone()).collect()
+            },
+            waiting,
+            limit_stop: state.limit_stop,
+            user_paused: state.user_paused == Some(true),
+        };
+        packed.insert(session.clone(), serde_json::to_value(carried)?);
+    }
+    Ok(packed)
+}
+
+pub(crate) async fn place_move(
+    engine: &Engine,
+    sessions: &[String],
+    wanted: BTreeMap<String, Value>,
+) -> io::Result<Vec<String>> {
+    let mut all_ids = HashSet::new();
+    let mut queues = BTreeMap::new();
+    for (id, row) in wanted {
+        let mut row: CarriedQueue = serde_json::from_value(row)?;
+        let mut ids = HashSet::new();
+        if !sessions.contains(&id) {
+            return Err(unreadable_move_queue());
+        }
+        for carried in &mut row.waiting {
+            if carried.shown.id != carried.message.id
+                || !send::valid_id(&carried.shown.id)
+                || !all_ids.insert(carried.shown.id.clone())
+            {
+                return Err(unreadable_move_queue());
+            }
+            ids.insert(carried.shown.id.clone());
+            portable_files(&carried.message.files)?;
+            engine.queues.waiting_prompt(&carried.shown.id).await?;
+        }
+        if row
+            .held
+            .iter()
+            .chain(&row.order)
+            .any(|id| !ids.contains(id))
+            || row.order.iter().collect::<HashSet<_>>().len() != row.order.len()
+        {
+            return Err(unreadable_move_queue());
+        }
+        queues.insert(id, row);
+    }
+    let mut unpaused = Vec::new();
+    for (id, row) in queues {
+        let _turn = engine.turn(&id).await;
+        forget_moved(engine, &id).await?;
+        for waiting in &row.waiting {
+            engine.queues.save_waiting(&waiting.message).await?;
+        }
+        engine
+            .queues
+            .put(&id, |state| {
+                state.paused = true;
+                state.waiting = row.waiting.into_iter().map(|item| item.shown).collect();
+                state.held = row.held;
+                state.order = row.order;
+                state.limit_stop = row.limit_stop.filter(|_| row.paused);
+                state.user_paused = (row.paused && row.user_paused).then_some(true);
+            })
+            .await?;
+        if !row.paused {
+            unpaused.push(id);
+        }
+    }
+    Ok(unpaused)
+}
+
+pub(crate) async fn forget_moved(engine: &Engine, session: &str) -> io::Result<()> {
+    let state = engine.queues.get(session).await?;
+    for entry in &state.waiting {
+        engine.queues.waiting_prompt(&entry.id).await?;
+    }
+    engine
+        .queues
+        .put(session, |queue| *queue = Queue::default())
+        .await?;
+    for entry in state.waiting {
+        let path = engine.queues.waiting_file(&entry.id)?;
+        tokio::task::spawn_blocking(move || kuvo_store::files::remove_file_synced(&path)).await??;
+    }
+    Ok(())
+}
+
+fn portable_files(files: &[Value]) -> io::Result<Vec<Value>> {
+    let portable = sendable(files);
+    if portable.len() != files.len()
+        || portable.iter().any(|file| {
+            !file["uri"].as_str().is_some_and(|uri| {
+                uri.starts_with("data:")
+                    && uri
+                        .split_once(',')
+                        .is_some_and(|(kind, _)| kind.ends_with(";base64"))
+            })
+        })
+    {
+        return Err(unreadable_move_queue());
+    }
+    Ok(portable)
+}
+
+async fn carry_prompt_files(files: Vec<Value>) -> io::Result<Vec<Value>> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || files.iter().map(carry_prompt_file).collect()).await?
+}
+
+fn carry_prompt_file(file: &Value) -> io::Result<Value> {
+    const MAX: u64 = 20 * 1024 * 1024;
+    let name = file["name"].as_str();
+    let uri = file
+        .pointer("/source/uri")
+        .and_then(Value::as_str)
+        .or_else(|| file["uri"].as_str());
+    let mime = file["mime"].as_str().filter(|mime| !mime.is_empty());
+    let (uri, name) = if let Some(uri) = uri.filter(|uri| {
+        uri.starts_with("data:")
+            && uri
+                .split_once(',')
+                .is_some_and(|(label, _)| label.ends_with(";base64"))
+    }) {
+        (uri.to_owned(), name.map(str::to_owned))
+    } else if let Some(data) = file["data"].as_str() {
+        let mime = mime.unwrap_or("application/octet-stream");
+        (
+            format!("data:{mime};base64,{data}"),
+            name.map(str::to_owned),
+        )
+    } else {
+        let path = uri
+            .filter(|uri| uri.starts_with("file:"))
+            .and_then(|uri| url::Url::parse(uri).ok())
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(unreadable_move_queue)?;
+        let before = std::fs::metadata(&path).map_err(|_| unreadable_move_queue())?;
+        if !before.is_file() || before.len() > MAX {
+            return Err(unreadable_move_queue());
+        }
+        let file = std::fs::File::open(&path).map_err(|_| unreadable_move_queue())?;
+        let mut bytes = Vec::with_capacity(before.len() as usize);
+        file.take(MAX + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unreadable_move_queue())?;
+        if bytes.len() as u64 != before.len() {
+            return Err(unreadable_move_queue());
+        }
+        let mime = mime.unwrap_or_else(|| carried_mime(&path));
+        let name = name
+            .or_else(|| path.file_name().and_then(|name| name.to_str()))
+            .map(str::to_owned);
+        (
+            format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
+            name,
+        )
+    };
+    let mut carried = json!({"uri":uri});
+    if let Some(name) = name {
+        carried["name"] = name.into();
+    }
+    Ok(carried)
+}
+
+fn carried_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("heic") => "image/heic",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        Some("md") => "text/markdown",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+fn unreadable_move_queue() -> io::Error {
+    io::Error::other("Some messages waiting to be sent didn’t come through. Try again.")
 }
 
 fn queue_item(call: &RouteCall<()>) -> Result<String, Refusal> {
@@ -1124,6 +1444,7 @@ where
     let session = sessions::id(&call)?;
     let id = queue_item(&call)?;
     let _turn = engine.turn(&session).await;
+    let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let lease = command_target(engine, &session).await?;
     if !advance(engine, &lease, &session, &id, immediately).await? {
         return Err(not_waiting());
@@ -1157,6 +1478,7 @@ async fn reorder_reply(
         )
     })?;
     let _turn = engine.turn(&session).await;
+    let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let lease = command_target(engine, &session).await?;
     let inbox = inbox(engine, &lease, &session)
         .await
@@ -1291,6 +1613,7 @@ async fn remove_reply(
         ));
     }
     let _turn = engine.turn(&session).await;
+    let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let file = removal_file(engine, &session, &id);
     let current = engine.queues.get(&session).await.map_err(save_failed)?;
     if let Some(token) = &token
@@ -1532,6 +1855,11 @@ impl Engine {
         let mut moved = 0;
         for session in ids {
             let _turn = self.turn(&session).await;
+            let _admitted = crate::session_move::admit(self, &session, None)
+                .await
+                .map_err(|_| {
+                    io::Error::other("An engine inbox cannot move while its conversation is held")
+                })?;
             moved += transfer(self, &lease, &session).await?;
         }
         Ok(moved)
@@ -1549,6 +1877,9 @@ impl Engine {
                 continue;
             }
             let _turn = self.turn(&session).await;
+            let Ok(_admitted) = crate::session_move::admit(self, &session, None).await else {
+                continue;
+            };
             if self
                 .call::<Value>(&lease, Method::GET, &sessions::path(&session), None)
                 .await
@@ -2039,6 +2370,9 @@ enum QueueEvent {
 
 async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -> io::Result<()> {
     let _turn = engine.turn(session).await;
+    let Ok(_admitted) = crate::session_move::admit(engine, session, None).await else {
+        return Ok(());
+    };
     if matches!(operation, QueueEvent::Discard) {
         return engine.queues.discard(session).await;
     }

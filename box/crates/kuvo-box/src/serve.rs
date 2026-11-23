@@ -67,25 +67,25 @@ pub async fn run(
         bootstrap.devices
     };
     let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
-    let peers = Arc::new(
-        ResidentPeers::start(
-            home,
-            roster,
-            relay,
-            Some(devices.clone()),
-            kind == ComputerKind::Mac,
-            Arc::new(system_clock),
-        )
-        .await?,
-    );
-    peers.follow_setup_roster(setup.handle().rosters()).await;
-    let accepted = setup.handle();
+    let mut peers = ResidentPeers::start(
+        home,
+        roster,
+        relay,
+        Some(devices.clone()),
+        kind == ComputerKind::Mac,
+        Arc::new(system_clock),
+    )
+    .await?;
+    let authority = setup.handle();
     let owners = kuvo_peers::ownership::Handle::new(
         peers.reader(),
         peers.relay_handle(),
         devices.clone(),
-        move || accepted.ownership_state(),
+        move || authority.ownership_state(),
     );
+    peers.attach_moves(engine.clone(), owners.clone()).await?;
+    let peers = Arc::new(peers);
+    peers.follow_setup_roster(setup.handle().rosters()).await;
     let engine = engine
         .with_session_ownership(Arc::new(super::session_ownership::OwnerPort(
             owners.clone(),
@@ -174,6 +174,7 @@ pub async fn run(
         None, // Row 6.2 supplies the resident vault holder.
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();

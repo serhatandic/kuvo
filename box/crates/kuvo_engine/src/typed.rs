@@ -321,6 +321,9 @@ pub(crate) async fn submit(
                     .ok()
                     .and_then(|body| serde_json::from_slice(&body.to_bytes()).ok())
                     .unwrap_or_default();
+                if crate::session_move::refused(reply.status, &value) {
+                    return Err(Refusal::json(reply.status, value));
+                }
                 let mut refused = if unconfirmed {
                     json!({ "ambiguous": true })
                 } else {

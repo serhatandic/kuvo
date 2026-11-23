@@ -220,6 +220,14 @@ pub(crate) async fn http(
 
 async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationToken) -> Reply {
     let path = request.path.split('?').next().unwrap_or_default();
+    let _admitted = if let Some(id) = crate::session_move::prompt_target(&request.method, path) {
+        match crate::session_move::admit(&engine, &id, None).await {
+            Ok(write) => Some(write),
+            Err(error) => return error.reply(),
+        }
+    } else {
+        None
+    };
     let demand = match path {
         "api/event" | "api/session/active" => Demand::Passive,
         _ => Demand::Start,

@@ -417,7 +417,7 @@ async fn finish(
             (status, body)
         }
     };
-    if response["ambiguous"] == true {
+    if response["ambiguous"] == true || crate::session_move::refused(status, &response) {
         return Ok(false);
     }
     saved.receipt.outcome =

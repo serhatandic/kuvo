@@ -173,6 +173,9 @@ async fn release(engine: &Engine, session: &str, reset: u64) -> io::Result<()> {
     if !saved.limit_stop.as_ref().is_some_and(is_ours) || reset > disk::now() {
         return Ok(());
     }
+    let Ok(_admitted) = crate::session_move::admit(engine, session, None).await else {
+        return Ok(());
+    };
     let Some(lease) = engine.acquire(Demand::Passive).await else {
         return Ok(());
     };
