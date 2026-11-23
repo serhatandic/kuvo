@@ -99,7 +99,11 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let fields = serde_json::from_slice(bytes).map_err(Error::Invalid)?;
+        Self::read_from(bytes)
+    }
+
+    pub(crate) fn read_from(input: impl std::io::Read) -> Result<Self, Error> {
+        let fields = serde_json::from_reader(input).map_err(Error::Invalid)?;
         let object = FORMAT.decode(Value::Object(fields))?;
         serde_json::from_value(object.fields.into()).map_err(Error::Invalid)
     }
@@ -107,6 +111,11 @@ impl Manifest {
     /// Use the current encoding for the fields this bundle carries. A plain
     /// bundle remains readable by computers from before notes and evidence.
     pub fn write(&self, path: &Path) -> Result<(), Error> {
+        files::write_atomic(path, &self.encode()?)?;
+        Ok(())
+    }
+
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
         let fields = serde_json::to_value(self).map_err(Error::Invalid)?;
         let Value::Object(fields) = fields else {
             unreachable!("a manifest serializes to an object");
@@ -119,8 +128,6 @@ impl Manifest {
             1
         };
         let format = format::ObjectFormat { current, ..FORMAT };
-        let bytes = serde_json::to_vec(&format.encode(fields)).map_err(Error::Invalid)?;
-        files::write_atomic(path, &bytes)?;
-        Ok(())
+        serde_json::to_vec(&format.encode(fields)).map_err(Error::Invalid)
     }
 }

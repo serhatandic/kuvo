@@ -1074,6 +1074,7 @@ dependencies = [
  "tokio-util",
  "unicode-normalization",
  "unicode-segmentation",
+ "url",
 ]
 
 [[package]]
@@ -1145,24 +1146,29 @@ dependencies = [
 name = "kuvo_peers"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "form_urlencoded",
  "futures-util",
  "getrandom 0.3.4",
  "http",
  "http-body-util",
+ "kuvo_engine",
  "kuvo_protocol",
  "kuvo_server",
  "kuvo_store",
  "kuvo_wire",
+ "percent-encoding",
  "rustls",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "url",
  "webpki-roots 1.0.12",
 ]
 

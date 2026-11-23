@@ -349,6 +349,7 @@ async fn deliver(
     arrival: Arrival,
 ) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
+    let _admitted = crate::session_move::admit(engine, session, None).await?;
     let path = receipt_path(engine, session, &arrival.id);
     let saved = read(engine, session, &arrival.id).await?;
     if let Some(receipt) = &saved
