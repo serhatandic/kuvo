@@ -113,7 +113,6 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   let macIdentity;
   const hostPassword = crypto.randomBytes(16).toString("hex");
   const prompts = [];
-  const draftEffects = [];
   const groupMessages = [];
   const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
   // The real bridge persists groups here, and the link uses those files to announce ownership.
@@ -128,9 +127,13 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   let ownedReadFailure = 0;
   let ownedLookupRefused = false;
   let extraMessages = [];
+  const ownedEvents = new Set();
+  const tellOwned = event => {
+    for (const stream of ownedEvents) stream.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
   const permissionAsks = new Map();
   const permissionEffects = [];
-  const engine = http.createServer((request, response) => {
+  const handleRuntime = (request, response) => {
     if (fixtureEngine) {
       void fixtureEngine.handle(request, response).then(handled => {
         if (!handled) response.writeHead(404).end("{}");
@@ -191,6 +194,13 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+      if (local && request.url === "/api/event") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.flushHeaders();
+        ownedEvents.add(response);
+        response.on("close", () => ownedEvents.delete(response));
+        return;
+      }
       const approval = liveAsks && /^\/api\/session\/(ses_owned|ses_native)(?:\/(permission|form)(?:\/([^/]+)\/reply)?)?$/.exec(request.url.split("?", 1)[0]);
       if (approval) {
         const [, session, area, ask] = approval;
@@ -232,16 +242,6 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       if (request.url.startsWith("/api/session/ses_owned")) {
         if (ownedLookupRefused && request.url === "/api/session/ses_owned") return send(403, { message: "Conversation lookup withheld." });
         if (!local || !ownedConversationPresent) return send(404, {});
-        const effect = engineModels && /\/(command|shell)$/.exec(request.url)?.[1];
-        if (effect && request.method === "POST") {
-          const parts = [];
-          request.on("data", part => parts.push(part));
-          request.on("end", () => {
-            draftEffects.push({ effect, body: JSON.parse(Buffer.concat(parts)) });
-            send(200, { data: {} });
-          });
-          return;
-        }
         if (request.url.endsWith("/prompt")) {
           const parts = [];
           request.on("data", part => parts.push(part));
@@ -258,14 +258,20 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const model = engineModels?.["/api/model/default"];
         return send(200, { data: { id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() }, ...(model ? { model } : {}) } });
       }
-      if (request.url.startsWith("/api/session?")) return send(200, { data: local ? [{ id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() } }] : [] });
+      if (request.url.startsWith("/api/session?")) return send(200, { data: local && ownedConversationPresent ? [{ id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() } }] : [] });
     }
     const call = request.url.startsWith("/api/session/ses_labels/message") && labelCall;
     const data = call ? [{ content: [{ type: "tool", name: "queue_labels", state: { status: "running", input: call } }] }] : [];
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data }));
-  });
+  };
+  const engine = http.createServer(handleRuntime);
   engine.listen(0, "127.0.0.1");
   await once(engine, "listening");
+  const agents = bridgePID ? http.createServer(handleRuntime) : null;
+  if (agents) {
+    agents.listen(0, "127.0.0.1");
+    await once(agents, "listening");
+  }
   const children = new Set();
   const start = (env, args, io, command = process.execPath) => {
     const child = spawn(command, args, { env, stdio: io });
@@ -281,7 +287,9 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     });
     await Promise.all(stops);
     engine.closeAllConnections();
-    await Promise.all([relay.close(), new Promise(resolve => engine.close(resolve))]);
+    agents?.closeAllConnections();
+    await Promise.all([relay.close(), new Promise(resolve => engine.close(resolve)),
+      ...(agents ? [new Promise(resolve => agents.close(resolve))] : [])]);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -309,9 +317,23 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned || recovery ? name : "test" }));
     if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
-      pid: bridgePID, port: engine.address().port, password: liveAsks && name === "Lab" ? "Lab-bridge" : name,
+      pid: bridgePID, port: agents.address().port, password: owned && name === "Lab" ? "Lab-bridge" : name,
     }));
     const nodeScript = index === splitIndex ? splitScript : name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
+    const localRouteScript = path.join(home, "fixture-route.mjs");
+    fs.writeFileSync(localRouteScript, `
+          import { engineHandler } from ${JSON.stringify(recovery ? pathToFileURL(nodeScript).href : pathToFileURL(script).href)};
+          const chunks = [];
+          for await (const chunk of process.stdin) chunks.push(chunk);
+          const given = JSON.parse(Buffer.concat(chunks));
+          const request = { ...given, fromApp: true, served: true, headers: given.headers, body: Buffer.from(JSON.stringify(given.body ?? {})) };
+          let status, body = [];
+          for await (const part of engineHandler()(request, {})) {
+            if (part.head) status = part.head.status;
+            if (part.body) body.push(part.body);
+          }
+          console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
+        `);
     if (nodeScript === legacyScript) {
       fs.mkdirSync(path.join(home, "bin"), { recursive: true });
       fs.writeFileSync(path.join(home, "bin", "box-version"), "0.8.0-beta.35");
@@ -349,19 +371,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         return { status, signal, value: json && out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, out: out.trim(), err };
       },
       async route(method, path, body, local = false, headers = {}, { freezeClockAt } = {}) {
-        const args = local ? ["--input-type=module", "-e", `
-          import { engineHandler } from ${JSON.stringify(recovery ? pathToFileURL(nodeScript).href : pathToFileURL(script).href)};
-          const chunks = [];
-          for await (const chunk of process.stdin) chunks.push(chunk);
-          const given = JSON.parse(Buffer.concat(chunks));
-          const request = { ...given, fromApp: true, served: true, headers: given.headers, body: Buffer.from(JSON.stringify(given.body ?? {})) };
-          let status, body = [];
-          for await (const part of engineHandler()(request, {})) {
-            if (part.head) status = part.head.status;
-            if (part.body) body.push(part.body);
-          }
-          console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
-        `] : [nodeScript, "box", "route"];
+        const args = local ? [localRouteScript] : [nodeScript, "box", "route"];
         if (freezeClockAt) {
           const clock = `
             import { existsSync } from "node:fs";
@@ -436,7 +446,9 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const setup = { id: `set_${crypto.randomBytes(16).toString("base64url")}`, epoch: 1, primary: a.key };
   const roster = { boxes: boxes.map(box => box.entry), moved: [], left: [] };
   const accepted = movingGroup || acceptedRoster ? { managed: true, checkpointed: true } : {};
-  const book = link.signDoc(a.seed, "peers", 1, { setup, ...roster, ...accepted });
+  const bookBody = { setup, ...roster, ...accepted };
+  const book = link.signDoc(a.seed, "peers", 1, bookBody);
+  const published = link.readDoc(book);
   const phone = link.publicOf(link.newKey()).toString("base64url");
   const pairing = crypto.randomBytes(16).toString("base64url");
   for (const box of boxes) {
@@ -456,6 +468,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       setup: { ...setup, ...accepted, role: box === a ? "primary" : "member", sign: a.sign },
       ...(accepted.checkpointed ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
       ...(box === a ? {
+        own: { peers: { n: published.n, h: published.h, b: crypto.createHash("sha256").update(JSON.stringify(bookBody)).digest().subarray(0, 8).toString("base64url") } },
         macPeers: boxes.slice(1).map(peer => peer.entry), phones: [{ key: phone, pairing, from: "pair", name: "Device" }],
         vouchBlocked: c ? [{ key: c.key, device: "Revoked", at: 1 }] : [],
       } : { mac: a.key, macs: [a.key], macSigns: { [a.key]: a.sign }, docs: { [`${a.sign} peers`]: book } }),
@@ -491,7 +504,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   // running this build follow it before a case begins.
   const current = boxes.filter((box, index) => !(legacyScript && box.name === "Lab") && !(recovery && index === 2));
   if (leads) await Promise.all(current.map(box => see(box, converted, a)));
-  return { boxes, a, b, c, relay, leaseRelay, see, phone, pairing, prompts, draftEffects, groupMessages, groupCopies, fixtureEngine, phase,
+  return { boxes, a, b, c, relay, leaseRelay, see, phone, pairing, prompts, groupMessages, groupCopies, fixtureEngine, phase, tellOwned,
     join: async code => {
       const home = path.join(root, "New Computer");
       fs.mkdirSync(home);
@@ -505,7 +518,10 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       assert.equal(status, 0, err);
       return JSON.parse(fs.readFileSync(path.join(env.KUVO_HOME, "run", "link.json"), "utf8"));
     },
-    showOwnedConversation: present => { ownedConversationPresent = present; },
+    showOwnedConversation: (present, { deleted = false } = {}) => {
+      ownedConversationPresent = present;
+      if (deleted) tellOwned({ type: "session.deleted", data: { sessionID: "ses_owned" } });
+    },
     breakOwnedRead: status => { ownedReadFailure = status; },
     refuseOwnedLookup: refused => { ownedLookupRefused = refused; },
     setOwnedMessages: messages => { extraMessages = messages; },
@@ -744,6 +760,10 @@ test("owner read distinguishes deletion, failed refresh and unavailable files on
   const { a, b, c, relay, see, showOwnedConversation, breakOwnedRead, refuseOwnedLookup, setOwnedMessages } = await network(t, true, undefined, true);
   await see(c, 2, a);
   await until("primary leased", () => a.lease(2, b), t.signal);
+  // A completed move keeps the owner known even after both runtimes stop listing the session.
+  const owner = { session: "ses_owned", key: c.key, at: Date.now() };
+  put(path.join(b.run, "moves", "moved.json"), JSON.stringify([owner]));
+  put(path.join(c.run, "moves", "moved.json"), JSON.stringify([{ ...owner, arrived: true }]));
   const query = `kuvo/data/owner?kind=conversations&id=ses_owned&computer=${c.key}`;
   const read = async (box = b, extra = "") => {
     const reply = await box.route("GET", query + extra);
@@ -800,12 +820,17 @@ test("owner read distinguishes deletion, failed refresh and unavailable files on
   await read();
   refuseOwnedLookup(true);
   const refusedLookup = await read();
-  assert.equal(refusedLookup.refresh, "withheld");
-  assert.equal(Object.hasOwn(refusedLookup, "data"), false);
+  // Its owner and conversation are already known, so a lookup refusal cannot withhold
+  // an otherwise live messages response.
+  assert.equal(refusedLookup.refresh, "live");
+  assert.deepEqual(refusedLookup.data.messages, messages);
   refuseOwnedLookup(false);
 
-  showOwnedConversation(false);
-  const absent = await read();
+  showOwnedConversation(false, { deleted: true });
+  const absent = await until("owner confirms deletion", async () => {
+    const value = await read();
+    return value.state === "absent" && value;
+  }, AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
   assert.equal(absent.state, "absent");
   assert.equal(absent.refresh, "live");
   assert.equal(absent.stale, false);
@@ -1168,13 +1193,10 @@ test("failure bench: forwarded computer changes carry receipts through the membe
 
 test("a scoped rename cannot overwrite a later name after primary handover", { timeout: 105_000 }, async t => {
   const { a, b, c, relay, see } = await leasedNetwork(t);
-  const phone = link.newKey();
-  const invite = await a.route("POST", "kuvo/phones/pair");
-  const paired = await deviceAt(relay, a, phone, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Receipt fixture" });
-  assert.ok(paired.greeting);
-  t.after(paired.close);
+  const key = link.newKey();
+  await enrollDesktop(a, key, "Receipt fixture");
   const at = box => until("paired rename client on " + box.name, async () => {
-    const device = await deviceAt(relay, box, phone);
+    const device = await deviceAt(relay, box, key, { client: "desktop" });
     if (!device.greeting) return false;
     t.after(device.close);
     return device;
@@ -1202,6 +1224,13 @@ test("a scoped rename cannot overwrite a later name after primary handover", { t
   assert.equal((await direct.ask("PATCH", route, intent, headers)).status, 409);
   assert.equal(b.read().shared.setupNames.value[c.key], "Name after handover");
 });
+
+async function enrollDesktop(box, key, name) {
+  const device = { key: link.publicOf(key).toString("base64url"), name, kind: "desktop" };
+  const enrolled = await box.route("POST", "kuvo/devices/pair", device, true);
+  assert.equal(enrolled.status, 200, JSON.stringify(enrolled));
+  return enrolled.value;
+}
 
 // Connect as an ordinary relay device and send normal client routes to a running box.
 async function deviceAt(relay, box, key, hello = {}) {
@@ -1250,16 +1279,16 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
     await network(t, true, undefined, true, undefined, false, false, undefined, { liveAsks: true });
   await see(c, 2, a);
   await until("primary leased", () => a.lease(2, b), t.signal);
-  const phoneKey = link.newKey();
+  const managerKey = link.newKey();
   const deskKey = link.newKey();
   const desktop = { key: link.publicOf(deskKey).toString("base64url"), name: "Desktop", kind: "desktop" };
-  const invite = await a.route("POST", "kuvo/phones/pair");
-  const primaryPhone = await deviceAt(relay, a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
-  assert.ok(primaryPhone.greeting);
-  t.after(primaryPhone.close);
+  await enrollDesktop(a, managerKey, "Primary desktop");
+  const primaryDesktop = await deviceAt(relay, a, managerKey, { client: "desktop" });
+  assert.ok(primaryDesktop.greeting);
+  t.after(primaryDesktop.close);
   const enrolled = await a.route("POST", "kuvo/devices/pair", desktop, true);
   assert.equal(enrolled.status, 200, JSON.stringify(enrolled.value));
-  const open = async (box, key, hello) => {
+  const open = async (box, key, hello = { client: "desktop" }) => {
     const client = await until("current pairing at " + box.name, async () => {
       const client = await deviceAt(relay, box, key, hello);
       return client.greeting && client;
@@ -1267,10 +1296,10 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
     t.after(client.close);
     return client;
   };
-  const phone = await open(c, phoneKey);
+  const manager = await open(c, managerKey);
   const desk = await open(c, deskKey, { client: "desktop" });
-  const lister = await open(b, phoneKey);
-  const apps = [phone, desk];
+  const lister = await open(b, managerKey);
+  const apps = [manager, desk];
   const sessions = ["ses_owned", "ses_native"];
   const native = (session, id) => `${session === "ses_native" ? "kuvo/agents/" : ""}api/session/${session}/permission/${id}/reply`;
   const askRoute = (session, id) => `kuvo/sessions/${session}/asks/${id}`;
@@ -1292,10 +1321,10 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
     setPermissionAsk(session, "per_localdeny");
     const denied = await desk.ask("POST", native(session, "per_localdeny"), { decision: "always" });
     assert.equal(denied.status, 403, JSON.stringify(denied.value));
-    assert.equal((await phone.ask("POST", askRoute(session, "per_localdeny"), { answer: "once" })).status, 403);
+    assert.equal((await manager.ask("POST", askRoute(session, "per_localdeny"), { answer: "once" })).status, 403);
     setPermissionAsk(session, "per_denied_sibling", "per_allowed_sibling");
     assert.equal((await desk.ask("POST", native(session, "per_allowed_sibling"), { decision: "always" })).status, 403);
-    assert.equal((await phone.ask("POST", askRoute(session, "per_allowed_sibling"), { answer: "always" })).status, 403);
+    assert.equal((await manager.ask("POST", askRoute(session, "per_allowed_sibling"), { answer: "always" })).status, 403);
   }
   assert.equal(permissionEffects.length, 4);
   fs.unlinkSync(settings);
@@ -1307,14 +1336,14 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
   const release = apps.map(client => relay.intercept(client.address, c.address, packet => { held.push(packet); return true; }));
   release.forEach(stop => t.after(stop));
   const pending = [
-    phone.ask("POST", native("ses_owned", "per_old_engine"), { decision: "once" }),
+    manager.ask("POST", native("ses_owned", "per_old_engine"), { decision: "once" }),
     desk.ask("POST", native("ses_native", "per_old_bridge"), { decision: "always" }),
   ].map(answer => answer.catch(() => ({ closed: true })));
   await until("both live replies are held in transport", () => held.length >= 2, t.signal);
   const reconnect = relay.disconnect(c.address);
   t.after(reconnect);
   await c.stop("SIGTERM");
-  const revoked = await primaryPhone.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
+  const revoked = await primaryDesktop.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked.value));
   setPermissionAsk("ses_owned", "per_replacement_engine");
   setPermissionAsk("ses_native", "per_replacement_bridge");
@@ -1326,7 +1355,7 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
   await until("pc5 received revocation", () => c.read().removed?.some(entry => entry.key === desktop.key), t.signal);
   const refused = await deviceAt(relay, c, deskKey, { client: "desktop" });
   assert.equal(refused.greeting, undefined);
-  const connected = await open(c, phoneKey);
+  const connected = await open(c, managerKey);
   for (const [session, id] of [["ses_owned", "per_old_engine"], ["ses_native", "per_old_bridge"]]) {
     assert.equal((await connected.ask("POST", native(session, id), { decision: "once" })).status, 404);
     assert.equal((await connected.ask("POST", askRoute(session, id), { answer: "once" })).status, 404);
@@ -1344,7 +1373,7 @@ test("live permission replies from paired clients expire across pc5 reconnect", 
 test("failure bench: clients share machine changes and revocations across three boxes", { timeout: 90_000 }, async t => {
   const { a, b, c, relay, see } = await leasedNetwork(t);
   await see(c, 2, a);
-  const open = async (box, key, hello) => {
+  const open = async (box, key, hello = { client: "desktop" }) => {
     const device = await deviceAt(relay, box, key, hello);
     if (!device.greeting) return device;
     t.after(device.close);
@@ -1362,14 +1391,13 @@ test("failure bench: clients share machine changes and revocations across three 
     const device = await open(box, key, hello);
     return device.greeting && device;
   });
-  const phoneKey = link.newKey();
-  const phonePublic = link.publicOf(phoneKey).toString("base64url");
-  const invite = await a.route("POST", "kuvo/phones/pair");
-  assert.equal(invite.status, 200);
-  const phoneA = await open(a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
-  assert.ok(phoneA.greeting);
-  const phoneB = await pairedAt(b, phoneKey);
-  const phoneC = await pairedAt(c, phoneKey);
+  const managerKey = link.newKey();
+  const managerPublic = link.publicOf(managerKey).toString("base64url");
+  await enrollDesktop(a, managerKey, "Managing desktop");
+  const managerA = await open(a, managerKey);
+  assert.ok(managerA.greeting);
+  const managerB = await pairedAt(b, managerKey);
+  const managerC = await pairedAt(c, managerKey);
 
   const launchKey = link.newKey();
   const desktop = { key: link.publicOf(launchKey).toString("base64url"), name: "Desktop", kind: "desktop" };
@@ -1379,13 +1407,13 @@ test("failure bench: clients share machine changes and revocations across three 
   const deskA = await pairedAt(a, launchKey, { client: "desktop" });
   const deskB = await pairedAt(b, launchKey, { client: "desktop" });
   const deskC = await pairedAt(c, launchKey, { client: "desktop" });
-  for (const device of [deskA, deskB, deskC, phoneA, phoneB, phoneC]) {
+  for (const device of [deskA, deskB, deskC, managerA, managerB, managerC]) {
     const roster = await device.ask("GET", "kuvo/computers");
     assert.equal(roster.status, 200);
     assert.deepEqual(new Set(roster.value.computers.map(peer => peer.key)), new Set([a.key, b.key, c.key]));
   }
 
-  const renamed = await phoneB.ask("PATCH", `kuvo/computers/${c.key}`, { name: "Shared name" });
+  const renamed = await managerB.ask("PATCH", `kuvo/computers/${c.key}`, { name: "Shared name" });
   assert.equal(renamed.status, 200, JSON.stringify(renamed));
   assertReceipt(a, "setupNames", "committed", renamed.value);
   for (const device of [deskA, deskB, deskC]) {
@@ -1396,7 +1424,7 @@ test("failure bench: clients share machine changes and revocations across three 
   const reconnect = relay.disconnect(c.address);
   t.after(reconnect);
   await until("the third computer goes offline", () => !relay.has(c.address), t.signal);
-  const revoked = await phoneB.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: save.value.pairing }] });
+  const revoked = await managerB.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: save.value.pairing }] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked));
   assertReceipt(a, "membershipAndAccess", "committed", revoked.value);
   assert.ok(c.read().phones.some(device => device.key === desktop.key));
@@ -1409,19 +1437,19 @@ test("failure bench: clients share machine changes and revocations across three 
   await until("the third computer installs the tombstone", () => c.read().removed.some(entry => entry.key === desktop.key), t.signal);
   for (const box of [a, b, c]) {
     assert.deepEqual(await open(box, launchKey, { client: "desktop" }), { refused: true });
-    assert.ok(box.read().phones.some(device => device.key === phonePublic));
+    assert.ok(box.read().phones.some(device => device.key === managerPublic));
   }
 
-  const removed = await phoneB.ask("DELETE", `kuvo/computers/${c.key}`);
+  const removed = await managerB.ask("DELETE", `kuvo/computers/${c.key}`);
   assert.equal(removed.status, 200, JSON.stringify(removed));
   assertReceipt(a, "membershipAndAccess", "committed", removed.value);
-  for (const device of [phoneA, phoneB]) {
+  for (const device of [managerA, managerB]) {
     await byClient("the removed machine is absent from the roster", async () =>
       (await device.ask("GET", "kuvo/computers")).value.computers.every(peer => peer.key !== c.key));
     assert.equal((await device.ask("POST", `kuvo/computers/${c.key}/connect`)).status, 404);
   }
-  await until("the removed computer received its unlink", () => !c.read().phones.some(device => device.key === phonePublic), t.signal);
-  assert.deepEqual(await open(c, phoneKey), { refused: true });
+  await until("the removed computer received its unlink", () => !c.read().phones.some(device => device.key === managerPublic), t.signal);
+  assert.deepEqual(await open(c, managerKey), { refused: true });
 });
 
 const personality = (i, length = 40) => ({ id: `custom.personal-${i}`, name: `Personality ${i}`, description: "x".repeat(length), updated: i + 1 });
@@ -1814,16 +1842,16 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   const { a, b, c, relay, prompts, see, showOwnedConversation } = await network(t, true, undefined, true);
   await see(c, 2, a);
   await until("primary leased", () => a.lease(2, b), t.signal);
-  const phoneKey = link.newKey();
+  const managerKey = link.newKey();
   const desktopKey = link.newKey();
-  const invite = await a.route("POST", "kuvo/phones/pair");
-  const phoneA = await deviceAt(relay, a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
-  assert.ok(phoneA.greeting);
-  t.after(phoneA.close);
+  await enrollDesktop(a, managerKey, "Managing desktop");
+  const managerA = await deviceAt(relay, a, managerKey, { client: "desktop" });
+  assert.ok(managerA.greeting);
+  t.after(managerA.close);
   const desktop = { key: link.publicOf(desktopKey).toString("base64url"), name: "Desktop", kind: "desktop" };
   const enrolled = await a.route("POST", "kuvo/devices/pair", desktop, true);
   assert.equal(enrolled.status, 200, JSON.stringify(enrolled));
-  async function open(box, key, hello) {
+  async function open(box, key, hello = { client: "desktop" }) {
     return until("fresh device session", async () => {
       const connection = await deviceAt(relay, box, key, hello);
       if (!connection.greeting) return false;
@@ -1831,14 +1859,14 @@ test("paired devices share ordinary edits and queued grants survive restart and 
       return connection;
     }, t.signal);
   }
-  const phone = await open(b, phoneKey);
+  const manager = await open(b, managerKey);
   const desk = await open(b, desktopKey, { client: "desktop" });
   const configuration = path.join(b.home, "backup", "configuration.json");
   fs.mkdirSync(path.dirname(configuration), { recursive: true });
   fs.writeFileSync(configuration, JSON.stringify({ version: 1, enabled: true, source: "private-source", key: "private-key",
     dest: { kind: "disk", path: "/private/path" }, projects: ["/private/project"], last: { id: "private-id", at: 1234, version: 1 },
     error: "private error" }));
-  for (const device of [phone, desk]) {
+  for (const device of [manager, desk]) {
     assert.deepEqual(await device.ask("GET", "kuvo/box/backups/status"), { status: 200, value: {
       enabled: true, destinationKind: "disk", destinationAvailable: false, lastVerifiedAt: 1234, attention: true,
     } });
@@ -1904,7 +1932,7 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   fs.writeFileSync(path.join(botFolder, "session"), "ses_owned\n");
   const heldDelete = await desk.ask("DELETE", `kuvo/bots/${bot}?on=${c.key}`);
   assert.equal(heldDelete.status, 202, JSON.stringify(heldDelete));
-  assert.equal((await phone.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "Different grant" })).status, 409);
+  assert.equal((await manager.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "Different grant" })).status, 409);
   assert.equal(deniedEdit.status, 202);
   assert.equal(deniedSend.status, 202);
   const beforeRevocation = await until("new work in flight", () => {
@@ -1928,7 +1956,7 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   const reconnect = relay.disconnect(c.address);
   t.after(reconnect);
   await c.stop("SIGTERM");
-  const revoked = await phoneA.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
+  const revoked = await managerA.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked));
   assert.ok(c.read().phones.some(each => each.key === desktop.key));
   await b.stop("SIGTERM");
@@ -1965,6 +1993,8 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   assert.equal(legacy.receipt.status, "interrupted");
   assert.match(legacy.receipt.message, /predates device tracking/);
   assert.deepEqual(legacy.recovery, { title: "Recover the old draft" });
+  await until("the restored session owns its queue again", async () => (await editRead(c, alreadyRef)).status === 200,
+    AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]));
   assert.deepEqual((await editRead(c, deniedRef)).value.fields, {});
   await until("held bot receipt preserves the revoked action", async () => {
     const listed = await b.route("GET", "kuvo/bots");
@@ -1975,7 +2005,7 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   assert.deepEqual((await editRead(c, oldRef)).value.fields, {});
   assert.deepEqual(prompts.map(e => e.id), ["msg_beforerevocation"]);
 
-  const phoneAgain = await open(b, phoneKey);
+  const managerAgain = await open(b, managerKey);
   // An old managed draft stays visible until a deliberate edit replaces it with its own grant.
   const heldFile = path.join(b.run, "bots-held", bot + ".json");
   const oldBot = { id: "bte_abcdefghijklmnop", bot, to: c.key, change: { name: "Original draft", jobLine: "Old text" },
@@ -1983,36 +2013,42 @@ test("paired devices share ordinary edits and queued grants survive restart and 
   const key = crypto.createHmac("sha256", Buffer.from(b.read().secret, "base64url")).update("kuvo bot edits held").digest();
   const sealed = [oldBot.id, bot, c.key, null, oldBot.change, oldBot.times, false, 1, 1];
   fs.writeFileSync(heldFile, JSON.stringify({ ...oldBot, seal: crypto.createHmac("sha256", key).update(JSON.stringify(sealed)).digest("base64url") }));
-  const reviewed = await phoneAgain.ask("GET", "kuvo/bots");
+  const reviewed = await managerAgain.ask("GET", "kuvo/bots");
   assert.match(reviewed.value.held.find(entry => entry.bot === bot).waits, /predates device tracking/);
   const resume = relay.pause(b.address, c.address);
   t.after(resume);
-  const replaced = await phoneAgain.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "New edit" });
+  const replaced = await managerAgain.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "New edit" });
   assert.equal(replaced.status, 202, JSON.stringify(replaced));
   assert.deepEqual(replaced.value.held.change, { name: "New edit" });
 });
 
-test("phone and desktop submit the same complete draft to the conversation owner", { timeout: 110_000 }, async t => {
+test("two desktops submit complete drafts to the conversation owner", { timeout: 110_000 }, async t => {
   const engineModels = {
-    "/api/provider": [{ id: "deepseek" }],
-    "/api/model": [{ id: "v4", providerID: "deepseek", name: "DeepSeek V4" }],
-    "/api/integration": [{ id: "deepseek", name: "DeepSeek", methods: [{ type: "key" }], connections: [{ type: "credential" }] }],
+    "/api/provider": [{ id: "deepseek" }, { id: "opencode" }],
+    "/api/model": [{ id: "v4", providerID: "deepseek", name: "DeepSeek V4", enabled: true, status: "active", cost: [{ input: 1, output: 2 }] }],
+    "/api/integration": [{ id: "deepseek", name: "DeepSeek", methods: [{ type: "key" }], connections: [{ type: "credential", method: "key" }] }],
     "/api/model/default": { providerID: "deepseek", id: "v4" },
-    "/api/command": [{ name: "init" }],
   };
-  const { a, b, c, relay, prompts, draftEffects, see, showOwnedConversation } = await network(t, true, undefined, true, undefined, false, false, undefined, { engineModels });
+  const { a, b, c, relay, prompts, see, showOwnedConversation, tellOwned } = await network(t, true, undefined, true, undefined, false, false, undefined, { engineModels });
   await see(c, 2, a);
   await until("primary lease", () => a.lease(2, b), t.signal);
-  const phone = link.newKey();
+  const manager = link.newKey();
   const desk = link.newKey();
-  const pair = await a.route("POST", "kuvo/phones/pair");
-  const phoneA = await deviceAt(relay, a, phone, { pair: new URL(pair.value.link).searchParams.get("token"), name: "Phone" });
-  assert.ok(phoneA.greeting);
-  t.after(phoneA.close);
+  await enrollDesktop(a, manager, "Managing desktop");
+  const managerA = await deviceAt(relay, a, manager, { client: "desktop" });
+  assert.ok(managerA.greeting);
+  t.after(managerA.close);
   const paired = await a.route("POST", "kuvo/devices/pair", { key: link.publicOf(desk).toString("base64url"), name: "Desk", kind: "desktop" }, true);
   assert.equal(paired.status, 200, JSON.stringify(paired));
   const route = "kuvo/sessions/ses_owned/draft";
-  for (const [key, hello, id] of [[phone, {}, "msg_draftphone"], [desk, { client: "desktop" }, "msg_draftdesk"]]) {
+  const provider = engineModels["/api/integration"][0];
+  const credentials = provider.connections;
+  const available = engineModels["/api/provider"];
+  const waitForModel = (device, runs) => until(`owner's model readiness is ${runs}`, async () => {
+    const reply = await device.ask("GET", "kuvo/sessions/models?sessions=ses_owned");
+    return reply.value?.sessions?.ses_owned?.runs === runs;
+  }, AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]));
+  for (const [key, hello, id] of [[manager, { client: "desktop" }, "msg_draftfirst"], [desk, { client: "desktop" }, "msg_draftdesk"]]) {
     const device = await until("owner device session", async () => {
       const connection = await deviceAt(relay, c, key, hello);
       return connection.greeting && connection;
@@ -2031,22 +2067,19 @@ test("phone and desktop submit the same complete draft to the conversation owner
     assert.deepEqual(await device.ask("POST", route, draft), initial);
     assert.equal((await device.ask("POST", route, { ...draft, text: "Changed" })).status, 409);
     showOwnedConversation(true);
-    const side = await device.ask("POST", route, { id: id + "side", text: "Aside", side: true, message: {} });
-    assert.deepEqual(side, { status: 200, value: { answer: { sideThread: true } } });
-    const command = await device.ask("POST", route, { id: id + "slash", text: "/init now", message: {} });
-    assert.equal(command.value.answer?.command?.name, "init", JSON.stringify(command));
-    const shell = { id: id + "shell", text: "!test", message: {} };
-    const ran = await device.ask("POST", route, shell);
-    assert.equal(ran.value.answer?.shell, "test", JSON.stringify(ran));
-    assert.deepEqual(await device.ask("POST", route, shell), ran);
-    engineModels["/api/model/default"] = { providerID: "deepseek", id: "missing" };
+    provider.connections = [];
+    engineModels["/api/provider"] = available.filter(each => each.id !== provider.id);
+    tellOwned({ type: "credential.updated" });
+    await waitForModel(device, false);
     const refused = await device.ask("POST", route, { id: id + "stale", text: "Did readiness change?", message: {} });
     assert.equal(refused.value.answer?.restore?.text, "Did readiness change?", JSON.stringify(refused));
-    engineModels["/api/model/default"] = { providerID: "deepseek", id: "v4" };
+    provider.connections = credentials;
+    engineModels["/api/provider"] = available;
+    tellOwned({ type: "credential.updated" });
+    await waitForModel(device, true);
   }
-  assert.deepEqual(draftEffects.map(effect => effect.effect), ["command", "shell", "command", "shell"]);
   const member = await until("paired session on the listing Box", async () => {
-    const connection = await deviceAt(relay, b, phone);
+    const connection = await deviceAt(relay, b, manager, { client: "desktop" });
     return connection.greeting && connection;
   }, t.signal);
   t.after(member.close);
@@ -2059,14 +2092,13 @@ test("phone and desktop submit the same complete draft to the conversation owner
   assert.equal(outbox.queuedMessage, undefined);
   assert.equal(outbox.operation, undefined);
   assert.equal(outbox.queuedDraft.body.text, queued.text);
-  assert.equal((await member.ask("POST", route, { ...queued, id: "msg_liveonly", text: "!test" })).status, 400);
-  assert.deepEqual(prompts.map(each => each.id), ["msg_draftphone", "msg_draftdesk"]);
+  assert.deepEqual(prompts.map(each => each.id), ["msg_draftfirst", "msg_draftdesk"]);
   permit();
   await until("the owner accepts the queued full draft", async () => {
     const receipt = await b.route("GET", `kuvo/data/messages/${waits.value.operation}`);
     return receipt.value.status === "committed";
   }, t.signal);
-  assert.deepEqual(prompts.map(each => each.id), ["msg_draftphone", "msg_draftdesk", "msg_ownerdraft"]);
+  assert.deepEqual(prompts.map(each => each.id), ["msg_draftfirst", "msg_draftdesk", "msg_ownerdraft"]);
   const settled = await member.ask("POST", route, queued);
   assert.equal(settled.value.message, queued.id);
   assert.equal(typeof settled.value.acceptedAt, "number");
@@ -2083,7 +2115,7 @@ test("phone and desktop submit the same complete draft to the conversation owner
   const holding = await member.ask("POST", submit, pinned);
   assert.equal(holding.status, 202, JSON.stringify(holding));
   await until("owner prompt before listing's receipt", () => prompts.some(prompt => prompt.id === pinned.id), t.signal);
-  const recovered = await phoneA.ask("GET", recover + "/" + pinned.submission);
+  const recovered = await managerA.ask("GET", recover + "/" + pinned.submission);
   assert.equal(recovered.status, 200, JSON.stringify(recovered));
   assert.equal(recovered.value.outcomes[0]?.status, "committed", JSON.stringify(recovered));
   assert.equal(recovered.value.outcomes[0]?.effect.message, pinned.id);
@@ -2094,18 +2126,18 @@ test("phone and desktop submit the same complete draft to the conversation owner
     return saved.value.status === "committed";
   }, t.signal);
   assert.equal(prompts.filter(prompt => prompt.id === pinned.id).length, 1);
-  const changed = await phoneA.ask("POST", submit, { ...pinned, text: "Changed intent on another lister" });
+  const changed = await managerA.ask("POST", submit, { ...pinned, text: "Changed intent on another lister" });
   assert.equal(changed.status, 202, JSON.stringify(changed));
   let changedReceipt;
   await until("changed intent refused by the original owner", async () => {
-    const receipt = await phoneA.ask("GET", "kuvo/data/messages/" + changed.value.operation);
+    const receipt = await managerA.ask("GET", "kuvo/data/messages/" + changed.value.operation);
     if (receipt.value.status !== "interrupted") return false;
     changedReceipt = receipt.value;
     return true;
   }, t.signal);
-  const conflict = await phoneA.ask("GET", recover + "/" + pinned.submission);
+  const conflict = await managerA.ask("GET", recover + "/" + pinned.submission);
   assert.equal(conflict.value.outcomes[0]?.conflict, true);
-  const different = await phoneA.ask("GET", recover + "/" + pinned.submission + "?digest=" + changedReceipt.digest);
+  const different = await managerA.ask("GET", recover + "/" + pinned.submission + "?digest=" + changedReceipt.digest);
   assert.equal(different.value.outcomes[0]?.status, "unknown");
   assert.equal(different.value.outcomes[0]?.draft.text, "Changed intent on another lister");
   assert.equal(prompts.filter(prompt => prompt.id === pinned.id).length, 1);
@@ -2131,7 +2163,7 @@ test("phone and desktop submit the same complete draft to the conversation owner
   t.after(resumeDelivery);
   const waiting = await deskListing.ask("POST", submit, parked);
   assert.equal(waiting.status, 202, JSON.stringify(waiting));
-  const revoked = await phoneA.ask("POST", "kuvo/phones/remove", { phones: [{ key: link.publicOf(desk).toString("base64url"), pairing: paired.value.pairing }] });
+  const revoked = await managerA.ask("POST", "kuvo/phones/remove", { phones: [{ key: link.publicOf(desk).toString("base64url"), pairing: paired.value.pairing }] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked));
   await until("owner has the desktop revocation", () => !c.read().phones.some(device => device.key === link.publicOf(desk).toString("base64url")), t.signal);
   resumeAccepted();
@@ -2147,7 +2179,7 @@ test("phone and desktop submit the same complete draft to the conversation owner
   await until("interrupted receipt from the revoked pairing", () => fs.existsSync(retired), t.signal);
   assert.equal(JSON.parse(fs.readFileSync(retired, "utf8")).receipt.status, "interrupted");
   assert.equal(prompts.filter(prompt => prompt.id === parked.id).length, 0);
-  const hidden = await phoneA.ask("GET", recover + "/" + parked.submission);
+  const hidden = await managerA.ask("GET", recover + "/" + parked.submission);
   assert.equal(hidden.value.outcomes.length, 0);
 });
 
@@ -2805,7 +2837,7 @@ test("failure bench: a pending wipe follows the setup through handover", { timeo
   assert.equal(result.status, 200, JSON.stringify(result.value));
   assert.equal((await submit(a, c, 2)).status, 202);
   await Promise.all([see(a, 3, c), see(c, 3, c)]);
-  assert.equal(removalOf(c, b).operation, result.value.operation);
+  await until("new primary installs the pending wipe", () => removalOf(c, b)?.operation === result.value.operation, t.signal);
   assert.equal(removalOf(c, b).delivered, undefined);
   b.start();
   await waitForWipe(b, t.signal);
