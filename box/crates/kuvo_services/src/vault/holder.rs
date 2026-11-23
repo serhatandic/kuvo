@@ -107,6 +107,13 @@ impl Holder {
             _agents: agents,
         })
     }
+
+    pub async fn shutdown(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for Holder {

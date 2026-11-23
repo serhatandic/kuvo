@@ -166,7 +166,7 @@ pub async fn run(
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
-    let _vault_holder =
+    let vault_holder =
         match kuvo_services::vault::Holder::start(home, vault, dispatcher.clone()).await {
             Ok(holder) => Some(holder),
             Err(error) => {
@@ -207,6 +207,9 @@ pub async fn run(
         })
         .await;
     session_source.abort();
+    if let Some(holder) = vault_holder {
+        holder.shutdown().await;
+    }
     result?;
     Ok(())
 }

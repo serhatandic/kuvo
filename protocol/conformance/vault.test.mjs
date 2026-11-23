@@ -150,7 +150,7 @@ test("the private socket proves it holds the unlock key and refuses a future req
 }, async t => {
   const { computer } = await bench(t);
   const box = await computer("Vault");
-  const { key } = await create(box, value());
+  const { key, proc } = await create(box, value());
   const run = path.join(box.home, "run");
   const socketKey = fs.readFileSync(path.join(run, "socket.key"), "utf8").trim();
   const route = path.join(run, "vault.sock");
@@ -198,6 +198,8 @@ test("the private socket proves it holds the unlock key and refuses a future req
   const replay = await exchange({ hello, key: socketKey }, () =>
     ({ method: "GET", path: vault, headers: { "x-kuvo-vault-auth": proof }, body: "" }));
   assert.equal(replay[1].status, 403);
+  assert.equal((await proc.stop()).code, 0, "the resident stopped cleanly");
+  assert.ok(!fs.existsSync(route), "the holder removes its socket on orderly shutdown");
 });
 
 function calling(box, session, name, input, callID) {
