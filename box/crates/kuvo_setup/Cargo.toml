@@ -22,7 +22,6 @@ http = "1"
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 kuvo_os = { path = "../kuvo_os" }
 kuvo_peers = { path = "../kuvo_peers" }
-kuvo_os = { path = "../kuvo_os" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_store = { path = "../kuvo_store" }
@@ -31,7 +30,6 @@ percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["hooks"] }
 serde = { version = "1", features = ["derive"] }
-rusqlite = "0.37"
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 thiserror = "2"
