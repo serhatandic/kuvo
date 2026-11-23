@@ -33,6 +33,7 @@ the races that span removal, backup, moves, and an authority change.
 | U6 | [A member forwards an unlink and receives the main’s saved decision](../../protocol/conformance/removal.test.mjs) | The relay holds main-to-member traffic through the commit. The forwarded request and a direct replay return the same signed decision without advancing the membership revision. |
 | U7 | [The only computer commits a wipe and erases only its old installation](../../protocol/conformance/removal.test.mjs) | A standalone Unix resident returns the signed reinstall offer, stops accepting clients and retires its directory. A sibling reached through a symlink stays intact. Rust enrolls again at the same path with fresh keys. The scenario uses an isolated account, no keeper, and no configured backup. |
 | U8 | [A Rust wipe resumes against its detached directory and leaves a replacement alone](../../protocol/conformance/removal.test.mjs) | A fresh process can finish erasing the authorized directory after a crash. The receipt's stored device and inode must match, and the new installation at the original path stays intact. |
+| U9 | [Local uninstall refuses a running main computer before clearing its identity](../../protocol/conformance/removal.test.mjs) | Both binaries refuse before deleting the desktop identity or writing an off marker. The primary and online member keep their setup and answer afterward. |
 
 ## Stored and inherited cases
 
@@ -170,7 +171,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 15 have coverage and 179 still have open or partial work. Of those, 143 list 2.3 as an owner (116 open, 27 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 16 have coverage and 178 still have open or partial work. Of those, 142 list 2.3 as an owner (114 open, 28 partial).
 
 ### computers-add
 
@@ -407,7 +408,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 15 h
 | --- | --- | --- |
 | [the desktop app on a member's computer is paired through its own box and reaches every box of the setup, until another device removes it](../../box/bridge-tests/devices-two-boxes.test.js#L297) | Open | 2.3 |
 | [a removal reaches a member while the primary's inbound device switch stays off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | U4 covers the saved off setting, refused pairing, replicated revocation and machine unlink. Live switch changes and the connection-level checks remain open. | 2.3, 6.2 |
-| [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L701) | Open | 2.3 |
+| [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L701) | U9 covers refusal with a running member. The paired desktop's open session and revocation checks remain open. | 2.3 |
 | [local uninstall revokes its desktop before stopping the box, including a session open to its primary](../../box/bridge-tests/devices-two-boxes.test.js#L739) | Open | 2.3 |
 
 ### peers
@@ -425,7 +426,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 15 h
 | [an SSH-enrolled member advertises its accepted epoch and catches up](../../box/bridge-tests/setup-handover.test.js#L428) | Open | 2.3 |
 | [unlink retries credential cleanup before acknowledging completion](../../box/bridge-tests/setup-handover-access.test.js#L18) | U3 covers a machine’s durable cleanup fence and restart. Helper and relocated stores remain open. | 2.3, 6.2 |
 | [an unmatched pre-join pairing requires an explicit enrollment decision](../../box/bridge-tests/setup-handover-access.test.js#L96) | Open | 2.3 |
-| [local uninstall refuses a primary before clearing identity or stopping it](../../box/bridge-tests/setup-handover-access.test.js#L124) | Open | 2.3 |
+| [local uninstall refuses a primary before clearing identity or stopping it](../../box/bridge-tests/setup-handover-access.test.js#L124) | U9 verifies refusal with the main running and U5 verifies standalone uninstall. | — |
 | [access routes return committed receipts from the main and through a member](../../box/bridge-tests/setup-handover-access.test.js#L143) | U1 proves the main’s durable unlink receipt. Access variants and member forwarding are open. | 2.3 |
 | [forwarded computer changes carry receipts through the member route](../../box/bridge-tests/setup-handover-access.test.js#L163) | U6 covers a forwarded plain unlink and a lost reply. Paired-device replay after revocation, other computer changes, and a writer handover remain open. | 2.3, 5.2 |
 | [a scoped rename cannot overwrite a later name after primary handover](../../box/bridge-tests/setup-handover-access.test.js#L173) | Open | 2.3 |

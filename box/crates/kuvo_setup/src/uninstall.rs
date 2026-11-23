@@ -30,6 +30,7 @@ const STOPPED: &str = "Kuvo Code is stopped on this computer and won't start aga
 const DESKTOP: &str = "Kuvo Code couldn’t delete this desktop’s local identity.";
 const CREDENTIALS: &str =
     "Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
+const MAIN_UNINSTALL: &str = "Choose another main computer first.";
 
 const PROCESSES: &[(&str, &str)] = &[
     ("run/box.pid", "keeper"),
@@ -86,6 +87,12 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
             note: None,
         });
     }
+    validate_disk(&files)?;
+    if let Some(link) = files.read::<Link>(LINK)?
+        && needs_handover(&link)?
+    {
+        return Ok(refusal(MAIN_UNINSTALL));
+    }
     let owner = files.path("run/.client-owner");
     let Ok(_owner) = OwnedLock::acquire(&owner, Duration::ZERO) else {
         return Ok(refusal(
@@ -112,16 +119,12 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     }
     let link: Option<Link> = files.read(LINK)?;
     if let Some(link) = link {
+        // A member may have joined since the read before we obtained the lock.
+        if needs_handover(&link)? {
+            return Ok(refusal(MAIN_UNINSTALL));
+        }
         if let Ok(setup) = link.setup() {
             let shared = link.member_list()?;
-            if setup.role == Role::Primary
-                && shared
-                    .boxes
-                    .iter()
-                    .any(|peer| peer.key != setup.position.primary)
-            {
-                return Ok(refusal("Choose another main computer first."));
-            }
             if setup.role == Role::Member || shared.devices().next().is_some() {
                 return Ok(refusal(
                     "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.",
@@ -183,6 +186,18 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
             "launchAgent": false, "crontab": false, "startsAgain": [], "left": [root], "message": note}),
         note: Some(note),
     })
+}
+
+fn needs_handover(link: &Link) -> Result<bool, Error> {
+    let Ok(setup) = link.setup() else {
+        return Ok(false);
+    };
+    Ok(setup.role == Role::Primary
+        && link
+            .member_list()?
+            .boxes
+            .iter()
+            .any(|peer| peer.key != setup.position.primary))
 }
 
 fn run_check(files: &Files, home: &Path) -> Result<Value, Error> {

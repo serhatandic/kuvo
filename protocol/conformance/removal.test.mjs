@@ -58,6 +58,38 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   assert.equal(fs.existsSync(path.join(home, "run", "link.json")), false);
 });
 
+test("local uninstall refuses a running main computer before clearing its identity", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const main = await computer("Studio");
+  const member = await computer("Lab");
+  const active = main.start();
+  const ask = main.connect(await active.ready());
+  const original = (await ask("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
+  const invitation = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
+  assert.equal(invitation.status, 201, invitation.text);
+  const enrolled = await member.join(invitation.json.code);
+  assert.equal(enrolled.code, 0, enrolled.log);
+  const other = member.connect(await member.start().ready());
+  const followed = await other("GET", "kuvo/setup");
+  assert.equal(followed.json.you.role, "member", followed.text);
+  assert.equal(followed.json.setup, original.setup);
+  const before = (await ask("GET", "kuvo/setup")).json;
+  const identity = path.join(main.home, "desktop", "identity");
+  write(identity, "keep this identity");
+
+  const refused = await main.command(["uninstall"]);
+  assert.equal(refused.code, 1, refused.log);
+  assert.deepEqual(JSON.parse(refused.text), {
+    result: "refused", message: "Choose another main computer first.",
+  });
+  assert.equal(fs.readFileSync(identity, "utf8"), "keep this identity");
+  assert.equal(fs.existsSync(path.join(main.home, "run", "off")), false);
+  assert.equal(active.child.exitCode, null);
+  assert.deepEqual((await ask("GET", "kuvo/setup")).json, before);
+  assert.equal((await other("GET", "kuvo/setup")).json.setup, followed.json.setup);
+});
+
 test("the only computer commits a wipe and erases only its old installation", {
   timeout: 35000, skip: process.platform === "win32" && "Native startup and shutdown belong to the Windows keeper.",
 }, async t => {
