@@ -1014,6 +1014,7 @@ dependencies = [
  "thiserror",
  "unicode-normalization",
  "url",
+ "zeroize",
 ]
 
 [[package]]
