@@ -248,8 +248,8 @@ TypeScript suite until their respective Rust phase.
 | `moves.test.js` | Moving sessions, bots and groups without losing queued work or attachments. | Later, 2.4. |
 | `moves-races.test.js` | Failed or duplicate move offers, partial arrivals and concurrent session work. | Later, 2.4. |
 | `moves-recover.test.js` | Retries, restart recovery and settling copies and mail. | Later, 2.4. |
-| `moves-lanes.test.js` | Native agent move payloads, accounts and relay transfers. | Later, 2.4 and 4.6. |
-| `moves-lanes-races.test.js` | Edits during packing, interrupted transfers and retained copies. | Later, 2.4 and 4.6. |
+| `moves-lanes.test.js` | Native agent move payloads, accounts and relay transfers. | Later, 4.6 and 5.1. |
+| `moves-lanes-races.test.js` | Edits during native packing, interrupted native transfers and retained copies. | Later, 4.6 and 5.1. Shared transfer and retry behavior remains in 2.4. |
 | `moves-elsewhere.test.js` | Listing and expiring moves between other computers. | Later, 2.4. Keep internal clock and announcer checks with TS. |
 | `work-queue-across.test.js` | Peer views, number leases, forwarding, handoff and deduplication. | Later, 5.2. Keep retired numbering rules and internal projections with TS. |
 | `work-queue-two-boxes.test.js` | Cross-computer items, numbering, delete and restore. | Later, 5.2. |
