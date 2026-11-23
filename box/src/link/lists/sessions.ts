@@ -576,11 +576,13 @@ async function readOnce(name: string, target: Target): Promise<void> {
   let running: Awaited<ReturnType<typeof readRunningSnapshot>>;
   let facts: EngineListFacts | undefined;
   try {
-    const listed = readSessions(target);
+    const listed = readSessions(target).then(async sessions => {
+      if (sessions) await discoverProjects(sessions);
+      return sessions;
+    });
     [sessions, running, facts] = await Promise.all([
       listed, readRunningSnapshot(name, target, listed), name === "engine" ? readEngineFacts() : undefined,
     ]);
-    if (sessions) await discoverProjects(sessions);
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
@@ -716,6 +718,7 @@ export function createdDirectory(id: string, now = Date.now()) {
 export async function noteListEvent(name: string, target: Target, event: { type?: string; data?: { sessionID?: unknown; info?: { id?: unknown }; error?: unknown; idle?: unknown } }): Promise<void> {
   if (!keepsList() || typeof event?.type !== "string") return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
+  const finishes = ENDS.has(event.type) || (name === "bridge" && event.type === "session.idle");
   if (typeof id !== "string" || !id.startsWith("ses")) return;
   if (event.type === "session.created") noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
   if (event.type === "session.deleted") justCreated.delete(id);
@@ -731,13 +734,13 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   }
   // (What it streams: worked out again only where a fact changed, as `moments` tells it.)
   const moment = moments.hear(event.type, id, event.data);
-  if (moment && event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type)) return;
+  if (moment && event.type !== "session.deleted" && event.type !== STARTS && !finishes) return;
   // Only those that change what's listed of it count (not what it streams meanwhile: a read for a
   // pin or a move still out isn't undone by the next word it says).
-  if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type) && !RELOADS.has(event.type)) return;
+  if (event.type !== "session.deleted" && event.type !== STARTS && !finishes && !RELOADS.has(event.type)) return;
   // (Read whole now: it's read again once that's in.)
   reading.get(name)?.add(id);
-  if (event.type === STARTS || ENDS.has(event.type) || event.type === "session.deleted") runningReads.get(name)?.add(id);
+  if (event.type === STARTS || finishes || event.type === "session.deleted") runningReads.get(name)?.add(id);
   const mine = ++eventCount;
   asked.set(`${name} ${id}`, mine);
   if (event.type === "session.deleted") {
@@ -756,7 +759,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
     clearWakeTurn(place, id);
     place.running.add(id);
     if ((known ??= readBoxKnows()).botSessions.has(id)) void readWakeTurn(place, target, id);
-  } else if (ENDS.has(event.type)) {
+  } else if (finishes) {
     place.running.delete(id);
     clearWakeTurn(place, id);
   }
