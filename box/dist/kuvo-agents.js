@@ -12338,6 +12338,7 @@ var paragraphs = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filte
 // box/src/agents/agents/claude.ts
 import { spawn as spawn6 } from "child_process";
 import { createHash as createHash8, randomUUID as randomUUID3 } from "crypto";
+import { open } from "fs/promises";
 import { createReadStream, existsSync as existsSync15, mkdirSync as mkdirSync14, readdirSync as readdirSync12, readFileSync as readFileSync22, rmdirSync as rmdirSync2, statSync as statSync8 } from "fs";
 import { homedir as homedir3 } from "os";
 import { basename as basename5, dirname as dirname11, join as join25, resolve as resolve6 } from "path";
@@ -13307,8 +13308,10 @@ ${input.text}` } : input, this.copies());
           task.outputFile = message.output_file;
         const command = task?.toolUseID ? this.commands.get(task.toolUseID) : undefined;
         this.lastEnded = { type: task?.type ?? "", description: task?.description ?? String(message.summary ?? ""), command, status: String(message.status ?? "completed"), summary: message.summary };
-        if (task?.shell)
-          endShell(task.shell, message.status === "completed" ? 0 : undefined);
+        if (task?.shell) {
+          const exit = /exit code (-?\d+)/i.exec(String(message.summary ?? ""))?.[1];
+          endShell(task.shell, exit !== undefined ? Number(exit) : message.status === "completed" ? 0 : undefined);
+        }
         if (this.liveTasks.delete(message.task_id))
           emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
         const callID = task?.type === "local_agent" && task.toolUseID ? task.toolUseID : typeof message.tool_use_id === "string" ? message.tool_use_id : task?.toolUseID;
@@ -13360,21 +13363,33 @@ ${input.text}` } : input, this.copies());
   }
   async taskOutput(taskID) {
     const task = this.tasks.get(taskID);
+    if (task?.outputFile) {
+      try {
+        const file = await open(task.outputFile, "r");
+        try {
+          const { size } = await file.stat();
+          const bytes = Buffer.alloc(Math.min(size, 64000));
+          const { bytesRead } = await file.read(bytes, 0, bytes.length, size - bytes.length);
+          if (bytesRead) {
+            task.last = { output: bytes.subarray(0, bytesRead).toString("utf8"), total: size - bytes.length + bytesRead };
+            return task.last;
+          }
+        } finally {
+          await file.close();
+        }
+      } catch {}
+    }
     try {
       if (this.query?.getTaskOutput) {
         const read = await this.query.getTaskOutput(taskID);
         const last = { output: String(read?.output ?? ""), total: Number(read?.total_bytes ?? 0) };
-        if (task)
-          task.last = last;
-        return last;
+        if (last.total > 0 || last.output.length) {
+          if (task)
+            task.last = last;
+          return last;
+        }
       }
     } catch {}
-    if (task?.outputFile) {
-      try {
-        const bytes = readFileSync22(task.outputFile);
-        return { output: bytes.subarray(Math.max(0, bytes.length - 64000)).toString("utf8"), total: bytes.length };
-      } catch {}
-    }
     return task?.last ?? { output: "", total: 0 };
   }
   get keepsWorking() {
@@ -16112,20 +16127,25 @@ class CodexThread {
   }
   terminals = [];
   commandStarts = new Map;
+  terminalOutput = new Map;
   terminalsRead;
   terminalReadVersion = 0;
   terminalsUnknown;
   get backgroundTasks() {
     if (!this.server || this.server.isClosed)
       return [];
-    const tasks = this.terminals.map(({ id, since, order }) => ({ id, since, order }));
+    const tasks = this.terminals.flatMap(({ id, since, order, shell }) => shell ? [] : [{ id, since, order }]);
     return this.terminalsUnknown ? [...tasks, this.terminalsUnknown] : tasks;
   }
   resetTerminals() {
     clearTimeout(this.terminalsRead);
     ++this.terminalReadVersion;
     const changed = this.terminals.length > 0 || this.terminalsUnknown !== undefined;
+    for (const terminal of this.terminals)
+      if (terminal.shell)
+        endShell(terminal.shell);
     this.terminals = [];
+    this.terminalOutput.clear();
     this.terminalsUnknown = undefined;
     this.commandStarts.clear();
     if (changed)
@@ -16133,7 +16153,7 @@ class CodexThread {
   }
   async stopBackgroundTasks() {
     const server = this.server;
-    if (!this.backgroundTasks.length || !server || !this.nativeID)
+    if (!this.terminals.length && !this.terminalsUnknown || !server || !this.nativeID)
       return;
     await server.request("thread/backgroundTerminals/clean", { threadId: this.nativeID }, 30000).catch(() => {});
     await this.readTerminals();
@@ -16161,7 +16181,11 @@ class CodexThread {
         for (const terminal of answer.data) {
           if (typeof terminal?.processId !== "string")
             continue;
-          listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined });
+          listed.push({
+            id: terminal.processId,
+            itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined,
+            command: typeof terminal.command === "string" ? terminal.command : undefined
+          });
         }
         cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined;
         if (cursor)
@@ -16187,19 +16211,46 @@ class CodexThread {
     const wasUnknown = this.terminalsUnknown !== undefined;
     this.terminalsUnknown = undefined;
     const before = new Map(this.terminals.map((terminal) => [terminal.id, terminal]));
-    this.terminals = listed.map(({ id, itemId }) => {
+    this.terminals = listed.map(({ id, itemId, command }) => {
       const known = before.get(id);
+      const same = known?.itemId === itemId ? known : undefined;
       const start = itemId === undefined ? undefined : this.commandStarts.get(itemId);
-      const observed = start ?? (known?.itemId === itemId ? known : undefined) ?? { since: Date.now(), order: workOrder() };
-      return { id, itemId, since: observed.since, order: observed.order };
+      const observed = start ?? same ?? { since: Date.now(), order: workOrder() };
+      let shell = same?.shell;
+      if (!shell && command) {
+        const output = itemId ? this.outputForTerminal(itemId) : { output: "", total: 0 };
+        shell = addShell(this.session.id, this.session.location.directory, unwrapShell(command), async () => output, async () => {
+          await server.request("thread/backgroundTerminals/terminate", { threadId: threadID, processId: id }, 30000);
+          await this.readTerminals(true);
+        }, observed.since, observed.order);
+      }
+      return { id, itemId, since: observed.since, order: observed.order, shell };
     });
+    const stillRunning = new Set(this.terminals.map((terminal) => terminal.shell));
+    for (const terminal of before.values()) {
+      if (terminal.shell && !stillRunning.has(terminal.shell))
+        endShell(terminal.shell);
+    }
     for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200)))
       this.commandStarts.delete(id);
+    const liveItems = new Set(this.terminals.map((terminal) => terminal.itemId));
+    for (const id of this.terminalOutput.keys()) {
+      if (!liveItems.has(id) && !this.commandStarts.has(id))
+        this.terminalOutput.delete(id);
+    }
     if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order))
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
     this.noteBackground(server);
     if (this.terminals.length)
       again();
+  }
+  outputForTerminal(itemId) {
+    let output = this.terminalOutput.get(itemId);
+    if (!output) {
+      output = { output: "", total: 0 };
+      this.terminalOutput.set(itemId, output);
+    }
+    return output;
   }
   noteBackground(server) {
     const held = server.holder;
@@ -16681,6 +16732,20 @@ ${said.map((each) => each.text).join(`
     const item = params?.item;
     if ((!from || from === this.server) && method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id)) {
       this.commandStarts.set(item.id, { since: Date.now(), order: workOrder() });
+    }
+    if (!from || from === this.server) {
+      if (method === "item/commandExecution/outputDelta" && typeof params.itemId === "string" && typeof params.delta === "string") {
+        const output = this.outputForTerminal(params.itemId);
+        output.output = (output.output + params.delta).slice(-outputLimit4);
+        output.total += Buffer.byteLength(params.delta);
+      } else if (method === "item/completed" && item?.type === "commandExecution" && typeof item.id === "string" && typeof item.aggregatedOutput === "string") {
+        const output = this.outputForTerminal(item.id);
+        const total = Buffer.byteLength(item.aggregatedOutput);
+        if (total >= output.total) {
+          output.output = item.aggregatedOutput.slice(-outputLimit4);
+          output.total = total;
+        }
+      }
     }
     if (!active)
       return;
@@ -17668,6 +17733,7 @@ var init_codex = __esm(() => {
   init_servers();
   init_pictures();
   init_ids();
+  init_shells();
   init_machine();
   init_maintenance();
   init_agent_updates();
@@ -33756,4 +33822,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents ebcb3bb33fdff1e106325bf39912bd3f59578774a99e7a47de1f876c851d1eec
+// Built from Packages/Box/src/agents 3704548b52a0446f9815f213eb30abe40dfed67582274fbf2204e70b7edd3f9c
