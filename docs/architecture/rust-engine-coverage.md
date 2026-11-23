@@ -81,9 +81,11 @@ the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
 owners on the same case each own the part described by their phase.
 
-- Message parts covers all 13 read and all 25 compose vectors. The two retained-file
-  vectors use real inline payloads and check the recovered file bytes, the prompt
-  files, and both kinds of attachment notes. Validation and error recovery are separate.
+- Message parts covers all 13 read and all 25 compose vectors. The original
+  conformance case filtered out the two `kept` compose vectors because the
+  Rust sender did not retain the inline attachment bytes. Both vectors now
+  use real inline payloads and check the recovered bytes, the prompt files,
+  and both kinds of attachment notes. Validation and error recovery are separate.
 - Context and inbox transfer use the resident scenarios above. Send recovery covers
   both sides of engine acceptance, including the live inbox and completed transcript.
 - Queue coverage is through the five session queue scenarios and the pinned engine
@@ -169,7 +171,8 @@ engine already had the message. The TypeScript owner now settles that claim
 using the local queue, engine inbox or exact transcript ID. The two residents
 agree on all ten replies and the final engine state. Tests also cut the
 original send before engine acceptance and while the prompt is still in the
-engine inbox.
+engine inbox. [Send-once contract](../../protocol/PROTOCOL.md),
+[GPUI send client](../../gpui/kuvo_box/src/client.rs).
 
 OpenCode's diagnostic for the current-beta second inventory page was
 "Path is not absolute". The shared fixture had replaced only "@HOME@",
