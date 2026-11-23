@@ -13158,6 +13158,12 @@ whole Insights screen as a box makes it. It takes `period` (7, 30 or 90),
 row's `id`), `computer` or `session` to narrow it. Every grouping is made
 by the box; a client draws it as it comes:
 
+For a selected computer, or across the setup, a reachable Insights peer without a completed
+first copy keeps the summary in `loading`. The final peer page records coverage, and the first
+ready summary includes the records already indexed from those peers. An away computer's
+indexed usage remains included. The saved summary key includes the selected peers and the
+presence of their kept copies, so a summary from before a computer joined can't stand in for it.
+
 - `totals`: `cost` (USD at current API rates), `tokens` (every token,
   cache reads included) and `cacheRate` (cached input over all input,
   null where no input was counted). Every row and standout has the same

@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.
 - The workspace badges count items waiting on you across your computers.
+- Insights waits for a reachable computer’s first usage copy before showing a total for the setup.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
 - Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.

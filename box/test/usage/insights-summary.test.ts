@@ -263,3 +263,32 @@ test("at most three sessions stand out, each for one reason, once there are enou
   ])
   expect((await summaryOf([...many("costly", 6), ...many("cold", 3, 0)])).standouts).toEqual([])
 })
+
+test("Insights waits for a new computer’s first complete copy and counts kept usage after it goes away", async () => {
+  const db = new InsightsDB(":memory:")
+  const post = new PeerPost()
+  const directory = new LinkDirectory(post)
+  const peers = { self: { key: "first", name: "MacBook" }, bots: [] }
+  const peer = { key: "mini", name: "Mac mini", insights: "connected" }
+  const insights = new Insights(db, {} as InsightsScan, new PricingStore(undefined, null), directory, post, "first", () => now)
+  const summary = async () => {
+    const reply = await insightsRoutes(insights, "GET", ["summary"], new URLSearchParams("period=30&zone=UTC"))
+    return (await reply.json() as { data: Summary }).data
+  }
+  try {
+    await db.take([call("ses_local", "one")], priced, now)
+    directory.set({ ...peers, boxes: [peer] })
+    expect((await summary()).state).toBe("loading")
+
+    await insights.take(peer.key, { kind: "insights", action: "page", after: 0, next: 1, more: false,
+      epoch: "test", scanned: now, records: [call("ses_remote", "one", { computer: "mini" })] })
+    directory.set({ ...peers, boxes: [{ ...peer, insights: "away" }] })
+    const first = await summary()
+    expect(first.state).toBe("ready")
+    expect(list(first, "computers").rows.map(row => [row.name, row.tokens]).sort()).toEqual([
+      ["Mac mini", processed()], ["MacBook", processed()],
+    ])
+  } finally {
+    await db.close()
+  }
+})

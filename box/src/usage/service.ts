@@ -9,6 +9,7 @@ import { GroupStore } from "../agents/groups/store"
 import { LinkDirectory, PeerPost } from "../agents/groups/post"
 import { parseProvider } from "../agents/accounts"
 import { isRealBridgeFolder } from "../shared/account"
+import type { SeatPeers } from "../shared/seats"
 import { writeSecret } from "../shared/files"
 import { bridgeRecordFormat, readRendezvous, type BridgeRecord } from "../shared/records"
 import { engineGet, readEngineFile } from "../link/engine/client"
@@ -36,10 +37,11 @@ export interface UsageOptions {
   bots: string
   engineData?: string
   bundle?: string
+  initialPeers?: SeatPeers
   conversationHome?: (session: string, origin?: string) => string | undefined
 }
 
-export function usageReader({ home, run, box, bots, engineData, bundle, conversationHome }: UsageOptions, fixtures?: {
+export function usageReader({ home, run, box, bots, engineData, bundle, initialPeers, conversationHome }: UsageOptions, fixtures?: {
   accounts: () => UsageAgent[]
   engineCredentials: () => Promise<unknown>
 }) {
@@ -51,6 +53,7 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   const post = new PeerPost(join(folder, "outbox.json"))
   const directory = new LinkDirectory(post)
+  if (initialPeers) directory.set(initialPeers)
   const engineAccounts = new EngineAccounts(fixtures?.engineCredentials ?? (async () => {
     if (!live) return []
     return engineGet(readEngineFile(), "api/credential")
