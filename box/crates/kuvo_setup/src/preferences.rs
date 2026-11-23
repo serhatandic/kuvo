@@ -454,7 +454,7 @@ fn title(name: &str) -> String {
     name.replace('_', " ").replace('/', " › ")
 }
 
-pub(crate) fn clock(files: &Files, link: &Link) -> Result<Value, Error> {
+pub(crate) fn clock(files: &Files, link: &Link, computer: &str) -> Result<Value, Error> {
     let kept = zone(files, link)?;
     let system = TimeZone::system();
     let own = system.iana_name().unwrap_or("UTC");
@@ -473,11 +473,11 @@ pub(crate) fn clock(files: &Files, link: &Link) -> Result<Value, Error> {
             format!("GMT{sign}{hours}:{minutes:02}")
         }
     };
-    let name = link
-        .name
-        .as_deref()
-        .filter(|name| !name.is_empty())
-        .unwrap_or("this computer");
+    let name = if computer.is_empty() {
+        "this computer"
+    } else {
+        computer
+    };
     let mut choices: Vec<_> = jiff::tz::db()
         .available()
         .filter(|id| zone_name(id.as_str()))
@@ -513,11 +513,14 @@ pub(crate) fn clock(files: &Files, link: &Link) -> Result<Value, Error> {
     } else {
         "own-clock"
     };
+    let choice_ids: Vec<_> = choices.iter().map(|choice| &choice["id"]).collect();
+    let revision =
+        fingerprint(&json!({"kind": "choice", "value": value, "can": true, "choices": choice_ids}));
     let mut page = json!({
         "id": "clock", "title": "Clock",
         "groups": [{"id": "clock", "title": "Clock", "rows": [{
             "id": "time-zone", "title": "Time zone", "line": line, "kind": "choice", "value": value, "choices": choices,
-            "can": true, "revision": fingerprint(&json!(["time-zone", value, kept])),
+            "can": true, "revision": &revision[..16],
         }]}],
     });
     if missing_rules {

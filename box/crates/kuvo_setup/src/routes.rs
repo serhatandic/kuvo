@@ -324,8 +324,8 @@ impl SetupHandle {
                 let given: SettingChange = read(&call.request.body)?;
                 if given.row != "time-zone" {
                     return Err(Refusal::new(
-                        StatusCode::BAD_REQUEST,
-                        "That isn't something to change.",
+                        StatusCode::NOT_FOUND,
+                        "That isn't on this page now.",
                     ));
                 }
                 let revision = Some(given.was);
@@ -333,17 +333,9 @@ impl SetupHandle {
                     .value
                     .as_str()
                     .ok_or_else(|| {
-                        Refusal::new(
-                            StatusCode::BAD_REQUEST,
-                            "This computer doesn't know that time zone.",
-                        )
+                        Refusal::new(StatusCode::BAD_REQUEST, "Pick one of its choices.")
                     })?
                     .to_owned();
-                if zone != "own-clock"
-                    && setup.views.borrow().clock["groups"][0]["rows"][0]["value"] != zone
-                {
-                    setup.require_primary("time zone")?;
-                }
                 respond(setup.request(Command::Zone { zone, revision }).await?)
             }
         });

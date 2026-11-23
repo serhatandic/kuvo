@@ -123,3 +123,22 @@ contains 222 declarations across the listed files, including adjacent work.
   route, which belongs to the bots port. The two binaries can be checked
   against the same stopped, signed setup home before those cross-area scenarios
   are green.
+
+## Conformance results
+
+- TypeScript passes the two-computer scenario, both personality scenarios and
+  the current layout-23 golden-home scenario. Rust passes the personality
+  validation case. The other scenarios first stop at the installer-code, bot
+  templates and project-list routes, respectively.
+- The scoped Rust check of the current TypeScript golden home preserves its
+  certified identity, leadership, accepted shared values and personality
+  library bytes. The live Rust pair uses a signed enrollment fixture until the
+  installer route is available. It confirms a member's save commits at the
+  main, then survives the main's exit, lease expiry and member promotion.
+- On the same stopped setup home the differential runner matches the setup
+  view, personality list and direct unauthenticated personality-document
+  refusal. The clock choice list differs because the bundled Jiff database
+  lists IANA aliases and TypeScript uses the Intl zone catalog. The row
+  revision hashes the offered IDs, so it differs too. The file inventory also
+  differs in companion files and startup bookkeeping, including the relay
+  setting and TypeScript's `run/link.seen` and `run/link.version` markers.

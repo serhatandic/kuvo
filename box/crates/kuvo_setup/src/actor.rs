@@ -169,7 +169,7 @@ impl SetupRuntime {
             None
         };
         let (link, identity) = tokio::task::spawn_blocking({
-            let (home, files) = (home.to_owned(), files.clone());
+            let (home, files, name) = (home.to_owned(), files.clone(), name.clone());
             move || open(&home, &files, &name, kind, relay, overlay)
         })
         .await
@@ -181,6 +181,7 @@ impl SetupRuntime {
             link,
             identity,
             kind,
+            name,
             lease,
             welcomed,
         })
@@ -196,6 +197,7 @@ pub struct PreparedSetup {
     link: Link,
     identity: Option<Identity>,
     kind: ComputerKind,
+    name: String,
     lease: lease::Client,
     welcomed: bool,
 }
@@ -227,11 +229,20 @@ impl PreparedSetup {
             mut link,
             identity,
             kind,
+            name,
             lease,
             welcomed,
         } = self;
         let (tx, rx) = mpsc::channel(32);
-        let view = make_view(&files, &link, identity.as_ref(), &lease, kind, welcomed)?;
+        let view = make_view(
+            &files,
+            &link,
+            identity.as_ref(),
+            &lease,
+            kind,
+            &name,
+            welcomed,
+        )?;
         let (views, view_rx) = watch::channel(view);
         let (rosters, roster_rx) =
             watch::channel(peer_roster(&link, identity.as_ref()).map(Arc::new));
@@ -243,6 +254,7 @@ impl PreparedSetup {
             link,
             identity,
             kind,
+            name,
             lease,
             welcomed,
             network,
@@ -552,6 +564,7 @@ fn make_view(
     own: Option<&Identity>,
     lease: &lease::Client,
     kind: ComputerKind,
+    name: &str,
     welcomed: bool,
 ) -> Result<View, Error> {
     let setup = link.setup().ok().filter(|_| own.is_some());
@@ -633,7 +646,7 @@ fn make_view(
         setup: view,
         access,
         personalities: preferences::library(files, link)?.document(),
-        clock: preferences::clock(files, link)?,
+        clock: preferences::clock(files, link, name)?,
     })
 }
 
@@ -642,6 +655,7 @@ struct Owner {
     link: Link,
     identity: Option<Identity>,
     kind: ComputerKind,
+    name: String,
     lease: lease::Client,
     welcomed: bool,
     network: Option<SetupLink>,
@@ -715,6 +729,7 @@ impl Owner {
             self.identity.as_ref(),
             &self.lease,
             self.kind,
+            &self.name,
             self.welcomed,
         ) {
             self.views.send_if_modified(|old| {
@@ -979,7 +994,7 @@ impl Owner {
                 Ok(Response::ok(with_receipt(response.value, receipt)))
             }
             Command::Zone { zone, revision } => {
-                let page = preferences::clock(&self.files, &self.link)?;
+                let page = preferences::clock(&self.files, &self.link, &self.name)?;
                 let row = &page["groups"][0]["rows"][0];
                 if revision
                     .as_ref()
@@ -987,7 +1002,16 @@ impl Owner {
                 {
                     return Ok(Response {
                         status: 409,
-                        value: json!({"message": "This setting changed. Try again.", "page": page}),
+                        value: json!({"message": "It changed since you read it.", "page": page}),
+                    });
+                }
+                if !row["choices"]
+                    .as_array()
+                    .is_some_and(|choices| choices.iter().any(|choice| choice["id"] == zone))
+                {
+                    return Ok(Response {
+                        status: 400,
+                        value: json!({"message": "Pick one of its choices."}),
                     });
                 }
                 let before = preferences::zone(&self.files, &self.link)?;
@@ -998,18 +1022,32 @@ impl Owner {
                 {
                     return Ok(Response::ok(page));
                 }
+                if self
+                    .link
+                    .setup()
+                    .is_ok_and(|setup| setup.role == Role::Member)
+                {
+                    return Ok(Response {
+                        status: 409,
+                        value: json!({"message": "Change your setup's time zone on its main computer."}),
+                    });
+                }
                 let choice = preferences::Zone::choose(&zone, before.as_ref())?;
                 if self.link.setup.is_none() {
                     preferences::keep_local_zone(&self.files, &choice)?;
                     preferences::apply_zone(&self.files, &choice)?;
                     self.refresh();
-                    return Ok(Response::ok(preferences::clock(&self.files, &self.link)?));
+                    return Ok(Response::ok(preferences::clock(
+                        &self.files,
+                        &self.link,
+                        &self.name,
+                    )?));
                 }
                 let receipt = self
                     .save(SharedKind::SetupTimeZone, json!(choice), None, None)
                     .await?;
                 Ok(Response::ok(with_receipt(
-                    preferences::clock(&self.files, &self.link)?,
+                    preferences::clock(&self.files, &self.link, &self.name)?,
                     receipt,
                 )))
             }

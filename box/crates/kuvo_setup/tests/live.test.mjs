@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { createHmac, createPublicKey, verify } from "node:crypto";
+import { createHash, createHmac, createPublicKey, verify } from "node:crypto";
 import http from "node:http";
 import {
   boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write,
@@ -210,6 +210,9 @@ test("clock changes are persisted and stale settings revisions are refused", { t
   const route = "kuvo/settings/clock";
   const read = (await get(box, route)).json.groups[0].rows[0];
   assert.equal(read.value, "own-clock");
+  assert.equal(read.revision, createHash("sha256").update(JSON.stringify({
+    can: true, choices: read.choices.map(choice => choice.id), kind: "choice", value: read.value,
+  })).digest("base64url").slice(0, 16));
   const given = { row: "time-zone", value: "Europe/Istanbul", was: read.revision };
   const answer = await box.ask("PATCH", route, given);
   assert.equal(answer.status, 200, answer.text);
@@ -222,6 +225,7 @@ test("clock changes are persisted and stale settings revisions are refused", { t
   assert.equal(fs.readFileSync(path.join(box.home, "wakes", "timezone"), "utf8"), "Europe/Istanbul");
   const stale = await box.ask("PATCH", route, { ...given, value: "Asia/Tokyo" });
   assert.equal(stale.status, 409, stale.text);
+  assert.equal(stale.json.message, "It changed since you read it.");
   assert.equal(entry(box, "setupTimeZone").value.zone, "Europe/Istanbul");
 });
 
