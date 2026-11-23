@@ -24,6 +24,7 @@ async fn a_machine_recovers_its_signed_identity_after_restart() {
         .start(None)
         .unwrap();
     let link = json_file(&home, "run/link.json");
+    assert_eq!(link["sharedOutcomes"], json!({}));
     let identity = link["setup"]["primary"].as_str().unwrap();
     assert_eq!(
         runtime.handle().identity(identity).unwrap(),
