@@ -45,8 +45,11 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     const opened = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
     const prompt = Promise.withResolvers<{ session: string; body: unknown }>();
     const prompts: { session: string; body: unknown }[] = [];
+    // (Down: the engine not answering yet, as just after the box starts.)
+    const engineState = { down: false };
     const engine = Bun.serve({
       hostname: "127.0.0.1", port: 0, async fetch(request) {
+        if (engineState.down) return Response.json({}, { status: 503 });
         const route = new URL(request.url).pathname;
         const data = (value: unknown) => Response.json({ data: value });
         if (request.method === "POST" && route === "/api/session") {
@@ -131,7 +134,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
       stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port, bridgePort: bridge?.port })),
       stdout: "ignore", stderr: "inherit", ipc,
     });
-    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
+    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
   });
   const setup = "setup_" + "a".repeat(32);
   for (const box of boxes) {
@@ -240,6 +243,27 @@ test("a computer going away keeps its rows with the same last-seen time and no a
     expect(merged.runs.computers.map((row: any) => [row.computer, row.here ?? false, row.away ?? false, row.lastSeen]))
       .toEqual([[near.computer, true, false, undefined], [far.computer, false, true, session.lastSeen]]);
     expect(fitsShape(RUNS_ON, merged.runs)).toBe(true);
+  } finally { setup.close(); }
+}, 30_000);
+
+test("Runs on lists this computer's models and its peers' at once after a restart, while its engine and peers are silent", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    const runsOn = async () => {
+      const watch = Buffer.from(JSON.stringify({ runs: targets.runs })).toString("base64url");
+      const { status, text } = await near.read(`kuvo/line?once=1&watch=${watch}`);
+      expect(status).toBe(200);
+      const runs = text.trim().split("\n").map(line => JSON.parse(line)).find((row: any) => row.t === "runs")!.d;
+      expect(fitsShape(RUNS_ON, runs)).toBe(true);
+      return runs.computers.map((row: any) => [row.computer.name, row.here ?? false, row.pending ?? false, row.offered.models.map((model: any) => model.id)]);
+    };
+    expect(await runsOn()).toEqual([["near", true, false, [near.model.id]], ["far", false, false, [far.model.id]]]);
+    // Started again (each read is a new process), its engine not answering yet and the other
+    // computer silent: both are still listed with their models, its own as last read.
+    near.engineState.down = true;
+    expect(await runsOn()).toEqual([["near", true, true, [near.model.id]], ["far", false, false, [far.model.id]]]);
   } finally { setup.close(); }
 }, 30_000);
 
