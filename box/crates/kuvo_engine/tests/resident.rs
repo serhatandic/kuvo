@@ -59,6 +59,7 @@ fn main() {
             interrupted_inbox_transfer().await;
             attachment_retention().await;
             local_background_activity().await;
+            transcript_reads_older_pages().await;
             coding_agent_models().await;
             external_asks().await;
             peer_waiting().await;
@@ -695,6 +696,108 @@ async fn local_background_activity() {
     server.stop().await;
 }
 
+async fn transcript_reads_older_pages() {
+    use kuvo_engine::{TranscriptError, TranscriptScope};
+
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    let retain = |file, value: Value| {
+        fs::write(work.join(file), serde_json::to_vec(&value).unwrap()).unwrap()
+    };
+    let session = "ses_transcript";
+    retain("transcript-session.json", json!({"id":session}));
+    let mut rows: Vec<_> = (1..=42).map(|at| json!({
+        "id":format!("msg_{at}"), "type":"user", "text":format!("Paragraph {at} {}",
+        if at % 14 == 0 { format!("mentions Café. {}", "words ".repeat(440)) } else { "words ".repeat(445) }),
+    })).collect();
+    let recent = rows.split_off(22);
+    retain(
+        "transcript-latest.json",
+        json!({"data":recent.into_iter().rev().collect::<Vec<_>>(), "cursor":{"previous":"older page"}}),
+    );
+    retain(
+        "transcript-older.json",
+        json!({"data":rows.into_iter().rev().collect::<Vec<_>>()}),
+    );
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let cancel = CancellationToken::new();
+    let read = |query| {
+        server
+            .engine
+            .transcript(session, "Release", query, TranscriptScope::Peer, &cancel)
+    };
+
+    let whole = read(None).await.unwrap();
+    assert!(whole.starts_with("# Release\n\n**User**\n\nParagraph 1 "));
+    assert!(whole.contains("[… the middle is left out; read it with query, to find a part …]"));
+    assert!(whole.contains("Paragraph 42 mentions Café."));
+    assert!(whole.len() < 20_200);
+    let found = read(Some("CAFE")).await.unwrap();
+    assert!(found.starts_with("3 places mention \"CAFE\""));
+    assert!(found.contains("Paragraph 41"));
+    assert!(found.contains("Paragraph 42 mentions Café."));
+    assert!(!found.contains("Paragraph 14 mentions Café."));
+    assert!(
+        read(Some("missing"))
+            .await
+            .unwrap()
+            .starts_with("Nothing in it mentions")
+    );
+
+    retain(
+        "transcript-session.json",
+        json!({"id":session, "revert":{"messageID":"msg_41"}}),
+    );
+    let reverted = read(None).await.unwrap();
+    assert!(reverted.contains("Paragraph 40"));
+    assert!(!reverted.contains("Paragraph 41"));
+    assert!(!reverted.contains("Paragraph 42"));
+    fs::write(work.join("transcript-unavailable"), []).unwrap();
+    assert!(
+        read(None)
+            .await
+            .unwrap()
+            .starts_with("Some older messages couldn't be read:")
+    );
+    retain(
+        "transcript-session.json",
+        json!({"id":session, "revert":{"messageID":"msg_3"}}),
+    );
+    assert!(matches!(
+        read(None).await,
+        Err(TranscriptError::Unavailable(_))
+    ));
+    fs::remove_file(work.join("transcript-unavailable")).unwrap();
+    retain("transcript-session.json", json!({"id":session}));
+    for reason in ["auto", "manual"] {
+        retain(
+            "transcript-latest.json",
+            json!({"data":[
+                {"id":"msg_idle","type":"idle","outcome":"failed","error":{"message":"The engine stopped."}},
+                {"id":"msg_summary","type":"compaction","reason":reason,"status":"failed"},
+                {"id":"msg_first","type":"user","text":"Tidy the notes."},
+            ]}),
+        );
+        let summary = read(None).await.unwrap();
+        assert!(summary.contains("_Couldn't summarize the conversation._"));
+        assert_eq!(
+            summary.contains("It stopped with an error: The engine stopped."),
+            reason == "auto"
+        );
+    }
+    cancel.cancel();
+    assert!(matches!(read(None).await, Err(TranscriptError::Cancelled)));
+    server.stop().await;
+}
+
 async fn external_asks() {
     use kuvo_engine::{
         AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,
@@ -1209,6 +1312,31 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session/ses_transcript" => {
+                let row: Value =
+                    serde_json::from_slice(&fs::read("transcript-session.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":row}));
+            }
+            "/api/session/ses_transcript/message" => {
+                let older = req
+                    .uri()
+                    .query()
+                    .is_some_and(|query| query.contains("cursor=older%20page"));
+                if older && Path::new("transcript-unavailable").exists() {
+                    answer = Reply::json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"message":"The oldest messages aren't ready."}),
+                    );
+                } else {
+                    let file = if older {
+                        "transcript-older.json"
+                    } else {
+                        "transcript-latest.json"
+                    };
+                    let row: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+                    answer = Reply::json(StatusCode::OK, row);
+                }
+            }
             "/api/session/active" if Path::new("active-sessions.json").exists() => {
                 let rows: Value =
                     serde_json::from_slice(&fs::read("active-sessions.json").unwrap()).unwrap();

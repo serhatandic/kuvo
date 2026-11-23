@@ -30,6 +30,7 @@ mod session_move;
 mod sessions;
 mod start_session;
 mod submissions;
+mod transcript;
 mod turns;
 mod typed;
 mod waiting;
@@ -74,6 +75,7 @@ pub use search::{
 };
 pub use session_list::{Activity, ActivityState, LocalSessions};
 pub use session_move::{MoveEngineError, SessionMove};
+pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
 
 impl Engine {

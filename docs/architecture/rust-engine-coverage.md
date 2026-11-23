@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 149 of
-411 declarations are covered, 89 are partial and 173 are gaps.
-Row 3.2 retains 130 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 152 of
+411 declarations are covered, 88 are partial and 171 are gaps.
+Row 3.2 retains 127 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -119,7 +119,7 @@ owners on the same case each own the part described by their phase.
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
 | `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 3.2 · 5 |
-| `box/test/conversation.test.ts` (3) | — | 3 | 1–2 | 3.2 · 1–3 |
+| `box/test/conversation.test.ts` (3) | 1–3 | — | — | — |
 | `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
@@ -246,6 +246,12 @@ moved copies, and reports each computer that could not answer. The
 delivery failures apart from reach observations through the relay's
 ordered self-echoes. No request or reply is stored in the forward spool.
 Projection of a coding-agent transcript waits for 4.1.
+The local `Engine::transcript` seam reads OpenCode's newest and older
+pages, stops at an Undo boundary and bounds the answer for a local agent
+or peer letter. The resident scenario covers a failed older page with
+and without a known Undo boundary, accent-insensitive query matches and
+failed automatic and manual summaries. Phase 2.4 owns the letter caller
+and 4.1 owns reads from the coding-agent runtime.
 Raw prompts and commands use the same attachment ingest as the composer,
 with the raw prompt's own send-once response cache. Expiry preserves moved
 payloads and transcript pictures. `AttachmentSource` carries the other
