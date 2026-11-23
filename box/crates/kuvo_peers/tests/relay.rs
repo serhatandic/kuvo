@@ -715,3 +715,210 @@ async fn live_stream_parts_and_temporary_reads_leave_saved_peer_reach_alone() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn owner_forwarding_binds_the_peer_to_the_accepted_setup_and_operation() {
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Action, Admission, Handle, Reply, Request, SetupState, Submitter},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let home = tempfile::tempdir().unwrap();
+        let run = home.path().join("run");
+        let here = public(RUST_KEY);
+        let peer = public(PEER_KEY);
+        let former = public([14; 32]);
+        let setup = format!("set_{}", encode(&[1; 16]));
+        let operation = encode(&[2; 32]);
+        let session = "ses_forwarded";
+        let (relay, mut test) = TestRelay::connect().await;
+        let resident = ResidentPeers::start(home.path(), Roster {
+            here: Some(here), main: Some(here), name: "Owner".into(),
+            members: vec![Member { key: peer, address: Some(PEER_ADDRESS), name: "Peer".into(), kind: ComputerKind::Machine }],
+        }, Some(relay), None, false, Arc::new(|| 12)).await.unwrap();
+        let devices = Devices::load(home.path(), "Owner".into(), ComputerKind::Machine).await.unwrap().devices;
+        let accepted = SetupState {
+            id: Some(setup.clone()), replacements: BTreeMap::from([(former, here)]),
+            grants_current: true, grants_disabled: false,
+        };
+        let owner = Handle::new(resident.reader(), resident.relay_handle(), devices, move || accepted.clone());
+        let mut incoming = owner.incoming().unwrap();
+        // The move arrived after the peer reader took its initial snapshot.
+        let moved = json!([{"session":session,"key":encode(&here),"at":10,"arrived":true,"formatVersion":1}]);
+        files::write_atomic(&run.join("moves/moved.json"), &serde_json::to_vec(&moved).unwrap()).unwrap();
+        let scope = owner.scope(session, Some(former)).unwrap();
+        assert_eq!(scope.here, Some(here));
+        assert_eq!(scope.receipt_issuer, Some(here));
+        assert!(scope.owner.unwrap().local);
+
+        let request = Request {
+            setup: setup.clone(), session: session.into(), operation: operation.clone(), submitter: Submitter::Computer,
+            action: Action::Submit { draft: json!({"id":"msg_forwarded"}) },
+        };
+        let nonce = encode(&[9; 16]);
+        for (target, membership) in [(peer, setup.clone()), (here, format!("set_{}", encode(&[3; 16]))), (here, setup.clone())] {
+            let packet = json!({"at":12,"ownerRequest":{"to":encode(&target),"nonce":nonce,"request":{
+                "setup":membership,"session":session,"operation":operation,"submitter":{"kind":"computer"},
+                "action":{"kind":"submit","draft":{"id":"msg_forwarded"}},
+            }}});
+            let bytes = Envelope(packet.as_object().unwrap().clone()).seal(&PEER_KEY, &here).unwrap();
+            test.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+        }
+        let accepted = incoming.recv().await.unwrap();
+        assert_eq!(accepted.peer(), peer);
+        assert_eq!(*accepted.request(), request);
+        assert_eq!(owner.admit(&accepted).unwrap(), Admission::Allowed);
+        let reply = Reply { status: 200, body: json!({"confirmed":true}) };
+        owner.reply(&accepted, reply.clone()).await.unwrap();
+        loop {
+            let (kind, _, body) = test.frame().await;
+            if kind != Kind::Mail { continue; }
+            let mail = Envelope::open(&body, &PEER_KEY, &here).unwrap();
+            if let Some(packet) = mail.0.get("ownerReply") {
+                assert_eq!(packet, &json!({"to":encode(&peer),"nonce":nonce,"setup":setup,"operation":operation,"reply":reply}));
+                break;
+            }
+        }
+
+        // A switch fences a queued effect immediately, while the old receipt
+        // can still be queried at its accepted replacement issuer.
+        let move_record = json!({"id":"mov_forwarded","thing":session,"role":"from","stage":"switching",
+            "peer":encode(&peer),"sessions":[session],"started":12,"formatVersion":1});
+        files::write_atomic(&run.join("moves/mov_forwarded.json"), &serde_json::to_vec(&move_record).unwrap()).unwrap();
+        assert_eq!(owner.admit(&accepted).unwrap(), Admission::OwnerChanged);
+        assert_eq!(owner.scope(session, Some(former)).unwrap().owner.unwrap().key, Some(peer));
+
+        let mut outcome = request;
+        outcome.action = Action::Outcome { issuer: former, query: json!({"handle":"issued"}) };
+        let client = owner.clone();
+        let asking = tokio::spawn(async move { client.request(peer, outcome, Duration::from_secs(2)).await });
+        loop {
+            let (kind, _, body) = test.frame().await;
+            if kind != Kind::Mail { continue; }
+            let mail = Envelope::open(&body, &PEER_KEY, &here).unwrap();
+            if let Some(packet) = mail.0.get("ownerRequest") {
+                assert_eq!(packet["to"], encode(&peer));
+                for (key, body) in [(encode(&[6; 32]), json!({"forged":true})), (operation, reply.body.clone())] {
+                    let answer = json!({"at":12,"ownerReply":{"to":encode(&here),"nonce":packet["nonce"],"setup":setup,
+                        "operation":key,"reply":{"status":200,"body":body}}});
+                    let bytes = Envelope(answer.as_object().unwrap().clone()).seal(&PEER_KEY, &here).unwrap();
+                    test.send(frames::relay_send(&PEER_ADDRESS,&bytes)).await;
+                }
+                break;
+            }
+        }
+        assert_eq!(asking.await.unwrap().unwrap(), reply);
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn forwarded_pairing_waits_for_current_grants_after_restart() {
+    use kuvo_peers::{
+        devices::{DeviceChange, DeviceFuture, DeviceRoster, Devices, ManagedDevices, Revocation},
+        directory::Roster,
+        ownership::{Handle, PairingState, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_server::{
+        Caller,
+        ssh::{Grant, IdentityRefusal, Pairings},
+    };
+    use kuvo_wire::keys::encode;
+    use std::sync::Arc;
+
+    struct Accepted(Arc<DeviceRoster>);
+    impl Pairings for Accepted {
+        fn identity(&self, _: &str) -> Result<[u8; 32], IdentityRefusal> {
+            Err(IdentityRefusal::Unavailable)
+        }
+        fn paired(&self, _: &[u8; 32]) -> Option<Grant> {
+            None
+        }
+    }
+    impl ManagedDevices for Accepted {
+        fn device_roster(&self) -> Arc<DeviceRoster> {
+            self.0.clone()
+        }
+        fn permits_pairing(&self) -> bool {
+            false
+        }
+        fn change<'a>(&'a self, _: &'a Caller, _: DeviceChange) -> DeviceFuture<'a> {
+            Box::pin(async { Err(kuvo_peers::devices::Error::Disabled) })
+        }
+    }
+
+    let folder = tempfile::tempdir().unwrap();
+    let home = folder.path();
+    let key = public([32; 32]);
+    let here = public(RUST_KEY);
+    let restart = || async {
+        ResidentPeers::start(
+            home,
+            Roster {
+                here: Some(here),
+                main: Some(public(PEER_KEY)),
+                name: "Member".into(),
+                members: vec![],
+            },
+            None,
+            None,
+            false,
+            Arc::new(|| 12),
+        )
+        .await
+        .unwrap()
+    };
+    let grant = |token: &str| {
+        serde_json::from_value(json!({"key":encode(&key),"kind":"desktop","pairing":token}))
+            .unwrap()
+    };
+    let open = |grants: DeviceRoster, ready: bool| async move {
+        let resident = restart().await;
+        let devices = Devices::load(home, "Member".into(), ComputerKind::Machine)
+            .await
+            .unwrap()
+            .devices
+            .with_managed(Arc::new(Accepted(Arc::new(grants))));
+        let handle = Handle::new(resident.reader(), None, devices, move || SetupState {
+            id: Some(format!("set_{}", encode(&[1; 16]))),
+            grants_current: ready,
+            ..SetupState::default()
+        });
+        (resident, handle)
+    };
+    let (previous, before) = open(
+        DeviceRoster {
+            devices: vec![grant("old")],
+            removed: vec![],
+        },
+        true,
+    )
+    .await;
+    assert_eq!(before.current_pairing(&key, "old"), PairingState::Allowed);
+    drop(previous);
+    let (_stale, after) = open(
+        DeviceRoster {
+            devices: vec![grant("old")],
+            removed: vec![],
+        },
+        false,
+    )
+    .await;
+    assert_eq!(after.current_pairing(&key, "old"), PairingState::Checking);
+    let current = DeviceRoster {
+        devices: vec![grant("new")],
+        removed: vec![Revocation {
+            key: encode(&key),
+            pairing: "old".into(),
+        }],
+    };
+    let (_restarted, fresh) = open(current, true).await;
+    assert_eq!(fresh.current_pairing(&key, "old"), PairingState::Revoked);
+    assert_eq!(fresh.current_pairing(&key, "new"), PairingState::Allowed);
+}

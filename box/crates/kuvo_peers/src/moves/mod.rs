@@ -179,8 +179,59 @@ fn departures(run: &Path) -> Result<Vec<Departure>, kuvo_store::format::Error> {
 }
 
 pub(crate) fn locate(run: &Path, ownership: &mut Ownership) {
+    apply_owners(
+        ownership,
+        departure_rows(run).filter_map(Result::ok),
+        journal_rows(run).filter_map(Result::ok).collect(),
+    );
+}
+
+/// Admission refuses unreadable durable state. The display projection still
+/// lists the known records while a newer resident's record is on disk.
+pub(crate) fn locate_checked(run: &Path, ownership: &mut Ownership) -> io::Result<()> {
+    let folder = run.join("moves");
+    let entries = match std::fs::read_dir(&folder) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut active = Vec::new();
+    for entry in entries.into_iter().flatten() {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".json"))
+            .is_some_and(|id| move_id(id).is_some())
+        {
+            continue;
+        }
+        let Some(row) = JOURNAL.read(&entry.path()).map_err(io::Error::other)? else {
+            continue;
+        };
+        active.push(serde_json::from_value(row.fields.into())?);
+    }
+    let mut moved = Vec::new();
+    if let Some(rows) = read_json(&folder.join("moved.json"))? {
+        let Value::Array(rows) = rows else {
+            return Err(io::Error::other("The move departure records aren’t a list"));
+        };
+        for row in rows {
+            let fields = DEPARTURE.decode(row).map_err(io::Error::other)?.fields;
+            moved.push(serde_json::from_value(fields.into())?);
+        }
+    }
+    apply_owners(ownership, moved, active);
+    Ok(())
+}
+
+fn apply_owners(
+    ownership: &mut Ownership,
+    departures: impl IntoIterator<Item = Departure>,
+    mut active: Vec<Journal>,
+) {
     let record = crate::lists::record;
-    for departure in departure_rows(run).filter_map(Result::ok) {
+    for departure in departures {
         if departure.queue.is_none()
             && let Some(key) = kuvo_wire::keys::decode_exact(&departure.key)
         {
@@ -193,12 +244,8 @@ pub(crate) fn locate(run: &Path, ownership: &mut Ownership) {
     let mut switching = BTreeSet::new();
     // Keep the known ownership fences even if a different move was written by
     // a newer resident. Client reads and proof replies still check all versions.
-    let mut active: Vec<_> = journal_rows(run)
-        .filter_map(Result::ok)
-        .filter(Journal::live)
-        .collect();
     active.sort_by_key(|record| record.started);
-    for movement in active {
+    for movement in active.into_iter().filter(Journal::live) {
         let destination = if movement.stage.switched() && movement.role == Role::From {
             kuvo_wire::keys::decode_exact(&movement.peer)
         } else {
