@@ -55,13 +55,15 @@ it identifies a part in the bundle. For a one-part bundle, `got` with index 1
 can make it ask for arrival before part 0 gets there. Rust only counts indices
 in the bundle. The TypeScript source is unchanged.
 
-The full move area passed 12 scenarios on macOS and 11 on WSL2 with GNU libc.
-Static Linux musl on WSL2 passed 10 before the waiting extension. Native
-Windows passed the first nine plus the focused managed attachment scenario.
-The two-binary reach comparison ran on macOS. Focused transfer, relay, receipt
-and engine tests passed on all four platforms. The TypeScript resident passed
-all nine applicable scenarios. The tests use disposable residents, a loopback
-relay and an OpenCode stand-in.
+The final full move area passed 21 Rust scenarios and all 19 applicable
+TypeScript scenarios on macOS, including the two-binary reach comparison.
+WSL2 with GNU libc, static Linux musl under WSL2 and native Windows each
+passed 20 Rust scenarios across full runs and focused reruns. The optional
+two-binary reach case ran on macOS. Focused transfer, relay, receipt and
+engine tests passed on all four platforms. Native Windows also passed both
+file-sharing scenarios after an earlier live run hit a transient journal
+replacement error. The tests use disposable residents, a loopback relay and
+an OpenCode stand-in.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -134,7 +136,7 @@ separately where they appear.
 | [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 2–3, 6, 8, 10–12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16, 28 | Open, 2.4 real move projections alongside the relevant merged views in 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
-| [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 3–4, 10, 13 | Open, 2.4 switched sessions, letters, ancestry and returning results to a moved lead. |
+| [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 3–4, 11, 14 | Open, 2.4 switched sessions, letters, ancestry and returning results to a moved lead. The last two were numbered 10 and 13 before the stale snapshot scenario was added. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4, 8–9 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2, and Work Queue deletion and former-owner replay in 2.4 and 5.2. |
 | [setup-handover, move and owner reads](../../box/bridge-tests/setup-handover.test.js#L15) | v3 compatibility | Partial, v0–v3 storage and the compatibility writer are covered. Old-reader rejection through the archive and queue handoffs remain 2.4 and 5.2. |
 | | Group survives source loss, away owner, standalone work with primary away, authoritative remote reads | Open, 2.4 transfer and owner reads with 2.2, 2.5, 3.2 and 5.2. |
