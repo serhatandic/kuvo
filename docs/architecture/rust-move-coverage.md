@@ -191,6 +191,9 @@ The six machine scenarios were rerun on macOS, on lokum and WSL2 using a
 Mac-built static executable, and on native Windows using LLVM MinGW.
 The lokum container runs an init so the harness is an ordinary process when
 the live-PID scenario checks it.
+After refreshing from main, the machine suite passed again on macOS and
+native Windows. The refreshed static musl build passed under WSL2. The
+earlier lokum pass covers the separate Linux host.
 
 With the verified OpenCode 2.2.6 package, C1 passes 30 checks on each
 executable, including its enclosing scenario. The focused Rust run passes
