@@ -309,7 +309,7 @@ test("local uninstall on a primary reports an unconfirmed desktop removal with n
   assert.equal(done.status, 1);
   const said = JSON.parse(done.stdout);
   assert.equal(said.stopped, true);
-  assert.match(said.message, /couldn’t confirm the desktop removal reached every other computer/);
+  assert.match(said.message, /couldn’t save the desktop’s removal/);
   assert.deepEqual(JSON.parse(read(path.join(where.run, "link.json"))).removed, [{ key, pairing: "desktop" }]);
 });
 

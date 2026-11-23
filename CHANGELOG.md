@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Removing Kuvo reports when other computers have yet to receive the desktop’s revocation.
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
