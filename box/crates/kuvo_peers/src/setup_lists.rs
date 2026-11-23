@@ -207,6 +207,7 @@ enum Change {
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
+    SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
 
 pub struct ResidentPeers {
@@ -297,6 +298,11 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Dispatch(dispatcher)).await;
     }
 
+    /// Track the roster handed down by setup authority after a durable membership or epoch change.
+    pub async fn follow_setup_roster(&self, rosters: watch::Receiver<Option<Arc<Roster>>>) {
+        let _ = self.changes.send(Change::SetupRosters(rosters)).await;
+    }
+
     pub async fn local(&self, local: Local) {
         let _ = self.changes.send(Change::Local(Arc::new(local))).await;
     }
@@ -369,6 +375,7 @@ impl Resident {
             .map(|relay| Publisher::start(relay.sender.clone()));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
+        let mut setup_rosters = None;
         loop {
             tokio::select! {
                 change = changes.recv() => match change {
@@ -384,8 +391,22 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     },
+                    Some(Change::SetupRosters(mut rosters)) => {
+                        if let Some(roster) = rosters.borrow_and_update().clone() {
+                            self.view.roster = roster;
+                        }
+                        setup_rosters = Some(rosters);
+                    },
                     None => return,
                 },
+                roster = setup_roster_changed(&mut setup_rosters) => {
+                    if let Some(roster) = roster {
+                        self.view.roster = roster;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
+                }
                 () = grants_changed(&mut devices) => {
                     if let (Some(relay), Some(devices)) = (&relay, &devices) {
                         let next = devices.grants();
@@ -553,6 +574,19 @@ async fn grants_changed(devices: &mut Option<Devices>) {
         return;
     }
     std::future::pending().await
+}
+
+async fn setup_roster_changed(
+    rosters: &mut Option<watch::Receiver<Option<Arc<Roster>>>>,
+) -> Option<Arc<Roster>> {
+    let Some(receiver) = rosters.as_mut() else {
+        return std::future::pending().await;
+    };
+    if receiver.changed().await.is_err() {
+        *rosters = None;
+        return None;
+    }
+    receiver.borrow_and_update().clone()
 }
 
 async fn relay_event(relay: &mut Option<Relay>) -> Option<relay::Event> {

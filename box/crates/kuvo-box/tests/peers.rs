@@ -1,18 +1,23 @@
 //! Peer routes through real resident processes, private homes, and a loopback relay stand-in.
 
-use std::{collections::HashMap, fs, io, path::Path, process::Stdio, time::Duration};
+use std::{collections::HashMap, fs, io, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use kuvo_peers::{
     relay::{Config, Event, Relay},
     session::{self, BoxHello, ClientHello, ComputerKind},
+    setup_lists::{ResidentPeers, system_clock},
 };
+use kuvo_server::{Caller, LocalOrigin, Transport, ssh::Pairings};
+use kuvo_setup::{ManagedDeviceChange, ManagedDeviceGrant, SetupRuntime};
 use kuvo_wire::{
+    documents::{self, Kind},
     frames,
     keys::{Address, Host, Identity, address_of, encode},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -40,23 +45,63 @@ fn public(key: u8) -> [u8; 32] {
     Identity::from_bytes([key; 32], [0; 32]).public()
 }
 
+fn signing_key(byte: u8) -> String {
+    let envelope = documents::sign(&[byte; 32], Kind::Peers, 1, Default::default()).unwrap();
+    encode(&documents::verify(envelope).unwrap().origin)
+}
+
 fn fixture(home: &Path, url: &str, key: u8, other: Option<u8>) {
     let computer = |key: u8| {
         json!({
             "key": encode(&public(key)), "address": encode(&address_of(&[key + 50; 32])),
-            "name": format!("Computer {key}"), "kind": "machine",
+            "name": format!("Computer {key}"), "kind": "machine", "sign": signing_key(key),
         })
     };
     let mut link = json!({
         "key": encode(&[key; 32]), "secret": encode(&[key + 50; 32]), "name":format!("Computer {key}"),
-        "relay":url, "formatVersion":1,
+        "formatVersion":1, "sign": encode(&[key; 32]), "phones": [],
     });
+    if !url.is_empty() {
+        link["relay"] = url.into();
+    }
     if let Some(other) = other {
         let main = key.min(other);
-        link["setup"] = json!({"id":"set_test","managed":true,"checkpointed":true,"primary":encode(&public(main))});
-        link["sharedSetup"] = json!("set_test");
-        link["shared"] =
-            json!({"membershipAndAccess":{"value":{"boxes":[computer(key),computer(other)]}}});
+        let id = format!("set_{}", encode(&[main; 16]));
+        let position = json!({"id": id, "epoch": 1, "primary": encode(&public(main))});
+        let shared = json!({"membershipAndAccess": {"sequence": 1, "value": {
+            "boxes": [computer(main), computer(key.max(other))], "left": [], "moved": [],
+            "devices": {"phones": [], "removed": []}, "removalRevisions": {},
+        }}});
+        let manifest = json!({"id": id, "shared": shared, "archives": []});
+        let envelope = documents::sign(
+            &[main; 32],
+            Kind::SetupCheckpoint,
+            1,
+            manifest.as_object().unwrap().clone(),
+        )
+        .unwrap();
+        let hash = encode(&Sha256::digest(envelope.d.as_bytes()));
+        write(
+            home,
+            &format!("run/setup-checkpoints/{hash}.json"),
+            json!(envelope),
+        );
+        let cert = json!({"setup": position, "relayTerm": 1, "checkpoint": hash});
+        let cert = documents::sign(
+            &[main; 32],
+            Kind::Leadership,
+            1,
+            cert.as_object().unwrap().clone(),
+        )
+        .unwrap();
+        link["setup"] = position;
+        link["setup"]["managed"] = true.into();
+        link["setup"]["checkpointed"] = true.into();
+        link["setup"]["role"] = if key == main { "primary" } else { "member" }.into();
+        link["setup"]["sign"] = signing_key(main).into();
+        link["sharedSetup"] = id.into();
+        link["shared"] = shared;
+        link["leadership"] = json!({"1": cert});
     }
     write(home, "run/link.json", link);
 }
@@ -218,6 +263,160 @@ fn run_relay_with(listener: TcpListener, peers: Destinations) -> JoinSet<io::Res
 async fn stand_in() -> (String, JoinSet<io::Result<()>>) {
     let listener = relay_socket().await;
     (relay_url(&listener), run_relay(listener))
+}
+
+async fn leased_relay(socket: TcpStream, peers: Destinations) -> io::Result<()> {
+    let mut first = [0];
+    if socket.peek(&mut first).await? == 0 {
+        return Ok(());
+    }
+    if first[0] != b'P' {
+        relay(socket, peers).await;
+        return Ok(());
+    }
+    let mut request = BufReader::new(socket);
+    let mut line = String::new();
+    let mut length = 0;
+    loop {
+        line.clear();
+        if request.read_line(&mut line).await? == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+    }
+    request.read_exact(&mut vec![0; length]).await?;
+    let body = json!({
+        "lease": {"holder": encode(&public(1)), "sign": signing_key(1),
+            "term": 1, "expires": system_clock() + 60_000, "high": 0},
+        "remaining": 60_000, "takeoverIn": 80_000,
+    })
+    .to_string();
+    request
+        .into_inner()
+        .write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
+    time::timeout(Duration::from_secs(25), async {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        let listener = relay_socket().await;
+        let url = relay_url(&listener);
+        let destinations = Destinations::default();
+        let mut relay_task = JoinSet::new();
+        relay_task.spawn({
+            let destinations = destinations.clone();
+            async move {
+                let mut connections = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            let (socket, _) = match accepted {
+                                Ok(connection) => connection,
+                                Err(error) => return Err::<(), _>(error),
+                            };
+                            connections.spawn(leased_relay(socket, destinations.clone()));
+                        }
+                        _ = connections.join_next(), if !connections.is_empty() => {}
+                    }
+                }
+            }
+        });
+        let mut residents = Vec::new();
+        for (home, own, other) in [(&a, 1, 2), (&b, 2, 1)] {
+            fixture(home, &url, own, Some(other));
+            let prepared = SetupRuntime::prepare(home, format!("Computer {own}"), false, None)
+                .await
+                .unwrap();
+            let roster = prepared.peer_roster().unwrap();
+            let relay = Relay::start(prepared.relay_config().unwrap().unwrap());
+            let setup = prepared.start(Some(relay.handle())).unwrap();
+            let peers = ResidentPeers::start(
+                home,
+                roster,
+                Some(relay),
+                None,
+                false,
+                Arc::new(system_clock),
+            )
+            .await
+            .unwrap();
+            residents.push((setup, peers));
+        }
+        while !a.join("run/setup-relay-lease.json").exists()
+            || !b.join("run/setup-relay-lease.json").exists()
+            || destinations.lock().await.len() != 2
+        {
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        let main = residents[0].0.handle();
+        let member = residents[1].0.handle();
+        let caller = Caller::Local(Transport::Http {
+            origin: LocalOrigin::App,
+            internal: false,
+        });
+        let key = public(3);
+        let change = ManagedDeviceChange::PairDesktop {
+            key: encode(&key),
+            name: "Desktop from the member".into(),
+        };
+        let operation = Some("c".repeat(22));
+        let saved = member
+            .change_devices(&caller, operation.clone(), change.clone())
+            .await
+            .unwrap();
+        let grant = saved.pairing.unwrap();
+        let receipt = saved.receipt.unwrap();
+        let proof = documents::verify(receipt.proof.clone()).unwrap();
+        assert_eq!(encode(&proof.origin), signing_key(1));
+        assert_eq!(proof.body["requestingMember"], encode(&public(2)));
+        assert_eq!(main.paired(&key).unwrap().id, grant);
+        assert_eq!(
+            member
+                .change_devices(&caller, operation, change)
+                .await
+                .unwrap()
+                .receipt
+                .unwrap()
+                .proof,
+            receipt.proof
+        );
+        while member.paired(&key).is_none() {
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        member
+            .change_devices(
+                &caller,
+                None,
+                ManagedDeviceChange::Revoke {
+                    grants: vec![ManagedDeviceGrant {
+                        key: encode(&key),
+                        pairing: grant,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(main.paired(&key).is_none());
+        while member.paired(&key).is_some() {
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        let state = read(&a, "run/link.json");
+        assert_eq!(state["shared"]["membershipAndAccess"]["sequence"], 3);
+    })
+    .await
+    .expect("the leased main commits and replicates signed device changes from a member");
 }
 
 #[tokio::test]
@@ -488,12 +687,14 @@ async fn desktop(url: String, pairing: String) -> (Relay, session::Id) {
 #[tokio::test]
 async fn a_local_app_pairs_once_and_removal_survives_a_resident_restart() {
     time::timeout(Duration::from_secs(15), async {
-        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(".kuvo-code-adding"), []).unwrap();
+        let home = root.path().join("box");
         let (url, _relay) = stand_in().await;
-        fixture(home.path(), &url, 3, None);
+        fixture(&home, &url, 3, None);
         let key = encode(&public(4));
         let body = json!({"kind":"desktop","key":key,"name":"Desktop app"});
-        let (mut child, record) = start(home.path()).await;
+        let (mut child, record) = start(&home).await;
         let (status, _) = request(
             &record,
             "POST",
@@ -542,7 +743,7 @@ async fn a_local_app_pairs_once_and_removal_survives_a_resident_restart() {
         .await;
         assert_eq!(status, 400, "a computer key cannot be revoked as a device");
         child.kill().await.unwrap();
-        let (mut child, _) = start(home.path()).await;
+        let (mut child, _) = start(&home).await;
         let (mut desktop, session) = desktop(url, pairing.into()).await;
         let (status, listed) = wire_request(&mut desktop, session, json!({
             "t":"req","id":1,"m":"GET","p":"kuvo/phones","h":{"X-Kuvo-Route-Version":"1"},
@@ -565,7 +766,7 @@ async fn a_local_app_pairs_once_and_removal_survives_a_resident_restart() {
             }
         }
         child.kill().await.unwrap();
-        let (_restarted, record) = start(home.path()).await;
+        let (_restarted, record) = start(&home).await;
         assert_eq!(
             request(&record, "GET", "kuvo/phones", None, false).await,
             (200, json!({"phones":[]}))

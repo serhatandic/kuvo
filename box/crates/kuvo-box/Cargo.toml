@@ -15,6 +15,7 @@ kuvo_engine = { path = "../kuvo_engine" }
 kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
+kuvo_setup = { path = "../kuvo_setup" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 
@@ -26,3 +27,4 @@ futures-util = { version = "0.3", features = ["sink"] }
 kuvo_wire = { path = "../kuvo_wire" }
 tokio = { version = "1", features = ["macros", "process"] }
 tokio-tungstenite = "0.29"
+sha2 = "0.10"
