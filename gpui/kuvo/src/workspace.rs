@@ -3596,8 +3596,11 @@ impl Workspace {
         let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
         let moving = self.moves.read(cx).row_status_words(&target).is_some();
         let Reading::Ready(bots) = self.area_view(Area::Bots)?.read(cx).bots() else { return None };
-        let bot = bots.bots.iter().find(|each| each.id == bot)?;
-        Some(if moving { crate::bot_face::still_bot_face(&bot.id, &bot.look, px(22.)) } else { areas::bot_face(&bot.id, &bot.look, px(22.)) })
+        let look = match bots.bots.iter().find(|each| each.id == bot) {
+            Some(here) => here.look.clone(),
+            None => bots.elsewhere.iter().find(|each| each.id == bot)?.look.clone()?,
+        };
+        Some(if moving { crate::bot_face::still_bot_face(bot, &look, px(22.)) } else { areas::bot_face(bot, &look, px(22.)) })
     }
 
     /// A bot's conversation in Bots, under the title bar, which says whose it is (as Sessions has
@@ -3624,7 +3627,9 @@ impl Workspace {
             let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
             let moving = self.moves.read(cx).row_status_words(&target).map(|words| SharedString::from(words.to_owned()));
             let listed = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
-                Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|bot| (bot.name.clone(), bot.job.clone())),
+                // (Here, or on another of your computers.)
+                Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|bot| (bot.name.clone(), bot.job.clone()))
+                    .or_else(|| bots.there().into_iter().find(|there| there.id == bot).map(|there| (there.name, there.job))),
                 _ => None,
             });
             let (name, job) = listed.unzip();
