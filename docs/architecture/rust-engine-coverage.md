@@ -128,6 +128,7 @@ owners on the same case each own the part described by their phase.
 ### Additional 3.2b reference cases
 
 The following 117 declarations extend the original 294-case inventory.
+They include 4 covered, 15 partial and 98 gaps.
 Each row uses the same one-based numbering and ownership rule.
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
@@ -175,7 +176,9 @@ OpenCode's diagnostic for the current-beta second inventory page was
 leaving literal "@S@" paths in several saved session rows.
 The generator now resolves the stored locations, URLs, repository IDs,
 and path-derived project IDs before opening either box. Both residents
-read every recorded session page using the pinned OpenCode API.
+read all five recorded pages using the pinned OpenCode API and preserve the
+beta home’s paused queue and message ID. Direct reads of the copied
+homes also match for the queue and sampled session and inbox responses.
 
 The local composer uses one persisted decision before send and settles it
 through the message journal. Its no-wait route writes a compatible standalone
@@ -207,7 +210,8 @@ Engine-swap inbox transfer is independent of the release keeper in 7.2.
 
 ### Differential file verdicts
 
-The table assigns every home path reported by the ten-step desktop comparison.
+The table assigns all 76 paths reported by the final ten-step desktop comparison.
+It also records the legacy presence marker seen in the earlier run.
 A position such as "run/link.json/value/key" is a field difference inside
 "run/link.json". Wildcards cover only the generated filenames at the stated
 depth. The row remains responsible for its files and for proving compatibility

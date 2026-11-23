@@ -8,7 +8,7 @@ import { boxBinary, isolatedEnv, launch, localRelay, request, scratch, startBox,
 import { generateCurrent } from "./compat/generate.mjs";
 
 const pinned = process.env.KUVO_CONFORMANCE_OPENCODE;
-test("each page of the recorded beta session inventory can be opened", {
+test("the recorded beta session pages and saved queue open through the resident", {
   skip: !pinned && "Set KUVO_CONFORMANCE_OPENCODE to the pinned binary.",
   timeout: 60000,
 }, async t => {
@@ -34,6 +34,12 @@ test("each page of the recorded beta session inventory can be opened", {
     write(path.join(home, "run/engine.json"), JSON.stringify({ port, password, pid: worker.child.pid, version: "2.2.6" }));
     box = startBox({ binary: boxBinary(), home, env, relay });
     const resident = await box.ready();
+    const queue = await request(resident, "GET", "kuvo/sessions/ses_golden/queue");
+    assert.equal(queue.status, 200, queue.text);
+    assert.equal(queue.json.paused, true);
+    assert.deepEqual(queue.json.held, []);
+    assert.deepEqual(queue.json.waiting.map(item => item.id), ["msg_goldenqueued"]);
+
     let route = "api/session?limit=1&order=desc";
     const titles = [];
     for (let page = 0; page < 5; page++) {
