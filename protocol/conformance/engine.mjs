@@ -48,7 +48,12 @@ export async function standInEngine(root, env) {
         if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
         const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
-        return send(engine.paged ? paged(rows, 100) : { data: rows });
+        const page = engine.paged ? paged(rows, 100) : { data: rows };
+        if (engine.holdSessionList) {
+          void engine.holdSessionList.then(() => send(page));
+          return;
+        }
+        return send(page);
       }
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {

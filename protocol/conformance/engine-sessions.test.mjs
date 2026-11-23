@@ -523,6 +523,74 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.fail("the new chat did not reach both lists on the line");
 });
 
+test("session list cursors carry changes and tombstones, then read whole after a restart", { timeout: 60000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-list-cursors");
+  const [gone, kept] = ["ses_cursorGone", "ses_cursorKept"];
+  here.engine.sessions.push(
+    sessionOf({ id: gone, directory: here.home, title: "To delete" }),
+    sessionOf({ id: kept, directory: here.home, title: "Before" }),
+  );
+  const first = here.start();
+  let record = await first.ready();
+  const list = since => request(record, "GET", "kuvo/sessions/list" + (since ? "?since=" + encodeURIComponent(since) : ""));
+  const initial = await openLine(record, "", "kuvo/sessions/list/events");
+  const newest = (await initial.frames().next()).value;
+  initial.close();
+  assert.equal(newest.full, true);
+  assert.deepEqual(Object.keys(newest.sessions).sort(), [gone, kept]);
+  assert.equal(newest.pending, undefined);
+  assert.equal((await request(record, "POST", `kuvo/sessions/${kept}/rename`, { title: "After" })).status, 200);
+  const changed = await until(async () => {
+    const answer = await list(newest.at);
+    return answer.json?.sessions?.[kept]?.title === "After" && answer.json;
+  }, "The recorded cursor did not receive the session change.");
+  assert.equal(changed.full, undefined);
+  assert.deepEqual(Object.keys(changed.sessions), [kept]);
+  assert.equal((await request(record, "DELETE", `kuvo/sessions/${gone}`)).status, 200);
+  const removed = await until(async () => {
+    const answer = await list(changed.at);
+    return answer.json?.gone?.includes(gone) && answer.json;
+  }, "The recorded cursor did not receive its tombstone.");
+  assert.deepEqual(removed.sessions, {});
+  assert.deepEqual((await list(removed.at)).json.sessions, {});
+  for (const since of ["another.1", removed.at.split(".")[0] + ".999999999", "unreadable"]) {
+    const whole = (await list(since)).json;
+    assert.equal(whole.full, true);
+    assert.deepEqual(Object.keys(whole.sessions), [kept]);
+    assert.equal(whole.gone, undefined);
+  }
+
+  await first.stop();
+  const added = "ses_cursorNew";
+  here.engine.sessions.push(sessionOf({ id: added, directory: here.home, title: "Since restart" }));
+  let release;
+  here.engine.holdSessionList = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  record = await here.start().ready();
+  const followed = await openLine(record, "", "kuvo/sessions/list/events");
+  assert.equal(followed.status, 200);
+  const snapshots = followed.frames();
+  try {
+    const saved = (await snapshots.next()).value;
+    assert.equal(saved.full, true);
+    assert.deepEqual(saved.pending, ["engine"]);
+    assert.deepEqual(Object.keys(saved.sessions), [kept]);
+    here.engine.holdSessionList = null;
+    release();
+    const live = (await snapshots.next()).value;
+    assert.equal(live.pending, undefined);
+    assert.equal(live.sessions[added].title, "Since restart");
+  } finally {
+    followed.close();
+  }
+  const current = await until(async () => {
+    const answer = await list(removed.at);
+    return answer.json?.full && !answer.json?.pending?.length && answer.json;
+  }, "The old process's cursor did not receive a new whole list.");
+  assert.deepEqual(Object.keys(current.sessions).sort(), [kept, added]);
+});
+
 test("a project query accepts a Windows key while route paths keep their separator guard", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("project-page-query");
