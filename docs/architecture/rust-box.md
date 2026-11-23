@@ -2,9 +2,9 @@
 
 Design, 23 November 2026. Source references are at `971e89b71`. The box (`box/src`, about
 184,000 lines of TypeScript run by the engine's Bun) is rewritten in Rust as one program for macOS,
-Linux and Windows, both native and WSL2. The Rust box speaks today's protocol and reads today's
-files, so the normal fleet update can switch computers one at a time. Computers on either box keep
-working together while that happens.
+Linux and Windows, both native and WSL2. It replaces the TypeScript box in one step: no public
+release mixes the two. The Rust box speaks today's protocol, reads every layout a release or the
+user's own betas left, and does the move from older releases itself.
 
 Why: the box's own memory and CPU use (the resident alone is 240 MiB PSS when idle, see
 [small computer](small-computer.md)). Rust is also the desktop's language, so the two can share
@@ -43,6 +43,7 @@ keep speed optimization (level 3), use thin LTO and strip symbols for size.
 | `kuvo_work` | Bots, wake-ups and watches, the Work Queue, group chats and seats, autopilot. |
 | `kuvo_services` | Usage, limits and Insights, Library, artifacts, marketplace, integrations, skills, settings pages, vault, files, Git, Changes, worktrees, the browser keeper. |
 | `kuvo_keeper` | Supervision, release selection and rollback, fleet updates, install and uninstall. |
+| `kuvo_move` | The move from 0.5–0.7.2 and 0.8.0-beta.1 into `~/.kuvo-code`, and what those releases' Macs still need (section 4). Its own crate so it can go whole. |
 | `kuvo-box` (bin) | `main`: the modes below. Each crate registers its own routes with one call. |
 
 **Libraries.** tokio (two worker threads; SQLite, fsync and Git go to the blocking pool, so the
@@ -120,9 +121,8 @@ The Win32 probes ran over OpenSSH in a scratch folder:
 Session 0.3 ran the Mini's Claude Code 2.1.330 and Antigravity 1.5.14, plus a scratch
 installation of Cursor CLI 2026.11.22-e9042b2. All ran with private homes, Keychain access
 blocked and vendor networking disabled. Claude's real CLI ran once from Rust and once
-through SDK 0.3.303 with the same scripted loopback model and MCP endpoints. The
-[spike crate and reproduction steps](../../spikes/agent-protocols/README.md) record both
-the SDK's outbound wire and what its public iterator returns.
+through SDK 0.3.303 with the same scripted loopback model and MCP endpoints. The probes are
+kept by the lead, out of the repository; their results are this section.
 
 ### Claude Code
 
@@ -134,7 +134,7 @@ the SDK's outbound wire and what its public iterator returns.
 | Model, effort and permission mode between turns | **Works.** `set_model`, `apply_flag_settings` (`effortLevel`), and `set_permission_mode` changed the live process. The next model request used Opus at high effort in Plan mode. A null `effortLevel` cleared the override. From Sonnet, omitting `model` returned to the account catalog’s resolved default (Opus on the fixture). |
 | MCP | **Works.** `mcp_set_servers` connected and removed both an HTTP server with headers and a stdio server with command, args and environment. Server status showed both fixture tool lists. Keep connection details on the pipe. Kuvo uses no in-process SDK MCP servers. |
 | Streaming, messages, steering and interruption | **Works.** Partial text, assistant frames, tool results, base64 image blocks and `priority: "next"` messages passed. Turn results can acknowledge several user UUIDs. `interrupt` during a streamed reply produced `aborted_streaming`. Raw stdio also exposes control traffic that the SDK consumes internally. |
-| Transcript resume, live reconnection and clear | **Works at the CLI.** `--session-id` then `--resume` reused the transcript. A second `initialize` on an open permission ask returned the same request in `response.pending_permission_requests` (beside the inner payload). Rust answered the redelivery and both queued UUIDs completed. The SDK handled that repeat with one permission callback. Reinitializing with an unanswered hook sent `control_cancel_request` for the old callback. `/clear` emitted `conversation_reset` and the next turn used the new session ID. The actual holder handoff still needs mixed-box coverage. |
+| Transcript resume, live reconnection and clear | **Works at the CLI.** `--session-id` then `--resume` reused the transcript. A second `initialize` on an open permission ask returned the same request in `response.pending_permission_requests` (beside the inner payload). Rust answered the redelivery and both queued UUIDs completed. The SDK handled that repeat with one permission callback. Reinitializing with an unanswered hook sent `control_cancel_request` for the old callback. `/clear` emitted `conversation_reset` and the next turn used the new session ID. Taking over a TypeScript holder's live turn is still to test (4.1, 4.4). |
 | Usage, limits and compaction | **Works for tested events.** Assistant and result usage, cumulative cost, context window, `api_retry` on a scripted HTTP 429, and `/compact` status and `compact_boundary` came over the same wire. Automatic compaction's environment and threshold policy stay in the box port. Subscription `rate_limit_event`, OAuth renewal and account-specific limits still need a signed-in test account. |
 | Subagents and background work | **Works.** The custom agent used its selected model and forwarded parent-linked assistant text. The CLI emitted task lifecycle and background-list events. A background shell returned `get_task_output` and reported `stopped` after `stop_task`. |
 | One-shot generation, auth and process lifecycle | **Works for local paths.** The tool-free, one-turn Haiku request returned a result with session persistence and hooks disabled. A fresh unsigned CLI initialized and returned a sign-in error on its first prompt. Match the SDK's `CLAUDE_CODE_SDK_READS_SESSION_STATE=1` to receive session-state frames and handle process exit and stderr alongside result frames. Signed-in auth events, credential refresh and provider-specific failures need a private account. |
@@ -185,7 +185,10 @@ ACP sessions and models, and a valid legacy-only profile before deleting the fal
 The other advertised methods still need their own isolated accounts or credentials. Neither launch
 needs a JavaScript sidecar.
 
-## 3. The contract both boxes meet
+## 3. The contract the Rust box meets
+
+The TypeScript box is the reference while porting, not a peer: the two never run in one public
+setup, so nothing has to match byte for byte between them on the wire.
 
 **Route shapes: TypeScript stays the source until the TypeScript box is removed.** The shapes are
 already exported as data (`protocol/vectors/routes/shapes/answers.json`, from
@@ -207,26 +210,29 @@ computers, seats, the SSH pipe and route, serve and resident, fleet switch, keep
 `kuvo_box`'s `real_box` tests. Tests of TypeScript internals, the Mac app or retired paths stay
 with the TypeScript box and go with it. **Added:**
 
-- byte vectors for each peer-mail kind;
-- `hold/1` transcripts, with adoption in both directions;
-- canonical-JSON digest vectors, for forwarded decisions;
-- a **golden home**: a folder at the current layout with every stored family. Each box reads the
-  other's writes.
+- byte vectors for what 0.5–0.7.2 and 0.8.0-beta.1 Macs send and read (their SSH verbs, mail,
+  beta.1's peers list), since those Macs still reach machines;
+- `hold/1` transcripts, with a TypeScript holder adopted by the Rust resident (for the switch,
+  section 4);
+- canonical-JSON digest vectors for signed documents;
+- **golden homes**: a 0.5–0.7.2 Mac's app folder and a machine it set up, a 0.8.0-beta.1 Mac and
+  machine, and a home at the current TypeScript beta's layout with every stored family. The Rust
+  box opens each and ends at the layout it writes.
 - Seatbelt profile and Landlock policy text from the same inputs;
 - the keeper's records (`serve.json`, `link.pid`, demand markers).
 
 The relay, link and Noise contracts are already vector-tested (`noise.json`, `link.json`) and stay
-byte for byte.
+byte for byte, for older Macs and between Rust versions.
 
-**Stored formats.** The Rust box reads and writes the same files at the layout the last TypeScript
-release writes. The layout number is frozen there, with no layout steps. A folder below it, or one
-stopped mid-step, is refused (section 4). Every per-file version check in
-[stored formats](stored-formats.md) is kept. Until the TypeScript box leaves the rollback window,
-the Rust box writes nothing the last TypeScript release can't read. Change rules continue as today
-afterward: new paths or per-file versions.
+**Stored formats.** The Rust box writes the files at the current TypeScript beta's layout (23),
+frozen there with no more layout steps; later changes are new paths or per-file versions, as today.
+It reads older homes through the move (section 4). A folder stopped mid-move resumes the move.
+Every per-file version check in [stored formats](stored-formats.md) is kept. Nothing it writes has
+to stay readable by a TypeScript box: going back is a restore (section 4).
 
 **Features.** At switch-over, the Rust box advertises exactly the `FEATURES` of the TypeScript
-version it replaces, so the update gate needs no change. `kuvo/info`'s `bridge` and `pieces` name the
+version it replaces, so the desktop's gate needs no change. Between Rust releases, mixed versions
+follow the normal rule. `kuvo/info`'s `bridge` and `pieces` name the
 resident's own version.
 
 ## 4. Switch-over
@@ -234,31 +240,47 @@ resident's own version.
 - **Release.** 0.8 ships the Rust box on macOS, Linux, WSL2 and native Windows. The signed
   `box/1` manifest gains, additively, one pack per target (`aarch64` and
   `x86_64` macOS, `x86_64` and `aarch64` Linux built with musl, `x86_64` Windows) and a `launch`
-  field. The last TypeScript release learns both before any Rust release is offered. Its
-  `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so. Engine
-  pins don't change.
-- **Keeper.** On Mac and Linux the shell keeper stays for the first Rust releases. Its tested
-  switch-and-judge path (rename `bin`, wait for `kuvo/info`, rename back) is what makes a rollback
-  safe. `kuvo-box keep` is native Windows' keeper from the start, with a plain selector file
-  instead of a junction (trial check 18). It replaces the shell keeper everywhere once the
-  TypeScript box is gone.
-- **Live work survives both ways.** The Rust resident adopts TypeScript holders, and the
-  TypeScript bridge adopts Rust holders. The running engine is adopted through `run/engine.json`.
-- **Rollback.** `bin` goes back to the TypeScript release, still installed beside it. That release
-  reads everything the Rust box wrote. Remove the TypeScript box four weeks after the last
-  computer switches.
-- **Mixed setups** meet only through mail v1, signed documents, the lease and Noise sessions. All
-  of these are vector-held and tested pairwise in session 9.1.
-- **Staging gate.** The Rust release stages only on a computer whose folder is at the frozen
-  layout and that no Mac still on a pre-0.8 release has visited in 30 days. A computer that a
-  pre-0.8 Mac still visits says why it can't stage and stays on the TypeScript box until that Mac
-  updates. The fleet update already allows that.
-- **0.5–0.7 → 0.8.** The **stepping stone**, the last TypeScript build, stays in the feed for the
-  data move.
-  `kuvo-install` picks it when it finds 0.5–0.7 data (a Mac's app folder, or a machine without a
-  bridge). The stepping stone moves the data into `~/.kuvo-code`, then the ordinary fleet update
-  brings the Rust box automatically. Rehome and the pre-0.8 compatibility routes stay in
-  TypeScript.
+  field; `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so.
+  Engine pins don't change. The feed holds no TypeScript build after 0.8.0-beta.1.
+- **Keeper.** On Mac and Linux the shell keeper stays for the first Rust releases: its tested
+  switch-and-judge path (rename `bin`, wait for `kuvo/info`, rename back) keeps Rust-to-Rust
+  rollback safe. `kuvo-box keep` is native Windows' keeper from the start, with a plain selector
+  file instead of a junction (trial check 18), and replaces the shell keeper everywhere later.
+- **0.5–0.7.2 and 0.8.0-beta.1 → 0.8: the move is the Rust box's own.** `kuvo-install`, or the
+  Rust box's first start, finds the older data (a Mac's app folder, a machine without a bridge, a
+  beta.1 home) and moves it into `~/.kuvo-code` at the frozen layout, automatically and resumable.
+  `kuvo_move` ports rehome (5,250 lines) and the items PROTOCOL.md "For released Macs" lists for
+  those releases, re-checked against `protocol/compat-kinds.txt` and the code:
+  - **`stays`** (0.7: app-agents-stopped, engine-stop, files, keeper, keeper-number,
+    leave-running, visits; beta.1: box-read-change, deleted-bots, mac-moves, peers-list): ported
+    as served behaviour, because a Rust machine can now be visited by a Mac that hasn't updated.
+    `files` is the hard one: a 0.7 Mac still copies its own TypeScript engine, bridge and keeper
+    over the machine's, and the Rust keeper must notice and repair from its release.
+  - **`next`** (bot-json-job, limits-own-numbers, own-envelope): #717 decides them before 7.3;
+    the plan counts them as ported.
+  - **Taken in once** (0.7: settings, worktrees, bot-kit, agents-runtime, mac-group-chats,
+    mac-git-settings, box-branch-prefix, kuvo-keys, move, pages-addresses; beta.1: mac-letters,
+    outbox, mac-agents, connected): steps of the move.
+  - **Not ported:** beta.30's three items (only TypeScript betas after beta.1 had them) and
+    layout.4 setup (no public release wrote a setup; the user's mains are converted, which the
+    golden home checks). Of the 23 layout steps only step 1's work (the staged import) runs,
+    inside the move: 11 and 17 rewrite setup records no public release wrote, and the user's
+    computers are past them.
+- **The user's four computers** are the only ones on a TypeScript 0.8 beta, and switch once:
+  - Before the first start, the Rust box copies the whole `~/.kuvo-code` into
+    `~/.kuvo-code/backups/before-rust`, kept until the user says to delete it.
+  - It reads the TypeScript beta's home in place, rewriting only what differs from its own layout.
+  - All four are prepared, then switched together by the normal fleet update. A computer that's
+    off updates when it comes back, before it rejoins.
+  - **Running turns are adopted, one way.** The Rust resident adopts the TypeScript holders
+    (`hold/1` is unchanged) and the running engine through `run/engine.json`, so the switch
+    doesn't wait for turns. That's already in 4.1 and costs about a day of it. The reverse
+    (a TypeScript bridge adopting Rust holders) isn't built.
+  - **Rollback** of this switch: stop the Rust box, restore the backup, reinstall the last
+    TypeScript beta. Turns started after the switch are lost, so a rollback waits for them to end.
+    Written down in `docs/releases.md` and tested once in the rehearsal (9.3).
+- **The TypeScript box's code** stays in the repository until four weeks after the user's
+  computers switched, then is removed (9.4).
 - **Auto and the sandbox.** On a Mac it's `sandbox-exec` with the same generated profile. On Linux,
   Landlock is applied by `kuvo-box fence-exec`. That exec starts single-threaded, so it calls
   `unshare` itself and drops the `bun:ffi` script and the util-linux dependency. Windows, native
@@ -268,20 +290,18 @@ resident's own version.
 
 ## 5. What not to port
 
-About 16,000 TypeScript lines, plus the bridge's process glue. The skipped compatibility stays in
-the TypeScript box for the computers that still need it.
+About 11,500 TypeScript lines, plus the bridge's process glue. Nothing skipped here is needed by a
+public release: the compatibility older Macs need is ported (section 4).
 
 | Skip | ~Lines | Evidence |
 |---|---:|---|
 | Phone app: `phones.ts`, phone sync, push, legacy sign-in route | 810 | The phone link was never on in a release (`PROTOCOL.md`, "For released Macs"). Retired (CHANGELOG). |
-| The Swift app's Mac front: `link/mac/*`, `toApp`, `kuvo/machines`, `kuvo/hosts` | 2,170 | The app source is gone. No caller in `gpui` or `mac/`. |
-| `link/compat/*` and the 0.7 "stays" items in `protocol/compat-kinds.txt` | 1,300 | Served only to Macs from before 0.8 (staging gate). |
-| Rehome, the 0.5–0.7 move | 5,250 | Only for app-folder data (stepping stone). |
+| The Swift app's Mac front: `link/mac/*`, `toApp`, `kuvo/machines`, `kuvo/hosts` | 2,170 | The app source is gone. No caller in `gpui` or `mac/`. Its beta.1 letters are taken in by the move. |
 | App-folder Mac box (`APP_FOLDER`, `mac-kit`) | 400 | Nothing starts `KUVO_BOX=mac`. |
 | Old update path: trial, engine swap, `keep-up`, renewal, `pick()` | 1,700 | Does nothing once `bin` is a link (`kuvo-start:41`). |
-| Unconverted setup authority and standby receipts | 750 | Every main converts on its first lease. The Rust box refuses an unconverted setup and leaves it to TypeScript. |
+| Unconverted setup authority and standby receipts | 750 | Every main converts on its first lease; no public release wrote a setup. The Rust box refuses an unconverted one. |
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
-| Folder layout steps (20 of 23 empty) | 500 | Frozen layout, per-file versions. |
+| Folder layout steps as steps (20 of 23 empty) | 400 | Frozen layout; the move does step 1's work. |
 | `kuvo/data/owner`, `data/messages`, `data/edits*` adapters | 60 | No desktop caller. Storage stays. |
 | Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | Removed from the TypeScript box on 23 November. |
 | Typed keywords and slash commands | 310 | Removed on 22 November. Composer draft delivery and the 0.7.x `/typed` compatibility route remain. |
@@ -293,10 +313,11 @@ Kept, despite being older: both SSH verbs, which one-client-process decision 3 k
 
 ## 6. Phase plan
 
-Pace: about 125,000 TypeScript code lines are ported (139,000 code lines without comments, less
-the skipped ones). In Rust, with tests, that's about 150,000 lines. At the measured 500–1,000
-tested lines an hour, that's 150–300 hours. The table, with harness, spikes, Windows and rehearsal
-included, comes to **about 310 hours: two Codex weeks**, or three calendar weeks with four lanes.
+Pace: about 132,000 TypeScript code lines are ported (139,000 code lines without comments, less
+the skipped ones; the move and older Macs' compatibility are about 7,000 of them). In Rust, with
+tests, that's about 158,000 lines. At the measured 500–1,000 tested lines an hour, that's 160–320
+hours. The table, with harness, spikes, Windows and rehearsal included, comes to **about 330
+hours: a little over two Codex weeks**, or three calendar weeks with four lanes.
 Each row is one task in its own worktree, done when its area's conformance tests pass against
 `kuvo-box`. Rows marked ×2 are two consecutive sessions. **Lanes:** A link and setup, B engine and
 agents, C work and services, D OS, panel and keeper. Phases 0–1 run first; then the lanes run in
@@ -305,7 +326,7 @@ parallel.
 | # | Session | Crate | After | Hours | Lane |
 |---|---|---|---|---:|---|
 | 0.1 | Box-under-test adapter; route scenarios through a binary; the TypeScript box passes | conformance | — | 6 | A |
-| 0.2 | Peer conformance through binaries: mail-kind vectors, `hold/1`, golden home, digests | conformance | 0.1 | 6 | A |
+| 0.2 | Conformance through binaries: older Macs' vectors, `hold/1` with a TypeScript holder, the four golden homes, digests | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | `kuvo_protocol`: codegen from shapes, checker held to `cases.json`, `FEATURES`; desktop takes the features and gate from it | protocol | 0.4 | 5 | B |
@@ -318,9 +339,10 @@ parallel.
 | 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment | setup | 2.1 | 5 ×2 | A |
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
+| 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | Engine on demand, park, adoption; `api/…` passthrough with WebSocket and PTY | engine | 1.4 | 6 | B |
 | 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
-| 4.1 | Holders (adopting the TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 6 ×2 | B |
+| 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
@@ -336,16 +358,17 @@ parallel.
 | 6.3 | Files, Git, Changes, worktrees, projects, folders | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
 | 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest | keeper | 1.3 | 5 ×2 | D |
-| 7.2 | Fleet update with per-target packs, staging gate, stepping stone in `kuvo-install`, uninstall, footprint | keeper | 7.1, 2.1 | 5 ×2 | A |
+| 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
+| 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
-| 9.1 | Mixed fleet: TypeScript and Rust pairs for lease, moves, numbers, update and rollback, holders in both directions | conformance | all | 6 | A |
+| 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
-| 9.3 | Rehearsal on four computers (Mac, Linux, WSL2, native Windows), including a 0.7.2 Mac through the stone; rollback drill | — | 9.2 | 6 ×2 | A |
-| 9.4 | After the rollback window: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
+| 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust; the rollback drill once | — | 9.2 | 7 ×2 | A |
+| 9.4 | Four weeks after the user's computers switched: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
 
-Totals by phase: 0: 21 · 1: 39 · 2: 42 · 3: 18 · 4: 40 · 5: 46 · 6: 36 · 7: 20 · 8: 22 · 9: 28.
-**The total is 312 hours.** By lane: A 100, B 82, C 61, D 69. Lane A is the longest chain.
+Totals by phase: 0: 21 · 1: 39 · 2: 54 · 3: 18 · 4: 39 · 5: 46 · 6: 36 · 7: 24 · 8: 22 · 9: 30.
+**The total is 329 hours.** By lane: A 100, B 81, C 73, D 75. Lane A is the longest chain.
 
 While the plan runs, the TypeScript box keeps taking fixes. Each fix lands with a route scenario or
 conformance test, so the Rust lane for that area takes it in. Windows sessions 4–11 in
@@ -355,13 +378,11 @@ box.
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.
-2. **Data and older Macs.** Keep the 0.5–0.7 data move in the TypeScript stepping stone in the
-   feed. The installer selects it automatically, then the ordinary update brings the Rust box.
-   The staging gate keeps computers that pre-0.8 Macs still visit on TypeScript until those Macs
-   update.
+2. **One box.** No public release mixes TypeScript and Rust boxes. The Rust box ports the move
+   from 0.5–0.7.2 and 0.8.0-beta.1 and what their Macs still need; no TypeScript stepping stone.
 3. **Light freeze on the TypeScript box.** Keep taking fixes and small features with scenarios.
    Start larger areas in Rust or wait.
 4. **Windows signing.** 8.2 builds are unsigned. Buy the code-signing certificate or service just
    before release and wire it into the release pipeline then.
-5. **Rollback.** Keep the TypeScript box installed beside the Rust box and keep its source for
-   four weeks after the last computer switches, then remove it.
+5. **The TypeScript code** stays in the repository until four weeks after the user's computers
+   switched, then is removed.
