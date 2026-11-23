@@ -1,4 +1,4 @@
-// The browser's data on a box (PROTOCOL.md, "The browser's data"): its history and site icons, the
+// The browser's data on a box (PROTOCOL.md, "The browser"): its history and site icons, the
 // sites that keep data in it, and its settings. Every box keeps its own, in its `browser` folder,
 // and they never leave it but in these answers.
 
@@ -52,16 +52,28 @@ export type BrowserSites = Infer<typeof BROWSER_SITES>;
 export type BrowserSettings = Infer<typeof BROWSER_SETTINGS>;
 
 export const BROWSER_ROUTES: RouteShape[] = [
+  // The browser's live view, opened as a socket (101); 426 for a plain request.
   { route: "GET kuvo/browser/view", feature: "browser.view", answers: { 101: BYTES, 426: object({ message: string }) } },
+  // The sites the browser opened, most suggested first.
   { route: "GET kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  // Clear the history, the keeper's notes not taken in yet too.
   { route: "DELETE kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  // Take one site out of the history, with its icon, until it's visited again.
   { route: "DELETE kuvo/browser/history/:host", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  // A site's icon as its pages gave it, or 404.
   { route: "GET kuvo/browser/icons/:host", feature: "browser.data", answers: { 200: BYTES } },
+  // The sites keeping cookies or storage in the browser, by registrable domain.
   { route: "GET kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  // Remove every site's data, signing the browser out of them.
   { route: "DELETE kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  // Remove one site's data, signing the browser out of it.
   { route: "DELETE kuvo/browser/sites/:site", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  // Search engine, tidying agents' tabs, offering to save passwords, and the Never sites.
   { route: "GET kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+  // Change any of those settings; `never` replaces the whole list.
   { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+  // Add one host to the sites passwords are never saved for.
   { route: "PUT kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
+  // Take one host off the Never list.
   { route: "DELETE kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
 ];

@@ -1,4 +1,4 @@
-// Changes (PROTOCOL.md, "Changes"): a project's changes on the box as git has them, for a client to
+// Changes: a project's changes on the box as git has them, for a client to
 // show and parse, and staging, unstaging, discarding, committing and pushing them there, bringing a
 // branch's work back (Merge into…, Create Pull Request), and the repository's branches and status.
 
@@ -136,24 +136,41 @@ export type BackupRestored = Infer<typeof BACKUP_RESTORED>;
 const REFUSED = object({ message: string });
 
 export const CHANGES_ROUTES: RouteShape[] = [
+  // What changed in a folder's repository in a scope, as git's diff, for a client to show and parse.
   { route: "POST kuvo/git/changes", feature: "git", answers: { 200: GIT_CHANGES } },
+  // How much changed in a scope (files, lines added and removed), without the diff.
   { route: "POST kuvo/git/changes/count", feature: "git.changes.count", answers: { 200: GIT_CHANGES_COUNT } },
+  // A folder's changed files, grouped as a Changes panel shows them, with what each button does.
   { route: "GET kuvo/git/files", feature: "git.files", answers: { 200: GIT_FILES, 404: REFUSED, 500: REFUSED } },
   { route: "GET kuvo/git/files/events", feature: "git.files", answers: { 200: GIT_FILES, 404: REFUSED } },
+  // The repository's branches for a branch menu, and where Merge into… would take a worktree's.
   { route: "POST kuvo/git/branches", feature: "git.branches", answers: { 200: GIT_BRANCHES, 404: REFUSED, 500: REFUSED } },
+  // Switch the repository to a branch, or a new one (`create`), uncommitted changes coming along.
   { route: "POST kuvo/git/switch", feature: "git.branches", answers: { 200: NOTHING, 400: REFUSED, 404: REFUSED, 422: REFUSED } },
+  // Whether anything in the folder's repository isn't committed.
   { route: "POST kuvo/git/status", feature: "git.status", answers: { 200: GIT_STATUS, 404: REFUSED, 500: REFUSED } },
   { route: "POST kuvo/git/stage", feature: "git", answers: { 200: NOTHING } },
   { route: "POST kuvo/git/unstage", feature: "git", answers: { 200: NOTHING } },
+  // Throw a file's changes away (a new file to the Trash); 409 if it changed since its `stamp`.
   { route: "POST kuvo/git/discard", feature: "git", answers: { 200: NOTHING, 409: REFUSED } },
+  // A file as git keeps it (`object`: `HEAD:path` or `:path`), for a picture's old side.
   { route: "GET kuvo/git/show", feature: "git", answers: { 200: BYTES } },
+  // Commit what's staged (or everything), pushing if asked; 422 `committed` when only the push failed.
   { route: "POST kuvo/git/commit", feature: "git", answers: { 200: NOTHING, 422: NOT_PUSHED } },
+  // Push what the folder's branch has to its remote.
   { route: "POST kuvo/git/push", feature: "git.push", answers: { 200: NOTHING } },
+  // Merge into…: a worktree's branch taken back into its base; 409 when it would conflict.
   { route: "POST kuvo/git/merge", feature: "git.merge", answers: { 200: object({ "into?": string }), 409: NOT_MERGED } },
+  // Create Pull Request: made with `gh` where it can be, else the host's page to make it on.
   { route: "POST kuvo/git/pull-request", feature: "git.pull-request", answers: { 200: PULL_REQUEST } },
+  // Create Pull Request's confirmation: branch, base, title and description from the commits.
   { route: "POST kuvo/git/pull-request/draft", feature: "git.pull-request.draft", answers: { 200: PULL_REQUEST_DRAFT } },
+  // What a commit would take, cut short, for writing its message (`prompt`: what a model is asked).
   { route: "POST kuvo/git/commit-diff", feature: "git", answers: { 200: COMMIT_DIFF } },
+  // Hand a Mac's Settings › Git to this box once, kept where it has none of its own yet.
   { route: "POST kuvo/git/settings/move", feature: "git", answers: { 200: object({ moved: bool }), 400: REFUSED, 409: REFUSED, 500: REFUSED } },
+  // A repository's branch backups, taken as agents' turns start and end, newest first.
   { route: "GET kuvo/git/backups", feature: "git.backups", answers: { 200: BRANCH_BACKUPS, 400: REFUSED } },
+  // Take a branch backup back: branches, stashes, and the repository itself if its `.git` went.
   { route: "POST kuvo/git/backups/restore", feature: "git.backups", answers: { 200: BACKUP_RESTORED, 400: REFUSED, 404: REFUSED, 409: REFUSED, 500: REFUSED } },
 ];

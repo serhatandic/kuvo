@@ -158,7 +158,7 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
     history+=(-C "$fixture_dir" "$link" "$keeper")
 fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
-    box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
+    box/bridge-tests box/test/fixtures protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
     "${sources[@]}" "${history[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"

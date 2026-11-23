@@ -19,7 +19,6 @@ beta.1 box-read-change stays
 beta.1 deleted-bots stays
 beta.1 mac-moves stays
 beta.1 peers-list stays
-0.7 no-boxes-json feed
 0.7 bot-json-job next
 0.7 limits-own-numbers next
 0.7 own-envelope next

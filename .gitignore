@@ -21,3 +21,6 @@ box/src/**/.unresolved-*.ts
 # Session notes, drafts and shots stay on disk, never in the repo.
 /.claude/
 /gpui/shots/
+
+# Built from box/src/shared/routes by scripts/check-built.sh --build (scripts/routes-md.ts), never kept.
+/protocol/ROUTES.md
