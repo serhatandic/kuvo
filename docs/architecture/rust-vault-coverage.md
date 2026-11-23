@@ -131,7 +131,7 @@ this row. Installed Helper cases still need the released supervision path.
 |---|---|---|
 | [rust-store-coverage.md](rust-store-coverage.md) | Helper rendezvous decoding and Helper launch-stdin format/recovery. | Partial. Helper scratch conformance exercises current rendezvous and stdin. Legacy and future versions need focused assertions (6.2). Recovery also needs 7.1. |
 | [rust-engine-coverage.md](rust-engine-coverage.md) | Tool wording (case 3). Session asks (cases 8–13 and 19). Vault IPC and SSH registration. | Partial. Vault tool list, ask routes and SSH registration run through the resident. Session-ask and wait-count integration needs 6.2 with 3.2 and 5.1. |
-| [rust-setup-coverage.md](rust-setup-coverage.md) | Signed installed Helper rehearsal, socket key, addressed SSH, vault socket and SSH session directory. | Partial. Installed Helper is a 9.3 rehearsal; disposable Keychain and Unix holder have conformance. Per-session registration runs in scratch. Production enablement needs 6.1 and 4.1. |
+| [rust-setup-coverage.md](rust-setup-coverage.md) | Signed installed Helper rehearsal, socket key, addressed SSH, vault socket and SSH session directory. | Partial. The released starter and resident recovery run with a debug Helper and disposable Keychain. The signed launchd rehearsal remains in 9.3. Per-session registration runs in scratch. Production enablement needs 6.1 and 4.1. |
 | [rust-move-coverage.md](rust-move-coverage.md) | Custom Claude credentials, released move Keychain copy/rollback, interactive saved-site transfer, vault and SSH session paths. | Partial. The real Claude credential move and the earlier rollback fixtures cover the named credential seam. SSH session paths are exercised in scratch. Saved-site transfer remains in 6.2 with 6.1. Helper launch belongs to 7.2. |
 | [rust-backups-coverage.md](rust-backups-coverage.md) | Separate key and no inherited grants; SSH deposits, replacement membership, revoked export, last-app wipe. | Partial. The shared vault conformance checks a real wrapped-key point, independent recovery key, and fresh grants. Mac secret reacquisition remains in 6.2 with 2.5. Membership and wipe orchestration remain in 2.3. |
 | [rust-adding-coverage.md](rust-adding-coverage.md) | Vault socket and SSH registration. Darwin launchctl cases at 560, 1993, 2015 and 2069; Helper install and recovery cases at 204, 468, 505, 700, 725, 774 and 793. | Partial. The Unix holder, SSH registration and disposable Helper protocol work here. Installed launch, recovery and wipe remain in 6.2 with 7.1 and 7.2. |
@@ -160,6 +160,8 @@ this row. Installed Helper cases still need the released supervision path.
   includes an ECDSA P-521 key with a short private scalar, as OpenSSH encodes it.
   The socket scenario checks that an orderly exit removes the listener path.
   It caught the stale socket left by TypeScript and a shutdown race in Rust.
+  The Rust Helper scenario uses the released starter. It catches a starter
+  that loses the Helper's credential pipe and checks the supervised restart.
   Four filtered Mac move tests passed, including the real disposable
   credential move and injected rollback and resume cases.
 - Native Windows passed all four applicable Rust scenarios. The Unix socket,

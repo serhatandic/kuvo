@@ -299,9 +299,9 @@ test("the Mac resident keeps vault values and generations in Helper's disposable
   timeout: 75000,
 }, async t => {
   const root = fs.realpathSync(scratch());
-  const home = path.join(root, "box");
-  const keychain = path.join(root, "vault.keychain-db");
   const binary = boxBinary();
+  const home = path.join(root, binary.typescript ? "box" : ".kuvo-code");
+  const keychain = path.join(root, "vault.keychain-db");
   const env = isolatedEnv(root);
   const quiet = { env, stdio: "ignore" };
   const password = "temporary-keychain-fixture";
@@ -328,21 +328,29 @@ test("the Mac resident keeps vault values and generations in Helper's disposable
   write(path.join(home, "box/kind"), "mac\n");
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
   write(path.join(home, "run/mac-link.json"), '{"phones":false,"relay":"ws://127.0.0.1:9"}\n');
-  const quote = text => "'" + text.replaceAll("'", "'\\''") + "'";
-  const executable = binary.typescript
-    ? `${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(binary.file)}`
-    : quote(binary.file);
-  write(path.join(home, "bin/kuvo-start"), `#!/bin/sh
+  const starter = path.join(home, "bin/kuvo-start");
+  if (binary.typescript) {
+    const quote = text => "'" + text.replaceAll("'", "'\\''") + "'";
+    write(starter, `#!/bin/sh
 K="$HOME/box"
 if [ "$1" = keep ]; then exec /bin/sleep 120; fi
 export KUVO_HOME="$K" KUVO_TEST_RELAY=ws://127.0.0.1:9 KUVO_TEST_NO_PEERS=1 KUVO_SANDBOX=off
 export BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
-exec ${executable} "$@"
+exec ${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(binary.file)} "$@"
 `, { mode: 0o700 });
+  } else {
+    write(starter, fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url)), { mode: 0o700 });
+    fs.copyFileSync(binary.file, path.join(home, "bin/kuvo-box"));
+    write(path.join(home, "box.json"), '{"launch":"rust"}\n');
+    write(path.join(home, "run/launch.env"), "KUVO_TEST_RELAY=ws://127.0.0.1:9\nKUVO_TEST_NO_PEERS=1\nKUVO_SANDBOX=off\n", { mode: 0o600 });
+    // The keeper's idle loop runs as shipped, with a stand-in for its power assertion.
+    const tools = path.join(root, "tools");
+    write(path.join(tools, "caffeinate"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    env.PATH = tools + path.delimiter + env.PATH;
+  }
   const recordFile = path.join(home, "run/serve.json");
   let lastPid;
-  async function start() {
-    guard = launch(helper, ["keep", "--home", home, "--test-keychain", keychain, "--test-keychain-password", password], env, home);
+  async function ready() {
     const record = await until(() => {
       if (guard.child.exitCode !== null) throw new Error("Test Helper left before starting its resident");
       if (!fs.existsSync(recordFile)) return;
@@ -352,6 +360,10 @@ exec ${executable} "$@"
     lastPid = record.pid;
     return (method, route, body, headers = header) => request(record, method, route, body, headers);
   }
+  function start() {
+    guard = launch(helper, ["keep", "--home", home, "--test-keychain", keychain, "--test-keychain-password", password], env, home);
+    return ready();
+  }
   let ask = await start();
   const secret = value();
   const made = await ask("POST", vault + "/items", { kind: "key", name: "Fixture credential", values: { token: secret } });
@@ -360,6 +372,17 @@ exec ${executable} "$@"
   const itemPath = vault + "/items/" + made.json.item.id;
   assert.deepEqual((await ask("POST", itemPath + "/same", { values: { token: secret } })).json, { same: true });
   assert.equal(fs.existsSync(path.join(home, "box/vault/values")), false);
+  if (!binary.typescript) {
+    // Confirm the rendezvous PID belongs to our fixture before signalling it.
+    const parent = execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(lastPid)], { env, encoding: "utf8" });
+    assert.equal(Number(parent.trim()), guard.child.pid);
+    process.kill(lastPid, "SIGTERM");
+    ask = await ready();
+    assert.deepEqual((await ask("POST", itemPath + "/same", { values: { token: secret } })).json, { same: true });
+    const link = readJSON(path.join(home, "run/link.json"));
+    assert.ok(["key", "secret", "sign"].every(field => !Object.hasOwn(link, field)),
+      "the restarted resident keeps the Mac's Helper identity off disk");
+  }
 
   const hostRecord = path.join(home, "run/host.json");
   const authentic = fs.readFileSync(hostRecord);

@@ -1019,7 +1019,7 @@ serve)
   { [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
   if rust_release; then
     environment; cd "$K/workspace" 2>/dev/null || cd "$K"
-    rust_command serve >"$R/serve.log" 2>&1
+    rust_command serve --resident >"$R/serve.log" 2>&1
   fi
   [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] || exit 1
   environment; cd "$K/workspace" 2>/dev/null || cd "$K"
