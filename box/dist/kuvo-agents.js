@@ -1101,8 +1101,8 @@ import { execFile as execFile2, execFileSync, spawn } from "child_process";
 import fs3 from "fs";
 import path4 from "path";
 import os2 from "os";
-function platformFacts(platform = process.platform, release = platform === "linux" ? os2.release() : "", distro = process.env.WSL_DISTRO_NAME) {
-  return { platform, wsl: platform === "linux" && (Boolean(distro) || /microsoft|wsl/i.test(release)) };
+function platformFacts(platform = process.platform, release = platform === "linux" ? os2.release() : "") {
+  return { platform, wsl: platform === "linux" && /microsoft|wsl/i.test(release) };
 }
 function isWindowsHost() {
   const { platform, wsl } = platformFacts();
@@ -34564,4 +34564,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 10f31aed28c18ba615c1eb0271d8917be9758bc51b2909fe51c415c861af30f2
+// Built from Packages/Box/src/agents 52d66f0ed315dbea080c139a4f45ba2ce7e477da1efc9a32e42578945530098e
