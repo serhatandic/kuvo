@@ -192,10 +192,16 @@ export async function standInEngine(root, env) {
         engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
         return send({});
       }
-      if (route === "GET /api/model") return send({ data: engine.models });
-      if (route === "GET /api/model/default") return send({ data: engine.defaultModel });
-      if (route === "GET /api/provider") return send({ data: engine.providers });
-      if (route === "GET /api/integration") return send({ data: engine.integrations });
+      if (["GET /api/model", "GET /api/model/default", "GET /api/provider", "GET /api/integration"].includes(route)) {
+        const catalog = engine.catalogs?.get(path.normalize(folderOf(request))) ?? engine;
+        if (route === "GET /api/model") return send({ data: catalog.models });
+        if (route === "GET /api/model/default") {
+          if (catalog.defaultUnavailable) return send({ message: "The default is unavailable." }, 503);
+          return send({ data: catalog.defaultModel });
+        }
+        if (route === "GET /api/provider") return send({ data: catalog.providers });
+        return send({ data: catalog.integrations ?? [] });
+      }
       if (request.method === "GET" && url.pathname.startsWith("/api/integration/")) {
         const account = engine.integrations.find(each => each.id === decodeURIComponent(url.pathname.slice("/api/integration/".length)));
         return account ? send({ data: account }) : send({}, 404);

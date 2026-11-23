@@ -247,6 +247,74 @@ test("the engine's catalog distinguishes a working model, an account key and no 
   });
 });
 
+test("only known folders use a project’s models, and session readiness uses its own folder", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-folders");
+  const project = path.join(here.home, "project");
+  const worktree = path.join(here.home, "tree");
+  const chat = path.join(here.home, "chat");
+  const stranger = path.join(here.home, "stranger");
+  for (const folder of [project, worktree, chat, stranger]) fs.mkdirSync(folder, { recursive: true });
+  const plain = reference("anthropic", "base");
+  here.engine.providers.push({ id: plain.providerID });
+  here.engine.models.push({ ...plain, name: "Base" });
+  here.engine.defaultModel = plain;
+  const names = [[project, "project"], [worktree, "worktree"], [chat, "chat"], [stranger, "stranger"]];
+  here.engine.catalogs = new Map(names.map(([folder, name]) => {
+    const model = reference("own-" + name, "local");
+    return [folder, { models: [{ ...model, name }], providers: [{ id: model.providerID }], defaultModel: model }];
+  }));
+  const projects = (directory, removed = false) => write(path.join(here.home, "box", "projects.json"),
+    JSON.stringify({ projects: [{ directory, folders: [], removed }] }));
+  projects(project + "/");
+  write(path.join(here.home, "box", "worktrees.json"),
+    JSON.stringify({ worktrees: [{ project, root: worktree, folder: worktree, branch: "kuvo/fixture" }] }));
+  here.engine.sessions.push(sessionOf({ id: "ses_folder", directory: chat }));
+  const record = await here.start().ready();
+  const picker = folder => request(record, "GET", "kuvo/models/offered" +
+    (folder ? "?folder=" + encodeURIComponent(folder.replaceAll("\\", "/")) : ""));
+  const assertStarting = async (folder, model) => {
+    const reply = await picker(folder);
+    assert.equal(reply.status, 200, reply.text);
+    assert.deepEqual(reply.json.starting, model, folder);
+    assert.equal(reply.json.models.length, 1);
+    assert.equal(reply.json.models[0].providerID, model.providerID, folder);
+  };
+  await assertStarting(project, reference("own-project", "local"));
+  await assertStarting(worktree, reference("own-worktree", "local"));
+  const ready = await request(record, "GET", "kuvo/sessions/models?sessions=ses_folder");
+  assert.equal(ready.status, 200, ready.text);
+  assert.deepEqual(ready.json.sessions, { ses_folder: { model: reference("own-chat", "local"), name: "chat", runs: true } });
+  await until(async () => (await picker(chat)).json?.starting?.providerID === "own-chat", "the session folder to join the picker");
+  for (const folder of [null, stranger, "relative/folder", path.join(here.home, "missing")]) await assertStarting(folder, plain);
+  projects(project, true);
+  await assertStarting(project, plain);
+});
+
+test("session readiness retries a default the engine could not answer", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-default-temporary");
+  const model = reference("anthropic", "base");
+  here.engine.providers.push({ id: model.providerID });
+  here.engine.models.push({ ...model, name: "Base" });
+  here.engine.defaultUnavailable = true;
+  here.engine.sessions.push(session(here, "ses_default"), session(here, "ses_explicit", model));
+  const record = await here.start().ready();
+  const picker = await request(record, "GET", "kuvo/models/offered");
+  assert.equal(picker.status, 200, picker.text);
+  assert.equal(Object.hasOwn(picker.json, "starting"), false);
+  const read = async () => {
+    const reply = await request(record, "GET", "kuvo/sessions/models?sessions=ses_default,ses_explicit");
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json.sessions;
+  };
+  const ready = { model, name: "Base", runs: true };
+  assert.deepEqual(await read(), { ses_explicit: ready });
+  here.engine.defaultUnavailable = false;
+  here.engine.defaultModel = model;
+  assert.deepEqual(await read(), { ses_default: ready, ses_explicit: ready });
+});
+
 test("a model removed from a catalog keeps the name the box last knew", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-model-name");
