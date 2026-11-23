@@ -303,6 +303,23 @@ fs.renameSync = (from, to) => {
   assert.deepEqual(read(linkFile), grants);
 
   if (interrupted) {
+    // The keeper can start the incoming resident before it detects the interrupted trial.
+    const resident = spawn(process.execPath, [installed, "serve", "--resident"], {
+      env, stdio: ["ignore", "ignore", "pipe"],
+    });
+    resident.stderr.on("data", chunk => { output += chunk; });
+    const residentExit = once(resident, "exit");
+    const stopResident = async () => {
+      if (resident.exitCode === null && resident.signalCode === null) resident.kill("SIGTERM");
+      await residentExit;
+    };
+    atEnd(stopResident);
+    const serveFile = path.join(home, "run", "serve.json");
+    await waitFor(() => fs.existsSync(serveFile) && read(serveFile).pid === resident.pid,
+      "the resident should answer during the trial", 20_000, () => resident.exitCode !== null || resident.signalCode !== null);
+    assert.deepEqual(read(linkFile), grants, "the trial resident leaves the legacy link state as it found it");
+    await stopResident();
+
     // A repair can have loaded the trial's link before rollback, but reach the
     // folder preflight only after the saved link is in place and the trial is gone.
     const latch = path.join(scratch, "delay-repair.mjs");
