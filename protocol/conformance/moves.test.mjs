@@ -226,6 +226,33 @@ async function readyToMove(resident, session, peer) {
   }, () => `The move to ${peer.name} did not become available`, 15000, 100);
 }
 
+// Observe the durable outcome and the removal of the active journal. A receipt
+// can already say "done" while the old computer is still retiring the folder.
+async function moveRetired(computer, id, logs) {
+  const directory = path.join(computer.home, "run/moves");
+  const outcome = path.join(directory, id + ".outcome.json");
+  const journal = path.join(directory, id + ".json");
+  try {
+    await new Promise((resolve, reject) => {
+      const check = () => {
+        if (fs.existsSync(outcome) && !fs.existsSync(journal)) done(resolve);
+      };
+      const changes = fs.watch(directory, check);
+      const deadline = setTimeout(() => done(reject, new Error("Timed out waiting for move retirement")), 20000);
+      function done(settle, result) {
+        clearTimeout(deadline);
+        changes.close();
+        settle(result);
+      }
+      changes.on("error", error => done(reject, error));
+      check();
+    });
+  } catch (error) {
+    const active = fs.existsSync(journal) ? readJSON(journal) : null;
+    throw new Error(`The move ${id} did not settle (${active?.stage}/${active?.step})\n${logs()}`, { cause: error });
+  }
+}
+
 test("a resident keeps the saved draft pending while a recovered move holds its session", {
   timeout: 45000, skip: binary.typescript && "The standalone draft outbox is the Rust session worker",
 }, async t => {
@@ -890,6 +917,62 @@ test("a refused letter becomes one queued note to the conversation that sent it"
   await here.start().ready();
   assert.equal(prompts().length, 1);
   assert.equal(there.engine.messages.has(recipient), false);
+});
+
+test("an answer left by a tool reaches the new owner once", {
+  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("late-answer-source"), there = await computer("late-answer-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_lateAnswer", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const sender = Buffer.from(main.key, "base64url"), secret = Buffer.alloc(32, 2);
+  let switching;
+  const release = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), secret, sender);
+    if (JSON.parse(payload).move?.op !== "switch") return false;
+    switching = packet;
+    return true;
+  });
+  t.after(release);
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  const logs = () => sourceProcess.log() + "\n" + targetProcess.log();
+  await until(() => {
+    try { return readJSON(path.join(here.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, () => "The source did not hear the destination's move capability\n" + logs(), 15000);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  await until(() => switching, () => "The destination did not get a held copy\n" + logs(), 15000);
+  const reply = path.join(here.home, "run/replies/ltr_lateAnswer");
+  const abandonedRead = path.join(here.home, "run/replies/ltr_abandonedRead.json");
+  const answer = "The venue is booked.";
+  write(reply + ".gaveup", "");
+  write(reply + ".json", JSON.stringify({ to: session, from: "ses_scout", name: "Scout", text: answer }));
+  write(abandonedRead, JSON.stringify({ read: true, to: session, text: "The transcript." }));
+  await until(() => !fs.existsSync(abandonedRead), "The resident did not process abandoned tool replies");
+  assert.equal(readJSON(reply + ".json").text, answer, "The reply is kept while its conversation is held");
+  assert.equal(here.engine.messages.has(session), false);
+  assert.deepEqual(there.engine.messages.get(session) ?? [], []);
+  release();
+  relay.replay(switching);
+  await moveRetired(here, begun.json.move.id, logs);
+  await until(() => !fs.existsSync(reply + ".json") &&
+    there.engine.messages.get(session)?.some(message => message.text?.includes(answer)),
+  "The late answer did not follow the moved chat", 17000);
+  const received = there.engine.messages.get(session).filter(message => message.text?.includes(answer));
+  assert.equal(received.length, 1);
+  assert.match(received[0].text, /^\[Message from Scout · ses_scout\][^\n]*\n\nThe venue is booked\.$/);
+  assert.equal(here.engine.messages.has(session), false);
+  assert.ok(!fs.existsSync(reply + ".gaveup"));
 });
 
 test("a managed attachment moves with both its typed references and its receipt", { timeout: 90000 }, async t => {
