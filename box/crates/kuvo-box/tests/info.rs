@@ -120,7 +120,10 @@ fn serve_answers_info_with_the_fields_the_desktop_reads() {
     assert_eq!(info.name, hostname::get().unwrap().to_string_lossy());
     assert_eq!(info.bridge.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     assert_eq!(info.engine, None);
-    assert_eq!(info.features, ["info", "line"]);
+    assert_eq!(
+        info.features,
+        ["info", "line", "engine.restart", "engine.start"]
+    );
     assert!(
         matches!(info.compatibility, desktop::Compatibility::Held { missing }
         if missing.iter().any(|name| name == "sessions.list"))

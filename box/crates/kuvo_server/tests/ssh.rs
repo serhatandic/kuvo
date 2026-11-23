@@ -1,9 +1,5 @@
 //! Two stdio pipes and the real resident IPC, using the desktop's Noise initiator and fixture grants.
 
-#[allow(dead_code)]
-#[path = "../../../../gpui/kuvo_box/src/link/noise.rs"]
-mod desktop_noise;
-
 use std::{
     io,
     path::Path,
@@ -24,6 +20,7 @@ use kuvo_server::{
     Access, LineTiming, Refusal, Registry, Reply, Resident, RouteReply,
     ssh::{Command, Grant, IdentityRefusal, NoPairings, Pairings, pipe},
 };
+use kuvo_wire::noise as desktop_noise;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream},
@@ -156,7 +153,9 @@ async fn hello(
     computer: &str,
 ) -> (Value, Option<desktop_noise::Transport>) {
     let mut noise = desktop_noise::Initiator::new(secret, public(BOX), b"kuvo-ssh v1");
-    let ask = noise.write_message_1(br#"{"v":1,"client":"desktop"}"#);
+    let ask = noise
+        .write_message_1(br#"{"v":1,"client":"desktop"}"#)
+        .unwrap();
     entry
         .send(json!({"computer":computer,"hello":URL_SAFE_NO_PAD.encode(ask)}))
         .await;
