@@ -108,13 +108,19 @@ function call(name, args, session) {
 mcp.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }) + "\n");
 
 test("a session started from a conversation, its subagent or its engine run is marked as the conversation's", async () => {
+  const calls = new Set();
   for (const caller of ["ses_lead", "ses_helper", "ses_run"]) {
     const result = await call("start_session", { task: "Review the docs.", title: "Review docs" }, caller);
     assert.equal(result.isError ?? false, false, result.content?.[0]?.text);
     const started = result.content[0].text.match(/\(address (ses_\w+)\)/)?.[1];
     assert.ok(started, result.content[0].text);
-    assert.deepEqual(marked.get(started), { kuvo: { startedBy: "ses_lead" } }, `started from ${caller}`);
+    const { call: operation, ...origin } = marked.get(started).kuvo;
+    assert.deepEqual(origin, { startedBy: "ses_lead" }, `started from ${caller}`);
+    assert.match(operation, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(created.at(-1).metadata.kuvo.call, operation, "the idempotent operation is also on the first record");
+    calls.add(operation);
   }
+  assert.equal(calls.size, 3);
 });
 
 test("an agent is promised it'll hear of a session it starts only once that session is marked to tell it: from no conversation here, or one the engine couldn't mark, it's told to write to it instead", async t => {

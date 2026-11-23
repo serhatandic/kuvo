@@ -667,8 +667,11 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   assert.deepEqual(link.keptComputer({ agents: { state: "down", why: "rm -rf" } }).agents, { state: "down" });
   assert.equal(link.keptComputer({ agents: { state: "gone" } }).agents, undefined);
 
-  // One the relay says isn't there: away, and nothing there counts as at work now.
+  // The last count survives a brief relay interruption, then clears if the computer stays away.
   fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() }));
+  ({ body } = await ask());
+  assert.deepEqual([body.computers[2].reach, body.computers[2].working, body.computers[2].system], ["away", 2, "Ubuntu 24.04.1 LTS"]);
+  fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() - 3 * 60_000 }));
   ({ body } = await ask());
   assert.deepEqual([body.computers[2].reach, body.computers[2].working, body.computers[2].system], ["away", 0, "Ubuntu 24.04.1 LTS"]);
   assert.equal((await ask("POST")).status, 405);

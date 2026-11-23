@@ -358,15 +358,27 @@ test("a machine set aside as shared by an earlier Kuvo Code follows its setup ag
   assert.deepEqual([lokum.state.link.setup.primary, lokum.state.link.setup.id, lokum.state.link.setup.aside], [macbook.entry.key, setupID("macbook"), undefined]);
 });
 
-test("a machine no Mac set up leads a setup of its own; once a Mac sets it up, it follows the Mac's (an empty setup joins); its Mac stops naming a setup, and it follows none, keeping the epoch it had", () => {
-  const main = mac("MacBook"), lone = machine("lone"), c = machine("c");
+test("a new computer signs its own setup before enrollment", () => {
+  const lone = machine("lone");
   link.settleOwnSetup(lone.state.link);
   const own = lone.state.link.setup;
-  assert.deepEqual([own.role, own.primary, own.epoch], ["primary", lone.entry.key, 1]);
+  assert.deepEqual([own.role, own.primary, own.epoch, own.managed, own.checkpointed], ["primary", lone.entry.key, 1, true, true]);
   assert.match(own.id, /^set_[A-Za-z0-9_-]{22}$/);
   const view = link.setupView(lone.state.link);
   assert.deepEqual(view.computers, [{ key: lone.entry.key, name: "", kind: "machine", role: "primary", app: false }]);
   assert.deepEqual(view.startsFromOthers, { value: null, default: "off" });
+
+  const main = mac("MacBook");
+  const before = structuredClone(own);
+  setUp(lone, main, [main.peers([lone], leads(main, 4))]);
+  assert.deepEqual(lone.state.link.setup, before, "a legacy roster cannot enroll a computer with a signed setup");
+});
+
+test("a computer in a legacy Mac-led setup keeps its epoch when its Mac steps aside", () => {
+  const main = mac("MacBook"), lone = machine("lone"), c = machine("c");
+  lone.state.link.setup = {
+    id: setupID("standalone"), role: "primary", primary: lone.entry.key, sign: lone.entry.sign, epoch: 1,
+  };
   setUp(lone, main, [main.peers([lone, c], leads(main, 4))]);
   assert.deepEqual([lone.state.link.setup.role, lone.state.link.setup.primary, lone.state.link.setup.epoch], ["member", main.entry.key, 4]);
   link.settleOwnSetup(lone.state.link);

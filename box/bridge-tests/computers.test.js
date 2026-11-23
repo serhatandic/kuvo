@@ -118,10 +118,13 @@ test("each computer says what its box answers, whole, and which of its sessions 
   // The Mac never said anything of itself yet.
   assert.deepEqual(["working" in computers.Studio, "features" in computers.Studio], [false, false]);
 
-  // Away: nothing there can be seen at work now, though it said so.
+  // Keep the last work list through a brief interruption, then clear it when the computer stays away.
   fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() }));
   const away = (await listed()).second;
-  assert.deepEqual([away.reach, away.working, away.atWork], ["away", 0, []]);
+  assert.deepEqual([away.reach, away.working, away.atWork], ["away", 2, computers.second.atWork]);
+  fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() - 3 * 60_000 }));
+  const gone = (await listed()).second;
+  assert.deepEqual([gone.reach, gone.working, gone.atWork], ["away", 0, []]);
 
   // What it tells its peers of itself: which of its sessions are at work, too.
   const sent = [];
