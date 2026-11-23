@@ -193,6 +193,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     }
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
+      const localAgents = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab-bridge").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
       if (local && request.url === "/api/event") {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -226,7 +227,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       const modelList = engineModels?.[request.url.split("?")[0]];
       if (local && modelList !== undefined) return send(200, { data: modelList });
       if (request.url.startsWith("/api/kuvo/link/groups")) {
-        if (!local) return send(404, {});
+        if (!local && !localAgents) return send(404, {});
         if (request.url.endsWith("/groups")) return send(200, { groups: [{ id: "grp_lab" }] });
         if (request.method === "POST") {
           const parts = [];
@@ -2835,6 +2836,7 @@ test("failure bench: a pending wipe follows the setup through handover", { timeo
   await until("target offline", () => !relay.has(b.address), t.signal);
   const result = await a.route("POST", `kuvo/computers/${b.key}/unlink-and-wipe`);
   assert.equal(result.status, 200, JSON.stringify(result.value));
+  await until("candidate learns the pending wipe before taking over", () => removalOf(c, b)?.operation === result.value.operation, t.signal);
   assert.equal((await submit(a, c, 2)).status, 202);
   await Promise.all([see(a, 3, c), see(c, 3, c)]);
   await until("new primary installs the pending wipe", () => removalOf(c, b)?.operation === result.value.operation, t.signal);
@@ -3222,6 +3224,7 @@ test("failure bench: an offline source’s accepted export preparation survives 
   const membership = a.read().shared.membershipAndAccess.value;
   assert.equal(membership.removals[b.key].operation, operation);
   assert.equal(JSON.stringify(membership).includes(prepare.export.recoveryKey), false);
+  await until("candidate learns the export preparation before taking over", () => removalOf(c, b)?.operation === operation, t.signal);
   const transfer = await submit(a, c, 2);
   assert.equal(transfer.status, 202, JSON.stringify(transfer.value));
   await see(c, 3, c);
