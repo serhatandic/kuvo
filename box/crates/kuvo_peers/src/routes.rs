@@ -6,6 +6,7 @@ use futures_util::stream;
 use http::StatusCode;
 use kuvo_protocol::{
     JsonStatus,
+    gate::{self, Compatibility},
     json::{BoolLiteral, Null, Nullable},
     routes::{types::*, *},
 };
@@ -482,12 +483,14 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
     }
-    local.system = Some(crate::setup_lists::system_name().into());
-    local.features = Some(view.features().into_iter().map(str::to_owned).collect());
+    local.system = view.system.as_deref().map(str::to_owned);
+    let features = view.features();
+    local.compatibility = computer_compatibility(&features);
+    local.features = Some(features.into_iter().map(str::to_owned).collect());
     let mut active = view.at_work();
     local.working = Some(active.len().into());
     local.working_title = Some(working_title(active.len() as u64));
-    active.truncate(20);
+    active.truncate(100);
     local.at_work = Some(active);
     let mut rows = vec![local];
     let mut peers: Vec<_> = view.roster.members.iter().collect();
@@ -514,42 +517,38 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
         if peer.kind == crate::session::ComputerKind::Mac {
             row.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
-        row.features = said
+        let features = said
             .filter(|said| !said.features_cut)
-            .and_then(|said| said.features.clone());
+            .and_then(|said| said.features.as_ref());
+        if let Some(features) = features {
+            let names: Vec<_> = features.iter().map(String::as_str).collect();
+            row.compatibility = computer_compatibility(&names);
+            row.features = Some(features.clone());
+        }
         if let Some(facts) = said.and_then(|said| said.computer.as_ref()) {
-            let text = |key, limit| {
-                let text = facts.facts.get(key)?.as_str()?;
-                (!text.is_empty() && text.encode_utf16().count() <= limit).then(|| text.to_owned())
-            };
-            row.version = text("version", 40);
-            row.engine = text("engine", 40);
-            row.system = text("system", 80);
-            row.kuvo = text("kuvo", 40);
+            row.version = facts.version.clone();
+            row.engine = facts.engine.clone();
+            row.system = facts.system.clone();
+            row.kuvo = facts.kuvo.clone();
             let gone = reach == Reach::Away
                 && heard.is_none_or(|heard| {
                     now.saturating_sub(heard) > 30 * 60_000
                         || now.saturating_sub(view.reach.away_since(&row.key).unwrap_or(heard))
-                            >= 60_000
+                            >= 120_000
                 });
-            row.working = facts
-                .facts
-                .get("working")
-                .and_then(|value| value.as_u64())
-                .filter(|working| *working <= 10_000)
-                .map(|working| Number::from(if gone { 0 } else { working }));
-            row.at_work = row.working.as_ref().and_then(|_| {
-                if gone {
+            if !gone {
+                row.agents = facts.agents.clone();
+            }
+            if let Some(working) = facts.working {
+                let working = if gone { 0 } else { working };
+                row.working = Some(Number::from(working));
+                row.working_title = Some(working_title(working));
+                row.at_work = if gone {
                     Some(vec![])
                 } else {
-                    serde_json::from_value(facts.facts.get("atWork")?.clone()).ok()
-                }
-            });
-            row.working_title = row
-                .working
-                .as_ref()
-                .and_then(Number::as_u64)
-                .map(working_title);
+                    facts.at_work.clone()
+                };
+            }
         }
         rows.push(row);
     }
@@ -558,6 +557,28 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
         fleet_update: None,
         wipe_pending: None,
     }
+}
+
+fn computer_compatibility(
+    features: &[&str],
+) -> Option<GetKuvoComputersStatus200ComputersItemCompatibility> {
+    use GetKuvoComputersStatus200ComputersItemCompatibility as Answer;
+    use GetKuvoComputersStatus200ComputersItemCompatibilityObjectState2 as State;
+    let (state, missing) = match gate::compatibility(features) {
+        Compatibility::Open => {
+            return Some(Answer::Open(
+                GetKuvoComputersStatus200ComputersItemCompatibilityOpen {
+                    state: GetKuvoComputersStatus200ComputersItemCompatibilityOpenState::Open,
+                },
+            ));
+        }
+        Compatibility::Behind { missing } => (State::Behind, missing),
+        Compatibility::Held { missing } => (State::Held, missing),
+        Compatibility::Unknown => return None,
+    };
+    Some(Answer::Object(
+        GetKuvoComputersStatus200ComputersItemCompatibilityObject { missing, state },
+    ))
 }
 
 fn working_title(count: u64) -> String {

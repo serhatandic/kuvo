@@ -15,6 +15,7 @@ use kuvo_wire::{
     documents::{self, Kind},
     frames,
     keys::{Address, Host, Identity, address_of, encode},
+    mail::Envelope,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -636,6 +637,9 @@ async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_
         let main_session = open_desktop(&mut client, host(1), pairing.clone())
             .await
             .expect("member's pairing opens the main");
+        let member_session = open_desktop(&mut client, host(2), pairing.clone())
+            .await
+            .expect("the same desktop grant opens the member");
         // This authenticated desktop revokes the other grant over its own paired route.
         let admin_host = host(2);
         let mut member_client = connecting_client(&url, 5, vec![]).await;
@@ -646,21 +650,33 @@ async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_
         )
         .await
         .expect("admin device opens the member");
-        let (status, phones) = wire_request(
-            &mut client,
-            main_session,
-            json!({"t":"req","id":300,"p":"kuvo/phones","h":{"x-kuvo-route-version":"1"},"end":true}),
-            None,
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert!(
-            phones["phones"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row["key"] == grant_key && row["you"] == true)
-        );
+        for (session, expected_name) in [(main_session, "Computer 1"), (member_session, "Computer 2")] {
+            let (status, info) = wire_request(
+                &mut client,
+                session,
+                json!({"t":"req","id":299,"p":"kuvo/info","h":{"x-kuvo-route-version":"1"},"end":true}), None,
+            ).await;
+            assert_eq!(status, 200);
+            assert_eq!(info["name"], expected_name);
+            let (status, phones) = wire_request(
+                &mut client,
+                session,
+                json!({"t":"req","id":300,"p":"kuvo/phones","h":{"x-kuvo-route-version":"1"},"end":true}), None,
+            ).await;
+            assert_eq!(status, 200);
+            let roster = phones["phones"].as_array().unwrap();
+            let own = roster.iter().find(|row| row["key"] == grant_key).unwrap();
+            assert_eq!(own["you"], true);
+            assert_eq!(own["kind"], "desktop");
+            assert_eq!(own["name"], "Member's app");
+            let (status, denied) = wire_request(
+                &mut client, session,
+                json!({"t":"req","id":302,"m":"POST","p":"kuvo/devices/pair","h":{"x-kuvo-route-version":"1"},"end":true}),
+                Some(pair(&grant_key, "Member's app")),
+            ).await;
+            assert_eq!(status, 403);
+            assert_eq!(denied["message"], "Only Kuvo Code on this computer adds itself to your devices.");
+        }
 
         let (status, _) = request(&member, "POST", "kuvo/phones/remove",
             Some(json!({"phones":[{"key":grant_key,"pairing":"former"}]})), true).await;
@@ -686,6 +702,13 @@ async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_
                 .await
                 .is_none()
         );
+        assert!(open_desktop(&mut client, host(1), pairing.clone()).await.is_none());
+        let (status, info) = wire_request(
+            &mut member_client, admin_session,
+            json!({"t":"req","id":303,"p":"kuvo/info","h":{"x-kuvo-route-version":"1"},"end":true}), None,
+        ).await;
+        assert_eq!(status, 200);
+        assert_eq!(info["name"], "Computer 2");
         assert_eq!(
             read(&c, "run/link.json")["shared"]["membershipAndAccess"]["sequence"],
             3
@@ -706,6 +729,10 @@ async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_
         let (status, refused) = request(&new, "POST", "kuvo/devices/pair", Some(pair(&grant_key, "Member's app")), true).await;
         assert_eq!(status, 409);
         assert_eq!(refused["reason"], "removed");
+        let (status, waiting) = request(&new, "POST", "kuvo/devices/pair", Some(pair(&encode(&public(6)), "New app")), true).await;
+        assert_eq!(status, 503, "{waiting}");
+        assert_eq!(waiting["message"], "Computer 1 isn't answering. This app reaches your other computers once it does.");
+        wait_for_roster(&new, std::slice::from_ref(&admin_key)).await;
 
     })
     .await
@@ -714,6 +741,7 @@ async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_
 
 #[tokio::test]
 async fn another_computers_session_is_in_the_first_state_after_restart_and_stays_visible_away() {
+    const ACTIVE: &str = "ses_active";
     time::timeout(Duration::from_secs(25), async {
         let temp = tempfile::tempdir().unwrap();
         let a = temp.path().join("a");
@@ -723,18 +751,36 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         fixture(&a, &url, 1, Some(2));
         fixture(&b, &url, 2, Some(1));
         write(&b, "run/lists/sessions.json", json!({
-            "epoch":"b","seq":1,"sessions":{SESSION:{"facts":{
-                "kind":"chat","directory":"/scratch","title":"Peer's session",
-                "created":10,"updated":20,"asked":30,"running":true,
-            },"place":"engine"}},"projects":{},"needsYou":[{"session":SESSION,"asks":{"kind":"question","summary":"asks for a choice"}}]
+            "epoch":"b","seq":1,"sessions":{
+                SESSION:{"facts":{
+                    "kind":"chat","directory":"/scratch","title":"Peer's session",
+                    "created":10,"updated":20,"asked":30,"running":true,
+                },"place":"engine"},
+                ACTIVE:{"facts":{
+                    "kind":"chat","directory":"/scratch","title":"Active session",
+                    "created":10,"updated":21,"running":true,
+                },"place":"engine"}
+            },"projects":{},"needsYou":[{"session":SESSION,"asks":{"kind":"question","summary":"asks for a choice"}}]
         }));
         let (mut a_process, a_record) = start(&a).await;
+        let key = encode(&public(2));
+        let pending = json!([{"id":key,"name":"Computer 2"}]);
         let (status, mut states) = request_start(&a_record, "GET", "kuvo/setup/sessions/list/events", None, false).await;
         assert_eq!(status, 200);
-        assert_eq!(next_line(&mut states).await["pendingComputers"][0]["name"], "Computer 2");
+        assert_eq!(next_line(&mut states).await["pendingComputers"], pending);
+        for (route, field) in [
+            ("kuvo/setup/sessions/events", "sessions"),
+            ("kuvo/setup/waiting/events", "waiting"),
+            ("kuvo/setup/notices/events", "notices"),
+        ] {
+            let (status, mut watch) = request_start(&a_record, "GET", route, None, false).await;
+            assert_eq!(status, 200, "{route}");
+            let state = next_line(&mut watch).await;
+            assert_eq!(state["pendingComputers"], pending, "{route}");
+            assert_eq!(state[field], json!([]), "{route}");
+        }
         let _relay = run_relay(listener);
         let (mut b_process, _) = start(&b).await;
-        let key = encode(&public(2));
         loop {
             let state = next_line(&mut states).await;
             if state["sessions"][SESSION]["computer"]["id"] == key {
@@ -746,7 +792,7 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         drop(states);
         let file = format!("run/peers/{key}/lists-v1.json");
         let copy = read(&a, &file);
-        assert_eq!(copy["sessions"][0]["id"], SESSION);
+        assert_eq!(copy["sessions"].as_array().unwrap().len(), 2);
 
         a_process.kill().await.unwrap();
         b_process.kill().await.unwrap();
@@ -761,6 +807,7 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         let (status, mut states) = request_start(&record, "GET", "kuvo/setup/sessions/list/events", None, false).await;
         assert_eq!(status, 200);
         let first = next_line(&mut states).await;
+        assert_eq!(first["pendingComputers"], json!([]));
         assert_eq!(first["sessions"][SESSION]["on"], json!({
             "id":key,"name":"Computer 2","away":true,"lastSeen":old,"actions":[],
         }));
@@ -769,6 +816,13 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         assert_eq!(location["on"], first["sessions"][SESSION]["on"]);
         let (_, counts) = request(&record, "GET", "kuvo/setup/waiting/counts", None, false).await;
         assert_eq!(counts["dock"], 1);
+        assert_eq!(counts["pendingComputers"], json!([]));
+        let (status, mut waiting) = request_start(&record, "GET", "kuvo/setup/waiting/events", None, false).await;
+        assert_eq!(status, 200);
+        let waiting = next_line(&mut waiting).await;
+        assert_eq!(waiting["pendingComputers"], json!([]));
+        assert_eq!(waiting["waiting"][0]["session"], SESSION);
+        assert_eq!(waiting["waiting"][0]["away"], true);
 
         let (status, computers) = request(&record, "GET", "kuvo/computers", None, false).await;
         assert_eq!(status, 200);
@@ -793,8 +847,114 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         assert_eq!(peers[1]["relay"], url);
         assert_eq!(peers[1]["reach"], "connected");
         assert_eq!(peers[1]["working"], 1);
-        assert_eq!(peers[1]["atWork"], json!([{"id":SESSION,"title":"Peer's session"}]));
+        assert_eq!(peers[1]["atWork"], json!([{"id":ACTIVE,"title":"Active session"}]));
     }).await.expect("two boxes share the session and reopen its kept snapshot");
+}
+
+#[tokio::test]
+async fn computers_show_only_valid_facts_from_the_latest_announcement() {
+    time::timeout(Duration::from_secs(15), async {
+        let home = tempfile::tempdir().unwrap();
+        let listener = relay_socket().await;
+        let url = relay_url(&listener);
+        fixture_roster(home.path(), &url, 1, &[1, 2, 3]);
+        let (_resident, record) = start(home.path()).await;
+        let (_, before) = request(&record, "GET", "kuvo/computers", None, false).await;
+        for row in &before["computers"].as_array().unwrap()[1..] {
+            assert_eq!(row["reach"], "connecting");
+            assert!(row.get("working").is_none());
+        }
+        let (status, mut listing) =
+            request_start(&record, "GET", "kuvo/setup/sessions/events", None, false).await;
+        assert_eq!(status, 200);
+        let pending = |key| json!({"id":encode(&public(key)), "name":format!("Computer {key}")});
+        assert_eq!(
+            next_line(&mut listing).await["pendingComputers"],
+            json!([pending(2), pending(3)])
+        );
+        let _relay = run_relay(listener);
+        let peer = connecting_client(&url, 2, vec![host(1)]).await;
+        let at = system_clock();
+        let send = |at, computer| {
+            let sender = peer.sender.clone();
+            async move {
+                let mail = json!({
+                    "at":at,"agents":{"at":at,"list":[],"features":["line.setup-lists"],"computer":computer}
+                });
+                sender
+                    .mail(host(1), Envelope(mail.as_object().unwrap().clone()))
+                    .await
+                    .unwrap();
+            }
+        };
+        send(
+            at,
+            json!({
+                "system":"Ubuntu 24.04.1 LTS","engine":"1.19.2","version":"1.0.0","working":2,
+                "agents":{"state":"down","why":"outdated","extra":"ignored"},
+                "extra":"ignored"
+            }),
+        )
+        .await;
+        // An older message can refresh reach, but must never replace computer facts.
+        send(at - 1, json!({"version":"old","working":9})).await;
+        loop {
+            let (_, state) = request(&record, "GET", "kuvo/computers", None, false).await;
+            let row = &state["computers"][1];
+            if row["reach"] == "connected" {
+                assert_eq!(row["version"], "1.0.0");
+                assert_eq!(row["engine"], "1.19.2");
+                assert_eq!(row["system"], "Ubuntu 24.04.1 LTS");
+                assert_eq!(row["working"], 2);
+                assert_eq!(row["agents"], json!({"state":"down","why":"outdated"}));
+                assert_eq!(row["compatibility"]["state"], "held");
+                assert!(row["compatibility"]["missing"].as_array().unwrap().contains(&json!("messages.send")));
+                break;
+            }
+        }
+        send(
+            at + 1,
+            json!({
+                "version":"1.0.1","system":"x".repeat(81),"engine":7,"working":10001,
+                "agents":{"state":"down","why":"unknown"}
+            }),
+        )
+        .await;
+        loop {
+            let (_, state) = request(&record, "GET", "kuvo/computers", None, false).await;
+            let row = &state["computers"][1];
+            if row["version"] == "1.0.1" {
+                for omitted in ["system", "engine", "working"] {
+                    assert!(row.get(omitted).is_none(), "{row}");
+                }
+                assert_eq!(row["agents"], json!({"state":"down"}));
+                break;
+            }
+        }
+        let peer_file = read(home.path(), "run/peer-agents.json");
+        assert_eq!(
+            peer_file[encode(&public(2))]["computer"],
+            json!({
+                "version":"1.0.1","agents":{"state":"down"}
+            })
+        );
+        loop {
+            let (_, state) = request(&record, "GET", "kuvo/computers", None, false).await;
+            let never_heard = &state["computers"][2];
+            if never_heard["reach"] == "away" {
+                assert!(never_heard.get("working").is_none());
+                break;
+            }
+        }
+        let (status, mut listing) =
+            request_start(&record, "GET", "kuvo/setup/sessions/events", None, false).await;
+        assert_eq!(status, 200);
+        let state = next_line(&mut listing).await;
+        assert_eq!(state["sessions"], json!([]));
+        assert_eq!(state["pendingComputers"], json!([pending(2)]));
+    })
+    .await
+    .expect("both peer announcements reach the computer list");
 }
 
 #[tokio::test]
@@ -851,7 +1011,12 @@ async fn an_away_worktree_pages_under_its_own_computers_project() {
                 .get(format!("{key}:/scratch/worktree"))
                 .is_none()
         );
-        assert_eq!(first["archivedGroups"][0]["sessions"], json!(["ses_old"]));
+        assert_eq!(
+            first["archivedGroups"],
+            json!([
+                {"directory":project,"title":"source","kind":"project","sessions":["ses_old"]}
+            ])
+        );
         let page = |cursor: String| {
             format!("kuvo/sessions/page?project={key}%3A%2Fscratch%2Fsource&cursor={cursor}")
         };
@@ -1217,6 +1382,7 @@ mod work {
 
     const NOW: i64 = 1_800_000_000_000;
     const LEAD: &str = "ses_business";
+    const MACHINE_LEAD: &str = "ses_machinelead";
     const BILLING: &str = "ses_billing";
     const OTHER: &str = "ses_other";
     const MISSING: &str = "ses_missing";
@@ -1245,7 +1411,9 @@ mod work {
                         "There's no session {MISSING} on this computer."
                     )));
                 }
-                if call.from != LEAD || call.request.session().is_some_and(|id| id != BILLING) {
+                if !matches!(call.from.as_str(), LEAD | MACHINE_LEAD)
+                    || call.request.session().is_some_and(|id| id != BILLING)
+                {
                     return Ok(Admission::Refused(Answer::refused(
                         "Only sessions started by this lead",
                     )));
@@ -1577,6 +1745,20 @@ mod work {
                 reader.changed().await.unwrap();
             }
 
+            now.store(NOW + 62_000, Ordering::Relaxed);
+            work.publish(snapshot("Within the spacing window", true))
+                .await
+                .unwrap();
+            let theirs = next_rows(&mut c).await;
+            assert_eq!(
+                theirs["leads"][other_lead][0]["title"],
+                "Within the spacing window"
+            );
+            assert_eq!(
+                read(b.path(), "run/work/pushed.json")[&a_key]["id"],
+                first["id"]
+            );
+
             let destination = peers.lock().await[&member(1).address.unwrap()].clone();
             drop(a);
             destination.closed().await;
@@ -1593,7 +1775,7 @@ mod work {
                 fs::read(home.join("run/peer-reach.json"))
                     .ok()
                     .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-                    .is_some_and(|copy| copy[&a_key] == NOW + 61_000)
+                    .is_some_and(|copy| copy[&a_key] == NOW + 62_000)
             };
             while !is_away(b.path()) {
                 reader.changed().await.unwrap();
@@ -1616,6 +1798,88 @@ mod work {
         })
         .await
         .expect("rows go only to the owner and retry until its receipt");
+    }
+
+    #[tokio::test]
+    async fn a_session_has_a_remote_owner_only_while_one_computer_claims_it() {
+        use kuvo_peers::directory::RecordScope;
+
+        time::timeout(Duration::from_secs(10), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let _relay = run_relay(listener);
+            let home = tempfile::tempdir().unwrap();
+            let (engine, _) = engine(home.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            let (resident, _) = start_work(&url, 1, home.path(), &[2, 3], now, engine).await;
+            let second = work_observer(&url, 2, 1).await;
+            let third = work_observer(&url, 3, 1).await;
+            let mut reader = resident.reader();
+            let owner = |reader: &Reader, id| {
+                reader
+                    .view()
+                    .owner_of(RecordScope::Session, id, NOW)
+                    .and_then(|owner| owner.key)
+            };
+            let row = |id| json!({"session":id,"name":id,"kind":"session"});
+            send_work_mail(
+                &second,
+                1,
+                json!({"at":NOW,
+                    "agents":{"at":NOW,"list":[row(SESSION),row("invalid")]}
+                }),
+            )
+            .await;
+            while owner(&reader, SESSION).is_none() {
+                reader.changed().await.unwrap();
+            }
+            assert_eq!(owner(&reader, SESSION), Some(key(2)));
+            let kept = read(home.path(), "run/peer-agents.json");
+            assert_eq!(kept[encode(&key(2))]["list"], json!([row(SESSION)]));
+
+            send_work_mail(
+                &second,
+                1,
+                json!({"at":NOW,"agents":{"at":NOW-1,"list":[]},
+                    "setupLists":{"at":NOW,"sessions":[],"projects":[],"queues":[],"waiting":[],
+                        "catalog":kuvo_peers::lists::Catalog::default()}
+                }),
+            )
+            .await;
+            while !home
+                .path()
+                .join(format!("run/peers/{}/lists-v1.json", encode(&key(2))))
+                .is_file()
+            {
+                reader.changed().await.unwrap();
+            }
+            assert_eq!(owner(&reader, SESSION), Some(key(2)));
+
+            send_work_mail(
+                &third,
+                1,
+                json!({"at":NOW,"agents":{"at":NOW,"list":[row(SESSION),row(OTHER)]}}),
+            )
+            .await;
+            while owner(&reader, OTHER).is_none() {
+                reader.changed().await.unwrap();
+            }
+            assert_eq!(owner(&reader, OTHER), Some(key(3)));
+            assert_eq!(owner(&reader, SESSION), None);
+
+            send_work_mail(
+                &third,
+                1,
+                json!({"at":NOW+1,"agents":{"at":NOW+1,"list":[]}}),
+            )
+            .await;
+            while owner(&reader, OTHER).is_some() {
+                reader.changed().await.unwrap();
+            }
+            assert_eq!(owner(&reader, SESSION), Some(key(2)));
+        })
+        .await
+        .expect("authenticated announcements update remote ownership in order");
     }
 
     #[tokio::test]
@@ -1706,11 +1970,29 @@ mod work {
             let (engine_b, _) = engine(b.path());
             let now = Arc::new(AtomicI64::new(NOW));
             let (a_box, a_work) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
-            let (_b_box, _) = start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
+            let (b_box, b_work) = start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
             ready(&a_box, 2, a.path()).await;
+            ready(&b_box, 1, b.path()).await;
 
             let list = answer(&a_work, request(Tool::ListSessions, json!({}))).await;
             assert_eq!((list.text.as_str(), list.refused), (LIST, false));
+            let from_machine = b_work
+                .call(
+                    key(1),
+                    MACHINE_LEAD.into(),
+                    request(Tool::ListSessions, json!({})),
+                    false,
+                    false,
+                )
+                .await
+                .unwrap();
+            let Outcome::Answer(from_machine) = from_machine else {
+                panic!("expected a reply from the Mac, got {from_machine:?}");
+            };
+            assert_eq!(
+                (from_machine.text.as_str(), from_machine.refused),
+                (LIST, false)
+            );
             assert_eq!(
                 answer(
                     &a_work,
@@ -2019,15 +2301,13 @@ mod work {
             let destination = peers.lock().await[&member(2).address.unwrap()].clone();
             drop(b_box);
             destination.closed().await;
-            let a_relay = a_box.relay_handle().unwrap();
-            // Force a reach probe rather than waiting for the announcement refresh.
-            let _ = a_relay
-                .sender
-                .mail(
-                    member(2).host().unwrap(),
-                    kuvo_wire::mail::Envelope(Default::default()),
-                )
-                .await;
+            // The list itself encounters the missing relay link. It returns immediately
+            // on the relay's refusal, well before the ordinary call timeout.
+            let unavailable = time::timeout(
+                Duration::from_secs(2),
+                a_work.call(key(2), LEAD.into(), request(Tool::ListSessions, json!({})), false, false),
+            ).await.expect("the relay reports that the computer is away").unwrap();
+            assert!(matches!(unavailable, Outcome::Away { kept: false, .. }));
             let mut changes = a_box.reader();
             let known_away = |home: &Path| {
                 fs::read(home.join("run/peer-reach.json")).ok()
@@ -2086,7 +2366,7 @@ mod work {
 
             now.store(NOW + 80_000, Ordering::Relaxed);
             let (returned, fresh_work) =
-                start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
+                start_work(&url, 2, b.path(), &[1], now.clone(), engine_b.clone()).await;
             away(a_box.reader(), key(2), false).await;
             let mut results = vec![mailbox.recv().await.unwrap(), mailbox.recv().await.unwrap()];
             results.sort();
@@ -2126,6 +2406,25 @@ mod work {
                 }
             }
             assert!(work_rows::for_lead(&reader, LEAD).await.unwrap().is_empty());
+
+            // A newer copy still arrives, but only well-formed rows reach the list.
+            now.store(NOW + 81_000, Ordering::Relaxed);
+            let fresh = json!({"at":NOW+81_000, "rows":{
+                "id":"rws_clean_rows", "at":NOW+81_000, "leads":{(LEAD):[
+                    {"session":BILLING,"title":"Broken","state":"exploded"},
+                    {"session":OTHER,"title":"Two\u{202e} lines\nhere","state":"idle"}
+                ]}
+            }});
+            relay.sender.mail(member(1).host().unwrap(), Envelope(fresh.as_object().unwrap().clone())).await.unwrap();
+            loop {
+                if let [copy] = work_rows::for_lead(&reader, LEAD).await.unwrap().as_slice() {
+                    assert_eq!(copy.rows.len(), 1);
+                    assert_eq!(copy.rows[0].session, OTHER);
+                    assert_eq!(copy.rows[0].title, "Two lines here");
+                    break;
+                }
+                reader.changed().await.unwrap();
+            }
         })
         .await
         .unwrap();
