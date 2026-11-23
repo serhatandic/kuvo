@@ -804,7 +804,11 @@ fn archived_groups(sessions: &Sessions, projects: &Projects) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn register(list: LocalSessions, routes: &mut Registry) {
+pub(crate) fn register(
+    list: LocalSessions,
+    routes: &mut Registry,
+    merged_page: impl Fn(&str, usize, u32) -> Option<page::Status200> + Send + Sync + 'static,
+) {
     let local = list.clone();
     routes.register::<read::Spec, _, _>(Access::Any, move |call| {
         let mut local = local.clone();
@@ -836,13 +840,32 @@ pub(crate) fn register(list: LocalSessions, routes: &mut Registry) {
             }))
         }
     });
+    let merged_page = Arc::new(merged_page);
     routes.register::<page::Spec, _, _>(Access::Any, move |call| {
         let mut local = list.clone();
+        let merged_page = Arc::clone(&merged_page);
         async move {
-            let project = crate::query(&call.request.path, "project").filter(|project| !project.is_empty())
-                .ok_or_else(|| Refusal::new(StatusCode::BAD_REQUEST, "Say which project (project, its folder)."))?;
-            let cursor = crate::query(&call.request.path, "cursor");
-            let (shown, step) = cursor.as_deref().and_then(parse_cursor).unwrap_or((6, 0));
+            let project = crate::query(&call.request.path, "project")
+                .filter(|project| !project.is_empty())
+                .ok_or_else(|| {
+                    Refusal::new(StatusCode::BAD_REQUEST, "Name the project: project=<its key>.")
+                })?;
+            let (shown, step) = crate::query(&call.request.path, "cursor")
+                .filter(|value| !value.is_empty())
+                .map_or(Some((6, 0)), |cursor| parse_cursor(&cursor))
+                .ok_or_else(|| {
+                    Refusal::new(StatusCode::BAD_REQUEST, "That cursor isn't one this box gave. Read the list again.")
+                })?;
+            if project.split_once(':').is_some_and(|(key, _)| {
+                key.len() == 43
+                    && key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            }) {
+                return merged_page(&project, shown, step)
+                    .map(RouteReply::json::<200>)
+                    .ok_or_else(|| {
+                        Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The session list isn’t ready.")
+                    });
+            }
             let snapshot = local.current(&call.cancel).await?;
             let facts = snapshot.sessions.iter().map(|(id, row)| (id.clone(), row.facts.clone())).collect();
             let rows = project_rows(&facts, &project);
@@ -854,6 +877,12 @@ pub(crate) fn register(list: LocalSessions, routes: &mut Registry) {
 
 fn parse_cursor(cursor: &str) -> Option<(usize, u32)> {
     let (shown, step) = cursor.strip_prefix('s')?.split_once('.')?;
+    if !(1..=5).contains(&shown.len())
+        || !(1..=2).contains(&step.len())
+        || !shown.bytes().chain(step.bytes()).all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
     let (shown, step) = (shown.parse().ok()?, step.parse().ok()?);
     ((6..=5000).contains(&shown) && step <= 20).then_some((shown, step))
 }

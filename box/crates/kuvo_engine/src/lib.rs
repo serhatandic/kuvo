@@ -23,7 +23,10 @@ mod typed;
 mod waiting;
 
 use http::StatusCode;
-use kuvo_protocol::routes::{post_kuvo_engine_restart as restart, post_kuvo_engine_start as start};
+use kuvo_protocol::routes::{
+    get_kuvo_sessions_page as page, post_kuvo_engine_restart as restart,
+    post_kuvo_engine_start as start,
+};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 
 pub const FEATURES: &[&str] = &["search", "sessions.models", "typed", "typed.draft"];
@@ -34,11 +37,18 @@ pub use session_list::LocalSessions;
 
 impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {
+        self.register_with_merged_pages(routes, |_, _, _| None)
+    }
+
+    pub fn register_with_merged_pages(
+        &self,
+        routes: &mut Registry,
+        merged_page: impl Fn(&str, usize, u32) -> Option<page::Status200> + Send + Sync + 'static,
+    ) -> LocalSessions {
         let list = LocalSessions::start(self.clone());
-        session_list::register(list.clone(), routes);
+        session_list::register(list.clone(), routes, merged_page);
         asks::register(self, list.clone(), routes);
         waiting::register(self, list.clone(), routes);
-
         parts::register(routes);
         models::register(self, routes);
         search::register(self, routes);
