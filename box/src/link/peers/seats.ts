@@ -22,6 +22,7 @@ import { LETTER_MEMORY } from "../letters/lifetime";
 import { LETTER_ID, SENDING, letterTries } from "../letters/letter";
 import { IS_MAC, RUN } from "../home";
 import { macLink, readLink } from "../state";
+import { readReach } from "./reach";
 import { readPeerAgents } from "./directory";
 import { mailFor, ownKey, peersOf } from "./known";
 import type { ToldAgents } from "../../shared/records";
@@ -219,9 +220,16 @@ export function seatPeers(link: LinkState | null = readLink(), told: Record<stri
   const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os.hostname();
   const setup = followedSetup(link);
   const insightOrigins = historicalInsightOrigins(link);
+  const reach = readReach();
   return {
     ...(key ? { self: { key, name } } : {}),
-    boxes: peers.map(peer => ({ key: peer.key, name: plainName(peer.name) || "another computer", seats: (told[peer.key]?.features ?? []).includes("groups.seats") })),
+    boxes: peers.map(peer => {
+      const features = told[peer.key]?.features;
+      return {
+        key: peer.key, name: plainName(peer.name) || "another computer", seats: features?.includes("groups.seats") ?? false,
+        insights: features && !features.includes("usage.insights") ? "unsupported" : reach[peer.key] === undefined ? "connected" : "away",
+      };
+    }),
     bots: peers.flatMap(peer => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id)
       .map(agent => ({ id: agent.id!, name: agent.name, job: agent.about ?? "", box: peer.key, session: agent.session, ...(agent.look ? { look: agent.look } : {}) }))),
     // (The usage panel's settings go only between its boxes. `null` only once that's settled, a

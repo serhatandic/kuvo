@@ -52,7 +52,7 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
 /** How many of `items` need you (the Work Queue's one rule, PROTOCOL.md "What waits on you"): open
  * and not deleted, and either in the status Needs you (someone said so) or with a linked session
  * that `asking` has (its agent asks now, whatever its status still says). Each item once. */
-export const needsYouIn = (items: readonly Item[], asking: ReadonlySet<string>): number =>
+export const needsYouIn = (items: readonly (Pick<Item, "removed" | "status"> & { sessions: readonly { session: string }[] })[], asking: ReadonlySet<string>): number =>
   items.filter(item => !item.removed && !isClosed(item.status) && (item.status === NEEDS_YOU || item.sessions.some(linked => asking.has(linked.session)))).length;
 
 /** What of the list this counts from: looked at again only when it changed (the list changes with

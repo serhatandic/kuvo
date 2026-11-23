@@ -142,7 +142,7 @@ impl Notifier {
                 continue;
             }
             let notices = client.follow_notices();
-            let waiting = client.follow_waiting();
+            let waiting = client.follow_waiting_on_computer();
             let (told, waits) = (notices.updates().clone(), waiting.updates().clone());
             let told_key = key.clone();
             let told_task = cx.spawn(async move |this, cx| {

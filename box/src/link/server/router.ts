@@ -40,7 +40,7 @@ import { folderTreeRoute, foldersRoute } from "../areas/folders";
 import { FILES_FIND_ROUTE, filesFindRoute } from "../areas/files-find";
 import { FOLDERS_SUGGESTED_ROUTE, foldersSuggestedRoute } from "../areas/folders-suggested";
 import { ARTIFACT_ROUTE, artifactsRoute } from "../areas/artifacts";
-import { LIBRARY_ROUTE, libraryRoute } from "../areas/library";
+import { LIBRARY_ROUTE, MERGED_LIBRARY_ROUTE, libraryRoute, mergedLibraryRoute } from "../areas/library";
 import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
 import { integrationsRoute } from "../areas/integrations";
@@ -57,7 +57,7 @@ import { keepsList, LIST_ROUTE, listRoute } from "../lists/sessions";
 import { CONVERSATION_LOCATION, OWN_CONVERSATION, PEER_CONVERSATION, conversationLocation, ownConversation } from "../lists/conversation";
 import { peerConversation } from "../peers/session-follow";
 import { DELIVERY_RECEIPT_EVENTS, deliveryReceiptEvents, deliveryRoute } from "../lists/delivery";
-import { PAGE_ROUTE, pageRoute, SETUP_LIST_ROUTE, SETUP_SESSION_LIST_ROUTE, setupListsRoute } from "../lists/setup";
+import { PAGE_ROUTE, pageRoute, SETUP_LIST_ROUTE, SETUP_SESSION_LIST_ROUTE, SETUP_WAIT_COUNTS, setupWaitCountsRoute, setupListsRoute } from "../lists/setup";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
@@ -244,6 +244,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: DELIVERY_FEATURE, when: route => route.match(DELIVERY_RECEIPT_EVENTS), answer: deliveryReceiptEvents },
   { feature: DELIVERY_FEATURE, when: route => route.match(DELIVERY_ROUTE), answer: deliveryRoute },
   { feature: "line.merged-sessions", when: route => route.match(SETUP_SESSION_LIST_ROUTE), answer: setupListsRoute },
+  { feature: "line.merged-waiting", when: route => route.match(SETUP_WAIT_COUNTS), answer: setupWaitCountsRoute },
   { feature: "line.setup-lists", when: route => route.match(SETUP_LIST_ROUTE), answer: setupListsRoute },
   { feature: "waiting", when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
@@ -312,6 +313,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "bots.edit", when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { feature: "groups", when: route => GROUP_ROUTE.test(route), answer: groupsRoute },
   { feature: "artifacts", when: route => ARTIFACT_ROUTE.test(route), answer: artifactsRoute },
+  { feature: "line.merged-library", when: route => route === MERGED_LIBRARY_ROUTE, answer: mergedLibraryRoute },
   { feature: "library", when: route => LIBRARY_ROUTE.test(route), answer: libraryRoute },
   { feature: "bots", when: route => route.match(/^kuvo\/bots\/([^/]+)\/arrived$/), answer: arrivedRoute },
   { feature: "bots.state", when: route => route.match(/^kuvo\/bots\/([^/]+)\/seen$/), answer: botSeenRoute },

@@ -1919,6 +1919,7 @@ impl State {
 
     /// One of the areas' answers (`kuvo/waiting`, `kuvo/computers`…), as it is now.
     fn area(&self, method: &str, route: &str) -> Option<(u16, Value)> {
+        let route = if route == "kuvo/setup/waiting/counts" { "kuvo/waiting" } else { route };
         areas::answer(&self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len(), self.bots.asking())
     }
 
@@ -3519,7 +3520,7 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // What waits on you, or your computers, followed: as it is now, then a line as it changes.
-        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/computers" | "kuvo/agents/api/kuvo/limits")) {
+        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/setup/waiting/counts" | "kuvo/computers" | "kuvo/agents/api/kuvo/limits")) {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();
@@ -3533,7 +3534,7 @@ impl Transport for StandIn {
                     if let Some((_, now)) = state.area("GET", once) {
                         let _ = sender.send(now.to_string());
                     }
-                    if once == "kuvo/waiting" { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
+                    if matches!(once, "kuvo/waiting" | "kuvo/setup/waiting/counts") { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
                 }
                 id
             };
@@ -3572,7 +3573,7 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // The Library, followed: as its query lists it now, then again as something's removed.
-        if route == "kuvo/library/events" {
+        if route == "kuvo/setup/library/events" {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();

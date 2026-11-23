@@ -17,12 +17,14 @@ import { ownComputerName } from "./computer-name"
 import { APP_FOLDER, located } from "./home"
 import { GitHubSignIn } from "./work-queue/github-sign-in"
 import { DATA_ID, ownerOf } from "./ownership/resolve"
+import { seatPeers } from "./peers/seats"
 import { peersOf } from "./peers/known"
 import { readLink } from "./state"
 
 export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
   const { handle, started, closeInsights } = usageReader({
     ...options,
+    initialPeers: seatPeers(),
     conversationHome: (id, computer) => {
       if (!DATA_ID.test(id)) return
       const link = readLink()
