@@ -9,6 +9,11 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
   const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  engine.open = new Set();
+  engine.closed = [];
+  engine.terminals = new Set();
+  engine.globalForms = new Map();
+  engine.dismissedGlobalForms = [];
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
@@ -34,6 +39,7 @@ export async function standInEngine(root, env) {
         return;
       }
       if (route === "GET /api/session") {
+        if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
         return send({ data: engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent)) });
       }
@@ -72,12 +78,15 @@ export async function standInEngine(root, env) {
       const ask = url.pathname.match(/^\/api\/session\/([^/]+)\/(permission|form)(?:\/([^/]+)(?:\/reply)?)?$/);
       if (ask) {
         const [, id, type, key] = ask;
-        const items = type === "permission" ? engine.permissions : engine.forms;
-        if (request.method === "GET") return send({ data: items.get(id) ?? [] });
-        const pending = items.get(id) ?? [];
+        const global = id === "global" && type === "form";
+        const items = global ? engine.globalForms : type === "permission" ? engine.permissions : engine.forms;
+        const location = global ? folderOf(request) : id;
+        if (request.method === "GET") return send({ data: items.get(location) ?? [] });
+        const pending = items.get(location) ?? [];
         const index = pending.findIndex(item => item.id === decodeURIComponent(key));
         if (index < 0) return send({}, 404);
         const [answered] = pending.splice(index, 1);
+        if (global && request.method === "DELETE") engine.dismissedGlobalForms.push({ id: answered.id, folder: location });
         publish({ type: type + (request.method === "DELETE" ? ".cancelled" : ".replied"),
           data: { sessionID: id, requestID: answered.id } });
         return send({});
@@ -88,13 +97,10 @@ export async function standInEngine(root, env) {
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
         const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
         if (held) engine.holdPrompt = null;
-        if (held?.beforeAcceptance) {
-          held.accepted();
-          return;
-        }
-        const messages = engine.messages.get(session) ?? [];
-        const inbox = engine.inboxes.get(session) ?? [];
-        if (!messages.some(row => row.id === given.id) && !inbox.some(row => row.id === given.id)) {
+        const accept = () => {
+          const messages = engine.messages.get(session) ?? [];
+          const inbox = engine.inboxes.get(session) ?? [];
+          if (messages.some(row => row.id === given.id) || inbox.some(row => row.id === given.id)) return;
           if (engine.running.has(session)) {
             const { id, delivery, ...payload } = given;
             inbox.push({ id, delivery, type: "user", payload });
@@ -104,7 +110,13 @@ export async function standInEngine(root, env) {
             engine.messages.set(session, messages);
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
+        };
+        if (held?.beforeAcceptance) {
+          held.accepted();
+          if (held.release) void held.release.then(() => { accept(); send({}); });
+          return;
         }
+        accept();
         if (held) {
           held.accepted();
           return;
@@ -138,6 +150,21 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/model/default") return send({ data: engine.defaultModel });
       if (route === "GET /api/provider") return send({ data: engine.providers });
       if (route === "GET /api/integration") return send({ data: engine.integrations });
+      if (request.method === "GET" && url.pathname.startsWith("/api/integration/")) {
+        const account = engine.integrations.find(each => each.id === decodeURIComponent(url.pathname.slice("/api/integration/".length)));
+        return account ? send({ data: account }) : send({}, 404);
+      }
+      if (route === "GET /api/debug/location") return send([...engine.open].map(directory => ({ directory })));
+      if (route === "DELETE /api/debug/location") {
+        const folder = url.searchParams.get("location[directory]");
+        if (engine.cantClose) return send({}, 405);
+        engine.open.delete(folder);
+        engine.closed.push(folder);
+        response.writeHead(204).end();
+        return;
+      }
+      if (route === "GET /api/pty") return send({ data: engine.terminals.has(folderOf(request)) ? [{ id: "pty_here", status: "running" }] : [] });
+      if (["GET /api/form", "GET /api/permission/request", "GET /api/shell"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });

@@ -37,6 +37,7 @@ mod adding;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod model_stars;
 mod predecessor;
 mod removal;
 mod replication;
@@ -44,6 +45,7 @@ pub(crate) use removal::Unlink;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 use handover::{Handover, HandoverReply};
+pub use model_stars::ModelStar;
 
 pub(crate) const LINK: &str = "run/link.json";
 const CARD: &str = "run/setup-card.json";
@@ -116,6 +118,7 @@ pub(crate) struct View {
     pub setup: Value,
     pub personalities: Result<Value, String>,
     pub clock: Value,
+    model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
 }
@@ -140,6 +143,7 @@ pub(crate) enum Command {
     RenameComputer(String, String, edits::Submitter),
     UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
+    ModelStar(model_stars::Change),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
     EditReceipt(String),
@@ -328,6 +332,8 @@ impl PreparedSetup {
             pending_tips: VecDeque::new(),
             pending_handover: None,
             pending_devices: HashMap::new(),
+            pending_stars: HashMap::new(),
+            next_stars_offer: Instant::now(),
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
@@ -801,6 +807,9 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        model_stars: link
+            .value(SharedKind::SetupStarredModels)
+            .map(|value| model_stars::list(Some(value))),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -828,6 +837,8 @@ struct Owner {
     pending_tips: VecDeque<Document>,
     pending_handover: Option<Handover>,
     pending_devices: HashMap<String, device_access::Pending>,
+    pending_stars: HashMap<String, model_stars::Pending>,
+    next_stars_offer: Instant,
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
@@ -881,6 +892,12 @@ impl Owner {
                     }
                     self.expire_handover().await;
                     self.expire_device_changes();
+                    self.expire_model_stars();
+                    if let Err(error) = self.offer_model_stars().await
+                        && !matches!(error, Error::Fenced | Error::Conflict)
+                    {
+                        eprintln!("checking existing model stars: {error}");
+                    }
                     self.refresh();
                 }
             }
@@ -908,6 +925,11 @@ impl Owner {
                     && old.personalities == view.personalities
                     && old.clock == view.clock
                     && old.access == view.access
+                    && old.model_stars == view.model_stars
+                    && old.ownership.id == view.ownership.id
+                    && old.ownership.replacements == view.ownership.replacements
+                    && old.ownership.grants_current == view.ownership.grants_current
+                    && old.ownership.grants_disabled == view.ownership.grants_disabled
                 {
                     return false;
                 }
@@ -1087,6 +1109,10 @@ impl Owner {
         }
         if let Command::DeviceChange(mutation) = command {
             self.ask_device_change(mutation, reply).await;
+            return;
+        }
+        if let Command::ModelStar(change) = command {
+            self.ask_model_star(change, reply).await;
             return;
         }
         let result = self.execute(command).await;
@@ -1313,7 +1339,7 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } | Command::DeviceChange(_) => {
+            Command::Handover { .. } | Command::DeviceChange(_) | Command::ModelStar(_) => {
                 unreachable!("this request can wait on relay mail")
             }
         }

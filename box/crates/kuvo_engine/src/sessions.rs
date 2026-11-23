@@ -210,6 +210,9 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                     ));
                 }
             }
+            if let Err(error) = engine.queues.discard(&id).await {
+                eprintln!("Removing the deleted conversation's saved queue: {error}");
+            }
             Ok(RouteReply::json::<200>(typed(json!({ "session": id }))?))
         }
     });

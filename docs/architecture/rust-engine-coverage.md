@@ -67,15 +67,16 @@ transport use the same dispatcher admission and bounded message channels.
 
 The `engine-sessions` and `engine-worktree` conformance areas use the selected
 resident binary, a scratch home, and the same loopback engine stand-in.
-`engine-live` also uses an installed pinned engine supplied in
-`KUVO_CONFORMANCE_OPENCODE`, with a local model response held open to put
-subsequent sends in its real inbox.
+`engine-live` uses the installed engine supplied in `KUVO_CONFORMANCE_OPENCODE`
+and a real OpenCode Go question to put subsequent messages in its inbox.
 `kuvo_engine/tests/resident.rs` additionally interrupts an inbox transfer
 after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The original 294 cases include 11 covered, 87 partial and 196 gaps.
+The first inventory recorded 294 cases. Across both inventories, 60 of
+411 declarations are covered, 115 are partial and 236 are gaps.
+Row 3.2 retains 229 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -105,15 +106,15 @@ owners on the same case each own the part described by their phase.
 | `box/test/message-parts.test.ts` (18) | 2, 5, 11, 17 | 1, 3–4, 8–10, 12–16, 18 | 6–7 | 3.2 · 1, 3–4, 6, 8–10, 12–16, 18<br>4.1 · 7 |
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
-| `box/test/queue-stop.test.ts` (6) | — | 1, 4 | 2–3, 5–6 | 3.2 · 1–6 |
-| `box/test/queue-items.test.ts` (25) | 7 | 1–6, 9–10, 13, 21–23 | 8, 11–12, 14–20, 24–25 | 3.2 · 1–6, 8–24<br>4.1 · 25<br>5.1 · 21 |
+| `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | — | 3 | 3.2 · 3 |
+| `box/test/queue-items.test.ts` (25) | 7, 9–10, 22 | 1–6, 13, 21, 23 | 8, 11–12, 14–20, 24–25 | 3.2 · 1–6, 8, 11–21, 23–24<br>4.1 · 25<br>5.1 · 21 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
-| `box/test/session-actions.test.ts` (26) | — | 1, 3–5, 14, 20 | 2, 6–13, 15–19, 21–26 | 3.2 · 1, 3–10, 14–16, 20, 23–26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
-| `box/test/session-pages.test.ts` (3) | — | 1–2 | 3 | 3.2 · 1–3 |
+| `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
+| `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
 | `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | — | 6 | 1–5, 7–8 | 3.2 · 1–8 |
 | `box/test/session-notes-writers.test.ts` (7) | — | 1 | 2–7 | 3.2 · 1–7<br>7.3 · 6 |
-| `box/bridge-tests/queue.test.js` (56) | — | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 15–21, 23–26, 28, 34–42, 44–53, 55–56 | 3.2 · 1–39, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25<br>5.4 · 17–21 |
+| `box/bridge-tests/queue.test.js` (56) | 15–16, 39 | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 17–21, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–14, 17–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25<br>5.4 · 17–21 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1, 3 | 2, 4, 6–9 | 5 | 3.2 · 2, 4, 6–9<br>4.1 · 5 |
@@ -130,26 +131,25 @@ owners on the same case each own the part described by their phase.
 ### Additional 3.2b reference cases
 
 The following 117 declarations extend the original 294-case inventory.
-They include 4 covered, 15 partial and 98 gaps.
 Each row uses the same one-based numbering and ownership rule.
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
-| `box/test/session-asks.test.ts` (19) | — | 1, 3–4, 18 | 2, 5–17, 19 | 3.2 · 1–5, 13–19<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
+| `box/test/session-asks.test.ts` (19) | 3–4, 14–15, 18 | 1, 6–11, 19 | 2, 5, 12–13, 16–17 | 3.2 · 1–2, 5, 13, 16–17, 19<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
 | `box/test/model-readiness.test.ts` (1) | — | 1 | — | 3.2 · 1 |
-| `box/test/models-offered.test.ts` (15) | — | — | 1–15 | 3.2 · 1–7, 9–13<br>4.1 · 1–2, 5, 8–9, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
-| `box/test/models-starred.test.ts` (7) | — | — | 1–7 | 3.2 · 1–7<br>2.1 · 4–7<br>7.3 · 3 |
-| `box/test/models-speed.test.ts` (3) | — | — | 1–3 | 3.2 · 1–3<br>4.2 · 1 |
+| `box/test/models-offered.test.ts` (15) | — | 1–2, 4–6, 8–15 | 3, 7 | 3.2 · 3–4, 6–7, 10–13<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
+| `box/test/models-starred.test.ts` (7) | 1–2, 4–7 | — | 3 | 7.3 · 3 |
+| `box/test/models-speed.test.ts` (3) | 2–3 | 1 | — | 4.2 · 1 |
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
-| `box/test/model-names.test.ts` (3) | — | — | 1–3 | 3.2 · 1–3 |
-| `box/test/search-snippet.test.ts` (4) | — | 3 | 1–2, 4 | 3.2 · 1–4 |
-| `box/test/attachment-paths.test.ts` (2) | — | — | 1–2 | 3.2 · 1–2 |
-| `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.4 · 1–3<br>3.2 · 1–3 |
+| `box/test/model-names.test.ts` (3) | 1–3 | — | — | — |
+| `box/test/search-snippet.test.ts` (4) | 2–3 | — | 1, 4 | 3.2 · 1, 4 |
+| `box/test/attachment-paths.test.ts` (2) | — | 1–2 | — | 2.4 · 1–2<br>2.5 · 1–2<br>4.1 · 1 |
+| `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.3 · 1–3 |
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
-| `box/bridge-tests/attachments-go.test.js` (6) | — | — | 1–6 | 3.2 · 1–6<br>4.1 · 2–4<br>2.4 · 5<br>7.3 · 1, 3 |
-| `box/bridge-tests/search.test.js` (11) | — | 3, 5–7, 10 | 1–2, 4, 8–9, 11 | 3.2 · 1–11<br>4.1 · 3 |
+| `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
+| `box/bridge-tests/search.test.js` (11) | 1, 4–7, 9, 11 | 3, 10 | 2, 8 | 3.2 · 2–3, 8, 10<br>4.1 · 3 |
 | `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 18–19, 32 | 2, 4, 6–17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 16–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
-| `box/bridge-tests/models-refresh.test.js` (4) | — | — | 1–4 | 3.2 · 1–4 |
+| `box/bridge-tests/models-refresh.test.js` (4) | 1 | 3 | 2, 4 | 3.2 · 2–4<br>6.1 · 3 |
 
 ### Implementation and remaining parity work
 
@@ -187,28 +187,58 @@ The local composer uses one persisted decision before send and settles it
 through the message journal. Its no-wait route writes a compatible standalone
 outbox record and returns the pending receipt before OpenCode replies. A
 resident task delivers saved drafts in order and reports its durable answers
-through the receipt topic. The scope is local desktop delivery in a standalone
-setup. Scoped submissions, paired and addressed delivery, editing a saved
-outbox draft, move fences, and mixed-version receipt indexing remain open.
-Phase 2.4 owns the shared owner journal and peer forwarding. Phase 3.2 owns
-the engine's submission and recovery routes and the rest of the local delivery contract.
+through the receipt topic. Taking a saved draft back keeps a terminal receipt
+and its recovery copy until the composer acknowledges it. Steer and Send Now
+persist alongside the original draft. Setup-scoped claims bind the original
+owner, listing computer or pairing, and original draft digest. The address
+index rebuilds from both receipt record versions in bounded batches. Outcome
+reads revalidate the current issuer and keep a page incomplete if one of its
+computers cannot answer.
+
+The box attaches the ownership handle before registering the engine routes,
+starts an authenticated request receiver after it has the local session view,
+and announces submission recovery to its peers. Drafts and addressed prompts
+are durable before the first reply. The owner applies the ordinary typed or
+prompt adapter under the same message identity on every retry. The peer
+transport supports inline payloads up to 5 MiB for an addressed draft and
+128 KiB for a scoped submission. Phase 2.4 owns the shared move journal,
+move admission fences and receipt handoff. Phase 5.3 owns the group
+transcript used by addressed group messages.
 
 The engine's event reader owns the local ask cache. Its session list and
 waiting count use the same snapshot. Normal questions and permissions are
 answered in their original session, and archiving holds the inbox and stops
-a run waiting on a question or permission. Global MCP forms, vault and
-sandbox asks, revocable consent, and the full bot and Work Queue counters
-still need their own adapters. The wake pause route and project removal
+a run waiting on a question or permission. Global MCP forms follow the first
+active session using their server and are dismissed in that folder. Permission
+grants reread the ask, device and local Blocks at the native boundary.
+`ExternalAsks` carries cards, responses and waiting changes from the vault
+and sandbox owners (6.1 and 6.2). Local bot activity includes delegation
+and the Work Queue counts newer copies once; `PeerWaiting` takes the live
+peer-activity snapshot from 5.1. The wake pause route and project removal
 remain in 5.1 and 6.3. A worktree whose session creation gets a failure
 response is removed only after a complete inventory shows no conversation
 using it. Ambiguous transport failures leave the worktree kept.
 
 Model readiness reads the conversation folder's OpenCode catalog and
-remembers its names. The picker, stars, speed, provider refresh, and
-coding-agent catalogs remain. Search caches local engine transcripts by
+remembers its names. The picker applies model order, availability, defaults,
+and preferences. Speed and standalone stars share the existing preference
+file. The setup actor saves stars as a signed `SetupStarredModels` value.
+A member sends the change to the current main through the setup authority
+mail. Each computer reoffers its older local list, and the main records
+which stars it has seen from that source so a later import preserves removals.
+`AgentModelSource` supplies the catalog and session directory from 4.1,
+with account plans from 5.4. Provider refresh keeps active folders and
+settles a persisted GitLab refresh after work ends. The provider compatibility
+layer rewrite is part of 6.1. Search caches local engine transcripts by
 session revision. Projection of a coding-agent transcript waits for 4.1.
-Attachment ingest covers the kept bytes and notes. Retention across branch,
-move and removal and the raw-prompt attachment path remain open.
+Raw prompts and commands use the same attachment ingest as the composer,
+with the raw prompt's own send-once response cache. Expiry preserves moved
+payloads and transcript pictures. `AttachmentSource` carries the other
+runtime's complete inventory and move protections. Removal waits until both
+runtimes can account for any branch references.
+Path remapping is exercised through the backup and move consumers in 2.4
+and 2.5, with coding-agent carry in 4.1. Installer address parsing belongs
+to enrollment in 2.3.
 Engine-swap inbox transfer is independent of the release keeper in 7.2.
 
 ### Platform verification
@@ -231,10 +261,41 @@ The passing attempt reused the same prebuilt Rust binary with that
 fixture corrected. The container and both Lokum scratch homes were gone
 afterward. The 16 targeted TypeScript reference tests also passed on macOS.
 
+### Phase 3.2c verification
+
+The live test uses the pinned OpenCode 2.2.6 and
+`opencode-go/deepseek-v4.1-flash`. A real question keeps the turn active
+while another message is saved, edited and recovered from its delivery
+receipt. The test answers the question and checks for one copy of the
+draft in the transcript. The deterministic tests use the loopback
+OpenCode API fixture to place a restart on either side of acceptance.
+
+The model preference differential agreed on five replies and
+`box/models.json`. The desktop differential agreed on ten replies and the
+final engine transcript, with one forced restart during send. Both runs
+also compared the full home. Rust keeps a bounded in-memory answer cache for raw
+engine prompts and a durable journal for the desktop send. A Tokio
+worker settles model refreshes off the engine event reader. The outbox
+commits the terminal receipt before deleting the active draft, and
+publishes receipt changes through a watch channel.
+
+| Platform | Phase 3.2c checks |
+| --- | --- |
+| macOS | 46 engine conformance cases against each binary, including the beta fixture and the real model. The Rust resident scenario also verifies the owner adapters and revoked delivery. |
+| WSL GNU | 43 deterministic Rust cases and the real model, with the Mac-built executable. |
+| Native Windows | 43 deterministic Rust cases with the Mac-built executable. The staged OpenCode pin reports version 2.2.6. |
+| Linux on Lokum | 35 deterministic Rust cases before the peer delivery and shared star additions, with a Mac-built static musl executable. The newer run shares the foreground test slot with the TypeScript suite. |
+
+The signed star test makes a change from a member, reads it from both
+computers, then merges older local copies after an unstar. It verifies the
+removed star stays absent. The paired delivery adapter fixture replaces the
+grant after saving the draft, verifies the worker refuses the old pairing,
+and reads the terminal receipt through the new pairing.
+
 ### Differential file verdicts
 
-The table assigns all 76 paths reported by the final ten-step desktop comparison.
-It also records the legacy presence marker seen in the earlier run.
+The model preference run reported 82 paths and the ten-step desktop run
+reported 93. The table includes the older baseline paths as well.
 A position such as "run/link.json/value/key" is a field difference inside
 "run/link.json". Wildcards cover only the generated filenames at the stated
 depth. The row remains responsible for its files and for proving compatibility
@@ -247,15 +308,20 @@ records or runtime endpoint they hold.
 | `agents/limits.json`, `agents/usage`, `agents/usage/claude-files`, `agents/usage/codex-files`, `agents/usage/grok-files`, `agents/usage/insights.sqlite`, `agents/usage/insights.sqlite-shm`, `agents/usage/insights.sqlite-wal`, `agents/usage/settings.json`, `agents/usage/usage.json`, `run/usage-attribution.json` | 5.4 | Usage, limits and the Insights database sidecars |
 | `artifacts`, `artifacts/citations-v1.json`, `artifacts/copies`, `artifacts/index-v1.sqlite`, `artifacts/key`, `artifacts/log`, `box/marketplace`, `box/marketplace/mcp-relay-v1.json`, `library`, `library/backfill.json`, `run/docs.changed` | 5.5 | Artifact storage, Library, and Marketplace relay and document invalidation |
 | `bots`, `run/bots-seen`, `run/notes`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json`, `wakes` | 5.1 | Bots, wakes, work activity, notes and notices |
-| `box/approval.json`, `chats` | 3.2 | Session approval timestamp at creation and the Chats folder lifecycle |
+| `box/approval.json` | 6.1 | TypeScript's `approvalsSince` reads the differing `since` field to distinguish old and new sessions during approval adoption. Rust session start reads the shared `last` and `fullAccess` values. |
+| `chats` | 1.4 | TypeScript creates the folder on the first `kuvo/info` request. Rust creates it while preparing the resident's info response. |
 | `box/found-folders.json` | 6.3 | First-seen project folders |
 | `config`, `config/opencode`, `config/opencode/plugins`, `config/opencode/plugins/kuvo-defaults.js`, `run/fence`, `run/fence/agents.md` | 6.1 | Engine configuration and the sandbox instructions |
-| `run/.queue-handoffs`, `run/glance`, `run/glance/asks.json`, `run/lists/sessions.json`, `run/queues-scanned.json` | 3.2 | Queue recovery markers, local list sequence and asks cache |
-| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward`, `run/work-queue/numbers.json` | 5.2 | Work Queue numbering, forwarding and GitHub credential exchange |
-| `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signing documents, and local checkpoint projection |
+| `run/.queue-handoffs` | Unread outside the old lock | `rg -n -F .queue-handoffs box/src box/crates` finds only the TypeScript per-item lock in `engine/queue.ts`. Rust uses the session turn. |
+| `run/glance`, `run/glance/asks.json` | Identical | Both writers publish the `asks` object that the TypeScript reader in `glance/asked.ts` consumes. |
+| `run/glance-source.json` | Unread by released readers | `rg -n -F glance-source.json box/src box/crates gpui` finds only the Rust checkpoint reader and writer. The digest binds the checkpoint to its OpenCode process. |
+| `run/lists/sessions.json` | 3.2 | Both boxes and the Rust peer publisher read the list. Rust writes the same owner, start identity and `workByBot` fields and advances each inventory as one revision. The desktop restart still differed in the saved floor and the affected row's sequence. |
+| `run/queues-scanned.json` | Identical | Both writers use a format-one port-to-process map. A same-process restart with a saved receipt resumes its inbox and preserves a stopped session in the conformance scenario. |
+| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward`, `run/work-queue/model.json`, `run/work-queue/numbers.json` | 5.2 | Work Queue model, numbering, forwarding and GitHub credential exchange |
+| `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signed shared values and outcomes, and local checkpoint projection |
 | `run/link.seen`, `run/link.version` | 7.3 | Legacy Mac activity and link version markers |
 | `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
 | `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
-| `run/prompt-receipts`, `run/prompt-receipts/*.json` | 3.2 | Rust prompt claim and answer journal, including its mixed-version recovery seam |
+| `run/prompt-receipts`, `run/prompt-receipts/*.json` | Unread by released readers | `rg -n -F prompt-receipts box/src box/crates gpui` finds only the Rust send journal. Released clients read the route, queue and transcript. Scoped and listing receipts use separate records. |
 | `run/route/ssh`, `run/socket.key` | 1.4 | Resident IPC endpoint and its random local credential |
 | `run/vault.sock`, `run/ssh-for` | 6.2 | Vault IPC and session SSH-agent registration |

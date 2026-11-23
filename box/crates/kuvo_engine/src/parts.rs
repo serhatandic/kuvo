@@ -319,6 +319,50 @@ fn add_attachment_lines<'a>(lines: &mut Vec<&'a str>, included: &'a [String], pa
     }
 }
 
+pub(crate) fn with_attachment_note(
+    text: &str,
+    attachments: &crate::attachments::Attachments,
+    join: bool,
+) -> String {
+    if attachments.included.is_empty() && attachments.paths.is_empty() {
+        return text.to_owned();
+    }
+    let found = join.then(|| ATTACHED.take(text)).flatten();
+    let mut words = found.as_ref().map_or(text, |(before, _)| before).to_owned();
+    let mut lines = found.map_or_else(
+        || {
+            ATTACHED.escape(&mut words);
+            Vec::new()
+        },
+        |(_, lines)| lines,
+    );
+    add_attachment_lines(&mut lines, &attachments.included, &attachments.paths);
+    ATTACHED.append(&mut words, &lines);
+    words
+}
+
+pub(crate) fn raw_prompt_parts(given: &mut Map<String, Value>, text: &mut String, phone: bool) {
+    if phone && !text.trim_end().ends_with(PHONE.closing) {
+        let empty = text.is_empty();
+        PHONE.append(text, &[PHONE.headings[0], PHONE_NOTE]);
+        if empty {
+            text.insert_str(0, "\n\n");
+        }
+    }
+    let parts = read_parts(text);
+    if parts.words == text.as_str() && parts.mail.is_none() {
+        return;
+    }
+    let metadata = given.entry("metadata").or_insert(Value::Null);
+    if !metadata.is_object() {
+        *metadata = json!({});
+    }
+    if !metadata["kuvo"].is_object() {
+        metadata["kuvo"] = json!({});
+    }
+    metadata["kuvo"]["parts"] = json!(parts);
+}
+
 pub(crate) fn compose(
     given: &Map<String, Value>,
     has_files: bool,
@@ -338,18 +382,7 @@ pub(crate) fn compose(
         }
         let kept = given.get("kept") == Some(&Value::Bool(true)) && legacy_queue;
         let again = !legacy_queue || given.get("again") == Some(&Value::Bool(true));
-        let mut text = text.to_owned();
-        if !attachments.included.is_empty() || !attachments.paths.is_empty() {
-            let (before, existing) = ATTACHED.take(&text).unwrap_or((text.as_str(), Vec::new()));
-            let mut after = before.to_owned();
-            if existing.is_empty() {
-                ATTACHED.escape(&mut after);
-            }
-            let mut lines = existing;
-            add_attachment_lines(&mut lines, &attachments.included, &attachments.paths);
-            ATTACHED.append(&mut after, &lines);
-            text = after;
-        }
+        let mut text = with_attachment_note(text, attachments, true);
         if !kept && !again && phone && !text.trim_end().ends_with(PHONE.closing) {
             PHONE.append(&mut text, &[PHONE.headings[0], PHONE_NOTE]);
         }

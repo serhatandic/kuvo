@@ -165,6 +165,15 @@ struct DraftReceipt {
     draft: Draft,
     decision: Value,
     outcome: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submission: Option<String>,
+}
+
+pub(crate) struct DraftContext<'a> {
+    pub caller: &'a Caller,
+    pub author: &'a str,
+    pub delivery_mode: Option<crate::delivery::Mode>,
+    pub submission: Option<&'a str>,
 }
 
 pub(crate) fn author(caller: &Caller) -> Result<String, Refusal> {
@@ -198,9 +207,14 @@ pub(crate) async fn submit(
     list: &LocalSessions,
     session: &str,
     draft: Draft,
-    caller: &Caller,
-    author: &str,
+    context: DraftContext<'_>,
 ) -> Result<Value, Refusal> {
+    let DraftContext {
+        caller,
+        author,
+        delivery_mode,
+        submission,
+    } = context;
     let key = disk::key(session, &draft.id);
     let _turn = engine.draft_turns.acquire(&format!("draft:{key}")).await;
     let path = engine
@@ -218,7 +232,10 @@ pub(crate) async fn submit(
                     "This computer can't read the saved draft.",
                 ));
             }
-            if receipt.author != author || receipt.draft != draft {
+            if receipt.author != author
+                || receipt.draft != draft
+                || receipt.submission.as_deref() != submission
+            {
                 return Err(Refusal::new(
                     StatusCode::CONFLICT,
                     "That operation id is already in use.",
@@ -230,6 +247,7 @@ pub(crate) async fn submit(
             receipt
         }
         None => {
+            crate::submissions::guard_legacy_draft(engine, session, &draft.id, submission).await?;
             let decision = decision(engine, session, &draft.text).await?;
             DraftReceipt {
                 format_version: 1,
@@ -237,6 +255,7 @@ pub(crate) async fn submit(
                 draft,
                 decision,
                 outcome: None,
+                submission: submission.map(str::to_owned),
             }
         }
     };
@@ -245,6 +264,7 @@ pub(crate) async fn submit(
         .pointer("/send/text")
         .and_then(Value::as_str)
     {
+        crate::consent::current(caller, &tokio_util::sync::CancellationToken::new())?;
         let mut message = receipt.draft.message.clone();
         message.insert("id".into(), json!(receipt.draft.id));
         let quoted = receipt.decision.pointer("/send/quoted") == Some(&Value::Bool(true));
@@ -254,6 +274,9 @@ pub(crate) async fn submit(
             text
         };
         message.insert("words".into(), json!(words));
+        if let Some(mode) = delivery_mode {
+            message.insert("delivery".into(), json!(mode.as_str()));
+        }
         // Keep only fields the composer passes to the send route.
         message.retain(|key, _| {
             matches!(
@@ -364,7 +387,19 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             let caller = call.request.caller;
             let author = author(&caller)?;
             let answer = tokio::spawn(async move {
-                submit(&engine, &list, &session, draft, &caller, &author).await
+                submit(
+                    &engine,
+                    &list,
+                    &session,
+                    draft,
+                    DraftContext {
+                        caller: &caller,
+                        author: &author,
+                        delivery_mode: None,
+                        submission: None,
+                    },
+                )
+                .await
             })
             .await
             .map_err(|_| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, UNAVAILABLE))??;

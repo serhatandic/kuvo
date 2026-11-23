@@ -73,8 +73,8 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 }
 
 pub use actor::{
-    ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
-    SetupRuntime,
+    ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, ModelStar, PreparedSetup,
+    SetupHandle, SetupRuntime,
 };
 pub use model::{Receipt, SharedKind};
 

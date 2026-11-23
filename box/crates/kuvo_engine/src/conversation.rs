@@ -71,16 +71,19 @@ pub(crate) fn watch(
     engine: crate::Engine,
     refresh: tokio::sync::mpsc::WeakSender<()>,
     ask_updates: tokio::sync::watch::Sender<std::sync::Arc<crate::asks::Book>>,
+    models_changed: tokio::sync::mpsc::Sender<()>,
     stop: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     use http::Method;
     use tokio::time::{Duration, sleep};
 
+    let attachments = crate::attachment_retention::watch(engine.clone());
     tokio::spawn(async move {
         let mut states = engine.states();
         let mut asks = crate::asks::Book::new();
         let mut generation = None;
+        let mut scan = None::<tokio::task::JoinHandle<()>>;
         loop {
             let Some(keep) = refresh.upgrade() else {
                 break;
@@ -104,12 +107,15 @@ pub(crate) fn watch(
                 if !asks.is_empty() {
                     ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
                 }
-            } else if generation != Some(pin) && !asks.is_empty() {
+            } else if generation != Some(pin) {
                 asks.clear();
                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
-                crate::asks::checkpoint(&engine, pin, &asks).await;
             }
-            generation = Some(pin);
+            let new_generation = generation != Some(pin);
+            if new_generation {
+                crate::asks::checkpoint(&engine, pin, &asks).await;
+                let _ = models_changed.try_send(());
+            }
             let request = engine
                 .upstream
                 .request(&lease.record, Method::GET, "api/event");
@@ -117,6 +123,32 @@ pub(crate) fn watch(
             if let Ok(Ok(response)) = connected
                 && response.status().is_success()
             {
+                if new_generation {
+                    generation = Some(pin);
+                    if let Some(previous) = scan.take() {
+                        previous.abort();
+                    }
+                    let engine = engine.clone();
+                    let stopped = stop.clone();
+                    scan = Some(tokio::spawn(async move {
+                        let Some(lease) = engine
+                            .acquire(crate::lifetime::Demand::Passive)
+                            .await
+                            .filter(|lease| (lease.record.pid, lease.record.port) == pin)
+                        else {
+                            return;
+                        };
+                        tokio::select! {
+                            () = stopped.cancelled() => {},
+                            result = crate::queue::scan(&engine, &lease) => if let Err(error) = result {
+                                eprintln!("Checking the engine's saved queues: {error}");
+                            }
+                        }
+                    }));
+                }
+                if let Some(attachments) = &attachments {
+                    let _ = attachments.send(None);
+                }
                 let mut chunks = response.bytes_stream();
                 let mut line = Vec::new();
                 loop {
@@ -143,6 +175,15 @@ pub(crate) fn watch(
                             .strip_prefix(b"data:")
                             .and_then(|data| serde_json::from_slice::<Event>(data).ok())
                         {
+                            if event.kind == "session.deleted"
+                                && let Some(attachments) = &attachments
+                                && let Some(session) = event.data["sessionID"].as_str()
+                            {
+                                let _ = attachments.send(Some(session.to_owned()));
+                            }
+                            if crate::model_refresh::work_ended(&event.kind) {
+                                let _ = models_changed.try_send(());
+                            }
                             if crate::asks::note(&mut asks, &event.kind, &event.data) {
                                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
                                 crate::asks::checkpoint(&engine, pin, &asks).await;

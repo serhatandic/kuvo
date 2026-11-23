@@ -7,13 +7,13 @@ use kuvo_protocol::routes::{
     get_kuvo_sessions_id_asks as read, get_kuvo_sessions_id_asks_events as events,
     post_kuvo_sessions_id_asks_ask as reply,
 };
-use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
+use kuvo_server::{Access, DispatchRequest, JsonLine, Refusal, Registry, RouteReply};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    Engine, LocalSessions, api,
+    Engine, ExternalAskKind, ExternalCard, ExternalDecision, ExternalReply, LocalSessions, api,
     lifetime::{Demand, Lease},
     sessions::{Session, id, typed},
 };
@@ -98,6 +98,7 @@ enum Answer {
     Permission,
     Questions(Vec<Field>, Vec<Question>),
     Dismiss,
+    External(ExternalAskKind),
 }
 
 struct Ask {
@@ -106,6 +107,7 @@ struct Ask {
     at: u64,
     card: Value,
     answer: Answer,
+    shared_folder: Option<String>,
 }
 
 impl Form {
@@ -219,11 +221,16 @@ impl Ask {
             at: time["created"].as_u64().unwrap_or_default(),
             card,
             answer,
+            shared_folder: None,
         }
     }
 
     fn response(&self, given: &Value) -> Result<(Method, String, Option<Value>), Refusal> {
-        let at = format!("api/session/{}", api::segment(&self.session));
+        let at = if self.shared_folder.is_some() {
+            "api/session/global".to_owned()
+        } else {
+            format!("api/session/{}", api::segment(&self.session))
+        };
         let ask = api::segment(&self.id);
         let form = format!("{at}/form/{ask}");
         let answer = match &self.answer {
@@ -255,6 +262,7 @@ impl Ask {
                     "This one is answered where it was asked: only dismissing it goes from here.",
                 ));
             }
+            Answer::External(_) => return Err(gone()),
         };
         Ok((
             Method::POST,
@@ -611,11 +619,15 @@ impl Permission {
     }
 }
 
-async fn found(engine: &Engine, session: &str, live: bool) -> Result<Vec<Ask>, Refusal> {
+async fn found(
+    engine: &Engine,
+    session: &str,
+    viewer: &DispatchRequest,
+) -> Result<Vec<Ask>, Refusal> {
     let lease = engine.acquire(Demand::Passive).await.ok_or_else(|| {
         Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
     })?;
-    found_on(engine, &lease, session, live).await
+    found_on(engine, &lease, session, false, Some(viewer)).await
 }
 
 async fn found_on(
@@ -623,6 +635,7 @@ async fn found_on(
     lease: &Lease,
     session: &str,
     live: bool,
+    viewer: Option<&DispatchRequest>,
 ) -> Result<Vec<Ask>, Refusal> {
     let path = format!("api/session/{}", api::segment(session));
     let top = engine
@@ -661,8 +674,8 @@ async fn found_on(
 
     let home = engine.account_home.to_string_lossy();
     let mut found = Vec::new();
-    for asker in askers {
-        let at = format!("api/session/{}", api::segment(&asker));
+    for asker in &askers {
+        let at = format!("api/session/{}", api::segment(asker));
         let permission = format!("{at}/permission{}", if live { "?live=1" } else { "" });
         let form = format!("{at}/form");
         let (permissions, forms) = tokio::join!(
@@ -676,16 +689,175 @@ async fn found_on(
         };
         for permission in permissions {
             let command = permission.command(engine, lease, &at).await;
-            found.push(permission.card(&asker, top.directory(), &home, command));
+            found.push(permission.card(asker, top.directory(), &home, command));
         }
-        found.extend(forms.into_iter().map(|form| form.card(&asker)));
+        found.extend(forms.into_iter().map(|form| form.card(asker)));
     }
-    found.sort_by_key(|ask| (matches!(ask.answer, Answer::Dismiss), ask.at));
+    found.extend(shared_forms(engine, lease, session, top.directory(), &askers).await?);
+    if let (Some(source), Some(viewer)) = (&engine.external_asks, viewer) {
+        for ask in source.list(&askers, viewer).await? {
+            if !askers.iter().any(|session| session == ask.card.session()) {
+                continue;
+            }
+            let kind = match &ask.card {
+                ExternalCard::Sandbox(_) => ExternalAskKind::Sandbox,
+                ExternalCard::Vault(_) => ExternalAskKind::Vault,
+            };
+            found.push(Ask {
+                id: ask.card.id().to_owned(),
+                session: ask.card.session().to_owned(),
+                at: ask.at,
+                card: ask.card.encode(),
+                answer: Answer::External(kind),
+                shared_folder: None,
+            });
+        }
+    }
+    if found.iter().any(|ask| ask.at == 0) {
+        let heard = restore(engine, (lease.record.pid, lease.record.port)).await;
+        for ask in found.iter_mut().filter(|ask| ask.at == 0) {
+            if let Some(pending) = heard.get(&ask.id) {
+                ask.at = pending.at;
+            }
+        }
+    }
+    found.sort_by_key(|ask| {
+        (
+            matches!(ask.answer, Answer::Dismiss)
+                || matches!(ask.answer, Answer::External(ExternalAskKind::Vault))
+                    && ask.card["choices"].as_array().is_some_and(Vec::is_empty),
+            ask.at,
+        )
+    });
     Ok(found)
 }
 
+async fn shared_forms(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    folder: &str,
+    askers: &[String],
+) -> Result<Vec<Ask>, Refusal> {
+    if folder.is_empty() {
+        return Ok(Vec::new());
+    }
+    let forms = engine
+        .upstream
+        .get_data::<Vec<Value>>(
+            &lease.record,
+            "api/session/global/form",
+            &api::folder_header(folder),
+            api::WAIT,
+        )
+        .await
+        .map_err(|_| unavailable())?;
+    let mut found = Vec::new();
+    let mut owners = std::collections::BTreeMap::new();
+    for form in forms
+        .into_iter()
+        .filter_map(|form| serde_json::from_value::<Form>(form).ok())
+    {
+        let Some(server) = form.metadata["server"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        if !owners.contains_key(server) {
+            let owner = server_owner(engine, lease, folder, server).await;
+            owners.insert(server.to_owned(), owner);
+        }
+        let Some(owner) = owners[server]
+            .as_ref()
+            .filter(|owner| askers.contains(owner))
+        else {
+            continue;
+        };
+        let title = form
+            .title
+            .as_deref()
+            .filter(|title| !title.is_empty())
+            .unwrap_or(server);
+        let card = json!({"kind":"other","title":title,"message":form.describe(),"dismiss":true});
+        let mut ask = Ask::new(form.id, owner, form.time, card, Answer::Dismiss);
+        ask.card["session"] = json!(session);
+        ask.shared_folder = Some(folder.to_owned());
+        found.push(ask);
+    }
+    Ok(found)
+}
+
+async fn server_owner(
+    engine: &Engine,
+    lease: &Lease,
+    folder: &str,
+    server: &str,
+) -> Option<String> {
+    let active = engine
+        .call_raw(lease, Method::GET, "api/session/active", None, api::WAIT)
+        .await
+        .ok()?;
+    let mut prefix = server
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    prefix.push('_');
+    for id in api::active_ids(&active["data"])? {
+        let route = crate::sessions::path(id);
+        let Ok(candidate) = engine.call::<Value>(lease, Method::GET, &route, None).await else {
+            continue;
+        };
+        if candidate
+            .pointer("/location/directory")
+            .and_then(Value::as_str)
+            != Some(folder)
+        {
+            continue;
+        }
+        let Ok(messages) = engine
+            .call::<Vec<Value>>(
+                lease,
+                Method::GET,
+                &format!("{route}/message?limit=8&order=desc"),
+                None,
+            )
+            .await
+        else {
+            continue;
+        };
+        let running = messages
+            .iter()
+            .filter(|message| message["type"] == "assistant")
+            .flat_map(|message| message["content"].as_array().into_iter().flatten())
+            .any(|part| {
+                part["type"] == "tool"
+                    && part["state"]["status"] == "running"
+                    && part["name"].as_str().is_some_and(|name| {
+                        name.starts_with(&prefix)
+                            || (name == "execute"
+                                && part
+                                    .pointer("/state/input/code")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|code| code.contains(server)))
+                    })
+            });
+        if running {
+            return Some(id.to_owned());
+        }
+    }
+    None
+}
+
 pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) {
-    let Ok(asks) = found_on(engine, lease, session, false).await else {
+    let Ok(asks) = found_on(engine, lease, session, false, None).await else {
         return;
     };
     if asks.is_empty() {
@@ -707,8 +879,12 @@ pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) 
     }
 }
 
-async fn reading(engine: &Engine, session: &str) -> Result<Value, Refusal> {
-    let asks = found(engine, session, false)
+async fn reading(
+    engine: &Engine,
+    session: &str,
+    viewer: &DispatchRequest,
+) -> Result<Value, Refusal> {
+    let asks = found(engine, session, viewer)
         .await?
         .into_iter()
         .map(|ask| ask.card)
@@ -722,7 +898,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         let here = here.clone();
         async move {
             Ok(RouteReply::json::<200>(typed(
-                reading(&here, &id(&call)?).await?,
+                reading(&here, &id(&call)?, &call.request).await?,
             )?))
         }
     });
@@ -731,9 +907,10 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
     routes.register::<events::Spec, _, _>(Access::Any, move |call| {
         let here = here.clone();
         let mut changes = updates.ask_changes();
+        let mut external = here.external_asks.as_ref().map(|source| source.waiting());
         async move {
             let session = id(&call)?;
-            let mut current = reading(&here, &session).await?;
+            let mut current = reading(&here, &session, &call.request).await?;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 loop {
                     let answer: events::Status200 = serde_json::from_value(current.clone()).map_err(io::Error::other)?;
@@ -741,10 +918,16 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                     loop {
                         tokio::select! {
                             changed = changes.changed() => if changed.is_err() { return; },
+                            changed = async {
+                                match &mut external {
+                                    Some(external) => external.changed().await,
+                                    None => std::future::pending().await,
+                                }
+                            } => if changed.is_err() { external = None; },
                             () = call.cancel.cancelled() => return,
                             () = tokio::time::sleep(Duration::from_secs(2)) => {},
                         }
-                        let next = match reading(&here, &session).await {
+                        let next = match reading(&here, &session, &call.request).await {
                             Ok(next) => next,
                             Err(error) => {
                                 if error.reply().status == StatusCode::NOT_FOUND { json!({"asks":[]}) } else { continue; }
@@ -768,29 +951,79 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                 .decode_utf8()
                 .map_err(|_| gone())?;
             let given = serde_json::from_slice::<Value>(&call.request.body).unwrap_or_default();
-            let found = found(&here, &session, true)
-                .await?
-                .into_iter()
-                .find(|item| item.id == ask)
-                .ok_or_else(gone)?;
-            let (method, path, body) = found.response(&given)?;
             let lease = here
                 .acquire(Demand::Passive)
                 .await
                 .ok_or_else(unavailable)?;
-            here.call::<Value>(&lease, method, &path, body.as_ref())
-                .await
-                .map_err(|error| match error {
-                    api::Error::Status(StatusCode::NOT_FOUND, _) => gone(),
-                    api::Error::Status(
-                        status @ (StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE),
-                        message,
-                    ) => Refusal::new(status, message),
-                    api::Error::Status(_, message) => {
-                        Refusal::new(StatusCode::BAD_GATEWAY, message)
+            let found = found_on(&here, &lease, &session, true, Some(&call.request))
+                .await?
+                .into_iter()
+                .find(|item| item.id == ask)
+                .ok_or_else(gone)?;
+            if let Answer::External(kind) = found.answer {
+                let source = here.external_asks.as_ref().ok_or_else(gone)?;
+                crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
+                let item = given["item"].as_str();
+                let choices = found.card["choices"].as_array().map(Vec::as_slice).unwrap_or_default();
+                if kind == ExternalAskKind::Vault && choices.is_empty() {
+                    return Err(Refusal::new(StatusCode::FORBIDDEN, "Answer it on your iPhone: only a device this computer’s vault knows can answer it."));
+                }
+                let answer = given["answer"].as_str();
+                let offered = choices.iter().any(|choice| {
+                    choice["answer"].as_str() == answer && choice["item"].as_str() == item
+                });
+                let decision = match (offered, answer) {
+                    (true, Some("once")) => ExternalDecision::Once,
+                    (true, Some("always")) => ExternalDecision::Always,
+                    (true, Some("reject")) => ExternalDecision::Reject,
+                    _ => {
+                        let offered = choices.iter().filter_map(|choice| choice["answer"].as_str()).collect::<Vec<_>>().join(", ");
+                        let message = if kind == ExternalAskKind::Vault && found.card["need"] == "item"
+                            && item.is_none() && answer != Some("reject")
+                        {
+                            "Say which item to give it.".to_owned()
+                        } else {
+                            format!("Answer {offered}.")
+                        };
+                        return Err(invalid(message));
                     }
-                    _ => unavailable(),
-                })?;
+                };
+                source.reply(ExternalReply { kind, session: &found.session, id: &ask, decision, item,
+                    request: &call.request, cancel: &call.cancel }).await?;
+                return Ok(RouteReply::json::<200>(reply::Status200 {}));
+            }
+            let (method, path, body) = found.response(&given)?;
+            crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
+            let headers = found
+                .shared_folder
+                .as_deref()
+                .map(api::folder_header)
+                .unwrap_or_default();
+            if matches!(found.answer, Answer::Permission)
+                && let Some(decision) = body.as_ref().and_then(|body| body["decision"].as_str())
+            {
+                crate::consent::grant(&here, &lease, &found.session, &ask, decision, &headers)
+                    .await?;
+                crate::consent::live(&here, &call.request.caller, &call.cancel, [&session, &found.session])?;
+            }
+            here.call_with_headers(
+                &lease,
+                method,
+                &path,
+                body.as_ref(),
+                Duration::from_secs(15),
+                headers,
+            )
+            .await
+            .map_err(|error| match error {
+                api::Error::Status(StatusCode::NOT_FOUND, _) => gone(),
+                api::Error::Status(
+                    status @ (StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE),
+                    message,
+                ) => Refusal::new(status, message),
+                api::Error::Status(_, message) => Refusal::new(StatusCode::BAD_GATEWAY, message),
+                _ => unavailable(),
+            })?;
             Ok(RouteReply::json::<200>(reply::Status200 {}))
         }
     });
@@ -812,28 +1045,76 @@ pub(crate) struct Words {
 
 pub(crate) type Book = std::collections::BTreeMap<String, Pending>;
 
+pub(crate) fn include_external(book: &mut Book, asks: &[crate::ExternalWaiting]) {
+    for ask in asks {
+        let (kind, summary) = match ask.kind {
+            ExternalAskKind::Sandbox => ("sandbox", "asks to run a command outside the sandbox"),
+            ExternalAskKind::Vault => ("vault", "asks for something from the vault"),
+        };
+        book.insert(
+            format!("{kind}:{}", ask.id),
+            Pending {
+                session: ask.session.clone(),
+                at: ask.at,
+                place: kind.into(),
+                asks: Words {
+                    kind: kind.into(),
+                    summary: summary.into(),
+                },
+            },
+        );
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct Checkpoint {
-    engine: (u32, u16),
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine: Option<(u32, u16)>,
     asks: Book,
 }
 
+#[derive(Deserialize, Serialize)]
+struct CheckpointSource {
+    engine: (u32, u16),
+    fingerprint: String,
+}
+
 pub(crate) async fn restore(engine: &Engine, source: (u32, u16)) -> Book {
-    crate::disk::read::<Checkpoint>(&engine.home.join("run/glance/asks.json"))
+    let kept = crate::disk::read::<Checkpoint>(&engine.home.join("run/glance/asks.json"))
         .await
         .ok()
-        .flatten()
-        .filter(|kept| kept.engine == source)
-        .map(|kept| kept.asks)
-        .unwrap_or_default()
+        .flatten();
+    let Some(kept) = kept else {
+        return Book::new();
+    };
+    let matches = if let Some(earlier) = kept.engine {
+        earlier == source
+    } else {
+        crate::disk::read::<CheckpointSource>(&engine.home.join("run/glance-source.json"))
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|earlier| {
+                earlier.engine == source
+                    && earlier.fingerprint == crate::submissions::fingerprint(json!(kept.asks))
+            })
+    };
+    if matches { kept.asks } else { Book::new() }
 }
 
 pub(crate) async fn checkpoint(engine: &Engine, source: (u32, u16), asks: &Book) {
-    let checkpoint = Checkpoint {
+    let tag = CheckpointSource {
         engine: source,
+        fingerprint: crate::submissions::fingerprint(json!(asks)),
+    };
+    let checkpoint = Checkpoint {
+        engine: None,
         asks: asks.clone(),
     };
-    let _ = crate::disk::durable(engine.home.join("run/glance/asks.json"), checkpoint).await;
+    let tagged = crate::disk::durable(engine.home.join("run/glance-source.json"), tag).await;
+    if tagged.is_ok() {
+        let _ = crate::disk::durable(engine.home.join("run/glance/asks.json"), checkpoint).await;
+    }
 }
 
 pub(crate) fn note(book: &mut Book, kind: &str, data: &Value) -> bool {

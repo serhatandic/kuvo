@@ -1,8 +1,17 @@
 //! Keep inline attachments in the conversation's folder and pass what its model can read.
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime},
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use http::{HeaderMap, Method};
+use kuvo_server::{DispatchRequest, LocalOrigin, Transport};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
@@ -11,6 +20,8 @@ use crate::{Engine, lifetime::Demand};
 
 const MODEL_BYTES: usize = 20 * 1024 * 1024;
 const MODEL_WAIT: Duration = Duration::from_secs(1);
+const KEEP_FOR: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+const SWEEP_EVERY_MS: u64 = 60 * 60 * 1000;
 
 #[derive(Default)]
 pub(crate) struct Attachments {
@@ -21,16 +32,30 @@ pub(crate) struct Attachments {
 
 impl Attachments {
     pub async fn keep(engine: &Engine, session: &str, files: Vec<Value>) -> Self {
+        Self::keep_in(engine, session, files, &HeaderMap::new()).await
+    }
+
+    async fn keep_in(
+        engine: &Engine,
+        session: &str,
+        files: Vec<Value>,
+        headers: &HeaderMap,
+    ) -> Self {
         let mut kept = Self::default();
         let mut input = None;
-        let folder = engine.home.join("attachments").join(session);
+        let root = engine.home.join("attachments");
+        let mut folder = root.clone();
+        if session_folder(session) {
+            folder.push(session);
+        }
         for mut file in files {
             let Some((mime, bytes)) = inline(&file) else {
                 kept.files.push(file);
                 continue;
             };
             if input.is_none() {
-                input = Some(model_input(engine, session).await);
+                input = Some(model_input(engine, session, headers).await);
+                engine.attachment_expiry.schedule(root.clone());
             }
             let formats = input.as_ref().and_then(Option::as_deref);
             let text = text_mime(&mime);
@@ -60,13 +85,147 @@ impl Attachments {
     }
 }
 
-fn inline(file: &Value) -> Option<(String, Vec<u8>)> {
+pub(crate) fn session_folder(name: &str) -> bool {
+    name.starts_with("ses_") && (5..=124).contains(&name.len()) && crate::sessions::valid_id(name)
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Expiry(Arc<AtomicU64>);
+
+impl Expiry {
+    fn schedule(&self, root: PathBuf) {
+        let at = crate::disk::now();
+        if self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                (at >= next).then_some(u64::MAX)
+            })
+            .is_err()
+        {
+            return;
+        }
+        let next = self.0.clone();
+        tokio::spawn(async move {
+            sweep_expired(&root).await;
+            next.store(
+                crate::disk::now().saturating_add(SWEEP_EVERY_MS),
+                Ordering::Relaxed,
+            );
+        });
+    }
+}
+
+async fn sweep_expired(root: &Path) {
+    let Some(before) = SystemTime::now().checked_sub(KEEP_FOR) else {
+        return;
+    };
+    let Ok(mut entries) = fs::read_dir(root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let folder = entry.path();
+        if entry.file_name().to_str().is_some_and(session_folder)
+            && entry.file_type().await.is_ok_and(|kind| kind.is_dir())
+        {
+            if let Ok(mut files) = fs::read_dir(&folder).await {
+                while let Ok(Some(file)) = files.next_entry().await {
+                    let name = file.file_name();
+                    let name = name.to_string_lossy();
+                    if name == "transcript-pictures"
+                        || name.strip_prefix("move-mov_").is_some_and(|id| {
+                            (1..=40).contains(&id.len())
+                                && id.bytes().all(|ch| ch.is_ascii_alphanumeric())
+                        })
+                    {
+                        continue;
+                    }
+                    expire(&file.path(), before).await;
+                }
+            }
+            let _ = fs::remove_dir(&folder).await;
+        } else {
+            expire(&folder, before).await;
+        }
+    }
+}
+
+async fn expire(file: &Path, before: SystemTime) {
+    if let Ok(metadata) = fs::symlink_metadata(file).await
+        && metadata.modified().is_ok_and(|modified| modified < before)
+    {
+        if metadata.is_dir() {
+            let _ = fs::remove_dir_all(file).await;
+        } else {
+            let _ = fs::remove_file(file).await;
+        }
+    }
+}
+
+/// Keep inline payloads on legacy prompt and command routes, using the caller's model folder.
+pub(crate) async fn raw(engine: &Engine, request: &DispatchRequest) -> Option<Vec<u8>> {
+    if request.method != Method::POST {
+        return None;
+    }
+    let path = request
+        .path
+        .split('?')
+        .next()?
+        .strip_prefix("api/session/")?;
+    let (session, action) = path.split_once('/')?;
+    if !matches!(action, "prompt" | "command") {
+        return None;
+    }
+    let session = percent_encoding::percent_decode_str(session)
+        .decode_utf8()
+        .ok()?;
+    let mut given = serde_json::from_slice::<serde_json::Map<String, Value>>(&request.body).ok()?;
+    let files = given.get_mut("files")?.as_array_mut()?;
+    if !files.iter().any(|file| inline_data(file).is_some()) {
+        return None;
+    }
+    let kept =
+        Attachments::keep_in(engine, &session, std::mem::take(files), &request.headers).await;
+    let from_mac = matches!(
+        request.caller.transport(),
+        Transport::Http {
+            origin: LocalOrigin::Mac,
+            ..
+        }
+    );
+    let phone = !from_mac
+        && !matches!(request.caller.transport(), Transport::Ssh { .. })
+        && !request
+            .caller
+            .pairing()
+            .is_some_and(|device| device.desktop);
+    let text = given
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut text = crate::parts::with_attachment_note(text, &kept, from_mac);
+    if action == "prompt" {
+        crate::parts::raw_prompt_parts(&mut given, &mut text, phone);
+    }
+    given.insert("text".into(), Value::String(text));
+    if kept.files.is_empty() {
+        given.remove("files");
+    } else {
+        given.insert("files".into(), Value::Array(kept.files));
+    }
+    serde_json::to_vec(&given).ok()
+}
+
+fn inline_data(file: &Value) -> Option<(&str, &str)> {
     let (label, data) = file
         .get("uri")?
         .as_str()?
         .strip_prefix("data:")?
         .split_once(',')?;
-    let label = label.strip_suffix(";base64")?;
+    Some((label.strip_suffix(";base64")?, data))
+}
+
+fn inline(file: &Value) -> Option<(String, Vec<u8>)> {
+    let (label, data) = inline_data(file)?;
     let mime = label
         .split(';')
         .next()
@@ -143,6 +302,10 @@ async fn save(folder: &Path, name: &str, bytes: &[u8]) -> Option<std::path::Path
                 return Some(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // The expiry worker can remove an empty session folder between the two mkdirs.
+                fs::create_dir_all(folder).await.ok()?;
+            }
             Err(_) => return None,
         }
     }
@@ -164,20 +327,19 @@ struct Capabilities {
     input: Option<Vec<String>>,
 }
 
-async fn model_input(engine: &Engine, session: &str) -> Option<Vec<String>> {
+async fn model_input(engine: &Engine, session: &str, headers: &HeaderMap) -> Option<Vec<String>> {
     let lease = engine.acquire(Demand::Passive).await?;
     let read = async {
         let route = crate::sessions::path(session);
-        let headers = http::HeaderMap::new();
         let record = &lease.record;
         let client = &engine.upstream;
         let session = client
-            .get_data::<Value>(record, &route, &headers, MODEL_WAIT)
+            .get_data::<Value>(record, &route, headers, MODEL_WAIT)
             .await
             .ok()?;
         let model = if session["model"].is_null() {
             client
-                .get_data::<Model>(record, "api/model/default", &headers, MODEL_WAIT)
+                .get_data::<Model>(record, "api/model/default", headers, MODEL_WAIT)
                 .await
                 .ok()?
         } else {
@@ -187,7 +349,7 @@ async fn model_input(engine: &Engine, session: &str) -> Option<Vec<String>> {
             return Some(input);
         }
         client
-            .get_data::<Vec<Value>>(record, "api/model", &headers, MODEL_WAIT)
+            .get_data::<Vec<Value>>(record, "api/model", headers, MODEL_WAIT)
             .await
             .ok()?
             .into_iter()

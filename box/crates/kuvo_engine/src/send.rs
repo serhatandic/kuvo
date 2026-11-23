@@ -427,12 +427,27 @@ async fn deliver(
                 answer = post(engine, &lease, session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
-                if request.immediate && !arriving {
+                if request.immediate
+                    && !engine
+                        .queues
+                        .get(session)
+                        .await
+                        .map_err(disk_failure)?
+                        .arriving(id)
+                {
                     let _ = queue::advance(engine, &lease, session, id, true).await;
                 }
             }
         }
-        if delivered && arriving {
+        if delivered
+            && (arriving
+                || engine
+                    .queues
+                    .get(session)
+                    .await
+                    .map_err(disk_failure)?
+                    .arriving(id))
+        {
             queue::hold_arrival(engine, &lease, session, id)
                 .await
                 .map_err(|_| engine_busy())?;

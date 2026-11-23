@@ -76,6 +76,18 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .await?,
     );
     peers.follow_setup_roster(setup.handle().rosters()).await;
+    let accepted = setup.handle();
+    let owners = kuvo_peers::ownership::Handle::new(
+        peers.reader(),
+        peers.relay_handle(),
+        devices.clone(),
+        move || accepted.ownership_state(),
+    );
+    let engine = engine
+        .with_session_ownership(Arc::new(super::session_ownership::OwnerPort(
+            owners.clone(),
+        )))
+        .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())));
     let mut routes = Registry::new();
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -99,6 +111,12 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
+    let owner_requests = tokio::spawn(super::session_ownership::serve(
+        owners,
+        engine.clone(),
+        sessions.clone(),
+    ));
+    peers.advertise_engine_submissions().await?;
     setup.handle().register(&mut routes);
     let account = kuvo_os::platform::Account::current()?.home_folder(
         kuvo_os::platform::Platform::current(),
@@ -165,6 +183,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .serve(dispatcher, Arc::new(devices), super::shutdown())
         .await;
     session_source.abort();
+    owner_requests.abort();
     result?;
     Ok(())
 }

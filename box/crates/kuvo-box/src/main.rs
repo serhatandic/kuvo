@@ -1,4 +1,6 @@
+mod model_stars;
 mod serve;
+mod session_ownership;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 

@@ -12,7 +12,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
-use http::{Request, Response, StatusCode, header};
+use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
     body::{Bytes, Frame, Incoming},
@@ -20,7 +20,11 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use kuvo_engine::{Engine, Timing, pinned_version};
+use kuvo_engine::{
+    AgentCatalog, AgentModel, AgentModelSource, AttachmentConversation, AttachmentRead,
+    AttachmentSource, AutoModel, CatalogRead, Engine, ModelAccount, ModelSpeed, Timing,
+    pinned_version,
+};
 use kuvo_os::process::ProcessIdentity;
 use kuvo_server::{
     Caller, DispatchRequest, LineTiming, Pairing, Registry, Reply, Resident, Transport,
@@ -53,6 +57,11 @@ fn main() {
         executor.block_on(async {
             scenarios().await;
             interrupted_inbox_transfer().await;
+            attachment_retention().await;
+            coding_agent_models().await;
+            external_asks().await;
+            peer_waiting().await;
+            paired_delivery().await;
         });
     }
 }
@@ -69,6 +78,10 @@ struct Server {
 
 impl Server {
     async fn start(home: &Path) -> Self {
+        Self::start_with(home, |engine| engine).await
+    }
+
+    async fn start_with(home: &Path, configure: impl FnOnce(Engine) -> Engine) -> Self {
         let resident = Resident::bind(home).await.unwrap().unwrap();
         let mut routes = Registry::new();
         let mut env: kuvo_os::platform::Environment = std::env::vars_os()
@@ -88,6 +101,7 @@ impl Server {
             },
         )
         .unwrap();
+        let engine = configure(engine);
         engine.register(&mut routes);
         let dispatcher = routes.build(LineTiming::default());
         let stop = CancellationToken::new();
@@ -510,6 +524,335 @@ fn auth(password: &str) -> String {
     format!("Basic {}", STANDARD.encode(format!("opencode:{password}")))
 }
 
+async fn attachment_retention() {
+    struct AgentInventory {
+        available: std::sync::atomic::AtomicBool,
+    }
+
+    impl AttachmentSource for AgentInventory {
+        fn conversations(&self) -> AttachmentRead<'_, Vec<AttachmentConversation>> {
+            Box::pin(async {
+                if self.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    Ok(Vec::new())
+                } else {
+                    Err(io::Error::other("The coding-agent roster is unavailable."))
+                }
+            })
+        }
+
+        fn transcript<'a>(&'a self, _: &'a str) -> AttachmentRead<'a, Vec<Value>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn protected(&self, session: &str) -> bool {
+            session == "ses_inMove"
+        }
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let inventory = Arc::new(AgentInventory {
+        available: false.into(),
+    });
+    let files = home.join("attachments");
+    for session in ["ses_source", "ses_branch", "ses_inMove", "ses_gone"] {
+        let folder = files.join(session);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("notes.txt"), session).unwrap();
+    }
+    let server = Server::start_with(home, |engine| {
+        engine.with_attachment_source(inventory.clone(), None)
+    })
+    .await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let work = home.join("workspace");
+    let show = work.join("attachments-list.json");
+    let branch = json!({"id":"ses_branch","metadata":{"kuvo":{"branchedFrom":"ses_middle"}}});
+    fs::write(
+        &show,
+        serde_json::to_vec(
+            &json!([branch, {"id":"ses_middle","metadata":{"kuvo":{"branchedFrom":"ses_source"}}}]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        work.join("attachment-words.json"),
+        br#"[{"type":"user","text":"file:///scratch/attachments/ses_source/notes.txt"}]"#,
+    )
+    .unwrap();
+    assert!(server.engine.reconcile_attachments().await.is_err());
+    assert!(files.join("ses_gone/notes.txt").exists());
+    inventory
+        .available
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    server.engine.reconcile_attachments().await.unwrap();
+    assert!(!files.join("ses_gone").exists());
+    assert!(files.join("ses_source/notes.txt").exists());
+    assert!(files.join("ses_branch/notes.txt").exists());
+    assert!(files.join("ses_inMove/notes.txt").exists());
+    fs::write(&show, b"[]").unwrap();
+    server.engine.reconcile_attachments().await.unwrap();
+    assert!(!files.join("ses_source").exists());
+    assert!(!files.join("ses_branch").exists());
+    assert!(files.join("ses_inMove/notes.txt").exists());
+    server.stop().await;
+}
+
+async fn external_asks() {
+    use kuvo_engine::{
+        AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,
+        ExternalReply, ExternalWaiting,
+    };
+    use kuvo_server::Refusal;
+    use tokio::sync::watch;
+
+    struct Owner(watch::Sender<Arc<Vec<ExternalWaiting>>>);
+    impl ExternalAsks for Owner {
+        fn list<'a>(
+            &'a self,
+            sessions: &'a [String],
+            viewer: &'a DispatchRequest,
+        ) -> AskResult<'a, Vec<ExternalAsk>> {
+            Box::pin(async move {
+                let choices = json!([{"answer":"once","title":"Allow Once","help":null,
+                    "named":null,"placeholder":null,"spoken":null}]);
+                let seen = self.0.borrow();
+                Ok(seen.iter().filter(|ask| sessions.contains(&ask.session)).map(|ask| {
+                    let card = match ask.kind {
+                        ExternalAskKind::Sandbox => ExternalCard::Sandbox(serde_json::from_value(json!({
+                            "kind":"sandbox","id":ask.id,"session":ask.session,"title":"Outside the sandbox",
+                            "asker":"Runner","message":"A command needs your answer.","command":"printf test",
+                            "error":null,"why":"A test command","stopped":[],"choices":choices,
+                        })).unwrap()),
+                        ExternalAskKind::Vault => ExternalCard::Vault(serde_json::from_value(json!({
+                            "kind":"vault","id":ask.id,"session":ask.session,"title":"Use a vault item",
+                            "need":"use","message":null,"note":null,"site":null,
+                            "choices":if viewer.headers.contains_key("x-test-vault-proof") { choices.clone() } else { json!([]) },
+                        })).unwrap()),
+                    };
+                    ExternalAsk { at: ask.at, card }
+                }).collect())
+            })
+        }
+        fn reply<'a>(&'a self, answer: ExternalReply<'a>) -> AskResult<'a, ()> {
+            Box::pin(async move {
+                assert!(matches!(answer.decision, ExternalDecision::Once));
+                assert_eq!(answer.session, "ses_asks");
+                if matches!(answer.kind, ExternalAskKind::Vault) {
+                    assert!(answer.request.headers.contains_key("x-test-vault-proof"));
+                }
+                let changed = self.0.send_if_modified(|rows| {
+                    let rows = Arc::make_mut(rows);
+                    let before = rows.len();
+                    rows.retain(|ask| ask.id != answer.id);
+                    rows.len() != before
+                });
+                if changed {
+                    Ok(())
+                } else {
+                    Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "It isn’t waiting any more.",
+                    ))
+                }
+            })
+        }
+        fn waiting(&self) -> watch::Receiver<Arc<Vec<ExternalWaiting>>> {
+            self.0.subscribe()
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let seen = Arc::new(vec![
+        ExternalWaiting {
+            id: "sb_test".into(),
+            session: "ses_asks".into(),
+            at: 2,
+            kind: ExternalAskKind::Sandbox,
+        },
+        ExternalWaiting {
+            id: "vault_test".into(),
+            session: "ses_asks".into(),
+            at: 1,
+            kind: ExternalAskKind::Vault,
+        },
+    ]);
+    let (updates, _) = watch::channel(seen);
+    let source = Arc::new(Owner(updates));
+    let server = Server::start_with(home, |engine| engine.with_external_asks(source)).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    fs::write(
+        home.join("workspace/attachments-list.json"),
+        br#"[{"id":"ses_asks","title":"Test","location":{"directory":""}}]"#,
+    )
+    .unwrap();
+    let route = "kuvo/sessions/ses_asks/asks";
+    let cards = server.get(route).await.json::<Value>().await.unwrap();
+    assert_eq!(cards["asks"][0]["id"], "sb_test");
+    assert_eq!(cards["asks"][1]["choices"], json!([]));
+    let answer = |id: &str| {
+        server
+            .request(reqwest::Method::POST, &format!("{route}/{id}"))
+            .header("x-kuvo-from", "app")
+            .json(&json!({"answer":"once"}))
+    };
+    assert_eq!(answer("vault_test").send().await.unwrap().status(), 403);
+    assert_eq!(answer("sb_test").send().await.unwrap().status(), 200);
+    assert_eq!(
+        answer("vault_test")
+            .header("x-test-vault-proof", "yes")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        server.get(route).await.json::<Value>().await.unwrap(),
+        json!({"asks":[]})
+    );
+    server.stop().await;
+}
+
+async fn coding_agent_models() {
+    struct CodingAgent;
+    impl AgentModelSource for CodingAgent {
+        fn catalog(&self, refresh: bool) -> CatalogRead<'_, AgentCatalog> {
+            Box::pin(async move {
+                let account =
+                    |provider: &str, id: &str, name: &str, label: Option<&str>| ModelAccount {
+                        provider: provider.into(),
+                        kind: "codex".into(),
+                        id: id.into(),
+                        name: name.into(),
+                        label: label.map(str::to_owned),
+                        signed_in_as: None,
+                        plan: Some("Pro".into()),
+                        installed: true,
+                        signed_in: true,
+                        complete: id != "default",
+                    };
+                Ok(AgentCatalog {
+                    accounts: vec![
+                        account("codex-cli", "default", "Codex", None),
+                        account("codex-cli@work", "work", "Codex · Work", Some("Work")),
+                    ],
+                    models: vec![AgentModel {
+                        provider: "codex-cli@work".into(),
+                        id: "listed".into(),
+                        name: "Listed".into(),
+                        aliases: vec!["default".into()],
+                        efforts: vec!["high".into()],
+                        hidden: false,
+                        retiring: false,
+                        provisional: false,
+                        speeds: vec![ModelSpeed {
+                            id: "priority".into(),
+                            name: "Fast".into(),
+                            description: None,
+                        }],
+                    }],
+                    auto: Some(vec![AutoModel {
+                        id: "picked".into(),
+                        name: "Picked".into(),
+                        entry_count: 1,
+                    }]),
+                    generations: [(
+                        "codex-cli@work".into(),
+                        if refresh { "fresh" } else { "kept" }.into(),
+                    )]
+                    .into(),
+                    unavailable: vec!["codex-cli".into()],
+                })
+            })
+        }
+        fn session_folder<'a>(&'a self, session: &'a str) -> CatalogRead<'a, Option<String>> {
+            Box::pin(async move { Ok((session == "ses_agents").then(String::new)) })
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    fs::create_dir_all(home.join("box")).unwrap();
+    fs::write(
+        home.join("box/models.json"),
+        br#"{"speeds":{"codex-cli@work":"priority"}}"#,
+    )
+    .unwrap();
+    let server = Server::start_with(home, |engine| {
+        engine.with_agent_model_source(Arc::new(CodingAgent))
+    })
+    .await;
+    let reply = server.get("kuvo/models/offered?session=ses_agents&refresh=1&provider=codex-cli%40work&model=default&variant=high").await;
+    assert_eq!(reply.status(), 200);
+    assert_eq!(
+        reply.json::<Value>().await.unwrap(),
+        json!({
+            "models":[
+                {"providerID":"codex-cli@work","id":"listed","name":"Listed","side":"agents","aliases":["default"],"efforts":["high"],"speeds":[{"id":"priority","name":"Fast"}]},
+                {"providerID":"auto","id":"picked","name":"Picked","side":"agents","aliases":[],"efforts":[]}
+            ],
+            "providers":[
+                {"id":"codex-cli@work","name":"Codex · Work","label":"Work","speed":"priority","account":{"agent":"codex","id":"work","agentName":"Codex","name":"Work","plan":"Pro"}},
+                {"id":"auto","name":"Custom Auto"}
+            ],
+            "known":{"engine":false,"agents":true},"starred":[],
+            "generations":{"codex-cli@work":"fresh"},"listing":["codex-cli"],"unavailable":[{"id":"codex-cli"}],
+            "starting":{"providerID":"codex-cli@work","id":"listed","variant":"high"},"scoped":true
+        })
+    );
+    server.stop().await;
+}
+
+async fn peer_waiting() {
+    use kuvo_engine::PeerWaiting;
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("bots/bot_scout");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(
+        folder.join("bot.json"),
+        br#"{"kuvo":1,"id":"bot_scout","name":"Scout"}"#,
+    )
+    .unwrap();
+    fs::write(folder.join("session"), b"ses_root").unwrap();
+    let seen = Arc::new(vec![
+        PeerWaiting {
+            session: "ses_delegated".into(),
+            line: vec!["ses_root".into()],
+            bot: None,
+        },
+        PeerWaiting {
+            session: "ses_child".into(),
+            line: Vec::new(),
+            bot: Some("bot_scout".into()),
+        },
+    ]);
+    let (updates, activity) = tokio::sync::watch::channel(seen);
+    let server = Server::start_with(home.path(), |engine| engine.with_peer_waiting(activity)).await;
+    let waiting = || async {
+        server
+            .get("kuvo/waiting")
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(waiting().await, json!({"sessions":0,"bots":1,"queue":0}));
+    updates.send_replace(Arc::new(Vec::new()));
+    assert_eq!(waiting().await, json!({"sessions":0,"bots":0,"queue":0}));
+    server.stop().await;
+}
+
 async fn fixture() {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
@@ -541,6 +884,136 @@ async fn fixture() {
                 .await;
         });
     }
+}
+
+async fn paired_delivery() {
+    use kuvo_engine::{
+        ComputerKey, DeviceAccess, OwnedRequest, OwnerScope, PeerReply, SessionOwnership,
+    };
+    use kuvo_server::Refusal;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Authority {
+        held: AtomicBool,
+        replaced: AtomicBool,
+    }
+
+    impl SessionOwnership for Authority {
+        fn scope(&self, _: &str, issuer: Option<ComputerKey>) -> Result<OwnerScope, Refusal> {
+            Ok(OwnerScope {
+                setup: Some("set_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                here: Some([3; 32]),
+                owner: None,
+                receipt_issuer: issuer,
+                held: self.held.load(Ordering::Relaxed),
+            })
+        }
+
+        fn current_pairing(&self, key: &ComputerKey, pairing: &str) -> DeviceAccess {
+            let expected = if self.replaced.load(Ordering::Relaxed) {
+                "new"
+            } else {
+                "old"
+            };
+            if *key == [17; 32] && pairing == expected {
+                DeviceAccess::Allowed
+            } else {
+                DeviceAccess::Revoked
+            }
+        }
+
+        fn request(&self, _: ComputerKey, _: OwnedRequest, _: Duration) -> PeerReply<'_> {
+            panic!("a draft addressed here must use the local handoff")
+        }
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let authority = Arc::new(Authority {
+        held: true.into(),
+        replaced: false.into(),
+    });
+    let server = Server::start_with(home.path(), |engine| {
+        engine.with_session_ownership(authority.clone())
+    })
+    .await;
+    let call = |method: Method, route: String, device, pairing: &str, body: Value| {
+        let id = pairing.to_owned();
+        let authority = authority.clone();
+        DispatchRequest {
+            method,
+            path: route,
+            headers: Default::default(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            caller: Caller::Paired {
+                transport: Transport::Relay,
+                pairing: Pairing::verified(
+                    device,
+                    id.clone(),
+                    "paired author".into(),
+                    true,
+                    move || authority.current_pairing(&device, &id) == DeviceAccess::Allowed,
+                ),
+            },
+        }
+    };
+    let cancel = CancellationToken::new();
+    let saved = server
+        .dispatcher
+        .dispatch(
+            call(
+                Method::POST,
+                "kuvo/sessions/ses_paired/delivery".into(),
+                [17; 32],
+                "old",
+                json!({"id":"msg_paired","text":"Before pairing changed","message":{}}),
+            ),
+            cancel.clone(),
+        )
+        .await;
+    assert_eq!(saved.status, 202);
+    let saved: Value =
+        serde_json::from_slice(&saved.body.collect().await.unwrap().to_bytes()).unwrap();
+    let receipt = format!(
+        "kuvo/data/messages/{}",
+        saved["operation"].as_str().unwrap()
+    );
+    let read = |pairing| call(Method::GET, receipt.clone(), [17; 32], pairing, Value::Null);
+    authority.replaced.store(true, Ordering::Relaxed);
+    authority.held.store(false, Ordering::Relaxed);
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(read("old"), cancel.clone())
+            .await
+            .status,
+        403
+    );
+    let settled = time::timeout(Duration::from_secs(15), async {
+        loop {
+            let result = server
+                .dispatcher
+                .dispatch(read("new"), cancel.clone())
+                .await;
+            assert_eq!(result.status, 200);
+            let receipt: Value =
+                serde_json::from_slice(&result.body.collect().await.unwrap().to_bytes()).unwrap();
+            if receipt["status"] == "interrupted" {
+                break receipt;
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        settled["message"]
+            .as_str()
+            .unwrap()
+            .contains("no longer has access")
+    );
+    assert!(!home.path().join("run/engine.json").exists());
+    server.stop().await;
+    println!("revoked delivery was fenced and the new pairing could read its receipt");
 }
 
 // The old inbox is only on the fixture engine; the saved prefix uses the resident's real files.
@@ -645,6 +1118,28 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session" if Path::new("attachments-list.json").exists() => {
+                let mut rows: Vec<Value> =
+                    serde_json::from_slice(&fs::read("attachments-list.json").unwrap()).unwrap();
+                if let Some(parent) = req.uri().query().and_then(|query| {
+                    query
+                        .split('&')
+                        .find_map(|field| field.strip_prefix("parentID="))
+                }) {
+                    rows.retain(|row| row["parentID"] == parent);
+                }
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session/ses_branch/message" | "/api/session/ses_middle/message"
+                if Path::new("attachment-words.json").exists() =>
+            {
+                let rows: Value =
+                    serde_json::from_slice(&fs::read("attachment-words.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session/ses_asks" if Path::new("attachments-list.json").exists() => {
+                answer = Reply::json(StatusCode::OK, json!({"data":{"id":"ses_asks"}}));
+            }
             "/api/echo" => {
                 let mut value = json!({
                     "path": req.uri().path_and_query().unwrap().as_str(),
