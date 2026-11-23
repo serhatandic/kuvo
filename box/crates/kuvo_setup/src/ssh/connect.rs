@@ -144,7 +144,36 @@ impl Destination {
         };
         let probe = format!(
             r#"uname -sm
-K="$HOME/{}"
+K="$HOME/{root}"
+A="$HOME/{reservation}"
+if [ -e "$A" ] || [ -L "$A" ]; then
+  previous=$(readlink "$A") || {{ echo account-error; exit 0; }}
+  case "$previous" in
+    guarded-*) ;;
+    *)
+      if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
+        echo account-error
+      elif (umask 077; : >>"$A.lock"); then
+        (
+          case "$(uname -s)" in
+            Darwin) /usr/bin/lockf -t 0 9 ;;
+            *) flock -n -E 75 9 ;;
+          esac
+          case "$?" in
+            0)
+              if [ "$(readlink "$A")" = "$previous" ]; then echo account-old; else echo account-busy; fi
+              ;;
+            75) echo account-busy ;;
+            *) echo account-error ;;
+          esac
+        ) 9<>"$A.lock" || echo account-error
+      else
+        echo account-error
+      fi
+      exit 0
+      ;;
+  esac
+fi
 if [ "$(uname -s)" = Darwin ]; then
   echo "macos $(sw_vers -productVersion 2>/dev/null)"
   if ! xcode-select -p >/dev/null 2>&1 || ! /usr/bin/git --version >/dev/null 2>&1; then echo no-tools; fi
@@ -158,7 +187,12 @@ if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/
 fi
 if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuvo.code" ]; then echo older; fi
 "#,
-            candidate.root
+            root = candidate.root,
+            reservation = if candidate.root == ".kuvo-code" {
+                ".kuvo-code-adding".to_owned()
+            } else {
+                format!("{}/run/ssh-adding", candidate.root)
+            }
         );
         let mut checked = candidate.shell(job, &probe, Vec::new(), 30).await?;
         if !checked.status.success() {
@@ -210,6 +244,17 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
             ));
         }
         let found: Vec<_> = lines.collect();
+        if found.contains(&"account-error") {
+            eprintln!("Kuvo couldn't prepare the SSH account on {}: {}", candidate.name, checked.stderr.trim());
+            return Err(format!("Kuvo Code couldn’t prepare the OS account on {}. Check that you can write to your home folder there, then try again.", candidate.name));
+        }
+        if found.contains(&"account-busy") {
+            return Err(format!("Another Kuvo Code change is in progress on {}. Try again once it finishes.", candidate.name));
+        }
+        if found.contains(&"account-old") {
+            let name = &candidate.name;
+            return Err(format!("An older version of Kuvo Code left an unfinished change on {name}. Restart {name} to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again."));
+        }
         if found.contains(&"musl") {
             return Err(format!(
                 "Kuvo Code runs on macOS, and on Linux with glibc, on x86-64 or ARM64; this computer is {} (musl).",

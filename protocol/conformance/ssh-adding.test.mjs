@@ -321,3 +321,24 @@ test("SSH Add preserves an unreadable machine list and recognizes a missing list
   }
   assert.equal(fs.existsSync(path.join(fake, "log")), false);
 });
+
+test("SSH Add leaves an older account reservation in place", {
+  skip: process.platform === "win32" && "The older reservation is a Unix symlink.",
+  timeout: 20000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const destination = "old-reservation";
+  const marker = path.join(remote, ".kuvo-code-adding");
+  const previous = "0123456789abcdef".repeat(3);
+  fs.symlinkSync(previous, marker);
+  write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
+  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  assert.equal(started.status, 202, started.text);
+  const failed = await until(async () => {
+    const attempt = (await page()).tries.find(attempt => attempt.id === started.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "SSH Add did not report the older reservation.");
+  assert.equal(failed.failure.message, "An older version of Kuvo Code left an unfinished change on old-reservation. Restart old-reservation to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.");
+  assert.equal(fs.readlinkSync(marker), previous);
+  assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
