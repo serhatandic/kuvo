@@ -51,6 +51,12 @@ fn signing_key(byte: u8) -> String {
 }
 
 fn fixture(home: &Path, url: &str, key: u8, other: Option<u8>) {
+    let mut members: Vec<_> = other.into_iter().flat_map(|other| [key, other]).collect();
+    members.sort_unstable();
+    fixture_roster(home, url, key, &members);
+}
+
+fn fixture_roster(home: &Path, url: &str, key: u8, members: &[u8]) {
     let computer = |key: u8| {
         json!({
             "key": encode(&public(key)), "address": encode(&address_of(&[key + 50; 32])),
@@ -64,12 +70,11 @@ fn fixture(home: &Path, url: &str, key: u8, other: Option<u8>) {
     if !url.is_empty() {
         link["relay"] = url.into();
     }
-    if let Some(other) = other {
-        let main = key.min(other);
+    if let Some(&main) = members.first() {
         let id = format!("set_{}", encode(&[main; 16]));
         let position = json!({"id": id, "epoch": 1, "primary": encode(&public(main))});
         let shared = json!({"membershipAndAccess": {"sequence": 1, "value": {
-            "boxes": [computer(main), computer(key.max(other))], "left": [], "moved": [],
+            "boxes": members.iter().copied().map(computer).collect::<Vec<_>>(), "left": [], "moved": [],
             "devices": {"phones": [], "removed": []}, "removalRevisions": {},
         }}});
         let manifest = json!({"id": id, "shared": shared, "archives": []});
@@ -305,6 +310,23 @@ async fn leased_relay(socket: TcpStream, peers: Destinations) -> io::Result<()> 
         .await
 }
 
+fn run_leased(listener: TcpListener, destinations: Destinations) -> JoinSet<io::Result<()>> {
+    let mut relay_task = JoinSet::new();
+    relay_task.spawn(async move {
+        let mut connections = JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (socket, _) = accepted?;
+                    connections.spawn(leased_relay(socket, destinations.clone()));
+                }
+                _ = connections.join_next(), if !connections.is_empty() => {}
+            }
+        }
+    });
+    relay_task
+}
+
 #[tokio::test]
 async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
     time::timeout(Duration::from_secs(25), async {
@@ -314,25 +336,7 @@ async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
         let listener = relay_socket().await;
         let url = relay_url(&listener);
         let destinations = Destinations::default();
-        let mut relay_task = JoinSet::new();
-        relay_task.spawn({
-            let destinations = destinations.clone();
-            async move {
-                let mut connections = JoinSet::new();
-                loop {
-                    tokio::select! {
-                        accepted = listener.accept() => {
-                            let (socket, _) = match accepted {
-                                Ok(connection) => connection,
-                                Err(error) => return Err::<(), _>(error),
-                            };
-                            connections.spawn(leased_relay(socket, destinations.clone()));
-                        }
-                        _ = connections.join_next(), if !connections.is_empty() => {}
-                    }
-                }
-            }
-        });
+        let _relay_task = run_leased(listener, destinations.clone());
         let mut residents = Vec::new();
         for (home, own, other) in [(&a, 1, 2), (&b, 2, 1)] {
             fixture(home, &url, own, Some(other));
@@ -417,6 +421,290 @@ async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
     })
     .await
     .expect("the leased main commits and replicates signed device changes from a member");
+}
+
+fn host(key: u8) -> Host {
+    Host {
+        key: public(key),
+        address: address_of(&[key + 50; 32]),
+    }
+}
+
+async fn wait_for_roster(record: &Value, keys: &[String]) {
+    loop {
+        let (status, value) = request(record, "GET", "kuvo/phones", None, true).await;
+        assert_eq!(status, 200);
+        let phones = value["phones"].as_array().unwrap();
+        if phones.len() == keys.len()
+            && keys
+                .iter()
+                .all(|key| phones.iter().any(|row| row["key"] == *key))
+        {
+            return;
+        }
+        time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn connecting_client(url: &str, key: u8, peers: Vec<Host>) -> Relay {
+    let mut relay = Relay::start(Config {
+        url: url.into(),
+        grants: HashMap::new(),
+        key: [key; 32],
+        secret: [key + 50; 32],
+        peers,
+        hello: BoxHello {
+            v: 1,
+            name: "Client".into(),
+            app: "test".into(),
+            kind: ComputerKind::Machine,
+            engine: None,
+        },
+    });
+    while !matches!(relay.events.recv().await, Some(Event::Connected(_))) {}
+    relay
+}
+
+async fn open_desktop(relay: &mut Relay, target: Host, pairing: String) -> Option<session::Id> {
+    let id = relay
+        .sender
+        .start(
+            target,
+            ClientHello {
+                v: 1,
+                name: "Managed desktop".into(),
+                app: "test".into(),
+                client: "desktop".into(),
+                pair: Some(pairing),
+            },
+        )
+        .await
+        .unwrap();
+    loop {
+        match relay.events.recv().await {
+            Some(Event::Session(session::Event::Opened(got, _))) if got == id => return Some(id),
+            Some(Event::Session(session::Event::Ended(got))) if got == id => return None,
+            Some(_) => {}
+            None => panic!("relay ended before the pairing result"),
+        }
+    }
+}
+
+async fn wait_closed(relay: &mut Relay, id: session::Id) {
+    loop {
+        match relay.events.recv().await {
+            Some(Event::Session(session::Event::Ended(got))) if got == id => return,
+            Some(_) => {}
+            None => panic!("relay ended before the revoked device closed"),
+        }
+    }
+}
+
+async fn verify_phone_sync(url: &str, key: &str) {
+    let mut client = connecting_client(url, 3, vec![host(1)]).await;
+    let origin = signing_key(1);
+    let id = encode(&[88; 16]);
+    let request = json!({"phoneSync":{"id":id,"origin":origin},"at":system_clock()});
+    client
+        .sender
+        .mail(
+            host(1),
+            kuvo_wire::mail::Envelope(request.as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    let (mut phones, mut peers) = (None, None);
+    loop {
+        let event = client
+            .events
+            .recv()
+            .await
+            .expect("signed device sync reply");
+        let Event::Mail {
+            key: sender,
+            envelope,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if sender != public(1) {
+            continue;
+        }
+        for export in envelope
+            .0
+            .get("docs")
+            .and_then(|docs| docs["give"].as_array())
+            .into_iter()
+            .flatten()
+        {
+            let doc = documents::verify(serde_json::from_value(export.clone()).unwrap()).unwrap();
+            assert_eq!(encode(&doc.origin), origin);
+            match doc.kind {
+                Kind::Phones => phones = Some(doc),
+                Kind::Peers => peers = Some(doc),
+                _ => {}
+            }
+        }
+        if let Some(sync) = envelope.0.get("phoneSync") {
+            let phones = phones.expect("phone sync includes the signed grant list");
+            let peers = peers.expect("phone sync includes the signed peer roster");
+            assert_eq!(
+                *sync,
+                json!({"id":id,"ack":true,
+                    "list":format!("{}:{}", phones.n, phones.digest()),
+                    "peers":format!("{}:{}", peers.n, peers.digest()),
+                })
+            );
+            assert!(
+                phones.body["phones"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["key"] == key)
+            );
+            assert_eq!(peers.body["boxes"].as_array().unwrap().len(), 3);
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_main_is_away() {
+    time::timeout(Duration::from_secs(35), async {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("main");
+        let b = temp.path().join("member");
+        let c = temp.path().join("returning");
+        let listener = relay_socket().await;
+        let url = relay_url(&listener);
+        let destinations = Destinations::default();
+        let _relay = run_leased(listener, destinations.clone());
+        for (home, key) in [(&a, 1), (&b, 2), (&c, 3)] {
+            fixture_roster(home, &url, key, &[1, 2, 3]);
+        }
+        let (mut primary, main) = start(&a).await;
+        let (_member, member) = start(&b).await;
+        let (mut returning, old) = start(&c).await;
+        while !a.join("run/setup-relay-lease.json").is_file()
+            || destinations.lock().await.len() != 3
+        {
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        let grant_key = encode(&public(4));
+        let admin_key = encode(&public(5));
+        let pair = |key: &str, name: &str| json!({"key":key,"name":name,"kind":"desktop"});
+        let (status, denied) = request(
+            &member,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&grant_key, "Member's app")),
+            false,
+        )
+        .await;
+        assert_eq!(status, 403, "{denied}");
+        let (status, grant) = request(
+            &member,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&grant_key, "Member's app")),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{grant}");
+        let pairing = grant["pairing"].as_str().unwrap().to_owned();
+        let (status, admin) = request(
+            &main,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&admin_key, "Other desktop")),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{admin}");
+        let keys = [grant_key.clone(), admin_key.clone()];
+        for record in [&main, &member, &old] {
+            wait_for_roster(record, &keys).await;
+        }
+
+        let mut client = connecting_client(&url, 4, vec![]).await;
+        let main_session = open_desktop(&mut client, host(1), pairing.clone())
+            .await
+            .expect("member's pairing opens the main");
+        // This authenticated desktop revokes the other grant over its own paired route.
+        let admin_host = host(2);
+        let mut member_client = connecting_client(&url, 5, vec![]).await;
+        let admin_session = open_desktop(
+            &mut member_client,
+            admin_host,
+            admin["pairing"].as_str().unwrap().into(),
+        )
+        .await
+        .expect("admin device opens the member");
+        let (status, phones) = wire_request(
+            &mut client,
+            main_session,
+            json!({"t":"req","id":300,"p":"kuvo/phones","h":{"x-kuvo-route-version":"1"},"end":true}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(
+            phones["phones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["key"] == grant_key && row["you"] == true)
+        );
+
+        let (status, _) = request(&member, "POST", "kuvo/phones/remove",
+            Some(json!({"phones":[{"key":grant_key,"pairing":"former"}]})), true).await;
+        assert_eq!(status, 200);
+        wait_for_roster(&member, &keys).await;
+
+        let old_endpoint = destinations.lock().await[&host(3).address].clone();
+        returning.kill().await.unwrap();
+        old_endpoint.closed().await;
+        verify_phone_sync(&url, &grant_key).await;
+        let (status, removed) = wire_request(
+            &mut member_client,
+            admin_session,
+            json!({"t":"req","id":301,"m":"POST","p":"kuvo/phones/remove","h":{"x-kuvo-route-version":"1"},"end":true}),
+            Some(json!({"phones":[{"key":grant_key,"pairing":pairing}]})),
+        )
+        .await;
+        assert_eq!(status, 200, "{removed}");
+        wait_closed(&mut client, main_session).await;
+        wait_for_roster(&member, std::slice::from_ref(&admin_key)).await;
+        assert!(
+            open_desktop(&mut client, host(2), pairing.clone())
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            read(&c, "run/link.json")["shared"]["membershipAndAccess"]["sequence"],
+            3
+        );
+        let primary_endpoint = destinations.lock().await[&host(1).address].clone();
+        primary.kill().await.unwrap();
+        primary_endpoint.closed().await;
+
+        let (_reconnected, new) = start(&c).await;
+        wait_for_roster(&new, std::slice::from_ref(&admin_key)).await;
+        let accepted = read(&c, "run/link.json");
+        let signed =
+            documents::verify(serde_json::from_value(accepted["setupReplica"].clone()).unwrap())
+                .unwrap();
+        assert_eq!(encode(&signed.origin), signing_key(1));
+        assert_eq!(accepted["shared"]["membershipAndAccess"]["sequence"], 4);
+        assert!(open_desktop(&mut client, host(3), pairing).await.is_none());
+        let (status, refused) = request(&new, "POST", "kuvo/devices/pair", Some(pair(&grant_key, "Member's app")), true).await;
+        assert_eq!(status, 409);
+        assert_eq!(refused["reason"], "removed");
+
+    })
+    .await
+    .expect("the returning member gets the signed revocation without its main");
 }
 
 #[tokio::test]
@@ -1425,7 +1713,7 @@ mod work {
             assert!(letter["note"]["words"].as_str().unwrap().contains("away for over a day"));
             assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 1);
 
-            let (_, list) = send_wire_call(&a_box, given("cal_wide00001234567", "list_sessions", json!({"wide":true}), NOW)).await;
+            let (_, list) = send_wire_call(&a_box, given("cal_wide000001234567", "list_sessions", json!({"wide":true}), NOW)).await;
             assert_eq!(list["read"], json!({}));
             let text = list["text"].as_str().unwrap();
             assert!(text.len() <= 22_000);

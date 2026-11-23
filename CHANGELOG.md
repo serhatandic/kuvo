@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.
+
 - The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
 - The Rust box can show your other computers’ saved sessions and notices as soon as it starts, with their last-seen time when they’re away.
 - The Rust server starts OpenCode when work needs it, keeps it running through a server restart, and parks it when idle.

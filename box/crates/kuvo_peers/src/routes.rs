@@ -677,7 +677,11 @@ fn register_devices(registry: &mut Registry, devices: Devices) {
             let result = match request {
                 Ok(request) => {
                     state
-                        .pair(request, crate::setup_lists::system_clock())
+                        .pair(
+                            request,
+                            crate::setup_lists::system_clock(),
+                            &call.request.caller,
+                        )
                         .await
                 }
                 Err(error) => Err(error),
@@ -691,6 +695,9 @@ fn register_devices(registry: &mut Registry, devices: Devices) {
                     RouteReply::json::<400>(post_kuvo_devices_pair::Status400 {
                         message: devices::Error::InvalidDevice.to_string(),
                     })
+                }
+                Err(devices::Error::WaitingForMain(message)) => {
+                    RouteReply::json::<503>(post_kuvo_devices_pair::Status503 { message })
                 }
                 Err(error) => {
                     let reason = matches!(error, devices::Error::Removed)
@@ -733,14 +740,17 @@ fn register_devices(registry: &mut Registry, devices: Devices) {
                     devices::Error::InvalidRemoval.to_string(),
                 )
             })?;
-            devices.remove(request, actor).await.map_err(|error| {
-                let status = if matches!(error, devices::Error::InvalidRemoval) {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::CONFLICT
-                };
-                Refusal::new(status, error.to_string())
-            })?;
+            devices
+                .remove(request, actor, &call.request.caller)
+                .await
+                .map_err(|error| {
+                    let status = if matches!(error, devices::Error::InvalidRemoval) {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        StatusCode::CONFLICT
+                    };
+                    Refusal::new(status, error.to_string())
+                })?;
             let answer: post_kuvo_phones_remove::Status200 =
                 serde_json::from_str("{}").map_err(internal)?;
             Ok(RouteReply::json::<200>(answer))
