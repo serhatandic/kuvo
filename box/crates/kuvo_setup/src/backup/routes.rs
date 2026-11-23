@@ -264,11 +264,6 @@ impl Service {
         }
         let work: Result<Option<RestorePoint>> = (|| {
             let authority = self.boundary(false)?;
-            if !kept.projects.is_empty() {
-                return Err(Error::Message(
-                    "The selected project folders are unavailable.",
-                ));
-            }
             if let Destination::Disk { path } = &kept.dest
                 && files::file_stamp(path)?.map(|stamp| stamp.device) != kept.disk
             {

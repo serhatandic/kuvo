@@ -152,3 +152,43 @@ test("a relay point survives the source and restores through its replacement mem
   assert.deepEqual(fs.readFileSync(path.join(replacement.home, "attachments/ses_a/evidence.bin")), payload);
   assert.equal(fs.readFileSync(path.join(replacement.home, "bots/bot_a/notes.md"), "utf8"), notes);
 });
+
+test("a project recovers its executable, empty directory and safe link", {
+  skip: process.platform === "win32" && "POSIX project modes and link creation",
+}, async t => {
+  const { computer } = await bench(t);
+  const owner = await computer("Project source");
+  const replacement = await computer("Project replacement");
+  const base = path.dirname(owner.home);
+  const disk = path.join(base, "disk");
+  const project = path.join(base, "project");
+  fs.mkdirSync(disk);
+  write(path.join(project, "bin", "check"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.mkdirSync(path.join(project, "empty"), { mode: 0o750 });
+  fs.symlinkSync("./bin/check", path.join(project, "check"));
+  fs.symlinkSync("../elsewhere", path.join(project, "escape"));
+  const destination = { kind: "disk", path: disk };
+  const recoveryKey = key.toString("base64url");
+  // Start from an already-configured, currently mounted destination.
+  write(path.join(owner.home, "backup", "configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source, key: recoveryKey, dest: destination,
+    disk: fs.statSync(disk).dev, projects: [project],
+  }));
+  const askOwner = owner.connect(await owner.start().ready());
+  const backup = await askOwner("POST", prefix + "/now", {}, app);
+  assert.equal(backup.status, 200, backup.text);
+  const askReplacement = replacement.connect(await replacement.start().ready());
+  const recovered = await askReplacement("POST", prefix + "/restore", {
+    destination, source, id: backup.json.point.id, recoveryKey, confirm: true,
+  }, app);
+  assert.equal(recovered.status, 200, recovered.text);
+  assert.ok(recovered.json.unavailable.some(({ entry, reason }) =>
+    entry === "projects/0/escape" && reason === "unsafe symbolic link"));
+  const tree = path.join(replacement.home, "backup", "recovered", backup.json.point.id, "projects", "0");
+  assert.equal(fs.readFileSync(path.join(tree, "bin", "check"), "utf8"), "#!/bin/sh\nexit 0\n");
+  assert.equal(fs.statSync(path.join(tree, "bin", "check")).mode & 0o777, 0o755);
+  assert.deepEqual(fs.readdirSync(path.join(tree, "empty")), []);
+  assert.equal(fs.statSync(path.join(tree, "empty")).mode & 0o777, 0o750);
+  assert.equal(fs.readlinkSync(path.join(tree, "check")), "./bin/check");
+  assert.equal(fs.lstatSync(path.join(tree, "escape"), { throwIfNoEntry: false }), undefined);
+});

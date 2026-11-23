@@ -21,7 +21,7 @@ and [resident conformance](../../protocol/conformance/backups.test.mjs).
 | An update cannot publish a mixed-layout backup | Covered by an interrupted layout and update-trial test. The fleet-switch hook remains in 7.2 and 9.1. |
 | Keep 30 daily points and expire old pre-operation points | Covered by the daily-retention scenario. The resident erases the resulting points after readback. |
 | SSH deposits ciphertext on the chosen member and verifies readback | Partial. Rust-to-Rust fake SSH checks bytes and readback. The full enrollment and login-agent cases need 2.3, 1.3 and 6.2. |
-| Relay survives source loss through accepted replacement membership | Partial. Real residents deposit, revoke, enroll, match and restore. Bad clocks, a cut publication, quotas and reservation recovery remain in 2.5. |
+| Relay survives source loss through accepted replacement membership | Partial. Real residents deposit, revoke, enroll, match and restore. The receiver scenario resumes a legacy reservation and replays append and commit. Bad clocks, quota edges, and crash-cut fixtures remain in 2.5. |
 | Restore matches a replacement and keeps the old key revoked | Partial. Relay recovery checks fresh authority. History conflicts and the combined wipe replay need 2.3 and 2.5. |
 | Separate vault key and no inherited grants | Backend seam in 2.5. Real backends and route wiring remain in 6.2 and 2.5. |
 | Preview a destination before enabling and require the local app | Covered by the conformance route test. |
@@ -39,7 +39,7 @@ and [resident conformance](../../protocol/conformance/backups.test.mjs).
 | Retain a populated replacement DB and hold its snapshot | Partial. Bootstrap and conflict handling are implemented. The WAL scenario covers scrub. Populated replacement fixture remains in 2.5. |
 | A handoff cannot land between the two queue reads | Partial. Queue capture runs under the legacy queue lock. The handoff race needs the writer in 5.2. |
 | Publish to a disk that rejects hard links without overwriting | Partial. Publication uses rename under the publishing lock. A no-hard-link filesystem and concurrent retry fixture remain in 2.5. |
-| Recover opted-in project modes, empty directories and safe links | Partial. Project index capture and restore are implemented. Safe Git preview and native Windows link verification need 6.3 and 2.5. |
+| Recover opted-in project modes, empty directories and safe links | Partial. Conformance verifies executable mode, empty directories, safe links and an unsafe-link omission. Safe Git preview and native Windows link verification need 6.3 and 2.5. |
 | Reopen managed bytes at changed paths and report pruned versions | Partial. Restore allocates attachment paths and rewrites known transcript fields and the archive inventory reports pruned versions. The full fixture needs 3.2, 5.5 and 2.5. |
 
 ## Cases assigned by other maps
@@ -63,7 +63,28 @@ and [resident conformance](../../protocol/conformance/backups.test.mjs).
 ## Stored formats and integration
 
 - Version-one AES-256-GCM binds the source and point. RustCrypto CTR and GHASH stream one message, and the reader authenticates it before parsing.
-- Relay backup upload reservations keep their version, source, point, size and digest in the receiving account. The receiver rechecks accepted membership, and replay checks publication against the size and digest. Golden reservation replay remains in 2.5.
+- Relay backup upload reservations keep their version, source, point, size and digest in the receiving account. The receiver rechecks accepted membership, and replay checks publication against the size and digest. The receiver test replays a legacy reservation and rejects a late commit after erase. Replay with the generated golden home remains in 2.5.
 - The setup actor owns replacement matches and approval. Backup also checks whether the accepted ownership view changed before placing files.
 - Row 6.2 must implement VaultBackend with unlock and tamper status, generation checks, item metadata and value reads via Helper Keychain on Mac and the unlocked wrapped-key file store elsewhere. Import uses the ordinary new-item writer and fresh IDs without inherited grants or usage. The local vault routes then connect to these operations with 2.5.
 - Pre-switch export and update/wipe hooks remain with 2.5, 2.3, 7.2 and 9.1. Wipe can authenticate a point and commit its proof under the backup lock. The pre-switch copy remains the manual recovery path. The pending list reads the held records. Resubmission and queue review receipts need the queue and engine owners in 5.2 and 3.2.
+
+## Verification
+
+| System | Rust backup service | Resident backup conformance |
+|---|---:|---:|
+| macOS | 7 passed | Rust 4 passed, TypeScript 4 passed |
+| Linux on Lokum | 7 passed | Rust 4 passed |
+| WSL2 Ubuntu 24.04 | 7 passed | Rust 4 passed |
+| Native Windows | 6 passed | Rust 3 passed, 1 POSIX project case skipped |
+
+Rust-to-Rust disk and fake SSH scenarios compare the seeded bytes after the
+source home is moved out of reach. The Relay scenario sends through the real
+residents and test relay, revokes the original source and restores through
+fresh replacement membership. The fake SSH service test uses a POSIX shell.
+Linux and WSL used static musl binaries built on macOS.
+
+The differential runner matched all five backup requests and every restored
+file in its disk fixture. The whole-home comparison still returned 80 startup
+differences from independent identities and services outside the backup
+requests. These included Insights, artifacts, vault, setup startup and the
+engine plugin. The box workspace compile check passed.
