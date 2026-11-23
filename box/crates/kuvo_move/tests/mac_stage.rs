@@ -86,6 +86,16 @@ fn example(home: &Path) -> App {
     );
     put(&app.source.join("box/bin/mcp-catalog.json"), b"catalog");
     std::os::unix::fs::symlink("notes.md", app.source.join("Chats/c1/latest")).unwrap();
+    std::os::unix::fs::symlink(
+        app.source.join("Attachments/c1/file with spaces.png"),
+        app.source.join("Chats/c1/absolute-attachment"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        app.home.join("unrelated"),
+        app.source.join("Chats/c1/external"),
+    )
+    .unwrap();
     app
 }
 
@@ -148,6 +158,14 @@ fn staging_places_copies_and_keeps_the_app_home_and_live_destination_unchanged()
         Path::new("notes.md")
     );
     assert_eq!(
+        fs::read_link(staged.path.join("chats/c1/absolute-attachment")).unwrap(),
+        app.destination.join("attachments/c1/file with spaces.png")
+    );
+    assert_eq!(
+        fs::read_link(staged.path.join("chats/c1/external")).unwrap(),
+        app.home.join("unrelated")
+    );
+    assert_eq!(
         fs::read(staged.path.join("attachments/c1/file with spaces.png")).unwrap(),
         b"attachment"
     );
@@ -192,6 +210,18 @@ fn binary_mac_preferences_become_box_projects_worktrees_and_settings() {
     );
     preferences.insert("git.branchPrefix".into(), "carried/".into());
     preferences.insert("toolApproval".into(), "askFirst".into());
+    preferences.insert(
+        "favoriteModels".into(),
+        "invalid,provider/model,provider/model,provider/with/slash,/model".into(),
+    );
+    put(
+        &app.source.join("opencode/config/opencode/opencode.json"),
+        br#"{"mcp":{"one":{"environment":{"TOKEN":"{env:KUVO_KEY_ONE}"},"args":["--token={file:/tmp/KUVO_KEY_TWO}","{env:UNRELATED}"]}}}"#,
+    );
+    put(
+        &app.source.join("bots/b1/workspace/.opencode/opencode.json"),
+        br#"{"mcp":{"one":{"environment":{"TOKEN":"{file:/tmp/KUVO_KEY_ONE}"}}}}"#,
+    );
     let file = app
         .home
         .join("Library/Preferences/run.kuvo.code.stage-test.plist");
@@ -217,7 +247,24 @@ fn binary_mac_preferences_become_box_projects_worktrees_and_settings() {
     );
     assert_eq!(
         read("config/opencode/opencode.json"),
-        serde_json::json!({"branch_prefix":"carried/"})
+        serde_json::json!({
+            "branch_prefix": "carried/",
+            "mcp": {"one": {
+                "environment": {"TOKEN": "{file:~/.kuvo-code/box/keys/KUVO_KEY_ONE}"},
+                "args": ["--token={file:~/.kuvo-code/box/keys/KUVO_KEY_TWO}", "{env:UNRELATED}"]
+            }}
+        })
+    );
+    assert_eq!(
+        read("bots/b1/workspace/.opencode/opencode.json")["mcp"]["one"]["environment"]["TOKEN"],
+        "{file:~/.kuvo-code/box/keys/KUVO_KEY_ONE}"
+    );
+    assert_eq!(
+        read("box/models.json"),
+        serde_json::json!({"starred":[
+            {"providerID":"provider", "id":"model"},
+            {"providerID":"provider", "id":"with/slash"}
+        ]})
     );
     assert_eq!(
         read("box/git.json"),

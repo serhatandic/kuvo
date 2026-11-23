@@ -162,7 +162,7 @@ pub fn stage(
         files::remove_file_synced(&path)?;
         clone(&release_plugin, &path, true)?;
     }
-    preferences::take(&source, &staging_disk)?;
+    preferences::take(&source, &staging_disk, account, destination.root())?;
     let dropped_letters = letters::upgrade(&source, &staging_disk)?;
     let welcome = staging_disk.path("run/welcomed.json")?;
     if metadata(&welcome)?.is_none() {
@@ -214,6 +214,7 @@ pub fn stage(
             files::rewrite_mac_entry(&file, &next)?;
         }
     }
+    paths::repoint_links(&staging, &map)?;
     files::sync_tree(&staging, &disk.0)?;
     completed(AppStep::Rewrite);
     let result = check::validate(&staged_engine, &data, &work);

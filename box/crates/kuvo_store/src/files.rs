@@ -312,3 +312,22 @@ pub fn rewrite_mac_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
     .map_err(|error| at("rewriting", path, error))
 }
+
+/// Replace the target of a symlink in a private Mac staging tree.
+#[cfg(target_os = "macos")]
+pub fn repoint_mac_link(path: &Path, target: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a staged symlink",
+        ));
+    }
+    let draft = tempfile::Builder::new()
+        .prefix(DRAFT_PREFIX)
+        .tempdir_in(parent(path)?)?;
+    let link = draft.path().join("link");
+    std::os::unix::fs::symlink(target, &link).map_err(|error| at("repointing", path, error))?;
+    replace_synced(&link, path)?;
+    draft.close()?;
+    sync_parent(path)
+}

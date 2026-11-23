@@ -1,5 +1,5 @@
 use super::invalid;
-use crate::{Disk, Error, json_at, metadata, save_json};
+use crate::{Disk, Error, entries, json_at, metadata, save_json};
 use kuvo_store::{
     files,
     format::{Fields, ObjectFormat, check_version},
@@ -24,7 +24,7 @@ pub(super) fn preference_path(source: &Path) -> Result<std::path::PathBuf, Error
 }
 
 /// Project app-owned preferences into the same files the box opens at startup.
-pub(super) fn take(source: &Path, stage: &Disk) -> Result<(), Error> {
+pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> Result<(), Error> {
     let path = preference_path(source)?;
     let given = files::read(&path)?
         .map(|bytes| {
@@ -40,7 +40,7 @@ pub(super) fn take(source: &Path, stage: &Disk) -> Result<(), Error> {
     projects(source, stage, &given)?;
     worktrees(stage, &given)?;
     machines(stage, &given)?;
-    git(stage, &given)?;
+    engine_settings(stage, &given, account, home)?;
     box_preferences(stage, &given)
 }
 
@@ -292,7 +292,98 @@ fn machines(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
     Ok(())
 }
 
-fn git(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
+fn engine_settings(stage: &Disk, prefs: &Fields, account: &Path, home: &Path) -> Result<(), Error> {
+    let settings = stage.path("config/opencode/opencode.json")?;
+    let before = files::read(&settings)?.unwrap_or_default();
+    let Some(fields) = (if before.iter().all(u8::is_ascii_whitespace) {
+        Some(Fields::new())
+    } else {
+        serde_json::from_slice::<Fields>(&before).ok()
+    }) else {
+        // An uneditable engine file stays as the user kept it.
+        return Ok(());
+    };
+    let shown = home
+        .strip_prefix(account)
+        .ok()
+        .filter(|rest| !rest.as_os_str().is_empty())
+        .map_or_else(|| home.to_path_buf(), |rest| Path::new("~").join(rest));
+    let keys = shown.join("box/keys");
+    let mut value = Value::Object(fields);
+    let mut changed = name_keys(&mut value, &keys);
+    if let Value::Object(fields) = &mut value {
+        changed |= take_git(stage, prefs, fields)?;
+    }
+    if changed {
+        pretty(&settings, &value, true)?;
+    }
+    for bot in entries(&stage.path("bots")?)? {
+        if !bot.file_type()?.is_dir() {
+            continue;
+        }
+        let relative = Path::new("bots")
+            .join(bot.file_name())
+            .join("workspace/.opencode/opencode.json");
+        let file = stage.path(&relative)?;
+        if let Some(before) = files::read(&file)?
+            && let Ok(Value::Object(fields)) = serde_json::from_slice(&before)
+        {
+            let mut value = Value::Object(fields);
+            if name_keys(&mut value, &keys) {
+                pretty(&file, &value, true)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn name_keys(value: &mut Value, keys: &Path) -> bool {
+    match value {
+        Value::Object(fields) => fields
+            .values_mut()
+            .fold(false, |changed, field| name_keys(field, keys) | changed),
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, field| name_keys(field, keys) | changed),
+        Value::String(text) => {
+            let mut output = String::with_capacity(text.len());
+            for segment in text.split_inclusive('}') {
+                let marker = segment
+                    .strip_suffix('}')
+                    .and_then(|text| text.rsplit_once('{'));
+                let Some((before, key)) = marker.and_then(|(before, marker)| {
+                    let value = marker
+                        .strip_prefix("env:")
+                        .or_else(|| marker.strip_prefix("file:"))?;
+                    let key = value.match_indices("KUVO_KEY_").find_map(|(at, label)| {
+                        let suffix = &value[at + label.len()..];
+                        (!suffix.is_empty()
+                            && suffix
+                                .bytes()
+                                .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_'))
+                        .then_some(&value[at..])
+                    })?;
+                    Some((before, key))
+                }) else {
+                    output.push_str(segment);
+                    continue;
+                };
+                output.push_str(before);
+                output.push_str("{file:");
+                output.push_str(&keys.join(key).to_string_lossy());
+                output.push('}');
+            }
+            if output == *text {
+                return false;
+            }
+            *text = output;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn take_git(stage: &Disk, prefs: &Fields, fields: &mut Fields) -> Result<bool, Error> {
     let offered: Vec<_> = [
         ("git.branchPrefix", "branch_prefix"),
         ("git.commitInstructions", "commit_instructions"),
@@ -310,7 +401,7 @@ fn git(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
     })
     .collect();
     if offered.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let record = stage.path("box/git.json")?;
     let mut kept = GIT
@@ -318,27 +409,15 @@ fn git(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
         .map(|record| record.fields)
         .unwrap_or_default();
     if kept.get("moved").and_then(Value::as_bool) == Some(true) {
-        return Ok(());
+        return Ok(false);
     }
-    let settings = stage.path("config/opencode/opencode.json")?;
-    let before = files::read(&settings)?.unwrap_or_default();
-    let Some(mut fields) = (if before.iter().all(u8::is_ascii_whitespace) {
-        Some(Fields::new())
-    } else {
-        serde_json::from_slice(&before).ok()
-    }) else {
-        // An uneditable engine file stays as the user kept it.
-        return Ok(());
-    };
     let original = fields.len();
     for (field, value) in offered {
         fields.entry(field).or_insert_with(|| value.into());
     }
-    if fields.len() != original {
-        pretty(&settings, &Value::Object(fields), true)?;
-    }
     kept.insert("moved".into(), true.into());
-    save_json(&record, &GIT.encode(kept))
+    save_json(&record, &GIT.encode(kept))?;
+    Ok(fields.len() != original)
 }
 
 fn box_preferences(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
@@ -347,6 +426,25 @@ fn box_preferences(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
         let mut fields: Fields = json_at(&file)?.unwrap_or_default();
         fields.insert("keepsAwake".into(), false.into());
         pretty(&file, &fields.into(), false)?;
+    }
+    if let Some(keys) = prefs.get("favoriteModels").and_then(Value::as_str) {
+        let mut seen = HashSet::new();
+        let stars: Vec<_> = keys
+            .split(',')
+            .filter_map(|key| key.split_once('/'))
+            .filter(|(provider, id)| !provider.is_empty() && !id.is_empty())
+            .filter(|pair| seen.insert(*pair))
+            .map(|(provider, id)| json!({"providerID":provider,"id":id}))
+            .collect();
+        if !stars.is_empty() {
+            let file = stage.path("box/models.json")?;
+            let mut fields: Fields = json_at(&file)?.unwrap_or_default();
+            if list(fields.get("starred")).is_empty() {
+                let last = stars.len().saturating_sub(200);
+                fields.insert("starred".into(), json!(&stars[last..]));
+                pretty(&file, &fields.into(), false)?;
+            }
+        }
     }
     if prefs.get("toolApproval").and_then(Value::as_str) == Some("askFirst") {
         let file = stage.path("box/approval.json")?;

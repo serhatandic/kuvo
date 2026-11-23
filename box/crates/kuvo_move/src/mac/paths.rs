@@ -1,5 +1,7 @@
+use crate::{Error, entries};
+use kuvo_store::files;
 use serde_json::Value;
-use std::path::Path;
+use std::{fs, path::Path};
 use url::Url;
 
 pub(super) struct PathMap(Vec<(String, String)>);
@@ -126,6 +128,34 @@ fn suffix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
 fn suffix_uri<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.strip_prefix(prefix)
         .filter(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
+}
+
+/// Relative links and paths outside the move continue to point where they did.
+pub(super) fn repoint_links(stage: &Path, map: &PathMap) -> Result<(), Error> {
+    fn visit(folder: &Path, map: &PathMap, depth: u8) -> Result<(), Error> {
+        for entry in entries(folder)? {
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                let path = entry.path();
+                let target = fs::read_link(&path)?;
+                if let Some(new) = target.to_str().and_then(|text| map.absolute(text)) {
+                    files::repoint_mac_link(&path, Path::new(&new))?;
+                }
+            } else if kind.is_dir() && depth < 40 {
+                visit(&entry.path(), map, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    for entry in entries(stage)? {
+        if entry.file_type()?.is_dir()
+            && !matches!(entry.file_name().to_str(), Some("bin" | "engine"))
+        {
+            visit(&entry.path(), map, 0)?;
+        }
+    }
+    Ok(())
 }
 
 /// Keep the legacy JSON writer's indentation and terminating newline.
