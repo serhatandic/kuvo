@@ -58,7 +58,9 @@ function inventory(root) {
           entry.log = fs.readFileSync(file, "utf8")
             .replace(/^timestamp=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /gm, "timestamp=<wall time> ")
             .replace(/^(timestamp=<wall time> level=[A-Z]+ run=)[a-f0-9]{8}(?= )/gm, "$1<engine run>")
-            .replace(/ durationMs=\d+(?= role=)/g, " durationMs=<elapsed time>");
+            .replace(/ durationMs=\d+(?= role=)/g, " durationMs=<elapsed time>")
+            // The engine may append its exit message before or after the verifier terminates it.
+            .replace(/timestamp=<wall time> level=INFO run=<engine run> message="shutdown started" signal=SIGTERM role=cli\n?$/, "");
         } else if (["updates/rehome/journal.json", "updates/rehome/state.json"].includes(key)) {
           const record = entry.json = readJSON(file);
           if (key.endsWith("/journal.json")) {

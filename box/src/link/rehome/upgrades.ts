@@ -521,8 +521,10 @@ function letters({ writeWhole, S, staged, dropped }: Upgrade): void {
   const send = (id: string, letter: { from?: unknown; to: unknown; text: unknown; at?: unknown; answers?: unknown }, machine: unknown) => {
     const peer = keyOf(machine);
     if (!peer || !LETTER_ID.test(id) || typeof letter.to !== "string" || typeof letter.text !== "string") { left++; return; }
+    // Keep the wire limit without cutting a surrogate pair in half.
+    const limit = (letter.text.codePointAt(31_999) ?? 0) > 0xffff ? 31_999 : 32_000;
     writeWhole(path.join(staged("run"), "outbox", "sending", `${id}.json`), JSON.stringify({
-      from: typeof letter.from === "string" ? letter.from : null, to: letter.to, text: letter.text.slice(0, 32_000), wait: false,
+      from: typeof letter.from === "string" ? letter.from : null, to: letter.to, text: letter.text.slice(0, limit), wait: false,
       at: Number.isFinite(letter.at) ? letter.at : now, peer, ...(typeof letter.answers === "string" ? { answers: letter.answers } : {}),
     }));
   };

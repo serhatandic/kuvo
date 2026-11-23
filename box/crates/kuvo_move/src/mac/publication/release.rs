@@ -29,22 +29,26 @@ const LEGACY_PROGRAMS: &[&str] = &[
     "bin/box-version",
 ];
 const DAMAGED: &str = "This copy of Kuvo is damaged. Download it again, then try again.";
+const NO_ENGINE: &str =
+    "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
+const NO_SOURCE: &str = "There's nothing of an earlier Kuvo Code's on this Mac to move.";
+const NEEDS_APFS: &str =
+    "Kuvo can't move your sessions on this disk: your home folder must be on one APFS disk.";
 
 pub(super) fn check(run: &Run<'_>, real: bool) -> Result<(), Error> {
     let root = run.home.root().canonicalize()?;
-    let release = run.release.canonicalize()?;
-    let engine = run.engine.canonicalize()?;
     let installer = root.join("updates/install");
-    if !release.starts_with(&installer) || !engine.starts_with(&installer) {
+    let release = canonical(run.release, DAMAGED)?;
+    if !release.starts_with(&installer) {
         return Err(super::invalid(
             "The release and engine must be in the installer's staging folder.",
         ));
     }
-    let manifest = format::BOX_FILES
-        .read(&release.join("box.json"))?
-        .ok_or_else(|| {
-            super::invalid("Kuvo's own files weren't unpacked. Open Kuvo again to try again.")
-        })?;
+    let manifest = match format::BOX_FILES.read(&release.join("box.json")) {
+        Ok(Some(manifest)) => manifest,
+        Err(error @ format::Error::Unsupported { .. }) => return Err(error.into()),
+        _ => return Err(super::invalid(DAMAGED)),
+    };
     let listed = manifest
         .fields
         .get("files")
@@ -87,7 +91,22 @@ pub(super) fn check(run: &Run<'_>, real: bool) -> Result<(), Error> {
             return Err(super::invalid(DAMAGED));
         }
     }
-    super::super::checked_engine(&release, &engine)?;
+    let pinned = super::super::engine_version(&manifest).ok_or_else(|| super::invalid(DAMAGED))?;
+    if !release
+        .join("bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper")
+        .is_file()
+    {
+        return Err(super::invalid(DAMAGED));
+    }
+    let engine = canonical(run.engine, NO_ENGINE)?;
+    if !engine.starts_with(&installer) {
+        return Err(super::invalid(
+            "The release and engine must be in the installer's staging folder.",
+        ));
+    }
+    if !engine.join(pinned).join("opencode").is_file() {
+        return Err(super::invalid(NO_ENGINE));
+    }
     if real
         && !metadata(&run.bundle.join("Contents/MacOS/kuvo-keys"))?
             .is_some_and(|meta| meta.is_file())
@@ -95,23 +114,33 @@ pub(super) fn check(run: &Run<'_>, real: bool) -> Result<(), Error> {
         return Err(super::invalid(DAMAGED));
     }
     let id = super::super::bundle_id(run.bundle)?;
-    let source = run.account.join("Library/Application Support").join(id);
-    if fs::metadata(&source)?.dev() != fs::metadata(&root)?.dev() {
-        return Err(super::invalid(
-            "Kuvo can't move your sessions on this disk: your home folder must be on one APFS disk.",
-        ));
-    }
+    let source = canonical(
+        &run.account.join("Library/Application Support").join(id),
+        NO_SOURCE,
+    )?;
     let output = Command::new("/bin/df")
         .env_clear()
         .args(["-Pk"])
         .arg(&root)
         .output()?;
     let rows = String::from_utf8_lossy(&output.stdout);
-    let capacity = rows
+    let disk: Vec<_> = rows
         .lines()
         .last()
-        .and_then(|line| line.split_ascii_whitespace().nth(3))
-        .and_then(|value| value.parse::<u64>().ok());
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .collect();
+    let mount = disk.get(5..).unwrap_or_default().join(" ");
+    let mounts = Command::new("/sbin/mount").env_clear().output()?;
+    let apfs = String::from_utf8_lossy(&mounts.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(" on "))
+        .filter_map(|(_, line)| line.rsplit_once(" ("))
+        .any(|(path, flags)| path == mount && flags.starts_with("apfs,"));
+    if fs::metadata(&source)?.dev() != fs::metadata(&root)?.dev() || !apfs {
+        return Err(super::invalid(NEEDS_APFS));
+    }
+    let capacity = disk.get(3).and_then(|value| value.parse::<u64>().ok());
     let database = source.join("opencode/data/opencode");
     let db_bytes: u64 = ["opencode.db", "opencode.db-wal"]
         .into_iter()
@@ -125,4 +154,14 @@ pub(super) fn check(run: &Run<'_>, real: bool) -> Result<(), Error> {
         )));
     }
     Ok(())
+}
+
+fn canonical(path: &Path, missing: &str) -> Result<std::path::PathBuf, Error> {
+    path.canonicalize().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            super::invalid(missing)
+        } else {
+            error.into()
+        }
+    })
 }

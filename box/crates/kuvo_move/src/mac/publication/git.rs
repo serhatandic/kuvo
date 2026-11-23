@@ -75,6 +75,18 @@ impl Repairs {
         })
     }
 
+    pub(super) fn undo_outside(&self) -> Result<(), Error> {
+        for edit in &self.edits {
+            let path = &edit.original.path;
+            if self.outside.iter().any(|record| record.path == *path)
+                && read_record(path)?.as_deref() == Some(&edit.next)
+            {
+                files::rewrite_mac_entry(path, edit.original.was.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
     fn record(&mut self, link: &Location, was: &str, next: String) {
         if was != next && !self.edits.iter().any(|edit| edit.original.path == link.to) {
             self.edits.push(Edit {

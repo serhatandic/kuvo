@@ -1,10 +1,11 @@
 #![cfg(target_os = "macos")]
 
-use kuvo_move::mac::{AppStep, CutoverStep, Run, stage};
+use kuvo_move::mac::{AppStep, CutoverStep, GenericPassword, KeychainItems, Run, stage};
 use kuvo_store::{files, home::Home, layout};
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     fs,
     io::{self, BufRead, BufReader, Read, Write},
@@ -321,7 +322,7 @@ fn a_change_to_the_source_after_cloning_refuses_the_stage() {
         },
     )
     .unwrap_err();
-    assert!(error.to_string().contains("changed during the staged move"));
+    assert!(matches!(error, kuvo_move::Error::SourceChanged(_)));
     assert!(!app.destination.join(layout::FILE).exists());
     let replayed = app.stage(|_| {});
     assert_eq!(
@@ -443,16 +444,81 @@ fn cut_child(root: &Path, world: Option<&Path>, test: &str, boundary: &str) {
 }
 
 fn publish(app: &App, complete: impl FnMut(CutoverStep)) -> kuvo_move::mac::Outcome {
+    let path = app.home.join("generic-keychain");
+    let keychain = path.is_dir().then(|| FileKeychain::new(path));
+    publish_using(app, keychain.as_ref(), complete)
+}
+
+fn publish_using(
+    app: &App,
+    keychain: Option<&FileKeychain>,
+    complete: impl FnMut(CutoverStep),
+) -> kuvo_move::mac::Outcome {
     let home = Home::new(app.destination.clone()).unwrap();
-    Run {
+    let system_account = app.home.join("unused-system-account");
+    let run = Run {
         home: &home,
         account: &app.home,
-        system_account: &app.home.join("unused-system-account"),
+        system_account: &system_account,
         bundle: &app.bundle,
         release: &app.release,
         engine: &app.engine,
+    };
+    match keychain {
+        Some(keychain) => run.execute_with_keychain(keychain, complete),
+        None => run.execute(complete),
     }
-    .execute(complete)
+}
+
+struct FileKeychain {
+    root: PathBuf,
+    fail_after_write: Option<String>,
+    armed: Cell<bool>,
+    fail_read: Cell<bool>,
+}
+
+impl FileKeychain {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            fail_after_write: None,
+            armed: Cell::new(false),
+            fail_read: Cell::new(false),
+        }
+    }
+}
+
+impl KeychainItems for FileKeychain {
+    fn read(&self, service: &str) -> io::Result<Option<GenericPassword>> {
+        if self.fail_after_write.as_deref() == Some(service) && self.fail_read.replace(false) {
+            return Err(io::Error::other("read-back failed in the test"));
+        }
+        files::read(&self.root.join(service))?
+            .map(|bytes| {
+                let (account, value) = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                Ok(GenericPassword { account, value })
+            })
+            .transpose()
+    }
+
+    fn write(&self, service: &str, item: &GenericPassword) -> io::Result<()> {
+        let body = serde_json::to_vec(&(&item.account, &item.value)).map_err(io::Error::other)?;
+        files::write_atomic(&self.root.join(service), &body)?;
+        if self.fail_after_write.as_deref() == Some(service) && self.armed.replace(false) {
+            self.fail_read.set(true);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, service: &str, account: &str) -> io::Result<()> {
+        if self
+            .read(service)?
+            .is_some_and(|item| item.account != account)
+        {
+            return Err(io::Error::other("wrong test account"));
+        }
+        files::remove_file_synced(&self.root.join(service))
+    }
 }
 
 #[test]
@@ -549,6 +615,21 @@ fn tagged_published_apps_resume_every_cutover_step() {
                 "publication_child",
                 &format!("{cutover:?}"),
             );
+            if cutover == CutoverStep::FirstPlacement {
+                let home = Home::new(app.destination.clone()).unwrap();
+                let outcome = kuvo_move::mac::resume(
+                    &home,
+                    &app.home,
+                    &app.home.join("unused-system-account"),
+                )
+                .unwrap();
+                assert_eq!(
+                    outcome.exit_code(),
+                    0,
+                    "{}",
+                    serde_json::to_value(outcome).unwrap()
+                );
+            }
             assert_eq!(complete(), expected, "{tag} after {cutover:?}");
         }
         reset();
@@ -579,21 +660,105 @@ fn tagged_published_apps_resume_every_cutover_step() {
 
         reset();
         let note = app.source.join("Chats/c1/notes.md");
+        let mut wrote = false;
         let changed = publish(&app, |step| {
-            if step == CutoverStep::FirstPlacement {
+            if step == CutoverStep::FirstPlacement && !wrote {
                 put(&note, b"written while placing");
+                wrote = true;
             }
         });
-        assert_eq!(changed.exit_code(), 1);
-        assert!(!app.destination.join(layout::FILE).exists());
-        assert!(!app.destination.join("box/kind").exists());
-        assert!(app.home.join("keychain/app/phone-link.key").is_file());
-        assert!(!app.home.join("keychain/helper/phone-link.key").exists());
-        assert_eq!(publish(&app, |_| {}).exit_code(), 0);
+        assert!(wrote);
+        assert_eq!(changed.exit_code(), 0);
         assert_eq!(
             fs::read(app.destination.join("chats/c1/notes.md")).unwrap(),
             b"written while placing"
         );
+        reset();
+        let slug = |folder: PathBuf| {
+            folder
+                .to_str()
+                .unwrap()
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+                .collect::<String>()
+        };
+        let projects = app.home.join(".claude/projects");
+        let previous = projects.join(slug(app.source.join("Chats/c1")));
+        let next = projects.join(slug(app.destination.join("chats/c1")));
+        put(&previous.join("thread.jsonl"), b"one thread");
+        put(
+            &app.source.join("groups.json"),
+            br#"[{"id":"grp_team","name":"Team","members":[]}]"#,
+        );
+        put(
+            &app.source.join("groups/grp_team.json"),
+            br#"[{"id":"first","text":"Ready","time":"2026-10-01T10:00:00Z"}]"#,
+        );
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{:?}", CutoverStep::Staging(AppStep::Import)),
+        );
+        let messages = "groups/grp_team/messages.json";
+        let private = app.destination.join("updates/rehome/rust-stage");
+        assert!(private.join("groups/grp_team/group.json").is_file());
+        let staged_messages = fs::read(private.join(messages)).unwrap();
+        assert!(!app.destination.join(layout::FILE).exists());
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{:?}", CutoverStep::FirstHistory),
+        );
+        assert!(!previous.exists());
+        assert!(!app.destination.join(layout::FILE).exists());
+        let home = Home::new(app.destination.clone()).unwrap();
+        let outcome =
+            kuvo_move::mac::resume(&home, &app.home, &app.home.join("unused-system-account"))
+                .unwrap();
+        assert_eq!(
+            outcome.exit_code(),
+            0,
+            "{}",
+            serde_json::to_value(outcome).unwrap()
+        );
+        assert_eq!(fs::read(next.join("thread.jsonl")).unwrap(), b"one thread");
+        assert_eq!(
+            fs::read(app.destination.join(messages)).unwrap(),
+            staged_messages
+        );
+        assert!(!previous.exists());
+        reset();
+        put(&app.destination.join("box/earlier.md"), b"old note");
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{:?}", CutoverStep::FirstDisplacement),
+        );
+        assert!(!app.destination.join(layout::FILE).exists());
+        assert!(!app.destination.join("box/earlier.md").exists());
+        let home = Home::new(app.destination.clone()).unwrap();
+        let outcome =
+            kuvo_move::mac::resume(&home, &app.home, &app.home.join("unused-system-account"))
+                .unwrap();
+        assert_eq!(
+            outcome.exit_code(),
+            0,
+            "{}",
+            serde_json::to_value(outcome).unwrap()
+        );
+        let kept = fs::read_dir(app.destination.join("trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read(kept.path().join("box/earlier.md")).unwrap(),
+            b"old note"
+        );
+        assert_eq!(snapshot(&app.source), original_source);
         reset();
     }
 }
@@ -749,4 +914,507 @@ fn tagged_mac_app_databases_migrate_on_their_staged_copies() {
             assert!(!app.destination.join(layout::FILE).exists());
         }
     }
+}
+
+/// A complete staged release for command-level admission and copying tests.
+fn staged_release(home: &Path) -> App {
+    use sha2::{Digest, Sha256};
+
+    let app = example(home);
+    let mut digest = BTreeMap::new();
+    for name in [
+        "bin/kuvo-box",
+        "bin/kuvo-start",
+        "config/opencode/plugins/kuvo-code.js",
+    ] {
+        put(&app.release.join(name), b"fixture program");
+        digest.insert(name, hex::encode(Sha256::digest(b"fixture program")));
+    }
+    put(
+        &app.release.join("box.json"),
+        &serde_json::to_vec(&serde_json::json!({
+            "version": "move-test", "engine": "2.2.6", "files": digest
+        }))
+        .unwrap(),
+    );
+    app
+}
+
+fn claude_service(folder: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use unicode_normalization::UnicodeNormalization;
+    let name: String = folder.to_str().unwrap().nfc().collect();
+    format!(
+        "Claude Code-credentials-{}",
+        hex::encode(&Sha256::digest(name)[..4])
+    )
+}
+
+#[test]
+fn claude_keychain_copy_survives_each_effect_and_requires_its_adapter_on_resume() {
+    for boundary in [
+        CutoverStep::CredentialAside,
+        CutoverStep::CredentialCopy,
+        CutoverStep::CredentialRetired,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let app = staged_release(root.path());
+        let folder = Path::new("agents/claude/accounts/cafe\u{301}");
+        put(&app.source.join(folder).join("profile.json"), b"settings");
+        let target = app.destination.join(folder);
+        let items = FileKeychain::new(app.home.join("generic-keychain"));
+        let source_name = claude_service(&app.source.join(folder));
+        let target_name = claude_service(&target);
+        let aside_name = format!("{target_name}.before-kuvo-move");
+        let expected = GenericPassword {
+            account: "the account".into(),
+            value: b"fixture source token".to_vec(),
+        };
+        let previous = GenericPassword {
+            account: "previous account".into(),
+            value: b"fixture prior contents".to_vec(),
+        };
+        items.write(&source_name, &expected).unwrap();
+        items.write(&target_name, &previous).unwrap();
+        let world = app.home.join("credential-world.json");
+        put(
+            &world,
+            &serde_json::to_vec(
+                &serde_json::json!({"home":app.home,"S":app.source,"K":app.destination,
+            "bundle":app.bundle,"release":app.release,"engine":app.engine}),
+            )
+            .unwrap(),
+        );
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{boundary:?}"),
+        );
+        assert!(target.join("profile.json").is_file());
+        assert_eq!(
+            items.read(&source_name).unwrap().is_none(),
+            boundary == CutoverStep::CredentialRetired
+        );
+        assert!(items.read(&aside_name).unwrap().as_ref() == Some(&previous));
+
+        let journal =
+            fs::read_to_string(app.destination.join("updates/rehome/publication.json")).unwrap();
+        for item in [&expected, &previous] {
+            assert!(!journal.contains(std::str::from_utf8(&item.value).unwrap()));
+            assert!(!journal.contains(&serde_json::to_string(&item.value).unwrap()));
+        }
+        let home = Home::new(app.destination.clone()).unwrap();
+        let system = app.home.join("unused-system-account");
+        assert_eq!(
+            kuvo_move::mac::resume(&home, &app.home, &system)
+                .unwrap()
+                .exit_code(),
+            3
+        );
+        assert!(!app.destination.join(layout::FILE).exists());
+        let recovered =
+            kuvo_move::mac::resume_with_keychain(&home, &app.home, &system, &items).unwrap();
+        assert_eq!(
+            recovered.exit_code(),
+            0,
+            "{:?}",
+            serde_json::to_value(recovered)
+        );
+        assert!(items.read(&target_name).unwrap().as_ref() == Some(&expected));
+        assert!(items.read(&source_name).unwrap().is_none());
+        assert!(items.read(&aside_name).unwrap().is_none());
+        assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
+    }
+}
+
+#[test]
+fn failed_claude_keychain_read_back_restores_the_existing_item_and_files() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let folder = Path::new("agents/claude/accounts/custom");
+    let source = app.source.join(folder);
+    let target = app.destination.join(folder);
+    put(&source.join("profile.json"), b"settings");
+    let source_name = claude_service(&source);
+    let target_name = claude_service(&target);
+    let expected = GenericPassword {
+        account: "account".into(),
+        value: b"fixture source".to_vec(),
+    };
+    let existing = GenericPassword {
+        account: "account".into(),
+        value: b"fixture previous".to_vec(),
+    };
+    let mut items = FileKeychain::new(app.home.join("generic-keychain"));
+    items.write(&source_name, &expected).unwrap();
+    items.write(&target_name, &existing).unwrap();
+    items.fail_after_write = Some(target_name.clone());
+    items.armed.set(true);
+    let failed = publish_using(&app, Some(&items), |_| {});
+    assert_eq!(failed.exit_code(), 1, "{:?}", serde_json::to_value(failed));
+    assert!(items.read(&source_name).unwrap().as_ref() == Some(&expected));
+    assert!(items.read(&target_name).unwrap().as_ref() == Some(&existing));
+    assert!(
+        items
+            .read(&format!("{target_name}.before-kuvo-move"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(source.join("profile.json").is_file());
+    assert!(!target.exists());
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(publish_using(&app, Some(&items), |_| {}).exit_code(), 0);
+    assert!(items.read(&source_name).unwrap().is_none());
+    assert!(items.read(&target_name).unwrap().as_ref() == Some(&expected));
+}
+
+#[test]
+fn a_write_during_copy_is_carried_by_the_same_move() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let home = Home::new(app.destination.clone()).unwrap();
+    let mut clones = 0;
+    let outcome = publish(&app, |step| {
+        if step == CutoverStep::Staging(AppStep::Clone) {
+            assert_eq!(
+                kuvo_move::rehome_status(&home)["progress"],
+                serde_json::json!({
+                    "step": "upgrade", "title": "Bringing your settings along", "index": 5, "of": 11
+                })
+            );
+            clones += 1;
+            if clones == 1 {
+                put(&app.source.join("Chats/c1/new.md"), b"written during copy");
+            }
+        }
+    });
+    assert_eq!(
+        outcome.exit_code(),
+        0,
+        "{}",
+        serde_json::to_value(outcome).unwrap()
+    );
+    assert_eq!(clones, 2);
+    assert_eq!(
+        kuvo_move::rehome_status(&home)["progress"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        fs::read(app.destination.join("chats/c1/new.md")).unwrap(),
+        b"written during copy"
+    );
+}
+
+#[test]
+fn linked_machine_settings_are_copied_without_replacing_the_external_file() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("machine");
+    let source = root.path().join("settings.json");
+    let saved = br#"{"instructions":["keep this"]}"#;
+    put(&source, saved);
+    put(&target.join("bin/kuvo-start"), b"old launcher");
+    let linked = target.join("config/opencode/opencode.json");
+    fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &linked).unwrap();
+
+    let home = Home::new(target.clone()).unwrap();
+    kuvo_move::open(&home, kuvo_os::platform::Platform::Mac, None, |_| {}).unwrap();
+    assert_eq!(fs::read_link(&linked).unwrap(), source);
+    assert_eq!(fs::read(&source).unwrap(), saved);
+    assert_eq!(
+        fs::read(target.join("box/adopted-from/opencode.json")).unwrap(),
+        saved
+    );
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(target.join("box/opencode.json")).unwrap()).unwrap();
+    assert_eq!(settings["instructions"], serde_json::json!(["keep this"]));
+    assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
+}
+
+#[test]
+fn a_cut_short_new_home_fences_startup_until_it_is_remade() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    fs::remove_dir_all(&app.source).unwrap();
+    put(&app.source.join("engine/2.2.6/opencode"), b"fresh engine");
+    let marker = app.destination.join("updates/rehome/new");
+    put(&marker, b"1\n");
+    put(&app.destination.join("bin/partial-program"), b"partial");
+    let home = Home::new(app.destination.clone()).unwrap();
+    let open = || {
+        kuvo_move::open(
+            &home,
+            kuvo_os::platform::Platform::Mac,
+            Some(root.path()),
+            |_| {},
+        )
+    };
+    assert!(matches!(open(), Err(kuvo_move::Error::Busy(path)) if path == marker));
+    assert!(!app.destination.join(layout::FILE).exists());
+    let answer = kuvo_move::mac::new_home(
+        &home,
+        Some(&app.source.join("box")),
+        None,
+        Path::new("/not-the-test-account"),
+        Some(&app.release),
+        false,
+    );
+    assert_eq!(answer.exit_code(), 0, "{:?}", serde_json::to_value(answer));
+    assert!(!marker.exists());
+    assert!(open().is_ok());
+    assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
+}
+
+#[test]
+fn sqlite_reader_sidecars_do_not_restart_the_move() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let database = app.source.join("opencode/data/opencode");
+    fs::create_dir_all(&database).unwrap();
+    let mut checks = 0;
+    let outcome = publish(&app, |step| {
+        if step == CutoverStep::Staging(AppStep::Check) {
+            checks += 1;
+            put(
+                &database.join("opencode.db-shm"),
+                b"rebuildable SQLite index",
+            );
+            put(&database.join("opencode.db-wal"), b"");
+        }
+    });
+    assert_eq!(
+        outcome.exit_code(),
+        0,
+        "{:?}",
+        serde_json::to_value(outcome)
+    );
+    assert_eq!(checks, 1);
+    assert_eq!(
+        fs::read(database.join("opencode.db-shm")).unwrap(),
+        b"rebuildable SQLite index"
+    );
+    assert_eq!(
+        fs::metadata(database.join("opencode.db-wal"))
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn repeated_source_writes_stop_after_three_rounds() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let mut clones = 0;
+    let file = app.source.join("Chats/c1/new.md");
+    let outcome = publish(&app, |step| {
+        if step == CutoverStep::FirstPlacement {
+            clones += 1;
+            put(&file, vec![b'x'; clones].as_slice());
+        }
+    });
+    assert_eq!(outcome.exit_code(), 1);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(clones, 3);
+    assert_eq!(reply["result"], "failed");
+    assert_eq!(reply["status"]["tries"], 1);
+    assert_eq!(reply["status"]["nextTry"], serde_json::Value::Null);
+    assert_eq!(
+        reply["message"],
+        "Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever it's open, then try again."
+    );
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert!(!app.destination.join("box").exists());
+    assert_eq!(fs::read(&file).unwrap(), b"xxx");
+    assert_eq!(publish(&app, |_| {}).exit_code(), 0);
+    assert_eq!(
+        fs::read(app.destination.join("chats/c1/new.md")).unwrap(),
+        b"xxx"
+    );
+}
+
+#[test]
+fn an_unreadable_old_journal_fences_both_sides() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let journal = app.destination.join("updates/rehome/journal.json");
+    let bytes = br#"{"v": 1, "step": "cle"#;
+    put(&journal, bytes);
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |step| panic!("Reached {step:?}"));
+    assert_eq!(outcome.exit_code(), 3);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(reply["result"], "stuck");
+    assert_eq!(reply["status"]["state"], "moving");
+    assert_eq!(reply["status"]["failed"]["step"], serde_json::Value::Null);
+    assert_eq!(fs::read(journal).unwrap(), bytes);
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(snapshot(&app.source), before);
+}
+
+#[test]
+fn a_missing_pinned_engine_reports_offline_before_copying() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    fs::remove_dir_all(&app.engine).unwrap();
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |step| panic!("Reached {step:?}"));
+    assert_eq!(outcome.exit_code(), 1);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(reply["result"], "refused");
+    assert_eq!(reply["status"]["state"], "failed");
+    assert_eq!(reply["status"]["failed"]["step"], "plan");
+    assert_eq!(
+        reply["message"],
+        "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again."
+    );
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(snapshot(&app.source), before);
+}
+
+#[test]
+fn a_future_engine_schema_is_refused_before_copying() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let file = app.source.join("opencode/data/opencode/opencode.db");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    {
+        let db = Connection::open(&file).unwrap();
+        db.execute_batch(
+            "CREATE TABLE migration (id TEXT);
+             INSERT INTO migration VALUES ('20270101000000_later');",
+        )
+        .unwrap();
+    }
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |step| panic!("Reached {step:?}"));
+    assert_eq!(outcome.exit_code(), 1);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(reply["result"], "refused");
+    assert_eq!(reply["status"]["failed"]["step"], "plan");
+    assert_eq!(
+        reply["message"],
+        "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (1 20270101000000_later). Nothing was changed. Update Kuvo if a newer version is out, then try again."
+    );
+    assert!(!app.destination.join("updates/rehome/rust-stage").exists());
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(snapshot(&app.source), before);
+}
+
+#[test]
+fn browser_only_app_gets_a_home_without_copying_the_browser_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    fs::remove_dir_all(&app.source).unwrap();
+    put(&app.source.join("Browser/history"), b"old profile");
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |_| {});
+    assert_eq!(
+        outcome.exit_code(),
+        0,
+        "{}",
+        serde_json::to_value(outcome).unwrap()
+    );
+    assert_eq!(
+        fs::read(app.destination.join("box/kind")).unwrap(),
+        b"mac\n"
+    );
+    assert!(app.destination.join(layout::FILE).is_file());
+    assert!(!app.destination.join("data").exists());
+    assert!(!app.destination.join("Browser").exists());
+    assert_eq!(snapshot(&app.source), before);
+}
+
+#[test]
+fn an_external_writer_is_named_and_left_running_until_it_closes_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let file = app.source.join("Chats/c1/open.log");
+    let mut child = ChildGuard(
+        Command::new("/bin/zsh")
+            .args(["-c", "exec 3>>\"$1\"; echo ready; read line", "zsh"])
+            .arg(&file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut ready = String::new();
+    BufReader::new(child.0.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "ready");
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |step| panic!("Reached {step:?}"));
+    assert_eq!(outcome.exit_code(), 1);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(reply["result"], "refused");
+    assert_eq!(
+        reply["message"],
+        "“zsh” is still using your earlier Kuvo Code's files. Quit it, then try again."
+    );
+    assert_eq!(snapshot(&app.source), before);
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert!(child.0.try_wait().unwrap().is_none());
+    drop(child.0.stdin.take());
+    child.0.wait().unwrap();
+
+    let outcome = publish(&app, |_| {});
+    assert_eq!(
+        outcome.exit_code(),
+        0,
+        "{}",
+        serde_json::to_value(outcome).unwrap()
+    );
+    assert!(app.destination.join("chats/c1/open.log").is_file());
+}
+
+#[test]
+fn a_collision_after_placing_rolls_back_without_replacing_the_new_file() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let file = app.destination.join("engine");
+    let before = snapshot(&app.source);
+    let outcome = publish(&app, |step| {
+        if step == CutoverStep::FirstPlacement {
+            put(&file, b"left by another installer");
+        }
+    });
+    assert_eq!(outcome.exit_code(), 1);
+    let reply = serde_json::to_value(outcome).unwrap();
+    assert_eq!(reply["status"]["failed"]["step"], "place");
+    assert_eq!(reply["result"], "failed");
+    assert_eq!(fs::read(file).unwrap(), b"left by another installer");
+    assert!(!app.destination.join("box").exists());
+    assert!(!app.destination.join(layout::FILE).exists());
+    assert_eq!(snapshot(&app.source), before);
+}
+
+#[test]
+fn a_claude_accounts_chat_history_is_carried_into_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let app = example(root.path());
+    let slug = |path: &Path| {
+        path.to_str()
+            .unwrap()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect::<String>()
+    };
+    let projects = "agents/claude/accounts/test/projects";
+    let old = app
+        .source
+        .join(projects)
+        .join(slug(&app.source.join("Chats/c1")))
+        .join("thread.jsonl");
+    put(&old, b"history\n");
+    let copied = app.stage(|_| {});
+    let next = copied
+        .path
+        .join(projects)
+        .join(slug(&app.destination.join("chats/c1")))
+        .join("thread.jsonl");
+    assert_eq!(fs::read(next).unwrap(), b"history\n");
+    assert_eq!(fs::read(old).unwrap(), b"history\n");
 }

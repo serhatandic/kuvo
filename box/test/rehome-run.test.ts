@@ -634,8 +634,8 @@ test.if(mac)("a move whose own record can't be read says so in words with what t
   const before = snapshot(m.S)
   const stuck = run(m)
   expect(stuck.status).toBe(3)
-  expect(stuck.said).toMatchObject({ result: "stuck", message: "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support." })
-  expect(stuck.said!.status.failed.message).not.toContain("journal")
+  const message = "Kuvo was stopped part way through moving your sessions and can't tell how far it got, so it's changing nothing more. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support."
+  expect(stuck.said).toMatchObject({ result: "stuck", message, status: { failed: { message } } })
   expect(existsSync(join(m.K, "box"))).toBe(false)
   expect(snapshot(m.S)).toEqual(before)
 }, LIMIT)

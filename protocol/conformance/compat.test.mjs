@@ -176,6 +176,9 @@ test("the current TypeScript beta's durable records survive opening at layout 23
     assert.equal(link.key, original.key);
     assert.deepEqual(link.computerHistory, original.computerHistory);
     assert.deepEqual(link.memberRemovals, original.memberRemovals);
+    for (const key of ["releasedSetup", "releasedWork", "releasedDatabaseWork", "releasedScopedWork"]) {
+      assert.deepEqual(link[key], original[key], key);
+    }
     for (const { family, result, entries } of families) {
       if (!result.startsWith("Preserved")) continue;
       for (const { file, bytes } of entries) assert.deepEqual(readFileSync(path.join(root, file)), bytes, family + " · " + file);

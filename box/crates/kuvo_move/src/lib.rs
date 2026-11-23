@@ -1,6 +1,10 @@
 //! One-time imports before the resident opens an older home.
 
+pub mod install;
 mod machine;
+mod status;
+
+pub use status::rehome_status;
 
 #[cfg(target_os = "macos")]
 pub mod mac;
@@ -42,6 +46,16 @@ pub enum Error {
     UnknownHome(PathBuf),
     #[error("Cannot move while {} is present.", .0.display())]
     Busy(PathBuf),
+    #[cfg(target_os = "macos")]
+    #[error(
+        "Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever it's open, then try again."
+    )]
+    SourceChanged(mac::ChangePoint),
+    #[cfg(target_os = "macos")]
+    #[error(
+        "Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again."
+    )]
+    AppPreferences(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// A boundary reached after all writes for a machine step are durable.
@@ -67,10 +81,12 @@ pub fn open(
     mut completed: impl FnMut(Step),
 ) -> Result<(), Error> {
     #[cfg(target_os = "macos")]
-    if mac::blocks_open(home)? {
-        return Err(Error::PreviousMove(
-            home.root().join("updates/rehome/publication.json"),
-        ));
+    if let Some(journal) = mac::unfinished(home)? {
+        return Err(Error::PreviousMove(journal));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(marker) = mac::unfinished_install(home)? {
+        return Err(Error::Busy(marker));
     }
     if layout::inspect(home)? == layout::Layout::Current {
         return Ok(());
@@ -79,7 +95,10 @@ pub fn open(
         && platform == Platform::Mac
         && home.root() == account_home.join(".kuvo-code")
     {
-        check_app_folder(&account_home.join("Library/Application Support/run.kuvo.code"))?;
+        let source = account_home.join("Library/Application Support/run.kuvo.code");
+        if app_source(&source)?.is_some() {
+            return Err(Error::AppFolder(source));
+        }
     }
     match layout::open(home) {
         Ok(()) => return Ok(()),
@@ -153,10 +172,10 @@ struct Journal {
     step: String,
 }
 
-fn check_app_folder(app: &Path) -> Result<(), Error> {
+fn app_source(app: &Path) -> Result<Option<install::Verdict>, Error> {
     for file in ["setup-card.json", "link.json", "serve.json", "keeper.json"] {
         if metadata(&app.join("box/run").join(file))?.is_some() {
-            return Err(Error::AppFolder(app.into()));
+            return Ok(Some(install::Verdict::AppBox));
         }
     }
     let rules: &[(&str, &[&str])] = &[
@@ -174,11 +193,11 @@ fn check_app_folder(app: &Path) -> Result<(), Error> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if !name.starts_with('.') && !excluded.contains(&name.as_ref()) {
-                return Err(Error::AppFolder(app.into()));
+                return Ok(Some(install::Verdict::App07));
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Resolve known in-home paths without using a linked directory as a write target.
