@@ -145,7 +145,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         },
@@ -203,7 +205,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         }
@@ -341,7 +345,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         },
@@ -399,7 +405,9 @@
              },
              "why": "string"
             }
-           }
+           },
+           "title?": "string",
+           "detail?": "string"
           }
          }
         }
@@ -527,7 +535,9 @@
            },
            "why": "string"
           }
-         }
+         },
+         "title?": "string",
+         "detail?": "string"
         }
        }
       },
@@ -658,7 +668,9 @@
            },
            "why": "string"
           }
-         }
+         },
+         "title?": "string",
+         "detail?": "string"
         }
        }
       },
@@ -7028,6 +7040,16 @@
          "ssh?": {
           "list": "string"
          },
+         "sshDistro?": "string",
+         "wsl?": {
+          "object": {
+           "version": {
+            "literal": 2
+           },
+           "distro?": "string",
+           "host?": "string"
+          }
+         },
          "working?": "number",
          "atWork?": {
           "list": {
@@ -7863,6 +7885,16 @@
          "relay?": "string",
          "ssh?": {
           "list": "string"
+         },
+         "sshDistro?": "string",
+         "wsl?": {
+          "object": {
+           "version": {
+            "literal": 2
+           },
+           "distro?": "string",
+           "host?": "string"
+          }
          },
          "working?": "number",
          "atWork?": {
@@ -11811,6 +11843,9 @@
             "literal": "models.readiness"
            },
            {
+            "literal": "models.speed"
+           },
+           {
             "literal": "models.starred"
            },
            {
@@ -12285,6 +12320,15 @@
          "literal": "machine"
         },
         "name": "string",
+        "wsl?": {
+         "object": {
+          "version": {
+           "literal": 2
+          },
+          "distro?": "string",
+          "host?": "string"
+         }
+        },
         "bridge": "string",
         "engine": {
          "oneOf": [
@@ -12801,6 +12845,9 @@
            },
            {
             "literal": "models.readiness"
+           },
+           {
+            "literal": "models.speed"
            },
            {
             "literal": "models.starred"
@@ -28648,7 +28695,16 @@
               },
               "retiring?": "bool",
               "hidden?": "bool",
-              "free?": "bool"
+              "free?": "bool",
+              "speeds?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "name": "string",
+                 "description?": "string"
+                }
+               }
+              }
              }
             }
            },
@@ -28663,7 +28719,8 @@
              "object": {
               "id": "string",
               "name": "string",
-              "label?": "string"
+              "label?": "string",
+              "speed?": "string"
              }
             }
            },
@@ -28897,7 +28954,16 @@
          },
          "retiring?": "bool",
          "hidden?": "bool",
-         "free?": "bool"
+         "free?": "bool",
+         "speeds?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "name": "string",
+            "description?": "string"
+           }
+          }
+         }
         }
        }
       },
@@ -28912,7 +28978,8 @@
         "object": {
          "id": "string",
          "name": "string",
-         "label?": "string"
+         "label?": "string",
+         "speed?": "string"
         }
        }
       },
@@ -29002,6 +29069,38 @@
          "id": "string"
         }
        }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/models/speed",
+   "feature": "models.speed",
+   "answers": {
+    "200": {
+     "object": {
+      "providerID": "string",
+      "speed": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
       }
      }
     },
