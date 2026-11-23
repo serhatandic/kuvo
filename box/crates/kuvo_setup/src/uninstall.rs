@@ -80,7 +80,7 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     }
     let files = Files::new(root.canonicalize().map_err(|source| at(root, source))?);
     if check {
-        return run_check(&files).map(|value| Outcome {
+        return run_check(&files, root).map(|value| Outcome {
             status: 0,
             value,
             note: None,
@@ -185,8 +185,7 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     })
 }
 
-fn run_check(files: &Files) -> Result<Value, Error> {
-    let root = files.root();
+fn run_check(files: &Files, home: &Path) -> Result<Value, Error> {
     let link: Link = files.read(LINK)?.unwrap_or_default();
     let computers = link
         .member_list()
@@ -200,7 +199,7 @@ fn run_check(files: &Files) -> Result<Value, Error> {
     let running = live_processes(files)?;
     let (bots, wakes) = scheduled_work(files)?;
     Ok(
-        json!({"folder": root, "kind": kind.as_deref().map(str::trim).unwrap_or("machine"),
+        json!({"folder": home, "kind": kind.as_deref().map(str::trim).unwrap_or("machine"),
         "running": running, "starts": {"launchAgent": false, "crontab": false, "checked": false},
         "bots": bots, "wakes": wakes, "phones": phones, "computers": computers}),
     )

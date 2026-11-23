@@ -53,11 +53,12 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-On macOS, TypeScript passes C1–C3, C5–C8, C10–C11 and U1–U3. Rust passes C1–C11 and
-U1–U4, including a Rust-to-Rust re-enrollment in U2. The Rust workspace compile
-check passes. The Mac-built static x86-64 musl binary passes C1–C11 and U1–U3
-in WSL 2 and in a single lokum container capped at one CPU and 1 GB.
-The native Windows binary passes C1–C8, C10–C11 and U1–U3. The original TypeScript
+On macOS, TypeScript passes C1–C3, C5–C8, C10–C11, U1–U3 and U5–U7. Rust passes
+C1–C11 and U1–U8. The Rust workspace compile check passes. The Mac-built static
+x86-64 musl binary passes C1–C11, U1–U3 and U5–U8 in WSL 2 and in a single
+lokum container capped at one CPU and 1 GB. The native Windows binary passes
+C1–C8, C10–C11, U1–U3 and U5–U6. The Unix wipe cases are skipped there.
+The original TypeScript
 fake SSH host, alias, WSL 1 refusal and device-revocation scenarios pass as
 reference checks. The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
@@ -65,7 +66,7 @@ joined, acknowledged unlink and re-enrolled after starting its resident in a
 separate foreground SSH session. The native resident launched by Add ended
 with the SSH command. Both live exercises used staged executables and isolated
 homes. Engine and keeper installation and cross-platform release selection
-still need the release path in 7.1.
+still need the release path in 7.1 and the native startup owner in 8.1.
 
 | Earlier mixed-only check | Status |
 | --- | --- |
