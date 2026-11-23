@@ -6,6 +6,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- One model picker everywhere: the composer, side chat, New Bot and a bot's settings, Marketplace › Add Agent and Settings › Models. Your favourites (★) and each provider sit down the left, the provider's models in the middle with "Search models…" across every provider, ⌘1…⌘9, ☆ to add one to your favourites and "Show more", and the model's reasoning levels on the right.
+- The composer has one chip for the model and its effort ("Opus 5.5 High"). Permissions moved into the picker, along its bottom: Ask First, Accept Edits, Auto or Full Access, each with a line on what it does. In a tight window the chip shortens instead of pushing Send out of the composer.
+- Codex models with a fast mode show Standard | Fast at the bottom of the picker. The choice is kept on that computer for that Codex account, as Codex's own `/fast` does.
+- Your favourite models are the same on every computer in your setup.
+- Marketplace › Add Agent picks its model in the same picker, instead of a long list.
+
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.

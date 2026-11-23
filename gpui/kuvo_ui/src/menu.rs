@@ -559,6 +559,7 @@ pub struct PopoverMenu {
     above: bool,
     centered: bool,
     fill: bool,
+    shrinks: bool,
 }
 
 impl PopoverMenu {
@@ -585,7 +586,7 @@ impl PopoverMenu {
             let view = view(window, cx);
             handle.open(view, window, cx);
         });
-        Self { id, trigger, menu, handle: None, align_right: false, above: false, centered: false, fill: false }
+        Self { id, trigger, menu, handle: None, align_right: false, above: false, centered: false, fill: false, shrinks: false }
     }
 
     /// Opens above the trigger (a composer's control, at the window's foot).
@@ -603,6 +604,13 @@ impl PopoverMenu {
     /// Takes the available width, so the trigger can size itself to the parent.
     pub fn fill(mut self) -> Self {
         self.fill = true;
+        self
+    }
+
+    /// Its trigger gives up room to what's beside it in a tight row, rather than pushing it out
+    /// (the composer's model chip, which truncates).
+    pub fn shrinks(mut self) -> Self {
+        self.shrinks = true;
         self
     }
 
@@ -652,7 +660,8 @@ impl RenderOnce for PopoverMenu {
             .id(self.id)
             .relative()
             .flex()
-            .flex_none()
+            .when(!self.shrinks, |d| d.flex_none())
+            .when(self.shrinks, |d| d.flex_shrink_1().min_w_0())
             .when(self.fill, |d| d.w_full().min_w_0())
             .when(!self.centered, |d| d.self_start())
             .when(self.centered, |d| d.self_center())

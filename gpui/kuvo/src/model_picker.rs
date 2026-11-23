@@ -1,13 +1,19 @@
-//! The one model picker, wherever a model is picked (the composer, a bot's settings, Settings ›
-//! Models), as 0.7's: your starred models and each provider's mark down the left, "Search models…"
-//! over the list, each model's name over where it's from, ⌘1… on the first rows, and a star on
-//! each to keep it with your starred ones.
+//! The one model picker, wherever a model is picked (the composer, a side chat, a bot's settings
+//! and New Bot, Marketplace › Add Agent, Settings › Models), laid out as T3 Code's (#975):
+//! - down the left, ★ your favourites, then each provider's mark, the one shown marked in blue;
+//! - in the middle, "Search models…" over every provider's, the provider's models with ⌘1… on the
+//!   first rows, ✓ on the current one, ☆ on a row under the pointer, and "Show more" for the rest;
+//!   your accounts with a coding agent switch above its list (#833), Kuvo's way rather than T3's;
+//! - on the right, where a choice takes an effort, "Reasoning": the current model's efforts;
+//! - along the bottom, where they apply (the composer's), Standard | Fast for a provider with a fast
+//!   mode, and the conversation's permissions.
 //!
-//! What it offers, and your stars, are the box's (`kuvo/models/offered`, `kuvo/models/starred`): a
-//! star is kept there, so every client's picker shows the same. What's drawn is worked out once
-//! per list ([`Catalog`]), and only the rows in sight are drawn (`uniform_list`), so it opens at
-//! once and scrolls through hundreds; what's typed is matched off the UI thread, and a newer search
-//! drops the one before it (as Zed's pickers do).
+//! What it offers, your favourites, the speeds and the modes' words are the box's
+//! (`kuvo/models/offered`, `kuvo/models/starred`, `kuvo/models/speed`, the approval's `options`):
+//! every client's picker shows the same. What's drawn is worked out once per list ([`Catalog`]),
+//! and only the rows in sight are drawn (`uniform_list`), so it opens at once and scrolls through
+//! hundreds; what's typed is matched off the UI thread, and a newer search drops the one before it
+//! (as Zed's pickers do).
 
 use std::{
     ops::Range,
@@ -22,12 +28,13 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use kuvo_box::{
+    approval::{Approval, Shown as ApprovalShown},
     client::BoxClient,
-    models::{Offered, OfferedModel, Side, Starred},
+    models::{Offered, OfferedModel, Side, Speed, Starred, effort_title},
     typed::ModelRef,
 };
 use kuvo_ui::{
-    button::{Button, ButtonSize, keycap},
+    button::keycap,
     icon::{Icon, IconName, IconSize},
     text_field::{TextField, TextFieldEvent},
     theme::{ActiveTheme, StyledType, TypeSize, radius, scaled, space},
@@ -62,16 +69,22 @@ pub fn bind_keys(cx: &mut App) {
     }
 }
 
-/// The picker's width, as 0.7's card.
-pub const WIDTH: f32 = 372.;
-/// The rail's width.
+/// The rail's width, the models' column's, and Reasoning's.
 const RAIL: f32 = 52.;
-/// A row's height: a name over its provider's line.
-const ROW: f32 = 46.;
+const MIDDLE: f32 = 320.;
+const RIGHT: f32 = 188.;
+/// The picker's width without Reasoning (a setting that takes no effort).
+pub const WIDTH: f32 = RAIL + MIDDLE;
+/// A row's height: a model on one line, its provider's mark ahead of it.
+const ROW: f32 = 34.;
 /// How many rows show before the list scrolls.
-const MOST_ROWS: usize = 7;
+const MOST_ROWS: usize = 8;
+/// How many of a provider's models show before "Show more".
+const FIRST: usize = 7;
 /// How many rows have a ⌘ number.
 const NUMBERED: usize = 9;
+/// The bottom bar's height.
+const BAR: f32 = 44.;
 /// How many accounts the switch's list has before it offers a filter.
 const FILTERED: usize = 7;
 /// An account's row in the switch's list, and how many show before it scrolls.
@@ -93,13 +106,18 @@ pub struct Entry {
     /// Where it's from: its provider (with its account's label), and "Free" for one that needs no
     /// account.
     pub line: SharedString,
-    /// Where it's from under its rail's account switch, which names the account: its agent's name
-    /// ("Claude Code"); none where its rail has no switch.
-    pub switched_line: Option<SharedString>,
+    /// What a row says after its name, where its mark alone doesn't say where it's from: its
+    /// account ("Work · Max") where its agent has two or more, its provider where its mark is
+    /// shared (OpenCode Zen and Go), "Free".
+    pub detail: Option<SharedString>,
+    /// It's under its rail's account switch (two or more accounts), which names its account.
+    pub switched: bool,
     pub provider: SharedString,
     /// Its place in the rail.
     pub rail: usize,
     pub efforts: Vec<String>,
+    /// The speeds it runs at besides Standard, as the box offers them.
+    pub speeds: Vec<Speed>,
     aliases: Vec<String>,
     /// Its name, and the rest it's found by (its id, its provider), lowercased for search.
     name_key: String,
@@ -165,6 +183,8 @@ pub struct Catalog {
     pub entries: Vec<Entry>,
     pub rails: Vec<RailEntry>,
     pub unset: Option<Unset>,
+    /// The speed picked for each provider on its box (`models.speed`; none: Standard).
+    pub speeds: std::collections::HashMap<String, String>,
 }
 
 impl Catalog {
@@ -206,10 +226,12 @@ impl Catalog {
                 name_key: model.name.to_lowercase(),
                 name: model.name.clone().into(),
                 line: line.into(),
-                switched_line: None,
+                detail: None,
+                switched: false,
                 provider: model.provider_id.clone().into(),
                 rail,
                 efforts: model.efforts.clone(),
+                speeds: model.speeds.clone(),
                 aliases: model.aliases.clone(),
                 rest_key: String::new(),
             });
@@ -222,16 +244,36 @@ impl Catalog {
                 rail.accounts.clear();
             }
         }
+        // (Whether a rail's mark stands for more than one provider: OpenCode Zen and Go.)
+        let shared: Vec<bool> = (0..catalog.rails.len()).map(|rail| {
+            let mut providers = catalog.entries.iter().filter(|entry| entry.rail == rail).map(|entry| entry.provider.clone());
+            let first = providers.next();
+            providers.any(|each| Some(&each) != first.as_ref())
+        }).collect();
         for entry in &mut catalog.entries {
             let rail = &catalog.rails[entry.rail];
+            let free = offered.models.iter().any(|model| model.free && model.provider_id == entry.provider.as_ref() && model.id == entry.reference.id);
+            let mut detail = None;
             if let Some(account) = rail.accounts.iter().find(|each| each.provider == entry.provider) {
-                let agent = offered.providers.iter().find(|each| each.id == entry.provider.as_ref()).and_then(|each| each.account.as_ref()).map(|each| each.agent_name.clone()).unwrap_or_else(|| rail.name.to_string());
                 entry.line = account.line().into();
-                entry.switched_line = Some(agent.into());
+                entry.switched = true;
+                detail = Some(account.line());
+            } else if shared[entry.rail] {
+                let provider = offered.providers.iter().find(|each| each.id == entry.provider.as_ref());
+                let mut named = provider.map(|each| each.name.clone()).unwrap_or_else(|| entry.provider.to_string());
+                if let Some(label) = provider.and_then(|each| each.label.as_ref()) {
+                    named = format!("{named} · {label}");
+                }
+                detail = Some(named);
             }
+            if free {
+                detail = Some(detail.map_or_else(|| "Free".to_owned(), |detail| format!("{detail} · Free")));
+            }
+            entry.detail = detail.map(Into::into);
             let model = &entry.reference;
             entry.rest_key = format!("{} {} {} {}", model.id, model.provider_id, entry.line, entry.aliases.join(" ")).to_lowercase();
         }
+        catalog.speeds = offered.providers.iter().filter_map(|each| Some((each.id.clone(), each.speed.clone()?))).collect();
         catalog
     }
 
@@ -328,6 +370,24 @@ pub type OnEffort = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 pub type OnPick = Rc<dyn Fn(Option<ModelRef>, &mut Window, &mut App)>;
 /// Your starred models, as they are now.
 pub type OnStarred = Rc<dyn Fn(Vec<Starred>, &mut App)>;
+/// A mode picked in the permissions.
+pub type OnApproval = Rc<dyn Fn(Approval, &mut Window, &mut App)>;
+
+/// Reasoning, on the right, where the choice takes an effort: what picking one does, and whether
+/// it can be left to the model ("Default", a bot's).
+#[derive(Clone)]
+pub struct Reasoning {
+    pub on_effort: OnEffort,
+    pub default: bool,
+}
+
+/// The conversation's permissions, at the bottom's right (the composer's): its mode as its box
+/// shows it, and what picking one does.
+#[derive(Clone)]
+pub struct Permissions {
+    pub shown: ApprovalShown,
+    pub pick: OnApproval,
+}
 
 /// Which list shows when nothing's typed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,6 +401,8 @@ enum Shown {
 enum Row {
     Unset,
     Model(usize),
+    /// "Show more": the rest of the provider's.
+    More,
 }
 
 pub struct ModelPicker {
@@ -356,10 +418,11 @@ pub struct ModelPicker {
     rows: Vec<Row>,
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
+    /// The providers whose every model shows ("Show more"), by rail id.
+    expanded: std::collections::HashSet<SharedString>,
     /// A search on its way, dropped (and stopped, `cancel`) as a newer one starts.
     searching: Option<Task<()>>,
     cancel: Arc<AtomicBool>,
-    /// Return was pressed before the search was found: what it finds first is picked.
     /// Return (or a ⌘ number: which row) was pressed before the search was found: that row of what
     /// it finds is picked.
     pick_when_found: Option<usize>,
@@ -368,7 +431,7 @@ pub struct ModelPicker {
     notice: Option<SharedString>,
     /// Said under the list (models this app can't put the conversation on yet).
     note: Option<SharedString>,
-    /// A star the box couldn't keep, and why.
+    /// A star or a speed the box couldn't keep, and why.
     problem: Option<SharedString>,
     height: f32,
     /// The account each rail with an account switch shows, by rail id (none chosen: the current
@@ -381,8 +444,15 @@ pub struct ModelPicker {
     account_filter: Entity<TextField>,
     account_query: String,
     on_pick: OnPick,
-    on_effort: Option<OnEffort>,
+    reasoning: Option<Reasoning>,
     on_starred: Option<OnStarred>,
+    /// Standard | Fast shows, where the current model has a speed.
+    speed: bool,
+    /// The speed picked here for each provider since it opened (`None`: Standard), shown at once.
+    speeds: std::collections::HashMap<String, Option<String>>,
+    speed_sending: Option<Task<()>>,
+    permissions: Option<Permissions>,
+    permissions_open: bool,
     /// Star changes waiting to go to the box, one at a time in the order made; the one on its
     /// way; and the stars as the box last said them.
     star_queue: std::collections::VecDeque<(Vec<Starred>, bool)>,
@@ -398,6 +468,11 @@ impl Focusable for ModelPicker {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.field.focus_handle(cx)
     }
+}
+
+/// How many rows the list is tall for `catalog`.
+fn list_rows(catalog: &Catalog) -> usize {
+    (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS)
 }
 
 impl ModelPicker {
@@ -428,9 +503,8 @@ impl ModelPicker {
             None if catalog.rails.is_empty() && starred.is_some() => Shown::Starred,
             None => Shown::Rail(0),
         };
-        let rows = (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS);
         let mut picker = ModelPicker {
-            height: rows as f32 * ROW + 8.,
+            height: list_rows(&catalog) as f32 * ROW + 8.,
             catalog,
             starred,
             current,
@@ -441,6 +515,7 @@ impl ModelPicker {
             rows: Vec::new(),
             selected: None,
             scroll: UniformListScrollHandle::new(),
+            expanded: Default::default(),
             searching: None,
             cancel: Arc::new(AtomicBool::new(false)),
             pick_when_found: None,
@@ -448,8 +523,13 @@ impl ModelPicker {
             note: None,
             problem: None,
             on_pick,
-            on_effort: None,
+            reasoning: None,
             on_starred: None,
+            speed: false,
+            speeds: Default::default(),
+            speed_sending: None,
+            permissions: None,
+            permissions_open: false,
             star_queue: Default::default(),
             star_sending: None,
             box_starred: Vec::new(),
@@ -461,11 +541,16 @@ impl ModelPicker {
             _field: subscription,
             _account_filter: filter_subscription,
         };
-        // Its account's list, where the current model is on one of several.
         if let Some(entry) = at.map(|at| &picker.catalog.entries[at]) {
             let rail = &picker.catalog.rails[entry.rail];
+            // Its account's list, where the current model is on one of several.
             if rail.accounts.iter().any(|each| each.provider == entry.provider) {
                 picker.accounts.insert(rail.id.clone(), entry.provider.clone());
+            }
+            // And every one of its provider's, where it's past the first few.
+            let before = picker.catalog.entries[..at.unwrap_or(0)].iter().filter(|each| each.rail == entry.rail && (!each.switched || each.provider == entry.provider)).count();
+            if before >= FIRST {
+                picker.expanded.insert(rail.id.clone());
             }
         }
         picker.box_starred = picker.starred.clone().unwrap_or_default();
@@ -479,38 +564,24 @@ impl ModelPicker {
         picker
     }
 
-    /// Let the picker change the current bot model’s effort alongside its model.
-    pub fn on_effort(mut self, on_effort: Option<OnEffort>) -> Self {
-        self.on_effort = on_effort;
+    /// Reasoning on the right: the current model's efforts, `on_effort` told the one picked
+    /// (`default`: "Default", leaving it to the model, ahead of them).
+    pub fn reasoning(mut self, on_effort: Option<OnEffort>, default: bool) -> Self {
+        self.reasoning = on_effort.map(|on_effort| Reasoning { on_effort, default });
         self
     }
 
-    fn effort_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let handler = self.on_effort.clone()?;
-        let current = self.current.as_ref()?;
-        let model = &self.catalog.entries[self.catalog.position(current)?];
-        if model.efforts.is_empty() {
-            return None;
-        }
-        let c = cx.theme().colors.clone();
-        let choices = std::iter::once(None).chain(model.efforts.iter().cloned().map(Some));
-        Some(div().flex().flex_col().gap(space::S1).px(space::S3).py(space::S2)
-            .border_b_1().border_color(c.border)
-            .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Effort"))
-            .child(div().flex().flex_wrap().gap(space::S1).children(choices.map(|choice| {
-                let id = SharedString::from(format!("bot-effort-{}", choice.as_deref().unwrap_or("default")));
-                let title = choice.as_deref().map(kuvo_box::models::effort_title).unwrap_or_else(|| "Default".into());
-                let on = current.variant == choice;
-                let handler = handler.clone();
-                Button::new(id, title).ghost().size(ButtonSize::Small).selected(on)
-                    .on_click(cx.listener(move |_, _, window, cx| {
-                        cx.emit(DismissEvent);
-                        if !on {
-                            handler(choice.clone(), window, cx);
-                        }
-                    }))
-            })))
-            .into_any_element())
+    /// Standard | Fast at the bottom's left, where the current model's provider has a fast mode
+    /// (the composer's and a side chat's: the speed is the box's, for that provider).
+    pub fn with_speed(mut self) -> Self {
+        self.speed = true;
+        self
+    }
+
+    /// The conversation's permissions at the bottom's right (the composer's).
+    pub fn permissions(mut self, permissions: Option<Permissions>) -> Self {
+        self.permissions = permissions;
+        self
     }
 
     /// Keep the last catalog visible while the host reads it again.
@@ -543,8 +614,7 @@ impl ModelPicker {
             let rail = self.catalog.rails.get(at);
             self.shown = Shown::Rail(rail.and_then(|rail| catalog.rails.iter().position(|entry| entry.id == rail.id)).unwrap_or(0));
         }
-        let rows = (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS);
-        self.height = rows as f32 * ROW + 8.;
+        self.height = list_rows(&catalog) as f32 * ROW + 8.;
         self.catalog = Arc::new(catalog);
         self.rows.clear();
         self.run_search(self.query.clone(), window, cx);
@@ -573,10 +643,26 @@ impl ModelPicker {
         self.field.update(cx, |field, cx| field.set_text(query, cx));
     }
 
-    /// Shows a provider's list, by its rail id (shots and tests).
+    /// Shows a provider's list, by its rail id, or "starred" (shots and tests).
     pub fn show_rail(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(at) = self.catalog.rails.iter().position(|rail| rail.id.as_ref() == id) {
+        if id == "starred" && self.starred.is_some() {
+            self.choose(Shown::Starred, cx);
+        } else if let Some(at) = self.catalog.rails.iter().position(|rail| rail.id.as_ref() == id) {
             self.choose(Shown::Rail(at), cx);
+        }
+    }
+
+    /// Highlights row `row`, as the pointer over it does (shots).
+    pub fn highlight(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.selected = (row < self.rows.len()).then_some(row);
+        cx.notify();
+    }
+
+    /// Opens the permissions' popover (shots).
+    pub fn open_permissions(&mut self, cx: &mut Context<Self>) {
+        if self.permissions.is_some() {
+            self.permissions_open = true;
+            cx.notify();
         }
     }
 
@@ -587,6 +673,7 @@ impl ModelPicker {
             .map(|row| match row {
                 Row::Unset => self.catalog.unset.as_ref().map(|unset| unset.title.to_string()).unwrap_or_default(),
                 Row::Model(ix) => self.catalog.entries[*ix].name.to_string(),
+                Row::More => "Show more".to_owned(),
             })
             .collect()
     }
@@ -600,19 +687,45 @@ impl ModelPicker {
         self.starred.as_ref().is_some_and(|starred| starred.iter().any(|each| entry.is(&each.provider_id, &each.id)))
     }
 
+    /// The current model, as the catalog has it.
+    fn current_entry(&self) -> Option<&Entry> {
+        let current = self.current.as_ref()?;
+        self.catalog.position(current).map(|at| &self.catalog.entries[at])
+    }
+
     /// The rows of the list shown while nothing's typed.
     fn show_list(&mut self) {
         let unset = self.catalog.unset.is_some().then_some(Row::Unset);
         let models: Vec<Row> = match self.shown {
             // Your starred ones that are offered here, in the order starred.
             Shown::Starred => self.starred.iter().flatten().filter_map(|each| self.catalog.entries.iter().position(|entry| entry.is(&each.provider_id, &each.id))).map(Row::Model).collect(),
-            // (Under its account switch, the account shown's.)
+            // (Under its account switch, the account shown's; the first few, then "Show more".)
             Shown::Rail(rail) => {
                 let account = self.account_shown(rail).cloned();
-                self.catalog.entries.iter().enumerate().filter(|(_, entry)| entry.rail == rail && account.as_ref().is_none_or(|account| entry.switched_line.is_none() || entry.provider == account.provider)).map(|(ix, _)| Row::Model(ix)).collect()
+                let mut all: Vec<Row> = self.catalog.entries.iter().enumerate().filter(|(_, entry)| entry.rail == rail && account.as_ref().is_none_or(|account| !entry.switched || entry.provider == account.provider)).map(|(ix, _)| Row::Model(ix)).collect();
+                let expanded = self.catalog.rails.get(rail).is_some_and(|each| self.expanded.contains(&each.id));
+                if !expanded && all.len() > FIRST + 1 {
+                    all.truncate(FIRST);
+                    all.push(Row::More);
+                }
+                all
             }
         };
         self.rows = unset.into_iter().chain(models).collect();
+    }
+
+    /// "Show more": every one of the provider's shown, the first of the rest highlighted.
+    fn show_more(&mut self, cx: &mut Context<Self>) {
+        let Shown::Rail(rail) = self.shown else { return };
+        let Some(id) = self.catalog.rails.get(rail).map(|each| each.id.clone()) else { return };
+        let at = self.rows.iter().position(|row| *row == Row::More);
+        self.expanded.insert(id);
+        self.show_list();
+        self.selected = at.filter(|at| *at < self.rows.len());
+        if let Some(at) = self.selected {
+            self.scroll.scroll_to_item(at, ScrollStrategy::Nearest);
+        }
+        cx.notify();
     }
 
     /// The account `rail`'s list shows, where it has a switch.
@@ -644,6 +757,7 @@ impl ModelPicker {
         }
         let Some(rail) = self.switch_rail() else { return };
         self.accounts_open = true;
+        self.permissions_open = false;
         self.account_filter.update(cx, |field, cx| field.set_text("", cx));
         self.account_query.clear();
         let shown = self.account_shown(rail).map(|each| each.provider.clone());
@@ -693,6 +807,7 @@ impl ModelPicker {
     fn choose(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
         self.accounts_open = false;
+        self.permissions_open = false;
         if !self.query.is_empty() {
             // (Clearing the search shows the list.)
             self.field.update(cx, |field, cx| field.set_text("", cx));
@@ -799,6 +914,7 @@ impl ModelPicker {
         let picked = match row {
             Row::Unset => None,
             Row::Model(ix) => Some(self.catalog.entries[ix].reference.clone()),
+            Row::More => return self.show_more(cx),
         };
         let on_pick = self.on_pick.clone();
         cx.emit(DismissEvent);
@@ -820,6 +936,27 @@ impl ModelPicker {
         }
         if let Some(row) = self.selected {
             self.pick_row(row, window, cx);
+        }
+    }
+
+    /// Escape: the permissions' popover first, then the account list, then the picker.
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.permissions_open {
+            self.permissions_open = false;
+            cx.notify();
+        } else if self.accounts_open {
+            self.close_accounts(window, cx);
+        } else {
+            cx.emit(DismissEvent);
+        }
+    }
+
+    fn pick_effort(&mut self, effort: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(reasoning) = self.reasoning.clone() else { return };
+        let unchanged = self.current.as_ref().is_some_and(|current| current.variant == effort);
+        cx.emit(DismissEvent);
+        if !unchanged {
+            (reasoning.on_effort)(effort, window, cx);
         }
     }
 
@@ -895,38 +1032,131 @@ impl ModelPicker {
         cx.notify();
     }
 
+    /// The speed `provider`'s models run at now: as picked here, else as its box said.
+    fn speed_of(&self, provider: &str) -> Option<String> {
+        match self.speeds.get(provider) {
+            Some(picked) => picked.clone(),
+            None => self.catalog.speeds.get(provider).cloned(),
+        }
+    }
+
+    /// Picks the speed for the current model's provider: shown at once, kept by its box.
+    fn pick_speed(&mut self, speed: Option<String>, cx: &mut Context<Self>) {
+        let (Some(entry), Some(client)) = (self.current_entry(), self.client.clone()) else { return };
+        let provider = entry.provider.to_string();
+        let before = self.speed_of(&provider);
+        if before == speed {
+            return;
+        }
+        self.speeds.insert(provider.clone(), speed.clone());
+        self.problem = None;
+        cx.notify();
+        let task = cx.background_executor().spawn({
+            let provider = provider.clone();
+            async move { client.set_speed(&provider, speed.as_deref()) }
+        });
+        self.speed_sending = Some(cx.spawn(async move |this, cx| {
+            let kept = task.await;
+            this.update(cx, |this, cx| {
+                match kept {
+                    Ok(now) => {
+                        this.speeds.insert(provider, now);
+                    }
+                    Err(error) => {
+                        this.speeds.insert(provider, before);
+                        this.problem = Some(format!("The speed wasn’t changed: {error}").into());
+                    }
+                }
+                this.speed_sending = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Picks a mode in the permissions: set (the popover closes), or, for Full Access not yet
+    /// confirmed on this computer, the picker closes so the composer asks.
+    fn pick_approval(&mut self, approval: Approval, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(permissions) = self.permissions.as_mut() else { return };
+        let choice = permissions.shown.choice(&approval).cloned();
+        let why = choice.as_ref().and_then(|choice| choice.unavailable.as_ref()).map(|why| why.reason.clone());
+        match why.as_deref() {
+            // Not to be had here, as its box says: shown, not picked.
+            Some(reason) if reason != "fullAccessOff" => return,
+            Some(_) => {
+                let pick = permissions.pick.clone();
+                cx.emit(DismissEvent);
+                pick(approval, window, cx);
+            }
+            None => {
+                permissions.shown.approval = approval.clone();
+                self.permissions_open = false;
+                let pick = permissions.pick.clone();
+                cx.notify();
+                pick(approval, window, cx);
+            }
+        }
+    }
+
     fn rows_in(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         let stars = self.starred.is_some();
-        // (Under the account switch, which names the account, a model says its agent alone.)
+        // (Under the account switch, which names the account, a model says no more.)
         let switched = self.switch_rail().is_some();
+        // (Listed with other providers', a row says its own: OpenAI's and Codex's marks look alike.)
+        let mixed = !self.query.trim().is_empty() || self.shown == Shown::Starred;
         range
             .filter_map(|row| {
                 let kind = *self.rows.get(row)?;
                 let selected = self.selected == Some(row);
+                if kind == Row::More {
+                    return Some(
+                        div()
+                            .id(("model-row", row))
+                            .debug_selector(|| "model-show-more".into())
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .h(scaled(px(ROW)))
+                            .px(space::S3)
+                            .rounded(radius::NAV)
+                            .cursor_pointer()
+                            .when(selected, |d| d.bg(c.hover))
+                            .hover(|d| d.bg(c.hover))
+                            .text_ui(TypeSize::Body)
+                            .text_color(c.text_muted)
+                            .on_click(cx.listener(|this, _, _, cx| this.show_more(cx)))
+                            .child("Show more")
+                            .into_any_element(),
+                    );
+                }
                 let number = (row < NUMBERED).then(|| SharedString::from(format!("⌘{}", row + 1)));
-                let (selector, name, line, mark, current, star) = match kind {
+                let (selector, name, detail, mark, current, star) = match kind {
                     Row::Unset => {
                         let unset = self.catalog.unset.as_ref()?;
-                        ("model-row-unset".to_owned(), unset.title.clone(), unset.line.clone(), None, unset.chosen, None)
+                        let line = (!unset.line.is_empty()).then(|| unset.line.clone());
+                        ("model-row-unset".to_owned(), unset.title.clone(), line, None, unset.chosen, None)
                     }
                     Row::Model(ix) => {
                         let entry = &self.catalog.entries[ix];
                         let rail = &self.catalog.rails[entry.rail];
                         let current = self.current.as_ref().is_some_and(|current| entry.is(&current.provider_id, &current.id));
                         let star = stars.then(|| (ix, self.is_starred(entry)));
-                        let line = entry.switched_line.clone().filter(|_| switched).unwrap_or_else(|| entry.line.clone());
-                        (format!("model-row-{}/{}", entry.reference.provider_id, entry.reference.id), entry.name.clone(), line, Some((rail.mark, rail.color)), current, star)
+                        let detail = entry.detail.clone().filter(|_| !(switched && entry.switched)).or_else(|| mixed.then(|| rail.name.clone()));
+                        (format!("model-row-{}/{}", entry.reference.provider_id, entry.reference.id), entry.name.clone(), detail, Some((rail.mark, rail.color)), current, star)
                     }
+                    Row::More => unreachable!(),
                 };
                 let star_selector = selector.replacen("model-row-", "model-star-", 1);
-                let mark = mark.map(|(path, color)| match path {
-                    Some(path) => kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Indicator).color(color.unwrap_or(c.text_muted)).into_any_element(),
-                    None => Icon::new(IconName::Sparkle).size(IconSize::Indicator).color(c.text_faint).into_any_element(),
-                });
+                let mark = match mark {
+                    Some((Some(path), color)) => kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Nav).color(color.unwrap_or(c.text_muted)).into_any_element(),
+                    Some((None, _)) => Icon::new(IconName::Sparkle).size(IconSize::Nav).color(c.text_faint).into_any_element(),
+                    None => div().size(px(16.)).into_any_element(),
+                };
                 Some(
                     div()
                         .id(("model-row", row))
+                        .group("model-row")
                         .debug_selector(move || selector)
                         .flex()
                         .items_center()
@@ -934,31 +1164,25 @@ impl ModelPicker {
                         .w_full()
                         .h(scaled(px(ROW)))
                         .pl(space::S3)
-                        .pr(space::S2)
+                        .pr(space::S1_5)
                         .rounded(radius::NAV)
                         .cursor_pointer()
                         .when(selected, |d| d.bg(c.hover))
                         .hover(|d| d.bg(c.hover))
                         .on_click(cx.listener(move |this, _, window, cx| this.pick_row(row, window, cx)))
+                        .child(div().flex().flex_none().items_center().justify_center().size(px(16.)).child(mark))
                         .child(
                             div()
                                 .flex()
-                                .flex_col()
                                 .flex_1()
+                                .items_center()
+                                .gap(space::S1_5)
                                 .min_w_0()
-                                .gap(px(1.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(space::S1_5)
-                                        .min_w_0()
-                                        .child(div().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
-                                        .when(current, |d| d.child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.accent))),
-                                )
-                                .child(div().flex().items_center().gap(space::S1_5).min_w_0().children(mark).child(div().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_muted).child(line))),
+                                .child(div().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
+                                .when(current, |d| d.child(div().flex_none().debug_selector(|| "model-current".into()).child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.text_muted))))
+                                .children(detail.map(|detail| div().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(detail))),
                         )
-                        .children(number.map(|keys| div().flex_none().child(keycap(keys, c.border, c.text_faint))))
+                        // ☆ on the row under the pointer (or highlighted); ★ always where starred.
                         .children(star.map(|(ix, on)| {
                             div()
                                 .id(("model-star", ix))
@@ -969,14 +1193,16 @@ impl ModelPicker {
                                 .justify_center()
                                 .size(px(24.))
                                 .rounded(radius::SMALL)
+                                .when(!on && !selected, |d| d.opacity(0.).group_hover("model-row", |s| s.opacity(1.)))
                                 .hover(|d| d.bg(c.pressed))
-                                .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(if on { "Unstar" } else { "Star" }).build(cx))
+                                .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(if on { "Remove from Favourites" } else { "Add to Favourites" }).build(cx))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.toggle_star(ix, cx);
                                 }))
-                                .child(Icon::new(if on { IconName::StarFilled } else { IconName::Star }).size(IconSize::Nav).color(if on { c.text } else { c.text_faint }))
+                                .child(Icon::new(if on { IconName::StarFilled } else { IconName::Star }).size(IconSize::Nav).color(if on { c.text } else { c.text_muted }))
                         }))
+                        .children(number.map(|keys| div().flex_none().child(keycap(keys, c.border, c.text_faint))))
                         .into_any_element(),
                 )
             })
@@ -1002,7 +1228,7 @@ impl ModelPicker {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(32.))
+                        .size(px(34.))
                         .rounded(radius::NAV)
                         .cursor_pointer()
                         .when(on, |d| d.bg(c.selected))
@@ -1011,12 +1237,12 @@ impl ModelPicker {
                         .on_click(cx.listener(move |this, _, _, cx| this.choose(shown, cx)))
                         .child(mark),
                 )
-                // The provider shown, marked at the rail's edge.
-                .when(on, |d| d.child(div().absolute().right_0().top(px(8.)).w(px(3.)).h(px(16.)).rounded_l(px(2.)).bg(c.accent)))
+                // The provider shown, marked in blue at the rail's edge.
+                .when(on, |d| d.child(div().absolute().right_0().top(px(9.)).w(px(3.)).h(px(16.)).rounded_l(px(2.)).bg(c.accent)))
         };
         let mut items: Vec<AnyElement> = Vec::new();
         if self.starred.is_some() {
-            items.push(button("model-rail-starred".into(), Shown::Starred, "Starred".into(), Icon::new(IconName::StarFilled).size(IconSize::Medium).color(c.text).into_any_element(), cx).into_any_element());
+            items.push(button("model-rail-starred".into(), Shown::Starred, "Favourites".into(), Icon::new(IconName::StarFilled).size(IconSize::Medium).color(c.text).into_any_element(), cx).into_any_element());
             if !self.catalog.rails.is_empty() {
                 items.push(div().mx(space::S3).my(space::S1).h(px(1.)).bg(c.border).into_any_element());
             }
@@ -1161,6 +1387,230 @@ impl ModelPicker {
         )
     }
 
+    /// Reasoning, on the right: the current model's efforts (and "Default" where the choice can be
+    /// left to it), the one picked checked; the model's name over them.
+    fn reasoning_column(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let reasoning = self.reasoning.clone()?;
+        let c = cx.theme().colors.clone();
+        let entry = self.current_entry().cloned();
+        let picked = self.current.as_ref().and_then(|current| current.variant.clone());
+        let mut rows: Vec<AnyElement> = Vec::new();
+        match &entry {
+            Some(entry) if !entry.efforts.is_empty() => {
+                let choices = reasoning.default.then_some(None).into_iter().chain(entry.efforts.iter().cloned().map(Some));
+                for choice in choices {
+                    let id = choice.clone().unwrap_or_else(|| "default".to_owned());
+                    let selector = format!("model-effort-{id}");
+                    let title = choice.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
+                    let on = picked == choice;
+                    rows.push(
+                        div()
+                            .id(SharedString::from(selector.clone()))
+                            .debug_selector(move || selector)
+                            .flex()
+                            .items_center()
+                            .h(scaled(px(ROW)))
+                            .px(space::S2)
+                            .rounded(radius::NAV)
+                            .cursor_pointer()
+                            .hover(|d| d.bg(c.hover))
+                            .on_click(cx.listener(move |this, _, window, cx| this.pick_effort(choice.clone(), window, cx)))
+                            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(title))
+                            .when(on, |d| d.child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.text_muted)))
+                            .into_any_element(),
+                    );
+                }
+            }
+            Some(_) => rows.push(div().px(space::S2).py(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child("This model has no reasoning levels.").into_any_element()),
+            None => rows.push(div().px(space::S2).py(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child("Pick a model to choose how hard it thinks.").into_any_element()),
+        }
+        Some(
+            div()
+                .debug_selector(|| "model-reasoning".into())
+                .flex()
+                .flex_col()
+                .flex_none()
+                .w(px(RIGHT))
+                .border_l_1()
+                .border_color(c.border)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S2)
+                        .h(px(44.))
+                        .mx(space::S3)
+                        .border_b_1()
+                        .border_color(c.border)
+                        .child(div().flex_none().text_ui(TypeSize::Body).text_color(c.text_muted).child("Reasoning"))
+                        .child(div().flex_1())
+                        .children(entry.map(|entry| div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_faint).child(entry.name))),
+                )
+                .child(div().id("model-efforts").flex().flex_col().p(space::S1).px(space::S1_5).overflow_y_scroll().children(rows))
+                .into_any_element(),
+        )
+    }
+
+    /// Standard | Fast: the speeds the current model runs at, where it has more than Standard.
+    fn speed_switch(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.speed || self.client.is_none() {
+            return None;
+        }
+        let entry = self.current_entry()?.clone();
+        if entry.speeds.is_empty() {
+            return None;
+        }
+        let c = cx.theme().colors.clone();
+        let picked = self.speed_of(&entry.provider);
+        let choices = std::iter::once((None, "Standard".to_owned(), None)).chain(entry.speeds.iter().map(|speed| (Some(speed.id.clone()), speed.name.clone(), speed.description.clone())));
+        Some(
+            div()
+                .debug_selector(|| "model-speed".into())
+                .flex()
+                .items_center()
+                .p(px(2.))
+                .rounded(radius::NAV)
+                .bg(c.sunken)
+                .children(choices.map(|(id, name, description)| {
+                    let on = picked == id;
+                    let selector = format!("model-speed-{}", id.as_deref().unwrap_or("standard"));
+                    let fast = id.is_some();
+                    let tip: SharedString = description.unwrap_or_else(|| name.clone()).into();
+                    div()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .flex()
+                        .items_center()
+                        .gap(space::S1)
+                        .h(px(26.))
+                        .px(space::S2)
+                        .rounded(radius::SMALL)
+                        .cursor_pointer()
+                        .when(on, |d| d.bg(c.selected))
+                        .when(!on, |d| d.hover(|d| d.bg(c.hover)))
+                        .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(tip.clone()).build(cx))
+                        .on_click(cx.listener(move |this, _, _, cx| this.pick_speed(id.clone(), cx)))
+                        .when(fast, |d| d.child(Icon::new(IconName::Bolt).size(IconSize::XSmall).color(if on { c.text } else { c.text_muted })))
+                        .child(div().text_ui(TypeSize::Small).text_color(if on { c.text } else { c.text_muted }).child(name))
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The conversation's mode, at the bottom's right: its icon and name, opening the permissions.
+    fn permissions_button(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let permissions = self.permissions.as_ref()?;
+        let c = cx.theme().colors.clone();
+        let shown = &permissions.shown;
+        let title = shown.title_of(&shown.approval).to_owned();
+        let open = self.permissions_open;
+        let holding = shown.holding().is_some();
+        let fixed = shown.parent.is_some();
+        let tip: SharedString = if fixed { "A subagent works with the permissions of the conversation that started it. Change them there.".into() } else { format!("Permissions: {}", shown.detail_of(&shown.approval)).into() };
+        Some(
+            div()
+                .id("model-permissions")
+                .debug_selector(|| "model-permissions".into())
+                .relative()
+                .flex()
+                .items_center()
+                .gap(space::S1_5)
+                .h(px(30.))
+                .px(space::S2)
+                .rounded(radius::NAV)
+                .when(open, |d| d.bg(c.hover))
+                .when(!fixed, |d| d.cursor_pointer().hover(|d| d.bg(c.hover)).on_click(cx.listener(|this, _, _, cx| {
+                    this.permissions_open = !this.permissions_open;
+                    this.accounts_open = false;
+                    cx.notify();
+                })))
+                .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(tip.clone()).build(cx))
+                .child(Icon::new(approval_icon(&shown.approval)).size(IconSize::Nav).color(c.icon))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(title))
+                .when(!fixed, |d| d.child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronUp }).size(IconSize::XSmall).color(c.text_faint)))
+                .children(holding.then(|| div().absolute().top(px(4.)).left(px(18.)).size(px(6.)).rounded_full().bg(c.warning)))
+                .into_any_element(),
+        )
+    }
+
+    /// The permissions' popover, over the picker's bottom right: the four modes in a row, and the
+    /// one picked's name and what it does, as its box words them.
+    fn permissions_popover(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.permissions_open {
+            return None;
+        }
+        let shown = self.permissions.as_ref()?.shown.clone();
+        let theme = cx.theme().clone();
+        let c = theme.colors.clone();
+        let modes: Vec<Approval> = if shown.options.is_empty() { Approval::ALL.to_vec() } else { shown.options.iter().map(|choice| choice.approval.clone()).collect() };
+        let held = shown.holding().map(|why| why.why.clone());
+        Some(
+            div()
+                .id("model-permissions-popover")
+                .debug_selector(|| "model-permissions-popover".into())
+                .absolute()
+                .right(space::S2)
+                .bottom(px(BAR + 4.))
+                .w(px(300.))
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .p(space::S3)
+                .rounded(radius::POPOVER)
+                .bg(c.elevated)
+                .border_1()
+                .border_color(c.border)
+                .shadow(theme.elevated_shadow())
+                .occlude()
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Permissions"))
+                .child(div().flex().items_center().p(px(2.)).rounded(radius::NAV).bg(c.sunken).children(modes.into_iter().map(|approval| {
+                    let on = approval == shown.approval;
+                    let choice = shown.choice(&approval);
+                    let refused = choice.and_then(|choice| choice.unavailable.as_ref()).filter(|why| why.reason != "fullAccessOff").map(|why| why.why.clone());
+                    let title = shown.title_of(&approval).to_owned();
+                    let tip: SharedString = match &refused {
+                        Some(why) => format!("{title}: {why}").into(),
+                        None => title.into(),
+                    };
+                    let selector = format!("model-permission-{}", approval.name());
+                    let icon = approval_icon(&approval);
+                    div()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .h(px(28.))
+                        .rounded(radius::SMALL)
+                        .when(on, |d| d.bg(c.selected))
+                        .when(refused.is_none() && !on, |d| d.cursor_pointer().hover(|d| d.bg(c.hover)))
+                        .when(refused.is_some(), |d| d.opacity(0.4))
+                        .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(tip.clone()).build(cx))
+                        .on_click(cx.listener(move |this, _, window, cx| this.pick_approval(approval.clone(), window, cx)))
+                        .child(Icon::new(icon).size(IconSize::Nav).color(if on { c.text } else { c.icon }))
+                })))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child({
+                            let title = shown.title_of(&shown.approval).to_owned();
+                            let selector = format!("model-permission-title-{title}");
+                            div().debug_selector(move || selector).text_ui(TypeSize::Body).text_color(c.text).child(title)
+                        })
+                        .child({
+                            let detail = shown.detail_of(&shown.approval).to_owned();
+                            let selector = format!("model-permission-detail-{detail}");
+                            div().debug_selector(move || selector).text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)
+                        })
+                        .children(held.map(|why| div().text_ui(TypeSize::Small).text_color(c.warning).child(format!("Asks first for now. {why}")))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// What the list says where it has no rows.
     fn empty_words(&self) -> SharedString {
         if let Some(notice) = &self.notice {
@@ -1170,9 +1620,19 @@ impl ModelPicker {
             return format!("No models match “{}”.", self.query.trim()).into();
         }
         match self.shown {
-            Shown::Starred => "Star a model with ☆ to keep it here, whichever provider it’s from.".into(),
+            Shown::Starred => "Add a model with ☆ to keep it here, whichever provider it’s from.".into(),
             Shown::Rail(_) => "No models to offer yet.".into(),
         }
+    }
+}
+
+/// A mode's icon, wherever it's shown.
+pub fn approval_icon(approval: &Approval) -> IconName {
+    match approval {
+        Approval::AskFirst => IconName::Hand,
+        Approval::AcceptEdits => IconName::Pencil,
+        Approval::FullAccess => IconName::Bolt,
+        Approval::Auto | Approval::Other(_) => IconName::Shield,
     }
 }
 
@@ -1180,7 +1640,9 @@ impl Render for ModelPicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let c = &theme.colors;
-        let height = scaled(px(self.height));
+        // (Tall enough for Reasoning's efforts too.)
+        let rows_tall = if self.reasoning.is_some() { (self.height - 8.).max(6. * ROW) + 8. } else { self.height };
+        let height = scaled(px(rows_tall));
         let rows = if self.notice.is_some() { 0 } else { self.rows.len() };
         let list = if rows == 0 {
             div()
@@ -1199,14 +1661,46 @@ impl Render for ModelPicker {
                 .p(space::S1)
                 .into_any_element()
         };
+        let searching = !self.query.trim().is_empty();
         let search = div()
             .flex()
             .items_center()
             .gap(space::S2)
             .h(px(44.))
-            .px(space::S3)
+            .mx(space::S3)
+            .border_b_1()
+            // (Blue while it's searching every provider's, as T3's.)
+            .border_color(if searching { c.accent } else { c.border })
             .child(Icon::new(IconName::Search).size(IconSize::Nav).color(c.text_faint))
             .child(div().flex_1().min_w_0().child(self.field.clone()));
+        let middle = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(MIDDLE))
+            .min_w_0()
+            .child(search)
+            .children(self.account_switch(cx))
+            .child(div().relative().child(list).children(self.account_list(cx)))
+            .children(self.problem.clone().map(|problem| div().px(space::S3).pb(space::S1).child(kuvo_ui::Notice::said("model-picker-problem", kuvo_ui::Tone::Warning, problem))))
+            .children(self.note.clone().map(|note| div().px(space::S3).py(space::S2).border_t_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note)));
+        let reasoning = self.reasoning_column(cx);
+        let width = RAIL + MIDDLE + if reasoning.is_some() { RIGHT } else { 0. };
+        let speed = self.speed_switch(cx);
+        let permissions = self.permissions_button(cx);
+        let bar = (speed.is_some() || permissions.is_some()).then(|| {
+            div()
+                .debug_selector(|| "model-picker-bar".into())
+                .flex()
+                .items_center()
+                .h(px(BAR))
+                .px(space::S2)
+                .border_t_1()
+                .border_color(c.border)
+                .children(speed)
+                .child(div().flex_1())
+                .children(permissions)
+        });
         div()
             .id("model-picker")
             .debug_selector(|| "model-picker".into())
@@ -1216,8 +1710,7 @@ impl Render for ModelPicker {
             .on_action(cx.listener(|this, _: &NextRail, _, cx| this.step_rail(1, cx)))
             .on_action(cx.listener(|this, _: &PreviousRail, _, cx| this.step_rail(-1, cx)))
             .on_action(cx.listener(|this, _: &Pick, window, cx| this.pick(window, cx)))
-            // (Escape closes the account list first.)
-            .on_action(cx.listener(|this, _: &Close, window, cx| if this.accounts_open { this.close_accounts(window, cx) } else { cx.emit(DismissEvent) }))
+            .on_action(cx.listener(|this, _: &Close, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &Row1, window, cx| this.pick_number(0, window, cx)))
             .on_action(cx.listener(|this, _: &Row2, window, cx| this.pick_number(1, window, cx)))
             .on_action(cx.listener(|this, _: &Row3, window, cx| this.pick_number(2, window, cx)))
@@ -1229,31 +1722,76 @@ impl Render for ModelPicker {
             .on_action(cx.listener(|this, _: &Row9, window, cx| this.pick_number(8, window, cx)))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             .occlude()
+            .relative()
             .flex()
-            .w(px(WIDTH))
+            .flex_col()
+            .w(px(width))
             .rounded(radius::POPOVER)
             .bg(c.elevated)
             .border_1()
             .border_color(c.border)
             .shadow(theme.elevated_shadow())
             .overflow_hidden()
-            .child(self.rail(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(search)
-                    // The search's underline, as 0.7's.
-                    .child(div().mx(space::S3).h(px(1.)).bg(c.accent))
-                    .children(self.effort_controls(cx))
-                    .children(self.account_switch(cx))
-                    .child(div().relative().child(list).children(self.account_list(cx)))
-                    .children(self.problem.clone().map(|problem| div().px(space::S3).pb(space::S1).child(kuvo_ui::Notice::said("model-picker-problem", kuvo_ui::Tone::Warning, problem))))
-                    .children(self.note.clone().map(|note| div().px(space::S3).py(space::S2).border_t_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))),
-            )
+            .child(div().flex().child(self.rail(cx)).child(middle).children(reasoning))
+            .children(bar)
+            .children(self.permissions_popover(cx))
     }
+}
+
+/// What the model chip says: the provider's mark, the model's name and its effort, as T3's
+/// ("✲ Opus 5.5 High"); a dot where the conversation does less than its permissions say for now.
+#[derive(Clone, Debug, Default)]
+pub struct ChipWords {
+    pub provider: Option<String>,
+    pub name: String,
+    pub effort: Option<String>,
+    pub holding: Option<SharedString>,
+}
+
+/// The model chip, opening `picker` (`ModelPicker`) above it: the composer's and a side chat's.
+pub fn model_chip<V: 'static>(words: ChipWords, disabled: bool, handle: &kuvo_ui::menu::PopoverMenuHandle, picker: impl Fn(&mut V, &mut Window, &mut Context<V>) -> Entity<ModelPicker> + 'static, cx: &mut Context<V>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let mark = words.provider.as_deref().and_then(|provider| {
+        let (_, path) = kuvo_ui::icon::provider_mark(provider)?;
+        Some(kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Nav).color(kuvo_ui::icon::provider_mark_color(provider).unwrap_or(c.icon)).into_any_element())
+    });
+    let tip: SharedString = match (&words.effort, &words.holding) {
+        (_, Some(why)) => format!("{}. {why}", words.name).into(),
+        (Some(effort), None) => format!("{} · {effort}", words.name).into(),
+        (None, None) => words.name.clone().into(),
+    };
+    let trigger = div()
+        .id("model-chip")
+        .debug_selector(|| "model-chip".into())
+        .relative()
+        .flex()
+        .items_center()
+        .gap(space::S1_5)
+        .min_w_0()
+        .h(px(24.))
+        .px(space::S2)
+        .rounded(radius::NAV)
+        .text_ui(TypeSize::Small)
+        .when(disabled, |d| d.opacity(0.5))
+        .when(!disabled, |d| d.cursor_pointer().hover(|d| d.bg(c.hover)))
+        .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(tip.clone()).shortcut("⇧⌘M").build(cx))
+        .children(mark.map(|mark| div().flex_none().child(mark)))
+        // In a tight row the name gives up its room first, then the effort (#975).
+        .child(div().debug_selector({
+            let name = format!("model-chip-name-{}", words.name);
+            move || name
+        }).min_w_0().max_w(px(220.)).flex_shrink_1().truncate().text_color(c.text).child(words.name.clone()))
+        .children(words.effort.clone().map(|effort| div().debug_selector({
+            let selector = format!("model-chip-effort-{effort}");
+            move || selector
+        }).min_w_0().flex_shrink(0.001).truncate().text_color(c.text_muted).child(effort)))
+        .children(words.holding.is_some().then(|| div().absolute().top(px(3.)).right(px(3.)).size(px(6.)).rounded_full().bg(c.warning)));
+    if disabled {
+        // (Held: it says the model, and opens nothing.)
+        return div().flex().flex_shrink_1().min_w_0().child(trigger).into_any_element();
+    }
+    let this = cx.entity().downgrade();
+    kuvo_ui::menu::PopoverMenu::view("model-menu", trigger, move |window, cx| this.update(cx, |this, cx| picker(this, window, cx)).expect("its view opens its picker")).with_handle(handle.clone()).above().centered().shrinks().into_any_element()
 }
 
 /// A setting's model, as a settings row draws a choice (Settings › Models, a bot's): what's chosen,
@@ -1325,6 +1863,8 @@ mod tests {
         // (One its provider retires isn't offered.)
         assert_eq!(catalog.entries.iter().map(|entry| entry.line.to_string()).collect::<Vec<_>>(), ["Anthropic", "Anthropic", "openai", "OpenCode Zen · Free", "OpenCode Go", "Claude Code · Work"]);
         assert_eq!(catalog.rails.iter().map(|rail| rail.id.to_string()).collect::<Vec<_>>(), ["anthropic", "openai", "opencode", "claude"]);
+        // A row says where it's from only where its mark doesn't: two providers under one mark.
+        assert_eq!(catalog.entries.iter().map(|entry| entry.detail.as_deref().unwrap_or("").to_owned()).collect::<Vec<_>>(), ["", "", "", "OpenCode Zen · Free", "OpenCode Go", ""]);
         // A model named by another id it's known by is that one.
         assert_eq!(catalog.position(&ModelRef { provider_id: "claude-code".into(), id: "default".into(), variant: None }), Some(5));
     }

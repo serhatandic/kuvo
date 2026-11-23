@@ -181,7 +181,7 @@ fn the_composers_bottom_row_is_on_one_line(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let middle = |cx: &mut VisualTestContext, selector: &str| bounds(cx, selector).unwrap_or_else(|| panic!("{selector} isn't on screen")).center().y;
     let line = middle(cx, "attach");
-    for each in ["mode-chip", "model-chip", "effort-chip", "send"] {
+    for each in ["model-chip", "send"] {
         assert!((middle(cx, each) - line).abs() < px(0.5), "{each} is off the paperclip's line");
     }
 }

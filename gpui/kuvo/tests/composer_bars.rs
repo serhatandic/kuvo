@@ -1,4 +1,4 @@
-//! The composer’s mode menu, Local or Worktree for a new session, and the conversation’s Activity,
+//! The composer’s permissions (in the model picker, #975), Local or Worktree for a new session, and the conversation’s Activity,
 //! as someone uses them against the stand-in box (nothing real is reached): picking a mode sets it
 //! on the box, Full Access asks once on this computer first; a new session starts in a worktree
 //! when picked; and Activity lists what the box says runs for a conversation (a bot's sessions, its
@@ -57,6 +57,14 @@ fn click(cx: &mut VisualTestContext, selector: &str) {
     cx.run_until_parked();
 }
 
+/// Opens the permissions, in the model picker over the composer.
+fn permissions(cx: &mut VisualTestContext) {
+    if !shown(cx, "model-picker") {
+        click(cx, "model-chip");
+    }
+    click(cx, "model-permissions");
+}
+
 fn mode_label(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
     workspace.read_with(cx, |workspace, cx| workspace.conversation().and_then(|view| view.read(cx).composer().read(cx).approval()).map(|shown| shown.approval.title().to_owned()))
 }
@@ -79,9 +87,9 @@ fn picking_a_mode_sets_it_on_the_box_and_the_chip_says_the_boxs_answer(cx: &mut 
     stand_in.set_approvals(true, None);
     let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
     assert_eq!(mode_label(&workspace, cx).as_deref(), Some("Auto"), "this computer's default, as its box says");
-    click(cx, "mode-chip");
-    assert!(shown(cx, "menu-item-Ask First") && shown(cx, "menu-item-Accept Edits") && shown(cx, "menu-item-Full Access"));
-    click(cx, "menu-item-Accept Edits");
+    permissions(cx);
+    assert!(shown(cx, "model-permission-askFirst") && shown(cx, "model-permission-acceptEdits") && shown(cx, "model-permission-fullAccess"));
+    click(cx, "model-permission-acceptEdits");
     assert_eq!(stand_in.approval_of("ses_signup").as_deref(), Some("acceptEdits"));
     assert_eq!(mode_label(&workspace, cx).as_deref(), Some("Accept Edits"));
 }
@@ -90,25 +98,25 @@ fn picking_a_mode_sets_it_on_the_box_and_the_chip_says_the_boxs_answer(cx: &mut 
 fn full_access_asks_once_on_this_computer_and_cancel_leaves_everything_as_it_was(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
-    click(cx, "mode-chip");
-    click(cx, "menu-item-Full Access");
+    permissions(cx);
+    click(cx, "model-permission-fullAccess");
     assert!(shown(cx, "full-access-question"), "asked first, in the composer");
     assert_eq!((stand_in.full_access(), stand_in.approval_of("ses_signup")), (false, None), "nothing changed on the box yet");
     click(cx, "full-access-cancel");
     assert!(!shown(cx, "full-access-question"));
     assert_eq!((stand_in.full_access(), mode_label(&workspace, cx).as_deref()), (false, Some("Auto")));
 
-    click(cx, "mode-chip");
-    click(cx, "menu-item-Full Access");
+    permissions(cx);
+    click(cx, "model-permission-fullAccess");
     click(cx, "full-access-allow");
     assert!(stand_in.full_access(), "switched on for this computer");
     assert_eq!(stand_in.approval_of("ses_signup").as_deref(), Some("fullAccess"));
     assert_eq!(mode_label(&workspace, cx).as_deref(), Some("Full Access"));
     // Confirmed here: picking it again doesn't ask.
-    click(cx, "mode-chip");
-    click(cx, "menu-item-Ask First");
-    click(cx, "mode-chip");
-    click(cx, "menu-item-Full Access");
+    permissions(cx);
+    click(cx, "model-permission-askFirst");
+    permissions(cx);
+    click(cx, "model-permission-fullAccess");
     assert!(!shown(cx, "full-access-question"));
     assert_eq!(stand_in.approval_of("ses_signup").as_deref(), Some("fullAccess"));
 }
@@ -127,8 +135,8 @@ fn a_new_session_starts_in_a_worktree_and_in_the_mode_picked(cx: &mut TestAppCon
     assert!(shown(cx, "worktree-chip"), "a project's new session offers Local or Worktree");
     click(cx, "worktree-chip");
     click(cx, "menu-item-Worktree");
-    click(cx, "mode-chip");
-    click(cx, "menu-item-Ask First");
+    permissions(cx);
+    click(cx, "model-permission-askFirst");
     workspace.update_in(cx, |workspace, window, cx| window.focus(&gpui::Focusable::focus_handle(workspace.landing().read(cx), cx), cx));
     cx.simulate_input("Fix the footer");
     cx.simulate_keystrokes("enter");
