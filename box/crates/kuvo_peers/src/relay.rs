@@ -20,7 +20,10 @@ use tokio_tungstenite::{
     tungstenite::{Message as Ws, protocol::WebSocketConfig},
 };
 
-use crate::session::{self, BoxHello, ClientHello, Id, Output, Sessions};
+use crate::{
+    parts::WorkQueueParts,
+    session::{self, BoxHello, ClientHello, Id, Output, Sessions},
+};
 
 const WELCOME_WITHIN: Duration = Duration::from_secs(15);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
@@ -331,6 +334,7 @@ impl Relay {
                 events,
                 observations,
                 sessions: Sessions::default(),
+                work_queue_parts: WorkQueueParts::default(),
             }
             .run(),
         );
@@ -354,6 +358,7 @@ struct Owner {
     events: mpsc::Sender<Event>,
     observations: broadcast::Sender<Arc<RelayEvent>>,
     sessions: Sessions,
+    work_queue_parts: WorkQueueParts,
 }
 
 impl Owner {
@@ -492,7 +497,7 @@ impl Owner {
         Ok(())
     }
 
-    fn receive_mail(&self, from: Address, body: &[u8]) -> Result<(), Error> {
+    fn receive_mail(&mut self, from: Address, body: &[u8]) -> Result<(), Error> {
         if let Some(sealed) = body.strip_prefix(INSTALLER) {
             if body.len() <= INSTALLER_LIMIT
                 && self.observations.receiver_count() > 0
@@ -522,7 +527,10 @@ impl Owner {
             .chain(peers.iter().filter(|peer| peer.address != from));
         for peer in candidates {
             match Envelope::open(body, &self.config.key, &peer.key) {
-                Ok(envelope) => {
+                Ok(mut envelope) => {
+                    if !self.work_queue_parts.receive(peer.key, &mut envelope) {
+                        return Ok(());
+                    }
                     return self.emit(Event::Mail {
                         from,
                         key: peer.key,
@@ -613,6 +621,8 @@ impl Owner {
                 reply,
             } => {
                 self.config.peers = peers;
+                self.work_queue_parts
+                    .retain(|key| self.config.peers.iter().any(|peer| &peer.key == key));
                 self.config.grants = grants;
                 for id in self.sessions.revoke(&self.config.grants) {
                     let output = self.sessions.close(id);

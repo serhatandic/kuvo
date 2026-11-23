@@ -68,14 +68,15 @@ impl TestRelay {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = config(format!("ws://{}", listener.local_addr().unwrap()));
         change(&mut config);
+        let secret = config.secret;
         let mut relay = Relay::start(config);
         let mut test = Self(
             accept_async(listener.accept().await.unwrap().0)
                 .await
                 .unwrap(),
         );
-        assert_eq!(test.binary().await, frames::relay_hello(&RUST_SECRET));
-        let address = keys::address_of(&RUST_SECRET);
+        assert_eq!(test.binary().await, frames::relay_hello(&secret));
+        let address = keys::address_of(&secret);
         test.send([&[1], &address[..]].concat()).await;
         assert!(matches!(relay.events.recv().await, Some(Event::Connected(got)) if got == address));
         (relay, test)
@@ -780,7 +781,7 @@ async fn owner_forwarding_binds_the_peer_to_the_accepted_setup_and_operation() {
             let (kind, _, body) = test.frame().await;
             if kind != Kind::Mail { continue; }
             let mail = Envelope::open(&body, &PEER_KEY, &here).unwrap();
-            if let Some(packet) = mail.0.get("ownerReply") {
+            if let Some(packet) = mail.0.get("workQueue").and_then(|queue| queue.get("ownerReply")) {
                 assert_eq!(packet, &json!({"to":encode(&peer),"nonce":nonce,"setup":setup,"operation":operation,"reply":reply}));
                 break;
             }
@@ -802,7 +803,7 @@ async fn owner_forwarding_binds_the_peer_to_the_accepted_setup_and_operation() {
             let (kind, _, body) = test.frame().await;
             if kind != Kind::Mail { continue; }
             let mail = Envelope::open(&body, &PEER_KEY, &here).unwrap();
-            if let Some(packet) = mail.0.get("ownerRequest") {
+            if let Some(packet) = mail.0.get("workQueue").and_then(|queue| queue.get("ownerRequest")) {
                 assert_eq!(packet["to"], encode(&peer));
                 for (key, body) in [(encode(&[6; 32]), json!({"forged":true})), (operation, reply.body.clone())] {
                     let answer = json!({"at":12,"ownerReply":{"to":encode(&here),"nonce":packet["nonce"],"setup":setup,
@@ -815,6 +816,234 @@ async fn owner_forwarding_binds_the_peer_to_the_accepted_setup_and_operation() {
         }
         assert_eq!(asking.await.unwrap().unwrap(), reply);
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn owner_forwarding_carries_the_full_draft_in_each_direction() {
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Action, Admission, Error, Handle, Reply, Request, SetupState, Submitter},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_wire::keys::encode;
+    use std::sync::Arc;
+
+    const OTHER_SECRET: [u8; 32] = [29; 32];
+    let here = public(RUST_KEY);
+    let peer = public(PEER_KEY);
+    let here_address = keys::address_of(&RUST_SECRET);
+    let peer_address = keys::address_of(&OTHER_SECRET);
+    let (left_relay, mut left_wire) = TestRelay::connect_with(|config| {
+        config.peers[0].address = peer_address;
+    })
+    .await;
+    let (right_relay, mut right_wire) = TestRelay::connect_with(|config| {
+        config.secret = OTHER_SECRET;
+        config.key = PEER_KEY;
+        config.peers = vec![Host {
+            key: here,
+            address: here_address,
+        }];
+    })
+    .await;
+    let capture = std::env::var_os("KUVO_OWNER_PARTS_TS");
+    let (recorded, mut frames_seen) = tokio::sync::mpsc::unbounded_channel();
+    let relay = tokio::spawn(async move {
+        loop {
+            let (mut frame, from, to, wire) = tokio::select! {
+                frame = left_wire.binary() => (frame, here_address, peer_address, &mut right_wire),
+                frame = right_wire.binary() => (frame, peer_address, here_address, &mut left_wire),
+            };
+            if frame.first() != Some(&2) {
+                continue;
+            }
+            assert_eq!(&frame[1..17], &to);
+            if capture.is_some() {
+                let origin = u8::from(from == peer_address);
+                recorded.send((origin, encode(&frame))).unwrap();
+            }
+            frame[1..17].copy_from_slice(&from);
+            wire.send(frame).await;
+        }
+    });
+
+    let setup = format!("set_{}", encode(&[3; 16]));
+    async fn resident(
+        key: [u8; 32],
+        remote: Host,
+        relay: Relay,
+        setup: &str,
+    ) -> (tempfile::TempDir, ResidentPeers, Handle) {
+        let home = tempfile::tempdir().unwrap();
+        let roster = Roster {
+            here: Some(key),
+            main: Some(key),
+            name: "This computer".into(),
+            members: vec![Member {
+                key: remote.key,
+                address: Some(remote.address),
+                name: "Other computer".into(),
+                kind: ComputerKind::Machine,
+            }],
+        };
+        let resident = ResidentPeers::start(
+            home.path(),
+            roster,
+            Some(relay),
+            None,
+            false,
+            Arc::new(|| 123),
+        )
+        .await
+        .unwrap();
+        let devices = Devices::load(home.path(), "This computer".into(), ComputerKind::Machine)
+            .await
+            .unwrap()
+            .devices;
+        let accepted = SetupState {
+            id: Some(setup.into()),
+            ..SetupState::default()
+        };
+        let handle = Handle::new(
+            resident.reader(),
+            resident.relay_handle(),
+            devices,
+            move || accepted.clone(),
+        );
+        (home, resident, handle)
+    }
+    let (left_home, _left_resident, left) = resident(
+        here,
+        Host {
+            key: peer,
+            address: peer_address,
+        },
+        left_relay,
+        &setup,
+    )
+    .await;
+    let (right_home, _right_resident, right) = resident(
+        peer,
+        Host {
+            key: here,
+            address: here_address,
+        },
+        right_relay,
+        &setup,
+    )
+    .await;
+    let mut right_incoming = right.incoming().unwrap();
+    let mut left_incoming = left.incoming().unwrap();
+    assert_eq!(left.members()[0].key, Some(peer));
+    assert_eq!(left.members()[0].name, "Other computer");
+
+    for (session, home, key) in [
+        ("ses_addressed_draft", right_home.path(), peer),
+        ("ses_scoped_draft", left_home.path(), here),
+    ] {
+        let moved = json!([{"session":session,"key":encode(&key),"at":123,"arrived":true,"formatVersion":1}]);
+        kuvo_store::files::write_atomic(
+            &home.join("run/moves/moved.json"),
+            &serde_json::to_vec(&moved).unwrap(),
+        )
+        .unwrap();
+    }
+
+    for (session, size, addressed, source, destination, from, to, inbox) in [
+        (
+            "ses_addressed_draft",
+            5 * 1024 * 1024,
+            true,
+            &left,
+            &right,
+            here,
+            peer,
+            &mut right_incoming,
+        ),
+        (
+            "ses_scoped_draft",
+            128 * 1024,
+            false,
+            &right,
+            &left,
+            peer,
+            here,
+            &mut left_incoming,
+        ),
+    ] {
+        let action = |extra| {
+            let prefix = "data:application/octet-stream;base64,";
+            let mut draft = json!({"id":"msg_draft","text":"","message":{
+                "files":[{"name":"example.bin","uri":prefix}]
+            }});
+            let room = size - kuvo_wire::json::ordinary(&draft).len();
+            draft["message"]["files"][0]["uri"] =
+                format!("{prefix}{}", "AAAA".repeat(room / 4)).into();
+            draft["text"] = "x".repeat(room % 4 + extra).into();
+            assert_eq!(kuvo_wire::json::ordinary(&draft).len(), size + extra);
+            if addressed {
+                Action::Deliver {
+                    message: json!({"draft":draft,"deliveryMode":"addressed"}),
+                }
+            } else {
+                Action::Submit { draft }
+            }
+        };
+        let request = Request {
+            setup: setup.clone(),
+            session: session.into(),
+            operation: encode(&[5; 32]),
+            submitter: Submitter::Computer,
+            action: action(1),
+        };
+        let wait = Duration::from_secs(20);
+        assert!(matches!(
+            source.request(to, request.clone(), wait).await,
+            Err(Error::TooLarge)
+        ));
+        let request = Request {
+            action: action(0),
+            ..request
+        };
+        let response = Reply {
+            status: 202,
+            body: json!({"receipt": "r".repeat(128 * 1024)}),
+        };
+        let receiving = async {
+            let incoming = inbox.recv().await.unwrap();
+            assert_eq!(incoming.peer(), from);
+            assert_eq!(incoming.request(), &request);
+            assert_eq!(destination.admit(&incoming).unwrap(), Admission::Allowed);
+            destination
+                .reply(&incoming, response.clone())
+                .await
+                .unwrap();
+        };
+        let asking = source.request(to, request.clone(), wait);
+        let (reply, ()) = tokio::time::timeout(wait, async { tokio::join!(asking, receiving) })
+            .await
+            .unwrap();
+        assert_eq!(reply.unwrap(), response);
+    }
+    relay.abort();
+    assert!(relay.await.unwrap_err().is_cancelled());
+    if let Some(bundle) = std::env::var_os("KUVO_OWNER_PARTS_TS") {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("frames.json");
+        let captured = std::iter::from_fn(|| frames_seen.try_recv().ok()).collect::<Vec<_>>();
+        kuvo_store::files::write_atomic(&file, &serde_json::to_vec(&captured).unwrap()).unwrap();
+        let result = std::process::Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/owner_parts.mjs"
+            ))
+            .arg(bundle)
+            .arg(file)
+            .status()
+            .unwrap();
+        assert!(result.success());
+    }
 }
 
 #[tokio::test]

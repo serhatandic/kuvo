@@ -14,7 +14,7 @@ pub fn digest(value: &Value) -> [u8; 32] {
 }
 
 /// Ordinary JSON.stringify order, used for the original bytes of mail and documents.
-pub(crate) fn ordinary(value: &Value) -> String {
+pub fn ordinary(value: &Value) -> String {
     let mut out = String::new();
     write(value, &mut out, false);
     out
