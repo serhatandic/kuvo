@@ -749,6 +749,42 @@ fn a_side_chat_asks_aside_follows_up_in_its_thread_and_opens_again_from_the_outp
     assert_eq!(showing(&workspace, cx), Some(Kind::SideChat(Some("btw_1".into()))));
 }
 
+/// A long side chat ends above its floating composer (11-23): whatever comes in after it's asked
+/// (the question, its answer, the composer's height as it's measured), it stays at its end.
+#[gpui::test]
+fn a_long_side_chat_keeps_its_last_answer_above_the_composer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let answer = "The unique index is the one place that settles it, so the code inserts first and treats 23505 as taken. Querying first leaves a gap two sign-ups can both pass.";
+    stand_in.answer_side_questions(&[answer; 8]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    // Opened with its questions asked before it's first drawn (the composer's height not measured
+    // yet), each question and its answer coming in after.
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_panel(Kind::SideChat(None), cx);
+        let view = workspace.panel().read(cx).side_chat().unwrap();
+        for ix in 1..=8 {
+            let field = view.read(cx).field().clone();
+            field.update(cx, |field, cx| field.set_text(&format!("Why check 23505 instead of querying first? ({ix})"), cx));
+            view.update(cx, |view, cx| view.ask(cx));
+        }
+    });
+    cx.run_until_parked();
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).side_chat()).unwrap();
+    // (Drawn twice: the composer's height is measured as it's laid out.)
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let (asked, last) = view.read_with(cx, |view, _| view.thread().map(|thread| (thread.questions.len(), thread.questions.last().map(|question| question.id.clone())))).expect("its questions");
+    let last = last.expect("its last question");
+    assert_eq!(asked, 8);
+    let long = view.read_with(cx, |view, _| view.scroll().max_offset().y);
+    assert!(long > px(200.), "longer than the panel: {long:?}");
+    let composer = bounds(cx, "side-chat-composer").expect("the composer");
+    let question = bounds(cx, &format!("side-question-{last}")).expect("the last question");
+    assert!(question.bottom() <= composer.top(), "the last question ends above the composer: {question:?}, {composer:?}");
+    let answered = bounds(cx, "side-chat-end").expect("the transcript's end");
+    assert!(answered.top() <= composer.top() + px(1.), "its answer ends above the composer: {answered:?}, {composer:?}");
+}
+
 #[gpui::test]
 fn a_side_chat_asks_on_the_model_picked_with_a_file_attached_and_leaves_the_conversations_model(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
