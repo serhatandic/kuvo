@@ -37,7 +37,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     const session = `ses_${name}`;
     const model = { providerID: name, id: `model-${name}` };
     const project = path.join(home, "project");
-    const time = { created: 100 + i, updated: 200 + i };
+    const time: { created: number; updated: number; archived?: number } = { created: 100 + i, updated: 200 + i };
     const cases: Record<string, { id: string; title: string; time: typeof time; directory?: string; location?: { directory: string } }> = {
       [session]: { id: session, title: `Session on ${name}`, directory: project, time },
     };
@@ -243,6 +243,63 @@ test("a computer going away keeps its rows with the same last-seen time and no a
     expect(merged.runs.computers.map((row: any) => [row.computer, row.here ?? false, row.away ?? false, row.lastSeen]))
       .toEqual([[near.computer, true, false, undefined], [far.computer, false, true, session.lastSeen]]);
     expect(fitsShape(RUNS_ON, merged.runs)).toBe(true);
+  } finally { setup.close(); }
+}, 30_000);
+
+test("the sidebar pages a peer's worktree sessions under their project, even while that peer is away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const template = far.cases[far.session]!;
+    const project = template.directory!;
+    const worktree = path.join(far.home, "worktree");
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(["git", "-C", project, ...args]);
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    };
+    git("init");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "Initial");
+    git("worktree", "add", "--detach", worktree);
+    const ids = Array.from({ length: 17 }, (_, i) => {
+      const id = `ses_worktree${i}`;
+      far.cases[id] = { ...template, id, directory: worktree, time: { ...template.time, updated: 1000 - i } };
+      return id;
+    }).concat(far.session);
+    const archived = "ses_archived_worktree";
+    far.cases[archived] = { ...template, id: archived, directory: worktree, time: { ...template.time, archived: 900 } };
+    await share(far, near);
+    expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
+
+    const { listing } = await line(near);
+    const key = `${far.computer.id}:${project}`;
+    expect(listing.sessions[ids[0]!]).toMatchObject({ directory: worktree, project: key, on: { ...far.computer, away: true } });
+    expect(listing.projects[key]).toMatchObject({ shown: ids.slice(0, 6), total: 18, more: { count: 10 } });
+    expect(listing.projects[`${far.computer.id}:${worktree}`]).toBeUndefined();
+    expect(listing.archivedGroups).toContainEqual({ directory: key, title: "project", kind: "project", sessions: [archived] });
+    const page = async (cursor: string) => {
+      const answer = await near.read(`kuvo/sessions/page?${new URLSearchParams({ project: key, cursor })}`);
+      expect(answer.status).toBe(200);
+      return JSON.parse(answer.text);
+    };
+    const next = await page(listing.projects[key].more.cursor);
+    expect(next).toMatchObject({ project: key, sessions: ids.slice(0, 16), total: 18, more: { count: 2 } });
+    expect(await page(next.more.cursor)).toEqual({ project: key, sessions: ids, total: 18, more: null });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("the sidebar shows a peer's saved sessions while this computer has no local list yet", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    near.engineState.down = true;
+    const watch = Buffer.from(JSON.stringify({ listing: targets.listing })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const listing = JSON.parse(answer.text.trim().split("\n")[1]!).d;
+    expect(Object.keys(listing?.sessions ?? {})).toEqual([far.session]);
+    expect(fitsShape(SESSION_LIST, listing)).toBe(true);
+    expect(listing.startProject).toBeNull();
   } finally { setup.close(); }
 }, 30_000);
 
