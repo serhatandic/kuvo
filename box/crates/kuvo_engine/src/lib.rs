@@ -12,6 +12,7 @@ mod proxy;
 mod queue;
 mod send;
 mod session_list;
+mod session_move;
 mod sessions;
 mod start_session;
 
@@ -25,6 +26,7 @@ use kuvo_server::{Access, Refusal, Registry, RouteReply};
 pub use launch::pinned_version;
 pub use lifetime::{Engine, State, Timing};
 pub use session_list::LocalSessions;
+pub use session_move::{MoveEngineError, SessionMove};
 
 impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {

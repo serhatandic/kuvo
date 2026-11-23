@@ -68,17 +68,33 @@ impl Engine {
         path: &str,
         body: Option<&Value>,
     ) -> Result<T, Error> {
+        let mut value = self.call_raw(lease, method, path, body, WAIT).await?;
+        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
+            value = data.take();
+        }
+        serde_json::from_value(value).map_err(Error::Invalid)
+    }
+
+    /// Some engine routes put cursor metadata next to `data`.
+    pub(crate) async fn call_raw(
+        &self,
+        lease: &Lease,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        wait: Duration,
+    ) -> Result<Value, Error> {
         let mut request = self
             .upstream
             .request(&lease.record, method, path)
-            .timeout(WAIT);
+            .timeout(wait);
         if let Some(body) = body {
             request = request.json(body);
         }
         let response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(Error::Transport)?;
-        let mut value: Value = if bytes.is_empty() {
+        let value: Value = if bytes.is_empty() {
             Value::Null
         } else if status.is_success() {
             serde_json::from_slice(&bytes).map_err(Error::Invalid)?
@@ -95,9 +111,6 @@ impl Engine {
                 );
             return Err(Error::Status(status, message));
         }
-        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
-            value = data.take();
-        }
-        serde_json::from_value(value).map_err(Error::Invalid)
+        Ok(value)
     }
 }
