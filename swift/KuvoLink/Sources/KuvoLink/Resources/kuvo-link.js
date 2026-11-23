@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 57c3f7da2b57
+// Kuvo folder layout 23 0f6c6ef554b1
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "57c3f7da2b57";
+var BRIDGE_VERSION = "0f6c6ef554b1";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -92705,9 +92705,9 @@ var init_invite = __esm(() => {
 });
 
 // protocol/gate-required.txt
-var gate_required_default = `# What a client needs a box to have before it uses it (PROTOCOL.md, "The update gate"): a box whose
-# \`kuvo/info\` features lack any of these is held until it's updated. The same names as KuvoClient's
-# BoxGate.required and gpui's kuvo_box (src/gate/required.rs), which gpui's tests hold to this.
+var gate_required_default = `# Features used by the update gate (PROTOCOL.md, "The update gate").
+# An absent baseline feature holds the gate. Other absent requirements leave it behind.
+# Baseline: clients.kind messages.send queue.stop.arriving sessions.list sessions.start.empty
 # One name a line, in order (LC_ALL=C sort): git merges this file by union (.gitattributes), so
 # branches that each add a name merge without a conflict (two added side by side may land in
 # either order, which is fine). Change nothing else here.
@@ -92829,7 +92829,8 @@ var init_compatibility2 = __esm(() => {
   init_store();
   REQUIRED = Array.from(new Set(gate_required_default.split(`
 `).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")))).sort();
-  BASELINE = ["clients.kind", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"];
+  BASELINE = gate_required_default.split(`
+`).find((line) => line.startsWith("# Baseline: ")).slice("# Baseline: ".length).trim().split(/\s+/);
 });
 
 // box/src/link/mac/app.ts
