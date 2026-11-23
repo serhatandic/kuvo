@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { createHash, createHmac, createPublicKey, verify } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import http from "node:http";
 import {
   boxBinary, isolatedEnv, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write,
 } from "../../../../protocol/conformance/adapter.mjs";
 import { relayLeaseStandIn } from "../../../bridge-tests/relay-lease-stand-in.js";
+import { seedPeerSetup } from "../../../../protocol/conformance/peer-fixture.mjs";
 
 const binary = boxBinary();
 const app = { "x-kuvo-from": "app" };
@@ -19,11 +20,11 @@ const get = (box, route = "kuvo/setup") => box.ask("GET", route);
 const post = (box, route, body) => box.ask("POST", route, body);
 const address = box => relayAddress(Buffer.from(readJSON(linkPath(box)).secret, "base64url"));
 
-async function bench(t, { handover = false, transferred, startupTimeout } = {}) {
+async function bench(t, { handover = false, transferred, holdLeaseReply, startupTimeout } = {}) {
   const root = fs.realpathSync(scratch());
   const leases = relayLeaseStandIn({ transferStartsNow: handover });
   const relay = await localRelay({
-    request: transferred ? (request, response) => {
+    request: transferred || holdLeaseReply ? (request, response) => {
       const prior = leases.lease;
       return leases.request(request, {
         writeHead(...args) {
@@ -31,8 +32,8 @@ async function bench(t, { handover = false, transferred, startupTimeout } = {}) 
           return {
             end(...args) {
               const next = leases.lease;
-              if (prior && next && prior.holder !== next.holder) transferred(relay);
-              response.end(...args);
+              if (prior && next && prior.holder !== next.holder) transferred?.(relay);
+              if (!holdLeaseReply?.(prior, next)) response.end(...args);
             },
           };
         },
@@ -54,11 +55,12 @@ async function bench(t, { handover = false, transferred, startupTimeout } = {}) 
     if (reserved) write(path.join(folder, ".kuvo-code-adding"), "");
     return {
       home,
-      async start({ expectFailure = false } = {}) {
+      async start({ expectFailure = false, spawned } = {}) {
         const proc = startBox({ binary, home, env, relay });
         children.push(proc);
         this.stop = proc.stop;
         this.log = proc.log;
+        spawned?.(proc);
         if (expectFailure) {
           const result = await proc.exited;
           assert.equal(result.code, 1, proc.log());
@@ -745,12 +747,8 @@ test("a draft denied by the setup capacity remains recoverable", { timeout: 2000
   assert.equal(entry(box, kind), undefined);
 });
 
-test("a Mac starts its setup with the authenticated helper and leaves the private keys there", { timeout: 25000 }, async t => {
-  const { computer } = await bench(t);
-  const box = computer("Studio");
+async function macHost(t, box, keys, { proofIsValid = true } = {}) {
   const password = "a-disposable-test-password";
-  const secret = Buffer.alloc(32, 7).toString("base64url");
-  let proofIsValid = false;
   let identityRequests = 0;
   const host = http.createServer(async (req, res) => {
     const chunks = [];
@@ -763,7 +761,7 @@ test("a Mac starts its setup with the authenticated helper and leaves the privat
     }
     if (req.url === "/link/identity" && req.headers.authorization === `Bearer ${password}`) {
       identityRequests++;
-      return answer(200, { key: secret, sign: secret, secret });
+      return answer(200, keys);
     }
     answer(403, {});
   });
@@ -773,20 +771,92 @@ test("a Mac starts its setup with the authenticated helper and leaves the privat
   write(path.join(box.home, "run", "host.json"), JSON.stringify({
     formatVersion: 1, password, url: `http://127.0.0.1:${host.address().port}`,
   }));
-  assert.match(await box.start({ expectFailure: true }), /invalid Mac helper proof/);
-  assert.equal(identityRequests, 0);
+  return { allow() { proofIsValid = true }, requests() { return identityRequests } };
+}
 
-  proofIsValid = true;
+test("a Mac starts its setup with the authenticated helper and leaves the private keys there", { timeout: 25000 }, async t => {
+  const { computer } = await bench(t);
+  const box = computer("Studio");
+  const seed = Buffer.alloc(32, 7).toString("base64url");
+  const host = await macHost(t, box, { key: seed, sign: seed, secret: seed }, { proofIsValid: false });
+  assert.match(await box.start({ expectFailure: true }), /invalid Mac helper proof/);
+  assert.equal(host.requests(), 0);
+
+  host.allow();
   await box.start();
   const setup = (await get(box)).json;
   assert.equal(setup.you.role, "primary");
   assert.equal(setup.primary.kind, "mac");
   const link = readJSON(linkPath(box));
   for (const field of ["key", "secret", "sign", "name", "relay"]) assert.equal(link[field], undefined, field);
-  assert.equal(identityRequests, 1);
+  assert.equal(host.requests(), 1);
   await box.stop();
   await box.start();
   assert.equal((await get(box)).json.setup, setup.setup);
+});
+
+test("an older Mac main converts its signed checkpoint once under the relay lease", { timeout: 25000 }, async t => {
+  let cut;
+  const held = new Promise(resolve => { cut = resolve; });
+  let interrupt = true;
+  const { computer, leases, relay } = await bench(t, {
+    holdLeaseReply(prior, next) {
+      if (!interrupt || prior || !next) return false;
+      cut();
+      return true;
+    },
+  });
+  const box = computer("Studio");
+  const { main, member } = seedPeerSetup(box.home, relay.url);
+  const old = readJSON(linkPath(box));
+  await macHost(t, box, { key: old.key, sign: old.sign, secret: old.secret });
+  const seed = Buffer.from(old.sign, "base64url");
+  const signer = createPrivateKey({
+    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]),
+    format: "der", type: "pkcs8",
+  });
+  for (const key of ["key", "sign", "secret", "relay"]) delete old[key];
+  old.shared.membershipAndAccess.value.boxes[0].kind = "mac";
+  old.shared.membershipAndAccess.value.successorOrder = [member.key, main.key];
+  old.shared.membershipAndAccess.value.successorPin = member.key;
+  old.shared.setupNames = { sequence: 2, value: { [member.key]: "Lab upstairs" } };
+  const { id, epoch, primary } = old.setup;
+  const tip = Buffer.from(JSON.stringify({
+    v: 1, kind: "leadership", origin: main.sign, n: epoch,
+    body: { setup: { id, epoch, primary }, standby: member.key, successorChain: true },
+  }));
+  old.leadership = { [epoch]: {
+    d: tip.toString("base64url"),
+    s: sign(null, Buffer.concat([Buffer.from("kuvo-link doc v1\0"), tip]), signer).toString("base64url"),
+  } };
+  write(linkPath(box), JSON.stringify(old));
+
+  let process;
+  const abandoned = box.start({ spawned: proc => { process = proc; } })
+    .then(() => ({ ready: true }), error => ({ error }));
+  const stoppedAtLease = await Promise.race([held.then(() => true), abandoned.then(() => false)]);
+  assert.equal(stoppedAtLease, true, box.log());
+  process.child.kill("SIGKILL");
+  await process.exited;
+  assert.ok((await abandoned).error);
+  assert.deepEqual(readJSON(linkPath(box)), old);
+  interrupt = false;
+
+  await box.start();
+  const current = readJSON(linkPath(box));
+  assert.equal(current.setup.id, id);
+  assert.equal(current.setup.epoch, epoch + 1);
+  assert.equal(current.setup.primary, main.key);
+  assert.equal(leases.leaseFor(id).holder, main.key);
+  assert.equal(current.shared.membershipAndAccess.value.successorOrder, undefined);
+  assert.equal(current.shared.membershipAndAccess.value.successorPin, undefined);
+  assert.deepEqual(current.shared.membershipAndAccess.value.boxes.map(({ key }) => key), [main.key, member.key]);
+  assert.deepEqual(current.shared.setupNames, old.shared.setupNames);
+  assert.deepEqual(current.leadership[epoch], old.leadership[epoch]);
+  for (const key of ["key", "sign", "secret"]) assert.equal(current[key], undefined);
+  await box.stop();
+  await box.start();
+  assert.deepEqual(readJSON(linkPath(box)).setup, current.setup);
 });
 
 test("relay restart grace lets the same main renew its expired grant", { timeout: 25000 }, async t => {

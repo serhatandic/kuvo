@@ -193,6 +193,34 @@ pub fn project_kit_personalities(kept: &Value, offered: &[Value]) -> Option<Valu
     Some(Library::merge(Library::entries(kept).chain(imported), 500).document())
 }
 
+/// Merge the retired Mac app's local library with the staged box's library.
+pub fn project_app_personalities(kept: &Value, made: &[Value], removed: &[Value]) -> Option<Value> {
+    let mut made = made.to_vec();
+    for entry in &mut made {
+        if let Some(fields) = entry.as_object_mut() {
+            let updated = match fields.get("updated") {
+                Some(value @ Value::Number(_)) => value.clone(),
+                Some(Value::String(text)) => text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(0.0)
+                    .into(),
+                Some(Value::Bool(flag)) => u8::from(*flag).into(),
+                _ => 0.into(),
+            };
+            fields.insert("updated".into(), updated);
+        }
+    }
+    let offered = json!({"personalities": made, "removed": removed});
+    let library = Library::merge(
+        Library::entries(kept).chain(Library::entries(&offered)),
+        LOCAL_REMOVALS,
+    );
+    (!library.personalities.is_empty() || !library.removed.is_empty()).then(|| library.document())
+}
+
 impl Library {
     pub fn document(&self) -> Value {
         json!({"kuvo": 1, "personalities": self.personalities, "removed": self.removed})

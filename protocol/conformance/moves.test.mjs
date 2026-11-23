@@ -172,7 +172,7 @@ test("both residents create and clear the same peer reach files", {
   const binaries = [boxBinary(), boxBinary(mixed)];
   const step = state => ({ method: "GET", path: "kuvo/moves/receipt?id=mov_absent", peerReach: { key: member.key, state } });
   const check = async (home, sequence) => {
-    const differences = await compare(home, sequence, ...binaries, peer);
+    const differences = await compare(home, sequence, ...binaries, { peerSeed: peer });
     assert.deepEqual(differences.filter(line => /^(request |home\/run\/peer-reach)/.test(line)), []);
   };
   await check(empty, [step("absent")]);

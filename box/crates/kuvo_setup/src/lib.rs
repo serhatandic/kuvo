@@ -77,4 +77,4 @@ pub use actor::{
 };
 pub use model::{Receipt, SharedKind};
 
-pub use preferences::project_kit_personalities;
+pub use preferences::{project_app_personalities, project_kit_personalities};

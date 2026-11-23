@@ -12,13 +12,17 @@ use std::{
 
 mod artifacts;
 mod check;
+mod counts;
 mod database;
 mod engine;
 mod letters;
 mod paths;
 mod preferences;
+mod publication;
 mod snapshots;
 mod source;
+
+pub use publication::{CutoverStep, Outcome, Run, blocks_open, settle_started};
 
 const STAGE: &str = "updates/rehome/rust-stage";
 const BESIDE: &[(&str, &str)] = &[
@@ -53,12 +57,26 @@ pub struct StagedApp {
     pub path: PathBuf,
     pub dropped_letters: usize,
     pub dropped_waiting_messages: u64,
+    counts: counts::Comparison,
+    leftovers: Vec<String>,
 }
 
 /// Prepare the source and the pinned engine's database for the Mac import.
 /// The caller owns the installer's staging and the app must be stopped.
 /// This entry point never publishes the home layout.
 pub fn stage(
+    destination: &Home,
+    account: &Path,
+    bundle: &Path,
+    release: &Path,
+    engine_dir: &Path,
+    completed: impl FnMut(AppStep),
+) -> Result<StagedApp, Error> {
+    let _guard = layout::lock_for_move(destination, Duration::from_secs(3))?;
+    prepare(destination, account, bundle, release, engine_dir, completed)
+}
+
+fn prepare(
     destination: &Home,
     account: &Path,
     bundle: &Path,
@@ -79,10 +97,6 @@ pub fn stage(
     if origin.starts_with(&target) || target.starts_with(&origin) {
         return Err(invalid("The app and destination folders overlap."));
     }
-    if layout::inspect(destination)? == layout::Layout::Current {
-        return Err(Error::UnknownHome(destination.root().into()));
-    }
-    let _guard = layout::lock_for_move(destination, Duration::from_secs(3))?;
     let disk = Disk(target);
     let layout = layout::inspect(destination)?;
     if !matches!(
@@ -105,6 +119,7 @@ pub fn stage(
     if metadata(&journal)?.is_some() {
         return Err(Error::PreviousMove(journal));
     }
+    source::validate_legacy(&source)?;
     let source_box = source.join("box");
     let source_disk = Disk(source_box.clone());
     if metadata(&source_box)?.is_some_and(|meta| !meta.is_dir()) {
@@ -155,6 +170,7 @@ pub fn stage(
     clone(&engine_dir, &staging.join("engine"), true)?;
     files::sync_tree(&staging, destination.root().canonicalize()?.as_path())?;
     completed(AppStep::Clone);
+    let before = counts::read(&staging)?;
 
     let plugin = "config/opencode/plugins/kuvo-code.js";
     let release_plugin = release.join(plugin);
@@ -192,9 +208,10 @@ pub fn stage(
             .iter()
             .map(|(from, to)| (from.as_path(), to.as_path())),
     );
-    let changes = engine::databases(&data)?
-        .into_iter()
-        .map(|file| database::rewrite(&file, &map))
+    let databases = engine::databases(&data)?;
+    let changes = databases
+        .iter()
+        .map(|file| database::rewrite(file, &map))
         .collect::<Result<_, _>>()?;
     snapshots::rewrite(&Disk(data.join("opencode")), &map, changes)?;
     for name in [
@@ -222,6 +239,14 @@ pub fn stage(
     let result = check::validate(&staged_engine, &data, &work);
     files::remove_tree_synced(&work)?;
     result?;
+    let counts = counts::Comparison::new(before, counts::read(&staging)?)?;
+    let leftovers = databases
+        .iter()
+        .map(|file| database::leftovers(file, &map))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     source::require_quiet(&source_disk)?;
     if source::stamp(&source)? != input {
         return Err(invalid("The app's data changed during the staged move."));
@@ -231,6 +256,8 @@ pub fn stage(
         path: staging,
         dropped_letters,
         dropped_waiting_messages,
+        counts,
+        leftovers,
     })
 }
 

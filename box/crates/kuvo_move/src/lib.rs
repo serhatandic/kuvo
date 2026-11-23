@@ -66,6 +66,12 @@ pub fn open(
     account_home: Option<&Path>,
     mut completed: impl FnMut(Step),
 ) -> Result<(), Error> {
+    #[cfg(target_os = "macos")]
+    if mac::blocks_open(home)? {
+        return Err(Error::PreviousMove(
+            home.root().join("updates/rehome/publication.json"),
+        ));
+    }
     if layout::inspect(home)? == layout::Layout::Current {
         return Ok(());
     }
