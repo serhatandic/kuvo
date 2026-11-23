@@ -1,8 +1,8 @@
 # Kuvo on Windows
 
-Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. The Windows and WSL trial ran on 23 November 2026 ([results](../../.claude/notes/699-windows-trial.md)).
+Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. The Windows and WSL trial ran on 23 November 2026 (results below).
 
-**Before 0.8, ship the GPUI desktop and both box options: WSL2 and native Windows.** Each works with the app closed, owns its work and pairs directly. Build WSL first to exercise the contracts, then native. The [November 15 inventory](../../.claude/notes/699-windows-box.md) has the older port details. The [current architecture](how-kuvo-works.md) removes the need to port split serve and a separate box-services worker. The [engine and browser start on demand](small-computer.md), [accounts use upstream sign-ins](agent-accounts.md), and [one event line per client per box](message-delivery.md) covers reconnects across all transports.
+**Before 0.8, ship the GPUI desktop and both box options: WSL2 and native Windows.** Each works with the app closed, owns its work and pairs directly. Build WSL first to exercise the contracts, then native. The [current architecture](how-kuvo-works.md) removes the need to port split serve and a separate box-services worker. The [engine and browser start on demand](small-computer.md), [accounts use upstream sign-ins](agent-accounts.md), and [one event line per client per box](message-delivery.md) covers reconnects across all transports.
 
 ## The box
 
@@ -57,6 +57,13 @@ WSL reuses the Linux workers, installer and update. Its cost is distro lifecycle
 
 - **WSL (1–12):** 1 WSL2 detection with interop on and off, 2 Linux box/bridge smoke, 3 interop boundaries with Windows tools/drives, 4 keep alive through terminal close and sleep, 5 cron/systemd on and off, 6 hidden logon task and cleanup, 7 loopback and sign-in callbacks under NAT/mirrored/VPN, 8 SSH wrapper and distro sshd with binary stdio, 9 headless Chrome without WSLg, 10 all five Linux sign-ins and turns with host PATH contamination, 11 `/mnt/c` Git/watch/modes, 12 due wake over suspend.
 - **Native (13–26):** 13 engine/runtime/SQLite/config/PTY, 14 hidden starter and child windows, 15 process creation identity, PID reuse, Job Objects, ConPTY and `.cmd`, 16 same-SID pipe access across sign-in and SSH, rejection of other SIDs, remote peers and wrong keys, stale-listener recovery and holder handover, 17 Chrome pipes/profile/credentials across logon and SSH, 18 locked files and interrupted selector/rollback with a live holder, 19 task restart and signed-out behavior, 20 SSH probe/binary stdio/forward/disconnect plus relay line replay and send receipts, 21 Git Bash/CRLF/symlinks/credentials, 22 five native sign-ins/turns/stops, 23 drive and UNC paths, case-sensitive NTFS and long paths, 24 Defender/SmartScreen/firewall, 25 ARM64 engine and Chrome emulation if in scope, 26 roaming profiles and NTFS identity/rename/delete behavior.
+
+**Trial results, 23 November 2026** (Windows 11 x64, WSL2 Ubuntu 24.04, smoke probes in disposable folders, an administrator account): 15 pass, 8 fail, 1 skipped (ARM64), 2 wait for the user (signing in to the five agents, in WSL and native).
+
+- **WSL works with the existing Linux box**: the engine, resident serve, NAT loopback, cron and systemd, a per-user sign-in task, staying alive through sleep and a closed terminal, and a headless Chrome.
+- **Fails to address:** 8, no SSH endpoint inside the distro (provision one explicitly, or prefer the paired relay); 11, projects on Windows drives (DrvFs) get no file events and ignore mode changes (refresh instead of watching); 18, a junction can't be replaced and a running executable can't be deleted (use a plain selector file and clean up busy files later); 19, a headless `conhost` starter hides the exit code, Task Scheduler's retry never ran, and the computer went offline before sign-in (use a starter that passes the status through; the network path before sign-in is part of the startup contract); 20, a streaming stdin/stdout pipe stalled and a listener outlived its SSH session (frame the protocol, own processes apart from SSH); 21, Git Bash makes no real symlinks; 23, Git fails in very long paths and the WSL UNC path failed over SSH; 26, `fsync` on a read-only or directory handle fails with `EPERM`, so the native resident stops at start (`shared/files.ts`'s `syncPath` needs a Windows durability rule).
+- **Test runs:** on WSL2 the box passed (93, 2 skipped) and the bridge had 3 failures (bot edit and delete answer 403 where the scenarios expect 404). Native never reached its tests: the runner couldn't use Credential Manager from an SSH sign-in.
+- Repeat the profile permissions, pipes, links and task registration with a standard account before treating them as release evidence.
 
 ## Decisions and access
 

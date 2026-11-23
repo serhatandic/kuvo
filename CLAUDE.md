@@ -18,6 +18,7 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - **Built files are never hand-edited (strict):** `kuvo-link.js`, `kuvo-agents.js`, `kuvo-browser.js`, `BRIDGE_VERSION`, `KEEPER`, `answers.json`, `features.json`. A feature name is one line, in order, in `FEATURES`.
 - **Never push, tag or open a PR (strict).** Commit tested work to your branch; the lead merges and pushes on the user's word. No GitHub polling.
 - **Commits:** small, plain messages; no Co-Authored-By or AI lines; no personal paths or secrets (the repo will be open source).
+- **The repo holds what an open-source reader needs.** Working notes, drafts and shots stay in `.claude/`, which is ignored: never force-add it.
 - **Changelog:** a line under Unreleased in `CHANGELOG.md` for anything people would notice.
 - **Brand:** ask the user before icons, logos, colors or taglines.
 - **The website is parked:** no `../kuvo-web` changes or docs branches until the user says go.
@@ -33,10 +34,10 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - `docs/architecture/windows.md`: the Windows plan (WSL2 and native).
 - `docs/working-here.md`: how sessions work (reporting, the user away, subagents, handovers), designing UI, GitHub.
 - `docs/testing.md`: read before writing a test; how to run them, Linux (lokum) and Windows checks.
-- `.claude/notes/rust-lane.md`: Rust builds through `scripts/cargo-locked.sh`.
+- `docs/your-settings-pages.md`: adding a page to the desktop app's Your settings.
 - `docs/footprint.md`: what Kuvo may leave on a computer, and the exceptions.
 - `docs/releases.md`: releases only from tags, through the pipeline, on the user's word.
 - `docs/upstreams.md`: the engine and other upstreams; the lead checks them weekly.
 - `docs/docs-map.md`: which website page each change touches (parked).
-- `CONTRIBUTING.md`: setup, builds, route scenarios, what branches don't edit by hand, compatibility markers.
+- `CONTRIBUTING.md`: setup, builds, Rust through `scripts/cargo-locked.sh`, route scenarios, what branches don't edit by hand, compatibility markers.
 - `protocol/PROTOCOL.md`: how boxes and clients talk; document what a box tells clients here.

@@ -3,9 +3,8 @@
 Code: `kuvo/src/launch.rs` (the window's root), `kuvo_box/src/install.rs` (running the installer
 the app carries), `kuvo/src/permissions/` (the heads-up, the tile, its icon, the two macOS calls).
 Shots: `shots/screens-launch-*`, `shots/screens-permission-*`. Tests: `kuvo_box/tests/install.rs`,
-`kuvo/tests/launch.rs`, `kuvo/tests/permissions.rs`. The drafts they were picked from:
-`.claude/notes/drafts/713-p7/README.md` on the drafts' branch (first run A for a new Mac, B for
-a move, which piece 7 builds; permissions C).
+`kuvo/tests/launch.rs`, `kuvo/tests/permissions.rs`. The picked drafts: first run A for a new Mac, B for a move
+(piece 7 builds both); permissions C.
 
 ## What Zed does
 
