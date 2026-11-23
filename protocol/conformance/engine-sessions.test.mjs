@@ -20,6 +20,89 @@ test("messages saved before parts were kept still show their parts", { timeout: 
   for (const [index, row] of vectors.read.entries()) {
     assert.deepEqual(response.json.parts[index], row.parts, row.about);
   }
+  for (const texts of [[1], Array(501).fill("a")]) {
+    const invalid = await request(resident, "POST", "kuvo/messages/parts", { texts });
+    assert.equal(invalid.status, 400, invalid.text);
+  }
+});
+
+test("send distinguishes your text from a replay and passes through an engine refusal", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-send-envelope");
+  const target = "ses_send";
+  const model = { id: "words", providerID: "local", capabilities: { input: ["text"] } };
+  here.engine.sessions.push({ ...sessionOf({ id: target, directory: here.home }), model });
+  const record = await here.start().ready();
+  const desktop = { "x-kuvo-from": "app" };
+  const send = body => request(record, "POST", "kuvo/sessions/" + target + "/send", body, desktop);
+  const prompts = () => here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt"));
+  for (const fields of [{ words: "  " }, { text: " " }]) assert.equal((await send(fields)).status, 400);
+  const absent = await request(record, "POST", "kuvo/sessions/ses_missing/send", { words: "Here" }, desktop);
+  assert.equal(absent.status, 404, absent.text);
+  const unlisted = await send({ id: "msg_unknown", words: "Ask &Nova", named: ["ses_nova"] });
+  assert.equal(unlisted.status, 409, unlisted.text);
+  assert.match(unlisted.json.message, /isn’t known|isn't known/);
+  assert.deepEqual(prompts(), []);
+
+  const id = "msg_refused";
+  const rejected = { message: "The engine refused this send.", reason: "example" };
+  here.engine.refusePrompt = { id, body: rejected, status: 500 };
+  const body = { id, words: "/review-quick main", keyword: "/plan", command: "review-quick" };
+  const refused = await send(body);
+  assert.equal(refused.status, 500, refused.text);
+  assert.deepEqual(refused.json, rejected);
+  assert.equal((await send(body)).status, 200);
+  assert.equal((await send(body)).status, 200);
+  assert.equal(prompts().length, 2);
+  assert.deepEqual(prompts().map(row => [row.json.text, row.json.metadata.kuvo.parts]),
+    Array(2).fill([body.words, { words: body.words }]));
+  assert.equal(here.engine.asked.some(row => row.method === "POST" && row.path.endsWith("/command")), false);
+
+  const letter = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nAsk again";
+  const previousFile = { uri: "file:///x/a.png", name: "a.png" };
+  assert.equal((await send({ id: "msg_asWritten", words: letter })).status, 200);
+  assert.deepEqual(prompts().at(-1).json.metadata.kuvo.parts, { words: letter });
+  assert.equal((await send({ id: "msg_replay", text: letter, files: [previousFile] })).status, 200);
+  assert.deepEqual(prompts().at(-1).json, {
+    id: "msg_replay", text: letter, files: [previousFile], delivery: "steer",
+    metadata: { kuvo: { parts: { words: "Ask again", mail: { name: "Ada", session: "ses_ada" } } } },
+  });
+
+  const replay = await send({ id: "msg_replayImage", text: "What's this?",
+    files: [{ uri: "data:image/png;base64,cG5n", name: "a.png" }] });
+  assert.equal(replay.status, 200, replay.text);
+  const written = prompts().at(-1).json;
+  assert.ok(!written.files?.length);
+  const [saved] = written.metadata.kuvo.parts.paths;
+  assert.equal(fs.readFileSync(saved, "utf8"), "png");
+  assert.ok(written.text.startsWith("What's this?\n\n<attached-files>\nOpen these attached files with your tools if you need them:\n"));
+  assert.ok(written.text.includes(saved));
+});
+
+test("queue add preserves fields, replays, and saved parts", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-queue-envelope");
+  const target = "ses_queue";
+  here.engine.sessions.push(sessionOf({ id: target, directory: here.home }));
+  const record = await here.start().ready();
+  const add = body => request(record, "POST", "kuvo/sessions/" + target + "/queue/add", body, { "x-kuvo-from": "app" });
+  const latest = () => here.engine.asked.findLast(row => row.method === "POST" && row.path.endsWith("/prompt")).json;
+  const fresh = await add({ id: "msg_fresh", words: "After this", widget: "Plans", delivery: "queue" });
+  assert.equal(fresh.status, 200, fresh.text);
+  assert.equal(fresh.json.waits, false);
+  assert.equal(latest().text, "After this\n\n<from-widget>\nThe user sent this from a widget shown in this conversation (show_widget), titled:\nPlans\n</from-widget>");
+  assert.deepEqual(latest().metadata.kuvo.parts, { words: "After this", widget: "Plans" });
+
+  const letter = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nThe build is green.";
+  const again = await add({ id: "msg_letter", text: letter, again: true, words: "The build is green.", delivery: "queue" });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(latest().text, letter);
+  assert.deepEqual(latest().metadata.kuvo.parts, { words: "The build is green.", mail: { name: "Ada", session: "ses_ada" } });
+
+  const parts = { words: "Check CI", widget: "Build" };
+  const kept = await add({ id: "msg_kept", text: "Check CI", words: "Check CI", kept: true, metadata: { kuvo: { parts } } });
+  assert.equal(kept.status, 200, kept.text);
+  assert.deepEqual(latest().metadata.kuvo.parts, parts);
 });
 
 test("a session reports the latest measured step until a summary supersedes it", { timeout: 45000 }, async t => {

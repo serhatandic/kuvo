@@ -131,9 +131,10 @@ export async function standInEngine(root, env) {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
         if (engine.refusePrompt?.id === given.id) {
-          engine.refusePrompt.seen();
+          const refusal = engine.refusePrompt;
+          refusal.seen?.();
           engine.refusePrompt = null;
-          return send({ message: "Try the prompt again." }, 503);
+          return send(refusal.body ?? { message: "Try the prompt again." }, refusal.status ?? 503);
         }
         const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
         if (held) engine.holdPrompt = null;
