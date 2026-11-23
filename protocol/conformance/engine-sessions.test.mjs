@@ -779,6 +779,117 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.fail("the new chat did not reach both lists on the line");
 });
 
+test("a bot's session only shows sustained reasoning and clears it after the tool starts", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-session-thinking");
+  const bot = "bot_reasoning";
+  const directory = path.join(here.home, "bots", bot);
+  const id = "ses_reasoning";
+  write(path.join(directory, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Reader" }));
+  write(path.join(directory, "session"), id);
+  here.engine.sessions.push(sessionOf({ id, directory }));
+  here.engine.running.add(id);
+  const record = await here.start().ready();
+  const facts = async () => {
+    const list = await request(record, "GET", "kuvo/sessions/list");
+    assert.equal(list.status, 200, list.text);
+    return list.json.sessions[id];
+  };
+  await until(() => here.engine.subscribers() > 0, "the resident to follow reasoning events");
+  assert.equal((await facts()).thinking, undefined);
+  const say = type => here.engine.emit({ type, data: { sessionID: id } });
+  say("session.reasoning.started");
+  say("session.tool.input.started");
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  assert.equal((await facts()).thinking, undefined);
+
+  const began = performance.now();
+  say("session.reasoning.started");
+  await until(async () => (await facts()).thinking === true, "the long stretch of reasoning to show");
+  assert.ok(performance.now() - began >= 1900, "Thinking appeared before two seconds of reasoning.");
+  say("session.text.started");
+  say("session.reasoning.started");
+  assert.equal((await facts()).thinking, true);
+  const stopped = performance.now();
+  say("session.tool.called");
+  await until(async () => (await facts()).thinking === undefined, "the tool to clear reasoning");
+  assert.ok(performance.now() - stopped >= 1400, "Thinking cleared before the grace period ended.");
+  assert.equal((await facts()).running, true);
+});
+
+test("the session list starts in the most recent project and orders ties by name", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-list-project-order");
+  const catalog = [
+    { directory: path.join(here.home, "aa"), name: "Project 10", updated: 42 },
+    { directory: path.join(here.home, "zz"), name: "project 002", updated: 42 },
+    { directory: path.join(here.home, "bb"), name: "First by name", updated: 1 },
+  ];
+  for (const [index, project] of catalog.entries()) {
+    fs.mkdirSync(project.directory, { recursive: true });
+    here.engine.sessions.push({ ...sessionOf({ id: "ses_project" + index, directory: project.directory }),
+      time: { created: 1, updated: project.updated } });
+  }
+  write(path.join(here.home, "box", "projects.json"), JSON.stringify({ projects: catalog.map(project => ({
+    directory: project.directory, name: project.name, folders: [],
+  })) }));
+  const record = await here.start().ready();
+  const list = await request(record, "GET", "kuvo/sessions/list");
+  assert.equal(list.status, 200, list.text);
+  assert.deepEqual(list.json.projectOrder, [catalog[1].directory, catalog[0].directory, catalog[2].directory]);
+  assert.equal(list.json.startProject, catalog[1].directory);
+});
+
+test("a session list saved before Needs you is read while OpenCode catches up", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-list-older-asks");
+  const id = "ses_old";
+  const project = path.join(here.home, "project");
+  write(path.join(here.home, "run", "lists", "sessions.json"), JSON.stringify({
+    epoch: "old", seq: 3, floor: 0, gone: {}, projects: { [project]: { updated: 2 } },
+    sessions: { [id]: { seq: 1, facts: { kind: "project", directory: project, project, created: 1, updated: 2, asked: 5 } } },
+  }));
+  const gate = Promise.withResolvers();
+  here.engine.holdSessionList = gate.promise;
+  t.after(() => gate.resolve());
+  const record = await here.start().ready();
+  const read = await request(record, "GET", "kuvo/sessions/list");
+  assert.equal(read.status, 200, read.text);
+  assert.equal(read.json.full, true);
+  assert.deepEqual(read.json.projects, { [project]: { updated: 2, asking: 0, working: 0 } });
+  assert.deepEqual(read.json.needsYou, [{ session: id, asks: { kind: "other", summary: "waits on you" } }]);
+  assert.equal((await request(record, "POST", "kuvo/sessions/list", {})).status, 405);
+});
+
+test("the first inventory never publishes a conversation deleted while its page was held", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-list-inventory-race");
+  const gone = sessionOf({ id: "ses_vanishing", directory: here.home, title: "Old" });
+  const kept = sessionOf({ id: "ses_present", directory: here.home, title: "Here" });
+  here.engine.sessions.push(gone, kept);
+  const gate = Promise.withResolvers();
+  here.engine.holdSessionList = gate.promise;
+  t.after(() => gate.resolve());
+  const record = await here.start().ready();
+  const reading = request(record, "GET", "kuvo/sessions/list", undefined, {}, 15000);
+  await until(() => here.engine.subscribers() > 0 && here.engine.heldInventories > 0,
+    "the resident to begin its first inventory and subscribe to events");
+  here.engine.sessions.shift();
+  here.engine.emit({ type: "session.deleted", data: { sessionID: gone.id } });
+  const form = { id: "form_afterDelete", sessionID: kept.id, title: "After deletion", fields: [] };
+  here.engine.forms.set(kept.id, [form]);
+  here.engine.emit({ type: "form.created", data: { form } });
+  const asks = path.join(here.home, "run", "glance", "asks.json");
+  await until(() => fs.existsSync(asks) && readJSON(asks).asks[form.id], "the resident to hear the deletion");
+  here.engine.holdSessionList = null;
+  gate.resolve();
+  const initial = await reading;
+  assert.equal(initial.status, 200, initial.text);
+  assert.equal(initial.json.full, true);
+  assert.deepEqual(Object.keys(initial.json.sessions), [kept.id]);
+  assert.equal(initial.json.gone, undefined);
+});
+
 test("session list cursors carry changes and tombstones, then read whole after a restart", { timeout: 60000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-list-cursors");

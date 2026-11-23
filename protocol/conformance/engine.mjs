@@ -50,7 +50,8 @@ export async function standInEngine(root, env) {
         const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
         const descendants = parent && parent !== "null" && Number(url.searchParams.get("limit")) > 0;
         const page = engine.paged || descendants ? paged(rows, 100) : { data: rows };
-        if (engine.holdSessionList) {
+        if (engine.holdSessionList && url.searchParams.get("limit") !== "1") {
+          if (!parent) engine.heldInventories = (engine.heldInventories ?? 0) + 1;
           void engine.holdSessionList.then(() => send(page));
           return;
         }

@@ -135,14 +135,18 @@ impl LocalSessions {
         let (refresh, mut requests) = mpsc::channel(1);
         let (updates, snapshot) = watch::channel(None);
         let stop = CancellationToken::new();
+        let (changed, revisions) = watch::channel(0);
         let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
+        let (thinking, mut thought) = watch::channel(Arc::new(BTreeSet::new()));
         let (models_changed, models) = crate::model_refresh::watch(engine.clone());
         let limits = crate::queue::watch_limits(engine.clone(), stop.clone());
         let feed = crate::conversation::watch(
             engine.clone(),
             refresh.downgrade(),
+            changed,
             ask_updates,
             models_changed,
+            thinking,
             stop.clone(),
         );
         let known_asks = ask_changes.clone();
@@ -171,6 +175,14 @@ impl LocalSessions {
                     biased;
                     next = requests.recv() => if next.is_none() { break; },
                     changed = ask_changes.changed() => if changed.is_err() { break; },
+                    changed = thought.changed() => {
+                        if changed.is_err() { break; }
+                        if !first && last.apply_thinking(&thought.borrow_and_update()) {
+                            let listed = publish(&updates, &last);
+                            save(&engine.home, listed).await;
+                        }
+                        continue;
+                    },
                     changed = async {
                         match &mut external {
                             Some(external) => external.changed().await,
@@ -183,22 +195,32 @@ impl LocalSessions {
                 let Some(lease) = engine.acquire(Demand::Passive).await else {
                     continue;
                 };
-                let mut book = ask_changes.borrow().clone();
+                let began = *revisions.borrow();
+                let mut book = ask_changes.borrow_and_update().clone();
                 if let Some(external) = &external {
                     crate::asks::include_external(Arc::make_mut(&mut book), &external.borrow());
                 }
-                let Some((sessions, projects, archived, needs_you)) =
+                let Some((mut sessions, projects, archived, needs_you)) =
                     measure(&engine, &lease, &book).await.ok()
                 else {
                     continue;
                 };
-                let write_first = std::mem::take(&mut first);
-                if last.commit(sessions, projects, archived, needs_you) || write_first {
-                    updates.send_replace(Some(Arc::new(last.clone())));
-                    let path = engine.home.join("run/lists/sessions.json");
-                    let saved = last.clone();
-                    let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, &saved))
-                        .await;
+                let published = {
+                    let revision = revisions.borrow();
+                    if *revision != began {
+                        // The feed queued another read. A stale page cannot revive a deleted row.
+                        continue;
+                    }
+                    let thinking = thought.borrow_and_update();
+                    for (id, facts) in &mut sessions {
+                        facts.thinking(thinking.contains(id));
+                    }
+                    let write_first = std::mem::take(&mut first);
+                    (last.commit(sessions, projects, archived, needs_you) || write_first)
+                        .then(|| publish(&updates, &last))
+                };
+                if let Some(saved) = published {
+                    save(&engine.home, saved).await;
                 }
             }
         });
@@ -250,6 +272,17 @@ impl LocalSessions {
     }
 }
 
+fn publish(updates: &watch::Sender<Option<Arc<Snapshot>>>, snapshot: &Snapshot) -> Arc<Snapshot> {
+    let published = Arc::new(snapshot.clone());
+    updates.send_replace(Some(published.clone()));
+    published
+}
+
+async fn save(home: &Path, snapshot: Arc<Snapshot>) {
+    let path = home.join("run/lists/sessions.json");
+    let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, snapshot.as_ref())).await;
+}
+
 type Sessions = BTreeMap<String, Facts>;
 type Projects = BTreeMap<String, Value>;
 
@@ -267,7 +300,7 @@ pub(crate) struct Snapshot {
     #[serde(default, skip_serializing)]
     archived: Vec<Value>,
     #[serde(default, rename = "needsYou")]
-    needs_you: Vec<Value>,
+    needs_you: Option<Vec<Value>>,
     #[serde(default, rename = "workByBot")]
     work_by_bot: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -316,6 +349,19 @@ impl Facts {
         self.extra.get(field) == Some(&Value::Bool(true))
     }
 
+    fn thinking(&mut self, should_show: bool) -> bool {
+        let thinking = should_show && self.flag("running");
+        if thinking == self.flag("thinking") {
+            return false;
+        }
+        if thinking {
+            self.extra.insert("thinking".into(), json!(true));
+        } else {
+            self.extra.remove("thinking");
+        }
+        true
+    }
+
     fn waiting(&self) -> bool {
         matches!(self.kind, Kind::Project | Kind::Chat | Kind::Bot)
             && self.extra.contains_key("asked")
@@ -329,6 +375,21 @@ impl Facts {
 }
 
 impl Snapshot {
+    fn apply_thinking(&mut self, thinking: &BTreeSet<String>) -> bool {
+        let next = self.seq + 1;
+        let mut changed = false;
+        for (session, row) in &mut self.sessions {
+            if row.facts.thinking(thinking.contains(session)) {
+                row.seq = next;
+                changed = true;
+            }
+        }
+        if changed {
+            self.seq = next;
+        }
+        changed
+    }
+
     pub(crate) fn has_local(&self, id: &str) -> bool {
         self.sessions
             .get(id)
@@ -418,7 +479,7 @@ impl Snapshot {
             projects: BTreeMap::new(),
             pending: Vec::new(),
             archived: Vec::new(),
-            needs_you: Vec::new(),
+            needs_you: Some(Vec::new()),
             work_by_bot: BTreeMap::new(),
             owner: None,
             started: None,
@@ -433,13 +494,13 @@ impl Snapshot {
         needs_you: Vec<Value>,
     ) -> bool {
         let mut changed = self.seq == 0
-            || self.needs_you != needs_you
+            || self.needs_you.as_ref() != Some(&needs_you)
             || !self.pending.is_empty()
             || self.projects != projects
             || self.archived != archived;
         let next = self.seq + 1;
         self.pending.clear();
-        self.needs_you = needs_you;
+        self.needs_you = Some(needs_you);
         let removed = self
             .sessions
             .keys()
@@ -514,15 +575,18 @@ impl Snapshot {
             .collect::<BTreeMap<_, _>>();
         let mut projects = self.projects.iter().collect::<Vec<_>>();
         projects.sort_by(|(left_id, left), (right_id, right)| {
-            right["updated"]
-                .as_u64()
-                .cmp(&left["updated"].as_u64())
+            let updated = |row: &Value| row["updated"].as_u64().unwrap_or_default();
+            updated(right)
+                .cmp(&updated(left))
+                .then_with(|| {
+                    by_project_name(project_name(left_id, left), project_name(right_id, right))
+                })
                 .then_with(|| left_id.cmp(right_id))
         });
         let order = projects.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         let mut answer = json!({ "at": self.cursor(), "sessions": sessions, "projects": self.projects,
             "projectOrder": order, "startProject": order.first(), "archivedGroups": self.archived,
-            "needsYou": self.needs_you });
+            "needsYou": self.needs_you.as_deref().unwrap_or_default() });
         if let Some(since) = since {
             let gone = self
                 .gone
@@ -540,6 +604,51 @@ impl Snapshot {
             answer["pending"] = json!(self.pending);
         }
         answer
+    }
+}
+
+fn project_name<'a>(directory: &'a str, row: &'a Value) -> &'a str {
+    row["name"].as_str().unwrap_or_else(|| {
+        Path::new(directory)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(directory)
+    })
+}
+
+fn name_parts(mut name: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        let first = name.chars().next()?;
+        let end = if first.is_ascii_digit() {
+            name.find(|character: char| !character.is_ascii_digit())
+                .unwrap_or(name.len())
+        } else {
+            first.len_utf8()
+        };
+        let (part, rest) = name.split_at(end);
+        name = rest;
+        Some(part)
+    })
+}
+
+fn by_project_name(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left = name_parts(left);
+    let mut right = name_parts(right);
+    loop {
+        let (a, b) = (left.next(), right.next());
+        let (Some(a), Some(b)) = (a, b) else {
+            return a.is_some().cmp(&b.is_some());
+        };
+        let part = if a.as_bytes()[0].is_ascii_digit() && b.as_bytes()[0].is_ascii_digit() {
+            let a = a.trim_start_matches('0');
+            let b = b.trim_start_matches('0');
+            a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+        } else {
+            a.to_lowercase().cmp(&b.to_lowercase())
+        };
+        if part != std::cmp::Ordering::Equal {
+            return part;
+        }
     }
 }
 
@@ -586,6 +695,19 @@ async fn load(home: &Path) -> Option<Snapshot> {
             project.entry(field).or_insert_with(|| json!(0));
         }
     }
+    saved.needs_you.get_or_insert_with(|| {
+        let mut waiting: Vec<_> = saved
+            .sessions
+            .iter()
+            .filter(|(_, row)| matches!(row.facts.kind, Kind::Project | Kind::Chat) && row.facts.waiting())
+            .map(|(session, row)| (session, row.facts.extra.get("asked").and_then(Value::as_u64)))
+            .collect();
+        waiting.sort_by(|(a, one), (b, other)| other.cmp(one).then_with(|| a.cmp(b)));
+        waiting
+            .into_iter()
+            .map(|(session, _)| json!({"session":session,"asks":{"kind":"other","summary":"waits on you"}}))
+            .collect()
+    });
     if saved
         .sessions
         .values()

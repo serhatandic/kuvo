@@ -1,5 +1,9 @@
 //! Shared treatment of stored and streaming conversation summaries.
 
+mod reasoning;
+
+use std::{collections::BTreeSet, sync::Arc};
+
 use serde_json::{Value, json};
 
 pub(crate) fn compaction_page(page: &mut Value) {
@@ -70,8 +74,10 @@ struct Event {
 pub(crate) fn watch(
     engine: crate::Engine,
     refresh: tokio::sync::mpsc::WeakSender<()>,
-    ask_updates: tokio::sync::watch::Sender<std::sync::Arc<crate::asks::Book>>,
+    inventory_changed: tokio::sync::watch::Sender<u64>,
+    ask_updates: tokio::sync::watch::Sender<Arc<crate::asks::Book>>,
     models_changed: tokio::sync::mpsc::Sender<()>,
+    thinking: tokio::sync::watch::Sender<Arc<BTreeSet<String>>>,
     stop: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
@@ -82,6 +88,7 @@ pub(crate) fn watch(
     tokio::spawn(async move {
         let mut states = engine.states();
         let mut asks = crate::asks::Book::new();
+        let mut reasoning = reasoning::Reasoning::default();
         let mut generation = None;
         let mut queues = crate::queue::QueueEvents::default();
         let mut scan = None::<tokio::task::JoinHandle<()>>;
@@ -110,6 +117,8 @@ pub(crate) fn watch(
                 }
             } else if generation != Some(pin) {
                 asks.clear();
+                reasoning = reasoning::Reasoning::default();
+                thinking.send_replace(Arc::new(BTreeSet::new()));
                 queues = crate::queue::QueueEvents::default();
                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
             }
@@ -157,6 +166,16 @@ pub(crate) fn watch(
                 loop {
                     let next = tokio::select! {
                         next = chunks.next() => next,
+                        () = async {
+                            match reasoning.next() {
+                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
+                            reasoning.advance();
+                            thinking.send_replace(Arc::new(reasoning.visible()));
+                            continue;
+                        },
                         _ = states.changed() => break,
                         _ = sleep(Duration::from_secs(60)) => break,
                     };
@@ -192,9 +211,9 @@ pub(crate) fn watch(
                                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
                                 crate::asks::checkpoint(&engine, pin, &asks).await;
                             }
-                            if event.kind.starts_with("session.")
-                                && !event.kind.starts_with("session.inbox.")
-                            {
+                            if changes_inventory(&event.kind) {
+                                inventory_changed
+                                    .send_modify(|revision| *revision = revision.wrapping_add(1));
                                 let _ = list.try_send(());
                             }
                             if let Some(session) = event.data["sessionID"]
@@ -202,6 +221,9 @@ pub(crate) fn watch(
                                 .or_else(|| event.data["info"]["id"].as_str())
                                 .filter(|id| crate::sessions::valid_id(id))
                             {
+                                if reasoning.hear(session, &event.kind) {
+                                    thinking.send_replace(Arc::new(reasoning.visible()));
+                                }
                                 queues.hear(
                                     &engine,
                                     session,
@@ -218,4 +240,27 @@ pub(crate) fn watch(
             sleep(Duration::from_millis(250)).await;
         }
     })
+}
+
+fn changes_inventory(kind: &str) -> bool {
+    matches!(
+        kind,
+        "session.created"
+            | "session.deleted"
+            | "session.renamed"
+            | "session.updated"
+            | "session.metadata.updated"
+            | "session.moved"
+            | "session.viewed"
+            | "session.revert.staged"
+            | "session.revert.cleared"
+            | "session.revert.committed"
+            | "session.shell.started"
+            | "session.shell.ended"
+            | "session.idle"
+            | "session.execution.started"
+            | "session.execution.succeeded"
+            | "session.execution.failed"
+            | "session.execution.interrupted"
+    )
 }
