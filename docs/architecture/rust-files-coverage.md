@@ -69,12 +69,17 @@ Counts: 19 cases, all covered. Added since: names in other scripts and folder er
 - Folder errors in Node's words: Unix error numbers map to libuv's words exactly; on Windows the
   map goes by error kind (a loop of links, a name too long, busy, memory, time, an invalid
   argument), and anything else says the system's own words.
-- OSes: the conformance area and the differential runs on macOS. On native Windows,
-  `kuvo_services` cross-builds (llvm-mingw, `x86_64-pc-windows-gnullvm`) and its unit tests pass
-  there. The Windows runner (`scripts/windows-box-check.sh`) now runs the Credential Manager check
-  and cleanup as their own `-ExecutionPolicy Bypass -File` processes (clearing the supervisor's
-  environment had dropped its own Bypass). It then stops at the check itself: Credential Manager
-  answers 1312 ("A specified logon session does not exist") to a key-based SSH logon, which has no
-  credential vault, and the check refuses to run tests it can't prove are on an empty store. The
-  files area on Windows (both boxes) and anything on Linux are left until that logon has a vault
-  (a password logon, or the runner as a scheduled task).
+- OSes: the conformance area and the differential runs pass on macOS. Native Windows, run directly
+  (the cross-built `kuvo-box.exe` and the conformance files in a scratch folder over SSH, as row 7.1
+  does): the files area passes 2 of 16 there. The TS box can't serve on native Windows (`EPERM` on
+  `fsync` at startup), so there is no reference to compare with there. What it found:
+  - fixed: the Windows error-word seam used `ErrorKind::FilesystemLoop`, unstable, so the Rust box
+    didn't build for Windows; it now maps Windows error codes as libuv does;
+  - `kuvo/folders?path=C:\…` is refused 403 with no JSON body before the files module answers
+    (the server's path handling, to look into with `kuvo_server`);
+  - `file://host/x` names `\\host\x`, whose name Rust's `Path` doesn't give (Node's `basename`
+    gives `x`);
+  - the case file is Unix-shaped and needs Windows variants: `chmod` (Windows has no unreadable
+    mode bits or execute bits), symbolic links (need Developer Mode), a `\` in a file name, the
+    POSIX-only check of the address vectors' folder, `GIT_CONFIG_GLOBAL=/dev/null`.
+  Linux is left.
