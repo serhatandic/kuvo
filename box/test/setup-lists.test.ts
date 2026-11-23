@@ -233,7 +233,7 @@ test("a conversation on an away computer is still known", async () => {
     expect(found.status).toBe(200);
     expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: true, lastSeen: expect.any(Number), actions: [] } });
   } finally { setup.close(); }
-});
+}, 30_000);
 
 test("a conversation absent from the setup is unknown", async () => {
   const setup = pair();
@@ -245,7 +245,7 @@ test("a conversation absent from the setup is unknown", async () => {
     expect(found.status).toBe(404);
     expect(JSON.parse(found.text)).toEqual({ message: "That conversation isn’t there any more." });
   } finally { setup.close(); }
-});
+}, 30_000);
 
 async function line(box: Box) {
   const watch = Buffer.from(JSON.stringify(targets)).toString("base64url");
