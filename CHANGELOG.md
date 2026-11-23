@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Editing or deleting a bot that’s gone tells you the bot is no longer there.
+
 - Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
