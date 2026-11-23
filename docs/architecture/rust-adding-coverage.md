@@ -26,17 +26,19 @@ the races that span removal, backup, moves, and an authority change.
 | C16 | [Local discovery keeps the app’s own installation](../../protocol/conformance/setup-judge.test.mjs) | Both binaries recognize the same startup markers, distinguish the same and different setups, read an older engine location, and reject missing inputs and a future card. |
 | C17 | [Local discovery sees an active Unix keeper and ignores it after startup is removed](../../protocol/conformance/setup-judge.test.mjs) | Both binaries recognize the running keeper and classify it as gone when its startup file is absent while the process still runs. |
 | C18 | [A new main retires a provisional installer computer from its replicated claim](../../protocol/conformance/adding.test.mjs) | The successor takes over while the issuer is offline, refuses a receipt naming the observer, and commits and replays the exact retirement. The observer and former issuer follow it, the old confirmation cannot restore the entry, and a clean copy enrolls with fresh keys while the applicant’s saved work stays independent. |
-| C19 | [Installer status distinguishes a fresh account, a machine, and an interrupted installation](../../protocol/conformance/setup-judge.test.mjs) | The deployed status command handles an empty home, disposable files, a machine with or without older app data, a removed machine, and an interrupted Linux making with leftover keys. |
+| C19 | [Installer status distinguishes a fresh account, a machine, and an interrupted installation](../../protocol/conformance/setup-judge.test.mjs) | The deployed status command handles an empty home, disposable files, a machine with or without older app data, a removed machine, and an interrupted Linux making with leftover keys. When both installations exist, it gives the released explanation and preserves both sets of data. |
+| C20 | [SSH Add leaves an older account reservation in place](../../protocol/conformance/ssh-adding.test.mjs) | The two implementations preserve the older marker and stop before reading or changing the existing installation. The failure gives the same manual recovery instructions. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
-| U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. The TypeScript run also observes the Usage scope rewrite. |
+| U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
 | U4 | [A main with incoming devices off still revokes a device and delivers a machine unlink](../../box/crates/kuvo_setup/tests/live.test.mjs) | A Rust main reads the persisted off setting through the Mac Helper path. It refuses a new pairing, publishes a signed desktop revocation and finishes a machine unlink while the setting stays off. |
 | U5 | [Uninstalling a stopped machine clears its desktop identity and sign-ins but retains work](../../protocol/conformance/removal.test.mjs) | `uninstall --check` inspects a stopped machine. Uninstall retires the desktop and credential files, marks the machine off, preserves work and can be repeated. Live shutdown, startup entries, backup preparation and remote uninstall remain open. |
 | U6 | [A member forwards an unlink and receives the main’s saved decision](../../protocol/conformance/removal.test.mjs) | The relay holds main-to-member traffic through the commit. Both remaining computers receive the acknowledgment. The removed computer runs standalone and keeps its session and bot files. Direct replay returns the same signed decision without advancing the membership revision. |
 | U7 | [The only computer commits a wipe and erases only its old installation](../../protocol/conformance/removal.test.mjs) | A standalone Unix resident returns the signed reinstall offer, stops accepting clients and retires its directory. A sibling reached through a symlink stays intact. Rust enrolls again at the same path with fresh keys. The scenario uses an isolated account, no keeper, and no configured backup. |
 | U8 | [A Rust wipe resumes against its detached directory and leaves a replacement alone](../../protocol/conformance/removal.test.mjs) | A fresh process can finish erasing the authorized directory after a crash. The receipt's stored device and inode must match, and the new installation at the original path stays intact. |
-| U9 | [Local uninstall refuses a running main computer before clearing its identity](../../protocol/conformance/removal.test.mjs) | Both binaries refuse before deleting the desktop identity or writing an off marker. The primary and online member keep their setup and answer afterward. |
+| U9 | [Local uninstall refuses a running main computer before clearing its identity](../../protocol/conformance/removal.test.mjs) | Both binaries refuse before deleting the desktop identity or writing an off marker. The running primary and member keep their setup and the same desktop grant. |
 | U10 | [The installer waits for an authorized wipe before offering reinstall](../../protocol/conformance/removal.test.mjs) | Both installers wait for a pending wipe, a competing owner or a mismatched directory identity. They finish an authorized detach, preserve a replacement and continue to offer reinstall. U7 verifies successful Rust enrollment consumes the offer. |
+| U11 | [Uninstall reports the desktop identity failure first and can be retried](../../protocol/conformance/removal.test.mjs) | When identity and sign-in cleanup both fail on a stopped Unix machine, the command reports the identity error. After permissions are repaired, retry removes the identity and preserves work. |
 
 ## Stored and inherited cases
 
@@ -63,20 +65,22 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-On macOS, TypeScript passes C1–C3, C5–C8, C10–C11, U1–U3 and U5–U7. Rust passes
-C1–C11 and U1–U8. The Rust workspace compile check passes. The Mac-built static
-x86-64 musl binary passes C1–C11, U1–U3 and U5–U8 in WSL 2 and in a single
-lokum container capped at one CPU and 1 GB. The native Windows binary passes
-C1–C8, C10–C11, U1–U3 and U5–U6. The Unix wipe cases are skipped there.
-The original TypeScript
-fake SSH host, alias, WSL 1 refusal and device-revocation scenarios pass as
-reference checks. The Windows PC’s WSL 2 account joined a Rust setup,
+In the five selected process areas, Rust passes 31 tests on macOS and
+TypeScript passes 28 with three Rust-specific cases skipped. The Rust
+workspace compile check passes. The static x86-64 musl binary passes all
+31 in WSL 2 and in one lokum container capped at one CPU and 1 GB.
+TypeScript also passes 28 in WSL 2. The native Windows binary passes 23 and
+skips eight Unix-specific tests. The original TypeScript fake SSH host,
+alias, WSL 1 refusal and device-revocation scenarios pass as reference checks.
+The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a
 separate foreground SSH session. The native resident launched by Add ended
 with the SSH command. The native Windows Add test needs 8.1 for an
-unattended resident. Both live exercises used staged executables and isolated
-homes. Engine and keeper installation and cross-platform release selection
+unattended resident. Live SSH also verified host key change, refused keys,
+Cancel at first trust and retaining an older reservation in WSL 2. These
+checks used staged executables and isolated homes. Engine and keeper
+installation and cross-platform release selection
 still need the release path in 7.1 and the native startup owner in 8.1.
 
 | Earlier mixed-only check | Status |
@@ -167,6 +171,9 @@ The stopped-uninstall command also returned matching `--check`, uninstall and
 replay JSON after replacing the scratch absolute paths. The six remaining
 entries and file hashes matched. The last-computer wipe fixture removes the
 home on both binaries and leaves the same receipt format and sibling file.
+The installer status differential resumed a detached legacy receipt and
+matched the reply, retained home paths, file modes and versioned completion
+receipt after the Rust writer was corrected.
 
 No path in these inventories was declared unread. The source search covered the
 box, Rust crates and desktop. The [move's machine differential](rust-move-coverage.md#verdicts-for-the-machine-differentials)
@@ -174,7 +181,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 22 have coverage and 172 still have open or partial work. Of those, 132 list 2.3 as an owner (106 open, 26 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 23 have coverage and 171 still have open or partial work. Of those, 130 list 2.3 as an owner (103 open, 27 partial).
 
 ### computers-add
 
@@ -213,7 +220,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 22 h
 | [a credential write interrupted by SSH 255 stops Add and recovery waits for the remote writer](../../box/bridge-tests/computers-add.test.js#L1449) | Open | 2.3 |
 | [a failed final release is reported and an abandoned reservation can be cleared explicitly](../../box/bridge-tests/computers-add-recovery.test.js#L127) | Open | 2.3 |
 | [a recovery answer only clears the reservation shown to the user](../../box/bridge-tests/computers-add-recovery.test.js#L170) | Open | 2.3 |
-| [an old reservation is kept and Add explains how to clear it after a restart](../../box/bridge-tests/computers-add-recovery.test.js#L189) | Open | 2.3 |
+| [an old reservation is kept and Add explains how to clear it after a restart](../../box/bridge-tests/computers-add-recovery.test.js#L189) | C20 and real OpenSSH into WSL 2 verify that Add leaves the older marker in place, keeps membership separate and tells the user how to clear the marker. | — |
 | [SSH uninstall cannot probe ownership while Add holds the account](../../box/bridge-tests/computers-add-recovery.test.js#L199) | Open | 2.3 |
 | [SSH Add is blocked from the time uninstall probes ownership through deletion](../../box/bridge-tests/computers-add-recovery.test.js#L225) | Open | 2.3 |
 | [a reservation creation error says the account couldn't be prepared and logs the SSH detail](../../box/bridge-tests/computers-add-recovery.test.js#L259) | Open | 2.3 |
@@ -253,7 +260,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 22 h
 | [an earlier Kuvo Code's chats and settings move with `kuvo-install move`: each step said in the box's own words, its helper started, and the app's own folder as it was](../../box/bridge-tests/install.test.js#L645) | Open | 2.6 |
 | [a move launchd wouldn't start: opening Kuvo again starts it with `new](../../box/bridge-tests/install.test.js#L700) | Open | 2.6, 6.2 |
 | [a moved Mac whose saved sign-ins are still owed opens and updates without the move or the Keychain: they wait for you, and only you start them](../../box/bridge-tests/install.test.js#L725) | Open | 2.6, 6.2 |
-| [a Mac that's one of your machines too is told so in words by the installer, and nothing is moved or stopped](../../box/bridge-tests/install.test.js#L750) | Open | 2.3, 2.6 |
+| [a Mac that's one of your machines too is told so in words by the installer, and nothing is moved or stopped](../../box/bridge-tests/install.test.js#L750) | C19 verifies status, its explanation, and both installations retained. The explicit move refusal stays with 2.6. | 2.6 |
 | [on Linux there's nothing to move: said, and nothing made](../../box/bridge-tests/install.test.js#L766) | Open | 2.6 |
 | [a copy of the app never judges or installs for the real one, and is refused before anything is written: Kuvo Code's own ID goes with ~/.kuvo-code alone](../../box/bridge-tests/install.test.js#L774) | Open | 6.2, 7.1 |
 | [the real home is told however it's written: on a Mac's disk a name in other letters' case is the same folder, there or not yet](../../box/bridge-tests/install.test.js#L793) | Open | 6.2, 7.1 |
@@ -273,7 +280,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 22 h
 | [a merge reserves Work Queue numbers through the relay lease](../../box/bridge-tests/installer-enrollment.test.js#L494) | Open | 2.3, 5.2 |
 | [installer retries a saved join after a lost answer and rejects code reuse by a different computer](../../box/bridge-tests/installer-enrollment.test.js#L538) | C2 covers plain enrollment retries and single-use binding. C10 covers selected credentials and C11 covers hash-only forwarding and a lost reply from the main. The remaining consent and paired-device races are open. | 2.3 |
 | [a computer enrolled by installer code receives a verified backup over Relay](../../box/bridge-tests/installer-enrollment.test.js#L919) | Open | 2.3, 2.5 |
-| [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 and U3 cover plain unlink, retained databases and key rotation on machine re-enrollment. Mac Helper and relocated data cases remain open. | 2.3 |
+| [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 and U3 cover plain unlink, retained databases, prior device revocation, signing-key retirement, and code replay. The released signed-mail and retained work variants remain open. | 2.3 |
 | [probe, SSH and installer code protect independent work and grants](../../box/bridge-tests/installer-enrollment.test.js#L1067) | Installer admission checks pairing and work. U2 checks both unchanged and changed retained SQLite work. SSH admission and full queue inventory remain open. | 2.3, 2.6 |
 | [a post-claim edit cancels only the provisional installer roster entry](../../box/bridge-tests/installer-enrollment.test.js#L1134) | C15 verifies retiring the exact provisional member, preserving work, and retrying after the cancellation answer is lost. | — |
 | [an expired installer claim can retire its exact entry after a member takes over the issuer’s relay lease](../../box/bridge-tests/installer-enrollment.test.js#L1208) | C6 and C18 verify issuance, takeover, scoped retirement, replicated revocation, replay, the former issuer’s delayed confirmation, and re-enrollment with fresh keys only for the clean copy. | — |
@@ -327,7 +334,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 22 h
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [uninstall deletes the desktop identity even if the engine and link are already gone](../../box/test/add-uninstall.test.ts#L9) | U5 covers stopped local uninstall. The SSH wrapper and confirmation after a remote failure remain open. | 2.3, 7.1 |
-| [uninstall reports incomplete cleanup if the desktop folder cannot be deleted without an engine](../../box/test/add-uninstall.test.ts#L30) | Open | 2.3 |
+| [uninstall reports incomplete cleanup if the desktop folder cannot be deleted without an engine](../../box/test/add-uninstall.test.ts#L30) | U11 covers the stopped local command without an engine. The SSH wrapper, its result and remote retry remain open. | 2.3 |
 | [disconnecting a shared box reports a failed departure and keeps its identity](../../box/test/add-uninstall.test.ts#L52) | Open | 2.3 |
 
 ### file-addresses
@@ -411,7 +418,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 22 h
 | --- | --- | --- |
 | [the desktop app on a member's computer is paired through its own box and reaches every box of the setup, until another device removes it](../../box/bridge-tests/devices-two-boxes.test.js#L297) | Open | 2.3 |
 | [a removal reaches a member while the primary's inbound device switch stays off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | U4 covers the saved off setting, refused pairing, replicated revocation and machine unlink. Live switch changes and the connection-level checks remain open. | 2.3, 6.2 |
-| [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L701) | U9 covers refusal with a running member. The paired desktop's open session and revocation checks remain open. | 2.3 |
+| [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L701) | U9 covers refusal with a running member and a replicated desktop grant. The open Noise session remains to be exercised. | 2.3 |
 | [local uninstall revokes its desktop before stopping the box, including a session open to its primary](../../box/bridge-tests/devices-two-boxes.test.js#L739) | Open | 2.3 |
 
 ### peers

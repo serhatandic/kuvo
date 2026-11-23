@@ -32,10 +32,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
 - Adding over SSH explains changed host keys and refused sign-ins, and preserves an unreadable saved list of computers.
 - Adding a second SSH address for a known Mac preserves older Kuvo work stored beside its current installation.
+- Adding over SSH explains how to clear a reservation left by an older Kuvo Code after restarting the other computer.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
 - If work appears on a computer after it starts joining, the installer keeps that work and cancels its unfinished enrollment.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
 - Uninstall tells a running main computer with members to hand over its role before it can be removed.
+- If uninstall cannot remove the desktop identity, it reports that failure first and can be retried after the folder permissions are repaired.
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
 - The installer resumes an authorized wipe and offers reinstall after erasing the previous installation.
 
