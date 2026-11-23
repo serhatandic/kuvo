@@ -128,6 +128,14 @@ const link = await import(LINK_BUNDLE.href);
 const leases = relayLeaseStandIn({ transferStartsNow: true });
 const relay = await relayStandIn(link, { request: leases.request, changed: () => {} });
 
+function renewStudioLease(peers) {
+  const setup = link.readLink().setup;
+  assert.equal(setup.role, "primary");
+  const roster = Object.fromEntries([[setup.primary, setup.sign], ...peers.map(peer => [peer.key, peer.sign])]);
+  const grant = leases.seed(setup, roster, 500);
+  recordRelayLease(path.join(macHome, "run"), setup, { relay: grant });
+}
+
 const macEngine = await engineWith("ses_lead");
 const labEngine = await engineWith("ses_far");
 write(path.join(macHome, "run", "engine.json"), { port: macEngine.port, password: "pw" });
@@ -191,10 +199,7 @@ before(async () => {
   });
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [peer], moved: [] })).status, 200);
   link.noteSetupNow(Date.now(), { soon: 0 });
-  const state = link.readLink().setup;
-  assert.equal(state.role, "primary");
-  const grant = leases.seed(state, { [state.primary]: state.sign, [peer.key]: peer.sign }, 500);
-  recordRelayLease(path.join(macHome, "run"), state, { relay: grant });
+  renewStudioLease([peer]);
   const setup = await ask("GET", "kuvo/link/setup");
   assert.equal(setup.status, 200);
   const result = spawnSync(process.execPath, [script, "setup"], {
@@ -547,6 +552,7 @@ test("failure bench: an older peer's signed copies cannot establish current acce
   await reached("Lab follows the main Mac's setup", () => labLink()?.setup?.role === "member" && labLink().setup.primary === macPub);
   await reached("Studio leads the setup", async () => (await ask("GET", "kuvo/setup")).json?.you?.role === "primary");
   function commitRoster(boxes) {
+    renewStudioLease(boxes);
     let saved;
     link.updateLink(current => {
       const membership = current.shared.membershipAndAccess.value;
@@ -683,6 +689,7 @@ link.askToSend();
 
 test("local uninstall refuses to clear a primary while a member holds an open session", { timeout: 25_000 }, async t => {
   signal = t.signal;
+  renewStudioLease(link.readLink().shared.membershipAndAccess.value.boxes);
   const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
   const key = link.newKey();
   const desktop = client({ name: "Studio uninstall desktop", client: "desktop" }, key);
@@ -721,6 +728,7 @@ test("local uninstall refuses to clear a primary while a member holds an open se
 
 test("local uninstall revokes its desktop before stopping the box, including a session open to its primary", { timeout: 60_000 }, async t => {
   signal = t.signal;
+  renewStudioLease(link.readLink().shared.membershipAndAccess.value.boxes);
   const main = { key: link.publicOf(macKey), address: macAddress };
   const key = link.newKey();
   const desktop = client({ name: "Lab desktop", client: "desktop" }, key);
