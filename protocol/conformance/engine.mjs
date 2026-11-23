@@ -30,6 +30,12 @@ export async function standInEngine(root, env) {
       try { given = body ? JSON.parse(body) : {}; } catch {}
       engine.asked.push({ method: request.method, path: url.pathname, json: given });
       const send = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      const paged = (rows, size) => {
+        const start = Number(url.searchParams.get("cursor") ?? 0);
+        const take = Number(url.searchParams.get("limit") ?? size);
+        const next = start + take;
+        return { data: rows.slice(start, next), cursor: next < rows.length ? { next: String(next) } : null };
+      };
       const route = `${request.method} ${url.pathname}`;
       if (route === "GET /api/event") {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -41,7 +47,8 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/session") {
         if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
-        return send({ data: engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent)) });
+        const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
+        return send(engine.paged ? paged(rows, 100) : { data: rows });
       }
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {
@@ -178,7 +185,10 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/pty") return send({ data: engine.terminals.has(folderOf(request)) ? [{ id: "pty_here", status: "running" }] : [] });
       if (["GET /api/form", "GET /api/permission/request", "GET /api/shell"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
-      if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
+      if (messages && request.method === "GET") {
+        const rows = engine.messages.get(decodeURIComponent(messages[1])) ?? [];
+        return send(engine.paged ? paged(rows, 200) : { data: rows });
+      }
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       // Its tools connected (Kuvo Code's own browser's, no integration's), so nothing waits for them.
       if (route === "GET /api/mcp") return send({ data: [{ name: "kuvo-browser", status: { status: "connected" } }] });

@@ -44,6 +44,7 @@ pub const FEATURES: &[&str] = &[
     "models.speed",
     "models.starred",
     "search",
+    "search.setup",
     "sessions.models",
     "typed",
     "typed.draft",
@@ -66,6 +67,9 @@ pub use models::ModelSpeed;
 pub use ownership::{
     ComputerKey, DeviceAccess, OwnedReply, OwnedRequest, OwnerAction, OwnerScope, PeerReply,
     SessionOwner, SessionOwnership, Submitter,
+};
+pub use search::{
+    PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
 pub use session_list::LocalSessions;
 pub use session_move::{MoveEngineError, SessionMove};

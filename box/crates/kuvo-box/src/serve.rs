@@ -117,6 +117,24 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         sessions.clone(),
     ));
     peers.advertise_engine_submissions().await?;
+    let accepted = setup.handle();
+    let memory =
+        kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
+            accepted.ownership_state().id
+        });
+    let search_engine = engine.clone();
+    let memory_reads =
+        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    engine.register_setup_search(
+        Arc::new(super::setup_search::SetupSearch {
+            peers: peers.reader(),
+            reads: memory,
+        }),
+        &mut routes,
+    );
+    if memory_reads.is_some() {
+        peers.advertise_conversation_search().await?;
+    }
     setup.handle().register(&mut routes);
     let account = kuvo_os::platform::Account::current()?.home_folder(
         kuvo_os::platform::Platform::current(),
@@ -192,6 +210,9 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .await;
     session_source.abort();
     owner_requests.abort();
+    if let Some(memory_reads) = memory_reads {
+        memory_reads.abort();
+    }
     result?;
     Ok(())
 }
@@ -233,6 +254,7 @@ fn info(
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
+    features.push(kuvo_peers::memory_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

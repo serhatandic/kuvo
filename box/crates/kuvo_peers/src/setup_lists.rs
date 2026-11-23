@@ -66,6 +66,7 @@ pub struct View {
     pub relay_connected: bool,
     work_calls: bool,
     submission_recovery: bool,
+    conversation_search: bool,
     backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
@@ -140,6 +141,12 @@ impl View {
         }
         if self.submission_recovery {
             features.push("typed.submission-recovery");
+        }
+        if self.conversation_search {
+            features.extend([
+                crate::memory_read::FEATURE,
+                crate::memory_read::SEARCH_FEATURE,
+            ]);
         }
         if self
             .local_lists
@@ -287,6 +294,7 @@ enum Change {
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
     SubmissionRecovery,
+    ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
@@ -391,6 +399,13 @@ impl ResidentPeers {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
     }
 
+    pub async fn advertise_conversation_search(&self) -> io::Result<()> {
+        self.changes
+            .send(Change::ConversationSearch)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
+    }
+
     /// Track the roster handed down by setup authority after a durable membership or epoch change.
     pub async fn follow_setup_roster(&self, rosters: watch::Receiver<Option<Arc<Roster>>>) {
         let _ = self.changes.send(Change::SetupRosters(rosters)).await;
@@ -442,6 +457,7 @@ impl Resident {
             relay_connected: false,
             work_calls: false,
             submission_recovery: false,
+            conversation_search: false,
             backup_receiver: false,
             endpoint,
             system: system_name(),
@@ -490,6 +506,12 @@ impl Resident {
                     },
                     Some(Change::SubmissionRecovery) => {
                         self.view.submission_recovery = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
+                    Some(Change::ConversationSearch) => {
+                        self.view.conversation_search = true;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }

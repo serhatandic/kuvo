@@ -1823,8 +1823,7 @@ impl QueueEvents {
                 | "session.execution.failed"
                 | "session.execution.interrupted"
                 | "session.deleted"
-        )
-            && let Some((_, pending)) = self.stops.remove(session)
+        ) && let Some((_, pending)) = self.stops.remove(session)
         {
             pending.cancel();
         }

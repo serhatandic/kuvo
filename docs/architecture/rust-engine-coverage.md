@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 70 of
-411 declarations are covered, 114 are partial and 227 are gaps.
-Row 3.2 retains 218 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 75 of
+411 declarations are covered, 113 are partial and 223 are gaps.
+Row 3.2 retains 213 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -142,12 +142,12 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/test/models-speed.test.ts` (3) | 2–3 | 1 | — | 4.2 · 1 |
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
 | `box/test/model-names.test.ts` (3) | 1–3 | — | — | — |
-| `box/test/search-snippet.test.ts` (4) | 2–3 | — | 1, 4 | 3.2 · 1, 4 |
+| `box/test/search-snippet.test.ts` (4) | 1–4 | — | — | — |
 | `box/test/attachment-paths.test.ts` (2) | — | 1–2 | — | 2.4 · 1–2<br>2.5 · 1–2<br>4.1 · 1 |
 | `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.3 · 1–3 |
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
-| `box/bridge-tests/search.test.js` (11) | 1, 4–7, 9, 11 | 3, 10 | 2, 8 | 3.2 · 2–3, 8, 10<br>4.1 · 3 |
+| `box/bridge-tests/search.test.js` (11) | 1–2, 4–11 | 3 | — | 3.2 · 3<br>4.1 · 3 |
 | `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 18–19, 32 | 2, 4, 6–17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 16–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
@@ -230,7 +230,12 @@ which stars it has seen from that source so a later import preserves removals.
 with account plans from 5.4. Provider refresh keeps active folders and
 settles a persisted GitLab refresh after work ends. The provider compatibility
 layer rewrite is part of 6.1. Search caches local engine transcripts by
-session revision. Projection of a coding-agent transcript waits for 4.1.
+session revision. Setup search merges live and local answers, filters stale
+moved copies, and reports each computer that could not answer. The
+`kuvo_peers::memory_read` task uses authenticated multipart mail and keeps
+delivery failures apart from reach observations through the relay's
+ordered self-echoes. No request or reply is stored in the forward spool.
+Projection of a coding-agent transcript waits for 4.1.
 Raw prompts and commands use the same attachment ingest as the composer,
 with the raw prompt's own send-once response cache. Expiry preserves moved
 payloads and transcript pictures. `AttachmentSource` carries the other
