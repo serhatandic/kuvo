@@ -658,21 +658,19 @@ test("in Auto, what the engine asks in a bot's work is answered as in any conver
   expect(replies.length).toBe(mine)
 })
 
-test("in Auto, a bot works in its own projects (one it made, its goal's) as in its own folder, and a project by another spelling of its path is the project: its file tools there aren't reviewed", async () => {
+test("in Auto, a bot works in its own projects (one it made) as in its own folder, and a project by another spelling of its path is the project: its file tools there aren't reviewed", async () => {
   const { BOTS } = await import("../src/link/home")
   const { PROJECTS_FILE } = await import("../src/link/areas/projects")
-  const { GOALS_FILE } = await import("../src/link/work/goals")
   const folder = join(BOTS, "bot_maker")
-  const made = join(box, "made-app"), aimed = join(box, "goal-site"), theirs = join(box, "someone-elses"), linked = join(box, "project-link")
-  for (const each of [join(folder, "workspace"), made, aimed, theirs]) mkdirSync(each, { recursive: true })
+  const made = join(box, "made-app"), theirs = join(box, "someone-elses"), linked = join(box, "project-link")
+  for (const each of [join(folder, "workspace"), made, theirs]) mkdirSync(each, { recursive: true })
   symlinkSync(project, linked)
   writeFileSync(join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_maker", name: "Maker", created: "2026-11-03" }))
   writeFileSync(join(folder, "session"), "ses_maker")
   const kept = (file: string) => existsSync(file) ? readFileSync(file, "utf8") : null
-  const before = { projects: kept(PROJECTS_FILE), goals: kept(GOALS_FILE) }
-  for (const file of [PROJECTS_FILE, GOALS_FILE]) mkdirSync(dirname(file), { recursive: true })
+  const before = kept(PROJECTS_FILE)
+  mkdirSync(dirname(PROJECTS_FILE), { recursive: true })
   writeFileSync(PROJECTS_FILE, JSON.stringify({ version: 1, projects: [{ directory: made, folders: [], madeBy: { bot: "bot_maker", name: "Maker", at: 1 } }, { directory: theirs, folders: [] }] }))
-  writeFileSync(GOALS_FILE, JSON.stringify({ goals: [{ id: "goal_site", bot: "bot_maker", name: "Maker", session: "ses_maker", goal: "Ship the site", state: "running", projects: [aimed], steps: [{ id: "s1", text: "Deploy it to Cloudflare Pages", state: "todo" }], checks: [], spend: [], public: [], waiting: [], paused: [] }] }))
   const ask = (session: string, id: string, filePath: string) => {
     calling[session] = [{ type: "tool", id: `call_${id}`, name: "edit", state: { input: { filePath } } }]
     asking[session] = [{ id, action: "external_directory", resources: [join(filePath, "..", "*")], source: { id: `call_${id}`, messageID: "msg_1" } }]
@@ -685,7 +683,6 @@ test("in Auto, a bot works in its own projects (one it made, its goal's) as in i
     const asked = prompts.length
     expect((await ask("ses_maker", "per_m1", join(made, "index.html")))?.decision).toBe("allow")
     expect(replies.at(-1)).toEqual({ path: "/permission/per_m1/reply", body: { decision: "once" } })
-    expect((await ask("ses_maker", "per_m2", join(aimed, "src", "app.ts")))?.decision).toBe("allow")
     // Any conversation's own project, named through a link to it.
     conversation("ses_linked", "auto", "Fix the build")
     expect((await ask("ses_linked", "per_m3", join(linked, "src", "main.ts")))?.decision).toBe("allow")
@@ -695,15 +692,11 @@ test("in Auto, a bot works in its own projects (one it made, its goal's) as in i
     // A project that isn't its own is the reviewer's, as before.
     expect((await ask("ses_maker", "per_m4", join(theirs, "notes.txt")))?.decision).toBe("refuse")
     expect(prompts.length).toBe(asked + 1)
-    // Starting the goal approved its plan: what it publishes or deploys there is what you asked for.
-    expect(prompts.at(-1)).toContain("Deploy it to Cloudflare Pages")
   } finally {
     rmSync(folder, { recursive: true, force: true })
     rmSync(linked, { force: true })
-    for (const [file, was] of [[PROJECTS_FILE, before.projects], [GOALS_FILE, before.goals]] as const) {
-      if (was === null) rmSync(file, { force: true })
-      else writeFileSync(file, was)
-    }
+    if (before === null) rmSync(PROJECTS_FILE, { force: true })
+    else writeFileSync(PROJECTS_FILE, before)
   }
 })
 

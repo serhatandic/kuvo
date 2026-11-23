@@ -31,7 +31,8 @@ import type { BotChange } from "../bots/edit";
 import type { GivenBot } from "../bots/make";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { submitterOf } from "../ownership/authority";
-import { peerListFollowers, peerSetupLists } from "../peers/lists";
+import { pendingComputers } from "../peers/pending";
+import { PEER_BOT_ACTIVITY, peerListFollowers, peerSetupLists } from "../peers/lists";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 
@@ -132,7 +133,7 @@ async function botsSaid(machine?: string) {
   });
   const lists = heldLists(undefined, undefined, knownOf(listed));
   // (None of the three while it can't check what it holds: a client keeps what it last heard.)
-  return { bots: botsWithNow(machine), ...lists, ...(lists.held && lists.refused ? { elsewhere: elsewhereSaid(listed, lists.held, lists.refused) } : {}) };
+  return { pendingComputers: pendingComputers(PEER_BOT_ACTIVITY, key => peers.some(({ origin, saved }) => origin.computer.id === key && saved.bots !== undefined)), bots: botsWithNow(machine), ...lists, ...(lists.held && lists.refused ? { elsewhere: elsewhereSaid(listed, lists.held, lists.refused) } : {}) };
 }
 
 // Its bots followed: a line now, and again as they change (made, changed, deleted, a wake-up

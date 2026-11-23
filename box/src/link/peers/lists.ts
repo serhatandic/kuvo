@@ -40,6 +40,7 @@ type PeerSnapshot<T> = T & { at: number; seen: number };
 export function peerSnapshots<Value extends object>(
   name: string, file: string, feature: string, fields: Record<string, Shape>,
   variant: (value: Value, features: readonly string[]) => Value = value => value,
+  spacing = SPACING,
 ) {
   const told = object({ at: number, ...fields });
   const kept = object({ seen: number, ...told.object });
@@ -119,7 +120,7 @@ export function peerSnapshots<Value extends object>(
     const ready = peers.filter(peer => {
       const before = sent.get(peer.key);
       return peer.address && agents[peer.key]?.features?.includes(feature) &&
-        (!before || refresh.has(peer.key) || now - before.sent >= (reach[peer.key] === undefined ? SPACING : AGAIN));
+        (!before || refresh.has(peer.key) || now - before.sent >= (reach[peer.key] === undefined ? spacing : AGAIN));
     });
     if (!ready.length) return;
     const value = await currentValue();
@@ -187,6 +188,12 @@ export function standingOf(key: string, quiet: boolean, seen: number | undefined
   if (switchingRelease(key, since, told, now)) return { away: false, updating: true };
   if (now - since < LIVE_FOR) return { away: false };
   return { away: true, ...(seen !== undefined ? { lastSeen: seen } : {}) };
+}
+
+/** How the computer `key` stands for rows drawn from a copy it sent, kept since `seen` (ms): quiet
+ * once the relay found it not there, or the copy is older than `quietAfter`; then `standingOf`. */
+export function copyStanding(key: string, seen: number, reach = readReach(), told = readPeerAgents(), now = Date.now(), quietAfter = 180_000) {
+  return standingOf(key, reach[key] !== undefined || now - seen > quietAfter, seen, reach, told, now);
 }
 
 /** Whether a computer answers, as its setup rows say it: a relay refusal is immediate, and silence

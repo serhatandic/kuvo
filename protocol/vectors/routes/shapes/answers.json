@@ -983,6 +983,200 @@
    }
   },
   {
+   "route": "GET kuvo/setup/outputs",
+   "feature": "line.merged-outputs",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "artifacts": {
+       "list": {
+        "object": {
+         "id": "string",
+         "path": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "memory"
+           },
+           {
+            "literal": "skill"
+           },
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "download"
+           },
+           {
+            "literal": "code"
+           },
+           {
+            "literal": "file"
+           }
+          ]
+         },
+         "type": "string",
+         "gone": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "updated": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "pinned": "bool",
+         "latest": {
+          "object": {
+           "n": "number",
+           "hash": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "reason?": "string"
+          }
+         },
+         "artifactId": "string",
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "next": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/outputs/events",
+   "feature": "line.merged-outputs",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "artifacts": {
+       "list": {
+        "object": {
+         "id": "string",
+         "path": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "memory"
+           },
+           {
+            "literal": "skill"
+           },
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "download"
+           },
+           {
+            "literal": "code"
+           },
+           {
+            "literal": "file"
+           }
+          ]
+         },
+         "type": "string",
+         "gone": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "updated": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "pinned": "bool",
+         "latest": {
+          "object": {
+           "n": "number",
+           "hash": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "reason?": "string"
+          }
+         },
+         "artifactId": "string",
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "next": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/artifacts",
    "feature": "artifacts",
    "answers": {
@@ -2558,6 +2752,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "bots": {
        "list": {
         "object": {
@@ -3155,6 +3357,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "bots": {
        "list": {
         "object": {
@@ -11702,9 +11912,6 @@
             "literal": "git.words"
            },
            {
-            "literal": "goals"
-           },
-           {
             "literal": "groups"
            },
            {
@@ -11771,7 +11978,16 @@
             "literal": "line.kept-conversation"
            },
            {
+            "literal": "line.merged-archives"
+           },
+           {
             "literal": "line.merged-library"
+           },
+           {
+            "literal": "line.merged-notices"
+           },
+           {
+            "literal": "line.merged-outputs"
            },
            {
             "literal": "line.merged-sessions"
@@ -11781,6 +11997,9 @@
            },
            {
             "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.pending-computers"
            },
            {
             "literal": "line.setup-lists"
@@ -11793,9 +12012,6 @@
            },
            {
             "literal": "mcp.catalog"
-           },
-           {
-            "literal": "messages.commands"
            },
            {
             "literal": "messages.compaction-words"
@@ -11912,9 +12128,6 @@
             "literal": "queue.once"
            },
            {
-            "literal": "queue.removed.keyword"
-           },
-           {
             "literal": "queue.steer"
            },
            {
@@ -11961,6 +12174,9 @@
            },
            {
             "literal": "search"
+           },
+           {
+            "literal": "search.setup"
            },
            {
             "literal": "sessions.actions"
@@ -12186,15 +12402,6 @@
            },
            {
             "literal": "work.elsewhere.start"
-           },
-           {
-            "literal": "work.goals"
-           },
-           {
-            "literal": "work.goals.apps"
-           },
-           {
-            "literal": "work.goals.projects"
            },
            {
             "literal": "work.projects"
@@ -12706,9 +12913,6 @@
             "literal": "git.words"
            },
            {
-            "literal": "goals"
-           },
-           {
             "literal": "groups"
            },
            {
@@ -12775,7 +12979,16 @@
             "literal": "line.kept-conversation"
            },
            {
+            "literal": "line.merged-archives"
+           },
+           {
             "literal": "line.merged-library"
+           },
+           {
+            "literal": "line.merged-notices"
+           },
+           {
+            "literal": "line.merged-outputs"
            },
            {
             "literal": "line.merged-sessions"
@@ -12785,6 +12998,9 @@
            },
            {
             "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.pending-computers"
            },
            {
             "literal": "line.setup-lists"
@@ -12797,9 +13013,6 @@
            },
            {
             "literal": "mcp.catalog"
-           },
-           {
-            "literal": "messages.commands"
            },
            {
             "literal": "messages.compaction-words"
@@ -12916,9 +13129,6 @@
             "literal": "queue.once"
            },
            {
-            "literal": "queue.removed.keyword"
-           },
-           {
             "literal": "queue.steer"
            },
            {
@@ -12965,6 +13175,9 @@
            },
            {
             "literal": "search"
+           },
+           {
+            "literal": "search.setup"
            },
            {
             "literal": "sessions.actions"
@@ -13190,15 +13403,6 @@
            },
            {
             "literal": "work.elsewhere.start"
-           },
-           {
-            "literal": "work.goals"
-           },
-           {
-            "literal": "work.goals.apps"
-           },
-           {
-            "literal": "work.goals.projects"
            },
            {
             "literal": "work.projects"
@@ -16343,6 +16547,70 @@
    }
   },
   {
+   "route": "GET kuvo/setup/notices/events",
+   "feature": "line.merged-notices",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "origins": {
+       "list": {
+        "object": {
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "telling": "bool",
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "notices": {
+       "list": {
+        "object": {
+         "id": "string",
+         "at": "number",
+         "notice": {
+          "object": {
+           "title?": "string",
+           "subtitle?": "string",
+           "body?": "string",
+           "category": "string",
+           "thread?": "string",
+           "data?": {
+            "map": "string"
+           }
+          }
+         },
+         "by?": {
+          "literal": "agent"
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/notices",
    "feature": "notices",
    "answers": {
@@ -18051,6 +18319,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "moves": {
        "list": {
         "object": {
@@ -18196,6 +18472,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "moves": {
        "list": {
         "object": {
@@ -18373,7 +18657,6 @@
        "object": {
         "sessions?": "number",
         "asks?": "number",
-        "goals?": "number",
         "agent?": "bool",
         "startsOver?": "string"
        }
@@ -20306,6 +20589,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -20438,6 +20729,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -22186,6 +22485,48 @@
    }
   },
   {
+   "route": "GET kuvo/setup/search",
+   "feature": "search.setup",
+   "answers": {
+    "200": {
+     "object": {
+      "results": {
+       "list": {
+        "object": {
+         "session": "string",
+         "snippet": "string",
+         "info": "any",
+         "subagent?": "any",
+         "computer?": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      },
+      "awayComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "unavailableComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/search",
    "feature": "search",
    "answers": {
@@ -22197,7 +22538,29 @@
          "session": "string",
          "snippet": "string",
          "info": "any",
-         "subagent?": "any"
+         "subagent?": "any",
+         "computer?": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      },
+      "awayComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "unavailableComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
         }
        }
       }
@@ -25113,7 +25476,6 @@
             "files?": {
              "list": "string"
             },
-            "keyword?": "string",
             "at": "number"
            }
           }
@@ -25282,6 +25644,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -25544,6 +25914,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -25859,7 +26237,25 @@
           }
          ]
         },
-        "running": "bool"
+        "running": "bool",
+        "tools?": {
+         "object": {
+          "directory": {
+           "oneOf": [
+            "string",
+            "null"
+           ]
+          },
+          "ready": {
+           "object": {
+            "files": "bool",
+            "changes": "bool",
+            "browser": "bool",
+            "terminal": "bool"
+           }
+          }
+         }
+        }
        }
       },
       {
@@ -25881,6 +26277,24 @@
               "literal": "manage"
              }
             ]
+           }
+          }
+         }
+        },
+        "tools?": {
+         "object": {
+          "directory": {
+           "oneOf": [
+            "string",
+            "null"
+           ]
+          },
+          "ready": {
+           "object": {
+            "files": "bool",
+            "changes": "bool",
+            "browser": "bool",
+            "terminal": "bool"
            }
           }
          }
@@ -25922,7 +26336,25 @@
         }
        ]
       },
-      "running": "bool"
+      "running": "bool",
+      "tools?": {
+       "object": {
+        "directory": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "ready": {
+         "object": {
+          "files": "bool",
+          "changes": "bool",
+          "browser": "bool",
+          "terminal": "bool"
+         }
+        }
+       }
+      }
      }
     },
     "403": {
@@ -27465,7 +27897,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -27480,12 +27911,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -27568,7 +27993,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -27584,12 +28008,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -27727,7 +28145,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -27743,12 +28160,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -27821,7 +28232,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -27837,12 +28247,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -27985,6 +28389,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -28247,6 +28659,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "sessions": {
        "list": {
         "object": {
@@ -28476,7 +28896,16 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "dock?": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28499,7 +28928,16 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "dock?": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28515,6 +28953,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "waiting": {
        "list": {
         "object": {
@@ -28582,6 +29028,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "queues": {
        "list": {
         "object": {
@@ -28601,7 +29055,6 @@
               "files?": {
                "list": "string"
               },
-              "keyword?": "string",
               "at": "number"
              }
             }
@@ -28655,6 +29108,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "computers": {
        "list": {
         "object": {
@@ -28795,7 +29256,16 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "dock?": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28813,7 +29283,16 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "dock?": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -29130,7 +29609,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -29145,12 +29623,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -29208,7 +29680,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -29224,12 +29695,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -30088,7 +30553,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30132,7 +30596,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30176,7 +30639,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30192,12 +30654,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -30285,7 +30741,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30329,7 +30784,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30373,7 +30827,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30417,7 +30870,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30467,7 +30919,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30642,7 +31093,6 @@
          "files?": {
           "list": "string"
          },
-         "keyword?": "string",
          "at": "number"
         }
        }
@@ -30667,12 +31117,6 @@
         },
         "from?": "string",
         "words": "string",
-        "keyword": {
-         "oneOf": [
-          "string",
-          "null"
-         ]
-        },
         "draft": "string",
         "before?": "string",
         "receipt?": "string",
@@ -31080,6 +31524,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -31573,6 +32025,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -32276,6 +32736,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -32690,6 +33158,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -33183,6 +33659,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -33886,6 +34370,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -34308,6 +34800,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -34801,6 +35301,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -35504,6 +36012,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -35925,6 +36441,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -36418,6 +36942,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -37121,6 +37653,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -37540,6 +38080,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -38033,6 +38581,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -38736,6 +39292,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -39178,6 +39742,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -39671,6 +40243,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -40374,6 +40954,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -40835,6 +41423,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -41328,6 +41924,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -42031,6 +42635,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -43187,7 +43799,6 @@
        "list": {
         "object": {
          "words": "string",
-         "keyword?": "string",
          "widget?": "string",
          "comments?": {
           "list": {
@@ -43228,9 +43839,6 @@
            "name": "string",
            "session": "string"
           }
-         },
-         "command?": {
-          "literal": true
          }
         }
        }
@@ -44122,6 +44730,14 @@
       "bot": "string",
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44141,6 +44757,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -44406,6 +45043,14 @@
      "object": {
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44425,6 +45070,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -44466,6 +45132,14 @@
      "object": {
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44485,6 +45159,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -45038,1000 +45733,6 @@
    }
   },
   {
-   "route": "GET kuvo/work/goals",
-   "feature": "work.goals",
-   "answers": {
-    "200": {
-     "object": {
-      "goals": {
-       "list": {
-        "object": {
-         "id": "string",
-         "bot": "string",
-         "name": "string",
-         "session": "string",
-         "goal": "string",
-         "title?": "string",
-         "state": {
-          "oneOf": [
-           {
-            "literal": "proposed"
-           },
-           {
-            "literal": "running"
-           },
-           {
-            "literal": "done"
-           },
-           {
-            "literal": "stopped"
-           },
-           {
-            "literal": "declined"
-           }
-          ]
-         },
-         "steps": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "state": {
-             "oneOf": [
-              {
-               "literal": "todo"
-              },
-              {
-               "literal": "doing"
-              },
-              {
-               "literal": "done"
-              },
-              {
-               "literal": "waiting"
-              },
-              {
-               "literal": "paused"
-              },
-              {
-               "literal": "skipped"
-              }
-             ]
-            },
-            "progress?": "number",
-            "note?": "string",
-            "detail?": "string",
-            "phase?": "string",
-            "site?": "string",
-            "app?": {
-             "object": {
-              "name": "string",
-              "id?": "string"
-             }
-            },
-            "after?": {
-             "list": "string"
-            },
-            "sessions?": {
-             "list": "string"
-            },
-            "resumes?": "number",
-            "until?": "number",
-            "began?": "number",
-            "ended?": "number"
-           }
-          }
-         },
-         "checks": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "detail?": "string",
-            "state": {
-             "oneOf": [
-              {
-               "literal": "ok"
-              },
-              {
-               "literal": "needs"
-              },
-              {
-               "literal": "failed"
-              }
-             ]
-            },
-            "by": {
-             "oneOf": [
-              {
-               "literal": "bot"
-              },
-              {
-               "literal": "box"
-              }
-             ]
-            },
-            "site?": "string",
-            "action?": {
-             "object": {
-              "kind": {
-               "oneOf": [
-                {
-                 "literal": "open"
-                },
-                {
-                 "literal": "projectsFolder"
-                }
-               ]
-              },
-              "label": "string",
-              "url?": "string"
-             }
-            }
-           }
-          }
-         },
-         "spend": {
-          "list": {
-           "object": {
-            "what": "string",
-            "cap": "number",
-            "currency": "string",
-            "per": {
-             "oneOf": [
-              {
-               "literal": "day"
-              },
-              {
-               "literal": "week"
-              },
-              {
-               "literal": "month"
-              },
-              {
-               "literal": "goal"
-              }
-             ]
-            },
-            "spent": "number",
-            "until?": "number"
-           }
-          }
-         },
-         "public": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "on": "bool"
-           }
-          }
-         },
-         "projects": {
-          "list": "string"
-         },
-         "wake": "bool",
-         "digest": {
-          "oneOf": [
-           {
-            "literal": "day"
-           },
-           {
-            "literal": "week"
-           },
-           {
-            "literal": "milestones"
-           },
-           {
-            "literal": "none"
-           }
-          ]
-         },
-         "ends?": "number",
-         "proposed": "number",
-         "started?": "number",
-         "ended?": "number",
-         "waiting": {
-          "list": {
-           "object": {
-            "id": "string",
-            "kind": {
-             "oneOf": [
-              {
-               "literal": "you"
-              },
-              {
-               "literal": "judgment"
-              },
-              {
-               "literal": "outside"
-              },
-              {
-               "literal": "ask"
-              }
-             ]
-            },
-            "text": "string",
-            "detail?": "string",
-            "url?": "string",
-            "site?": "string",
-            "app?": {
-             "object": {
-              "name": "string",
-              "id?": "string"
-             }
-            },
-            "session?": "string",
-            "step?": "string",
-            "at": "number"
-           }
-          }
-         },
-         "paused": {
-          "list": {
-           "object": {
-            "why": "string",
-            "until?": "number",
-            "session?": "string"
-           }
-          }
-         },
-         "waited": "number",
-         "watching": {
-          "list": "string"
-         },
-         "next?": "number",
-         "lastDigest?": {
-          "object": {
-           "at": "number",
-           "text": "string"
-          }
-         },
-         "report?": "string",
-         "mode": {
-          "oneOf": [
-           {
-            "literal": "interactive"
-           },
-           {
-            "literal": "autopilot"
-           }
-          ]
-         },
-         "decided": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "choice": "string",
-            "why?": "string",
-            "options?": {
-             "list": "string"
-            },
-            "multiple?": "bool",
-            "session?": "string",
-            "at": "number",
-            "yours?": {
-             "object": {
-              "choice": "string",
-              "at": "number"
-             }
-            }
-           }
-          }
-         },
-         "alone": "bool",
-         "folders?": {
-          "list": {
-           "object": {
-            "project": "string",
-            "folder": {
-             "oneOf": [
-              "string",
-              "null"
-             ]
-            },
-            "shown": {
-             "oneOf": [
-              "string",
-              "null"
-             ]
-            },
-            "there?": "bool"
-           }
-          }
-         }
-        }
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "route": "GET kuvo/work/goals/events",
-   "feature": "work.goals",
-   "answers": {
-    "200": {
-     "object": {
-      "goals": {
-       "list": {
-        "object": {
-         "id": "string",
-         "bot": "string",
-         "name": "string",
-         "session": "string",
-         "goal": "string",
-         "title?": "string",
-         "state": {
-          "oneOf": [
-           {
-            "literal": "proposed"
-           },
-           {
-            "literal": "running"
-           },
-           {
-            "literal": "done"
-           },
-           {
-            "literal": "stopped"
-           },
-           {
-            "literal": "declined"
-           }
-          ]
-         },
-         "steps": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "state": {
-             "oneOf": [
-              {
-               "literal": "todo"
-              },
-              {
-               "literal": "doing"
-              },
-              {
-               "literal": "done"
-              },
-              {
-               "literal": "waiting"
-              },
-              {
-               "literal": "paused"
-              },
-              {
-               "literal": "skipped"
-              }
-             ]
-            },
-            "progress?": "number",
-            "note?": "string",
-            "detail?": "string",
-            "phase?": "string",
-            "site?": "string",
-            "app?": {
-             "object": {
-              "name": "string",
-              "id?": "string"
-             }
-            },
-            "after?": {
-             "list": "string"
-            },
-            "sessions?": {
-             "list": "string"
-            },
-            "resumes?": "number",
-            "until?": "number",
-            "began?": "number",
-            "ended?": "number"
-           }
-          }
-         },
-         "checks": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "detail?": "string",
-            "state": {
-             "oneOf": [
-              {
-               "literal": "ok"
-              },
-              {
-               "literal": "needs"
-              },
-              {
-               "literal": "failed"
-              }
-             ]
-            },
-            "by": {
-             "oneOf": [
-              {
-               "literal": "bot"
-              },
-              {
-               "literal": "box"
-              }
-             ]
-            },
-            "site?": "string",
-            "action?": {
-             "object": {
-              "kind": {
-               "oneOf": [
-                {
-                 "literal": "open"
-                },
-                {
-                 "literal": "projectsFolder"
-                }
-               ]
-              },
-              "label": "string",
-              "url?": "string"
-             }
-            }
-           }
-          }
-         },
-         "spend": {
-          "list": {
-           "object": {
-            "what": "string",
-            "cap": "number",
-            "currency": "string",
-            "per": {
-             "oneOf": [
-              {
-               "literal": "day"
-              },
-              {
-               "literal": "week"
-              },
-              {
-               "literal": "month"
-              },
-              {
-               "literal": "goal"
-              }
-             ]
-            },
-            "spent": "number",
-            "until?": "number"
-           }
-          }
-         },
-         "public": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "on": "bool"
-           }
-          }
-         },
-         "projects": {
-          "list": "string"
-         },
-         "wake": "bool",
-         "digest": {
-          "oneOf": [
-           {
-            "literal": "day"
-           },
-           {
-            "literal": "week"
-           },
-           {
-            "literal": "milestones"
-           },
-           {
-            "literal": "none"
-           }
-          ]
-         },
-         "ends?": "number",
-         "proposed": "number",
-         "started?": "number",
-         "ended?": "number",
-         "waiting": {
-          "list": {
-           "object": {
-            "id": "string",
-            "kind": {
-             "oneOf": [
-              {
-               "literal": "you"
-              },
-              {
-               "literal": "judgment"
-              },
-              {
-               "literal": "outside"
-              },
-              {
-               "literal": "ask"
-              }
-             ]
-            },
-            "text": "string",
-            "detail?": "string",
-            "url?": "string",
-            "site?": "string",
-            "app?": {
-             "object": {
-              "name": "string",
-              "id?": "string"
-             }
-            },
-            "session?": "string",
-            "step?": "string",
-            "at": "number"
-           }
-          }
-         },
-         "paused": {
-          "list": {
-           "object": {
-            "why": "string",
-            "until?": "number",
-            "session?": "string"
-           }
-          }
-         },
-         "waited": "number",
-         "watching": {
-          "list": "string"
-         },
-         "next?": "number",
-         "lastDigest?": {
-          "object": {
-           "at": "number",
-           "text": "string"
-          }
-         },
-         "report?": "string",
-         "mode": {
-          "oneOf": [
-           {
-            "literal": "interactive"
-           },
-           {
-            "literal": "autopilot"
-           }
-          ]
-         },
-         "decided": {
-          "list": {
-           "object": {
-            "id": "string",
-            "text": "string",
-            "choice": "string",
-            "why?": "string",
-            "options?": {
-             "list": "string"
-            },
-            "multiple?": "bool",
-            "session?": "string",
-            "at": "number",
-            "yours?": {
-             "object": {
-              "choice": "string",
-              "at": "number"
-             }
-            }
-           }
-          }
-         },
-         "alone": "bool",
-         "folders?": {
-          "list": {
-           "object": {
-            "project": "string",
-            "folder": {
-             "oneOf": [
-              "string",
-              "null"
-             ]
-            },
-            "shown": {
-             "oneOf": [
-              "string",
-              "null"
-             ]
-            },
-            "there?": "bool"
-           }
-          }
-         }
-        }
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "route": "POST kuvo/work/goals/ask",
-   "feature": "work.goals",
-   "answers": {
-    "200": {
-     "object": {
-      "text": "string"
-     }
-    },
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "404": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "409": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
-   "route": "POST kuvo/work/goals/:id",
-   "feature": "work.goals",
-   "answers": {
-    "200": {
-     "object": {
-      "goal": {
-       "object": {
-        "id": "string",
-        "bot": "string",
-        "name": "string",
-        "session": "string",
-        "goal": "string",
-        "title?": "string",
-        "state": {
-         "oneOf": [
-          {
-           "literal": "proposed"
-          },
-          {
-           "literal": "running"
-          },
-          {
-           "literal": "done"
-          },
-          {
-           "literal": "stopped"
-          },
-          {
-           "literal": "declined"
-          }
-         ]
-        },
-        "steps": {
-         "list": {
-          "object": {
-           "id": "string",
-           "text": "string",
-           "state": {
-            "oneOf": [
-             {
-              "literal": "todo"
-             },
-             {
-              "literal": "doing"
-             },
-             {
-              "literal": "done"
-             },
-             {
-              "literal": "waiting"
-             },
-             {
-              "literal": "paused"
-             },
-             {
-              "literal": "skipped"
-             }
-            ]
-           },
-           "progress?": "number",
-           "note?": "string",
-           "detail?": "string",
-           "phase?": "string",
-           "site?": "string",
-           "app?": {
-            "object": {
-             "name": "string",
-             "id?": "string"
-            }
-           },
-           "after?": {
-            "list": "string"
-           },
-           "sessions?": {
-            "list": "string"
-           },
-           "resumes?": "number",
-           "until?": "number",
-           "began?": "number",
-           "ended?": "number"
-          }
-         }
-        },
-        "checks": {
-         "list": {
-          "object": {
-           "id": "string",
-           "text": "string",
-           "detail?": "string",
-           "state": {
-            "oneOf": [
-             {
-              "literal": "ok"
-             },
-             {
-              "literal": "needs"
-             },
-             {
-              "literal": "failed"
-             }
-            ]
-           },
-           "by": {
-            "oneOf": [
-             {
-              "literal": "bot"
-             },
-             {
-              "literal": "box"
-             }
-            ]
-           },
-           "site?": "string",
-           "action?": {
-            "object": {
-             "kind": {
-              "oneOf": [
-               {
-                "literal": "open"
-               },
-               {
-                "literal": "projectsFolder"
-               }
-              ]
-             },
-             "label": "string",
-             "url?": "string"
-            }
-           }
-          }
-         }
-        },
-        "spend": {
-         "list": {
-          "object": {
-           "what": "string",
-           "cap": "number",
-           "currency": "string",
-           "per": {
-            "oneOf": [
-             {
-              "literal": "day"
-             },
-             {
-              "literal": "week"
-             },
-             {
-              "literal": "month"
-             },
-             {
-              "literal": "goal"
-             }
-            ]
-           },
-           "spent": "number",
-           "until?": "number"
-          }
-         }
-        },
-        "public": {
-         "list": {
-          "object": {
-           "id": "string",
-           "text": "string",
-           "on": "bool"
-          }
-         }
-        },
-        "projects": {
-         "list": "string"
-        },
-        "wake": "bool",
-        "digest": {
-         "oneOf": [
-          {
-           "literal": "day"
-          },
-          {
-           "literal": "week"
-          },
-          {
-           "literal": "milestones"
-          },
-          {
-           "literal": "none"
-          }
-         ]
-        },
-        "ends?": "number",
-        "proposed": "number",
-        "started?": "number",
-        "ended?": "number",
-        "waiting": {
-         "list": {
-          "object": {
-           "id": "string",
-           "kind": {
-            "oneOf": [
-             {
-              "literal": "you"
-             },
-             {
-              "literal": "judgment"
-             },
-             {
-              "literal": "outside"
-             },
-             {
-              "literal": "ask"
-             }
-            ]
-           },
-           "text": "string",
-           "detail?": "string",
-           "url?": "string",
-           "site?": "string",
-           "app?": {
-            "object": {
-             "name": "string",
-             "id?": "string"
-            }
-           },
-           "session?": "string",
-           "step?": "string",
-           "at": "number"
-          }
-         }
-        },
-        "paused": {
-         "list": {
-          "object": {
-           "why": "string",
-           "until?": "number",
-           "session?": "string"
-          }
-         }
-        },
-        "waited": "number",
-        "watching": {
-         "list": "string"
-        },
-        "next?": "number",
-        "lastDigest?": {
-         "object": {
-          "at": "number",
-          "text": "string"
-         }
-        },
-        "report?": "string",
-        "mode": {
-         "oneOf": [
-          {
-           "literal": "interactive"
-          },
-          {
-           "literal": "autopilot"
-          }
-         ]
-        },
-        "decided": {
-         "list": {
-          "object": {
-           "id": "string",
-           "text": "string",
-           "choice": "string",
-           "why?": "string",
-           "options?": {
-            "list": "string"
-           },
-           "multiple?": "bool",
-           "session?": "string",
-           "at": "number",
-           "yours?": {
-            "object": {
-             "choice": "string",
-             "at": "number"
-            }
-           }
-          }
-         }
-        },
-        "alone": "bool",
-        "folders?": {
-         "list": {
-          "object": {
-           "project": "string",
-           "folder": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
-           "shown": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
-           "there?": "bool"
-          }
-         }
-        }
-       }
-      }
-     }
-    },
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "404": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "409": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "502": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
-   "route": "GET kuvo/work/apps/icon",
-   "feature": "work.goals.apps",
-   "answers": {
-    "200": "bytes",
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "404": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
    "route": "POST kuvo/projects/new",
    "feature": "work.projects",
    "answers": {
@@ -46088,6 +45789,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "owner": "string",
       "statuses": {
        "list": {
@@ -46679,6 +46388,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "owner": "string",
       "statuses": {
        "list": {

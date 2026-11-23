@@ -33,6 +33,7 @@ import { QUEUE_ROUTE, queueRoute } from "../../src/link/areas/queue"
 import { SEND_ROUTE, sendRoute } from "../../src/link/areas/messages"
 import { queueWatcher } from "../../src/link/engine/queue"
 import { agentsRoute } from "../../src/link/server/forward"
+import { COMMAND_OUTPUT_ROUTE, commandOutputRoute } from "../../src/link/areas/work"
 import type { RouteContext } from "../../src/link/server/context"
 import { ask, follow } from "../route-answer"
 
@@ -635,6 +636,44 @@ describe("Claude Code, on its own", () => {
     expect(notice.metadata).toMatchObject({ source: "shell", state: "completed", exit: 0 })
     expect(notice.description).toBe("npm run dev")
     expect(texts(id).join(" ")).toContain("The server stopped.")
+  })
+
+  test("a finished background command shows the final output file after Claude Code forgets its output", async () => {
+    const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+    sessions.prompt(id, { id: "msg_claude_bg_output", text: "build in the background", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 1)
+    const first = fake.sent[0].uuid
+    fake.out.push({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "build", name: "Bash", input: { command: "cargo build", run_in_background: true } }] }, parent_tool_use_id: null, user_message_uuids: [first] })
+    fake.out.push({ type: "system", subtype: "task_started", task_id: "build-task", task_type: "local_bash", description: "Build", tool_use_id: "build", is_backgrounded: true })
+    fake.out.push({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "build", content: "Command running in background" }] }, tool_use_result: { backgroundTaskId: "build-task" } })
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    const [job] = sessions.background()[id]!.commands
+    expect(job.command).toBe("cargo build")
+    const bridge = Bun.serve({ port: 0, fetch: handler({ sessions, password: "pw" } as any) })
+    const route = `kuvo/work/background/${id}/commands/${job.id}/output`
+    const printed = async () => {
+      const pieces = commandOutputRoute({
+        request: { method: "GET" },
+        readEngine: () => { throw new Error("No engine") },
+        bridge: () => ({ port: bridge.port!, password: "pw" }),
+        json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+      } as RouteContext, route.match(COMMAND_OUTPUT_ROUTE)!)
+      const [, body] = await Array.fromAsync(pieces)
+      return JSON.parse(Buffer.from(body!.body!).toString())
+    }
+    try {
+      fake.outputs.set("build-task", "Compiling\n")
+      expect(await printed()).toMatchObject({ command: { id: job.id, agents: true }, output: "Compiling", state: "running" })
+      const file = join(root, "build.output")
+      writeFileSync(file, "Compiling\nFinished\n")
+      fake.outputs.delete("build-task")
+      fake.out.push({ type: "system", subtype: "task_notification", task_id: "build-task", status: "completed", tool_use_id: "build", output_file: file, summary: "exit code 0" })
+      await until(() => !sessions.background()[id])
+      expect(await printed()).toMatchObject({ command: { id: job.id, agents: true }, output: "Compiling\nFinished", state: "ended" })
+    } finally {
+      bridge.stop(true)
+    }
   })
 
   test("a turn of its own answered before your message: your turn ends with the result that answers yours", async () => {

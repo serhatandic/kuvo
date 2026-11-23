@@ -1,6 +1,8 @@
 // What scripts/route-shapes.sh writes from box/src/shared, so nothing it holds is kept by
-// hand twice: each route's answers (protocol/vectors/routes/shapes/answers.json), and the scenario that
-// holds each box's `kuvo/info` to its features (protocol/vectors/routes/features.json). Run as
+// hand twice: each route's answers (protocol/vectors/routes/shapes/answers.json), the scenario that
+// holds each box's `kuvo/info` to its features (protocol/vectors/routes/features.json), and, without
+// --check, every route listed with its comment, for people (protocol/ROUTES.md, scripts/routes-md.ts;
+// not kept in git). Run as
 // `bun scripts/route-shapes.ts <checkout> [--check]`.
 
 import fs from "node:fs";
@@ -52,6 +54,13 @@ const files: [string, () => string][] = [
   ["protocol/vectors/routes/shapes/answers.json", answers],
   ["protocol/vectors/routes/features.json", features],
 ];
+// protocol/ROUTES.md is for people, never kept in git (.gitignore), so it's only written, never
+// checked; writing it also checks that each route is an entry of its own in its file.
+if (!check) {
+  const { routesMarkdown } = await import("./routes-md");
+  const catalogue = await routesMarkdown(root);
+  files.push(["protocol/ROUTES.md", () => catalogue]);
+}
 
 let stale = 0;
 for (const [file, write] of files) {

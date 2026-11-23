@@ -4,10 +4,10 @@ import { readFileSync } from "node:fs"
 import { botNow, botsNow, botStateTurns } from "../src/link/lists/rule"
 
 // Which state a bot is in is the box's rule, one for every client (PROTOCOL.md, "What a bot is
-// doing now"): held to protocol/vectors/bot-states.json, each state, their order, asleep's 12 hours,
+// doing now"): held to box/test/fixtures/bot-states.json, each state, their order, asleep's 12 hours,
 // since when, and what's over once you've seen the bot.
 
-const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/bot-states.json", import.meta.url), "utf8"))
+const vectors = JSON.parse(readFileSync(new URL("fixtures/bot-states.json", import.meta.url), "utf8"))
 
 // (What its sessions come to: as given, or from their facts and when you last saw each bot.)
 const countsOf = (each: any) => each.counts ?? botsNow(each.sessions, new Map(Object.entries(each.seen ?? {})))[each.bot]

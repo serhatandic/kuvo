@@ -1,9 +1,10 @@
-// A box's settings, as it describes them to every client (PROTOCOL.md, "A box's settings",
+// A box's settings, as it describes them to every client (PROTOCOL.md, "Per area",
 // `settings`): its sections, and each section's page of rows, with their words, values, whether
 // each can be changed from where it's asked (and why not), and a revision of each row's own. A
 // client draws a row by its `kind` alone, so a new client draws every setting a box has.
 
 import { any, bool, type Infer, list, literal, map, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 /** The kinds of row, each a control every client has. A box newer than a client may send one it
  * doesn't know: the client draws its title and line, and says to update to change it. */
@@ -136,6 +137,9 @@ const ROW_FIELDS = {
   /** A `custom` row's: what only an installed app draws, by name. */
   "name?": string,
   /** How a thing stands, beside its title (a server's "Connected"); never part of its revision. */
+  "computer?": object({ id: string, name: string }),
+  "away?": bool,
+  "lastSeen?": number,
   "badge?": SETTING_BADGE,
   /** One more line under it, set apart (the error a server failed with). */
   "notice?": object({ words: string, tone: words("quiet", "warning") }),
@@ -156,7 +160,7 @@ export const SETTING_GROUP = object({ id: string, "title?": string, "note?": str
 export const SETTING_NOTE = object({ words: string, tone: words("quiet", "warning") });
 
 /** A section's page. */
-export const SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE), "configChanges?": list(string) });
+export const SETTINGS_PAGE = object({ ...PENDING_COMPUTERS, id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE), "configChanges?": list(string) });
 
 /** One of a box's sections, for a sidebar and search: its id, title, the heading it's under, its
  * icon (by name: `shield`, `globe`…, a set every client has), its line, and words it's found by. */
@@ -205,10 +209,15 @@ export type SettingsPage = Infer<typeof SETTINGS_PAGE>;
 export type SettingsSection = Infer<typeof SETTINGS_SECTION>;
 
 export const SETTINGS_PAGE_ROUTES: RouteShape[] = [
+  // The box's settings sections, in order, for a sidebar and search.
   { route: "GET kuvo/settings", feature: "settings", answers: { 200: SETTINGS_SECTIONS } },
+  // A section's page of rows; a client draws each row by its `kind` alone.
   { route: "GET kuvo/settings/:section", feature: "settings", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
   { route: "GET kuvo/settings/:section/events", feature: "settings", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
+  // Changes one row (`{row, value, was}`); 409 with the page as it is now when the row changed since.
   { route: "PATCH kuvo/settings/:section", feature: "settings", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  // Does a row's action (`{was, values?}`: its form's values, or a flow's `code`).
   { route: "POST kuvo/settings/:section/:row/:action", feature: "settings.flows", body: SETTINGS_ACT, answers: { 200: SETTINGS_PAGE, 400: SETTINGS_FORM_REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  // Checks a form's values as they're typed, changing nothing; secrets are sent only as `•`s.
   { route: "POST kuvo/settings/:section/:row/:action/check", feature: "settings.flows", body: SETTINGS_CHECK, answers: { 200: SETTINGS_CHECKED, 400: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
 ];

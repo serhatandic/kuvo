@@ -48,6 +48,7 @@ export interface LimitsDirectory {
   readonly inNoSetup?: boolean
   isPeer(key: string): boolean
   peerBoxes(): { key: string; name: string }[]
+  limitPeers?(): { key: string; name: string; limits?: "connected" | "away" }[]
   /** This box, as the link names it. */
   own(): { key: string; name: string } | undefined
   /** Told each time the link says who they are. */
@@ -85,6 +86,7 @@ export class LimitsPeers {
   /** When each peer's ask (or its coming back) was last answered. */
   private answered = new Map<string, number>()
   private noticeBoundary = ""
+  private pendingState = ""
 
   constructor(
     private readonly limits: Limits,
@@ -169,6 +171,20 @@ export class LimitsPeers {
     if (changed) this.save()
   }
 
+  pendingComputers() {
+    return (this.directory.limitPeers?.() ?? [])
+      .filter(({ key, limits }) => limits === "connected" && this.told.has(key) && !this.peers.has(key))
+      .map(({ key, name }) => ({ id: key, name }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+  }
+
+  private coverageChanged() {
+    const next = JSON.stringify(this.pendingComputers())
+    if (next === this.pendingState) return
+    this.pendingState = next
+    this.limits.peersChanged()
+  }
+
   /** Every computer's accounts, this box's first, then each peer's by name. */
   rows(own: AccountLimits[], presentUsage = false, pace?: Pace): LimitRow[] {
     const now = this.now()
@@ -204,6 +220,7 @@ export class LimitsPeers {
       this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key), ...(!last ? { ask: true as const } : {}) }, false)
       this.told.set(key, { json, at: now })
     }
+    this.coverageChanged()
   }
 
   /** What a peer told (`from`, its key: the link opens only your computers' mail). */
@@ -337,6 +354,7 @@ export class LimitsPeers {
     if (gone || urgent) this.limits.peersChanged()
     urgent ||= gone
     this.tell(urgent)
+    this.coverageChanged()
   }
 
   private load() {

@@ -203,8 +203,8 @@ describe("its sessions' news", () => {
   })
 })
 
-// The cases every client reads (protocol/vectors/message-words.json), each on its own page.
-const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/message-words.json", import.meta.url), "utf8"))
+// The cases every client reads (box/test/fixtures/message-words.json), each on its own page.
+const vectors = JSON.parse(readFileSync(new URL("fixtures/message-words.json", import.meta.url), "utf8"))
 describe("protocol vectors", () => {
   const known = knownTools({ mcp: { servers: Object.fromEntries(vectors.servers.map((name: string) => [name, {}])) } })
   for (const each of vectors.cases) test(each.name, () => {

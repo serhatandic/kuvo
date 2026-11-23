@@ -143,6 +143,7 @@ pub struct Elsewhere {
 /// and what it holds for (and heard back from) those computers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BotsSaid {
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub bots: Vec<Bot>,
     pub elsewhere: Vec<Elsewhere>,
     pub held: Vec<Held>,
@@ -433,7 +434,7 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
 
 /// What a `kuvo/bots` answer says. `held` and `refused` left out: not known now, not none.
 fn said(answer: &Value) -> BotsSaid {
-    BotsSaid { bots: read_all(answer.get("bots")), elsewhere: read_all(answer.get("elsewhere")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")), held_unsaid: answer.get("held").is_none() }
+    BotsSaid { pending_computers: read_all(answer.get("pendingComputers")), bots: read_all(answer.get("bots")), elsewhere: read_all(answer.get("elsewhere")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")), held_unsaid: answer.get("held").is_none() }
 }
 
 fn read_all<T: serde::de::DeserializeOwned>(values: Option<&Value>) -> Vec<T> {

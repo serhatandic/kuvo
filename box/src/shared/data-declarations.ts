@@ -90,7 +90,6 @@ export const DATA_DECLARATIONS = {
   sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "attachments/", inventory: "session payloads" }, { pattern: "macAttachments/", inventory: "session payloads" }], families: ["Managed attachment files", "Artifacts"] },
   sessionNotes: { owner: "session computer", conflict: "keep both notes", backup: true, restore: "portable", storage: ["home/run/work/notes/"], families: ["Conversation metadata and queue", "Pending work and work status"] },
   pendingSessionWork: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work/awaited/", "home/run/work/wakes.json", "home/run/work/background.json", "home/run/work/asks.json", "home/run/work/oversight.json", "home/run/work/homes.json", "home/run/work/stopped.json", "home/run/work/unanswering.json"], families: ["Pending work and work status", "Local fences and audit"] },
-  sessionGoals: { owner: "session computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/run/work/goals.json"], families: ["Pending work and work status"] },
   sessionSchedules: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["wakes/*/session", "wakes/*/directory", "wakes/*/via", "wakes/*/zone", "wakes/*/paused", "wakes/*/wakes/", "wakes/*/watches/", "wakes/*/summaries/"], families: ["Wake-ups and watches"] },
   computerWipePreparation: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
   directoryWipeReceipts: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local",
@@ -190,7 +189,7 @@ export const DATA_DECLARATIONS = {
   browserHistory: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/browser/history.json", "home/browser/visits.jsonl", "home/browser/visits.jsonl.folding-*"], families: ["Browser history and settings"] },
   browserIconCache: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Browser history and settings"] },
   runtimeRecords: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local",
-    storage: ["home/run/owned-data/receipt-index-v1/", "home/run/peers/*/lists-v1.json", "home/run/peers/*/library-v1.json"], families: ["Runtime rendezvous", "Runtime markers and locks", "Pending work and work status"] },
+    storage: ["home/run/owned-data/receipt-index-v1/", "home/run/peers/*/lists-v1.json", "home/run/peers/*/library-v1.json", "home/run/peers/*/notices-v1.json"], families: ["Runtime rendezvous", "Runtime markers and locks", "Pending work and work status"] },
   computerLogsAndCaches: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Logs and disposable caches", "Local fences and audit", "Coding agent native storage", "Work Queue labels, delivery and receipts"] },
   clientLogs: { owner: "client", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Desktop settings", "Logs and disposable caches"] },
 } as const satisfies Record<string, DataDeclaration>;

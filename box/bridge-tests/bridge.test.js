@@ -28,6 +28,8 @@ const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-
 // A phone's key as a phone has one (32 bytes, base64url), named for a test.
 const shaped = name => crypto.createHash("sha256").update(name).digest("base64url");
 const vectors = name => JSON.parse(fs.readFileSync(new URL(`../../protocol/vectors/${name}`, import.meta.url), "utf8"));
+// The box's own cases, which no other side reads (box/test/fixtures).
+const fixture = name => JSON.parse(fs.readFileSync(new URL(`../test/fixtures/${name}`, import.meta.url), "utf8"));
 const hex = s => Buffer.from(s, "hex");
 
 test("Noise IK matches the vectors", () => {
@@ -1432,7 +1434,7 @@ test("a permission's notice names what its Always saves, as the Mac's buttons sa
   assert.equal(await titled("external_directory", [path.join(os.homedir(), "notes/a.md")], [path.join(os.homedir(), "notes/*")]), "Always Allow ~/notes");
   assert.equal(await titled("external_directory", [], [path.join(os.homedir(), "Developer/clients/acme/website-2026/*")]), "Always Allow …/website-2026");
   // The same words as the Mac's and the phone's, case for case (ClientText's AlwaysWordsTests reads them too).
-  const vectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/always-words.json", import.meta.url), "utf8"));
+  const vectors = JSON.parse(fs.readFileSync(new URL("../test/fixtures/always-words.json", import.meta.url), "utf8"));
   for (const each of vectors.cases) assert.equal(link.alwaysTitle(each, each.home ?? null), each.plain, JSON.stringify(each));
 });
 
@@ -1723,7 +1725,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "git.status": ["POST", "kuvo/git/status"],
     // (Settings › Git kept here, and the prompts written here: a Mac's from before moves in once.)
     "git.words": ["POST", "kuvo/git/settings/move"],
-    goals: ["GET", "kuvo/agents/api/kuvo/goals"],
     groups: ["GET", "kuvo/groups"],
     "groups.delete": ["DELETE", "kuvo/groups/grp_none"],
     "groups.edit": ["PATCH", "kuvo/groups/grp_none"],
@@ -1753,7 +1754,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
-    "messages.commands": ["POST", "kuvo/messages/parts"],
     "messages.compaction-words": ["GET", "api/session/none/message"],
     "messages.send": ["POST", "kuvo/messages/parts"],
     // (Each message page the box forwards: a tool step's title and doing, a lead's news of its sessions.)
@@ -1805,7 +1805,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "queue.items": ["GET", "kuvo/sessions/ses_none/queue"],
     // (queue/add taking a message once by its id, sent again.)
     "queue.once": ["POST", "kuvo/sessions/ses_none/queue/add"],
-    "queue.removed.keyword": ["DELETE", "kuvo/sessions/ses_none/queue/msg_none"],
     // (An item sent at the agent's next step; one that isn't waiting is a 404 of its own.)
     "queue.steer": ["POST", "kuvo/sessions/ses_none/queue/msg_none/steer"],
     "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],
@@ -1916,9 +1915,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)
     "work.elsewhere.start": ["POST", "kuvo/agent-tools"],
-    "work.goals": ["GET", "kuvo/work/goals"],
-    "work.goals.apps": ["GET", "kuvo/work/apps/icon?app=com.example.none"],
-    "work.goals.projects": ["POST", "kuvo/work/goals/goal_none"],
     "work.projects": ["GET", "kuvo/work/settings"],
     "work.subagents": ["GET", "kuvo/work/subagents/ses_none"],
     "work.unanswering": ["GET", "kuvo/work/unanswering"],
@@ -2366,7 +2362,7 @@ test("a machine's settings become its own once: what it runs with now, its Mac's
 });
 
 test("personalities' libraries meet as the vectors say", () => {
-  for (const each of vectors("personalities.json").cases) {
+  for (const each of fixture("personalities.json").cases) {
     assert.deepEqual(link.mergePersonalities(...each.libraries), each.expected, each.name);
   }
 });

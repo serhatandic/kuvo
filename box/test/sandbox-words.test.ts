@@ -35,7 +35,7 @@ test("on with commands reaching your login's services: why, and the page on what
   const { worded } = await import("../src/link/fence/state")
   const services = worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "util-linux" })
   expect(services).toMatchObject({ on: true, action: "help", actionLabel: "How to Check…", opens: "https://www.kuvo.run/code/docs/machines/#sandbox" })
-  expect(services.why).toContain("Until it has util-linux, agents don’t use your vault here and goals don’t run on their own.")
+  expect(services.why).toContain("Until it has util-linux, agents don’t use your vault here.")
   expect(worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "user namespaces" }).why).toContain("Until it allows user namespaces,")
   // On and whole, or with only git's files kept apart: nothing to say.
   expect(worded({ on: true, able: true, agents: true })).toEqual({ on: true, able: true, agents: true })

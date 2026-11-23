@@ -6,8 +6,8 @@
 import { FEATURES, type Feature } from "../features";
 import { bool, type Infer, list, literal, NOTHING, object, type RouteShape, string } from "../shape";
 
-/** What only a Mac answers, besides what every box does (`FEATURES`; PROTOCOL.md, "Features").
- * One a line, in order, as `FEATURES` are. */
+/** What only a Mac answers, besides what every box does (`FEATURES`; PROTOCOL.md, "Features and
+ * mixed versions"). One a line, in order, as `FEATURES` are. */
 export const MAC_FEATURES = [
   "accounts.ended",
   "hosts",
@@ -49,7 +49,10 @@ export const MACHINES = object({
 export type MacMachines = Infer<typeof MACHINES>;
 
 export const MAC_ROUTES: RouteShape[] = [
+  // This Mac's machines as Settings › Machines lists them, with the app closed too.
   { route: "GET kuvo/machines", feature: "machines", answers: { 200: MACHINES } },
+  // Your machines' relay addresses, for phones to reach them directly while the Mac is closed.
   { route: "GET kuvo/hosts", feature: "hosts", answers: { 200: HOSTS } },
+  // Forget a machine this Mac removed, so phones are no longer given it.
   { route: "DELETE kuvo/hosts/:machine", feature: "hosts", answers: { 200: NOTHING } },
 ];

@@ -2817,7 +2817,7 @@ impl Workspace {
 
     /// How many things wait on you in each area, as the box counts them.
     pub fn waiting(&self) -> Waiting {
-        self.waiting
+        self.waiting.clone()
     }
 
     /// Your computers as this app reaches them, for the switcher.

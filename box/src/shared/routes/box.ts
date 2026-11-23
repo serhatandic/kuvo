@@ -1,8 +1,9 @@
-// The box itself (PROTOCOL.md, "Messages in a session" and "Updates"): what it is and runs, its
+// The box itself (PROTOCOL.md, "This computer's box" and "Updates"): what it is and runs, its
 // updates, the phones paired with it, whether you're at a computer, and who `&` can name.
 
 import { FEATURES } from "../features";
 import { bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 import { MAC_FEATURES } from "./mac";
 import { SAVE_RECEIPT } from "./setup-save";
 
@@ -47,7 +48,7 @@ export const INFO = oneOf(
     chats: string,
     integrations: map(string),
     // How moving this Mac's box into its home of its own stands, while one waits, is under way or
-    // went back ("Moving this Mac's box"): left out otherwise.
+    // went back ("This computer's box"): left out otherwise.
     "moving?": object({ state: words("waiting", "moving", "clearing", "failed"), step: nullable(string), overdue: bool, "why?": string }),
   }),
   object({
@@ -117,7 +118,7 @@ export const UPDATE = object({
   "engineLast?": object({ at: number, result: words("changed", "back", "failed"), from: string, to: string, "message?": string }),
 });
 
-/** A step of moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box"). */
+/** A step of moving this Mac's box into a home of its own (PROTOCOL.md, "This computer's box"). */
 const REHOME_STEP = words("plan", "install", "keys", "clone", "upgrade", "database", "rewrite", "check", "place", "fix", "clear", "done");
 /** How moving this Mac's box into a home of its own stands (`kuvo/box/rehome`): its state (none
  * yet; `waiting` for a quiet moment; `moving` or `clearing`, under way, and the step; `done`;
@@ -150,7 +151,7 @@ export const REHOME = object({
 });
 
 /** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,
- * "What macOS allows"): whether there's such a program here (`applies`: a Mac's own box in a home of
+ * "This computer's box"): whether there's such a program here (`applies`: a Mac's own box in a home of
  * its own; never on Linux) and its name as System Settings lists it, whether it runs and has said
  * (`known`), and each permission macOS can be asked about, null where that isn't known; that
  * program's bundle on the Mac (`bundle`), and each permission in words (`list`): what System
@@ -166,7 +167,7 @@ export const BOX_PERMISSIONS = object({
   list: list(object({ id: words("screenRecording", "accessibility", "fullDiskAccess"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, byHandLine: string, unknownLine: string, asks: bool })),
 });
 
-/** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's
+/** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This computer's box"): where it's
  * installed, as it last registered; where Kuvo's desktop app that opened with it last is (`desktop`,
  * the one Kuvo Helper's Open Kuvo opens, #781); whether it's open (its tools answer), quits to
  * install an update now, is being opened for a browser call; and the last opening that failed,
@@ -201,7 +202,7 @@ const AT_WORK_COMPUTER = object({
 });
 
 /** What's at work in Kuvo on this computer now, as facts for what's always on screen there (Kuvo
- * Helper's menu bar item, `kuvo/box/at-work`, PROTOCOL.md "In the menu bar"): whether this box has
+ * Helper's menu bar item, `kuvo/box/at-work`, PROTOCOL.md "This computer's box"): whether this box has
  * such an item (`applies`: a Mac's own box in a home of its own, which Kuvo Helper runs); its
  * sessions at work (how many, and the latest few, by id and title, with the bot each works for, by
  * name); those waiting on you (the latest few, with what each asks in the box's words); what waits
@@ -225,7 +226,7 @@ export type AtWork = Infer<typeof AT_WORK>;
 /** Whether a client wants the box's server kept running (`kuvo/box/serve`), and whether it runs. */
 export const BOX_SERVE = object({ needed: bool, serving: bool });
 
-/** The browser agents use on a machine (`kuvo/browser`, PROTOCOL.md, "The browser on a machine"):
+/** The browser agents use on a machine (`kuvo/browser`, PROTOCOL.md, "The browser"):
  * `missing` (none, and none being set up), `checking`, `downloading` (with `progress`, 0 to 1),
  * `installing`, `ready`, or `failed` (`message`, and when it tries again by itself, ms, or null for
  * never). `chromium` is the version this box pins, `installed` the one in use (an older one works
@@ -291,13 +292,13 @@ const JUDGED_BOX = object({
   items: nullable(number),
 });
 
-/** What's on a computer, judged (PROTOCOL.md, "Your setup", "Already in a setup?"): one verdict,
+/** What's on a computer, judged (PROTOCOL.md, "Your setup"): one verdict,
  * whether adding it joins its setup with nothing to ask (`joins`: another setup's main computer, no
  * Mac's own app, with no other computer and no work in it), and each box found there. */
 export const JUDGED = object({ verdict: words("self", "free", "ours", "older", "elsewhere", "main", "two"), joins: bool, boxes: list(JUDGED_BOX) });
 
-/** What `kuvo-link.js here` prints as Kuvo Code opens on a Mac (PROTOCOL.md, "Already in a
- * setup?"): one verdict, whether the app uses its own box or the one already here (`attach`), how it
+/** What `kuvo-link.js here` prints as Kuvo Code opens on a Mac (PROTOCOL.md, "Your
+ * setup"): one verdict, whether the app uses its own box or the one already here (`attach`), how it
  * opens (`main`: its setup's main computer; `window`: onto a setup another computer is main of, its
  * box one of its members), that box, and the app's own. While a move of this Mac's box into its home
  * is under way (its journal there, not done), `moving`, to `wait`: neither the app nor its keeper
@@ -424,7 +425,7 @@ export const FLEET_SUMMARY = object({
 });
 export type FleetSummary = Infer<typeof FLEET_SUMMARY>;
 
-/** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
+/** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Your setup"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
  * a machine's name on its Mac;
  * Whether it's heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`); Kuvo Code's version
@@ -491,7 +492,7 @@ export const ADD_QUESTION = object({
 });
 export type AddQuestion = Infer<typeof ADD_QUESTION>;
 /** A try at adding a computer over SSH, setting one up again or uninstalling Kuvo Code from one
- * (PROTOCOL.md, "Computers", Adding one): where it is, what it's called, how it stands, its steps,
+ * (PROTOCOL.md, "Your setup"): where it is, what it's called, how it stands, its steps,
  * what it asks now, how it failed (`again`: trying again could go otherwise), and the computer it
  * came to (`known`: one that was here already, at another address). */
 export const ADD_TRY = object({
@@ -527,7 +528,15 @@ const NOTICE = object({
   "title?": string, "subtitle?": string, "body?": string, category: string,
   "thread?": string, "data?": map(string),
 });
-const NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
+export const TOLD_NOTICE = object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") });
+export const NOTICE_COPY = { telling: bool, notices: list(TOLD_NOTICE) } as const;
+const NOTICES = object(NOTICE_COPY);
+const NOTICE_COMPUTER = object({ id: string, name: string });
+const NOTICE_ORIGIN = object({ computer: NOTICE_COMPUTER, telling: bool, away: bool, "lastSeen?": number });
+const SETUP_NOTICES = object({ ...PENDING_COMPUTERS,
+  origins: list(NOTICE_ORIGIN),
+  notices: list(object({ ...TOLD_NOTICE.object, computer: NOTICE_COMPUTER, away: bool, "lastSeen?": number })),
+});
 
 const WIPE_EXPORT = object({ source: string, id: string, at: number });
 const COMPUTER_REMOVAL = object({ operation: string, accessRemoved: bool,
@@ -555,86 +564,154 @@ const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REP
   503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY) };
 
 export const BOX_ROUTES: RouteShape[] = [
+  // The sign-ins and keys a new computer could take, from the main; send the ids picked as `credentials`.
   { route: "GET kuvo/computers/add/credentials", feature: "computers.add.credentials", answers: { 200: CREDENTIAL_CHECKLIST, 403: ADD_REFUSED, ...ADD_ANSWERS } },
+  // A private join code from the main for `kuvo-install join` on the new computer; unused, it ends in 15 min.
   { route: "POST kuvo/computers/add/code", feature: "computers.add.from-any-client", answers: { 201: object({ code: string, expires: number }), 403: ADD_REFUSED, ...ADD_ANSWERS } },
+  // Whether this box can add computers (else `why`), SSH hosts to suggest, and its tries.
   { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
   { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+  // Add a computer over SSH (`destination` as `ssh` takes it); a member passes it to the main.
   { route: "POST kuvo/computers/add", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  // Answer what a try asks (a host key, an account to recover); `at` names the ask it answers.
   { route: "POST kuvo/computers/add/:id/answer", feature: "computers.add", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  // Stop a try under way (at its next step), or forget one that's over.
   { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
+  // Set Up Again over SSH at the address it was added under, bringing its Kuvo up to this box's.
   { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  // Uninstall Kuvo Code there over SSH, then remove it from your computers as DELETE does.
   { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  // Try Again on a row of the setup's update; with another computer's `key`, passed on to it by mail.
   { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string, "key?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  // Update Now on a machine this box set up over SSH: its Kuvo brought up to this box's at once.
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  // Your computers as one list, from any box: this one first, then its peers, with reach and actions.
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+  // Rename a computer; any member takes it, and the main saves the setup's accepted name.
   { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  // Backup health on this computer for a paired device: whether on, destination, last check, attention.
   { route: "GET kuvo/box/backups/status", feature: "box.backups.status", answers: { 200: BACKUP_STATUS,
     403: object({ message: string }), 405: object({}), 503: object({ message: string }),
   } },
+  // Remove a computer from your setup (any member passes it on); Kuvo keeps running there on its own.
   { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
+  // What unlinking or wiping that computer would move, export or leave behind, before you choose.
   { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
     200: REMOVAL_PLAN, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
     409: object({ message: string }), 503: object({ message: string }),
   } },
+  // Unlink it into a setup of its own, its sessions and bots kept there; resend the same `operation`.
   { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+  // Unlink it and delete Kuvo Code's data there, after any move or export you chose (`prepare`).
   { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+  // Reach an away peer again now; it's listed `connecting` for 20 seconds meanwhile.
   { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  // What this box is and runs: kind, versions, features and compatibility; a client asks it first.
   { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
+  // This box's own update: its version, the latest it knows, the step under way, why it can't update.
   { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
+  // Update Now / Check for Updates (`now: true`); on a member, its main checks for a release.
   { route: "POST kuvo/update", feature: "update", body: object({ now: literal(true) }), answers: { 202: UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+  // Offer a signed release from a folder here (Kuvo Code's own); the box checks it, then takes it.
   { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
+  // How moving this Mac's box out of the app's folder into a home of its own stands.
   { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+  // Ask to move this Mac's box now or back, or hand over an earlier app's sign-ins (`signIns: true`).
   { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+  // What macOS allows Kuvo Helper, the program this Mac's box runs under, each in words.
   { route: "GET kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS } },
+  // Put one permission off (`later`, a client's Not Now), kept so every client agrees.
   { route: "POST kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+  // This Mac's desktop app as its box knows it: where it is, whether it's open or updating.
   { route: "GET kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+  // The desktop app registers itself and its version with this Mac's box.
   { route: "POST kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+  // Open this Mac's desktop app for an agent's browser call (from Kuvo Code's own processes).
   { route: "POST kuvo/box/app/open", feature: "box.app", answers: { 200: BOX_APP } },
+  // This Mac's signed proof for one of your machines' vaults: for its key, or for one request.
   { route: "POST kuvo/box/proof", feature: "box.appKeys", answers: { 200: object({ mac: string, at: number, nonce: string, proof: string }) } },
   { route: "GET kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+  // What's at work in Kuvo on this computer, as facts for Kuvo Helper's menu bar item.
   { route: "GET kuvo/box/at-work", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
   { route: "GET kuvo/box/at-work/events", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+  // Stop Kuvo on this Mac until it next starts; only from this Mac's helper or app.
   { route: "POST kuvo/box/stop", feature: "box.atWork", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+  // Say whether Kuvo Code wants the box's server kept running (`needed`); Kuvo Code itself only.
   { route: "POST kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+  // The browser agents use on this machine: missing, being set up, ready or failed.
   { route: "GET kuvo/browser", feature: "browser", answers: { 200: BROWSER } },
+  // Set up the pinned browser now (`now` skips a failure's wait; `repair` sets it up again).
   { route: "POST kuvo/browser", feature: "browser", answers: { 202: BROWSER } },
+  // A file's bytes on this computer, by its full path, for a viewer.
   { route: "GET kuvo/file", feature: "file", answers: { 200: BYTES, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
+  // A file's name, size and kind (picture, PDF, text, other), or that it isn't there.
   { route: "GET kuvo/file/info", feature: "file.info", answers: { 200: FILE_INFO, 400: FILE_REFUSED, 403: FILE_REFUSED, 405: object({}) } },
+  // A file's text for a viewer, or `text: false` for one that isn't UTF-8 text.
   { route: "GET kuvo/file/text", feature: "file.text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
+  // The devices paired here (phones and desktop apps), `you` being the one asking.
   { route: "GET kuvo/phones", feature: "phones", answers: { 200: PHONES } },
+  // Remove a paired device; a member passes it to the main.
   { route: "POST kuvo/phones/remove", feature: "phones", answers: { 200: NOTHING } },
+  // A one-use pairing link (ten minutes) from the main; a member answers 409 naming the main.
   { route: "POST kuvo/phones/pair", feature: "phones.pair", answers: { 200: PAIRING } },
+  // Pair this computer's Kuvo Code desktop app as one of your devices; a member passes it to the main.
   { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
+  // End a pairing link (`?token=`) before it's used.
   { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
+  // Your setup as this box says it: id, epoch, main computer, this box's role, every computer.
   { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
+  // Make another computer the main one; asked of any member, the target confirms the same epoch.
   { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number, "unlinking?": bool }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
+  // Judge what an SSH probe found on a computer (free, ours, another setup's, older), and if it joins.
   { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
+  // Kuvo Code on this computer says it uses this box in place (said on its card from then on).
   { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },
+  // Whether a first run has anything to ask about your accounts here, or goes on to where to work.
   { route: "GET kuvo/setup/ready", feature: "setup.ready", answers: { 200: SETUP_READY } },
+  // Set whether you've had the first run with this box (`false`: have it again).
   { route: "POST kuvo/setup/welcomed", feature: "setup.welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
+  // Whether a client is in use here, and how many notices are held for it.
   { route: "GET kuvo/attention", feature: "attention", answers: { 200: ATTENTION } },
+  // A client in use says so for `for` seconds (renewed, at most 60), so phone notices wait.
   { route: "POST kuvo/attention", feature: "attention", answers: { 200: object({ for: number }) } },
+  // This Mac's app hands its box a notice for an ask from its panel's browser.
   { route: "POST kuvo/attention/notice", feature: "attention", answers: { 200: NOTHING } },
+  // This Mac's app says a request or ask was answered there, so its held notice never goes.
   { route: "POST kuvo/attention/answered", feature: "attention", answers: { 200: NOTHING } },
+  // Recent notices for the whole setup. Owners and their original notice IDs stay stable.
+  { route: "GET kuvo/setup/notices/events", feature: "line.merged-notices", answers: { 200: SETUP_NOTICES } },
+  // What the box told lately (ten minutes), for clients to show as their own notifications.
   { route: "GET kuvo/notices", feature: "notices", answers: { 200: NOTICES } },
   { route: "GET kuvo/notices/events", feature: "notices", answers: { 200: NOTICES } },
+  // Who `&` can name: this box's bots and latest sessions, then those your other computers told of.
   { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },
+  // The plans whose sign-in ended and couldn't be renewed, until one works again.
   { route: "GET kuvo/accounts/ended", feature: "accounts.ended", answers: { 200: ENDED } },
+  // Disconnect a plan: this box's sign-ins and keys for it removed.
   { route: "POST kuvo/accounts/:provider/forget", feature: "accounts.ended", answers: { 200: NOTHING } },
+  // The providers Refresh Models can bring new models to.
   { route: "GET kuvo/accounts/refreshable", feature: "accounts.refresh", answers: { 200: REFRESHABLE } },
+  // Refresh Models: the engine's lists made afresh without a restart; busy folders get them later.
   { route: "POST kuvo/accounts/:provider/refresh", feature: "accounts.refresh", answers: { 200: MODELS_REFRESHED } },
+  // This box's sign-ins, each with its plan, label and whether it's the one in use.
   { route: "GET kuvo/accounts/credentials", feature: "accounts.credentials", answers: { 200: CREDENTIALS } },
+  // For the first launch: coding agents, opencode keys and shell keys found here (names only).
   { route: "GET kuvo/accounts/found", feature: "accounts.found", answers: { 200: FOUND } },
+  // Copy an opencode key found here in as that plan's sign-in.
   { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
+  // Start a machine's engine that an older Mac's Stop left down.
   { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
+  // Start this computer's engine over; what runs in it stops.
   { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
+  // The coding agents' update notices, the bridge's (PROTOCOL.md, "Updates").
+  { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
+  // Dismiss one coding agent's update notice.
+  { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
   // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state"): the box's own route,
   // among those it passes on to the bridge (`kuvo/agents/…`).
-  // The coding agents' update notices, the bridge's (PROTOCOL.md, "Update notices").
-  { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
-  { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
   { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
+  // Stop a command a session left running, the engine's or a coding agent's.
   { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } },
 ];

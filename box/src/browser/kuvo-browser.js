@@ -2749,7 +2749,7 @@ async function checkField(p, index, wanted) {
 }
 
 // What's told of an ask left undone on Autopilot (LEFT_UNDONE_WORDS on the box).
-const LEFT_UNDONE = "This is on Autopilot: nothing was put to the user, and nothing was chosen for you. If only the user can do it, don't do it or ask again: leave that step undone, keep it as waiting if you're at a goal (goal_progress), carry on with everything else, and list what's left for them in your final reply.";
+const LEFT_UNDONE = "This is on Autopilot: nothing was put to the user, and nothing was chosen for you. If only the user can do it, don't do it or ask again: leave that step undone, carry on with everything else, and list what's left for them in your final reply.";
 
 const noAnswer = (answer, what) =>
   answer.type === "autopilot" ? LEFT_UNDONE
@@ -2763,7 +2763,7 @@ const text = (value, isError = false) => ({ content: [{ type: "text", text: valu
 // The tools answered by this machine's box: agents writing to each other and running their
 // sessions, a conversation's wake-ups, a bot's job, and the checks before showing a file or a widget
 // (which Kuvo Code then shows from the call).
-const MAIL_TOOLS = new Set(["list_agents", "send_message", "read_conversation", "start_session", "list_sessions", "stop_session", "compact_session", "answer_ask", "list_models", "make_project", "list_projects", "propose_goal", "goal_progress", "may_spend", "finish_goal", "notify_user", "plan_limits", "use_limit_reset",
+const MAIL_TOOLS = new Set(["list_agents", "send_message", "read_conversation", "start_session", "list_sessions", "stop_session", "compact_session", "answer_ask", "list_models", "make_project", "list_projects", "notify_user", "plan_limits", "use_limit_reset",
   "schedule_wake_up", "watch_for_change", "list_wake_ups", "cancel_wake_up", "set_job", "show_in_panel", "show_file", "mark_final", "show_widget"]);
 // Those that change what's kept, which the call stopping doesn't cut off.
 const KEPT_WHOLE = new Set(["schedule_wake_up", "watch_for_change", "cancel_wake_up", "set_job"]);

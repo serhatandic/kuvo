@@ -1,4 +1,4 @@
-// Wake-ups and watches (PROTOCOL.md, `kuvo/wakes`): a conversation's or a bot's, as the bar over
+// Wake-ups and watches (`kuvo/wakes`): a conversation's or a bot's, as the bar over
 // the Mac's composer shows them.
 
 import { bool, type Infer, list, NOTHING, number, object, type RouteShape, string } from "../shape";
@@ -23,13 +23,19 @@ export type Wakes = Infer<typeof WAKES>;
 export type WakeList = Infer<typeof WAKE_LIST>;
 
 export const WAKE_ROUTES: RouteShape[] = [
+  // Every conversation here with wake-ups or watches: its soonest, and its wake-ups, watches and pause.
   { route: "GET kuvo/wakes", feature: "wakes", answers: { 200: WAKE_LIST } },
   { route: "GET kuvo/wakes/events", feature: "wakes.events", answers: { 200: WAKE_LIST } },
   { route: "GET kuvo/wakes/:session", feature: "wakes", answers: { 200: WAKES } },
   { route: "GET kuvo/wakes/:session/events", feature: "bots.wake-ups", answers: { 200: WAKES } },
+  // Add a wake-up (`due`, `note`, `every?`), at least a minute away.
   { route: "POST kuvo/wakes/:session", feature: "wakes.edit", answers: { 200: WAKES } },
+  // Make a watch: a shell `check` run every so often, and a `note` for when its output changes.
   { route: "POST kuvo/wakes/:session/watch", feature: "wakes.events", answers: { 200: WAKES } },
+  // Pause or let go of a conversation's wake-ups (`paused`), or hold them as archiving does.
   { route: "POST kuvo/wakes/:session/pause", feature: "wakes.edit", answers: { 200: WAKES } },
+  // Cancel one wake-up (`wake`) or watch (`watch`).
   { route: "POST kuvo/wakes/:session/cancel", feature: "wakes.edit", answers: { 200: NOTHING } },
+  // Send one wake-up now; a repeating one still comes back at its time.
   { route: "POST kuvo/wakes/:session/now", feature: "wakes.edit", answers: { 200: NOTHING } },
 ];

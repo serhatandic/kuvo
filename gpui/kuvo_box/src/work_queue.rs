@@ -419,6 +419,7 @@ pub struct QueueSaid {
     pub removed: Vec<Item>,
     /// Your other computers that told of their queues.
     pub computers: Vec<Told>,
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     /// The box's counts, from this same view.
     pub counts: Counts,
     /// The words it was narrowed by, as the box says them back.
@@ -557,6 +558,7 @@ impl BoxClient {
             owners: read_all(answer.get("owners")),
             removed: read_all(answer.get("removed")),
             computers: read_all(answer.get("computers")),
+            pending_computers: read_all(answer.get("pendingComputers")),
             counts: answer.get("counts").cloned().and_then(|counts| serde_json::from_value(counts).ok()).unwrap_or_default(),
             q: answer.get("q").and_then(Value::as_str).map(str::to_owned),
         })

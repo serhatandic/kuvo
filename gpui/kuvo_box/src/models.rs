@@ -344,6 +344,8 @@ pub const RUNS_ON_ROUTE: &str = "kuvo/setup/runs-on/events";
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct RunsOn {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     #[serde(default, deserialize_with = "crate::accounts::readable")]
     pub computers: Vec<RunsOnComputer>,
 }

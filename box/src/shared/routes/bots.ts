@@ -1,7 +1,8 @@
-// Bots (PROTOCOL.md, `kuvo/bots`): the bots that live on the box asked, New Bot's templates, a bot
+// Bots (PROTOCOL.md, "Per area"): the bots that live on the box asked, New Bot's templates, a bot
 // made, changed, deleted, brought here from another computer and told what it is now.
 
 import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 import { LIMITS } from "./work";
 import { BOT_NOW } from "./sessions";
 
@@ -82,7 +83,7 @@ export const BOT_ELSEWHERE = object({
   "now?": BOT_NOW, "paused?": bool, "wakes?": number,
 });
 /** A change to a bot (or its delete) that lives on another of your computers, held here until that
- * computer answers ("Held for another computer"): the bot, that computer by its key (empty for one this box
+ * computer answers (PROTOCOL.md, "Per area"): the bot, that computer by its key (empty for one this box
  * doesn't know now, as the client named it: a machine you removed) and by its name here, the change as `PATCH kuvo/bots/<id>` takes it (each field the last given) or a delete, and
  * since when it's held (ms). `name` and `look`: the bot's, as its computer last told this box
  * (`bots.elsewhere`; left out for one no computer of yours ever listed to it). `waits`: why it
@@ -95,7 +96,7 @@ export const REFUSED_EDIT = object({ bot: string, box: string, computer: string,
  * computers, and what those refused lately (`bots.held`); and the bots that live on your other
  * computers, as each last told this box (`bots.elsewhere`). None of the three while this box
  * can't check what it holds: a client keeps what it last heard. */
-export const BOTS = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
+export const BOTS = object({ ...PENDING_COMPUTERS, bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
 /** An edit held here for the computer its bot lives on. */
 export const HELD = object({ held: HELD_EDIT });
 
@@ -133,11 +134,18 @@ export type RefusedEdit = Infer<typeof REFUSED_EDIT>;
 export const BOT_ROUTES: RouteShape[] = [
   { route: "GET kuvo/bots", feature: "bots", answers: { 200: BOTS } },
   { route: "GET kuvo/bots/events", feature: "bots.events", answers: { 200: BOTS } },
+  // Makes a bot here, as New Bot does; the same `request` id gets the same answer for an hour.
   { route: "POST kuvo/bots", feature: "bots.make", answers: { 201: MADE } },
+  // What New Bot offers here: templates, personalities, looks, the starting model and the projects.
   { route: "GET kuvo/bots/templates", feature: "bots.make", answers: { 200: TEMPLATES } },
+  // Tells each bot here what it is now (its instructions from the box's words), after they changed.
   { route: "POST kuvo/bots/retell", feature: "bots.elsewhere", answers: { 200: NOTHING } },
+  // Changes a bot as Edit Bot does; one on another of your computers is held for it (202).
   { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD, 403: object({ message: string }) } },
+  // Deletes a bot: its conversation, wake-ups and folder (to the trash); one elsewhere is held for it (202).
   { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD, 403: object({ message: string }) } },
+  // Makes a bot a client just moved here this box's own: its folder, clock, rules and what it's told.
   { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
+  // Reads a bot's own conversation, never the sessions working for it.
   { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } },
 ];

@@ -67,6 +67,7 @@ impl Reachability {
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Bots {
+    pub pending_computers: Vec<kuvo_box::areas::SetupComputer>,
     pub bots: Vec<Bot>,
     /// The bots that live on your other computers, as each last told the box (`kuvo/bots`).
     pub elsewhere: Vec<Elsewhere>,
@@ -427,7 +428,7 @@ impl AreaView {
                 let before = ready(&self.bots);
                 let groups = before.map(|bots| bots.groups.clone()).unwrap_or_default();
                 let groups_failed = before.and_then(|bots| bots.groups_failed.clone());
-                let bots = Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed };
+                let bots = Bots { pending_computers: said.pending_computers, bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed };
                 if self.has_fresh_bots() && matches!(&self.bots, Reading::Ready(before) if before == &bots) {
                     return;
                 }
@@ -719,9 +720,10 @@ impl AreaView {
                 if let Some(FollowedDuringRead { said, .. }) = followed {
                     self.reachability = Reachability::Reached;
                     let before = ready(&self.bots);
-                    let kept = before.map(|bots| BotsSaid { bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false });
+                    let kept = before.map(|bots| BotsSaid { pending_computers: bots.pending_computers.clone(), bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false });
                     let said = said.keeping(kept.as_ref());
                     self.bots = Reading::Ready(Bots {
+                        pending_computers: said.pending_computers,
                         bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused,
                         held_unsaid: said.held_unsaid,
                         groups: before.map(|bots| bots.groups.clone()).unwrap_or_default(),
@@ -744,7 +746,7 @@ impl AreaView {
                 let said = match &self.bots {
                     Reading::NotYet => Reading::NotYet,
                     Reading::Failed(why) => Reading::Failed(why.clone()),
-                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
+                    Reading::Ready(bots) => Reading::Ready(BotsSaid { pending_computers: bots.pending_computers.clone(), bots: bots.bots.clone(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
                 };
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));
@@ -926,7 +928,7 @@ fn read(area: Area, client: &BoxClient) -> Read {
                 Ok(groups) => (groups, None),
                 Err(error) => (Vec::new(), Some(kuvo_box::accounts::said(&error))),
             };
-            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed }
+            Bots { pending_computers: said.pending_computers, bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed }
         })),
         Area::Queue => Read::Queue(Box::new(client.work_queue_view())),
         _ => Read::Nothing,
@@ -1704,7 +1706,7 @@ mod tests {
                 view.reading = Some(cx.spawn(async |_, _| std::future::pending().await));
                 view.take_followed_bots(Followed::Failed(failure()), cx);
                 view.reading = None;
-                view.take(Read::Bots(Ok(Bots { bots: said.bots, ..Bots::default() })), cx);
+                view.take(Read::Bots(Ok(Bots { pending_computers: said.pending_computers, bots: said.bots, ..Bots::default() })), cx);
                 assert_eq!(crate::bot_face::faces(cx).borrow().shown("bot_docs"), Some(State::Done));
             });
         });

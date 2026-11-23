@@ -143,6 +143,8 @@ pub struct PartComputer {
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Library {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub items: Vec<LibraryItem>,
     #[serde(default)]
     pub more: bool,

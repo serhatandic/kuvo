@@ -228,9 +228,15 @@ export function seatPeers(link: LinkState | null = readLink(), told: Record<stri
       const features = told[peer.key]?.features;
       return {
         key: peer.key, name: plainName(peer.name) || "another computer", seats: features?.includes("groups.seats") ?? false,
-        // (Away as its rows say it, `standingOf`: not while it only restarts into a new release.)
-        insights: features && !features.includes("usage.insights") ? "unsupported"
-          : standingOf(peer.key, reach[peer.key] !== undefined, told[peer.key]?.heard, reach, told, now).away ? "away" : "connected",
+        // (Away as its rows say it, `standingOf`: not under a minute, nor while it only restarts into a
+        // new release.)
+        ...(() => {
+          const away = standingOf(peer.key, reach[peer.key] !== undefined, told[peer.key]?.heard, reach, told, now).away;
+          return {
+            limits: away ? "away" as const : "connected" as const,
+            insights: features && !features.includes("usage.insights") ? "unsupported" as const : away ? "away" as const : "connected" as const,
+          };
+        })(),
       };
     }),
     bots: peers.flatMap(peer => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id)

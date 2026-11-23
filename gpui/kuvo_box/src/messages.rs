@@ -59,6 +59,30 @@ pub struct Runtime {
     pub running: bool,
 }
 
+/// The conversation owner's folder and the tools its box can open there.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConversationTools {
+    pub directory: Option<String>,
+    pub ready: ToolReadiness,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolReadiness {
+    pub files: bool,
+    pub changes: bool,
+    pub browser: bool,
+    pub terminal: bool,
+}
+
+impl crate::BoxClient {
+    pub fn conversation_tools(&self, session: &str) -> crate::error::Result<ConversationTools> {
+        #[derive(Deserialize)]
+        struct Answer { tools: ConversationTools }
+        let answer: Answer = self.get(&format!("kuvo/sessions/{}/location?tools=1", paths::segment(session)))?;
+        Ok(answer.tools)
+    }
+}
+
 pub(crate) fn peer_route(computer: &str, session: &str, resource: &str) -> String {
     format!("kuvo/peer-session/{}/{}/{resource}", paths::segment(computer), paths::segment(session))
 }

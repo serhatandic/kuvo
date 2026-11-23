@@ -14,6 +14,7 @@ import { LIBRARY_COPY } from "../../shared/routes/library";
 import { fitsShape, object, type Infer } from "../../shared/shape";
 import { followedLive } from "../follow";
 import { readPeerAgents } from "../peers/directory";
+import { pendingComputers } from "../peers/pending";
 import { peerSnapshots } from "../peers/lists";
 import { filterOf } from "../library/routes";
 import { matchesLibrary } from "../library/store";
@@ -321,7 +322,6 @@ export async function* mergedLibraryRoute(context: RouteContext): AsyncGenerator
   const filter = filterOf(new URLSearchParams(query));
   if (typeof filter === "string") return yield* json(400, { message: filter });
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  let emitted = false;
   yield* followedLive(async () => {
     const link = readLink();
     const agents = readPeerAgents();
@@ -355,9 +355,12 @@ export async function* mergedLibraryRoute(context: RouteContext): AsyncGenerator
         return { computer, state: "there", part };
       })),
     ]);
-    if (!emitted && (remote.some(part => part === undefined) || (!here.part && !remote.some(part => part?.part)))) return undefined;
-    emitted = true;
-    return merged([here, ...remote.filter(part => part !== undefined)]);
+    const known = remote.filter(part => part !== undefined);
+    const pending = pendingComputers(MERGED_LIBRARY_FEATURE, key => known.some(part => part.computer.key === key), link);
+    const firstPeerCopy = known.some(part => part.part);
+    if (!pending.length && !here.part && !firstPeerCopy) return undefined;
+    const state = merged([here, ...known]);
+    return { ...state, ...(pending.length && !firstPeerCopy ? { items: [], more: false } : {}), pendingComputers: pending };
   }, tell => {
     libraryCopies.followers.add(tell);
     return () => { libraryCopies.followers.delete(tell); };

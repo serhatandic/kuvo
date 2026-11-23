@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EngineLink } from "../../src/agents/engine"
-import type { GoalPlaces } from "../../src/agents/goals"
+import type { SessionPlaces } from "../../src/agents/session-places"
 import { server } from "../../src/agents/groups/api"
 import { run } from "../../src/agents/proc"
 import { voiceRoutes, VoiceWords } from "../../src/link/voice"
@@ -21,7 +21,7 @@ process.env.GIT_CONFIG_GLOBAL = "/dev/null"
 process.env.GIT_CONFIG_NOSYSTEM = "1"
 
 const listen = () => () => {}
-function places(bridge = false): GoalPlaces {
+function places(bridge = false): SessionPlaces {
   return { engine: { api: link, listen }, bridge: { api: server(engine.url, "x"), listen }, isBridge: () => bridge }
 }
 

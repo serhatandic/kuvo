@@ -17,7 +17,7 @@ removeAtEnd(home);
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 
 const k = bytes => bytes.toString("base64url");
-const vectors = name => JSON.parse(fs.readFileSync(new URL(`../../protocol/vectors/${name}`, import.meta.url), "utf8"));
+const vectors = name => JSON.parse(fs.readFileSync(new URL(`../test/fixtures/${name}`, import.meta.url), "utf8"));
 const phoneKey = name => crypto.createHash("sha256").update(name).digest("base64url");
 
 // A machine: its keys, how a Mac's peers document names it, and its state, with a library file of
@@ -123,7 +123,7 @@ function personalities(box, method, id, body) {
   return answer;
 }
 
-test("documents verify as the vectors say, and turn away the ones that don't (protocol/vectors/docs.json)", () => {
+test("documents verify as the vectors say, and turn away the ones that don't (box/test/fixtures/docs.json)", () => {
   const v = vectors("docs.json");
   for (const each of v.taken) {
     const doc = link.readDoc(each.envelope);

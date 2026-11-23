@@ -397,8 +397,8 @@ async function answer(request: Request): Promise<Response> {
 
 const boxToolNames = new Set([
   "send_message", "read_conversation", "list_agents", "start_session", "list_sessions", "stop_session",
-  "compact_session", "answer_ask", "list_models", "make_project", "list_projects", "propose_goal",
-  "goal_progress", "may_spend", "finish_goal", "notify_user", "plan_limits", "use_limit_reset",
+  "compact_session", "answer_ask", "list_models", "make_project", "list_projects",
+  "notify_user", "plan_limits", "use_limit_reset",
   "schedule_wake_up", "watch_for_change", "list_wake_ups", "cancel_wake_up", "set_job",
 ])
 

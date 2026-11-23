@@ -195,6 +195,11 @@ pub trait Transport: Send + Sync {
         false
     }
 
+    /// The local setup reader if this transport belongs to a collection of boxes.
+    fn setup_client(&self) -> Option<crate::BoxClient> {
+        None
+    }
+
     /// How another of your computers' boxes is reached from where this one is, by its key
     /// (`kuvo/computers`): none where this client can't reach it yet.
     fn peer(&self, _key: &str) -> Option<std::sync::Arc<dyn Transport>> {

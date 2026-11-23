@@ -66,7 +66,7 @@ The picker still ships. Its approved removal depends on these changes:
 
 Still to build or verify end to end: the desktop's switch to merged topics, picker removal
 and Settings relocation, the rest of the off-loop work, and full tool-call
-delivery and restart coverage. The typed and slash composer remain in this build.
+delivery and restart coverage.
 
 ## Building: the line (branch `kuvo/delivery-3-one-line`)
 

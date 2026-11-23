@@ -1,5 +1,6 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 import { OFFLINE_EDIT_ANSWERS } from "./ownership";
-// The Work Queue (PROTOCOL.md, "The Work Queue"): an owner's view and its events, one item whole,
+// The Work Queue (PROTOCOL.md, "Per area"): an owner's view and its events, one item whole,
 // what `#n` refs name, the statuses, priorities and labels, and what you do from a client. Times
 // are milliseconds since 1970.
 
@@ -112,7 +113,7 @@ export const QUEUE_OWNER = object({ owner: string, kind: words("bot", "session",
 export const QUEUE_COUNTS = object({ open: number, statuses: map(number), priorities: map(number), labels: map(number), sources: map(number), computers: map(number), removed: number });
 
 /** An owner's view; with `counts=1`, its counts too; with `q`, only what the words are in. */
-export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL),
+export const QUEUE_VIEW = object({ ...PENDING_COMPUTERS, owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL),
   /** The colours a label may be (the looks' names), in the order a picker offers them. */
   colors: list(string),
   assignees: list(ASSIGNEE),
@@ -133,27 +134,41 @@ const REFS = object({ refs: map(nullable(REF_FACTS)), "aliases?": map(list(REF_F
 const ON_ANOTHER = object({ message: string, computer: COMPUTER });
 
 export const WORK_QUEUE_ROUTES: RouteShape[] = [
+  // An owner's view (`owner=ses_…|grp_…|usr_you|all`), across your computers; `q`, filters and `counts=1`.
   { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+  // The agents' `queue_…` tools (MCP definitions) and their instructions, for a tool server to list.
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
+  // Runs an agent's `queue_…` call (`{name, arguments, session}`), only while that session is making it.
   { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
+  // What each ref names (`refs=243,12`: a `#n`, an id or a `gh:` issue), for chips; null for one unknown.
   { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+  // Refs as a list (`{refs}`), or `{text}` → the `#n` mentions in a description (UTF-16 ranges).
   { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
+  // Adds (`{add, color?}`), changes (`{change, name?, color?}`) or removes (`{remove}`) a label.
   { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
+  // Restores saved label definitions with their ids through the main computer (`{library, force?}`).
   { route: `POST ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
     200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
   } },
+  // Previews a label restore without saving it; answered by the main computer.
   { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_PREVIEW_FEATURE, answers: {
     200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
   } },
+  // Adds an item; send a client operation id (`x-kuvo-operation`) and reuse it on a retry.
   { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+  // Imports items from Markdown backlog files on the box (`{owner, files}`), keeping their numbers where free.
   { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
+  // One item whole, by id or number; one on another computer is read from there (`told: false`) when it can be.
   { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
-  // (A file of an item on another computer: from there, 4 MB at most, else 413.)
+  // An item's file; one on another computer comes from there, 4 MB at most, else 413.
   { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
+  // Changes only what's sent; one kept on another computer is changed there by its box.
   { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
+  // Brings a deleted item back (kept 30 days).
   { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  // Deletes an item (kept 30 days); one on its way to another computer has its hand-off called off.
   { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
 ];
 

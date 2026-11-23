@@ -69,14 +69,16 @@ Read [the testing guide](docs/testing.md) and run focused checks for the area yo
   per checkout: with a shared target, Cargo can reuse another checkout's executable, which keeps
   that checkout's `CARGO_MANIFEST_DIR`, so shots write to and tests read fixtures from the wrong
   place.
+- Rust box: `scripts/cargo-box.sh` runs Cargo in `box/` with its pinned toolchain and its own
+  build slot. Use `scripts/cargo-box.sh build --release --locked` for a release build.
 - Box and bridge: `scripts/test-box.sh [box|bridge|all] [filter]`. Use
   `scripts/heavy.sh box scripts/test-linux.sh <ssh-host> <test file>` for a Linux
   bridge check. The scripts keep test data in scratch directories.
 - Kuvo Helper: `scripts/heavy.sh mac-build swift test --package-path mac/helper`.
 - Generated files: `BUN="$HOME/.bun/bin/bun" scripts/check-built.sh`.
 
-The build scheduler gives Rust one lane and gives `mac-build` and `box` two
-slots each. `scripts/heavy.sh status` shows their holders and queues.
+The build scheduler gives desktop Rust (`rust`) and box Rust (`rust-box`) one slot
+each, and gives `mac-build` and `box` two slots each. `scripts/heavy.sh status` shows their holders and queues.
 Set `KUVO_HEAVY_WAIT=0` to exit 75 if a job would wait, or
 `KUVO_HEAVY_PRIORITY=high` to move ahead of waiting normal-priority jobs.
 `KUVO_HEAVY_LIMIT` sets the command's time limit (`90m`, `600s`, `2h` or
@@ -84,7 +86,7 @@ Set `KUVO_HEAVY_WAIT=0` to exit 75 if a job would wait, or
 
 #### Route scenarios
 
-The bridge runs `protocol/vectors/routes/*.json` against the machine handler
+The bridge runs `box/test/fixtures/routes/*.json` (and `protocol/vectors/routes/features.json`) against the machine handler
 (`contract.test.js`) and the Mac box handler (`contract-mac.test.js`). The
 Mac scenarios use a captured 0.7 bot kit. The engine is a stand-in in both
 runners. To add a scenario:
@@ -111,8 +113,12 @@ runners. To add a scenario:
 - Every answer, whole, is also held to its route's shape: `box/src/shared/routes`, one
   file an area, with each field an answer can have (one ending in `?` may be left out) and its
   type, which the box's code takes its types from too. A new route, or a new field in an answer,
-  goes there first; `./scripts/route-shapes.sh` writes `routes/shapes/answers.json` for both
-  runners, and `routes/features.json` from the box's advertised capabilities.
+  goes there first, with a one-line comment above the route saying what it's for where its path
+  doesn't: routes are documented in their definition, and `scripts/check-built.sh --build` writes
+  `protocol/ROUTES.md` for a readable list (not kept in git). Add to `protocol/PROTOCOL.md` only a
+  rule a client must know that the route can't say, in a few lines. `./scripts/route-shapes.sh`
+  writes `routes/shapes/answers.json` for both runners, and `routes/features.json` from the box's
+  advertised capabilities.
   `test/route-shapes.test.ts` checks the generated files. The runners check
   answers against `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
   is JSON, `{}` at least.
@@ -125,7 +131,7 @@ runners. To add a scenario:
 | --- | --- |
 | `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); the keeper's shell files (`src/keeper`), the engine's plugin (`src/plugins`) and what writes its release's files (`src/release`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
 | `mac/helper/` | Kuvo Helper (Swift, macOS only): the signed program this Mac's box runs under, and `kuvo-keys`, the one-time hand-over of 0.7's Keychain items to it. Built on its own by `scripts/build-helper.sh`; its tests are `swift test` there |
-| `protocol/` | How boxes and clients talk (`PROTOCOL.md`), and the vectors every side is held to (`vectors/`) |
+| `protocol/` | How boxes and clients talk (`PROTOCOL.md`: only what a route can't say), and the vectors every side is held to (`vectors/`) |
 | `gpui/` | The GPUI app, in Rust (its `README.md`) |
 | `scripts/` | Builds, checks and the test runners |
 | `Licenses/` | License texts for code copied into this repository |
@@ -135,7 +141,7 @@ runners. To add a scenario:
 Each box's browser is Chrome for Testing, the full browser run in Chrome's own headless mode
 (the separate headless shell is one sites take for a bot), with its libraries and fonts, in
 `~/.kuvo-code/browser` there. The box sets it up on macOS and Linux, with or without a client
-(`box/src/link/browser`, PROTOCOL.md's "The browser on a machine"): the build pinned in
+(`box/src/link/browser`, PROTOCOL.md's "The browser"): the build pinned in
 `linux.json` and `mac.json` there (`scripts/browser-runtime.py` writes them; on a Mac machine,
 Chrome for Testing as it comes, with a `chrome` launcher, as it won't run through a link),
 downloaded only from Google's Chrome for Testing and Rocky Linux over HTTPS, each file checked
@@ -161,7 +167,7 @@ session. The box translates the keeper's newline stream to JSON facts and binary
 The keeper owns page sizes, captures once per size/quality class and allows two unacknowledged
 pictures per viewer. Raw CDP metrics and screencast calls obey the same rule: viewers cannot
 resize an agent's working page. The wire format and message budget are in PROTOCOL.md,
-“The browser's live view”. Test with `browser-live-view.test.js` and
+“The browser”. Test with `browser-live-view.test.js` and
 `browser-view-socket.test.js`: Chrome is stood in at the pipe; no real profile is used.
 
 The first two, finding no browser, have the box set it up and wait for it (`kuvo-link.js browser
@@ -250,8 +256,8 @@ and the lists they add to merge line by line:
 - **The bridge's version** (`BRIDGE_VERSION`, `box/src/link/version.ts`): never bump
   it. `scripts/build-box.sh` writes in a hash of the link as built, so it changes with every
   change (a machine's `setup` replaces a running bridge whose version isn't its own), and nothing
-  compares it: clients check `features`. A note of when something came in (PROTOCOL.md) names its
-  feature, not a bridge version.
+  compares it: clients check `features`. A note of when something came in names its feature, not
+  a bridge version.
 - **What a box answers** (`FEATURES` in `box/src/shared/features.ts`; `MAC_FEATURES`
   and `MACHINE_FEATURES` in `shared/routes/mac.ts`): add a name on a line of its own, in order
   (`LC_ALL=C sort`). Names two branches add in different places merge cleanly; git merges
@@ -264,8 +270,7 @@ and the lists they add to merge line by line:
   instead: this Mac's box claims every other name (`macFeatures`).
 - **Other lists a feature adds to** are one entry a line, in order, so they merge the same way
   (without union): the bridge's test of each name's route (`routes` in
-  `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES`, `MACHINE_FEATURES`, and
-  PROTOCOL.md's table of names ("Features").
+  `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES` and `MACHINE_FEATURES`.
 - **Compatibility requirement lists** are kept in sync between
   `gpui/kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt`. Keep
   entries sorted and check removals after a merge. The lists describe expected

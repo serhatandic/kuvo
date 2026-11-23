@@ -662,7 +662,7 @@ test("a bot's job is set as a whole (its set_job tool, Edit Bot): shown under it
 
 // How bots kept their job in their memory before (frozen as the Mac read it), which the box takes a
 // job from once (jobOf).
-const groupVectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/memory-jobs.json", import.meta.url), "utf8"));
+const groupVectors = JSON.parse(fs.readFileSync(new URL("../test/fixtures/memory-jobs.json", import.meta.url), "utf8"));
 
 test("a bot's job is read from its memory as the Mac reads it", () => {
   assert.ok(groupVectors.job.length > 5);
@@ -1121,7 +1121,7 @@ test("a bot on a machine is told, in Kuvo Code's own words, that it runs on that
 // How a conversation's rules are made again from its approval and Settings › Permissions, as the Mac
 // made them before its box did (written by an earlier Mac's RouteContractTests, kept as they were),
 // which a box does the same way for a bot that moves to it.
-const approval = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/routes/box/approval.json", import.meta.url), "utf8"));
+const approval = JSON.parse(fs.readFileSync(new URL("../test/fixtures/routes/box/approval.json", import.meta.url), "utf8"));
 // What Ask First asks about, before Settings' own rules, as the Mac has it.
 const askFirst = approval.find(each => each.name === "asks first; no settings").current.filter(rule => rule.action !== "external_directory");
 

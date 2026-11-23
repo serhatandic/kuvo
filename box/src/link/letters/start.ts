@@ -14,7 +14,7 @@ import { isObject } from "../../shared/json";
 import { isChatsFolder } from "../engine/chats";
 import { asked, call, engineGet } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
-import { keepWaitingLater, writtenByYou } from "../engine/queue";
+import { keepWaitingLater } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { noteSessionCreated } from "../lists/sessions";
 import { BOTS, CHATS, HERE, homeFolder, IS_MAC } from "../home";
@@ -44,8 +44,7 @@ import { keptFromSessions } from "../work/reviewer";
 import { botHere } from "../bots/here";
 import { findLinkedTrees, inProjectWorktree, inTime } from "../work/project-trees";
 import type { Approval } from "../work/approval";
-import { linkSession, pauseGoal, runningGoal } from "../work/goals";
-import { nextMidnight, startOfDay } from "../work/clock";
+import { startOfDay } from "../work/clock";
 import { atWorkNow } from "../work/background";
 import { botOfConversation, depthOf, isArchived, lineOf, ofBot, workSessions, worksFor } from "../work/tree";
 import { isAutopilot, tellAutopilot } from "../work/autopilot";
@@ -77,8 +76,6 @@ export interface StartGiven {
   approval?: unknown;
   autopilot?: unknown;
   wake?: unknown;
-  /** The goal's step it works on (its number or id), for that step's track. */
-  step?: unknown;
   /** false: a bot's session isn't told to review its work with reviewer subagents, only to report. */
   review?: unknown;
   computer?: unknown;
@@ -213,8 +210,6 @@ export interface StartPlace {
   operation?: string;
 }
 
-/** What a session a bot starts for its goal is told: no one may be there to answer. */
-export const goalNote = "This is part of a goal the user may not be watching: what you ask can wait a while, so carry on with what doesn't depend on it, and report what you couldn't do.";
 /** What a session a bot started is told with its task: its half of the playbook (PROTOCOL.md,
  * "Work"), in the task's text, so it works with any agent. `heard`: its finish is told its bot with
  * its last reply, so its report isn't sent again as a message (#270). `review`: false for a task its
@@ -320,23 +315,7 @@ async function inProject(folder: string, directory: string): Promise<boolean> {
 /** A new session with `given`'s task, from the conversation `by` (null: from a client). A bot's
  * (and its sessions') are its work: marked so, held to the limits you set for it, if any, with a
  * net against a runaway; another conversation's, a few in a while (`limits.ts`). */
-// Whether `session`'s turn answers what you wrote: its latest message to it is yours, not a
-// letter, a wake-up or the box's (looked for back past a long turn's steps, page by page).
-async function answersYou(target: Target, session: string): Promise<boolean> {
-  const address = encodeURIComponent(session);
-  let query = "limit=100&order=desc";
-  for (let pages = 0; pages < 20; pages++) {
-    const page = await engineGet(target, `api/session/${address}/message?${query}`).catch(() => null) as { data?: unknown; cursor?: { next?: string; previous?: string } | null } | null;
-    const messages: unknown[] = Array.isArray(page?.data) ? page.data : [];
-    const latest = messages.find(message => isObject(message) && message.type === "user") as { text?: unknown; metadata?: unknown } | undefined;
-    if (latest) return writtenByYou(latest.text, latest.metadata);
-    // (Older, as reading the whole conversation pages back.)
-    const next = page?.cursor?.next ?? page?.cursor?.previous;
-    if (!messages.length || !next) return false;
-    query = `limit=100&cursor=${encodeURIComponent(next)}`;
-  }
-  return false;
-}
+
 
 export async function startSession(given: StartGiven, by: Starter | null, place: StartPlace): Promise<{ started: Started } | { refused: StartRefusal }> {
   const model = given.model ?? by?.place?.data.model;
@@ -415,11 +394,6 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   // Full Access from a client where it can't be had says why, rather than starting it with less.
   const notFull = !by && requested === "fullAccess" ? unavailable("fullAccess") : null;
   if (notFull) return { refused: { status: 409, message: notFull.why, reason: notFull.reason as "fullAccessOff" } };
-  // The goal its bot is at, if any. Paused by you, nothing of it goes on until you resume it, so
-  // none of its sessions (one woken by a letter, say) starts another meanwhile, nor the bot's own
-  // conversation, but for what you ask it for there (its turn answering what you wrote).
-  const goal = bot ? runningGoal(bot.bot) : null;
-  if (goal?.heldByYou && !(ownBot && by?.place && await answersYou(by.place.target, by.session))) return no(403, "The user paused this goal: nothing new starts until they resume it.");
   // Where it runs: the engine, the coding agents' bridge for one of theirs, or the conversation's.
   let engine: Target | null = null;
   try { engine = place.readEngine(); } catch {}
@@ -510,7 +484,7 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   // asked for at once each count those before them that the engine doesn't show yet.
   // (Where the bot isn't, those its lead's computer said, or marked on the conversation starting it.)
   const limits = bot ? botLimits(bot.bot) ?? (remote ? remote.limits : limitsFrom(parent?.metadata?.kuvo?.limits)) : null;
-  const limited = bot && limits ? await heldByLimits(bot, limits, depth, Boolean(goal), [engine, bridge].filter((each): each is Target => Boolean(each)), place.signal) : null;
+  const limited = bot && limits ? await heldByLimits(bot, limits, depth, [engine, bridge].filter((each): each is Target => Boolean(each)), place.signal) : null;
   if (limited && "refused" in limited) return { refused: limited.refused };
   const went = limited?.went ?? (() => {});
   // A few at a time: an agent shouldn't fill the window with sessions unattended. A bot's work is
@@ -634,7 +608,7 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   const kuvo = { ...(starter ? { startedBy: by!.session, ...(bot ? { by: bot, depth } : {}), ...(wakes.length ? { wake: wakes } : {}) } : {}), ...(asBefore ? {} : { approval: kept, applied }), ...(autopilot ? { autopilot: true } : {}), ...(filed ? { filed } : {}), ...chat, ...marksOfLine };
   const from_ = remote ? `${by!.name} on ${remote.computer}` : by?.name ?? "";
   // (Its finish heard by its starter with its last reply: its report isn't sent again as a message.)
-  const textFor = (heard: boolean) => by ? composeLetter(from_, by.session, task, waits, heard) + (bot ? `\n\n${sessionNote(bot.name, heard, given.review !== false)}${goal ? `\n\n${goalNote}` : ""}` : "") : task;
+  const textFor = (heard: boolean) => by ? composeLetter(from_, by.session, task, waits, heard) + (bot ? `\n\n${sessionNote(bot.name, heard, given.review !== false)}` : "") : task;
   const heard = starter && wakes.includes("finished");
   const text = textFor(heard);
   const making: Making = { agents, asBefore, autopilot, kuvo, prompt: { id: messageID(), text, ...(heard ? { unheard: textFor(false) } : {}) }, folders: [...(project?.folders ?? [])], folder,
@@ -670,7 +644,6 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
   // Started by the bot itself, for clients to show it looking after its new session: now, before
   // a wait for its answer, so it shows before the session finishes.
   if (marked && by?.place && bot && botOfConversation(by.session)?.bot === bot.bot) noteOversight(bot.bot, session, "started");
-  if (bot && goal && given.step !== undefined && given.step !== null) linkSession(bot.bot, given.step, session);
   // None to give it (a client's new session): the session as it's made now, for the client to show
   // at once, and the worktree made for it.
   if (!task) {
@@ -682,10 +655,10 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
       return no(502, `Couldn't start the session in ${folder} on Autopilot: its agent couldn't be told how to work on it.`);
     }
     const info = await call(target, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, place.signal).catch(() => null);
-    noteSessionCreated(session, agents ? "agents" : "engine");
+    noteSessionCreated(session, agents ? "agents" : "engine", folder);
     return { started: { session, ...making.started, ...(isObject(info) ? { info } : {}), ...(treeMade ? { worktree: treeMade } : {}) } };
   }
-  noteSessionCreated(session, agents ? "agents" : "engine");
+  noteSessionCreated(session, agents ? "agents" : "engine", folder);
   const id = making.prompt.id;
   try {
     if (starter && by) await linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
@@ -711,8 +684,8 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
 /** The limits you set for `bot` (`limits`), looked at for a new session at `depth`: why it can't
  * start, or how its start went is kept (`went`), so starts asked for at once each count those
  * before them that the engine doesn't show yet. Its sessions here and, as they last told, on your
- * other computers. A day's limit during a goal pauses the goal till midnight. */
-export async function heldByLimits(bot: WorksFor, limits: WorkLimits, depth: number, goal: boolean, targets: Target[], signal?: AbortSignal): Promise<{ refused: StartRefusal } | { went: (session: string | null, prompted?: boolean) => void }> {
+ * other computers. */
+export async function heldByLimits(bot: WorksFor, limits: WorkLimits, depth: number, targets: Target[], signal?: AbortSignal): Promise<{ refused: StartRefusal } | { went: (session: string | null, prompted?: boolean) => void }> {
   const noted = noteStarting(bot.bot);
   const went = (session: string | null, prompted = false) => startedAs(bot.bot, noted.token, session, prompted);
   const work = ofBot(bot.bot, await workSessions(targets, signal, { archived: true }));
@@ -740,11 +713,6 @@ export async function heldByLimits(bot: WorksFor, limits: WorkLimits, depth: num
   });
   if (!past) return { went };
   went(null);
-  // A day's limit, during a goal: new sessions wait for midnight, when the bot is woken.
-  if (past.daily && goal) {
-    pauseGoal(bot.bot, { why: "your daily limit", until: nextMidnight(Date.now()) });
-    return { refused: { status: 429, message: `${past.words} New sessions for your goal wait for it to reset at midnight, and you're woken then: carry on meanwhile with what doesn't start a session.` } };
-  }
   return { refused: { status: 429, message: past.daily ? `${past.words} Ask the user to raise it (Edit Bot › Work), or go on tomorrow.` : past.words } };
 }
 

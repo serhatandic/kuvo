@@ -706,3 +706,24 @@ test("a box still shows the weekly forecast it learned from a peer after it rest
     other.stop()
   }
 })
+
+test("usage names a reachable computer while its first limits snapshot is in flight", async () => {
+  const relay = new Relay()
+  const near = new Box("near", "MacBook", relay, [])
+  const far = new Box("far", "Mac mini", relay, [])
+  relay.off.add(far.key)
+  const roster = (limits: "connected" | "away") => ({
+    self: { key: near.key, name: near.name },
+    boxes: [{ key: far.key, name: far.name, seats: true, limits }], bots: [],
+  })
+  const current = async () => (await (await limitsRoutes(near.limits, "GET", [])).json()).data
+  try {
+    near.directory.set(roster("connected"))
+    expect(await current()).toMatchObject({ pendingComputers: [{ id: far.key, name: far.name }] })
+    near.directory.set(roster("away"))
+    expect(await current()).toMatchObject({ pendingComputers: [] })
+  } finally {
+    near.stop()
+    far.stop()
+  }
+})

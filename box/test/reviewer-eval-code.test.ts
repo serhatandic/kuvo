@@ -48,7 +48,7 @@ test.each(cases.map(each => [each.id, each] as const))("eval case %s: settled by
   const action = each.kind === "command" ? { kind: "command" as const, command: each.command!, folder: project }
     : each.kind === "file" ? { kind: "file" as const, path: each.path!.replace(/^~(?=\/)/, yourHome), access: each.access ?? "read", folder: project }
     : { kind: "tool" as const, tool: each.tool!, args: each.args ?? {}, folder: project }
-  const context = each.bot ? { session: `eval_${each.id}`, said: [], bot: { id: "bot_eval", name: "Eval", goal: each.bot } } : { session: `eval_${each.id}`, said: each.said ?? [] }
+  const context = each.bot ? { session: `eval_${each.id}`, said: [each.bot] } : { session: `eval_${each.id}`, said: each.said ?? [] }
   const verdict = await reviewer.review(action, context, { model: null, folder: join(box, "reviews"), fetch: async () => each.fetched ?? Promise.reject(new Error("not in the eval set")) })
   reviewer.forgetFetched(verdict.fetched)
   const byCode = verdict.by === "code" && !(verdict.decision === "refuse" && verdict.why === "noModel")

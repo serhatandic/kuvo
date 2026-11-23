@@ -21,7 +21,6 @@ import { markChatOn } from "./chats";
 import { bridgeTarget, engineGet, peerTargets, readBridgeFile, readEngineFile } from "./client";
 import { applyCompatibility, followSettingsFile, learnCompatibility } from "./compatibility";
 import { modelsDue, settleDueModels, WORK_ENDS } from "./models";
-import { goalHolds, settleGoalHolds } from "../work/goals";
 import { workWatcher } from "../work/wakes";
 import { isOver, reviewPermission, settleAskReview, settleRunReviews, takeUpWaitingAsks } from "../work/reviewing";
 import { forgetReviews } from "../work/reviewer";
@@ -120,8 +119,6 @@ export interface WatchOptions {
   /** Whoever started a session told as it finishes or asks, as which of the box's places this is
    * (`work/wakes.ts`, `WorkWatch.from`). */
   work?: "engine" | "bridge" | false;
-  /** The agents' bridge's, which keeps conversations' goals: one paused or resumed held or let go. */
-  goals?: boolean;
   /** Told each time a deleted session's files were looked at (`session`), or, as the box finds
    * its engine, those of every session it no longer has (null): a test waits on it. */
   attachmentsLooked?: (session: string | null) => void;
@@ -255,7 +252,7 @@ export function watchBox({ tell = () => true, hold = null, bots = false, notices
   const stopStates = followBotStates();
   signal?.addEventListener("abort", stopStates, { once: true });
   watchEvents(readEngineFile, tell, signal, answered, { bots, notices, signIns: true, hold, signedIn, steers: true, learns: true, learned, queues: true, work: "engine", attachmentsLooked });
-  watchEvents(readBridgeFile, tell, signal, answered, { bots, notices, hold, queues: true, work: "bridge", goals: true, attachmentsLooked });
+  watchEvents(readBridgeFile, tell, signal, answered, { bots, notices, hold, queues: true, work: "bridge", attachmentsLooked });
   void watchUsage(tell, hold, signal);
 }
 
@@ -286,7 +283,7 @@ function letSessionFilesGo(looked: (session: string | null) => void, session?: s
 // told as it finishes or asks (work/wakes.ts), as the place it is ("engine" or "bridge").
 // Either way, a deleted session's files go with it (`letAttachmentsGo`), and any a session deleted
 // meanwhile left as it's found again.
-export async function watchEvents(read: () => Target, tell: (notice: Notice) => void, signal?: AbortSignal, answered: (id: string | undefined) => void = () => {}, { bots = false, notices = !bots, signIns = false, hold = null, signedIn = () => {}, steers = false, steerAfter, learns = false, learned = () => {}, queues = false, work = false, goals = false, attachmentsLooked = () => {} }: WatchOptions = {}): Promise<void> {
+export async function watchEvents(read: () => Target, tell: (notice: Notice) => void, signal?: AbortSignal, answered: (id: string | undefined) => void = () => {}, { bots = false, notices = !bots, signIns = false, hold = null, signedIn = () => {}, steers = false, steerAfter, learns = false, learned = () => {}, queues = false, work = false, attachmentsLooked = () => {} }: WatchOptions = {}): Promise<void> {
   let usageRevision = 0;
   let attempt = 0;
   let lastLearned = 0;
@@ -332,8 +329,6 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       const queue = queues ? queueWatcher(source, { found }) : null;
       const followWork = work ? workWatcher(source, peerTargets, { signal: connection.signal, from: work }) : null;
       workGone = followWork?.gone ?? null;
-      // A goal paused or resumed (the agents' bridge says so): its conversation held or let go.
-      const goalHeld = goals ? goalHolds(peerTargets) : null;
       // A pull request a session made itself with `gh`, kept as its own (glance/pulls.ts).
       const catchPull = pullCatcher(() => source);
       const response = await fetch(`http://127.0.0.1:${source.port}/api/event`, {
@@ -373,8 +368,6 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       // Its worktrees' sessions titled while it wasn't listening: their branches named; and those
       // whose last session went meanwhile tidied.
       if (!bots) nameDueWorktrees(source, connection.signal).then(() => tidyWorktrees(connection.signal)).catch(() => {});
-      // A goal's change it missed meanwhile: what's held for one let go, or kept, as it is now.
-      if (goalHeld) settleGoalHolds(source, goalHeld).catch(() => {});
       // Full Access's list for the sandbox's launcher, for those at work now (one changed meanwhile).
       if (work) noteFullAccessAtWork(source, atWork).catch(() => {});
       // Asks to work outside a folder waiting already (it started again as they came, or their
@@ -433,7 +426,6 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
         // A conversation in Auto: what its agent's file tools ask outside its folder, reviewed (and
         // told to your phones below only where it isn't: the reviewer never leaves one for you).
         const reviewed = work && event.type === "permission.asked" ? reviewPermission(source, event, connection.signal, undefined, work).catch(() => null) : null;
-        goalHeld?.(event).catch(() => {});
         if (signIns) noteSignIn(event, source).catch(() => {}).finally(() => signedIn(event));
         if (work && event.type === "session.execution.succeeded" && typeof event.data?.sessionID === "string") keepReadThroughSummary(source, event.data.sessionID, connection.signal).catch(() => {});
         // An agent's work read as each turn of it ends, unless what came since you read it is news to

@@ -266,6 +266,10 @@ impl Transport for Via {
         self.inner.here()
     }
 
+    fn setup_client(&self) -> Option<BoxClient> {
+        Boxes { inner: self.boxes.upgrade()? }.nearest()
+    }
+
     fn peer(&self, key: &str) -> Option<Arc<dyn Transport>> {
         let boxes = Boxes { inner: self.boxes.upgrade()? };
         boxes.client(key).map(|client| client.transport())

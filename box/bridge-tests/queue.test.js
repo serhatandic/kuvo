@@ -212,7 +212,7 @@ test("Stop holds what was for the next step ahead of the queue and pauses it; a 
   b.hear("session.execution.succeeded");
   b.wait(5000);
   assert.equal(asked.length, 2, "nothing started while it's paused");
-  const item = (id, held) => ({ id, words: "", files: [], keyword: null, from: null, on: "engine", delivery: "queue", held });
+  const item = (id, held) => ({ id, words: "", files: [], from: null, on: "engine", delivery: "queue", held });
   assert.deepEqual((await ask("GET", "kuvo/sessions/ses_1/queue")).json, { paused: true, held: ["msg_s1"] });
   // (Every message waiting, as clients that draw them ask: what Stop held first, `queue.items`.)
   assert.deepEqual((await ask("GET", "kuvo/sessions/ses_1/queue?items=1")).json, { paused: true, held: ["msg_s1"], items: [item("msg_s1", true), item("msg_q1", false)] });
@@ -677,7 +677,7 @@ test("Undo puts one taken away from what waits back as it was, where it was: its
   const receipt = "msg_undoAda";
   const { removed } = (await ask("DELETE", `kuvo/sessions/ses_1/queue/msg_w1?receipt=${receipt}`)).json;
   // (`before`: what came after it, for Undo to put it back ahead of.)
-  assert.deepEqual(removed, { id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", keyword: null, draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2", receipt });
+  assert.deepEqual(removed, { id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2", receipt });
   const back = await ask("POST", "kuvo/sessions/ses_1/queue/add", { ...removed, words: "the build is green.", kept: true });
   assert.equal(back.json.waits, true);
   assert.deepEqual(back.json.waiting.map(each => [each.id, each.from ?? null, each.text]), [["msg_w1", "Ada", "the build is green."], ["msg_w2", null, "Second."], ["msg_w3", null, "Third."]], "first again, where it was");

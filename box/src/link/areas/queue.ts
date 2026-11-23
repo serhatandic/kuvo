@@ -266,7 +266,7 @@ export function attachedOf(removed: Pick<RemovedWaiting, "files" | "text" | "met
 // files kept on the box as a message's are (`attachedIn`), then waiting there while the queue is
 // paused, else to the engine as it asked. Its forms (`id?`, `files?`, `delivery?`, `from?`,
 // `before?` and `metadata?` with each):
-// - `{words, keyword?, widget?, comments?, named?, notes?}`: a message's fields
+// - `{words, widget?, comments?, named?, notes?}`: a message's fields
 //   (`kuvo/sessions/<id>/send`'s); the box writes what the agent reads.
 // - `{text, again: true, words?}`: one sent before, sent again as the agent read it (`words`: how
 //   it's shown); its parts read from it.

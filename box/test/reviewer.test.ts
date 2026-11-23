@@ -203,14 +203,10 @@ test("the agent's tools read anywhere but your secrets with no review; your secr
 test("payments, messages, publishing and the like are refused unless you plainly asked; refused, they're held back for you", async () => {
   const ask = model(allows)
   expect(await reviewer.review(command("rm -rf build"), yours("Make the build pass"), given(ask))).toMatchObject({ decision: "allow", by: "model" })
-  expect(ask.shown[0]).toContain("unless what the user said (or the bot's goal) plainly asks for that very thing: spending money; sending a message")
+  expect(ask.shown[0]).toContain("unless what the user said plainly asks for that very thing: spending money; sending a message")
   // A model that would still leave it to you refuses it: nothing waits for you.
   const asking = model('{"decision": "ask", "reason": "It opens a pull request as you."}')
   expect(await reviewer.review(command("gh pr create --fill"), yours("Fix the typo"), given(asking))).toMatchObject({ decision: "refuse", by: "model", held: true, why: "reviewer", reason: "It opens a pull request as you." })
-  // A bot's too: its goal is what it's judged against.
-  const bot = { session: "ses_bot", said: [], bot: { id: "bot_pixel", name: "Pixel", goal: "Clean the build folder nightly" } }
-  expect(await reviewer.review(command("rm -rf build"), bot, given(ask))).toMatchObject({ decision: "allow" })
-  expect(ask.shown.at(-1)).toContain("Clean the build folder nightly")
 })
 
 test("the model's answer is taken only when it can be read; no model, a failure or anything else is held back, never allowed and never left waiting", async () => {
@@ -415,7 +411,7 @@ test("your own settings for every project (global git, SSH keys, sign-ins' files
   expect(ask.shown).toHaveLength(shown + 1)
   expect(ask.shown.at(-1)).toContain("your global git settings, for every project")
   // A bot's goal names it too; and a file the agent's tools change there.
-  expect((await reviewer.review(command("ssh-keygen -t ed25519 -f ~/.ssh/deploy"), { session: "ses_bot_keys", said: [], bot: { id: "bot_x", name: "Pixel", goal: "Set up an SSH deploy key for the server" } }, given(ask))).decision).toBe("allow")
+  expect((await reviewer.review(command("ssh-keygen -t ed25519 -f ~/.ssh/deploy"), { session: "ses_bot_keys", said: ["Set up an SSH deploy key for the server"] }, given(ask))).decision).toBe("allow")
   expect(await reviewer.review({ kind: "file", path: join(yourHome, ".gitconfig"), access: "write", folder: project }, yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", why: "unasked" })
 })
 
@@ -510,10 +506,9 @@ test("refusals for want of a model (none, an outage, an answer it can't read) ne
   expect(reviewer.reviewLog(context.session, folder).paused).toBeUndefined()
 })
 
-test("in a bot's conversation the model reads what you wrote there beside its goal", async () => {
+test("in a bot's conversation the model reads what you wrote there", async () => {
   const ask = model(allows)
-  await reviewer.review(command("crontab jobs.txt"), { session: "ses_bot_words", said: ["Add a cron job that syncs every hour"], bot: { id: "bot_x", name: "Pixel", goal: "Keep the site fresh" } }, given(ask))
-  expect(ask.shown[0]).toContain("Keep the site fresh")
+  await reviewer.review(command("crontab jobs.txt"), { session: "ses_bot_words", said: ["Add a cron job that syncs every hour"] }, given(ask))
   expect(ask.shown[0]).toContain("Add a cron job that syncs every hour")
 })
 
