@@ -165,17 +165,18 @@ mod platform {
 
 #[cfg(not(unix))]
 mod platform {
-    use std::io::ErrorKind;
-
-    /// libuv's message for the error libuv maps a Windows error to, by its kind.
+    /// libuv's message for the error libuv maps a Windows error code to (`uv_translate_sys_error`).
     pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
-        Some(match error.kind() {
-            ErrorKind::FilesystemLoop => "too many symbolic links encountered",
-            ErrorKind::InvalidFilename => "name too long",
-            ErrorKind::ResourceBusy => "resource busy or locked",
-            ErrorKind::OutOfMemory => "not enough memory",
-            ErrorKind::TimedOut => "connection timed out",
-            ErrorKind::InvalidInput => "invalid argument",
+        Some(match error.raw_os_error()? {
+            1921 => "too many symbolic links encountered", // ERROR_CANT_RESOLVE_FILENAME
+            206 => "name too long",                         // ERROR_FILENAME_EXCED_RANGE
+            32 | 33 | 170 => "resource busy or locked",     // sharing, lock, busy
+            8 | 14 => "not enough memory",
+            4 => "too many open files",
+            121 => "connection timed out", // ERROR_SEM_TIMEOUT
+            87 | 1004 => "invalid argument",
+            21 | 23 | 31 | 1117 => "i/o error", // not ready, CRC, general failure, device
+            50 => "operation not supported on socket",
             _ => return None,
         })
     }
