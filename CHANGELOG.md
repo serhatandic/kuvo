@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The update in the title bar only moves forward: each computer is grey while it gets ready (with how far, where Kuvo knows), blue once it's ready and while it switches, and green only once it's up to date. Its title says where the update is, a computer that's off says when it was last seen, and it stays for ten minutes after your computers finish, saying so.
+- A conversation's Activity shows its context bar from 0, and you can pick where conversations are summarized right under it: 200k, 400k, 600k or Never, the same setting as Settings › Conversations on that computer.
+- Signing in to a coding agent is one short sheet for every agent: where its sign-in ends on a code to paste back, the field is there at once, ready to paste into; where it finishes by itself, it just waits. Open the Page Again is there if the page didn't open, and × closes it.
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.
