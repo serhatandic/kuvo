@@ -28,6 +28,16 @@ keeper route cases, and the two existing TypeScript signing and packaging
 cases passed. The differential runner matched the failed-trial status response
 and reported differences in the rest of the home inventory.
 
+On native Windows the same five Rust cases passed. Preparation and retry took
+12.3 seconds, and the keeper confirmed the selection in 1.5 seconds. U7 left
+the account and its temporary directory unchanged. The scratch cross-build
+used the llvm-mingw runtime DLL alongside the test executable.
+
+On Ubuntu 24.04 under WSL2, the static x86_64 musl build passed all five Rust
+cases. Preparation and retry took 8.2 seconds, and selection and confirmation
+took 1.5 seconds. U7 passed there too. Lokum's Docker socket was unavailable
+to the test account, so this run covers Linux and WSL.
+
 ## TypeScript reference cases
 
 `Covered` means the exposed behaviour is checked. `Partial` records which
@@ -111,4 +121,4 @@ three are specific to the TypeScript bridge or desktop updater, and 34 are open.
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Existing backup boundary. Call it from the TypeScript-to-Rust switch and prove interrupted retries. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Open. | 7.2 |
 | Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Open. | 7.2 |
-| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers a stopped standalone Mac scratch install. The live shared, Helper-owned and full four-platform flows remain open. | 2.3, 7.2 |
+| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
