@@ -337,8 +337,7 @@ fn on_line<T: Send + 'static>(watch: impl FnOnce(Latest<T>) -> Watch) -> Follow<
 }
 
 impl BoxClient {
-    /// Follows the box's session lists: the list now, and again as it changes
-    /// (`kuvo/sessions/list/events`, on the line).
+    /// Follows the box's session lists on the line, across the setup where the box supports it.
     pub fn follow_sessions(&self, timing: Timing) -> Follow<ListUpdate> {
         let client = self.clone();
         spawn("kuvo-box sessions", move |latest, stop| follow_sessions(client, timing, latest, &stop))
@@ -383,19 +382,23 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
     }
     // The list as last taken, and whether the next good line is handed on even if unchanged.
     let listing = Arc::new(Mutex::new((Listing::new(), true)));
-    let start_required = client.advertised(sessions::LIST_START);
-    let route = if client.advertised(sessions::MERGED_SESSIONS) {
+    let route_for = |merged| if merged {
         sessions::MERGED_SESSIONS_ROUTE.into()
     } else {
         sessions::events_route(None)
     };
+    let route = route_for(client.advertised(sessions::MERGED_SESSIONS));
+    let unconfirmed = client.gate() == Gate::Unknown;
+    let box_ = client.clone();
     let theirs = latest.clone();
-    let watch = client.line().watch(route, move |said| {
+    let watch = client.line().watch_negotiated(route, unconfirmed, move || {
+        box_.connect().ok().map(|info| route_for(info.has(sessions::MERGED_SESSIONS)))
+    }, move |said| {
         let mut now = listing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match said {
             Said::Data(value) => match serde_json::from_value::<Line>(value)
                 .map_err(|error| Error::BadAnswer(format!("A line of the session list couldn't be read: {error}")))
-                .and_then(|line| line.check_start(start_required))
+                .and_then(|line| line.check_start(client.advertised(sessions::LIST_START)))
             {
                 Ok(line) => {
                     if now.0.take(line) || now.1 {

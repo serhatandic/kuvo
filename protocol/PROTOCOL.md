@@ -259,7 +259,9 @@ to open the conversation, `pause` or `resume` for the box's `…/queue/hold` or 
 and `messages` for the per-session queue. The owning box validates each action when asked.
 
 Feature `line.merged-sessions` adds `kuvo/setup/sessions/list/events`. Follow this topic in
-place of the single-box session-list topic. It sends full `kuvo/sessions/list` snapshots,
+place of the single-box session-list topic when the box advertises the feature. Read capabilities
+again when opening the line so an existing subscription can switch after a box update.
+The merged topic sends full `kuvo/sessions/list` snapshots,
 including the answering box's project order, start project and pending runtimes. Archived
 groups include each peer's archived sessions. If the answering box has no local list yet,
 it can still serve its peers' last snapshots, with a null start project. Every session and
