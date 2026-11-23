@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { scratch, until } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, scratch, until } from "./adapter.mjs";
 import { sessionOf } from "./engine.mjs";
 import { bench } from "./bench.mjs";
 
@@ -327,4 +327,36 @@ test("folders worth starting in: those worked in, newest first, then repositorie
   ]);
   assert.deepEqual(reply.json.folders.slice(2).map(each => [each.path, each.name, each.repository, each.seen]).sort(),
     [[dotfiles, "dotfiles", true, null], [projects, "website", true, null]]);
+});
+
+test("a file through the computer's own route command, its mode with its bytes where asked", async t => {
+  const bench_ = await bench(t);
+  const box = await bench_.computer("Routed");
+  await box.start().ready();
+  const folder = realpathSync(scratch());
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const launchFile = path.join(folder, "launch");
+  const report = path.join(folder, "report.txt");
+  writeFileSync(launchFile, "echo extensionless", { mode: 0o700 });
+  writeFileSync(report, "normal text", { mode: 0o600 });
+  const binary = boxBinary();
+  const env = { ...isolatedEnv(path.dirname(box.home)), KUVO_SANDBOX: "off" };
+  const routed = async route => {
+    const command = boxCommand(binary, box.home, env, bench_.relay, binary.typescript ? ["box", "route"] : ["route"], {}, "pipe");
+    let out = "";
+    command.child.stdout?.on("data", chunk => { out += chunk; });
+    command.child.stdin.end(JSON.stringify({ method: "GET", path: route }));
+    const { code } = await command.exited;
+    assert.equal(code, 0, command.log());
+    return JSON.parse(out);
+  };
+  const info = await routed(at(report));
+  assert.equal(info.status, 200);
+  assert.deepEqual(JSON.parse(info.body), { exists: true, name: "report.txt", size: 11, kind: "text", mime: "text/plain" });
+  for (const [file, executable, body] of [[launchFile, "1", "echo extensionless"], [report, "0", "normal text"]]) {
+    const answer = await routed(at(file, "") + "&withMode=1");
+    assert.equal(answer.status, 200);
+    assert.equal(answer.type, `application/vnd.kuvo.file; executable=${executable}`);
+    assert.equal(Buffer.from(answer.bodyBase64, "base64").toString(), body);
+  }
 });
