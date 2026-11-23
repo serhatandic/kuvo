@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use futures_util::{SinkExt, StreamExt};
 use kuvo_wire::{
     frames::{self, FromRelay, Kind, relay_hello, relay_send},
-    keys::{Address, Host, address_of},
+    keys::{Address, Host, Identity, address_of},
     mail::Envelope,
 };
 use tokio::{
@@ -25,6 +25,8 @@ use crate::session::{self, BoxHello, ClientHello, Id, Output, Sessions};
 const WELCOME_WITHIN: Duration = Duration::from_secs(15);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const ALIVE_FOR: Duration = Duration::from_secs(90);
+const INSTALLER: &[u8] = b"kuvo installer v1\0";
+const INSTALLER_LIMIT: usize = 50_000;
 const WRITE_WITHIN: Duration = Duration::from_secs(15);
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -79,6 +81,12 @@ pub enum RelayEvent {
         from: Address,
         key: [u8; 32],
         envelope: Envelope,
+    },
+    /// Authenticated static key, prior to roster admission. Only setup consumes this exchange.
+    Installer {
+        from: Address,
+        key: [u8; 32],
+        payload: Vec<u8>,
     },
     Removal {
         from: Address,
@@ -169,6 +177,7 @@ enum MailRoute {
 
 enum Command {
     Mail(Host, Envelope, MailRoute, Reply<()>),
+    Installer(Host, Vec<u8>, Reply<()>),
     Start(Host, ClientHello, Reply<Id>),
     Send(Id, session::Message, Reply<()>),
     Close(Id, Reply<()>),
@@ -182,7 +191,10 @@ enum Command {
 impl Command {
     fn offline(self, config: &mut Config) {
         match self {
-            Self::Mail(_, _, _, reply) | Self::Send(_, _, reply) | Self::Close(_, reply) => {
+            Self::Mail(_, _, _, reply)
+            | Self::Installer(_, _, reply)
+            | Self::Send(_, _, reply)
+            | Self::Close(_, reply) => {
                 let _ = reply.send(Err(Error::Offline));
             }
             Self::Start(_, _, reply) => {
@@ -224,6 +236,11 @@ impl Sender {
 
     pub async fn removal(&self, to: Host, envelope: Envelope) -> Result<(), Error> {
         self.request(|reply| Command::Mail(to, envelope, MailRoute::Removal, reply))
+            .await
+    }
+
+    pub async fn installer(&self, to: Host, payload: Vec<u8>) -> Result<(), Error> {
+        self.request(|reply| Command::Installer(to, payload, reply))
             .await
     }
 
@@ -476,6 +493,21 @@ impl Owner {
     }
 
     fn receive_mail(&self, from: Address, body: &[u8]) -> Result<(), Error> {
+        if let Some(sealed) = body.strip_prefix(INSTALLER) {
+            if body.len() <= INSTALLER_LIMIT
+                && self.observations.receiver_count() > 0
+                && let Some((key, message)) = sealed.split_first_chunk::<32>()
+                && let Ok((payload, _)) =
+                    kuvo_wire::noise::open_one_way(message, &self.config.key, key, INSTALLER)
+            {
+                let _ = self.observations.send(Arc::new(RelayEvent::Installer {
+                    from,
+                    key: *key,
+                    payload,
+                }));
+            }
+            return Ok(());
+        }
         if let Some((hinted_key, envelope)) = Envelope::open_removal(body, &self.config.key) {
             return self.emit(Event::Removal {
                 from,
@@ -518,6 +550,30 @@ impl Owner {
                         return Ok(());
                     }
                 }
+                let _ = reply.send(Ok(()));
+            }
+            Command::Installer(host, payload, reply) => {
+                let result = kuvo_wire::noise::seal_one_way(
+                    &payload,
+                    &self.config.key,
+                    &host.key,
+                    INSTALLER,
+                );
+                let sealed = match result {
+                    Ok((sealed, _)) => sealed,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.into()));
+                        return Ok(());
+                    }
+                };
+                let key = Identity::from_bytes(self.config.key, self.config.secret).public();
+                let body = [INSTALLER, &key, &sealed].concat();
+                if body.len() > INSTALLER_LIMIT {
+                    let _ = reply.send(Err(Error::Message));
+                    return Ok(());
+                }
+                let frame = frames::frame(Kind::Mail, 0, &body);
+                write(socket, relay_send(&host.address, &frame)).await?;
                 let _ = reply.send(Ok(()));
             }
             Command::Start(host, hello, reply) => {

@@ -16,6 +16,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
+- The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
+
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
 - The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.

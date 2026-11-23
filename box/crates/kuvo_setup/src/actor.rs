@@ -33,15 +33,18 @@ use crate::{
 };
 
 mod activity;
+mod adding;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod removal;
 mod replication;
+pub(crate) use removal::Unlink;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 use handover::{Handover, HandoverReply};
 
-const LINK: &str = "run/link.json";
+pub(crate) const LINK: &str = "run/link.json";
 const CARD: &str = "run/setup-card.json";
 const WELCOME: &str = "run/welcomed.json";
 const ATTACHED: &str = "run/app-attached.json";
@@ -118,6 +121,9 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
+    InstallerCode(Option<Value>, edits::Submitter),
+    RenameComputer(String, String, edits::Submitter),
+    UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
@@ -328,7 +334,7 @@ impl Drop for SetupRuntime {
     }
 }
 
-fn validate_disk(files: &Files) -> Result<(), Error> {
+pub(crate) fn validate_disk(files: &Files) -> Result<(), Error> {
     if let Some(layout) = files.read::<Value>("folder-version.json")?
         && (layout
             .get("version")
@@ -481,7 +487,7 @@ fn open(
     Ok((link, Some(own)))
 }
 
-fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> bool {
+pub(crate) fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> bool {
     if link
         .extra
         .get("macRotation")
@@ -520,7 +526,7 @@ fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> boo
     true
 }
 
-fn write_link(files: &Files, link: &Link, kind: ComputerKind) -> Result<(), Error> {
+pub(crate) fn write_link(files: &Files, link: &Link, kind: ComputerKind) -> Result<(), Error> {
     if kind == ComputerKind::Mac {
         let mut kept = link.clone();
         kept.key = None;
@@ -534,7 +540,7 @@ fn write_link(files: &Files, link: &Link, kind: ComputerKind) -> Result<(), Erro
     }
 }
 
-fn new_setup(position: Position, sign: String, role: Role) -> Setup {
+pub(crate) fn new_setup(position: Position, sign: String, role: Role) -> Setup {
     Setup {
         position,
         sign,
@@ -804,6 +810,9 @@ impl Owner {
                 () = time::sleep_until(until) => {
                     if self.next <= Instant::now() {
                         self.next = Instant::now() + Duration::from_secs(2);
+                        if let Err(error) = self.offer_unlinks().await {
+                            eprintln!("setup removal delivery: {error}");
+                        }
                         if let Err(error) = self.tick().await
                             && !matches!(error, Error::Relay(_) | Error::Conflict) {
                             eprintln!("setup heartbeat: {error}");
@@ -1031,6 +1040,13 @@ impl Owner {
 
     async fn execute(&mut self, command: Command) -> Result<Response, Error> {
         match command {
+            Command::InstallerCode(credentials, by) => {
+                self.issue_installer_code(credentials, by).await
+            }
+            Command::UnlinkComputer(key, request, explicit, by) => {
+                self.unlink_computer(key, request, explicit, by).await
+            }
+            Command::RenameComputer(key, name, by) => self.rename_computer(key, name, by).await,
             Command::ReadEdit(target) => {
                 let setup = self.link.setup()?;
                 let stale = setup.role == Role::Member && !self.lease.holds(&self.link);
@@ -1231,7 +1247,11 @@ impl Owner {
     }
 }
 
-fn project_membership(link: &mut Link, roster: &Membership, own: &Identity) -> Result<(), Error> {
+pub(crate) fn project_membership(
+    link: &mut Link,
+    roster: &Membership,
+    own: &Identity,
+) -> Result<(), Error> {
     let setup = link.setup()?.clone();
     let primary = &setup.position.primary;
     let here = setup.role == Role::Primary;
@@ -1261,13 +1281,19 @@ fn project_membership(link: &mut Link, roster: &Membership, own: &Identity) -> R
             ("memberRemovals", "removals"),
             ("wipePreparations", "wipePreparations"),
             ("mergedComputers", "mergedComputers"),
-            ("installerRecoveries", "installerRecoveries"),
         ] {
             if let Some(value) = roster.extra.get(portable) {
                 link.extra.insert(field.into(), value.clone());
             } else {
                 link.extra.shift_remove(field);
             }
+        }
+        let recoveries = crate::installer::recoveries(link, roster);
+        if recoveries.is_empty() {
+            link.extra.shift_remove("installerRecoveries");
+        } else {
+            link.extra
+                .insert("installerRecoveries".into(), Value::Object(recoveries));
         }
     } else {
         let name = roster

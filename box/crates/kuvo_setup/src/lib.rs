@@ -4,6 +4,7 @@ mod actor;
 mod checkpoint;
 mod document;
 mod edits;
+pub mod installer;
 mod preferences;
 mod routes;
 
@@ -18,6 +19,10 @@ use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{0}")]
+    Installer(String),
+    #[error(transparent)]
+    InstallerLayout(#[from] kuvo_store::layout::Error),
     #[error("{action} {path}: {source}")]
     File {
         action: &'static str,
