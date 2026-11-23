@@ -143,6 +143,7 @@ test("the only computer commits a wipe and erases only its old installation", {
     children.push(installer);
     installer.child.stdin.end(invite.json.code + "\n");
     assert.equal((await installer.exited).code, 0, installer.log());
+    assert.equal(fs.existsSync(marker), false, "successful reinstall consumes the former setup's offer");
     const next = startBox({ binary, home, env, relay: newRelay });
     children.push(next);
     const adopted = await request(await next.ready(), "GET", "kuvo/setup");
@@ -150,6 +151,75 @@ test("the only computer commits a wipe and erases only its old installation", {
     assert.equal(adopted.json.you.role, "member");
     assert.notEqual(adopted.json.you.key, key);
     assert.equal(fs.existsSync(local), false);
+  }
+});
+
+test("the installer waits for an authorized wipe before offering reinstall", {
+  skip: process.platform === "win32" && "Windows wipe startup still belongs to 8.1.",
+  timeout: 45000,
+}, async t => {
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const receipts = path.join(env.HOME, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe");
+  const setup = "set_" + Buffer.alloc(16, 38).toString("base64url");
+  const operation = Buffer.alloc(16, 39).toString("base64url");
+  const args = ["install", "--status", "--root", ".kuvo-code"];
+  if (process.platform === "darwin") {
+    const bundle = path.join(root, "Fixture.app");
+    write(path.join(bundle, "Contents", "Info.plist"),
+      '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>run.kuvo.code.wipe-test</string></dict></plist>');
+    args.push("--app", bundle);
+  }
+  const status = async () => {
+    const child = boxCommand(boxBinary(), root, env, { url: "ws://127.0.0.1:1" }, args, { KUVO_HOME: home }, "pipe");
+    let stdout = "";
+    child.child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
+    child.child.stdin.end();
+    assert.equal((await child.exited).code, 0, stdout + child.log());
+    return JSON.parse(stdout);
+  };
+  const link = path.join(home, "run", "link.json");
+  const pending = JSON.stringify({ setup: { id: setup, role: "primary" }, localWipe: { setup, operation } });
+  write(link, pending);
+  write(path.join(home, "run", "off"), "");
+  write(path.join(home, "data", "old-session"), "old work");
+  const before = await status();
+  assert.deepEqual([before.verdict, before.verb, before.offer], ["waits", null, undefined]);
+  assert.equal(fs.readFileSync(link, "utf8"), pending);
+  assert.equal(fs.existsSync(marker), false);
+
+  const { dev, ino } = fs.lstatSync(home, { bigint: true });
+  write(marker, JSON.stringify({ setup, operation, source: `${dev}:${ino}`, phase: "erasing" }), { mode: 0o600 });
+  fs.chmodSync(receipts, 0o700);
+  const old = path.join(receipts, `erase-${operation}`);
+  fs.renameSync(home, old);
+  const replacement = path.join(home, "desktop", "fixture");
+  write(replacement, "new work");
+  const lock = home + "-wipe.lock";
+  write(path.join(lock, `owner-${process.pid}-${"a".repeat(16)}`), "");
+  try {
+    const held = await status();
+    assert.deepEqual([held.verdict, held.verb, held.offer], ["waits", null, undefined]);
+    assert.equal(fs.readFileSync(path.join(old, "data", "old-session"), "utf8"), "old work");
+  } finally {
+    fs.rmSync(lock, { recursive: true });
+  }
+  const replacementStamp = fs.lstatSync(home, { bigint: true });
+  write(marker, JSON.stringify({ setup, operation, source: `${replacementStamp.dev}:${replacementStamp.ino}`, phase: "erasing" }));
+  const mismatched = await status();
+  assert.deepEqual([mismatched.verdict, mismatched.verb, mismatched.offer], ["waits", null, undefined]);
+  assert.equal(fs.readFileSync(path.join(old, "data", "old-session"), "utf8"), "old work");
+  write(marker, JSON.stringify({ setup, operation, source: `${dev}:${ino}`, phase: "erasing" }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const after = await status();
+    assert.deepEqual([after.verdict, after.verb, after.offer, after.wipeReceipt],
+      ["fresh", null, "reinstall-local", { setup, operation }]);
+    assert.equal(fs.existsSync(old), false);
+    assert.equal(fs.readFileSync(replacement, "utf8"), "new work");
+    assert.equal(fs.existsSync(link), false);
   }
 });
 

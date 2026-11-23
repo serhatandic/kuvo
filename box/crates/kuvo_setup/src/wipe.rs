@@ -161,6 +161,132 @@ struct Journal {
     format_version: u8,
 }
 
+#[derive(Serialize)]
+pub struct ReinstallReceipt {
+    setup: String,
+    operation: String,
+}
+
+pub enum InstallState {
+    Pending,
+    Erased(ReinstallReceipt),
+}
+
+impl InstallState {
+    pub fn pending_message(&self) -> Option<&'static str> {
+        match self {
+            Self::Pending => Some("This computer’s wipe hasn’t finished."),
+            Self::Erased(_) => None,
+        }
+    }
+}
+
+fn journal_path(root: &Path) -> io::Result<PathBuf> {
+    Ok(parent(root)?
+        .join(".kuvo-code-removal-receipts")
+        .join("last-setup-wipe"))
+}
+
+fn read_journal(marker: &Path) -> io::Result<Option<Journal>> {
+    if !private(parent(marker)?, true)? || !private(marker, false)? {
+        return Ok(None);
+    }
+    let bytes = fs::read(marker)?;
+    if bytes.len() > 220 {
+        return Err(io::Error::other("Invalid directory wipe receipt"));
+    }
+    let kept: Journal = serde_json::from_slice(&bytes)?;
+    let source = kept
+        .source
+        .as_deref()
+        .and_then(|id| id.split_once(':'))
+        .is_some_and(|(dev, file)| dev.parse::<u64>().is_ok() && file.parse::<u128>().is_ok());
+    if kept.format_version > 1
+        || !valid_removal(&kept.setup, &kept.operation)
+        || kept.phase.is_some() != source
+        || kept.phase.is_some() != kept.source.is_some()
+    {
+        return Err(io::Error::other("Invalid directory wipe receipt"));
+    }
+    Ok(Some(kept))
+}
+
+fn valid_removal(setup: &str, operation: &str) -> bool {
+    setup
+        .strip_prefix("set_")
+        .is_some_and(|part| model::safe_token(part, 22, 22))
+        && model::safe_token(operation, 22, 43)
+}
+
+/// An older link may fence installation before an authenticated erase grant
+/// is available. The hint never authorizes deletion.
+fn pending_hint(records: &Files) -> bool {
+    let Ok(Some(raw)) = records.read::<Value>(LINK) else {
+        return false;
+    };
+    let matches_setup = |kept: &Value| {
+        kept["setup"]
+            .as_str()
+            .zip(kept["operation"].as_str())
+            .is_some_and(|(setup, operation)| {
+                raw["setup"]["id"] == setup && valid_removal(setup, operation)
+            })
+    };
+    let wipe = &raw["localWipe"];
+    match raw["setup"]["role"].as_str() {
+        Some("primary") => matches_setup(wipe) && wipe.get("primary").is_none(),
+        Some("member") => {
+            matches_setup(&raw["removalSource"])
+                || (matches_setup(wipe) && wipe["primary"].is_object())
+        }
+        _ => false,
+    }
+}
+
+pub fn install_state(home: &Path) -> io::Result<Option<InstallState>> {
+    let Some(root) = boundary(home)? else {
+        return Ok(None);
+    };
+    let marker = journal_path(&root)?;
+    let records = Files::new(root.clone());
+    let mut journal = read_journal(&marker)?;
+    if journal.as_ref().is_some_and(|kept| kept.phase.is_some()) || pending_hint(&records) {
+        match finish(&root) {
+            Ok(true) => journal = read_journal(&marker)?,
+            Ok(false) => return Ok(Some(InstallState::Pending)),
+            Err(error) => {
+                eprintln!("finishing the installation's earlier wipe: {error}");
+                return Ok(Some(InstallState::Pending));
+            }
+        }
+    }
+    Ok(journal.map(|kept| {
+        if kept.phase.is_some() {
+            InstallState::Pending
+        } else {
+            InstallState::Erased(ReinstallReceipt {
+                setup: kept.setup,
+                operation: kept.operation,
+            })
+        }
+    }))
+}
+
+pub fn finish_reinstall(home: &Path) -> io::Result<()> {
+    let Some(root) = boundary(home)? else {
+        return Ok(());
+    };
+    let marker = journal_path(&root)?;
+    if read_journal(&marker)?.is_some_and(|kept| kept.phase.is_none()) {
+        let _guard =
+            OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
+        if read_journal(&marker)?.is_some_and(|kept| kept.phase.is_none()) {
+            files::remove_file_synced(&marker)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn pending(home: &Path) -> io::Result<bool> {
     let Some(root) = boundary(home)? else {
         return Ok(false);
@@ -186,38 +312,13 @@ pub fn finish(home: &Path) -> io::Result<bool> {
         return Ok(false);
     };
     let parent = parent(&root)?;
-    let receipts = parent.join(".kuvo-code-removal-receipts");
-    let marker = receipts.join("last-setup-wipe");
+    let marker = journal_path(&root)?;
+    let receipts = marker
+        .parent()
+        .ok_or_else(|| io::Error::other(UNSUPPORTED))?;
     let records = Files::new(root.clone());
     let pending = || pending_link(&records);
-    let read = || -> io::Result<Option<Journal>> {
-        if !private(&receipts, true)? || !private(&marker, false)? {
-            return Ok(None);
-        }
-        let bytes = fs::read(&marker)?;
-        if bytes.len() > 220 {
-            return Err(io::Error::other("Invalid directory wipe receipt"));
-        }
-        let kept: Journal = serde_json::from_slice(&bytes)?;
-        let setup = kept
-            .setup
-            .strip_prefix("set_")
-            .is_some_and(|part| model::safe_token(part, 22, 22));
-        let source = kept
-            .source
-            .as_deref()
-            .and_then(|id| id.split_once(':'))
-            .is_some_and(|(dev, file)| dev.parse::<u64>().is_ok() && file.parse::<u128>().is_ok());
-        if kept.format_version > 1
-            || !setup
-            || !model::safe_token(&kept.operation, 22, 43)
-            || kept.phase.is_some() != source
-            || kept.phase.is_some() != kept.source.is_some()
-        {
-            return Err(io::Error::other("Invalid directory wipe receipt"));
-        }
-        Ok(Some(kept))
-    };
+    let read = || read_journal(&marker);
     let current = read()?;
     if current.as_ref().is_none_or(|kept| kept.phase.is_none()) && pending()?.is_none() {
         return Ok(current.is_some() && !root.exists());
@@ -225,8 +326,8 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     let _boundary = OwnedLock::acquire(&parent.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
     let mut kept = read()?;
     let save = |journal: &Journal| -> io::Result<()> {
-        files::create_private_dirs(&receipts)?;
-        private(&receipts, true)?;
+        files::create_private_dirs(receipts)?;
+        private(receipts, true)?;
         files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent)
     };
     let mut guard = None;

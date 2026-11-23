@@ -26,6 +26,7 @@ use crate::{
     },
     random,
     storage::Files,
+    wipe,
 };
 
 const KIND: ComputerKind = ComputerKind::Machine;
@@ -195,11 +196,24 @@ struct CredentialCopy {
 }
 
 pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
-    join_at(home, name, input, false).await
+    join_and_reinstall(home, name, input, false).await
 }
 
 pub async fn join_ssh(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
-    join_at(home, name, input, true).await
+    join_and_reinstall(home, name, input, true).await
+}
+
+async fn join_and_reinstall(
+    home: &Home,
+    name: String,
+    input: &str,
+    staged: bool,
+) -> Result<Joined, Error> {
+    let joined = join_at(home, name, input, staged).await?;
+    if let Err(error) = wipe::finish_reinstall(home.root()) {
+        eprintln!("clearing the former installation’s wipe receipt: {error}");
+    }
+    Ok(joined)
 }
 
 async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
@@ -229,6 +243,14 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         return Err(refused(
             "Use Merge Setups on the setup this code was made for.",
         ));
+    }
+    let prior = wipe::install_state(home.root()).map_err(|source| Error::File {
+        action: "checking the earlier wipe at",
+        path: home.root().to_owned(),
+        source,
+    })?;
+    if let Some(message) = prior.as_ref().and_then(wipe::InstallState::pending_message) {
+        return Err(refused(message));
     }
     // Opening for enrollment never starts a move. A fresh applicant can
     // initialize its layout here, after the code is validated.
@@ -287,15 +309,20 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     if !already_joined {
         link.name
             .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
-        if let Err(problem) = check_join(&files, &link, &code, &id, claim.as_ref()) {
-            if !claim
-                .as_ref()
-                .is_some_and(|claim| claim.invite == id && !claim.adopted)
-                || link
+        let pending_claim = claim.as_ref().filter(|held| {
+            held.invite == id
+                && !held.adopted
+                && link
                     .setup
                     .as_ref()
-                    .is_some_and(|setup| setup.role == Role::Member)
-            {
+                    .is_none_or(|setup| setup.role != Role::Member)
+        });
+        if pending_claim.is_some_and(|held| {
+            held.cancel_pending || (held.recovery.is_some() && held.until <= lease::wall())
+        }) {
+            cancellation = Some(refused("This computer could not join."));
+        } else if let Err(problem) = check_join(&files, &link, &code, &id, claim.as_ref()) {
+            if pending_claim.is_none() {
                 return Err(problem);
             }
             cancellation = Some(problem);

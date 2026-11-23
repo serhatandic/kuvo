@@ -36,6 +36,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
 - Uninstall tells a running main computer with members to hand over its role before it can be removed.
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
+- The installer resumes an authorized wipe and offers reinstall after erasing the previous installation.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server reads saved move results and shows moves reported by your other computers.

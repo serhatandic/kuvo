@@ -528,6 +528,20 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    let wipe = kuvo_setup::wipe::install_state(home.root())?;
+    if let Some(message) = wipe
+        .as_ref()
+        .and_then(kuvo_setup::wipe::InstallState::pending_message)
+    {
+        println!(
+            "{}",
+            serde_json::json!({
+                "verdict": "waits", "verb": null, "status": kuvo_move::rehome_status(&home),
+                "message": message
+            })
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, None)?;
     if judge.verdict == kuvo_move::install::Verdict::Stuck
         && judge.status["step"].is_null()
@@ -539,7 +553,13 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         );
         return Ok(ExitCode::FAILURE);
     }
+    let fresh = judge.verdict == kuvo_move::install::Verdict::Fresh;
     let mut reply = serde_json::to_value(judge)?;
+    if fresh && let Some(kuvo_setup::wipe::InstallState::Erased(receipt)) = wipe {
+        reply["verb"] = serde_json::Value::Null;
+        reply["offer"] = "reinstall-local".into();
+        reply["wipeReceipt"] = serde_json::to_value(receipt)?;
+    }
     if reply["verdict"] == "two" {
         reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
     }
