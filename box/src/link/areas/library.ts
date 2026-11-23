@@ -2,7 +2,13 @@
 // each computer's box keeps for itself (its services, beside the artifact record), gathered here so
 // a client asks one box. This box's part comes from its services; each other computer's by mail (an
 // act in the `library` area), labelled with the computer it's on. A computer that's away, or whose
-// Kuvo Code is older and has no Library, is listed as such, and its part waits.
+// Kuvo Code is older and has no Library, is listed as such, and its part waits. Each other
+// computer's part as last read is kept (`run/library/peers/<key>.json`), so the Library lists it at
+// once, as of when it was seen, while that computer is asked or away (none only the very first time).
+
+import fs from "node:fs";
+import path from "node:path";
+import { writePrivate } from "../../shared/files";
 
 import { readServices } from "../../shared/box-services";
 import type { Target } from "../../shared/records";
@@ -10,7 +16,7 @@ import { isObject } from "../../shared/json";
 import { IS_MAC, RUN } from "../home";
 import { ownComputerName } from "../computer-name";
 import { computerName } from "../peers/computer-name";
-import { ownKey, peersOf, type Peer } from "../peers/known";
+import { KEY, ownKey, peersOf, removedBoxes, type Peer } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { offRelay } from "../letters/leave";
 import { readLink, type LinkState } from "../state";
@@ -37,8 +43,46 @@ export interface Part {
 /** Where a computer's part stands: there, away, too old for the Library, or it couldn't be read. */
 export type PartState = { state: "here" | "there" } | { state: "away" | "older" | "failed"; message: string };
 
-/** One computer's part, as it was asked for. */
-export type Asked = { computer: Computer & { here?: true }; part?: Part } & PartState;
+/** One computer's part, as it was asked for; `seen` (ms): it's the copy last read then. */
+export type Asked = { computer: Computer & { here?: true }; part?: Part; seen?: number } & PartState;
+
+// MARK: Your other computers' parts as last read
+
+/** Where your other computers' parts are kept as last read, one file each. */
+export const LIBRARY_PEERS = path.join(RUN, "library", "peers");
+/** How many lists a computer's copy keeps (the latest asked; a search with words is never kept). */
+const MOST_KEPT = 8;
+type Kept = { query: string; seen: number; part: Part };
+const keptFile = (key: string) => path.join(LIBRARY_PEERS, `${key}.json`);
+
+function keptOf(key: string): Kept[] {
+  if (!KEY.test(key)) return [];
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(keptFile(key), "utf8"));
+    return isObject(value) && Array.isArray(value.lists)
+      ? value.lists.filter((each): each is Kept => isObject(each) && typeof each.query === "string" && typeof each.seen === "number" && isPart(each.part))
+      : [];
+  } catch { return []; }
+}
+
+/** A computer's part for `query` as last read, with when. */
+export function keptPart(key: string, query: string): Kept | undefined {
+  return keptOf(key).find(each => each.query === query);
+}
+
+function keep(key: string, query: string, part: Part, seen: number): void {
+  if (!KEY.test(key) || new URLSearchParams(query).has("q")) return;
+  const lists = [{ query, seen, part }, ...keptOf(key).filter(each => each.query !== query)].slice(0, MOST_KEPT);
+  try { writePrivate(keptFile(key), JSON.stringify({ lists })); } catch {}
+}
+
+/** Forget the copies of computers removed from your setup. */
+function forgetRemoved(link = readLink()): void {
+  if (!link) return;
+  for (const key of removedBoxes(link)) if (KEY.test(key)) try { fs.rmSync(keptFile(key), { force: true }); } catch {}
+}
+
+const lastSeen = (name: string) => `${name} isn’t answering now, so its part of the Library is as it was when last seen.`;
 
 const servicesAway = "This computer’s Library can’t be read right now. Try again in a moment.";
 
@@ -96,16 +140,43 @@ function own(link: LinkState | null): Computer & { here: true } {
 }
 
 /** Your other computers' parts for `query`, each asked at once (one away or too old: said, not asked). */
-export async function askPeers(query: string, signal?: AbortSignal | null, { peers = peersOf(readLink()), ask = askByMail, has = (key: string) => takesForwarded(key, LIBRARY_FEATURE), away = (key: string) => awaySince(key) !== null || offRelay() }: { peers?: Peer[]; ask?: AskPeer; has?: (key: string) => boolean; away?: (key: string) => boolean } = {}): Promise<Asked[]> {
+/** Whom `askPeers` asks, and how (a test's own). */
+export type Asking = { peers?: Peer[]; ask?: AskPeer; has?: (key: string) => boolean; away?: (key: string) => boolean; now?: () => number };
+
+const peersAsking = ({ peers = peersOf(readLink()), ask = askByMail, has = (key: string) => takesForwarded(key, LIBRARY_FEATURE), away = (key: string) => awaySince(key) !== null || offRelay(), now = Date.now }: Asking) => ({ peers, ask, has, away, now });
+
+/** Your other computers' parts for `query`, each asked at once (one away or too old: said, not
+ * asked). One away or not answering is its part as last read, with when (`seen`), where there is one. */
+export async function askPeers(query: string, signal?: AbortSignal | null, asking: Asking = {}): Promise<Asked[]> {
+  const { peers, ask, has, away, now } = peersAsking(asking);
+  if (!asking.peers) forgetRemoved();
   return Promise.all(peers.map(async (peer): Promise<Asked> => {
     const computer = computerOf(peer);
     if (!has(peer.key)) return { computer, state: "older", message: `${computer.name} needs a newer Kuvo Code to show its Library here.` };
-    if (away(peer.key)) return { computer, state: "away", message: `${computer.name} isn’t answering now, so its part of the Library isn’t shown.` };
+    const asKept = (state: "away" | "failed", message: string): Asked => {
+      const kept = keptPart(peer.key, query);
+      return kept ? { computer, state, message: lastSeen(computer.name), part: kept.part, seen: kept.seen } : { computer, state, message };
+    };
+    if (away(peer.key)) return asKept("away", `${computer.name} isn’t answering now, so its part of the Library isn’t shown.`);
     const answer = await ask(computer, { area: "library", method: "GET", item: "list", body: { query } }, signal);
-    if ("refused" in answer) return { computer, state: answer.status === 409 ? "older" : "away", message: answer.refused };
-    if (answer.status !== 200 || !isPart(answer.value)) return { computer, state: "failed", message: `${computer.name}’s Library couldn’t be read. Try again in a moment.` };
+    if ("refused" in answer) return answer.status === 409 ? { computer, state: "older", message: answer.refused } : asKept("away", answer.refused);
+    if (answer.status !== 200 || !isPart(answer.value)) return asKept("failed", `${computer.name}’s Library couldn’t be read. Try again in a moment.`);
+    keep(peer.key, query, answer.value, now());
     return { computer, state: "there", part: answer.value };
   }));
+}
+
+/** Your other computers' parts for `query` before they're asked: each as last read, with when
+ * (`seen`); one away, said so; one too old, said so; one never read, left out until it answers. */
+export function keptPeers(query: string, asking: Asking = {}): Asked[] {
+  const { peers, has, away } = peersAsking(asking);
+  return peers.flatMap((peer): Asked[] => {
+    const computer = computerOf(peer);
+    if (!has(peer.key)) return [{ computer, state: "older", message: `${computer.name} needs a newer Kuvo Code to show its Library here.` }];
+    const kept = keptPart(peer.key, query);
+    if (away(peer.key)) return [kept ? { computer, state: "away", message: lastSeen(computer.name), part: kept.part, seen: kept.seen } : { computer, state: "away", message: `${computer.name} isn’t answering now, so its part of the Library isn’t shown.` }];
+    return kept ? [{ computer, state: "there", part: kept.part, seen: kept.seen }] : [];
+  });
 }
 
 function isPart(value: unknown): value is Part {
@@ -217,12 +288,13 @@ export async function* libraryRoute(context: RouteContext): AsyncGenerator<Answe
  * `kuvo/library/events`: the Library now, then again each time this computer's part changes (its
  * services follow it) or, asked again every `PEERS_AGAIN`, another computer's does.
  */
-async function* followLibrary(query: string, signal?: AbortSignal | null): AsyncGenerator<AnswerPiece> {
+export async function* followLibrary(query: string, signal?: AbortSignal | null, asking: Asking = {}): AsyncGenerator<AnswerPiece> {
   const stop = new AbortController();
   const ended = () => stop.abort();
   signal?.addEventListener("abort", ended, { once: true });
   let here: Asked | undefined;
-  let there: Asked[] | undefined;
+  // (Your other computers' parts as last read, at once, while they're asked.)
+  let there: Asked[] | undefined = keptPeers(query, asking);
   // (Told before it's waited for: not lost.)
   let dirty = false;
   let changed: (() => void) | undefined;
@@ -256,7 +328,7 @@ async function* followLibrary(query: string, signal?: AbortSignal | null): Async
   // Your other computers' parts, asked again now and then.
   void (async () => {
     while (!stop.signal.aborted) {
-      there = await askPeers(query, stop.signal);
+      there = await askPeers(query, stop.signal, asking);
       tell();
       await new Promise<void>(done => {
         const timer = setTimeout(done, PEERS_AGAIN);

@@ -197,6 +197,11 @@ impl SideChatView {
         &self.field
     }
 
+    /// Where its transcript is scrolled.
+    pub fn scroll(&self) -> &ScrollHandle {
+        &self.scroll
+    }
+
     /// Its side thread, as the box last said it.
     pub fn thread(&self) -> Option<&SideThread> {
         let id = self.thread.as_deref()?;
@@ -304,6 +309,11 @@ impl SideChatView {
             };
             return div().flex_1().min_h_0().flex().flex_col().pb(inset).child(super::changes::empty(title, detail, None, cx)).into_any_element();
         };
+        // At its end as last laid out: kept there as what's below grows (an answer coming in, the
+        // composer's height as it's measured), as the conversation's list is. Read up: left there.
+        if self.scroll.offset().y <= -self.scroll.max_offset().y + px(1.) {
+            self.scroll.scroll_to_bottom();
+        }
         div()
             .id("side-chat-transcript")
             .debug_selector(|| "side-chat-transcript".into())

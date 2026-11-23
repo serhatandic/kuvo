@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
+- The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.
 - A long command an agent runs and waits on now shows in a conversation's Processes (formerly Background processes) while it runs, not only inline: click it to see what it's printing, and Stop it there. For Codex, Claude Code, Cursor, Grok and Antigravity, Stop on such a command stops the agent's turn, as it does in their own apps.
 - The Marketplace is in the desktop app, on the rail (⌃8): connect apps with their own logos and add your own MCP servers, add ready-made agents as bots on any of your computers (their routines start off until you turn them on), and browse, preview and install skills, from a GitHub link or a folder too. It's free, and what you add is there on all your computers.
 - Settings › Integrations and Settings › Skills are gone: everything they did is in the Marketplace, including turning a skill off on one computer, Recently Deleted and Other Places.

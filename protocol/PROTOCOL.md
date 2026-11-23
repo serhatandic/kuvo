@@ -243,7 +243,7 @@ routes.
 | `kuvo/setup/sessions/events` | `{sessions, projects}`. Sessions have `id` and the usual session-list `facts`. Projects have `directory` and the usual listed project `facts`. Project paths and pages belong to the project's computer. |
 | `kuvo/setup/waiting/events` | `{waiting}`. Each row gives `session`, `since` (ms), optional `title` and `asks: {kind, summary}` for the conversation's oldest ask. Its complete cards and replies use the owning box's `kuvo/sessions/<id>/asks` routes. |
 | `kuvo/setup/queues/events` | `{queues}`. Each row gives `session` and its `queue`, the same held or paused queue overview as `kuvo/sessions/queues/events`. |
-| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases; a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
+| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`; just after its box starts, before it has read its own catalog, it's the one it saved last (`run/lists/runs-on.json`), with `pending: true`, and the one read follows on the same stream (none only the very first time). Another computer's is the copy it last sent. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases; a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
 
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
 public box key in `computer.id` to address its routes. Rows of the box answering have `here: true`. The local box uses `here` while it has
@@ -10608,14 +10608,18 @@ seconds since 1970.
 
 - `GET kuvo/library[?source=all|you|<bot>][&kind=image|document|page|other][&q=<words>][&hidden=1]`:
   `{items, more, sources: {bots: [{id, name, look?, computer}], you}, computers: [{key, name, here?, state,
-  message?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
+  message?, seen?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
   ones; a search finds them). A bot's `look` is as `kuvo/bots` gives it, to draw it by. `q` matches words in an item's name, its bot's name and its computer's.
   The box asks each of your other computers for its part by mail (an act in the `library` area,
   `GET list {query}`) and labels each item with the computer it's on: `state` is `here` (this one),
   `there`, `away` (not answering now), `older` (its Kuvo Code has no Library yet) or `failed`, with a
-  `message` to show. A client shows the computer only when there's more than one.
+  `message` to show. A client shows the computer only when there's more than one. The box keeps each
+  other computer's part as last read (`run/library/peers/<key>.json`, the latest lists asked, never a
+  search with words): one away or not answering is listed with that part and `seen` (ms, when it was
+  read), its `message` saying it's as last seen, and none only the very first time.
 - `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
-  part changes or, asked again every 20 seconds, another's does.
+  part changes or, asked again every 20 seconds, another's does. Its first line doesn't wait for your
+  other computers: each is its part as last read (`state: there` with `seen`), until it answers.
 - `GET kuvo/library/<id>[?computer=<key>]`: the item; `…/file`: its bytes, with its type (the record's
   copy once the file is gone; `410` when there's neither); `…/thumbnail`: a PNG, or the picture as it
   is (`404` for none); `POST …/hide {hidden}`: removed from the Library (`hidden: false` puts it back),

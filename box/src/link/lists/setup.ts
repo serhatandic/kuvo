@@ -1,10 +1,15 @@
 // Setup-wide line topics. Every box publishes only its own rows and can draw the whole setup from
 // its peers' last copies. A peer's settings or a row's action still go to its box.
 
+import fs from "node:fs";
 import path from "node:path";
 import { botsWithNow } from "../areas/bots";
 import type { Infer } from "../../shared/shape";
-import type { START_CATALOG } from "../../shared/routes/sessions";
+import { START_CATALOG } from "../../shared/routes/sessions";
+import { writePrivate } from "../../shared/files";
+import { parsed } from "../../shared/json";
+import { fitsShape } from "../../shared/shape";
+import { RUN } from "../home";
 import { offeredAnswer } from "../areas/models-offered";
 import { bridgeTarget, readEngineFile } from "../engine/client";
 import { queueFollowers, shownQueues } from "../engine/queue";
@@ -29,10 +34,39 @@ type Catalog = Infer<typeof START_CATALOG>;
 let catalog: Catalog | undefined;
 let catalogAt = -Infinity;
 let readingCatalog: Promise<Catalog> | undefined;
+/** Whether this process has read its own catalog yet (before: the copy it saved last, `pending`). */
+let catalogRead = false;
+const catalogFollowers = new Set<() => void>();
+
+/** This computer's catalog as last read, kept so Runs on lists it at once after the box starts
+ * again (only none the very first time). */
+export const CATALOG_FILE = path.join(RUN, "lists", "runs-on.json");
+let catalogSaved = "";
+
+function savedCatalog(): Catalog | undefined {
+  try {
+    const text = fs.readFileSync(CATALOG_FILE, "utf8");
+    const value = parsed(text);
+    if (!fitsShape(START_CATALOG, value)) return undefined;
+    catalogSaved = text;
+    return value as Catalog;
+  } catch { return undefined; }
+}
+
+function saveCatalog(value: Catalog): void {
+  const text = JSON.stringify(value);
+  if (text === catalogSaved) return;
+  try {
+    writePrivate(CATALOG_FILE, text);
+    catalogSaved = text;
+  } catch {}
+}
 
 function startCatalog(readers: Readers): Promise<Catalog> {
   const now = performance.now();
   if (catalog && now - catalogAt < 60_000) return Promise.resolve(catalog);
+  // (Just started: the copy saved last is what a side that can't be read yet keeps.)
+  if (!catalogRead) catalog ??= savedCatalog();
   readingCatalog ??= (async () => {
     let engine = null;
     try { engine = readers.readEngine(); } catch {}
@@ -55,7 +89,13 @@ function startCatalog(readers: Readers): Promise<Catalog> {
         agents.set(provider.account.agent, { id: provider.account.agent, name: provider.account.agentName });
     }
     catalogAt = now;
-    return catalog = { offered, agents: [...agents.values()] };
+    catalog = { offered, agents: [...agents.values()] };
+    if (known.engine || known.agents) saveCatalog(catalog);
+    if (!catalogRead) {
+      catalogRead = true;
+      for (const tell of [...catalogFollowers]) try { tell(); } catch {}
+    }
+    return catalog;
   })().finally(() => { readingCatalog = undefined; });
   return readingCatalog;
 }
@@ -130,7 +170,13 @@ async function merged(topic: Topic, context: RouteContext) {
   const computer = listComputer(link);
   const local: { computer: typeof computer; away: boolean; lastSeen?: number; updating?: true; here?: true } = { computer, away: false, here: true };
   if (topic === "runs-on") {
-    const [peers, here] = await Promise.all([peerSetupLists(link), startCatalog(context)]);
+    // Just started, its own catalog not read yet: the copy it saved last, at once, said to be as
+    // last read (`pending`). The live one follows on the same stream.
+    if (!catalogRead) catalog ??= savedCatalog();
+    const saved = !catalogRead && catalog ? catalog : undefined;
+    const reading = startCatalog(context);
+    if (saved) reading.catch(() => {});
+    const [peers, here] = await Promise.all([peerSetupLists(link), saved ? { ...saved, pending: true as const } : reading]);
     return {
       // (One that's away stays listed, said to be away since it was last seen: never picked.)
       computers: [{ computer, here: true, ...here }, ...peers.map(({ saved, origin }) => ({
@@ -208,7 +254,7 @@ export async function* setupListsRoute(context: RouteContext, match: RegExpMatch
     first = undefined;
     return initial ?? merged(topic, context);
   }, tell => {
-    const followers = [listFollowers, queueFollowers, peerListFollowers];
+    const followers = [listFollowers, queueFollowers, peerListFollowers, catalogFollowers];
     for (const set of followers) set.add(tell);
     return () => { for (const set of followers) set.delete(tell); };
   }, signal, { every: 3_000 });
