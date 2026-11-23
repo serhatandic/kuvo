@@ -65,6 +65,7 @@ pub struct View {
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
+    backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
 }
@@ -73,6 +74,36 @@ impl View {
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
+    }
+
+    pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
+        self.announced
+            .get(&encode(key))
+            .and_then(|announcement| announcement.features.as_ref())
+            .is_some_and(|features| features.iter().any(|name| name == feature))
+    }
+
+    pub fn announcing(&self, scope: RecordScope, id: &str) -> Vec<ComputerKey> {
+        self.roster
+            .members
+            .iter()
+            .filter(|member| {
+                self.announced
+                    .get(&encode(&member.key))
+                    .is_some_and(|copy| copy.announces(scope, id))
+            })
+            .map(|member| member.key)
+            .collect()
+    }
+
+    pub fn announced_sessions(&self) -> Vec<String> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|member| self.announced.get(&encode(&member.key)))
+            .flat_map(|copy| copy.list.iter().map(|agent| agent.session.clone()))
+            .filter(|session| session.starts_with("ses_"))
+            .collect()
     }
 
     pub fn standing(&self, key: ComputerKey, now: Millis) -> Standing {
@@ -100,6 +131,9 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        if self.backup_receiver {
+            features.push("box.backups.relay");
+        }
         if self.work_calls {
             features.push(crate::calls::FEATURE);
         }
@@ -248,6 +282,7 @@ enum Change {
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
+    BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
 
@@ -331,6 +366,10 @@ impl ResidentPeers {
         Ok(handle)
     }
 
+    pub async fn advertise_backup_receiver(&self) {
+        let _ = self.changes.send(Change::BackupReceiver).await;
+    }
+
     pub fn reader(&self) -> Reader {
         self.reader.clone()
     }
@@ -389,6 +428,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
+            backup_receiver: false,
             endpoint,
             system: system_name(),
         };
@@ -434,6 +474,10 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     },
+                    Some(Change::BackupReceiver) => {
+                        self.view.backup_receiver = true;
+                        publish.send_replace(Arc::new(self.view.clone()));
+                    }
                     Some(Change::SetupRosters(mut rosters)) => {
                         if let Some(roster) = rosters.borrow_and_update().clone() {
                             self.view.roster = roster;

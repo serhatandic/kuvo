@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box can verify encrypted backups on disk, over SSH, or on another computer through the relay. Restore keeps recovered pending work paused for review.
+
 - A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.
 - Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.
