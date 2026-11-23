@@ -1,81 +1,16 @@
 use super::*;
-use std::{
-    ffi::c_void,
-    mem::{MaybeUninit, size_of},
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    ptr::null_mut,
-};
+pub(super) use crate::windows::user_sid;
+use crate::windows::{LocalAllocation, SecurityDescriptor, sid_text};
+use std::{mem::size_of, os::windows::io::AsRawHandle, ptr::null_mut};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
 use windows_sys::Win32::{
-    Foundation::{HANDLE, LocalFree},
+    Foundation::HANDLE,
     Security::{
-        Authorization::{
-            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
-        },
-        GetTokenInformation, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT},
+        OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
     },
     Storage::FileSystem::SECURITY_IDENTIFICATION,
-    System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
-
-struct LocalAllocation(*mut c_void);
-
-impl Drop for LocalAllocation {
-    fn drop(&mut self) {
-        // SAFETY: the pointer is from a Win32 LocalAlloc-based conversion.
-        unsafe { LocalFree(self.0) };
-    }
-}
-
-pub(super) fn user_sid() -> io::Result<String> {
-    let mut token = null_mut();
-    // SAFETY: token is a writable handle output, and the process pseudohandle is valid.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: successful OpenProcessToken returned a new owned handle.
-    let token = unsafe { OwnedHandle::from_raw_handle(token) };
-    let mut size = 0;
-    // SAFETY: no buffer supplied, asking only for its size.
-    unsafe { GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut size) };
-    if size < size_of::<TOKEN_USER>() as u32 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut buffer =
-        vec![MaybeUninit::<usize>::uninit(); (size as usize).div_ceil(size_of::<usize>())];
-    // SAFETY: aligned buffer has at least size bytes of writable storage.
-    if unsafe {
-        GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            size,
-            &mut size,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: success initialized TOKEN_USER with a valid SID within the live buffer.
-    unsafe { sid_text((*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid) }
-}
-
-/// The caller owns the buffer that contains this SID for the duration of the call.
-unsafe fn sid_text(sid: PSID) -> io::Result<String> {
-    let mut text = null_mut();
-    // SAFETY: the caller supplies a valid SID and text is a writable output pointer.
-    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let _allocation = LocalAllocation(text.cast());
-    // SAFETY: the conversion returned a NUL-terminated string in a live allocation.
-    unsafe {
-        let length = (0..).find(|i| text.add(*i).read() == 0).unwrap();
-        String::from_utf16(std::slice::from_raw_parts(text, length)).map_err(io::Error::other)
-    }
-}
 
 fn owner_sid(pipe: HANDLE) -> io::Result<String> {
     let mut owner = null_mut();
@@ -109,27 +44,10 @@ fn owner_sid(pipe: HANDLE) -> io::Result<String> {
 
 fn server(endpoint: &Endpoint, first: bool) -> io::Result<NamedPipeServer> {
     let sid = &endpoint.sid;
-    let sddl: Vec<_> = format!("O:{sid}D:P(A;;GA;;;{sid})")
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let mut descriptor = null_mut();
-    // SAFETY: the SDDL is NUL-terminated and descriptor is a writable output pointer.
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let _allocation = LocalAllocation(descriptor);
+    let descriptor = SecurityDescriptor::parse(&format!("O:{sid}D:P(A;;GA;;;{sid})"))?;
     let mut security = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
+        lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
     // SAFETY: the descriptor and SECURITY_ATTRIBUTES live through CreateNamedPipeW.
