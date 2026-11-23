@@ -241,18 +241,13 @@ impl Owner {
         }
     }
 
-    pub(super) async fn receive(&mut self, event: relay::Event) -> Result<(), Error> {
+    pub(super) async fn receive(&mut self, event: relay::SetupEvent) -> Result<(), Error> {
         match event {
-            relay::Event::Connected(_) => {
+            relay::SetupEvent::Connected => {
                 self.next = Instant::now();
                 self.publish(true).await?;
             }
-            relay::Event::Session(kuvo_peers::session::Event::Accepted(id, _)) => {
-                if let Some(relay) = &self.network {
-                    let _ = relay.sender.close(id).await;
-                }
-            }
-            relay::Event::Mail { key, envelope, .. } => {
+            relay::SetupEvent::Mail { key, envelope } => {
                 let from = encode(&key);
                 if !self.roster()?.boxes.iter().any(|peer| peer.key == from) {
                     return Ok(());
@@ -274,7 +269,6 @@ impl Owner {
                     self.receive_edit_receipt(&from, receipt)?;
                 }
             }
-            _ => {}
         }
         Ok(())
     }

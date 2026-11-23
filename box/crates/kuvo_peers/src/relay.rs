@@ -63,6 +63,41 @@ pub enum Event {
     },
 }
 
+/// The subset of authenticated relay events consumed by setup authority.
+pub enum SetupEvent {
+    Connected,
+    Mail { key: [u8; 32], envelope: Envelope },
+}
+
+impl Event {
+    pub fn for_setup(&self) -> Option<SetupEvent> {
+        match self {
+            Self::Connected(_) => Some(SetupEvent::Connected),
+            Self::Mail { key, envelope, .. }
+                if [
+                    "docs",
+                    "setupAuthority",
+                    "scopedOfflineEdit",
+                    "offlineEditReceipt",
+                ]
+                .iter()
+                .any(|field| envelope.0.contains_key(*field)) =>
+            {
+                Some(SetupEvent::Mail {
+                    key: *key,
+                    envelope: envelope.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+pub struct SetupLink {
+    pub sender: Sender,
+    pub events: mpsc::Receiver<SetupEvent>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("relay connection is offline")]

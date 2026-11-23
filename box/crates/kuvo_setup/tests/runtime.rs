@@ -18,8 +18,10 @@ fn json_file(home: &Path, name: &str) -> Value {
 async fn a_machine_recovers_its_signed_identity_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("box");
-    let runtime = SetupRuntime::start(&home, "Studio".into(), false, None)
+    let runtime = SetupRuntime::prepare(&home, "Studio".into(), false, None)
         .await
+        .unwrap()
+        .start(None)
         .unwrap();
     let link = json_file(&home, "run/link.json");
     let identity = link["setup"]["primary"].as_str().unwrap();
@@ -44,8 +46,10 @@ async fn a_machine_recovers_its_signed_identity_after_restart() {
     assert_eq!(card["computers"], 1);
     assert_eq!(card["primary"]["name"], "Studio");
     drop(runtime);
-    let reopened = SetupRuntime::start(&home, "Changed system name".into(), false, None)
+    let reopened = SetupRuntime::prepare(&home, "Changed system name".into(), false, None)
         .await
+        .unwrap()
+        .start(None)
         .unwrap();
     assert!(reopened.handle().identity(identity).is_ok());
     assert_eq!(json_file(&home, "run/link.json"), link);
@@ -57,8 +61,10 @@ async fn a_reserved_account_waits_for_ssh_enrollment() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("box");
     fs::write(root.path().join(".kuvo-code-adding"), []).unwrap();
-    let runtime = SetupRuntime::start(&home, "Reserved".into(), false, None)
+    let runtime = SetupRuntime::prepare(&home, "Reserved".into(), false, None)
         .await
+        .unwrap()
+        .start(None)
         .unwrap();
     assert_eq!(
         runtime.handle().identity("another computer"),
@@ -87,7 +93,7 @@ async fn an_unconverted_setup_is_refused_before_startup_changes_it() {
         serde_json::to_vec(&link).unwrap(),
     )
     .unwrap();
-    let result = SetupRuntime::start(&home, "Old setup".into(), false, None).await;
+    let result = SetupRuntime::prepare(&home, "Old setup".into(), false, None).await;
     assert!(matches!(result, Err(Error::Version("unconverted setup"))));
     assert_eq!(json_file(&home, "run/link.json"), link);
     assert!(!home.join("run/setup-card.json").exists());

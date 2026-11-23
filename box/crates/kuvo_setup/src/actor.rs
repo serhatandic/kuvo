@@ -126,12 +126,12 @@ impl Response {
 }
 
 impl SetupRuntime {
-    pub async fn start(
+    pub async fn prepare(
         home: &Path,
         name: String,
         mac: bool,
         relay: Option<String>,
-    ) -> Result<Self, Error> {
+    ) -> Result<PreparedSetup, Error> {
         let files = Files::new(home.to_owned());
         let kind = if mac {
             ComputerKind::Mac
@@ -148,7 +148,7 @@ impl SetupRuntime {
         } else {
             None
         };
-        let (mut link, identity) = tokio::task::spawn_blocking({
+        let (link, identity) = tokio::task::spawn_blocking({
             let (home, files) = (home.to_owned(), files.clone());
             move || open(&home, &files, &name, kind, relay, overlay)
         })
@@ -156,12 +156,49 @@ impl SetupRuntime {
         .map_err(|_| Error::Invalid("setup startup task"))??;
         let lease = lease::Client::new(&files, &link, test_clock)?;
         let welcomed = read_welcome(&files)?;
-        let network = identity
+        Ok(PreparedSetup {
+            files,
+            link,
+            identity,
+            kind,
+            lease,
+            welcomed,
+        })
+    }
+
+    pub fn handle(&self) -> SetupHandle {
+        self.handle.clone()
+    }
+}
+
+pub struct PreparedSetup {
+    files: Files,
+    link: Link,
+    identity: Option<Identity>,
+    kind: ComputerKind,
+    lease: lease::Client,
+    welcomed: bool,
+}
+
+impl PreparedSetup {
+    pub fn relay_config(&self) -> Result<Option<relay::Config>, Error> {
+        self.identity
             .as_ref()
-            .zip(link.relay.as_ref())
-            .filter(|_| link.setup().is_ok())
-            .map(|(own, url)| start_relay(&link, own, url, kind))
-            .transpose()?;
+            .zip(self.link.relay.as_ref())
+            .filter(|_| self.link.setup().is_ok())
+            .map(|(own, url)| relay_config(&self.link, own, url, self.kind))
+            .transpose()
+    }
+
+    pub fn start(self, network: Option<relay::SetupLink>) -> Result<SetupRuntime, Error> {
+        let Self {
+            files,
+            mut link,
+            identity,
+            kind,
+            lease,
+            welcomed,
+        } = self;
         let (tx, rx) = mpsc::channel(32);
         let view = make_view(&files, &link, identity.as_ref(), &lease, kind, welcomed)?;
         let (views, view_rx) = watch::channel(view);
@@ -189,17 +226,13 @@ impl SetupRuntime {
         };
         actor.write_card()?;
         let task = tokio::spawn(actor.run());
-        Ok(Self {
+        Ok(SetupRuntime {
             handle: SetupHandle {
                 inbox: tx,
                 views: view_rx,
             },
             task,
         })
-    }
-
-    pub fn handle(&self) -> SetupHandle {
-        self.handle.clone()
     }
 }
 
@@ -375,19 +408,19 @@ fn new_setup(position: Position, sign: String, role: Role) -> Setup {
     }
 }
 
-fn start_relay(
+fn relay_config(
     link: &Link,
     identity: &Identity,
     url: &str,
     kind: ComputerKind,
-) -> Result<relay::Relay, Error> {
+) -> Result<relay::Config, Error> {
     let roster = link.member_list()?;
     let grants = if link.devices_disabled {
         HashMap::new()
     } else {
         link.grants(&roster, &identity.public)
     };
-    Ok(relay::Relay::start(relay::Config {
+    Ok(relay::Config {
         url: url.into(),
         secret: identity.secret,
         key: identity.key,
@@ -406,7 +439,7 @@ fn start_relay(
             app: env!("CARGO_PKG_VERSION").into(),
             engine: None,
         },
-    }))
+    })
 }
 
 fn read_welcome(files: &Files) -> Result<bool, Error> {
@@ -538,7 +571,7 @@ struct Owner {
     kind: ComputerKind,
     lease: lease::Client,
     welcomed: bool,
-    network: Option<relay::Relay>,
+    network: Option<relay::SetupLink>,
     rx: mpsc::Receiver<Request>,
     views: watch::Sender<View>,
     exports: Vec<(Kind, documents::Envelope)>,

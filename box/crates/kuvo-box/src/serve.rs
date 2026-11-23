@@ -1,6 +1,7 @@
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
+use kuvo_peers::relay::{Relay, SetupLink};
 use kuvo_protocol::{
     gate::compatibility,
     json::{Null, Nullable},
@@ -29,7 +30,27 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         (home == Path::new(&account).join(".kuvo-code"))
             .then(|| "wss://kuvolink.porigam.com.tr".into())
     });
-    let setup = kuvo_setup::SetupRuntime::start(home, name.clone(), mac, relay).await?;
+    let prepared = kuvo_setup::SetupRuntime::prepare(home, name.clone(), mac, relay).await?;
+    let mut relay_feed = None;
+    let network = prepared.relay_config()?.map(|config| {
+        let mut relay = Relay::start(config);
+        let (events, receive) = tokio::sync::mpsc::channel(64);
+        let sender = relay.sender.clone();
+        relay_feed = Some(tokio::spawn(async move {
+            while let Some(event) = relay.events.recv().await {
+                if let Some(event) = event.for_setup()
+                    && events.send(event).await.is_err()
+                {
+                    return;
+                }
+            }
+        }));
+        SetupLink {
+            sender,
+            events: receive,
+        }
+    });
+    let setup = prepared.start(network)?;
     let info = info(home, &name, mac)?;
     let mut routes = Registry::new();
     engine.register(&mut routes);
@@ -52,9 +73,13 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
     let dispatcher = routes.build(LineTiming::default());
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
-    resident
+    let result = resident
         .serve(dispatcher, Arc::new(setup.handle()), super::shutdown())
-        .await?;
+        .await;
+    if let Some(task) = relay_feed {
+        task.abort();
+    }
+    result?;
     Ok(())
 }
 

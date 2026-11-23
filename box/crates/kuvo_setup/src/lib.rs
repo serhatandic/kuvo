@@ -60,5 +60,5 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
     Ok(bytes)
 }
 
-pub use actor::{SetupHandle, SetupRuntime};
+pub use actor::{PreparedSetup, SetupHandle, SetupRuntime};
 pub use model::{Receipt, SharedKind};

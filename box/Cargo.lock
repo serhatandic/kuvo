@@ -892,6 +892,7 @@ dependencies = [
  "hostname",
  "http",
  "kuvo_engine",
+ "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
  "kuvo_setup",
