@@ -1,6 +1,7 @@
 //! The resident's on-demand OpenCode and its API passthrough.
 
 mod api;
+mod attachments;
 mod context;
 mod conversation;
 mod disk;

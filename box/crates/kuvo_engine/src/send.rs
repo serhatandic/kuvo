@@ -205,7 +205,8 @@ async fn compose(
     };
     let composed = parts::compose(
         &given,
-        !files.is_empty(),
+        has_files,
+        &kept,
         phone,
         legacy_queue,
         &naming,
@@ -219,6 +220,15 @@ async fn compose(
                 StatusCode::BAD_REQUEST
             },
             message,
+    let has_files = !files.is_empty();
+    let kept = if legacy_queue && given.get("kept") == Some(&Value::Bool(true)) {
+        crate::attachments::Attachments {
+            files,
+            ..Default::default()
+        }
+    } else {
+        crate::attachments::Attachments::keep(engine, session, files).await
+    };
         )
     })?;
     let mut metadata = composed
@@ -271,7 +281,7 @@ async fn compose(
             id,
             text: composed.text,
             delivery,
-            files,
+            files: kept.files,
             metadata,
         },
         words: composed.words,
