@@ -399,7 +399,8 @@ fn move_child() {
     let home = Home::new(root.into()).unwrap();
     open(&home, |step| {
         if format!("{step:?}") == pause {
-            println!("checkpoint");
+            // A one-thread libtest prints the test name without a newline.
+            println!("\ncheckpoint");
             io::stdout().flush().unwrap();
             io::stdin().read_exact(&mut [0]).unwrap();
         }
