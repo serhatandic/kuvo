@@ -143,6 +143,8 @@ for bin in box/dist/kuvo-link.js box/target/debug/kuvo-box; do KUVO_BOX_BIN="$bi
 KUVO_BOX_BIN_A=box/dist/kuvo-link.js KUVO_BOX_BIN_B=box/target/debug/kuvo-box node protocol/conformance/differential seed-home requests.json
 ```
 
+Run the tagged-home and holder cases with `KUVO_CONFORMANCE_AREA=compat` and `KUVO_CONFORMANCE_AREA=holder`; see [fixture generation and reproduction](../protocol/conformance/compat/README.md).
+
 For the differential runner, use an offline scratch home with synthetic data and no process
 records. A sequence is a JSON array such as `[{"method":"GET","path":"kuvo/info"}]`. Use
 `{{home}}` in a body or query to refer to each run's copy. The runner returns 0 for a match,
