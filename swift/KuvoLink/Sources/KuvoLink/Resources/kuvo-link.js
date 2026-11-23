@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 18d41be6ff8d
+// Kuvo folder layout 23 0ffec22c768a
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "18d41be6ff8d";
+var BRIDGE_VERSION = "0ffec22c768a";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -58911,7 +58911,7 @@ function checkedChange(given) {
     return { error: "That isn’t an effort." };
   return { change };
 }
-function holdEdit(bot, given, on, { removed = false, now = Date.now(), scope } = {}) {
+function holdEdit(bot, given, on, { removed = false, now = Date.now(), authorized, scope }) {
   const no = (status, message) => ({ status, value: { message } });
   if (!BOT_ID2.test(bot))
     return no(404, "That bot isn’t there any more.");
@@ -58920,6 +58920,8 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now(), scope } =
   const named = removed && on ? plainName(on).slice(0, 200) : "";
   if (!keeper && !named)
     return no(404, "That bot isn’t there any more.");
+  if (!authorized)
+    return no(403, "Use a paired Kuvo Code client to hold this change.");
   const computer = keeper ? shownName2(keeper) : named;
   if ("change" in given && isObject(given.change) && "work" in given.change)
     return no(409, `${computer} isn’t connected: change its work settings once it’s back.`);
@@ -60961,10 +60963,13 @@ async function* botRoute(context, oneBot) {
     const link = readLink();
     const setup = followedSetup(link);
     const submitter = submitterOf(context, link, true);
-    if (!submitter || submitter.kind !== "computer" && !setup)
-      return yield* json(403, { message: "Use a paired Kuvo Code client to hold this change." });
-    const scope = setup && (setup.managed || submitter.kind !== "computer") ? { setup: setup.id, submitter } : undefined;
-    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), { removed: query.has("removed"), scope });
+    const authorized = !!submitter && (submitter.kind === "computer" || !!setup);
+    const scope = setup && submitter && (setup.managed || submitter.kind !== "computer") ? { setup: setup.id, submitter } : undefined;
+    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), {
+      removed: query.has("removed"),
+      authorized,
+      scope
+    });
     return yield* json(held.status, held.value);
   }
   const { status, value } = !deleting ? await changeBot(id, parsed(request.body), readEngine, bridge, info.name, signal) : await deleteBot(id, readEngine, bridge);
