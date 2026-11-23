@@ -58,8 +58,7 @@ update path, because every later fix has to arrive through it.
 
 ## 1. The revised rule list
 
-The 58 rules are #848's (Work Queue #848; rules 28-54 also in
-`.claude/notes/848-data-list-draft.md`). Each is marked KEEP, REWRITE or DROP against the
+The 58 rules are #848's (Work Queue #848). Each is marked KEEP, REWRITE or DROP against the
 target: one lease at the relay agrees on the main, and the main decides everything else. The
 rules added on 11-21 follow the 58. **The lead shows the user only the REWRITE and DROP rows.**
 

@@ -1,5 +1,5 @@
 // What an earlier Kuvo Code kept in its own files and preferences, brought into the box's own
-// files (#713 piece 4; the inventory: `.claude/notes/713-piece-4-inventory.md`). Kuvo Code 0.5 to
+// files (#713 piece 4). Kuvo Code 0.5 to
 // 0.7.2 and 0.8.0-beta.1 had no box: their app kept your projects, machines, worktrees' records,
 // group chats, personalities and settings itself, and a later app gave each to its box as it
 // opened. No such app runs any more, so the box's move does it: each upgrade reads the app's

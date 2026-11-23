@@ -1,7 +1,7 @@
 # Coding-agent accounts
 
 22 November 2026. The user's decision: "lets do it the t3 way … its okay for users to bring their
-subscriptions." Research: `.claude/notes/signin-research-1122.md`. Code: `box/src/agents/accounts.ts`,
+subscriptions." Code: `box/src/agents/accounts.ts`,
 `roster.ts`, `signin.ts`, `agents/*.ts`; `box/src/usage/accounts.ts`, `native-usage.ts`.
 
 ## The model
