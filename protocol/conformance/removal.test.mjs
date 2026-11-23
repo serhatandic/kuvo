@@ -74,8 +74,9 @@ test("the only computer commits a wipe and erases only its old installation", {
   write(outside, "outside the installation");
   fs.symlinkSync(outside, path.join(home, "data", "outside-link"));
   const resident = startBox({ binary, home, env, relay });
+  const children = [resident];
   t.after(async () => {
-    await resident.stop();
+    for (const child of children.reverse()) await child.stop();
     await relay.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -96,6 +97,28 @@ test("the only computer commits a wipe and erases only its old installation", {
   assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
   assert.equal(fs.existsSync(home), false);
   assert.equal(fs.readFileSync(outside, "utf8"), "outside the installation");
+
+  if (!binary.typescript) {
+    const { computer, leases, relay: newRelay } = await bench(t);
+    const main = await computer("New setup");
+    const ask = main.connect(await main.start().ready());
+    const nextSetup = (await ask("GET", "kuvo/setup")).json.setup;
+    await until(() => leases.leaseFor(nextSetup), "The replacement setup did not claim a relay lease.");
+    const invite = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
+    assert.equal(invite.status, 201, invite.text);
+    fs.mkdirSync(home);
+    const installer = boxCommand(binary, home, env, newRelay, ["install", "--join"]);
+    children.push(installer);
+    installer.child.stdin.end(invite.json.code + "\n");
+    assert.equal((await installer.exited).code, 0, installer.log());
+    const next = startBox({ binary, home, env, relay: newRelay });
+    children.push(next);
+    const adopted = await request(await next.ready(), "GET", "kuvo/setup");
+    assert.equal(adopted.json.setup, nextSetup);
+    assert.equal(adopted.json.you.role, "member");
+    assert.notEqual(adopted.json.you.key, key);
+    assert.equal(fs.existsSync(local), false);
+  }
 });
 
 test("a Rust wipe resumes against its detached directory and leaves a replacement alone", {
