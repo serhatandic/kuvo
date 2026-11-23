@@ -3699,10 +3699,6 @@ impl Workspace {
         self.archived_filter
     }
 
-    pub fn toggle_archived_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_archived_filter(!self.archived_filter, window, cx);
-    }
-
     pub fn set_archived_filter(&mut self, on: bool, _window: &mut Window, cx: &mut Context<Self>) {
         if self.archived_filter == on {
             return;

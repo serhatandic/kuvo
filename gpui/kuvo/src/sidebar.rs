@@ -1,4 +1,4 @@
-//! The Sessions area's sidebar (Draft B): the search with an Archived filter toggle, then what's
+//! The Sessions area's sidebar (Draft B): the search, then what's
 //! waiting on you across projects ("Needs you"), then the box's sessions: each project with its
 //! sessions nested under it (pinned raised to the top once and marked with a pin, then newest
 //! first), and chats (pinned raised to top). Under the pointer (or while a row's menu/popover is
@@ -367,12 +367,11 @@ pub fn render(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
         .into_any_element()
 }
 
-/// The search: a sunken field with its glass, × to clear while it has words, and the Archived
-/// filter toggle at its right.
+/// The search: a sunken field with its glass, and × to clear while it has words. (Archived
+/// sessions are listed and restored in Settings › Archived Sessions.)
 fn search_field(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let has_words = !workspace.search_text(cx).is_empty();
-    let archived = workspace.archived_filter();
     div()
         .key_context(SEARCH)
         .debug_selector(|| "sidebar-search".into())
@@ -393,18 +392,6 @@ fn search_field(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElemen
                     .on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx))),
             )
         })
-        .child(
-            Button::icon_only(
-                "toggle-archived",
-                IconName::Sliders,
-                if archived { "Show active sessions" } else { "Show archived sessions" },
-            )
-            .ghost()
-            .size(ButtonSize::Small)
-            .selected(archived)
-            .tooltip("Archived sessions")
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_archived_filter(window, cx))),
-        )
         .into_any_element()
 }
 

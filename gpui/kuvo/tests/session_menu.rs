@@ -169,8 +169,10 @@ fn archived_filter_chip_search_unarchive_and_engine_archived_work(cx: &mut TestA
     assert!(bounds(cx, "session-found-ses_dark").is_none(), "archived session must stay hidden in active named search");
     click(cx, "clear-search");
 
-    // Toggling the Archived filter shows the chip and placeholder "Search archived".
-    click(cx, "toggle-archived");
+    // The Archived filter (no longer offered beside the search) shows the chip and placeholder
+    // "Search archived".
+    workspace.update_in(cx, |workspace, window, cx| workspace.set_archived_filter(true, window, cx));
+    cx.run_until_parked();
     assert!(bounds(cx, "showing-archived").is_some());
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.search().read(cx).placeholder_text().to_owned()),
@@ -736,5 +738,14 @@ fn active_popover_clears_when_anchor_leaves(cx: &mut TestAppContext) {
 
 fn point_outside_sidebar() -> Point<Pixels> {
     gpui::point(px(900.), px(400.))
+}
+
+
+#[gpui::test]
+fn the_sidebar_search_has_no_archived_filter_button(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, cx) = open(cx, stand_in);
+    assert!(bounds(cx, "sidebar-search").is_some(), "the sidebar's search is drawn");
+    assert!(bounds(cx, "toggle-archived").is_none(), "no filter button beside the search (Settings › Archived Sessions lists them)");
 }
 
