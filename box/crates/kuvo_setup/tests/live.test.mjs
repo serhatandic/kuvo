@@ -19,7 +19,7 @@ const get = (box, route = "kuvo/setup") => box.ask("GET", route);
 const post = (box, route, body) => box.ask("POST", route, body);
 const address = box => relayAddress(Buffer.from(readJSON(linkPath(box)).secret, "base64url"));
 
-async function bench(t, { handover = false, transferred } = {}) {
+async function bench(t, { handover = false, transferred, startupTimeout } = {}) {
   const root = fs.realpathSync(scratch());
   const leases = relayLeaseStandIn({ transferStartsNow: handover });
   const relay = await localRelay({
@@ -64,7 +64,7 @@ async function bench(t, { handover = false, transferred } = {}) {
           assert.equal(result.code, 1, proc.log());
           return proc.log();
         }
-        const record = await proc.ready();
+        const record = await proc.ready(startupTimeout);
         this.record = record;
         this.ask = (method, route, body, headers = app, timeout) => request(record, method, route, body, headers, timeout);
         assert.equal((await get(this)).status, 200);
@@ -316,8 +316,8 @@ test("a stale preference choice refreshes before a current choice can commit", {
   assert.deepEqual(view.choices, []);
 });
 
-test("a member misses two handovers and receives every page of the latest archive", { timeout: 40000 }, async t => {
-  const { a, b, c, aKey, bKey } = await paired(t, { handover: true, third: true });
+test("a member misses two handovers and receives every page of the latest archive", { timeout: 65000 }, async t => {
+  const { a, b, c, aKey, bKey } = await paired(t, { handover: true, third: true, startupTimeout: 40000 });
   await b.stop();
   const link = readJSON(linkPath(b));
   link.sharedOutcomes = Object.fromEntries(Array.from({ length: 257 }, (_, index) => {

@@ -97,7 +97,7 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
     ["serve", ...(binary.typescript ? ["--resident"] : []), ...args],
     mac ? { OPENCODE_PASSWORD: "conformance-local", KUVO_TEST_NO_PEERS: "1" } : {});
   const file = path.join(home, "run", "serve.json");
-  const ready = () => Promise.race([
+  const ready = (timeout = 25000) => Promise.race([
     until(() => {
       if (proc.child.exitCode !== null || proc.child.signalCode !== null || !proc.child.pid) {
         throw new Error(`serve exited before publishing ${file}\n${proc.log()}`);
@@ -108,7 +108,7 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
       assert.ok(Number.isInteger(record.port) && record.port > 0 && record.port <= 65535, "serve.json contains a TCP port");
       assert.ok(typeof record.password === "string" && record.password.length, "serve.json contains a password");
       return record;
-    }, () => `serve did not publish ${file}\n${proc.log()}`, 25000),
+    }, () => `serve did not publish ${file}\n${proc.log()}`, timeout),
     proc.exited.then(result => { throw new Error(`serve exited before readiness: ${JSON.stringify(result)}\n${proc.log()}`); }),
   ]);
   return { ...proc, ready };
