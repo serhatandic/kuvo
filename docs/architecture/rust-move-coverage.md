@@ -1,6 +1,6 @@
 # Rust move coverage
 
-Phase 2.6 is in progress. The resident passes the store's `MoveRequired` and
+Phase 2.6 is complete. The resident passes the store's `MoveRequired` and
 `ResumeMove` handoffs to `kuvo_move`. The machine path recognizes a predecessor
 by its saved files, takes the store's layout lock, checks again under the lock,
 and commits layout 23 after the last step. A current layout opens without
@@ -58,6 +58,9 @@ use authenticated Helper and relay stand-ins.
 | A8 | The command retries one source write in the same invocation and stops after three rounds of continued writes. A late placement collision rolls back and keeps the new file belonging to the other writer. A live status query reads the current staging step. An explicit resume finishes a published plan after a process cut. Imported group files reach the private import boundary before publication, and an external-history rename resumes by file identity. A shared-memory change and empty WAL appearing at the same checkpoint leave the attempt running. A cut during the displacement of a removed installation preserves its archive. |
 | A9 | A future engine schema is detected on a private database copy before staging. A browser-only app gets its own home, and a staged Claude Code account keeps history under the moved chat's name. |
 | A10 | A cut-short Mac installation holds startup until a new attempt finishes. The fresh release reaches layout 23 and the resident can then open it. |
+| A11 | A linked global settings file is imported into a machine's own settings, with its original bytes and link intact. |
+| A12 | A custom Claude Code account keeps its credential under its published configuration path. A read-back failure restores the previous credential and rolls back placement. A process cut after saving the previous credential, writing the new one, or retiring the original resumes through a disk-backed stand-in. Credentials never enter the move journal. |
+| C2 | The six released-move command fixtures from `rehome-upgrades.test.ts` run against either executable. Projects, worktrees, the empty and populated machine list, a 0.6 bot, 0.7.2 settings and notices, group seats and messages, devices and relay settings, and beta.1 letters and personality removals are checked directly. The three TypeScript reader and private-staging tests in that file also pass. |
 | C1 | The rehome conformance area runs the same released app fixture against both commands. It covers installer verdicts, unplaced and torn journals, file-only legacy placement recovery and retry receipts, missing and incompatible engines, a failed database migration, malformed preferences and newer app records, an existing machine home, archived leftovers from a removed installation, live writers and a read-only reader, older app discovery, the old keeper's control endpoint, a capped APFS volume, CLI status and validation, legacy bots and group chats, overlapping attachments, Usage and letters, staged and default-account history, and 255 active and archived sessions through the pinned engine. It checks the older settings omissions and their notice order, deferred copied-key settlement, sign-ins already recorded as imported, saved sign-in receipts and installer access during settlement, and the standalone move's Move Back reply. |
 | S2 | The authenticated older Mac main converts its checkpoint after receiving the relay lease. A PID kill at lease claim and a restart advance the same setup by one epoch. |
 | S1 | The stored-format conformance scenarios refuse newer, malformed and invalid layout records and reopen a fresh home at 23. |
@@ -66,19 +69,20 @@ use authenticated Helper and relay stand-ins.
 
 The primary inventory contains 135 test declarations. Each loop is counted at
 its declaration. The two forward-move loops expand to eleven cuts, the rollback
-loop to three, and the saved-sign-in unit loop to four outcomes. Nine
-declarations are out of scope under section 4. The tables record the
+loop to three, and the saved-sign-in unit loop to four outcomes. Nine original
+declarations are out of scope under section 4. The switch decision drops
+17 more declarations specific to the unpublished in-place move. The tables record the
 remaining ownership and the evidence mapped to each declaration.
 The associated compatibility checks below are tracked separately.
 
 | Reference | Declarations | Rust coverage and remaining owner |
 |---|---:|---|
-| [rehome](../../box/test/rehome.test.ts) | 36 | M2 covers a recognizable unfinished journal's startup fence and M4 covers the machine crash boundaries. A1–A4 cover private clones, a source write during cloning, and database and path rewrites within the staged engine and selected records. A7 covers publication, Git and recovery for the standalone command. The older move, kept copies, detailed progress and broader writer behavior are open in 2.6. App-facing readiness, new install and keeper scheduling also need 7.2. |
-| [rehome-run](../../box/test/rehome-run.test.ts) | 35 | M2, M3 and M6 exercise the destination, detection and writer fences for the machine entry point. A4 checks the tagged database migration and engine validation in staging. A7 covers the standalone run, publication and Keychain fixtures. A8–A9 and C1 exercise retry, quiescence, failure receipts, CLI status, disk space, browser-only eligibility and staged and default-account history. The remaining recovery variants stay with 2.6. Helper launch belongs to 7.2. |
-| [rehome-upgrades](../../box/test/rehome-upgrades.test.ts) | 9 | M1 covers the separate machine kit projections. A2 checks app plist decoding, projects, worktrees and Git. A4 checks the beta.1 pending letter. A5 checks artifact log paths and their version gate. C1 covers bot records, group messages, Usage settings, pending letters and seen-letter history. Additional settings, peer projection and app-format variants remain 2.6. |
-| [rehome-passwords](../../box/test/rehome-passwords.test.ts) and [bridge scenario](../../box/bridge-tests/rehome-passwords.test.js) | 2 | Mac handoff records and settling are open in 2.6. The actual saved sign-in transfer also needs the vault and Helper adapter in 6.2. |
+| [rehome](../../box/test/rehome.test.ts) | 36 | M2 covers the startup fence and M4 the machine crash boundaries. A1–A4 cover private clones, source writes, and database and path rewrites. A7–A10 and C1 cover standalone publication, recovery, status and fresh making. The in-place move, its clearing, Move Back, kept-copy expiry and its scheduling are dropped: TS-beta only (user 11-23). The standalone installer and Helper handoff belong to 7.2. |
+| [rehome-run](../../box/test/rehome-run.test.ts) | 35 | M2, M3 and M6 exercise machine admission. A4 checks the tagged database and pinned engine; A7–A9 and C1 cover the standalone move, retries, writer discovery, notices, CLI status, disk space, browser-only admission and history. C2 covers the complete released preferences fixtures. A12 covers the custom account credential step. The real Keychain interface belongs to 6.2 and Helper launch belongs to 7.2. |
+| [rehome-upgrades](../../box/test/rehome-upgrades.test.ts) | 9 | M1 and A2–A6 cover the machine kit, preferences and format gates. C1 and C2 cover the released app projections and notices, including the earlier pending-letter format and a Unicode boundary case. |
+| [rehome-passwords](../../box/test/rehome-passwords.test.ts) and [bridge scenario](../../box/bridge-tests/rehome-passwords.test.js) | 2 | A7 and C1 check the move's sign-in obligations, prior imports and settlement replies. The interactive saved-site transfer and vault verification belong to 6.2. |
 | [install-verdict](../../box/test/install-verdict.test.ts) | 12 | M2 and M3 cover blocking an unfinished journal and recognizing app data beside cache and program folders. M5 covers in-place startup without a bridge. A10 and C1 check the read-only verdicts, the CLI's earlier refusal of an unreadable record, and a fresh making retry with a preserved archive. Helper readiness and installer restart come from 7.2. Reinstall and wipe are 2.3 and 7.2. |
-| [install](../../box/bridge-tests/install.test.js) | 24 | The older app, move progress, failed launch settlement and two-install cases need the 2.6 staged move and 7.2 installer. Fresh install, release checks, staging races and keeper launch are 7.2. Wipe and reinstall admission are 2.3 and 7.2. |
+| [install](../../box/bridge-tests/install.test.js) | 24 | A7–A10 and C1 cover the staged move, progress, standalone making and two-install admission. Installer release staging, failed launch settlement and keeper launch are 7.2. Wipe and reinstall admission are 2.3 and 7.2. |
 | [folder-version](../../box/bridge-tests/folder-version.test.js) | 16 | S1 covers future and unreadable marker refusals. M2 and M5 cover the move's reader and valid 0→1 retry. A7 covers layout sealing for the tagged apps. Group-file sealing still needs its fixture. Steps 11 and 17 and the layout transitions only used by unpublished TypeScript betas are excluded by section 4. Bridge and keeper entry points and trial rollback need 4.1 and 7.1–7.2. |
 | [update-from-before](../../box/bridge-tests/update-from-before.test.js) | 1 | An updater handing over to the new keeper and updating its engine and bridge belongs to 7.2 and 9.3. M5 only covers opening data once the new executable runs. |
 
@@ -88,22 +92,23 @@ column. The loop declarations cover each cut or outcome described by that loop.
 
 | Reference | Declaration lines | Evidence and remaining owner |
 |---|---|---|
-| `rehome.test.ts` | 305, 422, 446, 463, 674, 698, 715, 742, 884, 910, 921, 972 | M4 and A7 cover interruption through publication. The older in-place move, concurrent movers, kept copies, and Move Back still need their 2.6 verdicts. |
-| `rehome.test.ts` | 512, 543, 566, 582, 601, 625, 644, 659, 705, 835, 953 | M2 and M3 cover the store's startup gate. A10 and C1 cover fresh making, collision admission, a copy failure, retry, and a repeated command. Keeper readiness and retry scheduling remain 7.2. Additional older-move status and recovery cases need 2.6. |
-| `rehome.test.ts` | 800, 867, 942, 983, 999 | M2 and M6 fence a recognizable unfinished move and a running machine writer. C1 covers the torn journal, disk-space refusal and malformed root. Additional CLI replies, admission and account isolation remain 2.6. |
-| `rehome.test.ts` | 1007, 1032, 1045, 1060, 1098, 1112, 1124 | A3 and A4 cover concurrent changes and database migration and validation. A8 covers retry rounds and rollback on a new destination collision. A9 and C1 cover an unsupported schema at command preflight and the pinned engine's large paginated list. Other rollback variants remain 2.6. |
-| `rehome.test.ts` | 1144 | Existing sign-in handover and rollback remain 2.6 and 6.2. |
-| `rehome-run.test.ts` | 20, 87, 110, 384, 461, 537, 573, 595, 608 | A1, A4 and A7 cover tagged migration, publication, path changes and interruption recovery. C1 checks the old keeper's loopback stop and attachment collisions with the message's rewritten URI. The differential passes with the pinned engine. Remaining upgrade notices stay with 2.6. Helper startup belongs to 7.2. |
+| `rehome.test.ts` | 305, 422, 446, 463, 674, 698, 715, 742, 884, 910, 921, 972, 1112 | In-place move, clearing, rollback, Move Back and kept-copy expiry dropped: TS-beta only (user 11-23). A7–A8 and C1 cover equivalent released-path publication, interruption, isolated recovery and archived destination files. |
+| `rehome.test.ts` | 625, 705, 835, 953 | Old phone move status and scheduled in-place move dropped: TS-beta only (user 11-23). A8 and C1 cover the released command's synchronous progress. |
+| `rehome.test.ts` | 512, 543, 566, 582, 601, 644, 659 | A10 and C1 cover fresh making, collision admission, a copy failure, retry, and a repeated command. The installer and Helper handoff belong to 7.2. |
+| `rehome.test.ts` | 800, 867, 942, 983, 999 | M2 and M6 fence a recognizable unfinished move and a running machine writer. C1 covers the torn journal, disk-space refusal, malformed root and released-app account isolation. Machines open in place and standalone Mac movement is refused on other platforms. |
+| `rehome.test.ts` | 1007, 1032, 1045, 1060, 1098, 1124 | A3 and A4 cover concurrent changes and database migration and validation. A8 covers retry rounds and rollback on a new destination collision. A9 and C1 cover an unsupported schema at command preflight and the pinned engine's large paginated list. |
+| `rehome.test.ts` | 1144 | The in-place invocation is dropped: TS-beta only (user 11-23). A12 covers the released move's equivalent credential handover and rollback. The real Helper interface belongs to 6.2. |
+| `rehome-run.test.ts` | 20, 87, 110, 384, 461, 537, 573, 595, 608 | A1, A4 and A7 cover tagged migration, publication, path changes and interruption recovery. C1 checks the old keeper's loopback stop, empty folders, attachment collisions and the rewritten message URI. The released-path fixtures check the retired engine queue notice. The differential passes with the pinned engine. Helper startup belongs to 7.2. |
 | `rehome-run.test.ts` | 128, 250, 262, 274, 282, 290, 325, 351 | A3 and M6 cover a changed source file and known live writer. A8 covers bounded retry and rollback and shared-memory and empty-WAL activity. C1 verifies the old engine and older app stop. The unrelated writer, external reader, chat program and another copy of the current app stay running. |
-| `rehome-run.test.ts` | 159, 174, 198, 209, 395, 420, 435, 506 | A7 covers Keychain copy, verification and rollback through stand-ins. A9 and C1 cover agent history under moved paths. C1 checks settling copied keys and recognizing prior website imports without reading passwords. Passing the added Claude Code account's sign-in to the new name and importing remaining website sign-ins need their 2.6 and 6.2 adapters. Old launch agent cleanup and starting the real Helper need 7.2. |
-| `rehome-run.test.ts` | 216, 224, 237, 371, 494, 553, 583, 623, 632, 643 | A2–A4 and M2–M3 cover selected input readers, the engine gate and startup fences. A8–A9 and C1 cover live Rust status, the future engine schema, browser-only admission, missing engine, two existing installations, malformed preferences and the torn journal. Remaining failure and eligibility variants stay with 2.6. |
-| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | M1 and A1–A4 cover a subset of settings, preferences, the machine list and selected letters. A2 covers local link preferences and personality deletion. C1 covers legacy bots, group records and message filtering, Usage settings precedence, seen-letter history and the ordered notices for settings left with the prior app. Additional projections remain 2.6. |
-| `rehome-upgrades.test.ts` | 214 | M2 covers the marker fence. App file indexes remain 2.6. |
+| `rehome-run.test.ts` | 159, 174, 198, 209, 395, 420, 435, 506 | A7 and the released command fixtures cover Keychain refusal, support log details, verification, old copies and rollback through stand-ins. A9 and C1 cover path-derived histories and recognizing prior website imports. A12 covers added Claude Code credential copy, rollback and resume. Real Keychain primitives and website vault operations belong to 6.2. Old launch agent cleanup and starting the real Helper belong to 7.2. |
+| `rehome-run.test.ts` | 216, 224, 237, 371, 494, 553, 583, 623, 632, 643 | A2–A4 and M2–M3 cover input readers, the engine gate and startup fences. A8–A9 and C1 cover live status, the future engine schema, browser-only admission, missing engine, two existing installations, malformed preferences and the torn journal. |
+| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | C2 runs the full released-command fixture set through both executables. A2 covers the typed Rust projection of binary preferences. |
+| `rehome-upgrades.test.ts` | 214 | The TypeScript staging folders list is private to its rewriter. Rust plans the corresponding history moves before publication and saves typed relocations, exercised in A8. M2 fences old journals at startup. |
 | `rehome-upgrades.test.ts` | 251 | Covered by A6. |
 | `rehome-upgrades.test.ts` | 235 | Covered by A5. |
-| `rehome-passwords.test.ts`, `rehome-passwords.test.js` | 9 and 54, respectively | 2.6 move obligations and 6.2 vault and Keychain. |
-| `install-verdict.test.ts` | 32, 74, 81, 89, 96, 111, 147, 154, 169 | M2, M3 and M5 cover the store's handoff and part of old-app detection. Full verdict, ownership and retry remain 2.6 and 7.2. |
-| `install-verdict.test.ts` | 45, 57, 128 | Move settlement and its lock remain 2.6. Helper, startup and updates remain 7.2. |
+| `rehome-passwords.test.ts`, `rehome-passwords.test.js` | 9 and 54, respectively | A7 and C1 check move obligations. Vault and Keychain operations belong to 6.2. |
+| `install-verdict.test.ts` | 32, 74, 81, 89, 96, 111, 147, 154, 169 | M2, M3 and M5 exercise startup gates. C1 covers the fresh, moving, stuck, waits, app-07, app-box, back, machine and two verdicts, plus an interrupted new Mac home. A10 checks its restart. Installer launch and update handoff belong to 7.2. |
+| `install-verdict.test.ts` | 45, 57, 128 | C1 covers the ours verdict, archived attempts and a concurrent sign-in or settlement worker. The live Helper readiness oracle, startup and updates belong to 7.2. |
 | `install.test.js` | 124, 361, 379, 387, 418, 442, 451, 468, 505, 766, 774, 793, 810, 875, 901 | Installer and keeper admission, release checks, retries and starting remain 7.2. M3 and M6 exercise the underlying fresh-home and writer checks. |
 | `install.test.js` | 148, 204, 267 | 2.3 and 7.2 own wipe, its completion receipt and reinstall admission. |
 | `install.test.js` | 564, 594, 645, 700, 725, 750 | A1–A4 and A7 cover staging, publication and stand-in settlement. M3 covers the detection fence. 7.2 owns installer progress and Helper launch. |
@@ -117,7 +122,7 @@ column. The loop declarations cover each cut or outcome described by that loop.
 
 | Reference | Rust coverage and remaining owner |
 |---|---|
-| [Settings adoption](../../box/bridge-tests/bridge.test.js#L2316), [Git settings](../../box/bridge-tests/git-words.test.js#L93) and [Git record version](../../box/bridge-tests/git-words.test.js#L138) | M1 and A2 cover the saved-settings precedence, branch-prefix import and reopening. The cited Git tests submit a live `POST kuvo/git/settings/move` request, owned by 7.3. Externally linked settings still need a 2.6 disk fixture. |
+| [Settings adoption](../../box/bridge-tests/bridge.test.js#L2316), [Git settings](../../box/bridge-tests/git-words.test.js#L93) and [Git record version](../../box/bridge-tests/git-words.test.js#L138) | M1, A2 and A11 cover saved-settings precedence, a linked settings file, branch-prefix import and reopening. The cited Git tests submit a live `POST kuvo/git/settings/move` request, owned by 7.3. |
 | [Worktree handoff](../../box/bridge-tests/worktrees.test.js#L392) and [saved prefix](../../box/bridge-tests/worktrees.test.js#L548) | M1 and A2 cover the saved prefix and records on disk. These tests submit `POST kuvo/worktrees/record` and start a worktree through the live worktree API. The worktree consumer is 3.2, and the released Mac request is 7.3. |
 | [Carried time zone](../../box/test/time-zone.test.ts#L76), [following a changing kit](../../box/test/time-zone.test.ts#L124) and [time-zone bridge scenarios](../../box/bridge-tests/time-zone.test.js) | M1 covers initial zone selection from the kit. Propagation, an explicit setup choice superseding the carried setting, and the wake-up consumers need 2.1 and their area scenarios. Repeated old-Mac input needs 7.3. |
 | [Unversioned peers](../../box/bridge-tests/peers.test.js#L44), [later mail](../../box/bridge-tests/peers.test.js#L57) and [old outbox](../../box/bridge-tests/peers.test.js#L586) | M1 covers fixed on-disk peer projection and relocation of unclaimed mail. Receiving newer legacy peers mail needs 7.3. Delivery after relocation also needs the 2.4 letter consumer. |
@@ -128,10 +133,15 @@ column. The loop declarations cover each cut or outcome described by that loop.
 
 ## Boundaries and gaps
 
-- **2.6** still owns older journals that already performed external or
-  forward-only actions, Move Back for the older in-place move, the remaining
-  explicit older move restart variants, and additional settings, path and
-  preflight edge cases. For a standalone move an attachment name collision is
+- The switch accepts completed TypeScript homes. Unfinished TypeScript
+  journals fence startup, with file-only pre-clear placement recovery in the
+  standalone command. The in-place move, destructive clearing, Move Back and
+  kept-copy expiry are dropped: TS-beta only (user 11-23). The command came
+  after both releases in `810abb362`. The released upgrade uses
+  `planMove(..., { whole: true })`, which has an empty clearing list. `finish`
+  writes `app` for that move, and only the in-place branch writes `keptUntil`.
+  `backRefusal` refuses Move Back when `app` exists. C1 checks that reply.
+- For a standalone move an attachment name collision is
   resolved in the private copy and the combined directory is placed whole.
   Actions from an older file-only journal are validated against its private
   staging and archive paths and unwound before retry. An explicit resume
@@ -144,7 +154,10 @@ column. The loop declarations cover each cut or outcome described by that loop.
   after the move reaches its forward-only step. The signed Keychain program for
   website sign-ins belongs to 6.2. The vault seam is the login create and
   values-match operations used by `rehome/passwords.ts`; the original is
-  retired only after the exact value verifies. The actual signed tools and live
+  retired only after the exact value verifies. For added Claude Code accounts,
+  the mover calls `KeychainItems` through `Run::execute_with_keychain` and
+  `resume_with_keychain`. Helper supplies its generic-password operations in
+  6.2. The actual signed tools and live
   Helper launch still need a dedicated integration check. Both tagged
   published destinations match with the pinned OpenCode executable and the
   fixture's Keychain stand-ins.
@@ -179,12 +192,17 @@ Mac-built static executable, and on native Windows using LLVM MinGW.
 The lokum container runs an init so the harness is an ordinary process when
 the live-PID scenario checks it.
 
-With the verified OpenCode 2.2.6 package, C1 passes 29 checks on each
+With the verified OpenCode 2.2.6 package, C1 passes 30 checks on each
 executable, including its enclosing scenario. The focused Rust run passes
-17 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
-plus their child harness. No TypeScript implementation was changed.
-The older malformed-journal assertion was updated to check the specific
-receipt the TypeScript command emits, also checked in C1.
+20 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
+plus their child harness. Nine preferences scenarios pass in each run of
+C2. Eleven further released-move reference scenarios pass on Rust.
+The TypeScript pending-letter regression failed before the fix because
+truncation split a surrogate pair. Both executables now preserve a valid
+string at the wire limit. The older malformed-journal assertion now uses
+the specific receipt the TypeScript command emits, also checked in C1.
+The peer moves area passed three checks and skipped two mixed-binary
+cases on each executable.
 
 The Rust stored-format area passes 4/4. The holder area fails because the
 Rust executable does not yet implement the holder mode (4.1). Rust compat
@@ -192,8 +210,8 @@ passes both tagged Mac app cases and the 0.7.2 machine case (3/5). The beta.1 ma
 unsigned peer update (7.3). Its original saved peers are already projected
 at startup. The current-beta case reaches the resident and first fails on
 `kuvo/projects` (6.3). A direct
-check preserved all 18 durable files listed by that fixture byte for byte
-and got the expected setup and personalities.
+check after opening the resident preserved all 18 durable files byte for
+byte and kept the four retained-work fields and the computer identity.
 
 | Fixture | Post-startup differential and separate assertions |
 |---|---|
@@ -288,6 +306,9 @@ fixture. The full published inventory after restart matches the uninterrupted
 move after projecting the same clock fields. Both source trees stay identical.
 An extra cut after displacing the first file from a removed installation
 checks that its saved files all reach the archive after restart.
+A disk-backed credential stand-in also cuts after the account's saved item
+is copied aside, after the new item is written, and after the old item is
+retired. The named Helper primitive is the 6.2 integration boundary.
 The setup conversion scenario also kills the resident after the relay accepts
 the claim and checks that a restart advances the same setup only once.
 
