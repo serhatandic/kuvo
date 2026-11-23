@@ -200,16 +200,82 @@ truth anywhere else would mean two places to edit for months. At removal (sessio
 the shapes become hand-written Rust, and `answers.json` is generated from them for the
 conformance suite and other clients.
 
-**Conformance suite** (`protocol/conformance/`, `node --test`, run against any binary named by
-`KUVO_BOX_BIN`). Today the route scenarios (199 scenarios, 436 requests) call the bundle's
-`engineHandler` in-process, as 118 of the 221 bridge tests do. Session 0.1 adds a box-under-test
-adapter. It starts `serve` in a scratch home with stand-in engine and relay addresses, finds it
-through `serve.json`, and speaks HTTP. `given` steps write files or configure the stand-ins, never
-call into the box. The TypeScript box passes the suite first. Then come the process-level tests
-already written as such or worth converting: two boxes, setup, devices, moves, Work Queue across
-computers, seats, the SSH pipe and route, serve and resident, fleet switch, keeper, updates, and
-`kuvo_box`'s `real_box` tests. Tests of TypeScript internals, the Mac app or retired paths stay
-with the TypeScript box and go with it. **Added:**
+**Conformance suite.** `protocol/conformance/` launches the selected box's `serve` in a scratch
+home, reads `run/serve.json`, and uses authenticated loopback HTTP and the NDJSON line. The
+source fixtures contain 95 route scenarios and 436 requests, including the shared features
+case. The suite also runs the 17 Mac variants covered by the old Mac route runner. Given steps
+seed files or configure the stand-ins. The actual TypeScript agents bridge runs separately for
+group-chat cases until Rust serves those routes in the resident.
+
+Run one area against both local builds, even if the first fails. Area names are the route fixture
+stems, plus `resident` and `two-boxes`.
+
+```sh
+for bin in box/dist/kuvo-link.js box/target/debug/kuvo-box; do KUVO_BOX_BIN="$bin" KUVO_CONFORMANCE_AREA=bots node --test protocol/conformance; done
+```
+
+Run the [differential runner](../../protocol/conformance/differential/compare.mjs) with an offline
+scratch fixture and a JSON list of requests.
+
+```sh
+KUVO_BOX_BIN_A=box/dist/kuvo-link.js KUVO_BOX_BIN_B=box/target/debug/kuvo-box node protocol/conformance/differential seed-home requests.json
+```
+
+Both runs start from the same home snapshot and each gets a fresh engine stand-in. The runner
+reports status, JSON and home differences by path. Its normalisation table names each variable
+field and why it varies. The Insights database is compared by its committed schema and rows,
+including changes in its WAL. Seed an existing identity for tests of an existing setup so that keys
+and signed documents compare. See [testing](../testing.md#box-conformance) for inputs and exit codes.
+
+**Process tests to convert.** Paths in this table are under `box/bridge-tests/` except where shown.
+"Converted" identifies the process test now in the suite. Cases marked later remain in the
+TypeScript suite until their respective Rust phase.
+
+| File | What it tests | Conversion |
+|---|---|---|
+| `two-boxes.test.js` | Membership and documents travel between computers. | Converted as `two-boxes` with two residents, installer enrollment and a replicated rename. The old phone notification and app-host paths stay with TS. |
+| `setup-two-boxes.test.js` | Both computers report the same setup, and the member requests numbers from the main. | Later, 2.1 and 5.2. |
+| `setup-handover.test.js` | Lease, takeover, removal, offline saves and recovery across failures. | Later, 2.1, 2.3, 2.5 and 9.3. Keep the unconverted setup cases with TS. |
+| `setup-mac.test.js` | Legacy Mac leadership, identity resets, and setup events. | App-host and retired authority stay with TS. Current events and restart later, 2.1. |
+| `setup-judge.test.js` | Setup and attach verdicts for fresh, known and older homes. | Later, 2.3 and 2.6. Retired app-folder probes stay with TS. |
+| `installer-enrollment.test.js` | Enrollment, merge, lost receipts, replay and credential selection. | Later, 2.3. |
+| `devices.test.js` | Local grants, device list and revocation. | Later, 2.2. |
+| `devices-two-boxes.test.js` | A paired device reaches both computers, with revocation and reconnect catch-up. | Later, 1.5 and 2.2. |
+| `moves.test.js` | Moving sessions, bots and groups without losing queued work or attachments. | Later, 2.4. |
+| `moves-races.test.js` | Failed or duplicate move offers, partial arrivals and concurrent session work. | Later, 2.4. |
+| `moves-recover.test.js` | Retries, restart recovery and settling copies and mail. | Later, 2.4. |
+| `moves-lanes.test.js` | Native agent move payloads, accounts and relay transfers. | Later, 2.4 and 4.6. |
+| `moves-lanes-races.test.js` | Edits during packing, interrupted transfers and retained copies. | Later, 2.4 and 4.6. |
+| `moves-elsewhere.test.js` | Listing and expiring moves between other computers. | Later, 2.4. Keep internal clock and announcer checks with TS. |
+| `work-queue-across.test.js` | Peer views, number leases, forwarding, handoff and deduplication. | Later, 5.2. Keep retired numbering rules and internal projections with TS. |
+| `work-queue-two-boxes.test.js` | Cross-computer items, numbering, delete and restore. | Later, 5.2. |
+| `seats.test.js` | A group uses another computer's bots, with seat mail and recovery. | Later, 5.3. |
+| `ssh-pipe.test.js` | Local SSH forwarding, streaming, deadlines and shutdown. | Later, 1.4. |
+| `ssh-route.test.js` | HTTP, relay and SSH give the same answers and keep operation identity. | Later, 1.4 and 1.5. |
+| `serve.test.js` | HTTP auth, requests and streams, heartbeat and interrupted bodies. | Converted as `resident` for discovery, auth and streaming. HTTP heartbeat and interrupted-body cases later, 1.4. The legacy app's stdin lifetime stays with TS. |
+| `resident-serve.test.js` | One listener, vault, lease and paired relay survive restart. | Converted as `resident` for one listener and restart, with line replay. Vault and paired relay cases later, 1.5, 2.2 and 6.2. Split launch stays with TS. |
+| `resident-supervision.test.js` | Resident demand and engine/bridge supervision. | Later, 3.1 and 7.1. The separate bridge stays with TS. |
+| `resident-update-pilot.test.js` | An active sandboxed turn survives update and rollback. | Later, 7.2 and 9.3. |
+| `fleet-switch.test.js` | Prepare, switch, retry, offline catch-up and progress. | Later, 7.2. |
+| `keeper-pause.test.js` | Pausing the keeper and releasing work safely. | Later, 7.1. |
+| `keeper-route.test.js` | The SSH launcher chooses the keeper's installed release. | Later, 7.1. |
+| `keeper-rollback.test.js` | A failed version rolls back code while retaining writes. | Later, 7.1. Old trial and Mac app-folder cases stay with TS. |
+| `updates.test.js` | Signed releases, packaging, staging, rollback records. | Later, 7.1 and 7.2 for behavior. Bundle contents and internal version helpers stay with TS. |
+| `update-engine-turn.test.js` | Engine turns and commands across a release switch. | Later, 7.2. |
+| `update-follows-peers.test.js` | Peer release discovery and scheduled updates. | Later, 7.2. The app update prompt stays with TS. |
+| `update-from-before.test.js` | A released predecessor updates into the new layout. | Later, 7.3 and 9.3. |
+| `update-real-keeper.test.js` | Real keeper upgrade from an app-owned baseline. | Later, release rehearsal for supported predecessors. Retired keeper paths stay with TS. |
+| `update-stops-nothing.test.js` | A running holder survives a switch or rollback. | Later, 4.1 and 7.2. Bridge-specific handover stays with TS. |
+| `own-home-mac-serve-update.test.js` | A helper-owned resident restarts on a new release. | Later, 7.2 and 9.3. |
+| `gpui/kuvo_box/tests/real_box.rs` | Desktop transport pairs with a real box, asks a route and follows it. | Later, 1.5, using the selected binary in the existing client test. |
+
+**TypeScript reference gaps.** The machine resident still answers the retired `GET kuvo/hosts`
+route. The case is skipped for TypeScript with a reason pointing to TS reference green.
+The generated `kuvo/info` shape omits the resident's `serverGeneration` and `serverBuild`.
+Until TS reference green updates the shape, the suite checks those two fields separately and
+keeps checking the rest of each reply against the generated shape.
+
+**Added:**
 
 - byte vectors for what 0.5–0.7.2 and 0.8.0-beta.1 Macs send and read (their SSH verbs, mail,
   beta.1's peers list), since those Macs still reach machines;
@@ -326,7 +392,7 @@ parallel.
 
 | # | Session | Crate | After | Hours | Lane |
 |---|---|---|---|---:|---|
-| 0.1 | Box-under-test adapter; route scenarios through a binary; the TypeScript box passes | conformance | — | 6 | A |
+| 0.1 | **Done.** Binary conformance for the routes, resident and two computers, with side-by-side response and home comparison. | conformance | — | 6 | A |
 | 0.2 | Conformance through binaries: older Macs' vectors, `hold/1` with a TypeScript holder, the four golden homes, digests | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
@@ -341,7 +407,7 @@ parallel.
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
 | 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes | move | 1.2, 2.1 | 6 ×2 | C |
-| 3.1 | Engine on demand, park, adoption; `api/…` passthrough with WebSocket and PTY | engine | 1.4 | 6 | B |
+| 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
 | 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |

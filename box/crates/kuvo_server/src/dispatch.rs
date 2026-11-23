@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     line::{LineHub, LineTiming},
     path,
+    socket::Socket,
 };
 
 pub type Body = UnsyncBoxBody<Bytes, io::Error>;
@@ -261,7 +262,7 @@ impl Refusal {
         Self::json(StatusCode::CONFLICT, error)
     }
 
-    pub(crate) fn reply(self) -> Reply {
+    pub fn reply(self) -> Reply {
         self.0
     }
 }
@@ -370,6 +371,13 @@ type Handler = Box<
 >;
 type Fallback = Box<dyn Fn(DispatchRequest, CancellationToken) -> FutureReply + Send + Sync>;
 
+type SocketResult = Result<Socket, Refusal>;
+type SocketHandler = Box<
+    dyn Fn(DispatchRequest, CancellationToken) -> Pin<Box<dyn Future<Output = SocketResult> + Send>>
+        + Send
+        + Sync,
+>;
+
 struct Entry {
     route: &'static Route,
     access: Access,
@@ -380,6 +388,7 @@ struct Entry {
 pub struct Registry {
     entries: Vec<Entry>,
     engine: Option<Fallback>,
+    socket: Option<SocketHandler>,
 }
 
 impl Registry {
@@ -460,6 +469,20 @@ impl Registry {
         }));
     }
 
+    pub fn sockets<F, Fut>(&mut self, handle: F)
+    where
+        F: Fn(DispatchRequest, CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = SocketResult> + Send + 'static,
+    {
+        assert!(
+            self.socket.is_none(),
+            "socket dispatcher already registered"
+        );
+        self.socket = Some(Box::new(move |request, cancel| {
+            Box::pin(handle(request, cancel))
+        }));
+    }
+
     /// Start with a line hub owned by this dispatcher. No process-global routes or lines.
     pub fn build(mut self, timing: LineTiming) -> Dispatcher {
         // The line looks through a weak dispatcher so its topic tasks cannot keep the server alive.
@@ -490,38 +513,28 @@ impl Dispatcher {
         reply
     }
 
-    async fn route(&self, request: DispatchRequest, cancel: CancellationToken) -> Reply {
-        let versions = request.headers.get_all(ROUTE_VERSION_HEADER);
-        let mut versions = versions.iter();
-        if let Some(value) = versions.next() {
-            let value = value
-                .to_str()
-                .ok()
-                .filter(|_| versions.next().is_none())
-                .unwrap_or("");
-            if let Some(error) = UnsupportedFormatVersion::for_route(Some(value)) {
-                return Reply::json(StatusCode::BAD_REQUEST, error);
-            }
+    /// All socket transports enter here after transport authentication.
+    pub async fn open_socket(
+        &self,
+        mut request: DispatchRequest,
+        cancel: CancellationToken,
+    ) -> SocketResult {
+        admissible(&request)?;
+        if request.method != Method::GET || !request.body.is_empty() {
+            return Err(unavailable_path());
         }
-        match &request.caller {
-            Caller::Local(_) if !request.caller.local() => {
-                return Refusal::new(StatusCode::FORBIDDEN, "Pair this device before connecting.")
-                    .reply();
-            }
-            Caller::Paired { pairing, .. } if !pairing.is_current() => {
-                return Refusal::new(
-                    StatusCode::FORBIDDEN,
-                    "This device’s pairing changed. Connect again.",
-                )
-                .reply();
-            }
-            _ => {}
-        }
+        request.path = path::canonical(&request.path).ok_or_else(unavailable_path)?;
+        let handler = self.0.socket.as_ref().ok_or_else(unavailable_path)?;
+        handler(request, cancel).await
+    }
 
+    async fn route(&self, mut request: DispatchRequest, cancel: CancellationToken) -> Reply {
+        if let Err(refusal) = admissible(&request) {
+            return refusal.reply();
+        }
         let Some(canonical) = path::canonical(&request.path) else {
-            return unavailable_path();
+            return unavailable_path().reply();
         };
-        let mut request = request;
         if request
             .method
             .as_str()
@@ -561,28 +574,60 @@ impl Dispatcher {
         if known {
             return Reply::empty_json(StatusCode::METHOD_NOT_ALLOWED);
         }
-        if canonical == request.path {
-            if path.starts_with("kuvo/") {
-                return Reply::empty_json(StatusCode::NOT_FOUND);
-            }
-            if path == "api" || path.starts_with("api/") {
-                if let Some(engine) = &self.0.engine {
-                    return engine(request, cancel).await;
-                }
-                return Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
-                    .reply();
-            }
+        if canonical == request.path && path.starts_with("kuvo/") {
+            return Reply::empty_json(StatusCode::NOT_FOUND);
         }
-        unavailable_path()
+        let canonical_route = canonical.split('?').next().unwrap_or_default();
+        if canonical_route == "api" || canonical_route.starts_with("api/") {
+            request.path = canonical;
+            if let Some(engine) = &self.0.engine {
+                return engine(request, cancel).await;
+            }
+            return Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
+                .reply();
+        }
+        unavailable_path().reply()
     }
 }
 
-fn unavailable_path() -> Reply {
-    Reply::bytes(
+fn admissible(request: &DispatchRequest) -> Result<(), Refusal> {
+    let versions = request.headers.get_all(ROUTE_VERSION_HEADER);
+    let mut versions = versions.iter();
+    if let Some(value) = versions.next() {
+        let value = value
+            .to_str()
+            .ok()
+            .filter(|_| versions.next().is_none())
+            .unwrap_or("");
+        if let Some(error) = UnsupportedFormatVersion::for_route(Some(value)) {
+            return Err(Refusal::json(StatusCode::BAD_REQUEST, error));
+        }
+    }
+    match &request.caller {
+        Caller::Local(_) if !request.caller.local() => {
+            return Err(Refusal::new(
+                StatusCode::FORBIDDEN,
+                "Pair this device before connecting.",
+            ));
+        }
+        Caller::Paired { pairing, .. } if !pairing.is_current() => {
+            return Err(Refusal::new(
+                StatusCode::FORBIDDEN,
+                "This device’s pairing changed. Connect again.",
+            ));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn unavailable_path() -> Refusal {
+    Refusal(Reply::bytes(
         StatusCode::FORBIDDEN,
         "text/plain",
         "That isn't available over the link.",
-    )
+    ))
 }
 
 fn parameters(pattern: &'static str, path: &str) -> Option<Vec<(&'static str, String)>> {

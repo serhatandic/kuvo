@@ -1,12 +1,17 @@
-use std::{fs, io, path::Path, sync::Arc};
+use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
+use kuvo_engine::{Engine, State, Timing};
 use kuvo_peers::{
     devices::Devices,
     relay::Relay,
     session::ComputerKind,
     setup_lists::{ResidentPeers, system_clock},
 };
-use kuvo_protocol::{gate::compatibility, routes::get_kuvo_info as info};
+use kuvo_protocol::{
+    gate::compatibility,
+    json::{Null, Nullable},
+    routes::{get_kuvo_info as info, types::GetKuvoInfoStatus200MacEngineState3 as EngineState},
+};
 use kuvo_server::{Access, LineTiming, Refusal, Registry, Resident, RouteReply};
 use serde_json::json;
 
@@ -18,16 +23,23 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
     let generation = resident.record().generation;
     let port = resident.record().port;
-    let kind = if fs::read_to_string(home.join("box/kind")).is_ok_and(|kind| kind.trim() == "mac") {
-        ComputerKind::Mac
-    } else {
-        ComputerKind::Machine
+    let engine = Engine::new(
+        home.to_owned(),
+        std::env::vars_os().collect(),
+        Timing::default(),
+    )?;
+    let kind = match fs::read_to_string(home.join("box/kind")) {
+        Ok(kind) if kind.trim() == "mac" => ComputerKind::Mac,
+        Ok(_) => ComputerKind::Machine,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ComputerKind::Machine,
+        Err(error) => return Err(error.into()),
     };
     let bootstrap =
         Devices::load(home, hostname::get()?.to_string_lossy().into_owned(), kind).await?;
     let info = info(
         home,
         &bootstrap.roster.name,
+        kind,
         bootstrap.devices.permits_local_pairing(),
     )?;
     let peers = ResidentPeers::start(
@@ -40,17 +52,23 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let mut routes = Registry::new();
+    engine.register(&mut routes);
     kuvo_peers::routes::register(&mut routes, peers.reader(), bootstrap.devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
-        let answer = RouteReply::json_with::<200>(
-            info.clone(),
-            [
-                ("serverGeneration", json!(generation)),
-                ("serverBuild", json!(VERSION)),
-            ],
-        )
-        .map_err(|error| Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
-        std::future::ready(answer)
+        let engine = engine.clone();
+        let info = info.clone();
+        async move {
+            RouteReply::json_with::<200>(
+                engine_info(info, engine.state().await),
+                [
+                    ("serverGeneration", json!(generation)),
+                    ("serverBuild", json!(VERSION)),
+                ],
+            )
+            .map_err(|error| {
+                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })
+        }
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
@@ -64,20 +82,18 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn info(
     home: &Path,
     name: &str,
+    kind: ComputerKind,
     permits_pairing: bool,
 ) -> Result<info::Status200, Box<dyn std::error::Error>> {
     let chats = home.join("chats");
     fs::create_dir_all(&chats)?;
-    let is_mac = match fs::read_to_string(home.join("box/kind")) {
-        Ok(kind) => kind.trim() == "mac",
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error.into()),
-    };
+    let is_mac = kind == ComputerKind::Mac;
     // Advertise the implemented routes while the desktop remains behind its update gate.
-    let mut features: Vec<_> = ["info", "line"]
-        .into_iter()
-        .chain(kuvo_peers::routes::FEATURES.iter().copied())
-        .collect();
+    let mut features = vec!["info", "line", "engine.restart"];
+    if !is_mac {
+        features.push("engine.start");
+    }
+    features.extend_from_slice(kuvo_peers::routes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }
@@ -104,8 +120,39 @@ fn info(
         answer["pieces"] = json!({
             "link": resident,
             "agents": {"running": null, "current": VERSION, "behind": false, "renewal": null, "waits": null},
-            "engine": {"running": null, "current": null, "behind": false},
+            "engine": {"running": null, "current": kuvo_engine::pinned_version(), "behind": false},
         });
     }
     Ok(serde_json::from_value(answer)?)
+}
+
+fn engine_info(mut info: info::Status200, state: State) -> info::Status200 {
+    let (state, version, started) = match state {
+        State::Idle => (EngineState::Idle, None, None),
+        State::Starting => (EngineState::Starting, None, None),
+        State::Running { version, started } => (EngineState::Running, version, started),
+        State::Stopped => (EngineState::Stopped, None, None),
+    };
+    let started = started
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .and_then(|time| serde_json::Number::from_f64(time.as_secs_f64()))
+        .map_or(Nullable::Null(Null), Nullable::Value);
+    match &mut info {
+        info::Status200::Mac(mac) => {
+            mac.engine_state = Some(state);
+            mac.engine = version.unwrap_or_default();
+            mac.started = started;
+        }
+        info::Status200::Machine(machine) => {
+            machine.engine_state = Some(state);
+            machine.running = state == EngineState::Running;
+            machine.stopped = state == EngineState::Stopped;
+            machine.started = started;
+            machine.engine = version.map_or(Nullable::Null(Null), Nullable::Value);
+            if let Some(pieces) = &mut machine.pieces {
+                pieces.engine.running = machine.engine.clone();
+            }
+        }
+    }
+    info
 }

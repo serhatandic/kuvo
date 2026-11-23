@@ -5,6 +5,7 @@ mod line;
 mod local;
 mod path;
 mod resident;
+pub mod socket;
 pub mod ssh;
 
 pub use dispatch::{

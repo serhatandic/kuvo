@@ -56,3 +56,11 @@ holding phone notifications remains with the notice producers.
 - The journal lookup covers switching and committed session, bot and group moves and suppresses
   local ownership while a move holds the copy. Activation transactions, queue assignment, forwarded submissions, and compatibility roster migration have their
   own consuming phases.
+
+## Shared checks
+
+The conformance suite's three attention scenarios pass on both binaries. Its membership-and-rename
+scenario passes on TypeScript and stops at `GET kuvo/setup` on Rust, which needs the setup route
+registration. The differential runner agrees on the kept conversation location, waiting count,
+known device roster, and refusal to pair from an untrusted local origin. Its home comparison still
+reports startup files from other TypeScript areas that the Rust resident has yet to initialize.

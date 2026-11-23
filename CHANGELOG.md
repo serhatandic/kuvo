@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - The Rust box can show your other computers’ saved sessions and notices as soon as it starts, with their last-seen time when they’re away.
+- The Rust server starts OpenCode when work needs it, keeps it running through a server restart, and parks it when idle.
 
 - The Rust server keeps live updates through a brief disconnect and queues SSH calls while Kuvo starts.
 

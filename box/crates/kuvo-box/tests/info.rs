@@ -120,8 +120,18 @@ fn serve_answers_info_with_the_fields_the_desktop_reads() {
     assert_eq!(info.name, hostname::get().unwrap().to_string_lossy());
     assert_eq!(info.bridge.as_deref(), Some(env!("CARGO_PKG_VERSION")));
     assert_eq!(info.engine, None);
-    assert!(info.features.contains(&"info".to_owned()));
-    assert!(info.features.contains(&"line.setup-lists".to_owned()));
+    for feature in [
+        "info",
+        "line",
+        "engine.restart",
+        "engine.start",
+        "line.setup-lists",
+    ] {
+        assert!(
+            info.features.iter().any(|available| available == feature),
+            "{feature}"
+        );
+    }
     assert!(
         matches!(info.compatibility, desktop::Compatibility::Held { missing }
         if missing.iter().any(|name| name == "sessions.list"))
