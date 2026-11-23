@@ -44,6 +44,11 @@ impl LocalSessions {
             .and_then(|snapshot| typed(snapshot.answer(None)).ok())
     }
 
+    /// The compatible on-disk representation, passed in memory to the peer publisher.
+    pub fn latest_record(&self) -> Option<Value> {
+        serde_json::to_value(self.snapshot.borrow().as_deref().as_ref()?).ok()
+    }
+
     pub async fn changed(&mut self) -> bool {
         self.snapshot.changed().await.is_ok()
     }

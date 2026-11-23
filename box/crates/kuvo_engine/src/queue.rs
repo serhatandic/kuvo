@@ -542,6 +542,15 @@ pub(crate) async fn reached(
     {
         return Ok(true);
     }
+    transcript_has(engine, lease, session, id).await
+}
+
+async fn transcript_has(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    id: &str,
+) -> Result<bool, api::Error> {
     let path = format!("{}/message/{}", sessions::path(session), api::segment(id));
     match engine.call::<Value>(lease, Method::GET, &path, None).await {
         Ok(message) if message["id"] == id || message["info"]["id"] == id => Ok(true),
@@ -1063,6 +1072,61 @@ fn removal_file(engine: &Engine, session: &str, id: &str) -> PathBuf {
         .join(format!("{}.json", disk::key(session, id)))
 }
 
+fn spent_path(engine: &Engine, session: &str, id: &str, token: &str) -> PathBuf {
+    engine
+        .home
+        .join("run/queue-removals/spent")
+        .join(disk::key(&disk::key(session, id), token))
+}
+
+async fn spend(engine: &Engine, session: &str, id: &str, token: &str) -> io::Result<()> {
+    disk::durable(spent_path(engine, session, id, token), ()).await
+}
+
+async fn forget_removal(engine: &Engine, session: &str, id: &str, token: &str) -> io::Result<()> {
+    spend(engine, session, id, token).await?;
+    match tokio::fs::remove_file(removal_file(engine, session, id)).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn saved_removal(engine: &Engine, session: &str, id: &str) -> io::Result<Option<Removal>> {
+    let saved = disk::read::<Removal>(&removal_file(engine, session, id)).await?;
+    let Some(saved) = saved else {
+        return Ok(None);
+    };
+    if saved.format_version > 1 {
+        return Err(io::Error::other(
+            "Unsupported queue removal receipt format.",
+        ));
+    }
+    if tokio::fs::try_exists(spent_path(engine, session, id, &saved.token)).await? {
+        return Ok(None);
+    }
+    Ok(Some(saved))
+}
+
+pub(crate) async fn check_undo(engine: &Engine, session: &str, id: &str) -> io::Result<()> {
+    if saved_removal(engine, session, id)
+        .await?
+        .is_some_and(|saved| !saved.complete)
+    {
+        return Err(io::Error::other(
+            "Kuvo is still checking whether the message was taken back.",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn finish_undo(engine: &Engine, session: &str, id: &str) -> io::Result<()> {
+    if let Some(saved) = saved_removal(engine, session, id).await? {
+        forget_removal(engine, session, id, &saved.token).await?;
+    }
+    Ok(())
+}
+
 async fn remove_reply(
     engine: &Engine,
     call: RouteCall<()>,
@@ -1079,23 +1143,30 @@ async fn remove_reply(
     let _turn = engine.turn(&session).await;
     let file = removal_file(engine, &session, &id);
     let current = engine.queues.get(&session).await.map_err(save_failed)?;
-    let existing = disk::read::<Removal>(&file).await.map_err(save_failed)?;
-    if let Some(ref receipt) = existing
-        && receipt.format_version > 1
+    if let Some(token) = &token
+        && tokio::fs::try_exists(spent_path(engine, &session, &id, token))
+            .await
+            .map_err(save_failed)?
     {
-        return Err(Refusal::new(
-            StatusCode::BAD_GATEWAY,
-            "Unsupported queue removal receipt format.",
-        ));
+        return Err(not_waiting());
+    }
+    let existing = saved_removal(engine, &session, &id)
+        .await
+        .map_err(save_failed)?;
+    if let (Some(token), Some(existing)) = (&token, &existing)
+        && *token != existing.token
+    {
+        spend(engine, &session, &id, token)
+            .await
+            .map_err(save_failed)?;
+        return Err(not_waiting());
     }
     let mut lease = engine.acquire(Demand::Passive).await;
     let items = match &lease {
         Some(lease) => inbox(engine, lease, &session).await.ok(),
         None => None,
     };
-    let mut removal = if let Some(existing) =
-        existing.filter(|existing| !existing.complete || token.as_ref() == Some(&existing.token))
-    {
+    let mut removal = if let Some(existing) = existing {
         existing
     } else {
         let before = current
@@ -1199,16 +1270,29 @@ async fn remove_reply(
             if let Err(error) = engine
                 .call::<Value>(&lease, Method::DELETE, &path, None)
                 .await
+                && !error.missing()
             {
-                if !error.missing() {
-                    return Err(queue_failed(error));
-                }
-                if reached(engine, &lease, &session, &id)
+                return Err(queue_failed(error));
+            }
+            if inbox(engine, &lease, &session)
+                .await
+                .map_err(queue_failed)?
+                .iter()
+                .any(|row| row.id == id)
+            {
+                return Err(Refusal::new(
+                    StatusCode::BAD_GATEWAY,
+                    "It couldn't be taken back. Try again in a moment.",
+                ));
+            }
+            if transcript_has(engine, &lease, &session, &id)
+                .await
+                .map_err(queue_failed)?
+            {
+                forget_removal(engine, &session, &id, &removal.token)
                     .await
-                    .map_err(queue_failed)?
-                {
-                    return Err(not_waiting());
-                }
+                    .map_err(save_failed)?;
+                return Err(not_waiting());
             }
         }
         engine
@@ -1266,13 +1350,14 @@ async fn acknowledge(
         .and_then(Value::as_str)
         .ok_or_else(|| Refusal::new(StatusCode::BAD_REQUEST, "Give the removal receipt."))?;
     let _turn = engine.turn(&session).await;
-    let file = removal_file(engine, &session, &id);
-    if disk::read::<Removal>(&file)
+    if saved_removal(engine, &session, &id)
         .await
         .map_err(save_failed)?
         .is_some_and(|saved| saved.complete && saved.token == token)
     {
-        tokio::fs::remove_file(file).await.map_err(save_failed)?;
+        forget_removal(engine, &session, &id, token)
+            .await
+            .map_err(save_failed)?;
     }
     Ok(RouteReply::json::<200>(sessions::typed(
         engine

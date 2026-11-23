@@ -72,6 +72,8 @@ struct Send {
     from: Option<String>,
     before: Option<String>,
     immediate: bool,
+    #[serde(default)]
+    undo: bool,
     form: Form,
 }
 
@@ -238,6 +240,7 @@ fn decode(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Send, Ref
         from,
         before,
         immediate: choice == Some("now") && !legacy_queue,
+        undo: legacy_queue && given.get("kept") == Some(&Value::Bool(true)),
     })
 }
 
@@ -270,7 +273,14 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
     let _turn = engine.turn(session).await;
     let path = receipt_path(engine, session, &given.prompt.id);
     let saved = read(engine, session, &given.prompt.id).await?;
-    if let Some(answer) = saved.as_ref().and_then(|receipt| receipt.answer.as_ref()) {
+    if let Some(receipt) = &saved
+        && let Some(answer) = &receipt.answer
+    {
+        if receipt.request.undo {
+            queue::finish_undo(engine, session, &receipt.request.prompt.id)
+                .await
+                .map_err(disk_failure)?;
+        }
         return Ok(answer.value.clone());
     }
     let interrupted = saved.is_some();
@@ -281,6 +291,11 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
     });
     let request = &receipt.request;
     let id = &request.prompt.id;
+    if request.undo {
+        queue::check_undo(engine, session, id)
+            .await
+            .map_err(disk_failure)?;
+    }
     let queue = engine.queues.get(session).await.map_err(disk_failure)?;
     let mut admitted = queue.contains(id);
     let mut delivered = false;
@@ -344,11 +359,18 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
     } else if admitted {
         answer = json!({ "waits": true });
     }
+    let undo = receipt.request.undo;
+    let id = receipt.request.prompt.id.clone();
     receipt.answer = Some(Answer {
         value: answer.clone(),
         delivered,
     });
     disk::durable(path, receipt).await.map_err(disk_failure)?;
+    if undo {
+        queue::finish_undo(engine, session, &id)
+            .await
+            .map_err(disk_failure)?;
+    }
     Ok(answer)
 }
 

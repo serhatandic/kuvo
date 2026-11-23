@@ -1,6 +1,7 @@
 // Session and message behavior through the selected resident and its engine API.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 import { request } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
@@ -147,7 +148,7 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.equal(started.status, 200);
   assert.equal(started.json.title, "New conversation");
   assert.equal(started.json.project, null);
-  assert.equal(started.json.folder, here.home + "/chats");
+  assert.equal(started.json.folder, path.join(here.home, "chats"));
   assert.equal(started.json.info.metadata.kuvo.chat, started.json.folder);
   assert.equal(started.json.info.metadata.kuvo.approval, "askFirst");
 
@@ -162,4 +163,56 @@ test("a new chat keeps its session marks and appears in the local session list",
     return;
   }
   assert.fail("the new chat did not reach the line");
+});
+
+test("a stopped queue replays its send and protects an undone message from an old removal", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-undo");
+  const id = "ses_undo";
+  here.engine.sessions.push(sessionOf({ id, title: "Paused", directory: here.home }));
+  const first = here.start();
+  let resident = await first.ready();
+  const path = "kuvo/sessions/" + id;
+  assert.equal((await request(resident, "POST", path + "/stop")).status, 200);
+  const message = { id: "msg_undo", words: "Keep me", delivery: "queue" };
+  const send = await request(resident, "POST", path + "/send", message);
+  assert.equal(send.status, 200);
+  assert.deepEqual(send.json, { waits: true });
+  await first.stop();
+  resident = await here.start().ready();
+
+  const replay = await request(resident, "POST", path + "/send", message);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.json, send.json);
+  const remove = path + "/queue/msg_undo?receipt=msg_ticket";
+  const removed = await request(resident, "DELETE", remove);
+  assert.equal(removed.status, 200);
+  const undo = await request(resident, "POST", path + "/queue/add", { ...removed.json.removed, kept: true });
+  assert.equal(undo.status, 200, undo.text);
+  assert.equal(undo.json.waits, true);
+  assert.equal((await request(resident, "DELETE", remove)).status, 404);
+  const queue = await request(resident, "GET", path + "/queue");
+  assert.equal(queue.status, 200);
+  assert.deepEqual(queue.json.waiting.map(row => [row.id, row.text]), [[message.id, message.words]]);
+});
+
+test("a message removed while on its way can be taken back when it arrives", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-arriving");
+  const id = "ses_arriving";
+  here.engine.sessions.push(sessionOf({ id, title: "Arriving", directory: here.home }));
+  const resident = await here.start().ready();
+  const path = "kuvo/sessions/" + id;
+  assert.equal((await request(resident, "POST", path + "/stop")).status, 200);
+  const route = path + "/queue/msg_arriving?arriving=1";
+  const before = await request(resident, "DELETE", route);
+  assert.equal(before.status, 409);
+  assert.equal(before.json.arriving, true);
+  const send = await request(resident, "POST", path + "/send", { id: "msg_arriving", words: "Keep it here first" });
+  assert.equal(send.status, 200);
+  assert.deepEqual(send.json, { waits: true });
+  const after = await request(resident, "DELETE", route);
+  assert.equal(after.status, 200);
+  assert.equal(after.json.removed.words, "Keep it here first");
+  assert.deepEqual(here.engine.messages.get(id) ?? [], []);
 });
