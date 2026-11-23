@@ -20,6 +20,7 @@ use crate::{
     model::{Position, Role, safe_token},
     random,
     seed::source::{Consent, Inventory, Prepared, Selection},
+    ssh::Action,
     storage::Files,
 };
 
@@ -37,6 +38,7 @@ pub(crate) enum AddRequest {
         invite: String,
         selection: Selection,
     },
+    Ssh(Action),
 }
 
 impl AddRequest {
@@ -44,19 +46,22 @@ impl AddRequest {
         Duration::from_secs(match self {
             Self::Checklist => 20,
             Self::Offer { .. } => 45,
+            Self::Ssh(Action::Page) => 20,
+            Self::Ssh(_) => 45,
         })
     }
 
     fn to_act(&self, at: u64, id: String, position: &Position, by: Submitter) -> Act {
         let (method, item, input) = match self {
-            Self::Checklist => ("GET", "credentials", None),
+            Self::Checklist => ("GET", "credentials".into(), None),
             Self::Offer { invite, selection } => (
                 "POST",
-                "code",
+                "code".into(),
                 Some(json!({
                     "invite": invite, "credentials": selection.ids(),
                 })),
             ),
+            Self::Ssh(action) => action.wire(),
         };
         let actor = match by {
             Submitter::Computer => None,
@@ -67,13 +72,21 @@ impl AddRequest {
             at,
             area: AREA.into(),
             method: method.into(),
-            item: item.into(),
+            item,
             body: Scope {
                 setup: position.id.clone(),
                 epoch: position.epoch,
                 actor,
                 input,
             },
+        }
+    }
+
+    fn mutates(&self) -> bool {
+        match self {
+            Self::Checklist => false,
+            Self::Offer { .. } => true,
+            Self::Ssh(action) => action.changes(),
         }
     }
 }
@@ -110,7 +123,9 @@ impl Act {
                     selection: Selection::read(given.get("credentials").cloned())?,
                 })
             }
-            _ => None,
+            _ => {
+                Action::read(&self.method, &self.item, self.body.input.clone()).map(AddRequest::Ssh)
+            }
         }
     }
 }
@@ -165,11 +180,22 @@ pub(super) struct Forwarding {
     pub(super) jobs: JoinSet<Finished>,
     active: HashSet<(String, String)>,
     pending: HashMap<String, Pending>,
+    completed: HashMap<(String, String), Cached>,
+}
+
+struct Cached {
+    digest: String,
+    expires: Instant,
+    answer: Response,
 }
 
 enum Where {
     Local(Reply),
-    Peer { from: String, request: String },
+    Peer {
+        from: String,
+        request: String,
+        cache: Option<String>,
+    },
 }
 
 pub(super) struct Finished {
@@ -181,6 +207,7 @@ pub(super) struct Finished {
 
 enum PreparedRequest {
     Checklist(Value),
+    Ssh(Response),
     Offer {
         invite: String,
         seed: Option<Prepared>,
@@ -243,7 +270,7 @@ impl Owner {
         let deadline = sent + request.allowed_for();
         let id = format!("wqa_{}", encode(&random::<16>()?));
         let act = request.to_act(lease::wall(), id.clone(), &position, by);
-        let spool = if matches!(request, AddRequest::Offer { .. }) {
+        let spool = if request.mutates() {
             let path = format!("run/work-queue/forward/{id}.json");
             if self
                 .files
@@ -283,11 +310,23 @@ impl Owner {
         destination: Where,
     ) {
         let files = self.files.clone();
+        let ssh = self
+            .ssh
+            .borrow()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
         self.forwarding.jobs.spawn(async move {
             let result = match request {
                 AddRequest::Checklist => {
                     PreparedRequest::Checklist(Inventory::read(&files).await.checklist())
                 }
+                AddRequest::Ssh(action) => match ssh {
+                    Some(ssh) => PreparedRequest::Ssh(ssh.execute(action, by.clone()).await),
+                    None => PreparedRequest::Failed(refused(
+                        503,
+                        "Kuvo’s local server hasn’t started yet. Try again in a moment.",
+                    )),
+                },
                 AddRequest::Offer { invite, selection } if selection.empty() => {
                     PreparedRequest::Offer { invite, seed: None }
                 }
@@ -361,6 +400,29 @@ impl Owner {
             self.add_answer(from, &act.id, answer).await;
             return Ok(());
         }
+        let cache = if matches!(&request, AddRequest::Ssh(action) if action.changes()) {
+            let wire = serde_json::to_string(&act).expect("forwarded SSH request serializes");
+            let digest = installer::hash(&wire);
+            if let Some(old) = self
+                .forwarding
+                .completed
+                .get(&(from.into(), act.id.clone()))
+            {
+                let answer = if old.digest == digest {
+                    old.answer.clone()
+                } else {
+                    refused(
+                        409,
+                        "That operation id is already bound to another change or owner.",
+                    )
+                };
+                self.add_answer(from, &act.id, answer).await;
+                return Ok(());
+            }
+            Some(digest)
+        } else {
+            None
+        };
         if self.forwarding.active.insert((from.into(), act.id.clone())) {
             self.prepare_add(
                 request,
@@ -369,6 +431,7 @@ impl Owner {
                 Where::Peer {
                     from: from.into(),
                     request: act.id,
+                    cache,
                 },
             );
         }
@@ -392,7 +455,7 @@ impl Owner {
                 .as_u64()
                 .and_then(|status| u16::try_from(status).ok());
             let answer = match status {
-                Some(status @ (200 | 201 | 400 | 403 | 409 | 503)) => Response {
+                Some(status @ (200 | 201 | 202 | 400 | 403 | 404 | 405 | 409 | 503)) => Response {
                     status,
                     value: value["value"].clone(),
                 },
@@ -424,6 +487,7 @@ impl Owner {
         } else {
             match result {
                 PreparedRequest::Checklist(value) => Ok(Response::ok(value)),
+                PreparedRequest::Ssh(answer) => Ok(answer),
                 PreparedRequest::Offer { invite, seed } => {
                     let consent = seed.map_or(Consent::None, Consent::Selected);
                     self.issue_installer_offer(invite, consent, by).await
@@ -435,11 +499,27 @@ impl Owner {
             Where::Local(reply) => {
                 let _ = reply.send(response);
             }
-            Where::Peer { from, request } => {
+            Where::Peer {
+                from,
+                request,
+                cache,
+            } => {
                 self.forwarding
                     .active
                     .remove(&(from.clone(), request.clone()));
                 let response = response.unwrap_or_else(|error| refused(503, &error.to_string()));
+                if let Some(digest) = cache
+                    && self.forwarding.completed.len() < 64
+                {
+                    self.forwarding.completed.insert(
+                        (from.clone(), request.clone()),
+                        Cached {
+                            digest,
+                            expires: Instant::now() + Duration::from_secs(50),
+                            answer: response.clone(),
+                        },
+                    );
+                }
                 self.add_answer(&from, &request, response).await;
             }
         }
@@ -453,6 +533,9 @@ impl Owner {
 
     pub(super) async fn retry_add_requests(&mut self) {
         let now = Instant::now();
+        self.forwarding
+            .completed
+            .retain(|_, entry| entry.expires > now);
         let due: Vec<_> = self
             .forwarding
             .pending

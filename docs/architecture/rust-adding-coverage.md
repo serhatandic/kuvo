@@ -16,12 +16,13 @@ the races that span removal, backup, moves, and an authority change.
 | C6 | [The main retires only the provisional computer named by a cancellation receipt](../../protocol/conformance/adding.test.mjs) | A stopped installer prints its expired claim’s receipt. The main refuses a forged receipt, retires the exact entry once and allows a new enrollment with fresh keys. |
 | C7 | [A seed keeps existing sign-ins and keys and takes portable credentials once](../../protocol/conformance/adding.test.mjs) | The local seed refuses future formats, preserves existing credentials, skips renewing tokens and chooses integration settings from the installed catalog. |
 | C8 | [Local discovery chooses the existing machine](../../protocol/conformance/setup-judge.test.mjs) | The startup command chooses an existing member, ignores a stopped installation marked off, and waits for an unfinished move. |
-| C9 | [SSH Add trusts the selected host and starts an enrolled resident](../../protocol/conformance/ssh-adding.test.mjs) | The TypeScript fake host waits for explicit trust, installs and signs in the resident. Add preserves one member across two verified addresses, refuses an alias with a copied machine ID and a different box key, and refuses WSL 1 before copying files. |
+| C9 | [SSH Add trusts the selected host and starts an enrolled resident](../../protocol/conformance/ssh-adding.test.mjs) | The TypeScript fake host waits for explicit trust, installs and signs in the resident. Add preserves one member across two verified addresses and refuses a copied machine ID with a different box key. A member follows attempts on the main, survives a lost start reply, answers the host key question, and deletes the failed WSL 1 attempt. |
 | C10 | [Installer enrollment copies only the selected sign-ins and keys](../../protocol/conformance/adding.test.mjs) | Checklist IDs omit secrets and rotating sign-ins. The issuer seals the selected seed at rest. A multipart seed resumes after a failed engine write, preserves the selected key contents and is deleted after an acknowledgment. |
 | C11 | [A member lists the main computer’s keys and issues an installer code through it](../../protocol/conformance/adding.test.mjs) | A member shows the main’s checklist, keeps the token on the requesting side and retries a lost reply with the same invitation hash. The selected copy is already sealed and stays usable after its source key changes. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
+| U4 | [A main with incoming devices off still revokes a device and delivers a machine unlink](../../box/crates/kuvo_setup/tests/live.test.mjs) | A Rust main reads the persisted off setting through the Mac Helper path. It refuses a new pairing, publishes a signed desktop revocation and finishes a machine unlink while the setting stays off. |
 
 ## Stored and inherited cases
 
@@ -48,18 +49,19 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-On macOS, TypeScript passes C1–C3, C5–C8, C10 and U1–U3. Rust passes C1–C10 and
-U1–U3, including a Rust-to-Rust re-enrollment in U2. The Rust workspace compile
-check passes. The Mac-built static x86-64 musl binary passes C1–C9 and U1–U3
+On macOS, TypeScript passes C1–C3, C5–C8, C10–C11 and U1–U3. Rust passes C1–C11 and
+U1–U4, including a Rust-to-Rust re-enrollment in U2. The Rust workspace compile
+check passes. The Mac-built static x86-64 musl binary passes C1–C11 and U1–U3
 in WSL 2 and in a single lokum container capped at one CPU and 1 GB.
-The native Windows binary passes C1–C8, C10 and U1–U3. The original TypeScript
-fake SSH host scenario passes as a reference check. The Windows PC’s WSL 2
-account also joined a Rust setup and acknowledged a plain unlink over a
-private relay with both homes isolated. Native Windows copied the executable,
-joined, and wrote readiness. Its SSH-launched resident exited after the SSH
-command ended, so it could not receive unlink. The real SSH exercises used
-staged Rust executables. Engine and keeper installation and cross-platform
-release selection still need the release path in 7.1.
+The native Windows binary passes C1–C8, C10–C11 and U1–U3. The original TypeScript
+fake SSH host, alias, WSL 1 refusal and device-revocation scenarios pass as
+reference checks. The Windows PC’s WSL 2 account joined a Rust setup,
+acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
+joined, acknowledged unlink and re-enrolled after starting its resident in a
+separate foreground SSH session. The native resident launched by Add ended
+with the SSH command. Both live exercises used staged executables and isolated
+homes. Engine and keeper installation and cross-platform release selection
+still need the release path in 7.1.
 
 | Earlier mixed-only check | Status |
 | --- | --- |
@@ -69,6 +71,10 @@ release selection still need the release path in 7.1.
 
 Released Macs 0.5–0.7.2 and 0.8.0-beta.1 remain in scope. The TypeScript
 conformance oracle uses its own residents. Rust live checks use Rust residents.
+The tagged 0.7.2 machine retains its settings and identity on both binaries.
+The beta.1 fixture retains that behavior on TypeScript. Rust's case stalls
+when it waits for the updated beta.1 peers mail. Receiving that released
+mail belongs to 7.3. Earlier released Macs still need adding and removal proof.
 
 The differential runner compared stopped TypeScript homes without a file
 allowlist. Installer validation refusals and unlink receipt replay, including
@@ -132,7 +138,7 @@ exists. The directory entries are included with the respective files.
 | `run/lists/sessions.json`, `run/queues-scanned.json` | **3.2.** Session-list writers and `engine/queue.ts` keep the projection and scan cursor. Port and timestamps can vary, while missing records and stable fields still count. |
 | `agents` | **4.1.** `agents/main.ts` initializes the bridge's local home. |
 | `bots`, `wakes`, `run/bots-seen`, `run/glance`, `run/glance/asks.json`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json` | **5.1.** Bot discovery, wake-up scheduling, the glance writer and notice replay use these. `bots/seen.ts`, `work/background.ts` and `notices/told.ts` read the cursors or kept state. |
-| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward` | **5.2.** Queue forwarding and service startup use the saved queue state and sign-in staging. **2.3** uses the forward spool for installer requests. C11 verifies hash-only forwarding and its accepted invitation. |
+| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward` | **5.2.** Queue forwarding and service startup use the saved queue state and sign-in staging. **2.3** uses the forward spool for installer and SSH requests. C11 verifies hash-only installer forwarding. C9 verifies a repeated SSH request within the live main's retry window. Recovery from a main restart still needs durable SSH action receipts. |
 | `chats` | **5.3.** The shared chats store uses the home directory named in `link/home.ts`. |
 | `agents/limits.json`, `agents/usage`, `agents/usage/claude-files`, `agents/usage/codex-files`, `agents/usage/grok-files`, `agents/usage/insights.sqlite`, `agents/usage/insights.sqlite-shm`, `agents/usage/insights.sqlite-wal`, `agents/usage/settings.json`, `agents/usage/usage.json`, `run/usage-attribution.json` | **5.4.** The usage worker writes the scans, settings, Insights database and attribution. `agents/box-services.ts` reads attribution. SQLite journal presence and stable settings still count. Enrollment's use of the settings scope is **2.3**. |
 | `artifacts`, `artifacts/citations-v1.json`, `artifacts/copies`, `artifacts/index-v1.sqlite`, `artifacts/key`, `artifacts/log`, `library`, `library/backfill.json`, `box/marketplace`, `box/marketplace/mcp-relay-v1.json` | **5.5.** The artifact store, library backfill and Marketplace relay consume these. The index and kept records belong to their own services. |
@@ -145,7 +151,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 26 have partial coverage, and 164 are open. Of the open cases, 133 list 2.3 as an owner.
+This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 27 have partial coverage, and 163 are open. Of the open cases, 132 list 2.3 as an owner.
 
 ### computers-add
 
@@ -201,7 +207,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [a stopped Darwin machine reports a refused legacy launch job](../../box/bridge-tests/computers-add-darwin.test.js#L112) | Open | 2.3, 6.2 |
 | [an adopted Darwin reinstall reports failure while the bridge returns 503](../../box/bridge-tests/computers-add-darwin.test.js#L135) | Open | 2.3, 7.1 |
 | [a Darwin keeper finishes an interrupted fresh install when both services answer](../../box/bridge-tests/computers-add-darwin.test.js#L166) | Open | 6.2, 7.1 |
-| [a Linux primary starts fresh, enrolls over SSH and pairs devices](../../box/bridge-tests/computers-add-enrollment.test.js#L18) | C9 runs fresh enrollment from a Linux binary. This path still needs device pairing and release startup coverage. | 2.3, 7.1 |
+| [a Linux primary starts fresh, enrolls over SSH and pairs devices](../../box/bridge-tests/computers-add-enrollment.test.js#L18) | C9 runs fresh enrollment and member forwarding from a Linux binary. This path still needs device pairing, follow-up reinstall and release startup coverage. | 2.3, 7.1 |
 
 ### install
 
@@ -381,7 +387,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [the desktop app on a member's computer is paired through its own box and reaches every box of the setup, until another device removes it](../../box/bridge-tests/devices-two-boxes.test.js#L297) | Open | 2.3 |
-| [a removal reaches a member while the primary's inbound device switch stays off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | Open | 2.3 |
+| [a removal reaches a member while the primary's inbound device switch stays off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | U4 covers the saved off setting, refused pairing, replicated revocation and machine unlink. Live switch changes and the connection-level checks remain open. | 2.3, 6.2 |
 | [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L701) | Open | 2.3 |
 | [local uninstall revokes its desktop before stopping the box, including a session open to its primary](../../box/bridge-tests/devices-two-boxes.test.js#L739) | Open | 2.3 |
 

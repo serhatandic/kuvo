@@ -61,6 +61,7 @@ pub struct SetupRuntime {
 pub struct SetupHandle {
     pub(crate) inbox: mpsc::Sender<Request>,
     pub(crate) views: watch::Receiver<View>,
+    pub(crate) ssh_routes: watch::Sender<Option<std::sync::Weak<crate::ssh::Adding>>>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
     activity: activity::Sender,
 }
@@ -182,6 +183,7 @@ pub(crate) enum Command {
     },
 }
 
+#[derive(Clone)]
 pub(crate) struct Response {
     pub status: u16,
     pub value: Value,
@@ -321,6 +323,7 @@ impl PreparedSetup {
             welcomed,
         )?;
         let (views, view_rx) = watch::channel(view);
+        let (ssh_routes, ssh) = watch::channel(None);
         let (rosters, roster_rx) =
             watch::channel(peer_roster(&link, identity.as_ref()).map(Arc::new));
         for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
@@ -348,6 +351,7 @@ impl PreparedSetup {
             unlink_challenge: None,
             pending_devices: HashMap::new(),
             forwarding: add_forward::Forwarding::default(),
+            ssh,
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
@@ -361,6 +365,7 @@ impl PreparedSetup {
                 inbox: tx,
                 views: view_rx,
                 rosters: roster_rx,
+                ssh_routes,
                 activity,
             },
             task,
@@ -860,6 +865,7 @@ struct Owner {
     unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
     forwarding: add_forward::Forwarding,
+    ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,

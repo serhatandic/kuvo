@@ -14,7 +14,6 @@ use std::{
     },
 };
 
-use http::StatusCode;
 use kuvo_protocol::routes::*;
 use kuvo_server::{Access, Refusal, Registry};
 use serde::{Deserialize, Serialize};
@@ -24,10 +23,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 use self::{address::Address, connect::Destination, transport::HostKey};
 use crate::{
     SetupHandle,
-    actor::Command,
+    actor::{Command, Response, add_forward::AddRequest},
     edits::Submitter,
     preferences,
-    routes::{submitter, typed},
+    routes::{response_refusal, submitter, typed},
     storage::Files,
 };
 
@@ -160,11 +159,57 @@ impl Drop for Active {
 }
 
 #[derive(Clone)]
-struct Adding {
+pub(crate) struct Adding {
     setup: SetupHandle,
     commands: mpsc::Sender<Message>,
     views: watch::Receiver<Vec<Attempt>>,
     files: Files,
+}
+
+pub(crate) enum Action {
+    Page,
+    Start(Value),
+    Answer { id: String, input: Value },
+    Cancel(String),
+}
+
+impl Action {
+    pub(crate) fn wire(&self) -> (&'static str, String, Option<Value>) {
+        match self {
+            Self::Page => ("GET", "add".into(), None),
+            Self::Start(input) => ("POST", "add".into(), Some(input.clone())),
+            Self::Answer { id, input } => ("POST", format!("answer/{id}"), Some(input.clone())),
+            Self::Cancel(id) => ("DELETE", id.clone(), None),
+        }
+    }
+
+    pub(crate) fn read(method: &str, item: &str, input: Option<Value>) -> Option<Self> {
+        fn valid(id: &str) -> bool {
+            id.strip_prefix("add_").is_some_and(|suffix| {
+                (1..=40).contains(&suffix.len())
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            })
+        }
+        match (method, item) {
+            ("GET", "add") => Some(Self::Page),
+            ("POST", "add") => Some(Self::Start(input.unwrap_or_default())),
+            ("POST", item) => {
+                let id = item.strip_prefix("answer/").filter(|id| valid(id))?;
+                Some(Self::Answer {
+                    id: id.into(),
+                    input: input.unwrap_or_default(),
+                })
+            }
+            ("DELETE", item) if valid(item) => Some(Self::Cancel(item.into())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn changes(&self) -> bool {
+        !matches!(self, Self::Page)
+    }
 }
 
 enum Change {
@@ -187,17 +232,18 @@ enum Progress {
 }
 
 enum Message {
-    Client(Change, oneshot::Sender<Result<Value, Refusal>>),
+    Client(Change, oneshot::Sender<Result<Value, Denied>>),
     Job(String, Progress),
 }
 
 impl SetupHandle {
     pub fn register_ssh(&self, routes: &mut Registry, home: &Path) {
-        let adding = Adding::new(self.clone(), home.into());
+        let adding = Arc::new(Adding::new(self.clone(), home.into()));
+        self.ssh_routes.send_replace(Some(Arc::downgrade(&adding)));
         let route = adding.clone();
         routes.register::<get_kuvo_computers_add::Spec, _, _>(Access::Any, move |_| {
             let route = route.clone();
-            async move { typed::<get_kuvo_computers_add::Spec, 200>(route.page().await) }
+            async move { typed::<get_kuvo_computers_add::Spec, 200>(route.followed_page().await) }
         });
         let route = adding.clone();
         routes.register::<get_kuvo_computers_add_events::Spec, _, _>(Access::Any, move |_| {
@@ -208,7 +254,7 @@ impl SetupHandle {
                 Ok(kuvo_server::RouteReply::ndjson::<200>(async_stream::stream! {
                     let mut before = Value::Null;
                     loop {
-                        let next = route.page().await;
+                        let next = route.followed_page().await;
                         if next != before {
                             let line = serde_json::from_value(next.clone())
                                 .map_err(std::io::Error::other)
@@ -219,59 +265,51 @@ impl SetupHandle {
                         tokio::select! {
                             result = attempts.changed() => if result.is_err() { break; },
                             result = setup.changed() => if result.is_err() { break; },
+                            () = tokio::time::sleep(std::time::Duration::from_millis(1500)), if route.member() => {},
                         }
                     }
                 }))
             }
         });
         let route = adding.clone();
-        routes.register::<post_kuvo_computers_add::Spec, _, _>(Access::DesktopOrPaired, move |call| {
-            let route = route.clone();
-            async move {
-                let by = submitter(&call.request.caller)?;
-                route.allowed(by.clone()).await.map_err(Denied::refusal)?;
-                let value = body(&call.request.body);
-                if value.get("replace").is_some_and(|item| !item.as_str().is_some_and(|v| crate::model::safe_token(v, 43, 43))) {
-                    return Err(refuse(400, "Choose the previous membership by its key."));
+        routes.register::<post_kuvo_computers_add::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let route = route.clone();
+                async move {
+                    let response = route
+                        .follow(
+                            Action::Start(body(&call.request.body)),
+                            submitter(&call.request.caller)?,
+                        )
+                        .await?;
+                    if response.status == 202 {
+                        typed::<post_kuvo_computers_add::Spec, 202>(response.value)
+                    } else {
+                        Err(response_refusal(response))
+                    }
                 }
-                if value.get("discardLocalPairings").is_some_and(|item| !item.is_boolean()) {
-                    return Err(refuse(400, "Choose whether to discard local pairings."));
-                }
-                let destination = Address::read(value["destination"].as_str().unwrap_or(""))
-                    .map_err(|message| refuse(400, message))?;
-                if value.get("credentials").is_some_and(|item| !item.as_array().is_some_and(|ids| {
-                    ids.len() <= 300 && ids.iter().all(|id| id.as_str().is_some_and(|id| crate::model::safe_token(id, 43, 43)))
-                })) {
-                    return Err(refuse(400, "Choose sign-ins and keys by their checklist IDs."));
-                }
-                if value["credentials"].as_array().is_some_and(|items| !items.is_empty()) {
-                    return Err(refuse(503, "Some selected sign-ins or keys are no longer available. Open the checklist again."));
-                }
-                let windows = match value.get("windows") {
-                    None => WindowsMode::Wsl,
-                    Some(value) if value == "native" => WindowsMode::Native,
-                    Some(value) if value == "wsl" => WindowsMode::Wsl,
-                    Some(_) => return Err(refuse(400, "Choose native Windows or WSL.")),
-                };
-                typed::<post_kuvo_computers_add::Spec, 202>(route.change(Change::Start(destination, by, windows)).await?)
-            }
-        });
+            },
+        );
         let route = adding.clone();
         routes.register::<post_kuvo_computers_add_id_answer::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
                 let route = route.clone();
                 async move {
-                    route
-                        .allowed(submitter(&call.request.caller)?)
-                        .await
-                        .map_err(Denied::refusal)?;
                     let id = call.param("id").unwrap_or_default().to_owned();
-                    typed::<post_kuvo_computers_add_id_answer::Spec, 200>(
-                        route
-                            .change(Change::Answer(id, body(&call.request.body)))
-                            .await?,
-                    )
+                    let action = Action::Answer {
+                        id,
+                        input: body(&call.request.body),
+                    };
+                    let response = route
+                        .follow(action, submitter(&call.request.caller)?)
+                        .await?;
+                    if response.status == 200 {
+                        typed::<post_kuvo_computers_add_id_answer::Spec, 200>(response.value)
+                    } else {
+                        Err(response_refusal(response))
+                    }
                 }
             },
         );
@@ -280,14 +318,15 @@ impl SetupHandle {
             move |call| {
                 let route = adding.clone();
                 async move {
-                    route
-                        .allowed(submitter(&call.request.caller)?)
-                        .await
-                        .map_err(Denied::refusal)?;
                     let id = call.param("id").unwrap_or_default().to_owned();
-                    typed::<delete_kuvo_computers_add_id::Spec, 200>(
-                        route.change(Change::Cancel(id)).await?,
-                    )
+                    let response = route
+                        .follow(Action::Cancel(id), submitter(&call.request.caller)?)
+                        .await?;
+                    if response.status == 200 {
+                        typed::<delete_kuvo_computers_add_id::Spec, 200>(response.value)
+                    } else {
+                        Err(response_refusal(response))
+                    }
                 }
             },
         );
@@ -395,7 +434,57 @@ impl Adding {
         json!({"can": true, "hosts": hosts, "tries": tries})
     }
 
-    async fn change(&self, change: Change) -> Result<Value, Refusal> {
+    fn member(&self) -> bool {
+        self.setup.views.borrow().setup["you"]["role"] == "member"
+    }
+
+    async fn follow(&self, action: Action, by: Submitter) -> Result<Response, Refusal> {
+        if self.member() {
+            self.setup
+                .request(Command::AddViaMain(AddRequest::Ssh(action), by))
+                .await
+        } else {
+            Ok(self.execute(action, by).await)
+        }
+    }
+
+    async fn followed_page(&self) -> Value {
+        match self.follow(Action::Page, Submitter::Computer).await {
+            Ok(answer) if answer.status == 200 => answer.value,
+            Ok(answer) => {
+                json!({"can": false, "why": answer.value["message"], "hosts": [], "tries": []})
+            }
+            Err(_) => {
+                json!({"can": false, "why": "This computer can't reach your main computer.", "hosts": [], "tries": []})
+            }
+        }
+    }
+
+    pub(crate) async fn execute(&self, action: Action, by: Submitter) -> Response {
+        if matches!(action, Action::Page) {
+            return Response::ok(self.page().await);
+        }
+        let result = async {
+            self.allowed(by.clone()).await?;
+            let (status, change) = match action {
+                Action::Start(value) => (202, start(value, by)?),
+                Action::Answer { id, input } => (200, Change::Answer(id, input)),
+                Action::Cancel(id) => (200, Change::Cancel(id)),
+                Action::Page => unreachable!("the page is read separately"),
+            };
+            Ok(Response {
+                status,
+                value: self.change(change).await?,
+            })
+        }
+        .await;
+        result.unwrap_or_else(|error: Denied| Response {
+            status: error.status,
+            value: error.value,
+        })
+    }
+
+    async fn change(&self, change: Change) -> Result<Value, Denied> {
         let (reply, result) = oneshot::channel();
         self.commands
             .send(Message::Client(change, reply))
@@ -448,11 +537,7 @@ impl Owner {
         self.changed.send_replace(next);
     }
 
-    fn change(
-        &mut self,
-        change: Change,
-        out: &mpsc::WeakSender<Message>,
-    ) -> Result<Value, Refusal> {
+    fn change(&mut self, change: Change, out: &mpsc::WeakSender<Message>) -> Result<Value, Denied> {
         match change {
             Change::Start(destination, by, windows) => {
                 if let Some(now) = self
@@ -749,26 +834,52 @@ impl Denied {
             value: json!({"message": message}),
         }
     }
-
-    fn refusal(self) -> Refusal {
-        Refusal::json(
-            StatusCode::from_u16(self.status).expect("known status"),
-            self.value,
-        )
-    }
 }
 
 fn body(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap_or(Value::Null)
 }
 
-fn refuse(status: u16, message: impl Into<String>) -> Refusal {
-    Refusal::new(StatusCode::from_u16(status).expect("known status"), message)
+fn refuse(status: u16, message: impl Into<String>) -> Denied {
+    Denied::new(status, message.into())
 }
 
-fn unavailable() -> Refusal {
+fn unavailable() -> Denied {
     refuse(
         503,
         "Kuvo’s local server did not answer. Check the add attempts before retrying.",
     )
+}
+
+fn start(value: Value, by: Submitter) -> Result<Change, Denied> {
+    if value.get("replace").is_some_and(|item| {
+        !item
+            .as_str()
+            .is_some_and(|v| crate::model::safe_token(v, 43, 43))
+    }) {
+        return Err(refuse(400, "Choose the previous membership by its key."));
+    }
+    if value
+        .get("discardLocalPairings")
+        .is_some_and(|item| !item.is_boolean())
+    {
+        return Err(refuse(400, "Choose whether to discard local pairings."));
+    }
+    let destination = Address::read(value["destination"].as_str().unwrap_or(""))
+        .map_err(|message| refuse(400, message))?;
+    let selection = crate::seed::source::Selection::read(value.get("credentials").cloned())
+        .ok_or_else(|| refuse(400, "Choose sign-ins and keys by their checklist IDs."))?;
+    if !selection.empty() {
+        return Err(refuse(
+            503,
+            "Some selected sign-ins or keys are no longer available. Open the checklist again.",
+        ));
+    }
+    let windows = match value.get("windows") {
+        None => WindowsMode::Wsl,
+        Some(value) if value == "native" => WindowsMode::Native,
+        Some(value) if value == "wsl" => WindowsMode::Wsl,
+        Some(_) => return Err(refuse(400, "Choose native Windows or WSL.")),
+    };
+    Ok(Change::Start(destination, by, windows))
 }

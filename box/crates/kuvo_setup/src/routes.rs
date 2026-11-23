@@ -733,7 +733,7 @@ where
     }
 }
 
-fn response_refusal(response: Response) -> Refusal {
+pub(crate) fn response_refusal(response: Response) -> Refusal {
     Refusal::json(
         StatusCode::from_u16(response.status).expect("setup response status"),
         response.value,

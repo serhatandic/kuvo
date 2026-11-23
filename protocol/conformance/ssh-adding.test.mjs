@@ -22,7 +22,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
       }
     }
   });
-  const { computer, leases } = await bench(t);
+  const { computer, leases, relay } = await bench(t);
   const key = Buffer.concat([Buffer.from("0000000b7373682d6564323535313900000020", "hex"), Buffer.alloc(32, 8)]).toString("base64");
   const main = await computer("Studio", boxBinary(), folder => {
     const fake = path.join(folder, "ssh");
@@ -113,7 +113,27 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   fs.mkdirSync(wsl1);
   write(path.join(fake, "home-windows-no-wsl2"), wsl1);
   write(path.join(fake, "windows-windows-no-wsl2"), "");
-  const windows = await ask("POST", "kuvo/computers/add", { destination: "windows-no-wsl2" }, headers);
+  const fromMember = (method, route, value) => request(service, method, route, value, headers);
+  const forwardedPage = await fromMember("GET", "kuvo/computers/add");
+  assert.equal(forwardedPage.status, 200, forwardedPage.text);
+  assert.equal(forwardedPage.json.can, true);
+  assert.equal(forwardedPage.json.tries.find(attempt => attempt.id === aliasID).known, true);
+  const roster = readJSON(path.join(main.home, "run", "link.json")).shared.membershipAndAccess.value.boxes;
+  const host = roster.find(each => each.key !== done.computer.key);
+  const lab = roster.find(each => each.key === done.computer.key);
+  let lost = false;
+  const pause = relay.intercept(Buffer.from(host.address, "base64url"), Buffer.from(lab.address, "base64url"), () => {
+    lost ||= readJSON(path.join(main.home, "run", "adding.json")).some(each => each.destination === "windows-no-wsl2");
+    return true;
+  });
+  const forwarded = fromMember("POST", "kuvo/computers/add", { destination: "windows-no-wsl2" });
+  let windows;
+  try {
+    await until(() => lost, "The main did not start the forwarded Add.");
+  } finally {
+    pause();
+    windows = await forwarded;
+  }
   assert.equal(windows.status, 202, windows.text);
   const windowsID = windows.json.try.id;
   const windowsTry = async () => (await page()).json.tries.find(attempt => attempt.id === windowsID);
@@ -121,7 +141,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
     const attempt = await windowsTry();
     return attempt?.state === "asking" && attempt.question;
   }, "The Windows host key was never shown.");
-  const trusted = await ask("POST", `kuvo/computers/add/${windowsID}/answer`, { answer: "trust", at: windowsQuestion.at }, headers);
+  const trusted = await fromMember("POST", `kuvo/computers/add/${windowsID}/answer`, { answer: "trust", at: windowsQuestion.at });
   assert.equal(trusted.status, 200, trusted.text);
   const noWsl2 = await until(async () => {
     const attempt = await windowsTry();
@@ -129,4 +149,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   }, "The Windows account without WSL 2 should be refused.");
   assert.equal(noWsl2.message, "Install Ubuntu with WSL 2 on desktop-test, then open Ubuntu once and try again.");
   assert.deepEqual(fs.readdirSync(wsl1), []);
+  const gone = await fromMember("DELETE", `kuvo/computers/add/${windowsID}`);
+  assert.equal(gone.status, 200, gone.text);
+  assert.ok(!(await page()).json.tries.some(attempt => attempt.id === windowsID));
 });
