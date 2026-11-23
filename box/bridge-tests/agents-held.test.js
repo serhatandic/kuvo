@@ -301,8 +301,10 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
       response.write(": open\n\n");
       return;
     }
-    response.writeHead(404, { "content-type": "application/json" });
-    response.end("{}");
+    // An Allow reply checks the engine's current Blocks, including after a bridge restart.
+    const config = request.method === "GET" && request.url === "/api/config";
+    response.writeHead(config ? 200 : 404, { "content-type": "application/json" });
+    response.end(config ? '{"data":[{"info":{"policies":[]}}]}' : "{}");
   });
   if (!livenessEngine) {
     await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
@@ -342,6 +344,14 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
       return { status: 0, json: null };
     }
   };
+  // The desktop chooses Ask First when opening these sessions. The engine’s Blocks are separate.
+  const createSession = body => api("POST", "api/session", {
+    permissions: [
+      { action: "shell", resource: "*", effect: "ask" },
+      { action: "edit", resource: "*", effect: "ask" },
+    ],
+    ...body,
+  });
   const up = besides => until(async () => {
     const said = record();
     if (!said?.pid || said.pid === besides) return null;
@@ -360,7 +370,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     atEnd(() => { if (recovered.exitCode === null) recovered.kill(); });
     return recovered;
   };
-  return { root, home, api, up, log, held, holders, recover, shutdown, engine, restart: () => { launch = start(); } };
+  return { root, home, api, createSession, up, log, held, holders, recover, shutdown, engine, restart: () => { launch = start(); } };
 }
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
@@ -380,7 +390,7 @@ function changeBridge(box) {
 async function continueWhileAsking({ provider, model, log, liveTransfer = false, releaseSwitch = false }) {
   const box = await machine({ liveTransfer, single: releaseSwitch });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", { title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
+  const made = await box.createSession({ title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
   assert.equal(made.status, 200, JSON.stringify(made.json));
   const session = made.json.data.id;
   assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldagent00000001", delivery: "steer", text: "run it" })).status, 200);
@@ -396,7 +406,7 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false,
   const beforeCut = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
   const notices = page => page.filter(each => each.type === "synthetic" && each.text.endsWith("switched to its review mode.")).map(each => each.id);
   if (releaseSwitch) {
-    const extra = await box.api("POST", "api/session", { title: "Another session", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
+    const extra = await box.createSession({ title: "Another session", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
     assert.equal(extra.status, 200);
     const extraID = extra.json.data.id;
     assert.equal((await box.api("POST", `api/session/${extraID}/prompt`, { id: "msg_heldslow000000001", delivery: "steer", text: "run it" })).status, 200);
@@ -430,8 +440,7 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false,
   }, "the approval to show again");
   assert.equal(asks.length, 1, "asked once");
   if (liveTransfer) assert.equal(asks[0].id, priorAsk.id, "the pending approval kept its identity");
-  // The release fixture has no engine permission settings to authorize an approval.
-  assert.equal((await box.api("POST", `api/session/${session}/permission/${asks[0].id}/reply`, { decision: releaseSwitch ? "reject" : "once" })).status, 200);
+  assert.equal((await box.api("POST", `api/session/${session}/permission/${asks[0].id}/reply`, { decision: "once" })).status, 200);
   const messages = await until(async () => {
     const page = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
     return page.at(-1)?.type === "idle" ? page : null;
@@ -477,7 +486,7 @@ for (const [provider, model, log] of [
 ]) test(`a legacy ${provider} holder keeps running with the default compaction setting`, { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ single: true });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", { title: "Legacy compaction", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
+  const made = await box.createSession({ title: "Legacy compaction", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
   assert.equal(made.status, 200);
   const route = `api/session/${made.json.data.id}`;
   const send = async (id) => assert.equal((await box.api("POST", `${route}/prompt`, { id, delivery: "steer", text: "run it" })).status, 200);
@@ -522,7 +531,7 @@ test("a native program update waits for its held turn and queues the next prompt
   const box = await machine({ programUpdate: true });
   await box.up();
   const make = async (title, providerID = "codex-cli", id = "gpt-test") => {
-    const response = await box.api("POST", "api/session", {
+    const response = await box.createSession({
       title, location: { directory: path.join(box.home, "work") }, model: { providerID, id },
     });
     assert.equal(response.status, 200);
@@ -565,7 +574,7 @@ test("a bridge crash during the program drain preserves the pending update and h
   const box = await machine({ programUpdate: true });
   const first = await box.up();
   const make = async title => {
-    const made = await box.api("POST", "api/session", {
+    const made = await box.createSession({
       title, location: { directory: path.join(box.home, "work") },
       model: { providerID: "codex-cli", id: "gpt-test" },
     });
@@ -615,7 +624,7 @@ test("a bridge crash during the program drain preserves the pending update and h
 test("a replacement bridge keeps prompts queued until a detached program installer exits", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ programUpdate: true });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", {
+  const made = await box.createSession({
     title: "Wait across restart", location: { directory: path.join(box.home, "work") },
     model: { providerID: "codex-cli", id: "gpt-test" },
   });
@@ -647,7 +656,7 @@ test("Antigravity ACP keeps its original session, prompt and approval through a 
 test("Cursor's live worker keeps streaming the same SDK run through a bridge update", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ liveTransfer: true, cursor: true });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", {
+  const made = await box.createSession({
     title: "Cursor held", location: { directory: path.join(box.home, "work") },
     model: { providerID: "cursor", id: "cursor-test" },
   });
@@ -683,7 +692,7 @@ test("Cursor's live worker keeps streaming the same SDK run through a bridge upd
 test("a rejected Claude rejoin keeps the checkpoint for the previous bridge", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ liveTransfer: true });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", {
+  const made = await box.createSession({
     title: "Rejoin failure", location: { directory: path.join(box.home, "work") },
     model: { providerID: "claude-code", id: "default" },
   });
@@ -717,7 +726,7 @@ test("a rejected Claude rejoin keeps the checkpoint for the previous bridge", { 
 test("Cursor's completed child keeps its session and tool link through cutover", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ liveTransfer: true, cursor: true });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", {
+  const made = await box.createSession({
     title: "Cursor parent", location: { directory: path.join(box.home, "work") },
     model: { providerID: "cursor", id: "cursor-test" },
   });
@@ -748,7 +757,7 @@ test("Cursor's completed child keeps its session and tool link through cutover",
 test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new client joins): a crash ends its turn as before, and it's stopped, not left waiting", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ claudeVersion: "2.1.200" });
   const first = await box.up();
-  const made = await box.api("POST", "api/session", { title: "Older", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
+  const made = await box.createSession({ title: "Older", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
   const session = made.json.data.id;
   assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldolder000000001", delivery: "steer", text: "run it" })).status, 200);
   const asked = await until(() => box.log("claude.log").find(each => "asked" in each), "Claude Code to ask");
@@ -792,7 +801,7 @@ Bun.serve({ hostname: "127.0.0.1", port: Number(port), idleTimeout: 0, async fet
     }), { headers: { "content-type": "text/event-stream" } });
   }
   if (url === "/api/provider") return reply([{ id: "fixture-engine", name: "Fixture Engine" }]);
-  if (url === "/api/model") return reply([{ id: "fixture-test", providerID: "fixture-engine" }]);
+  if (url === "/api/model") return reply([{ id: "fixture-test", providerID: "fixture-engine", limit: { context: 128000, output: 16000 } }]);
   if (url === "/api/session" && request.method === "POST") return reply({ id });
   if (url === "/api/session/active") return reply(running ? { [id]: { type: "busy" } } : {});
   if (url === base + "/prompt") {
@@ -852,7 +861,7 @@ for (const [provider, model, log] of [
     if (engine) await box.engine.kill();
   });
   await box.up();
-  const made = await box.api("POST", "api/session", {
+  const made = await box.createSession({
     title: "Turn liveness",
     location: { directory: path.join(box.home, "work") },
     model: { providerID: provider, id: model },

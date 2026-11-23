@@ -380,22 +380,22 @@ test("submission receipts survive either handoff order and compact without relea
     keepRecord("outbox", operation, pending);
     if (ix % 2 === 0) {
       moved();
-      sendOwnerMessages(host, readLink(), Date.now());
+      await sendOwnerMessages(host, readLink(), Date.now());
       assert.deepEqual(readRecord("message-receipts", operation).parked.body.message.files, body.message.files);
-      takeMessageReceipt(peer(from), { ...answer, digest: "wrong" }, true, true);
+      await takeMessageReceipt(peer(from), { ...answer, digest: "wrong" }, true, true);
       assert.equal(readRecord("message-receipts", operation).receipt.status, "interrupted");
     }
-    takeMessageReceipt(peer(from), answer, true, true);
+    await takeMessageReceipt(peer(from), answer, true, true);
     moved();
-    sendOwnerMessages(host, readLink(), Date.now());
-    takeMessageReceipt(peer(from), { ...answer, acceptedAt: 123456 }, true, true);
+    await sendOwnerMessages(host, readLink(), Date.now());
+    await takeMessageReceipt(peer(from), { ...answer, acceptedAt: 123456 }, true, true);
     assert.equal((await ask("GET", "kuvo/data/messages/" + operation)).value.acceptedAt, answer.acceptedAt);
     assert.equal(readRecord("message-receipts", operation).parked, undefined);
     assert.equal((await ask("POST", "kuvo/sessions/" + session + "/submit", body)).value.message, body.id);
     assert.equal((await ask("POST", "kuvo/sessions/" + session + "/submit", { ...body, text: "Changed" })).status, 409);
     if (ix === 0) {
       keepRecord("outbox", operation, pending); // Cut after archive publication, before unlink.
-      sendOwnerMessages(host, readLink(), Date.now());
+      await sendOwnerMessages(host, readLink(), Date.now());
       assert.equal(readRecord("outbox", operation), undefined);
     }
   }
