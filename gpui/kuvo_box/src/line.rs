@@ -81,6 +81,9 @@ struct State {
     since: Option<Instant>,
     /// Since when it has had no topics.
     empty: Option<Instant>,
+    /// The box answered the line `404`: it's on a release from before it (mid-update, or catching
+    /// up). Asked again as any drop is, and never said to what follows.
+    before_the_line: bool,
 }
 
 /// The line to one box. Every client of the same transport shares it ([`Line::of`]).
@@ -153,6 +156,12 @@ impl Line {
     /// Whether the line has been silent for `long` or more while it's wanted.
     pub fn silent_for(&self, long: Duration) -> bool {
         self.silence().is_some_and(|silence| silence >= long)
+    }
+
+    /// Whether the box is on a release from before the line (it's updating, or will catch up by
+    /// itself): what follows keeps what it had, and the computer is drawn as updating.
+    pub fn is_before_the_line(&self) -> bool {
+        self.state().before_the_line
     }
 
     /// Whether it's been heard within `recent`.
@@ -338,6 +347,7 @@ impl Line {
             let mut heard_any = false;
             match opened {
                 Ok(mut stream) if (200..300).contains(&stream.status) => {
+                    self.state().before_the_line = false;
                     loop {
                         let text = match lines::next_line(&mut *stream.reader) {
                             Ok(Some(text)) => text,
@@ -354,15 +364,14 @@ impl Line {
                         }
                     }
                 }
-                Ok(mut stream) => {
-                    // Turned down whole (a box from before the line, or one not ready yet): tried again.
-                    let mut body = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut stream.reader, &mut body);
-                    let refusal = Refusal::from_answer(stream.status, &body);
+                Ok(stream) => {
+                    // Turned down whole. A box from before the line (`404`, `405`: still on the
+                    // release before, as one is while it switches to the new one) is asked again
+                    // as after any drop, and nothing is said to what follows: each keeps what it
+                    // had, and the computer reads as updating, never as needing a newer Kuvo. One
+                    // not ready yet (`5xx`) is asked again the same way.
                     if stream.status == 404 || stream.status == 405 {
-                        for sink in self.sinks() {
-                            sink(Said::Refused(refusal.clone()));
-                        }
+                        self.state().before_the_line = true;
                     }
                 }
                 Err(_) => {}

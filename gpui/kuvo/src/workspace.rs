@@ -289,6 +289,12 @@ pub struct Workspace {
     landing_picked: bool,
     /// What the box said of sessions started here, until its list has them: their projects.
     started: HashMap<String, Option<String>>,
+    /// Sessions started here on another computer (picked in Runs on), by that computer's key, until
+    /// the setup's list says where they are.
+    started_on: HashMap<String, String>,
+    /// Where a new session or bot can run, as the nearest box says it (`kuvo/setup/runs-on`).
+    runs_on: Vec<kuvo_box::models::RunsOnComputer>,
+    _runs_on_follow: Option<Follow<Followed<kuvo_box::models::RunsOn>>>,
     /// Sessions started here whose first message didn't go (or came back with why), while you were
     /// elsewhere: marked in the sidebar until opened.
     unsent: HashSet<String>,
@@ -421,10 +427,8 @@ impl Workspace {
         cx.observe(&insights, |_, _, cx| cx.notify()).detach();
         let library = cx.new(|cx| crate::library::LibraryView::new(client.clone(), live, window, cx));
         cx.subscribe_in(&library, window, |this: &mut Self, _, at: &crate::library::ShowAt, window, cx| {
-            match &at.computer {
-                Some(computer) => cx.emit(Switch::SessionAt { computer: computer.clone(), session: at.session.clone(), message: at.message.clone() }),
-                None => this.open_session_at(&at.session, at.message.as_deref(), window, cx),
-            }
+            // (On whichever computer it is: the session list says, and it opens through that one.)
+            this.open_session_at(&at.session, at.message.as_deref(), window, cx);
         }).detach();
         cx.subscribe_in(&library, window, |this: &mut Self, _, open: &crate::library::OpenInPanel, window, cx| {
             match &open.session {
@@ -499,6 +503,7 @@ impl Workspace {
                 Go::Opened(address) => {
                     this.permissions.update(cx, |permissions, cx| permissions.opened(address, cx));
                 }
+                Go::Setting(place) => this.show_setting(place, window, cx),
                 Go::AddMachine => {
                     if let Some(view) = this.area_view(Area::Computers).cloned() {
                         view.update(cx, |view, cx| view.select(Some("add".into()), cx));
@@ -552,6 +557,9 @@ impl Workspace {
             landing_place: None,
             landing_picked: false,
             started: HashMap::new(),
+            started_on: HashMap::new(),
+            runs_on: Vec::new(),
+            _runs_on_follow: None,
             unsent: HashSet::new(),
             collapsed: HashSet::new(),
             showing_all: HashSet::new(),
@@ -648,6 +656,22 @@ impl Workspace {
                     }
                 }
             }));
+            // Where a new session can run, as the nearest box says it (an older box without it:
+            // this computer alone, so no Runs on).
+            let follow = client.follow_runs_on();
+            let updates = follow.updates().clone();
+            workspace._runs_on_follow = Some(follow);
+            workspace.tasks.push(cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    let rows = match update {
+                        Followed::Now(said) => said.computers,
+                        Followed::Failed(_) => Vec::new(),
+                    };
+                    if this.update(cx, |this, cx| this.take_runs_on(rows, cx)).is_err() {
+                        break;
+                    }
+                }
+            }));
             // Where the box streams, what waits on you and your computers are followed as they
             // change; elsewhere they're read again (as the list changes, as Computers opens).
             if client.streams() {
@@ -687,7 +711,12 @@ impl Workspace {
     /// The session list, read once (shots and tests, against a stand-in).
     #[cfg(feature = "stand-in")]
     fn read_list_at_once(&self) -> ListUpdate {
-        match self.client.session_list(None) {
+        let line = if self.client.advertises(kuvo_box::sessions::MERGED_SESSIONS) {
+            self.client.merged_sessions_at_once()
+        } else {
+            self.client.session_list(None)
+        };
+        match line {
             Ok(line) => {
                 let mut listing = Listing::new();
                 listing.take(line);
@@ -711,6 +740,11 @@ impl Workspace {
         };
         self.take_list(update, cx);
         self.landing.update(cx, |composer, cx| composer.read_at_once(cx));
+        #[cfg(feature = "stand-in")]
+        {
+            let rows = self.client.runs_on_at_once().map(|said| said.computers).unwrap_or_default();
+            self.take_runs_on(rows, cx);
+        }
         self.rings.update(cx, |rings, cx| rings.read_at_once(cx));
         self.read_computers(cx);
         if matches!(self.welcome, Welcome::Had | Welcome::Unknown) {
@@ -735,7 +769,8 @@ impl Workspace {
     /// Reads `session` into `view` at once, on this thread, as its follows would hand it.
     #[cfg(feature = "stand-in")]
     fn read_conversation_at_once(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) {
-        let client = self.client.clone();
+        // (Its own computer's box: another computer's conversation is read there.)
+        let client = view.read(cx).client().clone();
         {
             let update = match crate::conversation::read_now(&client, session) {
                 Ok(conversation) => kuvo_box::ConversationUpdate::Conversation(conversation),
@@ -743,7 +778,7 @@ impl Workspace {
                 Err(error) => kuvo_box::ConversationUpdate::Failed(error),
             };
             let asks = client.asks(session).unwrap_or_default();
-            let queue = client.queue(session).unwrap_or_default();
+            let queue = view.read(cx).composer().read(cx).delivery_box().map_or_else(|| client.queue(session), |delivery| delivery.queue(session)).unwrap_or_default();
             view.update(cx, |view, cx| {
                 view.take(update, cx);
                 view.take_asks(asks, cx);
@@ -1514,19 +1549,8 @@ impl Workspace {
         } else {
             return None;
         };
-        // Another of yours that works now: this Mac's own first, then the first answering.
-        let needs = self.area_feature().map(|(feature, _, _)| feature).filter(|feature| !self.client.gate().is_held() && !self.client.gate().has(feature));
-        let shown = self.switching.as_ref().and_then(|switching| switching.shown.clone());
-        let switch_to = self.switching.as_ref().and_then(|switching| {
-            let works = |row: &&kuvo_box::boxes::Row| {
-                Some(row.key()) != shown.as_deref()
-                    && !row.computer.is_older()
-                    && matches!(row.reach, kuvo_box::boxes::Reach::Nearest | kuvo_box::boxes::Reach::Connected)
-                    && needs.is_none_or(|needed| row.computer.features.as_deref().is_none_or(|features| features.iter().any(|feature| feature == needed)))
-            };
-            let rows = &switching.rows;
-            rows.iter().find(|row| works(row) && matches!(row.reach, kuvo_box::boxes::Reach::Nearest)).or_else(|| rows.iter().find(works)).map(|row| (row.key().to_owned(), row.computer.name.clone()))
-        });
+        // (One window shows all your computers: there's no other to switch it to.)
+        let switch_to = None;
         Some(Blocked { kind, title, detail, busy, attention, action, switch_to, error })
     }
 
@@ -1834,9 +1858,24 @@ impl Workspace {
         }
     }
 
+    /// The box a session's conversation, composer and panel use: the window's for this computer's,
+    /// else that of the computer the setup's list says it's on (none: one this app doesn't reach
+    /// now, or that computer is away and its row can't be opened).
+    pub fn client_for(&self, session: &str) -> Option<BoxClient> {
+        match self.listing.computer_of(session) {
+            // (Started here on another computer, before the setup's list has it.)
+            None if self.started_on.contains_key(session) => self.client.peer(&self.started_on[session]),
+            None => Some(self.client.clone()),
+            Some(on) if on.opens() => self.client.peer(&on.id),
+            Some(_) => None,
+        }
+    }
+
     /// Opens a conversation where it belongs: a bot's own in Bots (that bot picked), any other in
     /// Sessions. Every "open this conversation" goes through here.
     pub fn open_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // (Another computer's that can't be opened now: its row says why, and nothing opens.)
+        let Some(client) = self.client_for(session) else { return };
         if let Some(bot) = self.own_bot(session, cx) {
             self.open_bot_chat(&bot, session, None, window, cx);
             return;
@@ -1854,7 +1893,7 @@ impl Workspace {
             return;
         }
         self.unsent.remove(session);
-        let (client, live) = (self.client.clone(), self.live);
+        let live = self.live;
         let composer = self.composer_for(session, window, cx);
         // Only the composer on screen asks again for what the box couldn't say.
         self.show_composer(Some(&composer), cx);
@@ -1912,11 +1951,9 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, computer: Option<&str>, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| {
-                if let Some(computer) = computer {
-                    cx.emit(Switch::Session { computer: computer.into(), session: session.into() });
-                } else {
-                    workspace.open_session_now(session, window, cx);
-                }
+                // (Another computer's too: it opens here, through that computer's box.)
+                let _ = computer;
+                workspace.open_session_now(session, window, cx);
             }).ok();
         });
         let workspace = cx.entity().downgrade();
@@ -1956,14 +1993,17 @@ impl Workspace {
         }
         self.area = Area::Bots;
         self.sidebar_for_area(window);
+        let row = if self.elsewhere_bot(bot, cx).is_some() { format!("elsewhere:{bot}") } else { format!("bot:{bot}") };
         if let Some(view) = self.area_view(Area::Bots).cloned() {
-            view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
+            view.update(cx, |view, cx| view.select(Some(row), cx));
         }
         self.record(Nav::BotChat { bot: bot.to_owned() }, cx);
         self.in_bot_chat = true;
-        let composer = self.composer_for(session, window, cx);
+        let client = self.bot_client(bot, session, cx);
+        let computer = self.elsewhere_bot(bot, cx).map(|there| there.computer_key);
+        let composer = self.composer_on(session, client, computer, window, cx);
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
-            let (client, live) = (self.client.clone(), self.live);
+            let (client, live) = (self.bot_client(bot, session, cx), self.live);
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
             self.wire_bars(&view, Some(bot.to_owned()), cx);
             self.wire_wakes(&view, session, cx);
@@ -1986,10 +2026,27 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The bot `bot` on another of your computers, as the box lists it.
+    fn elsewhere_bot(&self, bot: &str, cx: &App) -> Option<kuvo_box::bots::Elsewhere> {
+        match self.area_view(Area::Bots)?.read(cx).bots() {
+            Reading::Ready(bots) if !bots.bots.iter().any(|each| each.id == bot) => bots.elsewhere.iter().find(|each| each.id == bot && !each.unlisted).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The box a bot's conversation goes to: its computer's, for a bot on another of yours.
+    fn bot_client(&self, bot: &str, session: &str, cx: &App) -> BoxClient {
+        self.elsewhere_bot(bot, cx)
+            .and_then(|there| self.client.peer(&there.computer_key))
+            .or_else(|| self.client_for(session))
+            .unwrap_or_else(|| self.client.clone())
+    }
+
     /// The session the box lists as `bot`'s own conversation now.
     fn bot_session(&self, bot: &str, cx: &App) -> Option<String> {
         match self.area_view(Area::Bots)?.read(cx).bots() {
-            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|each| each.session.clone()),
+            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|each| each.session.clone())
+                .or_else(|| bots.elsewhere.iter().find(|each| each.id == bot && !each.unlisted && !each.session.is_empty()).map(|each| each.session.clone())),
             _ => None,
         }
     }
@@ -2079,6 +2136,14 @@ impl Workspace {
     /// `session`'s composer: the one it had, with its draft (its model read again, as it may have
     /// changed meanwhile), or a new one.
     fn composer_for(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
+        let client = self.client_for(session).unwrap_or_else(|| self.client.clone());
+        let computer = self.listing.computer_of(session).map(|on| on.id.clone());
+        self.composer_on(session, client, computer, window, cx)
+    }
+
+    /// A session's composer reads its settings from the owner and sends through this box.
+    fn composer_on(&mut self, session: &str, client: BoxClient, computer: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
+        let delivery = kuvo_box::queue::DeliveryBox::new(self.client.clone(), computer);
         // Its folder, where its project's own settings may add models to what's offered.
         let folder = self.listing.facts(session).map(|facts| facts.directory.clone());
         if let Some((composer, _)) = self.composers.get(session) {
@@ -2092,12 +2157,13 @@ impl Workspace {
             }
             return composer;
         }
-        let (client, live) = (self.client.clone(), self.live);
+        let live = self.live;
         let composer = cx.new(|cx| Composer::in_folder(client, Target::Session { id: session.to_owned(), place: Where::Engine }, folder, live, cx));
         let subscription = cx.subscribe_in(&composer, window, |this, _, event: &ComposerEvent, window, cx| this.composer_event(event, window, cx));
         // Not on screen until its conversation opens.
         let asked = self.computer_asked();
         composer.update(cx, |composer, cx| {
+            composer.set_delivery_box(delivery);
             composer.set_shown(false, cx);
             composer.set_computer(asked, cx);
         });
@@ -2159,6 +2225,45 @@ impl Workspace {
         }
     }
 
+    /// Where a new one starts on a computer (none: this one) before one's picked: its newest
+    /// project as the lists have it, else a chat.
+    fn default_place_on(&self, computer: Option<&str>) -> StartIn {
+        let Some(computer) = computer else { return self.default_place() };
+        self.landing_projects(Some(computer)).into_iter().next().map_or(StartIn::Chat, |(directory, _)| StartIn::Project(directory))
+    }
+
+    /// The projects a new one can start in on a computer (none: this one), newest first, by
+    /// their key in the lists and name.
+    pub fn landing_projects(&self, computer: Option<&str>) -> Vec<(String, String)> {
+        self.listing
+            .sidebar()
+            .projects
+            .iter()
+            .filter(|group| match (computer, kuvo_box::sessions::project_elsewhere(&group.directory)) {
+                (None, None) => !group.elsewhere,
+                (Some(computer), Some((on, _))) => group.elsewhere && on == computer,
+                _ => false,
+            })
+            .map(|group| (group.directory.clone(), group.name.clone()))
+            .collect()
+    }
+
+    /// Runs on, as the nearest box says it: the landing composer and New Bot offer it.
+    fn take_runs_on(&mut self, rows: Vec<kuvo_box::models::RunsOnComputer>, cx: &mut Context<Self>) {
+        self.runs_on = rows.clone();
+        let now = self.now();
+        self.landing.update(cx, |composer, cx| composer.set_runs_on(rows.clone(), now, cx));
+        if let Some(view) = self.area_view(Area::Bots).cloned() {
+            view.update(cx, |view, cx| view.set_runs_on(rows, now, cx));
+        }
+        cx.notify();
+    }
+
+    /// Runs on, as the nearest box last said it.
+    pub fn runs_on(&self) -> &[kuvo_box::models::RunsOnComputer] {
+        &self.runs_on
+    }
+
     pub fn landing_place(&self) -> StartIn {
         self.landing_place.clone().unwrap_or_else(|| self.default_place())
     }
@@ -2181,12 +2286,21 @@ impl Workspace {
 
     fn composer_event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            ComposerEvent::Started { session, project, written, files, sent, .. } => {
+            ComposerEvent::Started { session, project, written, files, sent, first, computer, .. } => {
                 // What the box said of what was written (or why it didn't go) goes to the new
                 // conversation's own composer; the landing one is left empty.
                 self.started.insert(session.clone(), project.clone());
+                if let Some(computer) = computer {
+                    self.started_on.insert(session.clone(), computer.clone());
+                }
                 let composer = self.composer_for(session, window, cx);
-                composer.update(cx, |composer, cx| composer.take_sent(written, files.clone(), sent.clone(), cx));
+                composer.update(cx, |composer, cx| {
+                    if let Some(sent) = sent {
+                        composer.take_sent(written, files.clone(), sent.clone(), cx);
+                    } else {
+                        composer.queue_first(session, first.clone(), files.clone(), cx);
+                    }
+                });
                 // Opened, unless you've gone to another conversation meanwhile, or started
                 // writing the next one.
                 let writing_next = !self.landing.read(cx).field().read(cx).text().trim().is_empty() || !self.landing.read(cx).attached().is_empty();
@@ -2200,6 +2314,26 @@ impl Workspace {
                     // You're elsewhere: what didn't go waits there, marked in the sidebar.
                     self.unsent.insert(session.clone());
                 }
+            }
+            // Another computer picked in Runs on: a new one starts where that computer's lists
+            // say (its newest project, else a chat), with what it offers read there.
+            ComposerEvent::RunsOn(computer) => {
+                let place = self.default_place_on(computer.as_deref());
+                self.landing_place = Some(place.clone());
+                self.landing_picked = false;
+                self.place_panel(cx);
+                self.landing.update(cx, |composer, cx| {
+                    composer.set_start(place, cx);
+                    if composer.reads() {
+                        composer.read_models(cx);
+                        composer.read_approval(cx);
+                    } else {
+                        // (Tests and shots: read at once, as the app's reads would hand it.)
+                        #[cfg(feature = "stand-in")]
+                        composer.read_at_once(cx);
+                    }
+                });
+                cx.notify();
             }
             // (A group chat's composer is its chat's; what's on its way, its conversation's.)
             ComposerEvent::Wrote | ComposerEvent::Outgoing => {}
@@ -2279,7 +2413,9 @@ impl Workspace {
                 _ => None,
             },
         };
-        self.panel.update(cx, |panel, cx| panel.set_conversation(key, place, cx));
+        // (Another computer's session: its files, terminals, browser and Changes are that one's.)
+        let elsewhere = key.as_deref().filter(|session| self.listing.computer_of(session).is_some()).and_then(|session| self.client_for(session));
+        self.panel.update(cx, |panel, cx| panel.set_conversation_on(key, place, elsewhere, cx));
     }
 
     /// A drag of the panel's edge started at `x`.
@@ -2663,13 +2799,6 @@ impl Workspace {
             }
             cx.notify();
         }
-        // Connections can become usable after this workspace received its own list of computers.
-        if let (Some(switching), Some(area)) = (&self.switching, self.area_view(Area::Bots).cloned()) {
-            let peers: Vec<_> = switching.rows.iter()
-                .filter(|row| switching.shown.as_deref().map_or(!row.computer.here, |shown| row.key() != shown))
-                .map(|row| Computer { here: false, ..row.computer.clone() }).collect();
-            area.update(cx, |area, cx| area.follow_remote_bots(&peers, cx));
-        }
         // (The box that lists them may have changed with them, `set_lister`: handed on each time.)
         self.sync_offers(cx);
     }
@@ -2911,10 +3040,17 @@ impl Workspace {
 
     /// Settings, on a place there (its key; a section's name alone is the computer shown's).
     pub fn show_setting(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(view) = self.area_view(Area::Settings).cloned() {
-            view.update(cx, |view, cx| view.select(Some(section.to_owned()), cx));
+        // A computer's settings are under Computers › that computer (a section named alone is this
+        // computer's); your own, in Settings.
+        let (area, place) = match section {
+            yours if yours.starts_with("yours/") => (Area::Settings, yours.to_owned()),
+            place if place.starts_with("box/") => (Area::Computers, place.to_owned()),
+            named => (Area::Computers, crate::settings::box_key("", &named.to_lowercase().replace(' ', "-"))),
+        };
+        if let Some(view) = self.area_view(area).cloned() {
+            view.update(cx, |view, cx| view.select(Some(place), cx));
         }
-        self.show_area(Area::Settings, window, cx);
+        self.show_area(area, window, cx);
     }
 
     fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
@@ -2931,6 +3067,15 @@ impl Workspace {
                     self.open_bot_chat(bot, &session, None, window, cx);
                     return;
                 }
+            }
+            // A bot on another of your computers opens into its chat as one here does, through
+            // that computer's box.
+            if let Some(there) = picked.as_deref().and_then(|key| key.strip_prefix("elsewhere:")).and_then(|bot| self.elsewhere_bot(bot, cx))
+                && !there.session.is_empty()
+                && self.client.peer(&there.computer_key).is_some()
+            {
+                self.open_bot_chat(&there.id, &there.session, None, window, cx);
+                return;
             }
         }
         // Non-bot rows in Bots show their page.
@@ -3462,7 +3607,8 @@ impl Workspace {
     }
 
     fn ensure_row_actions(&mut self, session: &str, retry_failed: bool, cx: &mut Context<Self>) {
-        if self.client.gate().is_held() {
+        // (Another computer's session: its menu is that computer's, not asked of this one's box.)
+        if self.client.gate().is_held() || self.listing.computer_of(session).is_some() {
             return;
         }
         if let Some(entry) = self.session_menu.row_actions.get(session) {
@@ -4007,8 +4153,10 @@ impl Workspace {
     }
 
     fn sidebar_available(&self, cx: &App) -> bool {
+        // (A computer that can't be reached keeps its sidebar, its rows as last read; one held
+        // has nothing to list, but in Settings.)
         self.first_run().is_none() && !self.awaits_box()
-            && (self.area == Area::Settings || self.blocked(cx).is_none())
+            && (self.area == Area::Settings || self.blocked(cx).is_none_or(|blocked| blocked.kind != "held"))
     }
 
     fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
@@ -4104,6 +4252,13 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.area != Area::Settings
             && let Some(settings) = self.area_view(Area::Settings).and_then(|view| view.read(cx).settings()).cloned()
+        {
+            settings.update(cx, |settings, _| settings.hidden());
+        }
+        // (And a computer's, under Computers, off screen.)
+        if let Some(view) = self.area_view(Area::Computers)
+            && let Some(settings) = view.read(cx).computer_settings().cloned()
+            && (self.area != Area::Computers || view.read(cx).settings().is_none())
         {
             settings.update(cx, |settings, _| settings.hidden());
         }
@@ -4219,11 +4374,16 @@ impl Render for Workspace {
             library.update(cx, |view, cx| view.set_bots(bots, cx));
         }
         let sessions = self.area == Area::Sessions;
-        // A computer that can't be used shows why, and what moves it on, in every area but
-        // Settings, never areas that open empty.
-        let blocked = (self.area != Area::Settings).then(|| self.blocked(cx)).flatten();
+        // A computer whose Kuvo this app can't read (older, held) is each area's title and one
+        // quiet line, with what moves it on, in every area but Settings: never a page of its own,
+        // never one opened empty. One that can't be reached keeps the rows it last had.
+        let blocked = (self.area != Area::Settings).then(|| self.blocked(cx)).flatten().filter(|blocked| blocked.kind == "held");
         let content: AnyElement = if let Some(blocked) = &blocked {
-            div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
+            let title = match self.area_view(self.area) {
+                Some(view) if self.area != Area::Sessions => view.read(cx).title(cx),
+                _ => self.area.name().into(),
+            };
+            div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::quiet(blocked, title, cx)).into_any_element()
         } else if in_insights {
             insights.into_any_element()
         } else if in_library {

@@ -327,16 +327,6 @@ fn computers_keeps_this_one_while_the_list_cant_be_read(cx: &mut TestAppContext)
     assert!(bounds(cx, "computer-dot-this").is_none());
 }
 
-/// The title bar's switcher names your other computers as the box lists them; this window's first.
-#[gpui::test]
-fn the_switcher_lists_your_other_computers_as_the_box_does(cx: &mut TestAppContext) {
-    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    click(cx, "computer-switcher");
-    let devbox = bounds(cx, "menu-item-devbox").expect("devbox");
-    let studio = bounds(cx, "menu-item-studio-mini").expect("one that's away");
-    assert!(devbox.top() < studio.top());
-    assert!(bounds(cx, "menu-item-Show Computers").is_some());
-}
 
 #[gpui::test]
 fn a_box_alone_lists_itself(cx: &mut TestAppContext) {
@@ -601,17 +591,18 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_settings(cx: &mut TestAppContext) {
+fn a_held_older_box_shows_each_areas_title_and_one_quiet_line_with_what_moves_it_on(cx: &mut TestAppContext) {
     let stand_in = StandIn::held_older(Replies::Never);
     stand_in.own_update_waits("waiting", 1);
-    let (title, detail) = kuvo::workspace::held_words(Some("This Mac"), true);
-    stand_in.own_update_words(title, detail);
+    let (held, detail) = kuvo::workspace::held_words(Some("This Mac"), true);
+    stand_in.own_update_words(held, detail);
     let (workspace, cx) = open(cx, stand_in);
     workspace.update_in(cx, |workspace, _, cx| read_update_offers(workspace, cx));
     cx.run_until_parked();
     assert!(bounds(cx, "update-chip").is_some());
-    // Sessions: why it can't be used, in the gate's words, never an empty list or a composer
-    // that takes nothing.
+    // Sessions: its title and one quiet line, in the gate's words, never a page of its own in the
+    // middle, an empty list or a composer that takes nothing.
+    assert!(bounds(cx, "area-quiet-title").is_some() && bounds(cx, "area-quiet-line").is_some());
     assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
     workspace.read_with(cx, |workspace, cx| {
@@ -622,21 +613,20 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
         // Never words without a way on: Update Now, here as everywhere.
         assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
     });
-    assert!(bounds(cx, "blocked-action").is_some());
-    for (rail, empty) in [("rail-bots", "bots-empty"), ("rail-queue", "queue-empty"), ("rail-computers", "computers-page")] {
+    // (Beside its line, never under a page's middle.)
+    let (line, action) = (bounds(cx, "area-quiet-line").unwrap(), bounds(cx, "blocked-action").expect("Update Now"));
+    assert!(action.top() >= line.top() && action.bottom() <= line.bottom());
+    for (rail, empty, name) in [("rail-bots", "bots-empty", "Bots"), ("rail-queue", "queue-empty", "Work Queue"), ("rail-computers", "computers-page", "Computers")] {
         click(cx, rail);
         assert!(bounds(cx, "update-chip").is_some());
-        assert!(bounds(cx, "blocked-held").is_some(), "{rail}: the same view");
+        assert!(bounds(cx, "area-quiet-line").is_some(), "{rail}: one quiet line");
+        assert_eq!(title(&workspace, cx).as_deref(), Some(name), "{rail}: its title");
         assert!(bounds(cx, empty).is_none(), "{rail}: never opened empty");
         assert!(bounds(cx, "held-area-sidebar").is_none(), "{rail}: no empty sidebar beside it");
     }
     click(cx, "rail-settings");
     assert!(bounds(cx, "blocked-held").is_none());
     assert!(bounds(cx, "row-editor").is_some(), "your own settings remain available");
-    // Its own settings are its box's: they wait with it.
-    click(cx, "settings-foot");
-    assert!(bounds(cx, "settings-held").is_some());
-    assert!(bounds(cx, "update-chip").is_some());
 }
 
 /// This Mac's box reports an update offer that asks first. Update Now invokes the box's offer.
@@ -728,9 +718,7 @@ fn opening_the_gate_refreshes_the_area_already_on_screen(cx: &mut TestAppContext
 fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut TestAppContext) {
     let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     assert!(bounds(cx, "area-sidebar").is_some());
-    let toggle = bounds(cx, "toggle-sidebar").unwrap();
-    let picker = bounds(cx, "computer-switcher").unwrap();
-    assert!(toggle.right() <= picker.left(), "the toggle precedes the computer picker");
+    assert!(bounds(cx, "computer-switcher").is_none(), "the title bar has no computer picker");
     click(cx, "toggle-sidebar");
     assert!(bounds(cx, "area-sidebar").is_none());
     cx.simulate_keystrokes("cmd-b");
@@ -746,7 +734,7 @@ fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut T
     assert!(bounds(cx, "area-sidebar").is_some());
 }
 
-/// The sidebar toggle, the computer picker, back and forward are one group over the sidebar side;
+/// The sidebar toggle, back and forward are one group over the sidebar side;
 /// a thin divider ends it where the sidebar column ends, and the title starts after it. There is no
 /// + in the bar (New Session is ⌘N and File › New Session), and with the sidebar hidden the group
 /// and the divider stay together, then the title.
@@ -756,13 +744,13 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
     click(cx, "rail-queue");
     assert!(bounds(cx, "new-session").is_none(), "the title bar has no + of its own");
     let order = |cx: &mut gpui::VisualTestContext| {
-        ["toggle-sidebar", "computer-switcher", "back", "forward", "title-bar-divider", "window-title"].map(|name| bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn")))
+        ["toggle-sidebar", "back", "forward", "title-bar-divider", "window-title"].map(|name| bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn")))
     };
     let shown = order(cx);
     for pair in shown.windows(2) {
         assert!(pair[0].right() <= pair[1].left(), "left to right: {pair:?}");
     }
-    let divider = shown[4];
+    let divider = shown[3];
     assert!(divider.size.width <= gpui::px(2.) && divider.size.height < gpui::px(kuvo::title_bar::HEIGHT) / 2., "thin and short: {divider:?}");
     let sidebar = bounds(cx, "area-sidebar").unwrap();
     assert!((divider.right() - sidebar.right()).abs() <= gpui::px(2.), "the divider sits where the sidebar column ends: {divider:?} / {sidebar:?}");
@@ -771,7 +759,7 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
     for pair in hidden.windows(2) {
         assert!(pair[0].right() <= pair[1].left(), "left to right, sidebar hidden: {pair:?}");
     }
-    assert!(hidden[4].left() - hidden[3].right() <= gpui::px(16.), "the divider stays with the group");
+    assert!(hidden[3].left() - hidden[2].right() <= gpui::px(16.), "the divider stays with the group");
 }
 
 fn drag_sidebar(cx: &mut VisualTestContext, delta: f32) {
@@ -789,7 +777,7 @@ fn resizable_sidebar_width(cx: &mut VisualTestContext) -> Pixels {
     let divider = bounds(cx, "title-bar-divider").unwrap();
     assert_eq!(divider.right(), sidebar.right(), "the border and divider share the same edge");
     assert!(bounds(cx, "toggle-sidebar").unwrap().right() <= divider.left());
-    for name in ["computer-switcher", "back", "forward"] {
+    for name in ["back", "forward"] {
         let button = bounds(cx, name).unwrap();
         if sidebar.size.width == px(64.) {
             assert!(button.left() >= divider.right(), "{name} sits beside the title in compact mode");
@@ -811,10 +799,8 @@ fn resizable_sidebar_keeps_a_long_computer_name_inside_the_header(cx: &mut TestA
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.box_name().to_string()), name);
     click(cx, "rail-queue");
     assert_eq!(resizable_sidebar_width(cx), px(272.));
-    let picker = bounds(cx, "computer-switcher").unwrap().size.width;
     drag_sidebar(cx, 160.);
     assert_eq!(resizable_sidebar_width(cx), px(432.));
-    assert!(bounds(cx, "computer-switcher").unwrap().size.width > picker);
 }
 
 #[gpui::test]
@@ -970,17 +956,12 @@ fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppC
     click(cx, "bot-avatar-bot:solo");
     assert_eq!(title(&workspace, cx).as_deref(), Some("One Bot with a Very Long Name"));
 
+    // Its computer goes away: its bots stay as last read, never a page of its own instead.
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(bounds(cx, "area-sidebar").is_none());
-    assert!(bounds(cx, "held-area").is_some());
-    click(cx, "computer-switcher");
-    assert!(bounds(cx, "menu-item-Only Box").is_some());
-    assert!(bounds(cx, "menu-item-Show Computers").is_none(), "there are no other computers");
-    cx.simulate_keystrokes("escape ctrl-4");
-    cx.run_until_parked();
-    assert_eq!(area(&workspace, cx), Area::Computers);
+    assert!(bounds(cx, "blocked-unreached").is_none() && bounds(cx, "held-area").is_none());
+    assert!(bounds(cx, "bot-avatar-bot:solo").is_some(), "its rows as last read");
 }
 
 #[gpui::test]
@@ -1006,22 +987,23 @@ fn compact_sidebar_search_closes_when_folded(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn compact_sidebar_search_closes_on_disconnect_and_cannot_reopen(cx: &mut TestAppContext) {
+fn the_compact_sidebar_keeps_its_bots_when_their_computer_goes_away(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_elsewhere(true);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-bots");
     drag_sidebar(cx, -210.);
-    click(cx, "bot-avatar-search");
-    cx.simulate_input("Mira");
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira").is_some());
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(bounds(cx, "blocked-unreached").is_some());
-    assert!(bounds(cx, "sidebar-quick-search").is_none());
-    cx.simulate_keystrokes("cmd-shift-f");
-    assert!(bounds(cx, "sidebar-quick-search").is_none());
-    assert!(bounds(cx, "blocked-unreached").is_some());
+    // Its rows as last read, and the search over them still opens: no page of its own instead.
+    assert!(bounds(cx, "blocked-unreached").is_none());
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira").is_some());
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("Mira");
+    cx.run_until_parked();
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
     assert_eq!(area(&workspace, cx), Area::Bots);
 }
 

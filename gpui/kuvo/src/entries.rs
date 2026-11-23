@@ -58,7 +58,7 @@ pub enum Entry {
     /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go; `waits`:
     /// its box took it while the agent works, and it's read at the agent's next step.
     /// `files`: the names of those that aren't pictures; `pictures`: those that are, read from here.
-    Outgoing { id: String, words: String, files: Vec<String>, pictures: Vec<Picture>, failed: Option<String>, interruption: Option<String>, waits: bool },
+    Outgoing { id: String, words: String, files: Vec<String>, pictures: Vec<Picture>, failed: Option<String>, interruption: Option<String>, waits: bool, held: bool },
 }
 
 impl Entry {
@@ -115,7 +115,7 @@ impl Entry {
         let waits = waits && outgoing.failed.is_none();
         let interruption = outgoing.interruption().map(str::to_owned);
         let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else if interruption.is_some() { u64::MAX - 3 } else { u64::MAX };
-        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, pictures: shown, failed: outgoing.failed.clone(), interruption, waits }, revision)
+        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, pictures: shown, failed: outgoing.failed.clone(), interruption, waits, held: outgoing.held && outgoing.failed.is_none() }, revision)
     }
 }
 
@@ -323,10 +323,10 @@ pub fn render(
     let actions = actions.map(|actions| (actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx), actions.shown));
     let body: AnyElement = match entry {
         Entry::Earlier => own,
-        Entry::Outgoing { words, files, pictures, failed, interruption, waits, .. } => {
+        Entry::Outgoing { words, files, pictures, failed, interruption, waits, held, .. } => {
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
             let shown = (!pictures.is_empty()).then(|| yours_pictures(pictures, looks, cx));
-            outgoing(ix, words, files, shown, failed.as_deref(), interruption.as_deref(), *waits, sel, own, cx)
+            outgoing(ix, words, files, shown, failed.as_deref(), interruption.as_deref(), *waits, *held, sel, own, cx)
         }
         Entry::Message(message) => match &**message {
             Message::User(user) if user.is_letter() => {
@@ -634,9 +634,9 @@ fn content_units(step: &Step, n: usize, at: u32, open: &HashSet<Fold>) -> Vec<Un
 }
 
 /// Yours on its way: your message as it will show, its files' names under it, and under them
-/// nothing more while it's on its way, "At its next step", or why it couldn't go with `actions` (Retry, Edit) beside it.
+/// nothing more while it's on its way, "At its next step", or why its box won't take it with `actions` (Edit, Remove) beside it.
 #[allow(clippy::too_many_arguments)]
-fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>, failed: Option<&str>, interruption: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
+fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>, failed: Option<&str>, interruption: Option<&str>, waits: bool, held: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let parts = Parts::words(words.to_owned());
     let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
@@ -654,11 +654,14 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
             .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("At its next step"))
             .child(actions)
             .into_any_element()),
+        // Still here, its computer not answering: it goes by itself once it does (the composer's
+        // one line says so); Edit and Remove meanwhile, nothing else.
+        (None, None) if held => Some(div().debug_selector(|| "held-here".into()).flex().justify_end().child(actions).into_any_element()),
         // On its way: drawn as yours at once with nothing under it, as Claude Code and Codex draw
         // one (it's the box's to deliver; a failure says so here), so it doesn't move as its copy
         // takes its place.
         (None, None) => None,
-        // Couldn't go: the one notice under it, the box's why as its line, Retry at its end.
+        // Its box won't take it: the one notice under it, the box's why as its line, Edit at its end.
         (Some(why), None) => Some(Notice::inline("not-sent", Tone::Error, "Not sent").detail(SharedString::from(why.to_owned())).trailing(actions).into_any_element()),
     };
     div()

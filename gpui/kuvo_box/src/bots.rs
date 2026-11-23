@@ -122,6 +122,18 @@ pub struct Elsewhere {
     /// What deleting it takes with it there, in the box's words.
     #[serde(default, deserialize_with = "readable")]
     pub deletes: Vec<DeleteLine>,
+    /// Its computer isn't answering, as the box says it.
+    #[serde(default)]
+    pub away: bool,
+    /// When its computer was last heard from (ms), while it's away.
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    #[serde(default)]
+    pub now: Option<crate::areas::BotNow>,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub wakes: Option<f64>,
 }
 
 /// What `kuvo/bots` says: the bots that live on the box, those that live on your other computers,

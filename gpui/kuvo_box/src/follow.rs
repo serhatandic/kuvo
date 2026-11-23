@@ -382,10 +382,15 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
         let _ = client.connect();
     }
     // The list as last taken, and whether the next good line is handed on even if unchanged.
-    let listing = Mutex::new((Listing::new(), true));
+    let listing = Arc::new(Mutex::new((Listing::new(), true)));
     let start_required = client.advertised(sessions::LIST_START);
+    let route = if client.advertised(sessions::MERGED_SESSIONS) {
+        sessions::MERGED_SESSIONS_ROUTE.into()
+    } else {
+        sessions::events_route(None)
+    };
     let theirs = latest.clone();
-    let watch = client.line().watch(sessions::events_route(None), move |said| {
+    let watch = client.line().watch(route, move |said| {
         let mut now = listing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match said {
             Said::Data(value) => match serde_json::from_value::<Line>(value)

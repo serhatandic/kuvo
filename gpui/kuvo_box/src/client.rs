@@ -255,6 +255,27 @@ impl BoxClient {
         Some(BoxClient { transport, gate: Arc::default() })
     }
 
+    /// Messages under these ids waiting to be sent again that never reached the box don't go
+    /// (PROTOCOL.md, "Sending again"); one that may have reached it, its box takes once.
+    pub fn take_back(&self, ids: &[String]) {
+        self.transport.take_back(ids);
+    }
+
+    /// The box of another of your computers, by its key, as this client reaches it (none where it
+    /// doesn't yet).
+    pub fn peer(&self, key: &str) -> Option<BoxClient> {
+        let transport = self.transport.peer(key)?;
+        Some(BoxClient { transport, gate: Arc::default() })
+    }
+
+    /// The setup's sessions, read once (a stand-in's: its events route answers its state and ends).
+    #[cfg(feature = "stand-in")]
+    pub fn merged_sessions_at_once(&self) -> Result<Line> {
+        let response = self.transport.send(&Request::get(sessions::MERGED_SESSIONS_ROUTE))?;
+        let line: Line = decode(&response)?;
+        line.check_start(self.advertised(sessions::LIST_START))
+    }
+
     /// Whether a followed route would use the same connection as before.
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.transport, &other.transport)
@@ -479,7 +500,7 @@ impl BoxClient {
         // takes one id once and settles one a restart cut off (its answer lost, its box
         // restarting); never of another box or another way, which could send it twice.
         if draft.legacy_attempted.get().is_some()
-            && !(draft.route.get() == Some(&DraftRoute::Draft) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
+            && !(matches!(draft.route.get(), Some(DraftRoute::Draft | DraftRoute::Decision)) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
             return Ok(uncertain_draft());
         }
         let recovery = self.has_feature("typed.submission-recovery")?;
@@ -504,8 +525,10 @@ impl BoxClient {
             Some(DraftRoute::Submission(_) | DraftRoute::Draft) => return Ok(uncertain_draft()),
             _ => {}
         }
-        if draft.legacy_attempted.set(()).is_err() {
-            return Ok(uncertain_draft());
+        // (Its fields under its id, `idempotency-key`: its box takes one id once, so it's asked
+        // again of the same box as often as it takes, never of another.)
+        if draft.legacy_attempted.set(()).is_ok() {
+            let _ = draft.asked_box.set(self.describe());
         }
         let quoted = |words: &str| {
             if words == draft.text && let Some(rendered) = &draft.quote {
@@ -539,21 +562,7 @@ impl BoxClient {
             answer: Answer,
             message: Option<String>,
         }
-        let mut prepared = draft.clone();
-        if prepared.quote.is_none() && let Some(quote) = quote {
-            prepared.capture_quote(quote);
-        }
-        let message = Sending {
-            files: draft.files.clone(), notes: draft.notes.clone(), comments: draft.comments.clone(),
-            named: draft.named.clone(), widget: draft.widget.clone(), delivery: Some(draft.delivery),
-            ..Sending::default()
-        };
-        let mut body = json!({
-            "id": draft.id, "text": draft.text, "message": message
-        });
-        if let Some(rendered) = prepared.quote {
-            body["quotedText"] = rendered.into();
-        }
+        let mut body = draft_body(draft, quote);
         let action = if let Some(submission) = draft.submission() {
             body["submission"] = submission.into();
             "submit"
@@ -690,6 +699,25 @@ impl BoxClient {
     pub fn describe(&self) -> String {
         self.transport.describe()
     }
+}
+
+pub(crate) fn draft_body(draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Value {
+    let mut prepared = draft.clone();
+    if prepared.quote.is_none() && let Some(quote) = quote {
+        prepared.capture_quote(quote);
+    }
+    let message = Sending {
+        files: draft.files.clone(), notes: draft.notes.clone(), comments: draft.comments.clone(),
+        named: draft.named.clone(), widget: draft.widget.clone(), delivery: Some(draft.delivery),
+        ..Sending::default()
+    };
+    let mut body = json!({
+        "id": draft.id, "text": draft.text, "message": message
+    });
+    if let Some(rendered) = prepared.quote {
+        body["quotedText"] = rendered.into();
+    }
+    body
 }
 
 fn uncertain_draft() -> Sent {

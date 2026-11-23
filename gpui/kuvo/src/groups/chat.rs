@@ -907,24 +907,42 @@ impl Render for GroupChatView {
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = self.problem.clone().filter(|_| self.read).or_else(|| self.act_failed.clone());
+        // (Words in the list's place sit centred above the composer.)
+        let (listed, inset) = (self.read && !self.rows.is_empty(), self.list.bottom_inset());
         div()
             .debug_selector(|| "group-chat".into())
             .track_focus(&self.focus)
             .size_full()
             .flex()
             .flex_col()
-            .child(div().relative().flex_1().min_h_0().child(body))
-            .child(
+            // The transcript fills the height and scrolls under the composer, which floats over
+            // its bottom; the list's end is padded by the composer's height, as it's measured.
+            .child(div().relative().flex_1().min_h_0().child(div().size_full().when(!listed, |d| d.pb(inset)).child(body)).child(
                 div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
                     .flex()
                     .flex_col()
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
-                    .children(banner.map(|why| div().w_full().max_w(px(COLUMN)).pb(space::S2).child(kuvo_ui::Notice::said("group-problem", kuvo_ui::Tone::Warning, why))))
-                    .children(self.paused_bar(cx))
-                    .child(div().w_full().max_w(px(COLUMN)).child(self.composer.clone())),
-            )
+                    .child(self.list.floating())
+                    .child(
+                        div()
+                            .id("group-composer-stack")
+                            .block_mouse_except_scroll()
+                            .w_full()
+                            .max_w(px(COLUMN))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .children(banner.map(|why| div().w_full().max_w(px(COLUMN)).pb(space::S2).child(kuvo_ui::Notice::said("group-problem", kuvo_ui::Tone::Warning, why))))
+                            .children(self.paused_bar(cx))
+                            .child(div().w_full().max_w(px(COLUMN)).child(self.composer.clone())),
+                    ),
+            ))
     }
 }
 

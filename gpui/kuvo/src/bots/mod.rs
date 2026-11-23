@@ -83,6 +83,8 @@ pub enum Act {
     FormPersonality(Option<String>),
     FormModel(Option<ModelRef>),
     FormProject(Option<String>),
+    /// Runs on: another computer by its key (none: this one).
+    FormRunsOn(Option<String>),
     Create,
     CancelNew,
 }
@@ -175,6 +177,8 @@ struct Form {
     personality: Option<Option<String>>,
     model: Option<ModelRef>,
     project: Option<String>,
+    /// Runs on: the computer it's made on, by its key (none: this one).
+    on: Option<String>,
     /// This New Bot's own id: a retry sends it again, so the bot is made once.
     request: String,
     creating: bool,
@@ -218,6 +222,9 @@ type ProfileDraft = [FieldDraft; 3];
 /// The Bots area's main view.
 pub struct BotsView {
     client: BoxClient,
+    /// Runs on, as the nearest box says it, and when (for when an away one was last seen).
+    runs_on: Vec<kuvo_box::models::RunsOnComputer>,
+    runs_on_now: f64,
     moves: Option<Entity<crate::moves::MovesView>>,
     live: bool,
     said: Reading<BotsSaid>,
@@ -306,6 +313,8 @@ impl BotsView {
         ];
         let mut view = BotsView {
             client,
+            runs_on: Vec::new(),
+            runs_on_now: 0.0,
             moves: None,
             live,
             said: Reading::NotYet,
@@ -377,6 +386,57 @@ impl BotsView {
             self.this_box = name.to_owned();
             self.rebuild(cx);
         }
+    }
+
+    /// Runs on, as the nearest box says it, `now`. The computer picked going away: this one again.
+    pub fn set_runs_on(&mut self, computers: Vec<kuvo_box::models::RunsOnComputer>, now: f64, cx: &mut Context<Self>) {
+        self.runs_on_now = now;
+        if self.runs_on == computers {
+            return;
+        }
+        self.runs_on = computers;
+        if self.form.on.as_ref().is_some_and(|on| !self.pickable(on)) {
+            self.pick_runs_on(None, cx);
+        }
+        self.rebuild(cx);
+    }
+
+    /// Whether another computer can be picked in Runs on: listed, and not away.
+    fn pickable(&self, key: &str) -> bool {
+        self.runs_on.iter().any(|row| row.computer.id == key && !row.here && !row.away)
+    }
+
+    /// Whether a menu's choice can't be picked now (an away computer in Runs on).
+    pub(crate) fn unpickable(&self, act: &Act) -> bool {
+        matches!(act, Act::FormRunsOn(Some(key)) if !self.pickable(key))
+    }
+
+    /// The box New Bot makes its bot on: the computer picked in Runs on's, else this one's.
+    fn form_client(&self) -> BoxClient {
+        self.form.on.as_ref().and_then(|on| self.client.peer(on)).unwrap_or_else(|| self.client.clone())
+    }
+
+    /// A computer as Runs on names it: "This Mac" for this window's own.
+    fn runs_on_name(&self, key: Option<&str>) -> String {
+        match key.and_then(|key| self.runs_on.iter().find(|row| row.computer.id == key)) {
+            Some(row) => row.computer.name.clone(),
+            None if self.client.here() => crate::launch::HERE.to_owned(),
+            None => self.this_box.clone(),
+        }
+    }
+
+    /// Runs on picked: what a bot can be is that computer's to say (its projects, its models), so
+    /// they're read there, and what was picked of the last one's is let go.
+    fn pick_runs_on(&mut self, on: Option<String>, cx: &mut Context<Self>) {
+        if self.form.on == on || on.as_ref().is_some_and(|on| !self.pickable(on)) {
+            return;
+        }
+        self.form.on = on;
+        self.form.model = None;
+        self.form.project = None;
+        self.templates = Reading::NotYet;
+        self.offered = Reading::NotYet;
+        self.read_offers(cx);
     }
 
     fn now(&self) -> f64 {
@@ -451,14 +511,22 @@ impl BotsView {
 
     /// What a bot can be here: its looks and personalities, and the models offered.
     fn read_offers(&mut self, cx: &mut Context<Self>) {
-        self.run("read-templates", |client| client.bot_templates(), |this, read, _| this.templates = reading(read, &this.templates), cx);
-        self.run("read-offered", |client| client.offered_models(None, None), |this, read, _| this.offered = reading(read, &this.offered), cx);
+        // (Read on the computer picked in Runs on: an answer from the one picked before is left.)
+        let (client, on) = (self.form_client(), self.form.on.clone());
+        let mine = on.clone();
+        self.run_on(client.clone(), "read-templates", |client| client.bot_templates(), move |this, read, _| if this.form.on == mine { this.templates = reading(read, &this.templates) }, cx);
+        self.run_on(client, "read-offered", |client| client.offered_models(None, None), move |this, read, _| if this.form.on == on { this.offered = reading(read, &this.offered) }, cx);
     }
 
     /// Runs `work` against the box, in the app off this thread, in tests and shots at once, and
     /// hands what it came to to `then`. A newer one under the same name replaces an older.
     fn run<T: Send + 'static>(&mut self, name: impl Into<String>, work: impl FnOnce(&BoxClient) -> T + Send + 'static, then: impl FnOnce(&mut BotsView, T, &mut Context<BotsView>) + 'static, cx: &mut Context<Self>) {
         let client = self.client.clone();
+        self.run_on(client, name, work, then, cx)
+    }
+
+    /// The same, against `client` (another computer's box).
+    fn run_on<T: Send + 'static>(&mut self, client: BoxClient, name: impl Into<String>, work: impl FnOnce(&BoxClient) -> T + Send + 'static, then: impl FnOnce(&mut BotsView, T, &mut Context<BotsView>) + 'static, cx: &mut Context<Self>) {
         if !self.live {
             let done = work(&client);
             then(self, done, cx);
@@ -895,6 +963,21 @@ impl BotsView {
             },
             Row { key: "new-model".into(), title: "Model".into(), detail: "What it thinks with.".into(), control: Control::Model { shown: model_shown, current: self.form.model.clone(), new: Some(unset) } },
         ];
+        // Runs on, with more than one computer: where it's made and works. One that's away says
+        // when it was seen, and can't be picked.
+        if self.runs_on.len() > 1 {
+            let choices = self
+                .runs_on
+                .iter()
+                .map(|row| {
+                    let key = (!row.here).then(|| row.computer.id.clone());
+                    let said = if !row.away { String::new() } else if row.updating { "Updating…".to_owned() } else { row.last_seen.map(|seen| format!("seen {}", crate::time::ago(seen, self.runs_on_now))).unwrap_or_else(|| "Away".into()) };
+                    let checked = key == self.form.on;
+                    (self.runs_on_name(key.as_deref()), said, Act::FormRunsOn(key), checked)
+                })
+                .collect();
+            rows.insert(0, Row { key: "new-runs-on".into(), title: "Runs on".into(), detail: "The computer it lives and works on.".into(), control: Control::Menu { shown: self.runs_on_name(self.form.on.as_deref()), choices, personality: false } });
+        }
         if !templates.projects.is_empty() {
             let mut projects = vec![("A folder of its own".to_owned(), String::new(), Act::FormProject(None), self.form.project.is_none())];
             projects.extend(templates.projects.iter().map(|project| (self.project_name(&project.directory), String::new(), Act::FormProject(Some(project.directory.clone())), self.form.project.as_ref() == Some(&project.directory))));
@@ -934,7 +1017,9 @@ impl BotsView {
         self.form.creating = true;
         self.form.error = None;
         let request = new.request.clone();
-        self.run(
+        let client = self.form_client();
+        self.run_on(
+            client,
             "create",
             move |client| client.make_bot(&new),
             move |this, made, cx| {
@@ -1056,6 +1141,7 @@ impl BotsView {
             Act::FormPersonality(personality) => self.form.personality = Some(personality),
             Act::FormModel(model) => self.form.model = model,
             Act::FormProject(project) => self.form.project = project,
+            Act::FormRunsOn(on) => self.pick_runs_on(on, cx),
             Act::Create => self.create(cx),
             Act::CancelNew => cx.emit(BotsEvent::Select(None)),
             Act::Marketplace => cx.emit(BotsEvent::Marketplace),

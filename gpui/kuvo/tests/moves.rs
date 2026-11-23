@@ -192,7 +192,9 @@ fn bot_move_from_other_computers_uses_the_bots_source(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
+    // It opens into its chat, as a bot here does; its settings are a click away.
     click(cx, "elsewhere-bot_mira");
+    click(cx, "bot-chat-settings");
     assert!(cx.debug_bounds("bot-computer").is_some());
     click(cx, "bot-computer-menu");
     assert!(cx.debug_bounds("menu-item-devbox").is_some());

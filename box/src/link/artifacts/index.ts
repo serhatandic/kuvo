@@ -23,6 +23,10 @@ export class ArtifactIndex {
     `)
   }
 
+  close() { this.db.close() }
+
+  update(work: () => void) { this.db.transaction(work).immediate() }
+
   get(id: string): Artifact | undefined {
     const row = this.db.query<{ body: string }, [string]>("SELECT body FROM artifact WHERE id = ?").get(id)
     return row ? JSON.parse(row.body) : undefined

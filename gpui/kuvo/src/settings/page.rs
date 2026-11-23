@@ -98,6 +98,8 @@ impl SettingsView {
             Side::Yours => NavRow::new("settings-foot-row", "Computer settings").icon(IconName::Computer).trailing(
                 div().flex().items_center().gap(space::S2).child(div().max_w(px(88.)).truncate().text_role(TextRole::Meta).text_color(c.text_faint).child(name.clone())).child(Icon::new(IconName::ChevronRight).color(c.icon)),
             ),
+            // (Under Computers, back to the computer's page.)
+            Side::Computer if self.of_computers() => NavRow::new("settings-foot-row", name.clone()).icon(IconName::ChevronLeft),
             Side::Computer => NavRow::new("settings-foot-row", "Your settings").icon(IconName::User).trailing(Icon::new(IconName::ChevronRight).color(c.icon)),
         }
         .on_click(cx.listener(|this, _, _, cx| this.switch_side(cx)));

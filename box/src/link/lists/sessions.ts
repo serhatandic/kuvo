@@ -877,6 +877,14 @@ export function keptSessions(target: Target): ReadonlyMap<string, EngineSession>
 /** The list as this process keeps it (the long-running one's), else as its file has it. */
 export const keptList = (): Kept | null => latest ?? readList();
 
+/** The list as last saved, before this process has read its engine: every place said to be as
+ * last read (`pending`). None the first time ever. */
+function savedList(): Kept | null {
+  const file = readList();
+  if (!file) return null;
+  return { ...file, pending: [...new Set([...(file.pending ?? []), "engine"])] };
+}
+
 // What the box knows beside its sessions, as last read (`readBoxKnows`): null to read again.
 let known: BoxKnows | null = null;
 let watchesWhole = (): boolean => true;
@@ -970,7 +978,12 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
   const since = new URLSearchParams(request.path.split("?")[1] ?? "").get("since");
-  const list = await listNow(context, signal ?? undefined);
+  // Just started, its engine not read yet: the list as last saved, said to be as last read
+  // (`pending`), so a client draws your sessions at once. The engine is read meanwhile, and the
+  // live list follows on the same stream.
+  const saved = keepsList() && !latest ? savedList() : null;
+  if (saved) listNow(context).catch(() => {});
+  const list = saved ?? await listNow(context, signal ?? undefined);
   if (!list) return yield* json(503, { message: "The engine isn’t running." });
   if (!match[1]) return yield* json(200, answerFrom(list, since));
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
@@ -986,13 +999,14 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
     let first = true;
     while (!signal?.aborted) {
       dirty = false;
-      const now = latest;
-      if (!keepsList() || !now) return;
-      const answer = answerFrom(now, at);
+      const now = latest ?? (first ? saved : null);
+      if (!keepsList()) return;
+      // (The engine's read not done yet, after the saved list: the next look waits for it.)
+      const answer = now ? answerFrom(now, at) : null;
       // (Nothing changed since: no line, but the first.)
-      if (first || answer.full || at !== answer.at) yield { body: Buffer.from(JSON.stringify(answer) + "\n") };
+      if (answer && (first || answer.full || at !== answer.at)) yield { body: Buffer.from(JSON.stringify(answer) + "\n") };
       first = false;
-      at = answer.at;
+      if (answer) at = answer.at;
       if (dirty) continue;
       // A minute at most between looks: worked out again then, with the box's files as they are.
       const woke = await new Promise<boolean>(done => {

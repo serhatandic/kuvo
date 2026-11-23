@@ -228,6 +228,7 @@ Feature `line`. A client opens one stream to each box, and everything it follows
   - `{beat}` every `beat` ms while it's quiet. A beat has no `n`.
 - **Resuming.** `n` counts each line on the line. Reopen with the same `line` and the last `n` you got as `after`. If the box still keeps them (4 MB, for 2 minutes after the stream drops, with its topics still running), it sends every line after `after`, then the live ones, with `fresh: false`. Otherwise it answers `fresh: true` with a new id, and each topic starts over from its state now. A client takes that as a snapshot, and reads again what an event topic is of.
 - **Once.** A box reached in a way that can't keep a stream (a one-shot `box route`) is asked with `once=1`. It answers the hello and each topic's state now, then ends. Ask again every few seconds.
+- **Older box.** A box on a release from before the line answers `kuvo/line` with `404`. It is updating, or catches up by itself: ask again as after a drop, keep what each topic last said, and never show the `404`.
 - **Offline.** A client counts a computer as away only once its line has been silent for 30 s. With nothing heard for 15 s, it reopens the line. A slow or failed request never makes a computer away, and a dropped stream is never shown: each view keeps the last state it received.
 
 
@@ -242,18 +243,29 @@ routes.
 | `kuvo/setup/sessions/events` | `{sessions, projects}`. Sessions have `id` and the usual session-list `facts`. Projects have `directory` and the usual listed project `facts`. Project paths and pages belong to the project's computer. |
 | `kuvo/setup/waiting/events` | `{waiting}`. Each row gives `session`, `since` (ms), optional `title` and `asks: {kind, summary}` for the conversation's oldest ask. Its complete cards and replies use the owning box's `kuvo/sessions/<id>/asks` routes. |
 | `kuvo/setup/queues/events` | `{queues}`. Each row gives `session` and its `queue`, the same held or paused queue overview as `kuvo/sessions/queues/events`. |
-| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). Away computers are omitted. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
+| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases; a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
 
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
-public box key in `computer.id` to address its routes. The local box uses `here` while it has
+public box key in `computer.id` to address its routes. Rows of the box answering have `here: true`. The local box uses `here` while it has
 no peer identity. Key rows by computer and row ID. An away row includes `lastSeen`, the time
-in milliseconds when the receiving box last received its snapshot.
+in milliseconds when the receiving box last received its snapshot. An away row from a computer
+that last said it was ready for a release, or switching to it, and went quiet less than ten
+minutes ago also has `updating: true`: show it as updating, not as last seen.
 
 Session, waiting and queue rows carry `actions` with available controls. Away rows have empty
 actions. On sessions, `open` opens the conversation and `manage` opens its owner-provided
 `…/actions` menu. On waiting rows, `review` opens the owner's asks. Queue rows offer `open`
 to open the conversation, `pause` or `resume` for the box's `…/queue/hold` or `…/queue/resume`,
 and `messages` for the per-session queue. The owning box validates each action when asked.
+
+Feature `line.merged-sessions` adds `kuvo/setup/sessions/list/events`. Follow this topic in
+place of the single-box session-list topic. It sends full `kuvo/sessions/list` snapshots,
+including the answering box's project order, start project, pending runtimes and archived
+groups. Every session and project includes `computer: {id, name}`. Remote rows also carry
+`on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
+`<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
+chooses one row for each session ID. The snapshot includes every listed session in a remote
+project, so remote projects have no paging cursor.
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start
@@ -279,6 +291,36 @@ Send ordinary messages through the nearest box with
 `POST kuvo/data/messages?session=<session>&computer=<computer>` and the usual stable message ID.
 The nearest box keeps its receipt and the owner delivers it. The setup list can identify the
 owner even when its agents announcement omitted the session.
+
+#### Durable composer delivery
+
+Feature `typed.delivery`. A client submits `POST kuvo/sessions/<session>/delivery?computer=<id>`
+to its nearest box with the ordinary draft payload `{id, text, message, quotedText?}`. Omit
+`computer` or use `here` for that box. The box records a draft before answering `202` with its
+message receipt. Retry the same request and ID if that reply is lost. A retry of a delivered
+draft answers `200` with its message ID. A different draft cannot reuse the ID. For another
+computer, files travel inline in the peer mail, with up to 5 MiB for the encoded draft.
+
+The box sends the oldest pending draft for each conversation first, with or without a connected
+client. It retries when that computer or the runtime cannot answer. The owner deduplicates by
+draft ID using its draft claim and reconciles an uncertain handoff against the conversation and
+queue. Only an authenticated owner's receipt advances delivery to the next draft. A known
+ownership change interrupts the pinned delivery rather than resending it to a second owner.
+
+- `GET …/delivery/events?computer=<id>` is a line topic with the message queue from the owning
+  box, plus drafts waiting at the nearest box. Where the owner is away, `deliveryLine` gives the
+  quiet composer note. `GET …/delivery?computer=<id>` reads the nearest box's pending drafts.
+- `GET kuvo/data/messages/<operation>/events` follows the draft receipt on the nearest box.
+  Receipts use the same fields as `GET kuvo/data/messages/<operation>`.
+- `DELETE …/delivery/<message>?computer=<id>` removes a draft still waiting at the nearest box
+  and returns its text and files in `removed`. To recover the result after disconnect, pass an
+  opaque `receipt` query value and replay the removal with the same value. After restoring the
+  draft, `POST …/delivery/<message>/ack?computer=<id>&receipt=<receipt>` clears the recovery copy.
+  A removal stops further delivery attempts. A draft already being taken can still reach the owner.
+- `POST …/delivery/<message>/steer?computer=<id>` and `…/now?computer=<id>` change how the
+  owner submits a draft that is still waiting at the nearest box. Use the owner's queue action
+  where the draft has already been handed off and the nearest box answers `404`.
+
 
 ## Mail
 
@@ -949,8 +991,10 @@ A revoked held-bot action can retain its draft and refusal in the Box's held lis
 
 ### Peers
 
-With `line.setup-lists`, peers mail `{setupLists: {at, sessions, projects, waiting, queues, catalog}}`
+With `line.setup-lists`, peers mail `{setupLists: {at, sessions, projects, waiting, queues, catalog, bots?}}`
 using the same authenticated envelope as their agents' lists. Each box publishes its own rows.
+Peers that advertise `bots.peer-activity` receive a `bots` map keyed by bot ID. Each entry has
+`{session, now, paused?, wakes?}`, used with the matching bot, computer and conversation.
 A large snapshot is split into `setupLists.part` envelopes using the same part framing as documents.
 A receiver takes only a complete, newer snapshot from a current peer, records when it arrived, and
 keeps the last copy under `run/peers/<key>/lists-v1.json`. The publisher resends periodically to
@@ -2174,9 +2218,11 @@ its update view. A temporary `503` leaves the list waiting.
   archivedGroups: [{directory, title, kind, sessions: [id]}], pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
-  `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
-  coding agents' bridge runs but couldn't be read yet, so its sessions are as last read (none are
-  said gone for it).
+  `503 {"message"}` while the engine can't be read and no list was ever saved; `405` for anything
+  but `GET`. `pending`: the places it couldn't read yet, whose sessions are as last read (none are
+  said gone for them): `bridge`, the coding agents' bridge runs but hasn't answered; `engine`, the
+  box has just started and this is the list it saved last (`run/lists/sessions.json`), answered at
+  once so a client draws its rows; the list as read follows on the same stream.
 - `projectOrder` and `startProject` (`sessions.list.start`) are whole on every line. The box
   orders projects by the latest session, then by project name in sidebar order, then by directory.
   The initial project for a new conversation is the first in that order, or null for Chats.
@@ -2311,7 +2357,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
     (a peer not heard from yet since this box knew of it, or being reached again: Connect, below,
     asked in the last 20 seconds and no word since), `away` (the relay said it isn't
-    there, `run/peer-reach.json`, or nothing came from it for half an hour). As this box last heard: one that's itself
+    there, `run/peer-reach.json`, or nothing came from it for half an hour). Any mail from it counts as heard (its
+    `heard` in `run/peer-agents.json`, moved at most every five minutes, and at once when it ends a half hour's
+    quiet), not only its agents: one back is `connected` with its first mail. As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
   - `kuvo?`: the installed version of Kuvo on that computer.
   - `version?`, `engine?`, `system?`: the desktop app’s version on a Mac (Kuvo’s on a machine), its engine’s, and its system as
@@ -3692,7 +3740,10 @@ the box (`link/areas/agents-down.ts`), never by a client:
   waits for the bridge, half a minute at most, and is answered by it**; only after that wait does it
   get `503 {message, reason: "agentsRestarting"}`, the message "The coding agents are restarting.
   This takes a few seconds." A client keeps what it last read (a session's messages, the usage
-  rings, the accounts) and asks again; it never shows this as an error.
+  rings, the accounts) and asks again; it never shows this as an error. The group chats' list
+  (`GET kuvo/groups`, `…/events`) doesn't wait: the box keeps the list the bridge last answered
+  (`run/lists/groups.json`) and answers that at once while the bridge isn't there, the events
+  stream then going on as the bridge says it once it's back. Only a box that never read it waits.
 - **Down**: `503 {message, reason: "agentsDown", action?}`, the message one plain sentence of why:
   - `engine`: "The coding agents start once the engine is running." (the engine's own line says
     why it isn't);
@@ -6073,8 +6124,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   same flag); `personality` (its id) and `model` (`{providerID, id, variant}`) as Edit Bot shows
   them, left out when it has none; and `folder`, `project` (as the box names them; left out for a
   folder of its own) and `created`; and `deletes`, what deleting it takes with it (below). A client
-  asks each box for its own bots; what one last said shows while it's away. `GET kuvo/bots/events` follows the list (`application/x-ndjson`): the
-  list now, then again each time it changes (`bots.events` in `features`).
+  follows its nearest box's `GET kuvo/bots/events` (`application/x-ndjson`). The `elsewhere`
+  rows carry each owning box's last bot activity as `now`, with `paused` or `wakes` when supplied.
+  Older peers can omit activity. The route gives the list now, then again each time it changes (`bots.events` in `features`).
   - A bot's job is its box's record of it (`job.json` in its folder): the bot keeps it with its
     set_job tool (`{summary, details}`), and Edit Bot can change it (`PATCH` with `job`); its memory
     is its own to write as it likes. A job from before that is taken once from where it was: the
@@ -6096,9 +6148,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     confirm shows these lines as they are and writes none of its own; a `what` it doesn't know
     is a line all the same.
   - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session?, name?,
-    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?}]`, each bot your
-    other computers list, as each last told the box asked (their agents, "Peers"), for a client
-    to draw as it is: its `job`'s line, the computer it lives on by its key (`box`, as
+    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?, away?, lastSeen?}]`,
+    each bot your other computers list, as each last told the box asked (their agents, "Peers"), for
+    a client to draw as it is (`away: true` while its computer isn't answering, as `kuvo/computers`
+    says it, with `lastSeen`, when it was last heard from, in ms; said again as that changes): its `job`'s line, the computer it lives on by its key (`box`, as
     `kuvo/computers` has it) and by its name here (`computer`, a machine by its name), that
     computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there
     (its folder where that computer says its deleted bots' go, `trash` in its agents' mail: `trash`
@@ -10650,6 +10703,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands` and `custom-auto`; the rest come page by page.
   `skills` is no longer listed (Marketplace › Skills has it, "Marketplace"); its page still answers by name.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
+  These are that computer's own settings, kept on it: a client shows them with the computer (the
+  desktop app under Computers › that computer, from that computer's own box), apart from its own
+  settings (the desktop app's Settings), and never one computer's under another's name.
 - `kuvo/settings/conversations` serves the `compaction` choice row, saved by the usual
   revision-checked PATCH. Choice IDs are `200000`, `400000` (default), `600000` and `never`.
   The choice lives on the box running the conversation. Claude Code and Codex keep their native

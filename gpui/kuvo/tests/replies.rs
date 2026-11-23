@@ -125,6 +125,59 @@ fn an_item_named_in_a_reply_is_a_chip_where_its_written_and_opens_the_item(cx: &
     shows_item_234(&workspace, cx);
 }
 
+/// The user's flicker (11-22, beta.42): an item's chips in a conversation were one element to the
+/// window, sharing one hover, so pointing at one opened a card under every chip of that item, and
+/// the cards blinked off and on while the pointer rested there. Chips now differ from row to row,
+/// but two in one text (an item named twice in a sentence) still shared theirs. One card opens,
+/// by the chip pointed at, and stays while the pointer is on it.
+#[gpui::test]
+fn pointing_at_one_of_an_items_chips_opens_one_card_that_stays(cx: &mut TestAppContext) {
+    const TWICE: &str = "Next up is #234, then #234 again.";
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_234", json!({ "owner": SESSION, "title": "Dark mode for the settings page", "status": "todo" }), None);
+    stand_in.work_queue_mention_fixture(TWICE, json!([{ "start": 11, "end": 15, "number": 234 }, { "start": 22, "end": 26, "number": 234 }]));
+    stand_in.add_message(SESSION, json!({ "type": "user", "id": "msg_ask", "time": { "created": NOW - 60_000.0 }, "text": "What's next?" }));
+    stand_in.add_message(SESSION, json!({ "type": "assistant", "id": "msg_turn", "time": { "created": NOW - 50_000.0, "completed": NOW - 40_000.0 }, "finish": "stop", "content": [text(TWICE)] }));
+    // A long reply after it, so it sits mid-window, clear of the composer.
+    let long = (1..=24).map(|n| format!("Line {n} of the plan.")).collect::<Vec<_>>().join("\n\n");
+    stand_in.add_message(SESSION, json!({ "type": "assistant", "id": "msg_long", "time": { "created": NOW - 15_000.0, "completed": NOW - 12_000.0 }, "finish": "stop", "content": [text(&long)] }));
+    stand_in.add_message(SESSION, json!({ "type": "idle", "id": "msg_done", "time": { "created": NOW - 10_000.0 }, "outcome": "succeeded" }));
+    let (_workspace, view, cx) = open(cx, stand_in);
+    // (The conversation settled where it shows: drawn again once it's laid out.)
+    cx.simulate_mouse_move(gpui::point(px(640.), px(200.)), None, Modifiers::default());
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    // Where each "#234" is written: on its chip.
+    let named: Vec<_> = view.read_with(cx, |view, _| {
+        view.units().iter().filter(|(key, _)| key.starts_with("msg_turn")).flat_map(|(key, units)| {
+            units.iter().flat_map(|unit| unit.text.match_indices("#234").map(|(at, _)| {
+                view.selection().point_for(&UnitId::new(key.to_string(), unit.path.as_slice()), at + 1).expect("drawn")
+            }).collect::<Vec<_>>())
+        }).collect()
+    });
+    let [first, second] = named[..] else { panic!("named twice in the reply: {named:?}") };
+    assert!(second.y > first.y + px(10.), "the second chip on the next line: {first:?} / {second:?}");
+
+    cx.simulate_mouse_move(first, None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(320));
+    cx.run_until_parked();
+    // Beside the chip pointed at (above it, or below the line under it), and only there.
+    let by_first = |card: Bounds<Pixels>| (card.bottom() - first.y).abs() < px(30.) || (card.top() - first.y) > px(0.) && (card.top() - first.y) < px(30.);
+    let card = bounds(cx, "queue-item-hover-card").expect("its card opens");
+    assert!(by_first(card), "by the chip pointed at, and only there: {card:?} / {first:?} (the other chip at {second:?})");
+
+    // The pointer rests on the chip (a hair's move, as a resting hand makes): the card stays.
+    for step in 1..=3 {
+        cx.simulate_mouse_move(first + gpui::point(px(step as f32), px(0.)), None, Modifiers::default());
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        let card = bounds(cx, "queue-item-hover-card").unwrap_or_else(|| panic!("the card blinked off after move {step}"));
+        assert!(by_first(card), "still by the chip after move {step}: {card:?}");
+    }
+}
+
 #[gpui::test]
 fn a_work_queue_steps_row_carries_its_items_chip_which_opens_the_item(cx: &mut TestAppContext) {
     let step = json!({ "type": "tool", "id": "call_q1", "name": "kuvo-browser_queue_update", "state": { "status": "completed", "input": { "item": "#234", "status": "in-progress" } } });

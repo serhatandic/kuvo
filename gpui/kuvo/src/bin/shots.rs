@@ -213,6 +213,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Every computer in one window: devbox's sessions under their project; devbox switching to a
+    // new release; devbox off a while.
+    Screen { slug: "sessions-all-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "sessions-computer-updating", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "sessions-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Runs on beside the model in a new session's composer, devbox away (closed, then open), and a
+    // computer's settings under Computers › that computer.
+    Screen { slug: "runs-on", width: 1280., height: 820., session: None, typed: Some("Look at the deploy logs"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "runs-on-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(runs_on_open) },
+    Screen { slug: "computer-settings", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_settings) },
     Screen { slug: "landing-sky-dawn", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dawn) },
     Screen { slug: "landing-sky-day", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_day) },
     Screen { slug: "landing-sky-dusk", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sky_dusk) },
@@ -480,6 +490,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "insights-narrowed", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-refreshing", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Before the box's first figures: the title and one quiet line.
+    Screen { slug: "insights-loading", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-grid", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-list", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-bot", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -557,6 +569,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-end", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-scrolled", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "floating-composer-grown", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: Some("Here are the two screens: the header still wraps on the narrow one, and the footer’s links run into each other."), empty: false, opens: &[], search: None, walks: 0, attach: &["shots/theme-dark.png", "kuvo_ui/src/theme.rs"], panel: None },
     Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-dragging", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-long", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -575,6 +590,8 @@ const SCREENS: &[Screen] = &[
     // Bot sidebar status marks (trailing column & compact under-face gutter) and the Outputs popover media strip.
     Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bots-sessions-unreachable", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    // A bot on studio-mini, off for three hours: when it was last seen.
+    Screen { slug: "bots-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
@@ -884,8 +901,8 @@ fn queue_done(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 fn queue_filtered(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_all(workspace, window, cx);
     queue_page(workspace, cx).update(cx, |page, cx| {
-        page.act(QueueAct::AddFilter(Filter::Computer { key: "key_devbox".into(), name: "devbox".into() }), cx);
-        page.act(QueueAct::AddFilter(Filter::Computer { key: "key_studio".into(), name: "studio-mini".into() }), cx);
+        page.act(QueueAct::AddFilter(Filter::Owner { owner: "ses_wren".into(), name: "Wren".into() }), cx);
+        page.act(QueueAct::AddFilter(Filter::Owner { owner: "ses_scout".into(), name: "Scout".into() }), cx);
     });
 }
 fn queue_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1092,7 +1109,8 @@ fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Worksp
 /// Settings' view, on `section`.
 fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &mut Context<Workspace>) -> gpui::Entity<SettingsView> {
     workspace.show_setting(section, window, cx);
-    workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned()).expect("Settings")
+    // (Your own in Settings; a computer's under Computers › that computer.)
+    workspace.area_view(workspace.area()).and_then(|view| view.read(cx).settings().cloned()).expect("Settings")
 }
 
 fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1222,6 +1240,15 @@ fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<
     if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("older-budget").cloned()) {
         view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
+}
+/// Runs on's menu open, in a new session's composer.
+fn runs_on_open(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let landing = w.landing().clone();
+    landing.update(cx, |composer, cx| composer.open_runs_on(window, cx));
+}
+/// devbox's settings, under Computers › devbox: its Permissions.
+fn computer_settings(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, &kuvo::settings::box_key("key_devbox", "permissions"), window, cx);
 }
 fn this_mac(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "computer", window, cx);
@@ -3005,6 +3032,23 @@ fn main() -> anyhow::Result<()> {
                 }), include_bytes!("../../../assets/icons/activity.svg"));
                 stand_in.set_queue("ses_signup", vec![]);
             }
+            if matches!(screen.slug, "sessions-all-computers" | "sessions-computer-updating" | "sessions-computer-away" | "runs-on" | "runs-on-open") {
+                stand_in.share_setup_lists();
+                match screen.slug {
+                    "runs-on" | "runs-on-open" => stand_in.setup_away("key_devbox", NOW - 3.0 * 3_600_000.0, false),
+                    "sessions-computer-updating" => stand_in.setup_away("key_devbox", NOW - 90_000.0, true),
+                    "sessions-computer-away" => stand_in.setup_away("key_devbox", NOW - 3.0 * 3_600_000.0, false),
+                    _ => {}
+                }
+            }
+            // (The box still reading its first figures.)
+            if screen.slug == "insights-loading" {
+                stand_in.set_insights(kuvo::stand_in::insights::Sample::Reading);
+            }
+            if screen.slug == "bots-computer-away" {
+                stand_in.move_bot("bot_release", "studio-mini");
+                stand_in.bot_computer_away("bot_release", Some(NOW - 3.0 * 3_600_000.0));
+            }
             if screen.slug == "bots-sessions-unreachable" {
                 stand_in.sessions_readable(false);
                 stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 0, "asking": 0, "state": "idle", "since": NOW }));
@@ -3187,6 +3231,11 @@ fn main() -> anyhow::Result<()> {
                 let wakes = names.iter().enumerate().map(|(ix, name)| serde_json::json!({ "id": format!("wk_{ix}"), "due": NOW / 1000. + 3600. * (ix as f64 + 4.), "every": "1d", "summary": name, "cancelKey": format!("wk_{ix}") })).collect();
                 let watches = ["ci", "inbox", "deploys", "errors"].iter().enumerate().map(|(ix, letters)| serde_json::json!({ "letters": letters, "next": NOW / 1000. + 180. * (ix as f64 + 1.), "every": "5m", "summary": format!("Watch {letters}") })).collect();
                 stand_in.set_bot_wakes("bot_mira", wakes, watches);
+            }
+            if screen.slug == "floating-composer-grown" {
+                stand_in.set_queue("ses_lighthouse", ["Check the form on mobile", "Add a changelog entry"].iter().enumerate().map(|(index, text)| {
+                    serde_json::json!({ "id": format!("msg_shot{index}"), "words": text, "delivery": "queue", "on": "engine", "held": false })
+                }).collect());
             }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
@@ -3418,6 +3467,17 @@ fn main() -> anyhow::Result<()> {
                     mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
                     mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
                     mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            // Read up a little: the way back to the end shows over the composer.
+            if screen.slug == "floating-composer-scrolled" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).conversation().expect("the conversation").read(cx).list().scroll_by(px(-360.));
+                    window.refresh();
                 })?;
                 cx.run_until_parked();
                 cx.update_window(any, |_, window, _| window.refresh())?;
@@ -3715,19 +3775,17 @@ impl gpui::Render for BesideSettings {
     }
 }
 
-/// The window over your boxes: the switcher open on your computers, a session open on another
-/// of them (`switcher`, `elsewhere`), the first Quit's note (`quit-note`), and another computer
+/// The window over your boxes: a session open on another of them (`elsewhere`), the first Quit's note (`quit-note`), and another computer
 /// whose Kuvo is older than this app, its update chip's card open: waiting a long while, with
 /// Update Now (`update-waiting`), and being updated (`update-running`); one the box that lists it
 /// sets up again (`update-setup`), and one nothing here reaches over SSH (`update-ssh`). And this
 /// Mac's own Kuvo waiting for the release this app carries (`update-own-waiting`), and taking it
 /// (`update-own-running`).
 fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed"] {
+    for slug in ["elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -3870,18 +3928,6 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             if slug.starts_with("fleet-header-") {
                 // (The notifier's card, its entry motion run to its end.)
                 cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
-                cx.run_until_parked();
-                cx.update_window(any, |_, window, _| window.refresh())?;
-                cx.run_until_parked();
-            }
-            if slug == "switcher" {
-                // A click on the switcher, through the window.
-                cx.update_window(any, |_, window, cx| {
-                    let at = gpui::point(px(130.), px(22.));
-                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
-                    mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
-                    mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
-                })?;
                 cx.run_until_parked();
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();

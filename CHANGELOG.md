@@ -9,13 +9,26 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Marketplace is in the desktop app, on the rail (⌃8): connect apps with their own logos and add your own MCP servers, add ready-made agents as bots on any of your computers (their routines start off until you turn them on), and browse, preview and install skills, from a GitHub link or a folder too. It's free, and what you add is there on all your computers.
 - Settings › Integrations and Settings › Skills are gone: everything they did is in the Marketplace, including turning a skill off on one computer, Recently Deleted and Other Places.
 - New Bot no longer has templates to start from; it points to Marketplace › Agents instead.
+- The desktop app shows all your computers in one window, and the computer picker is gone. Another computer's sessions are listed under their project and open on that computer; a project is named for its computer only where two share a name.
+- While a computer is away its rows stay, saying when it was last seen, or "Updating…" while it switches to a new release. Once it's back they're live again within seconds, its bots included, instead of saying "Can't be reached".
+- The Work Queue lists every computer's items together, and its filter no longer offers a computer. Before its first answer, the Work Queue and Insights show one quiet loading line, with their tabs, search, filters, periods and refresh coming in with the data.
+- A new session has Runs on beside its model: pick which of your computers it works on, and its models, modes and projects are that computer's. A computer that's away is listed with when it was last seen, and can't be picked. New Bot has the same choice.
+- Each computer's settings are on its page under Computers, with a Settings row there; Settings itself holds your own. Its row at the foot still takes you to this computer's.
+- When this computer's Kuvo needs updating, each area shows its title and one line saying so, with Update Now beside it, instead of a page in the middle. A computer that can't be reached keeps showing what it last had.
+- Your sessions and group chats show as soon as Kuvo starts, as they were last, while it reads them again; they're empty only the very first time.
+- Send is never greyed out and never spins: send as many messages as you like, while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
+- Messages waiting for another computer keep going after you quit the desktop app.
+- Send is never greyed out and never spins: keep sending messages while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
 
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
 - While the agent runs a command or thinks, its steps line is the only spinner: "Working…" shows only between steps.
 - Pictures in conversations, the composer, the panel, Activity and the Library have one clean rounded edge, with no corners showing past it.
 - A project's longer session list says how many it has: "Show 10 more of 44", then "Show all 44" for the last of them. Activity's sessions fold the same way ("Show all 9").
 - Pointing at a Work Queue chip in a reply shows the pointing hand, not the text cursor.
+- Pointing at a Work Queue chip in a conversation opens one card, beside that chip, and it stays open: it no longer blinks, or opens under every chip for the same item.
+- The composer floats over the conversation: messages scroll under it instead of stopping at its top edge, and the last one always scrolls clear of it, in sessions, bots, group chats and the side chat.
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
+- Requests stay responsive while Kuvo reads saved artifacts and fills the Library at startup.
 
 - Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.
 - Side questions can include pictures. They're answered by the model you pick or the conversation's own, if it can see pictures. Side questions in a coding agent's conversation still take text files only.

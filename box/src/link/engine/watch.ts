@@ -1,3 +1,4 @@
+import { runLocalDelivery } from "../ownership/messages";
 import { followOwnAgents } from "../peers/agents";
 import { RUN } from "../home";
 import { serverEvents } from "../../shared/event-stream";
@@ -246,6 +247,7 @@ export function watchBox({ tell = () => true, hold = null, bots = false, notices
   signal?.addEventListener("abort", stopAsks, { once: true });
   // Every client's session lists, kept as the events come (lists/sessions.ts).
   const stopList = keepList();
+  runLocalDelivery(signal);
   signal?.addEventListener("abort", stopList, { once: true });
   const stopOwnAgents = followOwnAgents(readEngineFile);
   signal?.addEventListener("abort", stopOwnAgents, { once: true });

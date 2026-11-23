@@ -24,7 +24,7 @@ import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { takeSessionFollow } from "./session-follow";
 import { takeSetupLists, tellListsAgain } from "./lists";
-import { noteHeard } from "./reach";
+import { noteHeard, peerIsAway } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
 import { takeMoveMail } from "../moves/move";
 import { frozen } from "../moves/records";
@@ -33,7 +33,7 @@ import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
 import { takeZone } from "../zone/setting";
 import { followPeers, takeReleaseMail } from "../updates/fleet";
-import { readPeerAgents, takeAgents } from "./directory";
+import { heardFrom, readPeerAgents, takeAgents } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, openRemovalMail, ownKey, peersOf, takeLegacyPeers } from "./known";
 import { takeLimits, takeSeat } from "./seats";
 import { queuesBack, takeWorkQueueMail, tellQueuesAgain } from "../work-queue/across";
@@ -172,9 +172,12 @@ export function receiveMail(
     peerMail(sender, { sessionFollow: payload.sessionFollow });
     return true;
   }
-  // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).
-  // Back after not answering: what's kept for it goes now, not at its next minute.
-  if (noteHeard(sender.key)) {
+  // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`),
+  // and however long it was quiet (`heard`, which its agents move only as it connects and every ten
+  // minutes). Back after not answering: what's kept for it goes now, not at its next minute.
+  const quiet = heardFrom(sender.key);
+  const found = noteHeard(sender.key);
+  if (found || (quiet !== null && peerIsAway(sender.key, quiet, {}))) {
     callsBack(sender.key);
     rowsBack();
     queuesBack(sender.key);

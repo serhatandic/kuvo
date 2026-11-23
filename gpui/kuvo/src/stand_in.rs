@@ -84,6 +84,17 @@ struct State {
     name: Option<String>,
     /// The boxes of your other computers it reaches, by key.
     peers: HashMap<String, StandIn>,
+    /// It serves the setup's lists (`line.setup-lists`): its own rows and its peers'.
+    setup_lists: bool,
+    delivery_enabled: bool,
+    delivery_waiting: Vec<(String, String, Value)>,
+    delivery_done: HashSet<String>,
+    /// How each peer stands in the setup's lists, by key (none: answering): away since when, and
+    /// whether only to switch to a new release.
+    setup_standing: HashMap<String, (f64, bool)>,
+    /// Rows of computers it keeps a last copy of but reaches no box of, as the setup's list says
+    /// them (`kuvo/setup/sessions/events` sessions).
+    setup_kept: Vec<Value>,
     older: bool,
     move_scenario: Option<moves::Scenario>,
     /// What its `kuvo/info` leaves out of what this app draws (a box behind on those features).
@@ -286,6 +297,145 @@ impl StandIn {
             state.settings.set_browser("never", json!([]));
         }
         stand_in
+    }
+
+    /// It serves the setup's lists across your computers (`line.setup-lists`), as a box of this
+    /// release does: its own rows, and its other computers'.
+    pub fn share_setup_lists(&self) {
+        self.state().setup_lists = true;
+    }
+
+    /// The local box accepts sends even when their owner isn't reachable.
+    pub fn enable_delivery(&self) {
+        self.state().delivery_enabled = true;
+    }
+
+    /// One round of the stand-in box's background delivery, advanced by the test.
+    pub fn delivery_round(&self) {
+        loop {
+            let (computer, session, draft, peer) = {
+                let state = self.state();
+                let Some((computer, session, draft)) = state.delivery_waiting.first() else { return; };
+                let Some(peer) = state.peers.get(computer) else { return; };
+                (computer.clone(), session.clone(), draft.clone(), peer.clone())
+            };
+            let sent = Transport::send(&peer, &Request::post(format!("kuvo/sessions/{session}/send"), json!({
+                "id": draft["id"], "words": draft["text"], "delivery": draft["message"]["delivery"],
+            })));
+            if !sent.is_ok_and(|response| response.is_success()) { return; }
+            let mut state = self.state();
+            state.delivery_done.insert(draft["id"].as_str().unwrap().to_owned());
+            state.delivery_waiting.retain(|(key, _, saved)| key != &computer || saved["id"] != draft["id"]);
+        }
+    }
+
+    /// Another computer in the setup's lists goes away (`since`: when its last copy came), only
+    /// to switch to a new release where `updating`.
+    pub fn setup_away(&self, key: &str, since: f64, updating: bool) {
+        self.state().setup_standing.insert(key.to_owned(), (since, updating));
+    }
+
+    /// A computer it reaches no box of, as its last copy in the setup's lists has it: these sessions.
+    pub fn setup_kept(&self, rows: Vec<Value>) {
+        self.state().setup_kept = rows;
+    }
+
+    /// The setup's sessions and projects, as `kuvo/setup/sessions/events` says them.
+    fn setup_sessions(&self) -> Value {
+        let state = self.state();
+        let here = json!({ "id": "key_stand_in", "name": state.name() });
+        let rows = |line: &Value, computer: &Value, standing: Option<(f64, bool)>, local: bool| -> (Vec<Value>, Vec<Value>) {
+            let away = standing.is_some();
+            let mut origin = json!({ "computer": computer, "away": away });
+            if let Some((since, updating)) = standing {
+                origin["lastSeen"] = json!(since);
+                if updating {
+                    origin["updating"] = json!(true);
+                }
+            }
+            if local {
+                origin["here"] = json!(true);
+            }
+            let with = |mut row: Value| {
+                for (key, value) in origin.as_object().unwrap() {
+                    row[key] = value.clone();
+                }
+                row
+            };
+            let sessions = line["sessions"].as_object().into_iter().flatten().map(|(id, facts)| with(json!({ "id": id, "facts": facts, "actions": if away { json!([]) } else { json!(["open", "manage"]) } }))).collect();
+            let projects = line["projects"].as_object().into_iter().flatten().map(|(directory, facts)| with(json!({ "directory": directory, "facts": facts }))).collect();
+            (sessions, projects)
+        };
+        let (mut sessions, mut projects) = rows(&state.line(true), &here, None, true);
+        let peers: Vec<(String, StandIn)> = state.peers.iter().map(|(key, peer)| (key.clone(), peer.clone())).collect();
+        let standing = state.setup_standing.clone();
+        sessions.extend(state.setup_kept.iter().cloned());
+        drop(state);
+        for (key, peer) in peers {
+            let (line, name) = { let peer = peer.state(); (peer.line(true), peer.name()) };
+            let (more, more_projects) = rows(&line, &json!({ "id": key, "name": name }), standing.get(&key).copied(), false);
+            sessions.extend(more);
+            projects.extend(more_projects);
+        }
+        json!({ "sessions": sessions, "projects": projects })
+    }
+
+    /// Where a new session can run, as `kuvo/setup/runs-on/events` says it: this computer, then
+    /// its peers, an away one with when it was last seen.
+    fn runs_on(&self) -> Value {
+        let state = self.state();
+        let mut computers = vec![json!({ "computer": { "id": "key_stand_in", "name": state.name() }, "here": true, "offered": { "models": [] }, "agents": [] })];
+        let mut peers: Vec<(String, StandIn)> = state.peers.iter().map(|(key, peer)| (key.clone(), peer.clone())).collect();
+        peers.sort_by(|a, b| a.0.cmp(&b.0));
+        let standing = state.setup_standing.clone();
+        drop(state);
+        for (key, peer) in peers {
+            let name = peer.state().name();
+            let mut row = json!({ "computer": { "id": key, "name": name }, "offered": { "models": [] }, "agents": [] });
+            if let Some((since, updating)) = standing.get(&key) {
+                row["away"] = json!(true);
+                row["lastSeen"] = json!(since);
+                if *updating {
+                    row["updating"] = json!(true);
+                }
+            }
+            computers.push(row);
+        }
+        json!({ "computers": computers })
+    }
+
+    fn merged_sessions(&self) -> Value {
+        let mut listing = self.state().line(true);
+        let rows = self.setup_sessions();
+        let on = |row: &Value, actions: Value| json!({
+            "id": row["computer"]["id"], "name": row["computer"]["name"], "away": row["away"].as_bool().unwrap_or_default(),
+            "lastSeen": row["lastSeen"], "updating": row["updating"].as_bool().unwrap_or_default(), "actions": actions,
+        });
+        for row in rows["projects"].as_array().into_iter().flatten().filter(|r| r["here"] != true) {
+            let (computer, directory) = (row["computer"]["id"].as_str().unwrap(), row["directory"].as_str().unwrap());
+            let mut facts = row["facts"].clone();
+            if let Some(fields) = facts.as_object_mut() {
+                for key in ["shown", "total", "more"] { fields.remove(key); }
+            }
+            facts["on"] = on(row, json!([]));
+            listing["projects"][format!("{computer}:{directory}")] = facts;
+        }
+        for row in rows["sessions"].as_array().into_iter().flatten().filter(|r| r["here"] != true) {
+            let id = row["id"].as_str().unwrap();
+            if !listing["sessions"][id].is_null() { continue; }
+            let mut facts = row["facts"].clone();
+            if facts["kind"] == "project" {
+                let directory = facts["project"].as_str().or_else(|| facts["directory"].as_str()).unwrap();
+                let project = format!("{}:{directory}", row["computer"]["id"].as_str().unwrap());
+                if listing["projects"][&project].is_null() {
+                    listing["projects"][&project] = json!({ "name": directory.rsplit('/').next(), "on": on(row, json!([])) });
+                }
+                facts["project"] = json!(project);
+            }
+            facts["on"] = on(row, row["actions"].as_array().map_or_else(|| json!(["open", "manage"]), |actions| json!(actions)));
+            listing["sessions"][id] = facts;
+        }
+        listing
     }
 
     /// The box of another of your computers, as this one reaches it (`key`: its key in
@@ -827,6 +977,27 @@ impl StandIn {
     pub fn move_bot(&self, bot: &str, computer: &str) {
         let mut state = self.state();
         state.bots.move_away(bot, computer);
+        state.sync_bots();
+    }
+
+    /// The computer `bot` lives on (one of your others) as the box says it on the bot's row: away,
+    /// last heard from at `seen` (ms), or answering (`None`). Those following the bots hear it.
+    pub fn bot_computer_away(&self, bot: &str, seen: Option<f64>) {
+        let mut state = self.state();
+        if let Some(row) = state.bots.elsewhere.iter_mut().find(|each| each["id"] == json!(bot))
+            && let Some(row) = row.as_object_mut()
+        {
+            match seen {
+                Some(seen) => {
+                    row.insert("away".into(), json!(true));
+                    row.insert("lastSeen".into(), json!(seen));
+                }
+                None => {
+                    row.remove("away");
+                    row.remove("lastSeen");
+                }
+            }
+        }
         state.sync_bots();
     }
 
@@ -2296,6 +2467,8 @@ impl StandIn {
                 if state.areas.fleet.is_some() { features.push(crate::fleet::FEATURE); }
                 // (A machine's box shows its browser live; a Mac's has none of its own.)
                 if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
+                if state.delivery_enabled { features.push(kuvo_box::queue::DELIVERY_FEATURE); }
+                if state.setup_lists { features.extend([kuvo_box::sessions::SETUP_LISTS, kuvo_box::sessions::MERGED_SESSIONS]); }
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
@@ -2313,6 +2486,41 @@ impl StandIn {
                 }
                 None => answer(409, json!({ "message": "It has the newest Kuvo already." })),
             },
+            ("POST", ["kuvo", "sessions", session, "delivery"]) if state.delivery_enabled => {
+                let owner = query(path, "computer").map(decoded).unwrap_or_else(|| "here".into());
+                let id = body["id"].as_str().unwrap();
+                if !state.delivery_done.contains(id) && !state.delivery_waiting.iter().any(|(_, _, draft)| draft["id"] == body["id"]) {
+                    state.delivery_waiting.push((owner.clone(), (*session).into(), body.clone()));
+                }
+                answer(202, json!({ "operation": id, "owner": owner, "status": "pending" }))
+            }
+            ("GET", ["kuvo", "data", "messages", id]) if state.delivery_enabled => {
+                let status = if state.delivery_done.contains(*id) { "committed" } else { "pending" };
+                answer(200, json!({ "operation": id, "owner": "key_devbox", "status": status }))
+            }
+            ("GET", ["kuvo", "sessions", session, "delivery"]) if state.delivery_enabled => {
+                let computer = query(path, "computer").map(decoded).unwrap_or_else(|| "here".into());
+                let items: Vec<_> = state.delivery_waiting.iter().filter(|(key, target, _)| key == &computer && target.as_str() == *session)
+                    .map(|(_, _, draft)| json!({ "id": draft["id"], "words": draft["text"], "on": "box", "delivery": "queue", "held": false }))
+                    .collect();
+                let line = state.peers.get(&computer).and_then(|peer| {
+                    let peer = peer.state();
+                    (peer.down && !items.is_empty()).then(|| format!("{} isn’t answering · your messages will go when it’s back", peer.name()))
+                });
+                answer(200, json!({ "paused": false, "items": items, "deliveryLine": line }))
+            }
+            ("GET", ["kuvo", "setup", "sessions", "list", "events"]) if state.setup_lists => {
+                drop(state);
+                answer(200, self.merged_sessions())
+            }
+            ("GET", ["kuvo", "setup", "sessions", "events"]) if state.setup_lists => {
+                drop(state);
+                answer(200, self.setup_sessions())
+            }
+            ("GET", ["kuvo", "setup", "runs-on", "events"]) if state.setup_lists => {
+                drop(state);
+                answer(200, self.runs_on())
+            }
             ("GET", ["kuvo", "sessions", "list"]) if state.sessions_down => answer(500, json!({ "message": "Sessions couldn’t be read." })),
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "sessions", "page"]) => {

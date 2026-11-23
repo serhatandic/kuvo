@@ -685,7 +685,8 @@ pub struct SelectableText {
     on_link: Option<LinkClick>,
     link_title: Option<Rc<dyn Fn(&str) -> String>>,
     items: Vec<(Range<usize>, ItemOverlay)>,
-    overlays: Vec<AnyElement>,
+    /// Each item's element, with where it is among them (its id under the text's, [`Self::item_ids`]).
+    overlays: Vec<(usize, AnyElement)>,
     inner: Option<(AnyElement, TextLayout)>,
 }
 
@@ -766,6 +767,13 @@ impl SelectableText {
         }
         self.inner.as_mut().expect("built")
     }
+
+    /// Runs `f` with item `ix`'s ids under this text's: an item named twice (in two replies, or
+    /// twice in one) is two elements, each with its own state (its hover, its card), never one
+    /// shared by every place it's named.
+    fn item_ids<R>(id: &ElementId, ix: usize, window: &mut Window, f: impl FnOnce(&mut Window) -> R) -> R {
+        window.with_id(id.clone(), |window| window.with_id(ix, f))
+    }
 }
 
 impl Element for SelectableText {
@@ -793,12 +801,15 @@ impl Element for SelectableText {
         let layout = layout.clone();
         // (After the text's hitboxes, so an item's own takes the pointer over it.)
         self.overlays.clear();
-        for (range, build) in &self.items {
+        for (ix, (range, build)) in self.items.iter().enumerate() {
             if let Some(first) = range_rects(&layout, range.clone(), false).into_iter().next() {
                 let rect = Bounds::new(point(first.left(), first.top() + px(1.)), size(first.size.width, first.size.height - px(2.)));
-                let mut overlay = build(rect, window, cx);
-                overlay.prepaint_as_root(rect.origin, rect.size.map(gpui::AvailableSpace::Definite), window, cx);
-                self.overlays.push(overlay);
+                let overlay = Self::item_ids(&self.id, ix, window, |window| {
+                    let mut overlay = build(rect, window, cx);
+                    overlay.prepaint_as_root(rect.origin, rect.size.map(gpui::AvailableSpace::Definite), window, cx);
+                    overlay
+                });
+                self.overlays.push((ix, overlay));
             }
         }
         if let Some((state, unit)) = &self.unit {
@@ -825,8 +836,8 @@ impl Element for SelectableText {
         if let (Some(_), Some(hitbox)) = (&self.unit, hitbox.as_ref()) {
             window.set_cursor_style(CursorStyle::IBeam, hitbox);
         }
-        for overlay in &mut self.overlays {
-            overlay.paint(window, cx);
+        for (ix, overlay) in &mut self.overlays {
+            Self::item_ids(&self.id, *ix, window, |window| overlay.paint(window, cx));
         }
         if let Some((state, unit)) = &self.unit {
             let (range, emphasized) = {

@@ -80,6 +80,9 @@ export type JSONAnswer<Value = unknown, Refusal = Value> = { status: 200; value:
 export interface RouteContext {
   /** Receipts from successful config writes made by this Settings action. */
   configChanges?: string[];
+  /** Delivery change made on the listing box while the draft waited. */
+  deliveryMode?: "steer" | "now";
+  durableDelivery?: boolean;
   /** Owner admission for a deferred delivery, checked again after asynchronous preparation. */
   admitQueued?: () => { status: number; value: unknown; notAdmitted?: true } | null;
   request: LinkRequest;

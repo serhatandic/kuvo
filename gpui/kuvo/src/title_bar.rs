@@ -1,23 +1,23 @@
-//! The title bar: the window's buttons, the sidebar toggle, the computer switcher, back and forward
+//! The title bar: the window's buttons, the sidebar toggle, back and forward
 //! as one group over the rail and the area's sidebar, a thin divider after it; then the main view's title, and the side panel's button.
 //! Dragging it moves the window.
 
 use kuvo_ui::motion::{MotionExt as _};
 use gpui::{
-    AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled, WeakEntity, div, prelude::FluentBuilder as _, px,
+    AnyElement, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
-    menu::{Menu, MenuEntry, MenuItem, PopoverMenu},
+    menu::PopoverMenu,
     small::{Chip, spinner, status_dot},
     theme::{radius, space},
 };
 
-use crate::area::{Area, Back, Forward, ShowComputers};
-use crate::areas::{Reading, computer_line};
+use crate::area::{Area, Back, Forward};
+use crate::areas::computer_line;
 use crate::session_menu::{ActivePopover, title_anchored_popover};
-use crate::workspace::{BoxState, Switch, Workspace};
-use kuvo_box::boxes::{Pairing, Reach, Row};
+use crate::workspace::Workspace;
+use kuvo_box::boxes::{Reach, Row};
 
 /// How tall it is.
 pub const HEIGHT: f32 = 44.;
@@ -35,9 +35,6 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
     let gap = space::S0_5;
     let divider_gap = space::S1;
     let divider_width = px(1.);
-    let picker_room = edge.filter(|_| !compact).map_or(px(184.), |edge| {
-        edge - px(LIGHTS) - button_size.height() * 3. - gap * 3. - divider_gap - divider_width
-    });
     let toggle = buttons(
         Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
             .ghost()
@@ -48,7 +45,6 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
             .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
     );
     let navigation = div().flex().flex_none().items_center().gap(gap)
-        .child(buttons(computer_switcher(workspace, compact, picker_room, cx)))
         .child(buttons(
             Button::icon_only("back", IconName::ArrowLeft, "Back")
                 .ghost()
@@ -271,167 +267,6 @@ fn session_more_menu(workspace: &Workspace, session: &str, cx: &Context<Workspac
 /// A press in here is its buttons', never the title bar's window move.
 fn buttons(child: impl IntoElement) -> impl IntoElement {
     div().flex_none().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(child)
-}
-
-/// The computer whose box the window shows, and how it stands; it opens the list of your computers.
-fn computer_switcher(workspace: &Workspace, compact: bool, room: Pixels, cx: &Context<Workspace>) -> AnyElement {
-    let c = &cx.theme().colors;
-    let name = workspace.box_name();
-    // Away: the box's word for it on its name, muted ("Can’t be reached"), not a red dot; a quiet
-    // dot where no list says it.
-    let away = match (workspace.box_state(), workspace.computers()) {
-        (BoxState::Unreachable(_), Reading::Ready(computers)) => computers.iter().find(|computer| computer.here).map(|computer| computer.reach_title("away")).filter(|words| !words.is_empty()),
-        _ => None,
-    };
-    let dot = match workspace.box_state() {
-        BoxState::Connecting => Some(c.text_faint),
-        BoxState::Unreachable(_) if away.is_none() || compact => Some(c.text_faint),
-        BoxState::Connected | BoxState::Held | BoxState::Unreachable(_) => None,
-    };
-    let trigger = if compact {
-        Button::icon_only("computer-switcher", IconName::Computer, name.clone())
-            .size(ButtonSize::Small)
-    } else {
-        Button::new("computer-switcher", name.clone())
-            .ghost()
-            .quiet()
-            .icon(IconName::Computer)
-            .icon_after(IconName::ChevronDown)
-            .truncate_at(room)
-            .tooltip(name.clone())
-    }.icon_size(IconSize::Medium);
-    let this = cx.entity().downgrade();
-    div()
-        .relative()
-        .flex()
-        .items_center()
-        .child(PopoverMenu::new("computer-menu", trigger, move |_, cx| {
-            let workspace = this.upgrade();
-            let this = this.clone();
-            cx.new(|cx| {
-                let menu = Menu::new(cx).width(px(280.));
-                match workspace {
-                    Some(workspace) => menu.follow(&workspace, ComputerMenu::read, move |state| state.items(&this), cx),
-                    None => menu,
-                }
-            })
-        }))
-        .children(dot.map(|color| div().absolute().top(px(1.)).right(px(1.)).child(status_dot(color))))
-        .children(away.filter(|_| !compact).map(|words| kuvo_ui::notice::on_name(words, cx)))
-        .into_any_element()
-}
-
-#[derive(PartialEq)]
-struct ComputerMenuRow {
-    name: String,
-    mac: bool,
-    detail: String,
-    pick: Option<String>,
-    pair_again: Option<String>,
-}
-
-#[derive(PartialEq)]
-struct ComputerMenu {
-    name: SharedString,
-    detail: Option<&'static str>,
-    rows: Vec<ComputerMenuRow>,
-    pairing: Option<Pairing>,
-}
-
-impl ComputerMenu {
-    fn read(workspace: &Workspace) -> Self {
-        let detail = match workspace.box_state() {
-            BoxState::Connecting => Some("Connecting…"),
-            BoxState::Unreachable(_) => Some("Can’t connect"),
-            BoxState::Connected | BoxState::Held => None,
-        };
-        let (rows, pairing) = if let Some(switching) = workspace.switching() {
-            let rows = switching.rows.iter()
-                .filter(|row| Some(row.key()) != switching.shown.as_deref() && !(switching.shown.is_none() && row.reach == Reach::Nearest))
-                .map(|row| ComputerMenuRow {
-                    name: row.computer.name.clone(),
-                    mac: row.computer.is_mac(),
-                    detail: reach_line(row),
-                    pick: (row.usable() && !row.key().is_empty()).then(|| row.key().to_owned()),
-                    pair_again: match &row.reach {
-                        Reach::Readd(said) => said.pair_again_label().map(str::to_owned),
-                        _ => None,
-                    },
-                })
-                .collect();
-            (rows, Some(switching.pairing.clone()))
-        } else {
-            let rows = match workspace.computers() {
-                Reading::Ready(computers) => computers.iter().filter(|computer| !computer.here)
-                    .map(|computer| ComputerMenuRow {
-                        name: computer.name.clone(), mac: computer.is_mac(), detail: computer_line(computer), pick: None, pair_again: None,
-                    }).collect(),
-                _ => Vec::new(),
-            };
-            (rows, None)
-        };
-        Self { name: workspace.box_name(), detail, rows, pairing }
-    }
-
-    fn items(&self, workspace: &WeakEntity<Workspace>) -> Vec<MenuItem> {
-        let shown = MenuEntry::new(self.name.clone()).icon(IconName::Computer).checked(true);
-        let shown = match self.detail { Some(detail) => shown.detail(detail), None => shown };
-        let mut items = vec![MenuItem::Header("Shown in This Window".into()), MenuItem::Entry(shown)];
-        if !self.rows.is_empty() {
-            items.push(MenuItem::Header("Your Other Computers".into()));
-        }
-        for row in &self.rows {
-            let entry = MenuEntry::new(row.name.clone())
-                .icon(if row.mac { IconName::Computer } else { IconName::Terminal })
-                .detail(row.detail.clone());
-            let entry = if let Some(key) = row.pick.clone() {
-                let workspace = workspace.clone();
-                entry.on_select(move |_, cx| {
-                    workspace.update(cx, |_, cx| cx.emit(Switch::To(key.clone()))).ok();
-                })
-            } else {
-                entry.disabled(true)
-            };
-            items.push(MenuItem::Entry(entry));
-            if let Some(label) = &row.pair_again {
-                items.push(MenuItem::Entry(pair_again(label, workspace)));
-            }
-        }
-        let status = match &self.pairing {
-            Some(Pairing::Waiting(why) | Pairing::Refused(why)) => Some(MenuEntry::new("Your other computers aren’t reached yet").detail(why.clone()).disabled(true)),
-            Some(Pairing::Checking(why)) => Some(MenuEntry::new(why.clone()).loading()),
-            Some(Pairing::Readd(said)) => Some(MenuEntry::new(said.title.clone().unwrap_or_default()).detail(said.message.clone()).disabled(true)),
-            Some(Pairing::Removed(why)) => Some(MenuEntry::new("This app was removed from your devices").detail(why.clone()).disabled(true)),
-            None if !self.rows.is_empty() => Some(MenuEntry::new("Switching to another computer").detail("not in this app yet").disabled(true)),
-            _ => None,
-        };
-        if let Some(status) = status {
-            items.extend([MenuItem::Separator, MenuItem::Entry(status)]);
-        }
-        let action = match &self.pairing {
-            Some(Pairing::Readd(said)) => said.pair_again_label(),
-            Some(Pairing::Removed(_)) => Some("Connect This App Again"),
-            _ => None,
-        };
-        if let Some(label) = action {
-            items.push(MenuItem::Entry(pair_again(label, workspace)));
-        }
-        if self.pairing.is_some() || !self.rows.is_empty() {
-            if self.pairing.is_some() {
-                items.push(MenuItem::Separator);
-            }
-            items.push(MenuItem::Entry(MenuEntry::new("Show Computers").shortcut("⌃4")
-                .on_select(|window, cx| window.dispatch_action(Box::new(ShowComputers), cx))));
-        }
-        items
-    }
-}
-
-fn pair_again(label: &str, workspace: &WeakEntity<Workspace>) -> MenuEntry {
-    let workspace = workspace.clone();
-    MenuEntry::new(label.to_owned()).on_select(move |_, cx| {
-        workspace.update(cx, |_, cx| cx.emit(Switch::PairAgain)).ok();
-    })
 }
 
 /// How this app stands with one of your computers, in the switcher's words.
