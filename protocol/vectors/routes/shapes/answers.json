@@ -971,6 +971,103 @@
    }
   },
   {
+   "route": "GET kuvo/setup/outputs",
+   "feature": "line.merged-outputs",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "artifacts": {
+       "list": {
+        "object": {
+         "id": "string",
+         "path": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "memory"
+           },
+           {
+            "literal": "skill"
+           },
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "download"
+           },
+           {
+            "literal": "code"
+           },
+           {
+            "literal": "file"
+           }
+          ]
+         },
+         "type": "string",
+         "gone": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "updated": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "pinned": "bool",
+         "latest": {
+          "object": {
+           "n": "number",
+           "hash": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "reason?": "string"
+          }
+         },
+         "artifactId": "string",
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "next": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/artifacts",
    "feature": "artifacts",
    "answers": {
@@ -2546,6 +2643,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "bots": {
        "list": {
         "object": {
@@ -3140,6 +3245,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "bots": {
        "list": {
         "object": {
@@ -11750,7 +11863,16 @@
             "literal": "line"
            },
            {
+            "literal": "line.merged-archives"
+           },
+           {
             "literal": "line.merged-library"
+           },
+           {
+            "literal": "line.merged-notices"
+           },
+           {
+            "literal": "line.merged-outputs"
            },
            {
             "literal": "line.merged-sessions"
@@ -11760,6 +11882,9 @@
            },
            {
             "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.pending-computers"
            },
            {
             "literal": "line.setup-lists"
@@ -11937,6 +12062,9 @@
            },
            {
             "literal": "search"
+           },
+           {
+            "literal": "search.setup"
            },
            {
             "literal": "sessions.actions"
@@ -12748,7 +12876,16 @@
             "literal": "line"
            },
            {
+            "literal": "line.merged-archives"
+           },
+           {
             "literal": "line.merged-library"
+           },
+           {
+            "literal": "line.merged-notices"
+           },
+           {
+            "literal": "line.merged-outputs"
            },
            {
             "literal": "line.merged-sessions"
@@ -12758,6 +12895,9 @@
            },
            {
             "literal": "line.peer-conversation"
+           },
+           {
+            "literal": "line.pending-computers"
            },
            {
             "literal": "line.setup-lists"
@@ -12935,6 +13075,9 @@
            },
            {
             "literal": "search"
+           },
+           {
+            "literal": "search.setup"
            },
            {
             "literal": "sessions.actions"
@@ -16313,6 +16456,70 @@
    }
   },
   {
+   "route": "GET kuvo/setup/notices/events",
+   "feature": "line.merged-notices",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "origins": {
+       "list": {
+        "object": {
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "telling": "bool",
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "notices": {
+       "list": {
+        "object": {
+         "id": "string",
+         "at": "number",
+         "notice": {
+          "object": {
+           "title?": "string",
+           "subtitle?": "string",
+           "body?": "string",
+           "category": "string",
+           "thread?": "string",
+           "data?": {
+            "map": "string"
+           }
+          }
+         },
+         "by?": {
+          "literal": "agent"
+         },
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/notices",
    "feature": "notices",
    "answers": {
@@ -18021,6 +18228,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "moves": {
        "list": {
         "object": {
@@ -18166,6 +18381,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "moves": {
        "list": {
         "object": {
@@ -20276,6 +20499,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -20408,6 +20639,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -22156,6 +22395,48 @@
    }
   },
   {
+   "route": "GET kuvo/setup/search",
+   "feature": "search.setup",
+   "answers": {
+    "200": {
+     "object": {
+      "results": {
+       "list": {
+        "object": {
+         "session": "string",
+         "snippet": "string",
+         "info": "any",
+         "subagent?": "any",
+         "computer?": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      },
+      "awayComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "unavailableComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/search",
    "feature": "search",
    "answers": {
@@ -22167,7 +22448,29 @@
          "session": "string",
          "snippet": "string",
          "info": "any",
-         "subagent?": "any"
+         "subagent?": "any",
+         "computer?": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      },
+      "awayComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "unavailableComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
         }
        }
       }
@@ -25252,6 +25555,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -25514,6 +25825,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -25829,7 +26148,25 @@
           }
          ]
         },
-        "running": "bool"
+        "running": "bool",
+        "tools?": {
+         "object": {
+          "directory": {
+           "oneOf": [
+            "string",
+            "null"
+           ]
+          },
+          "ready": {
+           "object": {
+            "files": "bool",
+            "changes": "bool",
+            "browser": "bool",
+            "terminal": "bool"
+           }
+          }
+         }
+        }
        }
       },
       {
@@ -25851,6 +26188,24 @@
               "literal": "manage"
              }
             ]
+           }
+          }
+         }
+        },
+        "tools?": {
+         "object": {
+          "directory": {
+           "oneOf": [
+            "string",
+            "null"
+           ]
+          },
+          "ready": {
+           "object": {
+            "files": "bool",
+            "changes": "bool",
+            "browser": "bool",
+            "terminal": "bool"
            }
           }
          }
@@ -25892,7 +26247,25 @@
         }
        ]
       },
-      "running": "bool"
+      "running": "bool",
+      "tools?": {
+       "object": {
+        "directory": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "ready": {
+         "object": {
+          "files": "bool",
+          "changes": "bool",
+          "browser": "bool",
+          "terminal": "bool"
+         }
+        }
+       }
+      }
      }
     },
     "403": {
@@ -27955,6 +28328,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "at": "string",
       "full?": "bool",
       "sessions": {
@@ -28217,6 +28598,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "sessions": {
        "list": {
         "object": {
@@ -28446,7 +28835,15 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28469,7 +28866,15 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28485,6 +28890,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "waiting": {
        "list": {
         "object": {
@@ -28552,6 +28965,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "queues": {
        "list": {
         "object": {
@@ -28625,6 +29046,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "computers": {
        "list": {
         "object": {
@@ -28755,7 +29184,15 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -28773,7 +29210,15 @@
      "object": {
       "sessions": "number",
       "bots": "number",
-      "queue": "number"
+      "queue": "number",
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      }
      }
     },
     "405": {
@@ -30998,6 +31443,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -31491,6 +31944,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -32194,6 +32655,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -32608,6 +33077,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -33101,6 +33578,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -33804,6 +34289,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -34226,6 +34719,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -34719,6 +35220,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -35422,6 +35931,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -35843,6 +36360,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -36336,6 +36861,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -37039,6 +37572,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -37458,6 +37999,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "id": "string",
       "title": "string",
       "line?": "string",
@@ -37951,6 +38500,14 @@
              }
             },
             "name?": "string",
+            "computer?": {
+             "object": {
+              "id": "string",
+              "name": "string"
+             }
+            },
+            "away?": "bool",
+            "lastSeen?": "number",
             "badge?": {
              "object": {
               "words": "string",
@@ -38654,6 +39211,14 @@
                 }
                },
                "name?": "string",
+               "computer?": {
+                "object": {
+                 "id": "string",
+                 "name": "string"
+                }
+               },
+               "away?": "bool",
+               "lastSeen?": "number",
                "badge?": {
                 "object": {
                  "words": "string",
@@ -39096,6 +39661,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -39589,6 +40162,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -40292,6 +40873,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -40753,6 +41342,14 @@
       "message": "string",
       "page?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "id": "string",
         "title": "string",
         "line?": "string",
@@ -41246,6 +41843,14 @@
                }
               },
               "name?": "string",
+              "computer?": {
+               "object": {
+                "id": "string",
+                "name": "string"
+               }
+              },
+              "away?": "bool",
+              "lastSeen?": "number",
               "badge?": {
                "object": {
                 "words": "string",
@@ -41949,6 +42554,14 @@
                   }
                  },
                  "name?": "string",
+                 "computer?": {
+                  "object": {
+                   "id": "string",
+                   "name": "string"
+                  }
+                 },
+                 "away?": "bool",
+                 "lastSeen?": "number",
                  "badge?": {
                   "object": {
                    "words": "string",
@@ -44040,6 +44653,14 @@
       "bot": "string",
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44059,6 +44680,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -44324,6 +44966,14 @@
      "object": {
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44343,6 +44993,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -44384,6 +45055,14 @@
      "object": {
       "activity?": {
        "object": {
+        "pendingComputers?": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
         "working": "number",
         "asking": "number",
         "sessions": {
@@ -44403,6 +45082,27 @@
            },
            "computer?": "string",
            "subagent?": "bool"
+          }
+         }
+        },
+        "lastSeenSessions?": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string",
+           "subagent?": "bool",
+           "lastSeen": "number"
           }
          }
         }
@@ -46006,6 +46706,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "owner": "string",
       "statuses": {
        "list": {
@@ -46597,6 +47305,14 @@
    "answers": {
     "200": {
      "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
       "owner": "string",
       "statuses": {
        "list": {

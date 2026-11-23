@@ -31910,7 +31910,8 @@ class LinkDirectory {
       if (!box || typeof box.key !== "string" || !box.key)
         continue;
       const insights = box.insights === "connected" || box.insights === "away" || box.insights === "unsupported" ? box.insights : undefined;
-      boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, insights });
+      const limits = box.limits === "connected" || box.limits === "away" ? box.limits : undefined;
+      boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, insights, limits });
     }
     this.boxes = boxes;
     const self = given.self;
@@ -31941,7 +31942,10 @@ class LinkDirectory {
     return [...this.boxes].map(([key, box]) => ({ key, name: box.name }));
   }
   insightPeers() {
-    return [...this.boxes].map(([key, { insights }]) => ({ key, insights }));
+    return [...this.boxes].map(([key, { name, insights }]) => ({ key, name, insights }));
+  }
+  limitPeers() {
+    return [...this.boxes].map(([key, { name, limits }]) => ({ key, name, limits }));
   }
   insightOrigins() {
     return [...this.origins].map(([key, name]) => ({ key, name }));
@@ -34498,4 +34502,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents aa788d03c74fdc2dcbf21fcd388ad1ba0fb5bcf607c07ae2f24dfec64b5f12fe
+// Built from Packages/Box/src/agents 5f9041c4a3c85ac8aaa3a53f3cf8efaa78b79a7e146b85c8c0cb6227d5b7c857
