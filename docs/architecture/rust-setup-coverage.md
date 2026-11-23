@@ -68,22 +68,22 @@ contains 222 declarations across the listed files, including adjacent work.
 | [setup-mac](../../box/bridge-tests/setup-mac.test.js) | 7 | Bootstrap and restart with Helper keys → B12. The other cases cover the retired rank rule, key rotation, SSH re-enrollment or following writes from an external process. |
 | [setup-judge](../../box/bridge-tests/setup-judge.test.js) | 11 | Card output → R1 and R2. Multi-install discovery, probe judgments, attach action checks and future cards need their 2.3 cases. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 18 | Current main, offline exception, holder replay and capacity → B1, B6, B10, B11. Remaining cases concern queue, session, handoff and receipt index ownership or need live grant rotation across two peers. |
-| [setup-handover](../../box/bridge-tests/setup-handover.test.js) | 68 | Split out below. |
+| Setup handover bridge files | 68 | Scenario links below. |
 
 | Handover cases | Count | Rust coverage or gap |
 |---|---:|---|
-| [Move, away owner, local work, owner reads](../../box/bridge-tests/setup-handover.test.js#L520-L837) | 5 | 2.2, 2.4, queue and engine. |
-| [Mixed rollback, multiple handovers, SSH epoch](../../box/bridge-tests/setup-handover.test.js#L838-L948) | 3 | B2 covers one missed epoch without unlink. Pinned SSH catch-up, two successive handovers and historical rollback combinations remain open. |
-| [Successor and primary loss during handover](../../box/bridge-tests/setup-handover.test.js#L949-L1013) | 3 | B3 and B6 cover the healthy readiness exchange and lease fencing. The three exact transfer cuts are open. |
-| [Credential cleanup, enroll/removal and access forwarding](../../box/bridge-tests/setup-handover.test.js#L1014-L1428) | 8 | 2.2 and 2.3. Scoped rename receipts and permission grants need their own route scenarios. |
-| [SSH personalities, label restores](../../box/bridge-tests/setup-handover.test.js#L1429-L1717) | 4 | B5 covers the library merge. SSH command saves, the label restore command and its old or unreachable main checks remain open. |
-| [Commit before publication and number blocks](../../box/bridge-tests/setup-handover.test.js#L1718-L1812) | 2 | B7 exercises durable save and catch-up. The exact post-commit loss cut, peer pairing and number-block allocation still need checks. |
-| [Paired queued grants, drafts, notes and deletions](../../box/bridge-tests/setup-handover.test.js#L1813-L2273) | 4 | B2 covers the preference field decision. Queues, notes, attachment handling and live device changes need the respective area ports. |
-| [Preference merge through takeover](../../box/bridge-tests/setup-handover.test.js#L2274-L2304) | 1 | B2. |
-| [Bot ownership, unlink, wipe, restore and mixed release](../../box/bridge-tests/setup-handover.test.js#L2305-L4139) | 29 | 2.3–2.5, engine/work, and rehearsal. |
-| [Lease renewal, fencing and sole-main changes](../../box/bridge-tests/setup-handover.test.js#L4140-L4263) | 6 | Restart grace and a partitioned main → B13 and B6. The offline pairing, installer and unlink/number cases need 2.2, 2.3 and 5.2. |
-| [Replica catch-up and mixed resident handover](../../box/bridge-tests/setup-handover.test.js#L4264-L4333) | 2 | Replica catch-up → B7. The mixed TypeScript resident case belongs to the historical rehearsal. |
-| [Unlink after handover to an older release](../../box/bridge-tests/setup-handover.test.js#L4334) | 1 | Handover → B3. Unlink and the historical binary combination remain separate. |
+| [Move, away owner, local work, owner reads](../../box/bridge-tests/setup-handover.test.js#L61) | 5 | 2.2, 2.4, queue and engine. |
+| [Mixed rollback, multiple handovers, SSH epoch](../../box/bridge-tests/setup-handover.test.js#L342) | 3 | B2 covers one missed epoch without unlink. Pinned SSH catch-up, two successive handovers and historical rollback combinations remain open. |
+| [Successor and primary loss during handover](../../box/bridge-tests/setup-handover.test.js#L453) | 3 | B3 and B6 cover the healthy readiness exchange and lease fencing. The three exact transfer cuts are open. |
+| [Credential cleanup, enroll/removal and access forwarding](../../box/bridge-tests/setup-handover-access.test.js) | 8 | 2.2 and 2.3. Scoped rename receipts and permission grants need their own route scenarios. |
+| [SSH personalities, label restores](../../box/bridge-tests/setup-handover-shared.test.js#L17) | 4 | B5 covers the library merge. SSH command saves, the label restore command and its old or unreachable main checks remain open. |
+| [Commit before publication and number blocks](../../box/bridge-tests/setup-handover-shared.test.js#L303) | 2 | B7 exercises durable save and catch-up. The exact post-commit loss cut, peer pairing and number-block allocation still need checks. |
+| [Paired queued grants, drafts, notes and deletions](../../box/bridge-tests/setup-handover-shared.test.js#L383) | 4 | B2 covers the preference field decision. Queues, notes, attachment handling and live device changes need the respective area ports. |
+| [Preference merge through takeover](../../box/bridge-tests/setup-handover-shared.test.js#L848) | 1 | B2. |
+| [Bot ownership](../../box/bridge-tests/setup-handover-shared.test.js#L879), [unlink](../../box/bridge-tests/setup-handover-removal.test.js), [export](../../box/bridge-tests/setup-handover-export.test.js), [wipe](../../box/bridge-tests/setup-handover-wipe.test.js), [restore and mixed release](../../box/bridge-tests/setup-handover-recovery.test.js) | 29 | 2.3–2.5, engine/work, and rehearsal. |
+| [Lease renewal, fencing and sole-main changes](../../box/bridge-tests/setup-handover-lease.test.js#L31) | 6 | Restart grace and a partitioned main → B13 and B6. The offline pairing, installer and unlink/number cases need 2.2, 2.3 and 5.2. |
+| [Replica catch-up and mixed resident handover](../../box/bridge-tests/setup-handover-lease.test.js#L155) | 2 | Replica catch-up → B7. The mixed TypeScript resident case belongs to the historical rehearsal. |
+| [Unlink after handover to an older release](../../box/bridge-tests/setup-handover-lease.test.js#L225) | 1 | Handover → B3. Unlink and the historical binary combination remain separate. |
 
 ### Bridge scenario details
 

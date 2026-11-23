@@ -235,7 +235,7 @@ TypeScript suite until their respective Rust phase.
 |---|---|---|
 | `two-boxes.test.js` | Membership and documents travel between computers. | Converted as `two-boxes` with two residents, installer enrollment and a replicated rename. The old phone notification and app-host paths stay with TS. |
 | `setup-two-boxes.test.js` | Both computers report the same setup, and the member requests numbers from the main. | Later, 2.1 and 5.2. |
-| `setup-handover.test.js` | Lease, takeover, removal, offline saves and recovery across failures. | Later, 2.1, 2.3, 2.5 and 9.3. Keep the unconverted setup cases with TS. |
+| `setup-handover*.test.js` | Lease, takeover, removal, offline saves and recovery across failures. | Later, 2.1, 2.3, 2.5 and 9.3. Keep the unconverted setup cases with TS. |
 | `setup-mac.test.js` | Legacy Mac leadership, identity resets, and setup events. | App-host and retired authority stay with TS. Current events and restart later, 2.1. |
 | `setup-judge.test.js` | Setup and attach verdicts for fresh, known and older homes. | Later, 2.3 and 2.6. Retired app-folder probes stay with TS. |
 | `installer-enrollment.test.js` | Enrollment, merge, lost receipts, replay and credential selection. | Later, 2.3. |

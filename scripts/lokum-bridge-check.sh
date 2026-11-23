@@ -143,7 +143,7 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/update-real
     old_link "11323b39316e0ec1f9b6281ab9bba9153db8e822" > "$fixture_dir/$baseline"
     history+=(-C "$fixture_dir" "$baseline")
 fi
-if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* ]]; then
+if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* || " ${files[*]} " == *" bridge-tests/setup-handover-recovery.test.js "* ]]; then
     read -r neighbor < box/bridge-tests/recovery-neighbor-ref.txt
     [[ "$neighbor" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid recovery neighbor reference" >&2; exit 1; }
     recovery=box/bridge-tests/.recovery-neighbor.mjs
@@ -153,7 +153,7 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
     old_link "fccda2de1" > "$fixture_dir/$beta35"
     history+=(-C "$fixture_dir" "$beta35")
 fi
-if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* || " ${files[*]} " == *" bridge-tests/resident-update-pilot.test.js "* ]]; then
+if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover-lease.test.js "* || " ${files[*]} " == *" bridge-tests/resident-update-pilot.test.js "* ]]; then
     read -r split < box/bridge-tests/split-launch-ref.txt
     [[ "$split" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid split launch reference" >&2; exit 1; }
     link=box/bridge-tests/.split-launch.mjs
