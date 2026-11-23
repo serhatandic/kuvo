@@ -22,6 +22,8 @@ const KEEP_MOST: usize = 1000;
 const KEEP_BYTES: usize = 64 * 1024;
 const UNAVAILABLE: &str = "The engine isn't answering. Try again in a moment.";
 const DRAFT_FIELDS: &str = "Send a draft with its stable id, text and message fields.";
+const UNCONFIRMED: &str =
+    "The Box could not confirm the draft's outcome. Check the conversation before sending again.";
 
 fn restore(status: StatusCode, message: &str, text: &str) -> Refusal {
     Refusal::json(
@@ -174,6 +176,13 @@ pub(crate) struct DraftContext<'a> {
     pub author: &'a str,
     pub delivery_mode: Option<crate::delivery::Mode>,
     pub submission: Option<&'a str>,
+    pub request: DraftRequest,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum DraftRequest {
+    Direct,
+    Durable,
 }
 
 pub(crate) fn author(caller: &Caller) -> Result<String, Refusal> {
@@ -214,6 +223,7 @@ pub(crate) async fn submit(
         author,
         delivery_mode,
         submission,
+        request,
     } = context;
     let key = disk::key(session, &draft.id);
     let _turn = engine.draft_turns.acquire(&format!("draft:{key}")).await;
@@ -221,10 +231,9 @@ pub(crate) async fn submit(
         .home
         .join("run/draft-receipts")
         .join(format!("{key}.json"));
-    let mut receipt = match disk::read::<DraftReceipt>(&path)
-        .await
-        .map_err(store_error)?
-    {
+    let saved = disk::read::<DraftReceipt>(&path).await.map_err(store_error)?;
+    let recovering = saved.is_some();
+    let mut receipt = match saved {
         Some(receipt) => {
             if receipt.format_version != 1 {
                 return Err(Refusal::new(
@@ -295,8 +304,15 @@ pub(crate) async fn submit(
             }
             Err(error) => {
                 let reply = error.reply();
-                if reply.status.is_server_error() {
+                let unconfirmed = reply.status.is_server_error();
+                if unconfirmed && request == DraftRequest::Durable {
                     return Err(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, UNAVAILABLE));
+                }
+                if unconfirmed && recovering {
+                    return Err(Refusal::json(
+                        StatusCode::CONFLICT,
+                        json!({ "ambiguous": true, "message": UNCONFIRMED }),
+                    ));
                 }
                 let value: Value = reply
                     .body
@@ -305,8 +321,14 @@ pub(crate) async fn submit(
                     .ok()
                     .and_then(|body| serde_json::from_slice(&body.to_bytes()).ok())
                     .unwrap_or_default();
-                json!({ "answer": { "restore": { "text": text }, "error": value["message"].as_str()
-                    .unwrap_or("Check the conversation to see whether the draft went before sending again.") } })
+                let mut refused = if unconfirmed {
+                    json!({ "ambiguous": true })
+                } else {
+                    json!({ "restore": { "text": text } })
+                };
+                refused["error"] = json!(value["message"].as_str()
+                    .unwrap_or("Check the conversation to see whether the draft went before sending again."));
+                json!({ "answer": refused })
             }
         }
     } else {
@@ -397,6 +419,7 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                         author: &author,
                         delivery_mode: None,
                         submission: None,
+                        request: DraftRequest::Direct,
                     },
                 )
                 .await

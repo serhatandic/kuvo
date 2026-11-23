@@ -20,6 +20,11 @@ test("a typed decision is answered once across restart and sends no message itse
   const offers = await request(record, "GET", base + "/typed");
   assert.equal(offers.status, 200, offers.text);
   assert.deepEqual(offers.json, { keywords: [], commands: [] });
+  for (const text of ["fix the tests", "/goal ship it", "! ls", "/plan", "/compact", "/review-quick main", "/init now"]) {
+    const decision = await request(record, "POST", base + "/typed", { text }, desktop);
+    assert.deepEqual(decision.json, { send: { text, quoted: true } });
+  }
+  assert.equal(here.engine.asked.some(row => row.path === "/api/command"), false);
   const headers = { ...desktop, "idempotency-key": "typed-stable" };
   const original = await request(record, "POST", base + "/typed", { text: "/goal ship it" }, headers);
   assert.equal(original.status, 200, original.text);
@@ -29,6 +34,89 @@ test("a typed decision is answered once across restart and sends no message itse
   assert.equal(retry.status, 200, retry.text);
   assert.deepEqual(retry.json, original.json);
   assert.deepEqual(here.engine.messages.get(conversation) ?? [], []);
+});
+
+test("typed and draft sends restore the words when the selected model needs an account", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-draft-model-refusal");
+  const model = { providerID: "anthropic", id: "claude" };
+  const ready = { providerID: "deepseek", id: "v4" };
+  here.engine.providers.push({ id: ready.providerID });
+  here.engine.models.push({ ...ready, name: "DeepSeek V4" }, { ...model, name: "Claude" });
+  here.engine.integrations.push({
+    id: "anthropic", name: "Anthropic", connections: [], methods: [{ type: "oauth", id: "browser" }, { type: "key" }],
+  });
+  const session = { ...sessionOf({ id: conversation, directory: here.home }), model };
+  here.engine.sessions.push(session);
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The engine did not publish account changes.");
+  const text = "!npm test";
+  const refuse = {
+    restore: { text }, error: "Claude needs a sign-in to Anthropic: sign in, or choose another model.",
+    action: { do: "signIn", label: "Sign In", help: "Sign in to Anthropic" },
+  };
+  const typed = words => request(record, "POST", base + "/typed", words, desktop);
+  assert.deepEqual((await typed({ text, refusal: "The client's old refusal." })).json, refuse);
+  const draft = (id, words) => request(record, "POST", base + "/draft", { id, text: words, message: {} }, desktop);
+  const original = await draft("msg_modelRefused", text);
+  assert.equal(original.status, 200, original.text);
+  assert.deepEqual(original.json, { answer: refuse });
+  assert.deepEqual(here.engine.messages.get(conversation) ?? [], []);
+
+  session.model = ready;
+  here.engine.emit({ type: "session.updated", data: { sessionID: conversation, info: session } });
+  await until(async () => {
+    const current = await typed({ text, refusal: "The client's old refusal." });
+    return current.json?.send?.text === text && current.json.send.quoted === true;
+  }, "The changed model did not carry the draft.");
+  assert.deepEqual((await draft("msg_modelRefused", text)).json, original.json);
+  for (const [id, words] of [["msg_slash", "/goal ship it"], ["msg_bang", "! ls"]]) {
+    const sent = await draft(id, words);
+    assert.equal(sent.status, 200, sent.text);
+    assert.equal(sent.json.message, id);
+    assert.deepEqual(sent.json.answer, { send: { text: words, quoted: true } });
+    assert.deepEqual((await draft(id, words)).json, sent.json);
+    assert.equal((await draft(id, words + " again")).status, 409);
+  }
+  assert.deepEqual(here.engine.messages.get(conversation).map(row => [row.id, row.text]), [
+    ["msg_slash", "/goal ship it"], ["msg_bang", "! ls"],
+  ]);
+  here.engine.refusePrompt = { id: "msg_busyDraft", seen() {} };
+  const busy = await draft("msg_busyDraft", "The engine was busy.");
+  assert.equal(busy.status, 200, busy.text);
+  assert.equal(busy.json.answer.ambiguous, true);
+  assert.equal(typeof busy.json.answer.error, "string");
+  assert.equal(here.engine.messages.get(conversation).length, 2);
+});
+
+test("an explicit empty default asks for a model and an unavailable catalog leaves a draft alone", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-draft-unknown-model");
+  const model = { providerID: "deepseek", id: "v4", name: "DeepSeek V4" };
+  here.engine.providers.push({ id: model.providerID });
+  here.engine.models.push(model);
+  here.engine.sessions.push(sessionOf({ id: conversation, directory: here.home }));
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The engine event reader did not connect.");
+  const text = "Keep the original words.";
+  const typed = value => request(record, "POST", base + "/typed", value, desktop);
+  const choose = {
+    restore: { text }, error: "Choose a model to send it.",
+    action: { do: "choose", label: "Choose a Model", help: "Choose a model" },
+  };
+  assert.deepEqual((await typed({ text })).json, choose);
+  const none = await request(record, "POST", base + "/draft", { id: "msg_chooseModel", text, message: {} }, desktop);
+  assert.equal(none.status, 200, none.text);
+  assert.deepEqual(none.json, { answer: choose });
+  assert.deepEqual(here.engine.messages.get(conversation) ?? [], []);
+  here.engine.providers.length = 0;
+  here.engine.models.length = 0;
+  here.engine.emit({ type: "model.updated", data: {} });
+  await until(async () => (await typed({ text })).json?.send?.text === text, "The unavailable model catalog refused the user's words.");
+  const absent = await request(record, "POST", "kuvo/sessions/ses_missing/typed", { text }, desktop);
+  assert.equal(absent.status, 404, absent.text);
+  assert.deepEqual(absent.json, { message: "There's no such conversation here.", restore: { text } });
+  assert.equal((await typed({})).status, 400);
 });
 
 test("a draft lost after its engine accepted it confirms the original message once", { timeout: 45000 }, async t => {
@@ -56,6 +144,39 @@ test("a draft lost after its engine accepted it confirms the original message on
   assert.equal(different.status, 409, different.text);
   assert.deepEqual(here.engine.messages.get(conversation).map(row => [row.id, row.text]), [[draft.id, draft.quotedText]]);
   assert.equal(here.engine.asked.filter(call => call.method === "POST" && call.path.endsWith("/prompt")).length, 1);
+});
+
+test("two retries recover a draft that never reached the engine before restart", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-draft-unaccepted");
+  here.engine.sessions.push(sessionOf({ id: conversation, directory: here.home }));
+  const first = here.start();
+  const record = await first.ready();
+  const draft = { id: "msg_orphanDraft", text: "Send the same draft once.", message: {} };
+  const atEngine = new Promise(resolve => {
+    here.engine.holdPrompt = { id: draft.id, beforeAcceptance: true, accepted: resolve };
+  });
+  const post = host => request(host, "POST", base + "/draft", draft, desktop);
+  const lost = post(record).catch(() => null);
+  await atEngine;
+  first.child.kill("SIGKILL");
+  await first.exited;
+  assert.equal(await lost, null);
+  assert.deepEqual(here.engine.messages.get(conversation) ?? [], []);
+  const again = await here.start().ready();
+  here.engine.inboxUnavailable = new Set([conversation]);
+  const unknown = await post(again);
+  assert.equal(unknown.status, 409, unknown.text);
+  assert.equal(unknown.json.ambiguous, true);
+  assert.deepEqual(here.engine.messages.get(conversation) ?? [], []);
+  here.engine.inboxUnavailable.clear();
+  const firstTwo = await Promise.all([post(again), post(again)]);
+  assert.ok(firstTwo.some(answer => answer.status === 200 && answer.json.message === draft.id));
+  const confirmed = await post(again);
+  assert.equal(confirmed.status, 200, confirmed.text);
+  assert.equal(confirmed.json.message, draft.id);
+  assert.deepEqual(here.engine.messages.get(conversation).map(row => [row.id, row.text]), [[draft.id, draft.text]]);
+  assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).length, 2);
 });
 
 test("a scoped draft keeps its receipt and preserves the earlier send across restart", { timeout: 45000 }, async t => {

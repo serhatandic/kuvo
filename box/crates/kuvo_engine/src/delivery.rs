@@ -637,6 +637,7 @@ async fn apply_delivery(
             author: &author,
             delivery_mode: op.delivery_mode,
             submission: None,
+            request: typed::DraftRequest::Durable,
         },
     )
     .await

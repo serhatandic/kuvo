@@ -373,6 +373,7 @@ async fn claim(
             author: &author,
             delivery_mode: None,
             submission: Some(&handle.text),
+            request: typed::DraftRequest::Durable,
         },
     )
     .await;
