@@ -1,4 +1,4 @@
-// What agents ask you for while they browse (PROTOCOL.md, `kuvo/asks`): a sign-in, a code or a
+// What agents ask you for while they browse (PROTOCOL.md, "Per area"): a sign-in, a code or a
 // step only you can do, as the cards over the composer show them, and a client's answer.
 
 import { bool, type Infer, list, NOTHING, object, type RouteShape, string, words } from "../shape";
@@ -36,5 +36,6 @@ export type Asks = Infer<typeof ASKS>;
 export const ASK_ROUTES: RouteShape[] = [
   { route: "GET kuvo/asks", feature: "asks", answers: { 200: ASKS } },
   { route: "GET kuvo/asks/events", feature: "asks", answers: { 200: ASKS } },
+  // Answers one (`signIn`, `code`, `done`, `declined`); what's typed goes only to the page, never the agent.
   { route: "POST kuvo/asks/:id", feature: "asks", answers: { 200: NOTHING } },
 ];

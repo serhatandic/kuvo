@@ -1,6 +1,7 @@
-// The route scenarios both boxes answer alike (`protocol/vectors/routes/*.json`), run against the bridge's
+// The route scenarios both boxes answer alike (`box/test/fixtures/routes/*.json`, and
+// `protocol/vectors/routes/features.json`, which the desktop app reads too), run against the bridge's
 // real handler (`engineHandler` in kuvo-link.js) as one box: a machine's (contract.test.js), on a
-// box folder of its own with the catalogs a release brings a box (`protocol/vectors/routes/box`, written
+// box folder of its own with the catalogs a release brings a box (`box/test/fixtures/routes/box`, written
 // from the box's own table by `scripts/route-vectors.sh`); or this Mac's (contract-mac.test.js), with
 // the app's own folders beside its box's (KUVO_BOTS, KUVO_WAKES), for the areas that have moved
 // onto it. Both run the real kuvo-wake with a stand-in engine.
@@ -37,8 +38,15 @@ let root = "";
 
 // The machine's name, as its Mac knows it: never a host that resolves.
 const MACHINE = "lab.invalid";
-const vectors = new URL("../../protocol/vectors/routes/", import.meta.url);
+const vectors = new URL("../test/fixtures/routes/", import.meta.url);
+// What the desktop app is held to as well (scripts/route-shapes.sh writes both): the features
+// scenario and every route's answers.
+const shared = new URL("../../protocol/vectors/routes/", import.meta.url);
 const read = (url, name) => fs.readFileSync(new URL(name, url), "utf8");
+// The scenario files, by name, and where each is.
+const SHARED_SCENARIOS = ["features.json"];
+const scenarioFiles = () => [...fs.readdirSync(vectors).filter(name => name.endsWith(".json")), ...SHARED_SCENARIOS].sort();
+const readScenarios = file => JSON.parse(read(SHARED_SCENARIOS.includes(file) ? shared : vectors, file));
 // What a client puts beside every box's bridge: the integrations, the popular MCP servers, and
 // what the box makes bots with and tells them (Kuvo Code's own words, as they ship).
 const boxFiles = { "integrations.json": read(vectors, "box/integrations.json"), "mcp-catalog.json": read(vectors, "box/mcp-catalog.json"),
@@ -432,7 +440,7 @@ async function ask(handle, method, requestPath, body) {
 
 // ---- What each route answers (protocol/vectors/routes/shapes/answers.json): every answer, whole ----
 
-const shapes = JSON.parse(read(vectors, "shapes/answers.json"));
+const shapes = JSON.parse(read(shared, "shapes/answers.json"));
 const show = value => (value === undefined ? "missing" : JSON.stringify(value)?.slice(0, 200));
 const isPlain = value => value !== null && typeof value === "object" && !Array.isArray(value);
 // Why `value` isn't of `shape`, at its first difference, or null when it is.
@@ -593,8 +601,8 @@ export function contract({ box: as, root: folder, files }) {
   for (const [name, given] of Object.entries({ KUVO_HOME: home, KUVO_BOTS: botsRoot, KUVO_WAKES: wakesRoot, KUVO_WAKE_COMMAND: wakeCommand })) {
     if (!path.resolve(given).startsWith(path.resolve(root) + path.sep)) throw new Error(`${name} is ${given}, outside this test's own folder ${root}: not running the scenarios.`);
   }
-  for (const file of fs.readdirSync(vectors).filter(name => name.endsWith(".json") && (!files || files.includes(name))).sort()) {
-    const { scenarios } = JSON.parse(read(vectors, file));
+  for (const file of scenarioFiles().filter(name => !files || files.includes(name))) {
+    const { scenarios } = readScenarios(file);
     for (const scenario of scenarios) {
       // One that's the other box's alone is listed, said to be so, and not run.
       test(`${file}: ${scenario.name}`, { skip: isOurs(scenario.only) ? false : `the ${scenario.only === "mac" ? "Mac" : "machine"}'s alone: ${scenario.why}` }, () => run(scenario));
@@ -606,14 +614,14 @@ export function contract({ box: as, root: folder, files }) {
   if (box !== "machine") return;
 
   // Both runners hold answers to shapes alike.
-  test("both runners hold an answer to its shape alike (protocol/vectors/routes/shapes/cases.json)", () => {
+  test("both runners hold an answer to its shape alike (box/test/fixtures/routes/shapes/cases.json)", () => {
     const { cases } = JSON.parse(read(vectors, "shapes/cases.json"));
     assert.ok(cases.length > 20);
     for (const each of cases) assert.equal(unshaped(each.shape, "value" in each ? each.value : undefined) === null, each.matches, JSON.stringify(each));
   });
 
   // And judge an answer by its route alike: which route it is, its status, a refusal, a HEAD.
-  test("both runners judge an answer by its route alike (protocol/vectors/routes/shapes/routes.json)", () => {
+  test("both runners judge an answer by its route alike (box/test/fixtures/routes/shapes/routes.json)", () => {
     const { cases } = JSON.parse(read(vectors, "shapes/routes.json"));
     assert.ok(cases.length > 15);
     for (const each of cases) {
@@ -626,7 +634,7 @@ export function contract({ box: as, root: folder, files }) {
   });
 
   // The Mac's runner holds its matching to the same cases.
-  test("both runners match an answer and fill in a scenario alike (protocol/vectors/routes/match/cases.json)", () => {
+  test("both runners match an answer and fill in a scenario alike (box/test/fixtures/routes/match/cases.json)", () => {
     const { cases, filled: fills } = JSON.parse(read(vectors, "match/cases.json"));
     assert.ok(cases.length > 40 && fills.length > 5);
     for (const each of cases) {
@@ -642,8 +650,8 @@ export function contract({ box: as, root: folder, files }) {
     const names = new Set();
     const boxes = ["mac", "machine"];
     const only = (keys, allowed, where) => keys.forEach(key => assert.ok(allowed.includes(key), `${where}: “${key}” isn't something a runner reads`));
-    for (const file of fs.readdirSync(vectors).filter(name => name.endsWith(".json"))) {
-      for (const scenario of JSON.parse(read(vectors, file)).scenarios) {
+    for (const file of scenarioFiles()) {
+      for (const scenario of readScenarios(file).scenarios) {
         const named = `${file}: ${scenario.name}`;
         assert.ok(scenario.name && !names.has(named), `${named}: a scenario needs a name of its own`);
         names.add(named);

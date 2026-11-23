@@ -8,7 +8,7 @@ Where tests live:
 
 - **Box** (Bun, TypeScript): `box/test/*.test.ts`. The first import is `./safety`.
 - **Bridge and route scenarios** (Node's runner, the built bridge and link): `box/bridge-tests/*.test.js`,
-  first import `./test-safety.js`; route scenarios in `protocol/vectors/routes/*.json` (CONTRIBUTING.md,
+  first import `./test-safety.js`; route scenarios in `box/test/fixtures/routes/*.json` (CONTRIBUTING.md,
   "Route scenarios").
 - **Desktop** (Rust): `gpui/kuvo/tests/*.rs` (views, against the stand-in box `kuvo::stand_in`),
   `gpui/kuvo_box/tests/*.rs` (the client of a box).

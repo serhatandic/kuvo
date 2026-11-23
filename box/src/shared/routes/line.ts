@@ -16,6 +16,8 @@ export const LINE_ITEM = oneOf(
 );
 
 export const LINE_ROUTES: RouteShape[] = [
+  // The one stream: a hello, then numbered topic lines, refusals, gaps and heartbeats.
   { route: "GET kuvo/line", feature: "line", answers: { 200: LINE_ITEM } },
+  // Change an open line's topics; 404 with `fresh` means open the line again with every topic.
   { route: "POST kuvo/line/watch", feature: "line", body: object({ line: string, watch: map(string) }), answers: { 200: object({ line: string }), 404: object({ fresh: bool, message: string }) } },
 ];

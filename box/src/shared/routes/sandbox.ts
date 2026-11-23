@@ -1,4 +1,4 @@
-// The sandbox agents' commands run in on a box (PROTOCOL.md, "Sandbox").
+// The sandbox agents' commands run in on a box (PROTOCOL.md, "Per area").
 
 import { any, bool, type Infer, list, literal, NOTHING, number, object, type RouteShape, string, words } from "../shape";
 
@@ -118,16 +118,26 @@ export type SandboxOwner = Infer<typeof SANDBOX_OWNER>;
 export type SandboxAsk = Infer<typeof SANDBOX_ASK>;
 
 export const SANDBOX_ROUTES: RouteShape[] = [
+  // Whether agents' commands here run in the sandbox, why not, and what a client offers to put it right.
   { route: "GET kuvo/sandbox", feature: "sandbox", answers: { 200: SANDBOX } },
+  // Sets the sandbox up and checks it again now; answers the state.
   { route: "POST kuvo/sandbox/check", feature: "sandbox.check", answers: { 200: SANDBOX } },
+  // Answers its ask to restart agents started before it was on (`{restart}`: true restarts them, false not).
   { route: "POST kuvo/sandbox/restart", feature: "sandbox", answers: { 200: SANDBOX, 503: object({ message: string }) } },
+  // Commands agents ask to run outside the sandbox, and how Auto's reviewer took up folder asks.
   { route: "GET kuvo/sandbox/asks", feature: "sandbox.asks", answers: { 200: SANDBOX_ASKS } },
   { route: "GET kuvo/sandbox/asks/events", feature: "sandbox.asks", answers: { 200: SANDBOX_ASKS } },
+  // Answers one (`{answer: once | always | no}`); `always` without the ask's `always` counts as once.
   { route: "POST kuvo/sandbox/asks/:id", feature: "sandbox.asks", answers: { 200: NOTHING } },
+  // Also Allowed: the folders a project's, a bot's or the chats' commands may write in the sandbox.
   { route: "GET kuvo/sandbox/allowed", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
+  // Adds a folder to Also Allowed (at most 8 a project; never home, system or Kuvo Code folders, or secrets).
   { route: "POST kuvo/sandbox/allowed", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
   { route: "DELETE kuvo/sandbox/allowed/:id", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
+  // The agents' `sandbox_ask` tool, for a tool server to list (only while the sandbox is on).
   { route: "GET kuvo/sandbox/tools", feature: "sandbox", answers: { 200: SANDBOX_TOOL_LIST } },
+  // Runs a `sandbox_ask` call (`{session, name, arguments}`), only while that conversation is making it.
   { route: "POST kuvo/sandbox/tools", feature: "sandbox", answers: { 200: SANDBOX_TOOL } },
+  // From the engine's plugin: a command the sandbox stopped; in Auto its reviewer may run it again outside.
   { route: "POST kuvo/sandbox/stopped", feature: "sandbox", answers: { 200: SANDBOX_STOPPED } },
 ];
