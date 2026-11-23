@@ -1228,7 +1228,7 @@ test("a raw desktop prompt keeps inline attachments and sends only what the mode
   }
   assert.deepEqual(message.metadata.kuvo.parts, {
     words: "Check these",
-    ...(path.sep === "/" ? { paths: [paths[1]] } : {}),
+    paths: [paths[1]],
   });
   const retry = await request(record, "POST", `api/session/${session}/prompt`,
     { id: "msg_rawAttachments", text: "Check these", files }, { "x-kuvo-from": "mac" });
