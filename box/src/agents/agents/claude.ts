@@ -29,7 +29,7 @@ import { forgetLegacyToken, legacyToken } from "../claude-compat"
 import { newID } from "../ids"
 import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
-import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
+import { removedSkills, skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { claudeSubagents, subagentRules, subagentsFor, type Subagents } from "../subagents"
 import { onMachine, ownFoldersScript } from "../machine"
 import { fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceOn, sameFenceKey, seatBot, fullAccessMark } from "../fence"
@@ -999,6 +999,7 @@ class ClaudeThread implements Thread {
     const tools = agentToolsFor(this.session.id, this, fenceOn())
     // Settings › Skills' skills, as a plugin of its own (but those it reads itself).
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)))
+    const removals = JSON.stringify([...removedSkills()])
     // So does it when the box's sandbox was turned on or off, or its rules changed.
     const fence = fenceKey() + fullAccessMark(this.session.id)
     // And your subagents (Settings › Agents), or the model they use, changed: it takes them as it starts.
@@ -1012,7 +1013,7 @@ class ClaudeThread implements Thread {
     // (One taken up from the bridge before is told its instructions and tools instead, on its first
     // turn here: those it started with weren't all kept.)
     const fenceChanged = !sameFenceKey(this.opened?.fence, fence)
-    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || fenceChanged || this.opened?.subagents !== subagentsKey
+    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || (this.opened?.removals ?? "[]") !== removals || fenceChanged || this.opened?.subagents !== subagentsKey
     let deferred = false
     if (this.query && restart) {
       deferred = this.canRestart?.() === false
@@ -1040,7 +1041,7 @@ class ClaudeThread implements Thread {
       if (this.opened?.plan !== input.plan) await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {})
       this.opened = deferred && this.opened
         ? { ...this.opened, model: modelID, effort, plan: input.plan }
-        : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
+        : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, removals, fence, subagents: subagentsKey }
       // (What it was taken up with is told it now: from here, as one started here.)
       this.adopted = false
     }
@@ -1464,7 +1465,8 @@ class ClaudeThread implements Thread {
     const ownMemory = named && existsSync(named) ? named : undefined
     this.input = new Queue()
     const tools = agentToolsFor(this.session.id, this, fenceOn())
-    this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
+    const removed = [...removedSkills()]
+    this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, removals: JSON.stringify(removed), fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
     // Before the compaction setting, the holder kept a token fingerprint instead of an
     // account fingerprint. The two cannot be compared across that upgrade.
     const signIn = taken && (taken.meta.opened as ClaudeThread["opened"])?.compaction !== undefined
@@ -1475,6 +1477,7 @@ class ClaudeThread implements Thread {
     let query: any
     let agentExited = false
     let exitTimer: ReturnType<typeof setTimeout> | undefined
+    const skillOverrides = Object.fromEntries(removed.flatMap(name => [[name, "off"], [`anthropic-skills:${name}`, "off"]]))
     query = this.query = sdk.query({
       prompt: this.input,
       options: {
@@ -1500,7 +1503,10 @@ class ClaudeThread implements Thread {
         ...(Object.keys(subagents.agents).length ? { agents: subagents.agents } : {}),
         ...(resume ? { resume: id } : { sessionId: id }),
         // A bot's memory in its own folder, once it's there.
-        ...(ownMemory ? { settings: { autoMemoryDirectory: ownMemory } as any } : {}),
+        ...(ownMemory || removed.length ? { settings: {
+          ...(ownMemory ? { autoMemoryDirectory: ownMemory } : {}),
+          ...(removed.length ? { skillOverrides } : {}),
+        } as any } : {}),
         // Its commands know their conversation, as the engine's do (kuvo-wake schedules for it).
         // And the model its subagents use when theirs doesn't say (Settings › Agents), one it runs.
         env: { ...this.agent.env(),
@@ -2306,6 +2312,13 @@ class ClaudeThread implements Thread {
    */
   private async preToolUse(input: any): Promise<any> {
     if (input?.hook_event_name !== "PreToolUse") return {}
+    if (input.tool_name === "Skill") {
+      const name = input.tool_input?.skill ?? input.tool_input?.command
+      const removed = removedSkills()
+      if (typeof name === "string" && (removed.has(name) || removed.has(name.split(":").at(-1)!))) {
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "This skill was removed in Kuvo Marketplace." } }
+      }
+    }
     // What a command runs, before it does (one left running is named by it in the bar).
     if (input.tool_name === "Bash" && typeof input.tool_use_id === "string" && typeof input.tool_input?.command === "string") this.commands.set(input.tool_use_id, input.tool_input.command)
     await this.ownTaken()

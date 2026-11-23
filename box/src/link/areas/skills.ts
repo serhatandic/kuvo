@@ -112,6 +112,7 @@ function skillFolders(): string[] {
 // visit or a backup put back can change.
 const SKILL_TRASH = path.join(K, "trash", "skills");
 export const SKILL_TRASH_FOLDER = SKILL_TRASH;
+export const skillTrashRecord = (id: string) => path.join(SKILL_TRASH, `.${id}.json`);
 const SKILL_TRASH_DAYS = 30;
 const DAY = 86_400_000;
 
@@ -122,14 +123,17 @@ const isDirectory = (file: string) => { try { return fs.statSync(file).isDirecto
  * `<name>-<seconds>`). */
 export function skillTrashEntry(entry: unknown): SkillTrashEntry | null {
   const found = typeof entry === "string" && entry.length <= 141 ? /^(.+)-(\d{1,12})$/.exec(entry) : null;
-  return found && isSkillFolder(found[1]) && isSkillFolder(entry) ? { folder: found[1], deleted: Number(found[2]) } : null;
+  return found && isSkillFolder(found[1]) ? { folder: found[1], deleted: Number(found[2]) } : null;
 }
 
 /** What's been in Recently Deleted 30 days or more, gone for good. */
 function clearSkillTrash(now = Date.now()) {
   for (const id of listOf(SKILL_TRASH)) {
     const entry = skillTrashEntry(id);
-    if (entry && entry.deleted * 1000 <= now - SKILL_TRASH_DAYS * DAY) try { fs.rmSync(path.join(SKILL_TRASH, id), { recursive: true, force: true }); } catch {}
+    if (entry && entry.deleted * 1000 <= now - SKILL_TRASH_DAYS * DAY) try {
+      fs.rmSync(path.join(SKILL_TRASH, id), { recursive: true, force: true });
+      fs.rmSync(skillTrashRecord(id), { force: true });
+    } catch {}
   }
 }
 
@@ -149,7 +153,7 @@ function skillTrashEntries(): DeletedSkill[] {
   for (const id of listOf(SKILL_TRASH)) {
     const entry = skillTrashEntry(id);
     const away = path.join(SKILL_TRASH, id);
-    if (!entry || !isDirectory(away)) continue;
+    if (!entry || (!isDirectory(away) && !fs.lstatSync(away, { throwIfNoEntry: false })?.isSymbolicLink())) continue;
     const about = skillAbout(textOf(path.join(away, "SKILL.md")) ?? "");
     entries.push({
       id, folder: entry.folder, name: about.name || entry.folder, ...(about.description ? { description: about.description } : {}),
@@ -504,6 +508,7 @@ export async function answerSkills(method: string, requestPath: string, body: Sk
         const entry = parts[2];
         const name = skillTrashEntry(entry)?.folder;
         if (!name) return { status: 400, value: message("That isn’t an entry in Recently Deleted.") };
+        if (fs.existsSync(skillTrashRecord(entry!))) return { status: 409, value: message("Restore this setup-wide skill in Marketplace.") };
         const away = path.join(SKILL_TRASH, entry!);
         if (!isDirectory(away)) return { status: 404, value: {} };
         const back = path.join(SKILLS, name);

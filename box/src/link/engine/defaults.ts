@@ -17,6 +17,7 @@
 // it reads, Plan's plans, and skills' folders, as the engine finds them.
 
 import path from "node:path";
+import { removedSkillsFile } from "../../shared/marketplace";
 import { textOf, writePrivate } from "../files";
 import { APP_FOLDER, ENGINE_CONFIG, K } from "../home";
 import { realish } from "../fence/policy";
@@ -33,7 +34,7 @@ export function keptFolders(): string[] {
   return [...new Set(folders.flatMap(folder => [folder, realish(folder)]))];
 }
 
-export function defaultsPlugin(kept: string[]): string {
+export function defaultsPlugin(kept: string[], removedFile = removedSkillsFile(K)): string {
   return `// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Working in a folder outside a conversation's project asks you first, as Settings › Permissions
 // says. The engine's own agents get that rule after their own and before your settings', so what
@@ -45,6 +46,7 @@ import os from "node:os"
 import path from "node:path"
 
 const KEPT = ${JSON.stringify(kept)}
+const REMOVED = ${JSON.stringify(removedFile)}
 const DATA = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "opencode")
 // Where the engine keeps Plan's plans (its home folder's \`.opencode/plan\`).
 const PLANS = path.join(process.env.OPENCODE_TEST_HOME || os.homedir(), ".opencode", "plan")
@@ -74,6 +76,15 @@ export default {
       const rules = [{ action: "external_directory", resource: "*", effect: "ask" }, ...opened([...KEPT, path.join(DATA, "tool-output"), path.join(DATA, "repos"), PLANS, ...skills])]
       for (const agent of draft.list()) if (letsOut(agent.permissions)) draft.update(agent.id, (it) => { it.permissions.push(...rules) })
     })
+    // Apply setup-wide removals to the list and to the skill loader, including
+    // built-ins with no file to move.
+    if (ctx.skill.transform) await ctx.skill.transform(draft => {
+      let removed
+      try { removed = new Set(JSON.parse(fs.readFileSync(REMOVED, "utf8"))) } catch { return }
+      for (const skill of draft.list()) if (removed.has(skill.id) || removed.has(path.basename(path.dirname(skill.path)))) draft.remove(skill.id)
+    })
+    const reloadSkills = () => { void ctx.skill.reload().catch(() => {}) }
+    if (ctx.skill.reload) fs.watchFile(REMOVED, { interval: 1000, persistent: false }, reloadSkills)
     // Skills' folders, as the engine finds them: after this plugin is set up, and as they change.
     const learn = async () => {
       const listed = await ctx.skill.list().catch(() => null)
@@ -85,6 +96,7 @@ export default {
     }
     void (async () => {
       try { for await (const _ of ctx.event.subscribe({ types: ["skill.updated"] })) await learn().catch(() => {}) } catch {}
+      finally { fs.unwatchFile(REMOVED, reloadSkills) }
     })()
     await learn().catch(() => {})
   },

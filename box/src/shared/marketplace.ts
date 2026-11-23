@@ -22,3 +22,13 @@ export function marketplaceScope(directory: string): MarketplaceScope | undefine
   } catch {}
   return undefined;
 }
+
+// The box projects the setup's removals here for its engine and agent bridge.
+export const removedSkillsFile = (box: string) => path.join(box, "box", "marketplace", "removed-skills.json");
+export function removedSkillNames(box: string): Set<string> {
+  try {
+    const names = JSON.parse(fs.readFileSync(removedSkillsFile(box), "utf8"));
+    if (Array.isArray(names)) return new Set(names.filter(name => typeof name === "string"));
+  } catch {}
+  return new Set();
+}

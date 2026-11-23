@@ -5586,7 +5586,15 @@ function marketplaceScope(directory) {
   } catch {}
   return;
 }
-var MARKETPLACE_SERVER_PREFIX = "marketplace-", MARKETPLACE_SCOPE = ".kuvo-marketplace.json", MARKETPLACE_SKILL_MARKER = ".kuvo-marketplace.json";
+function removedSkillNames(box) {
+  try {
+    const names = JSON.parse(fs6.readFileSync(removedSkillsFile(box), "utf8"));
+    if (Array.isArray(names))
+      return new Set(names.filter((name) => typeof name === "string"));
+  } catch {}
+  return new Set;
+}
+var MARKETPLACE_SERVER_PREFIX = "marketplace-", MARKETPLACE_SCOPE = ".kuvo-marketplace.json", MARKETPLACE_SKILL_MARKER = ".kuvo-marketplace.json", removedSkillsFile = (box) => path6.join(box, "box", "marketplace", "removed-skills.json");
 var init_marketplace = () => {};
 
 // box/src/agents/servers.ts
@@ -10805,7 +10813,7 @@ var init_agent_updates = () => {};
 // box/src/agents/skills.ts
 import { createHash as createHash6 } from "crypto";
 import { cpSync, existsSync as existsSync12, mkdirSync as mkdirSync11, readdirSync as readdirSync9, readFileSync as readFileSync19, renameSync as renameSync8, rmSync as rmSync11, statSync as statSync4, symlinkSync, utimesSync, writeFileSync as writeFileSync12 } from "fs";
-import { dirname as dirname9, join as join21, resolve as resolve5, sep as sep3 } from "path";
+import { basename as basename4, dirname as dirname9, join as join21, resolve as resolve5, sep as sep3 } from "path";
 function setSkillSource(engine, folder) {
   link2 = engine;
   home = folder;
@@ -10862,10 +10870,11 @@ async function skillsFor(directory, own, off) {
   const seen = new Set;
   const skills = [];
   const scope = marketplaceScope(directory);
+  const removed = removedSkills();
   for (const skill of await engineSkills(directory)) {
     if (scope && existsSync12(join21(skill.folder, MARKETPLACE_SKILL_MARKER)) && !scope.skills.includes(skill.name))
       continue;
-    if (!existsSync12(join21(skill.folder, "SKILL.md")))
+    if (removed.has(skill.name) || removed.has(basename4(skill.folder)) || !existsSync12(join21(skill.folder, "SKILL.md")))
       continue;
     if (seen.has(skill.name) || off(skill.name) || within2(skill.folder, own))
       continue;
@@ -11006,7 +11015,10 @@ function copySkillsInto(folder, skills) {
   }
   return list.length ? createHash6("sha256").update(JSON.stringify(after)).digest("hex").slice(0, 16) : undefined;
 }
-var link2, home, skillsRoot = () => home ? join21(home, "skills") : undefined, listed, said, largest;
+var link2, home, skillsRoot = () => home ? join21(home, "skills") : undefined, removedSkills = () => {
+  const box = process.env.KUVO_HOME ?? (home ? join21(home, "..", "box") : undefined);
+  return box ? removedSkillNames(box) : new Set;
+}, listed, said, largest;
 var init_skills = __esm(() => {
   init_marketplace();
   listed = new Map;
@@ -12720,13 +12732,13 @@ import { spawn as spawn6 } from "child_process";
 import { createHash as createHash8, randomUUID as randomUUID3 } from "crypto";
 import { createReadStream, existsSync as existsSync15, mkdirSync as mkdirSync14, readdirSync as readdirSync12, readFileSync as readFileSync23, rmdirSync as rmdirSync2, statSync as statSync8 } from "fs";
 import { homedir as homedir3 } from "os";
-import { basename as basename4, dirname as dirname11, join as join25, resolve as resolve6 } from "path";
+import { basename as basename5, dirname as dirname11, join as join25, resolve as resolve6 } from "path";
 import { createInterface } from "readline";
 import { pathToFileURL as pathToFileURL3 } from "url";
 function botMemory(session) {
   const bot = session.metadata?.kuvo?.bot;
   const directory = session.location.directory;
-  if (typeof bot !== "string" || basename4(directory) !== "workspace" || basename4(dirname11(directory)) !== bot)
+  if (typeof bot !== "string" || basename5(directory) !== "workspace" || basename5(dirname11(directory)) !== bot)
     return;
   return join25(dirname11(directory), "memory");
 }
@@ -13400,6 +13412,7 @@ class ClaudeThread {
     const append = hooks.instructions();
     const tools = agentToolsFor(this.session.id, this, fenceOn());
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)));
+    const removals = JSON.stringify([...removedSkills()]);
     const fence = fenceKey() + fullAccessMark(this.session.id);
     this.subagents = await subagentsFor(this.session.location.directory);
     const subagents = claudeSubagents(this.subagents);
@@ -13409,7 +13422,7 @@ class ClaudeThread {
     const usage = this.usageGeneration;
     const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.();
     const fenceChanged = !sameFenceKey(this.opened?.fence, fence);
-    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || !this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || fenceChanged || this.opened?.subagents !== subagentsKey;
+    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || !this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || (this.opened?.removals ?? "[]") !== removals || fenceChanged || this.opened?.subagents !== subagentsKey;
     let deferred = false;
     if (this.query && restart) {
       deferred = this.canRestart?.() === false;
@@ -13437,7 +13450,7 @@ class ClaudeThread {
         await this.query.applyFlagSettings({ effortLevel: effort ?? null }).catch(() => {});
       if (this.opened?.plan !== input.plan)
         await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {});
-      this.opened = deferred && this.opened ? { ...this.opened, model: modelID, effort, plan: input.plan } : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey };
+      this.opened = deferred && this.opened ? { ...this.opened, model: modelID, effort, plan: input.plan } : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, removals, fence, subagents: subagentsKey };
       this.adopted = false;
     }
     if (this.query && (opening || this.servers !== serversNow)) {
@@ -13814,13 +13827,15 @@ ${input.text}` } : input, this.copies());
     const ownMemory = named && existsSync15(named) ? named : undefined;
     this.input = new Queue;
     const tools = agentToolsFor(this.session.id, this, fenceOn());
-    this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
+    const removed = [...removedSkills()];
+    this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, removals: JSON.stringify(removed), fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
     const signIn = taken && taken.meta.opened?.compaction !== undefined ? typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined : this.agent.limits.signIn?.();
     this.usageGeneration = { number: this.agent.limits.generation?.() ?? 0, signIn };
     this.adopted = Boolean(taken);
     let query;
     let agentExited = false;
     let exitTimer;
+    const skillOverrides = Object.fromEntries(removed.flatMap((name) => [[name, "off"], [`anthropic-skills:${name}`, "off"]]));
     query = this.query = sdk.query({
       prompt: this.input,
       options: {
@@ -13841,7 +13856,10 @@ ${input.text}` } : input, this.copies());
         ...skills ? { plugins: [{ type: "local", path: skills, skipMcpDiscovery: true }] } : {},
         ...Object.keys(subagents.agents).length ? { agents: subagents.agents } : {},
         ...resume ? { resume: id } : { sessionId: id },
-        ...ownMemory ? { settings: { autoMemoryDirectory: ownMemory } } : {},
+        ...ownMemory || removed.length ? { settings: {
+          ...ownMemory ? { autoMemoryDirectory: ownMemory } : {},
+          ...removed.length ? { skillOverrides } : {}
+        } } : {},
         env: {
           ...this.agent.env(),
           CLAUDE_CODE_AUTO_COMPACT_WINDOW: compaction === "never" ? undefined : String(Number(compaction ?? 400000) + 33000),
@@ -14594,6 +14612,13 @@ ${input.text}` } : input, this.copies());
   async preToolUse(input) {
     if (input?.hook_event_name !== "PreToolUse")
       return {};
+    if (input.tool_name === "Skill") {
+      const name = input.tool_input?.skill ?? input.tool_input?.command;
+      const removed = removedSkills();
+      if (typeof name === "string" && (removed.has(name) || removed.has(name.split(":").at(-1)))) {
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "This skill was removed in Kuvo Marketplace." } };
+      }
+    }
     if (input.tool_name === "Bash" && typeof input.tool_use_id === "string" && typeof input.tool_input?.command === "string")
       this.commands.set(input.tool_use_id, input.tool_input.command);
     await this.ownTaken();
@@ -15214,7 +15239,7 @@ var init_codex_credentials = __esm(() => {
 });
 
 // box/src/agents/agents/codex-citations.ts
-import { basename as basename5 } from "path";
+import { basename as basename6 } from "path";
 
 class CodexCitations {
   held = "";
@@ -15259,7 +15284,7 @@ class CodexCitations {
 }
 function plainCitations(text) {
   const reader = new CodexCitations;
-  return [...reader.read(text), ...reader.end()].map((said) => ("text" in said) ? said.text : basename5(said.made)).join("");
+  return [...reader.read(text), ...reader.end()].map((said) => ("text" in said) ? said.text : basename6(said.made)).join("");
 }
 function citedIn(message) {
   if (message.type !== "assistant" || parseProvider(message.model.providerID)?.kind !== "codex")
@@ -15349,7 +15374,7 @@ var init_codex_citations = __esm(() => {
 // box/src/agents/agents/codex.ts
 import { existsSync as existsSync16, lstatSync as lstatSync8, mkdirSync as mkdirSync15, readdirSync as readdirSync13, readFileSync as readFileSync25, readlinkSync, rmSync as rmSync14, symlinkSync as symlinkSync2, unlinkSync as unlinkSync2 } from "fs";
 import { homedir as homedir4 } from "os";
-import { basename as basename6, join as join27 } from "path";
+import { basename as basename7, join as join27 } from "path";
 function rolloutOf(home, id) {
   const named = (name) => name.startsWith("rollout-") && name.endsWith(`-${id}.jsonl`);
   const list = (folder) => {
@@ -16150,8 +16175,8 @@ class CodexAgent {
     const file = rolloutOf(this.home, id);
     if (!file)
       return { items: [], missing: true };
-    const day = /^rollout-(\d{4})-(\d{2})-(\d{2})T/.exec(basename6(file));
-    return { items: [{ path: file, name: day ? join27(day[1], day[2], day[3], basename6(file)) : basename6(file) }] };
+    const day = /^rollout-(\d{4})-(\d{2})-(\d{2})T/.exec(basename7(file));
+    return { items: [{ path: file, name: day ? join27(day[1], day[2], day[3], basename7(file)) : basename7(file) }] };
   }
   conversationPlace() {
     const sessions = join27(this.home, "sessions");
@@ -25665,7 +25690,7 @@ var init_store = __esm(() => {
 import { createHash as createHash13 } from "crypto";
 import { createReadStream as createReadStream2 } from "fs";
 import { copyFile, lstat as lstat2, mkdir, readFile as readFile2, readdir, rename, rm, stat, writeFile } from "fs/promises";
-import { basename as basename7, dirname as dirname16, isAbsolute as isAbsolute3, join as join37, normalize, sep as sep4 } from "path";
+import { basename as basename8, dirname as dirname16, isAbsolute as isAbsolute3, join as join37, normalize, sep as sep4 } from "path";
 async function hashOf(file) {
   const hash = createHash13("sha256");
   for await (const chunk of createReadStream2(file))
@@ -25726,7 +25751,7 @@ class Carrying {
     return { files };
   }
   async laneList(at, files) {
-    const link = (path) => new CantCarry(`its conversation has something that isn't a plain file (${basename7(path)})`);
+    const link = (path) => new CantCarry(`its conversation has something that isn't a plain file (${basename8(path)})`);
     const out = [];
     const take = async (from, into) => {
       for (const { path, size } of await plainFiles(from, link)) {
@@ -26141,7 +26166,7 @@ class Undo {
     if (there && merges) {
       if (await hashOf(dest).catch(() => "") === file.sha256)
         return;
-      dest = join37(dirname16(dest), `moved-${file.sha256.slice(0, 8)}-${basename7(dest)}`);
+      dest = join37(dirname16(dest), `moved-${file.sha256.slice(0, 8)}-${basename8(dest)}`);
       there = await lstat2(dest).then(() => true, () => false);
       if (there)
         return;
@@ -33576,7 +33601,7 @@ var init_bridge_transfer = __esm(() => {
 
 // box/src/agents/main.ts
 import { existsSync as existsSync23, mkdirSync as mkdirSync20, readdirSync as readdirSync17, readFileSync as readFileSync38, realpathSync as realpathSync10, rmSync as rmSync21 } from "fs";
-import { basename as basename8, dirname as dirname19, join as join41 } from "path";
+import { basename as basename9, dirname as dirname19, join as join41 } from "path";
 import { format as format2 } from "util";
 import { spawn as spawn8 } from "child_process";
 function engineAgent(providerID) {
@@ -33718,7 +33743,7 @@ function stop(reason, handOver = false, startReplacement = true) {
 }
 function startNext(run) {
   try {
-    if (basename8(machineHome) !== ".kuvo-code")
+    if (basename9(machineHome) !== ".kuvo-code")
       return;
     if (Number(readFileSync38(join41(run, "agents.pid"), "utf8").trim()) !== process.pid)
       return;
@@ -34192,7 +34217,7 @@ var init_main = __esm(async () => {
       if (kept3)
         return true;
       const engine = keeperEngine(machineHome);
-      return !engine || engine === basename8(dirname19(process.execPath));
+      return !engine || engine === basename9(dirname19(process.execPath));
     },
     lets: () => {
       if (kept3)
@@ -34236,7 +34261,7 @@ var init_main = __esm(async () => {
       if (!kept3 || !ownRuntime)
         return;
       const engine = keeperEngine(machineHome);
-      return engine && engine !== basename8(dirname19(process.execPath)) ? engine : undefined;
+      return engine && engine !== basename9(dirname19(process.execPath)) ? engine : undefined;
     },
     holdAfter: renewHoldAfter,
     settle: renewSettle
@@ -34267,4 +34292,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 89b69637fa66f5794bdcfc794e32a66406b4cf32a89d0c1284a93134313f698b
+// Built from Packages/Box/src/agents c0ff77a94808a7777651ae8ddbdd490a2a4dd8e1b8359cd8bc6ce0552d17932b

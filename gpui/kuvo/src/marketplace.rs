@@ -890,7 +890,7 @@ impl MarketplaceView {
         match section {
             Section::Apps => self.open_app(&item.id, None, window, cx),
             Section::Agents => self.open_agent(&item.id, window, cx),
-            Section::Skills if item.origin.as_deref() != Some("found") => self.open_skill(&item.id, window, cx),
+            Section::Skills if item.origin.as_deref() != Some("found") || !item.actions.is_empty() => self.open_skill(&item.id, window, cx),
             Section::Skills => {}
         }
     }
@@ -1163,7 +1163,7 @@ impl MarketplaceView {
         // ("Yours" beside a name only where it's among Kuvo's: its own group says so already.)
         let yours = section != Section::Agents && item.is_yours() && item.origin.as_deref() != Some("found") && !item.category.starts_with("Your");
         let detail = item.detail.clone().or_else(|| item.location.clone());
-        let pressable = !(section == Section::Skills && item.origin.as_deref() == Some("found"));
+        let pressable = !(section == Section::Skills && item.origin.as_deref() == Some("found") && item.actions.is_empty());
         let clicked = item.clone();
         div()
             .id(SharedString::from(format!("market-item-{id}")))
