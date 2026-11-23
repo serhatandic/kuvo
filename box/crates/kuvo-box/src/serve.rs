@@ -75,14 +75,18 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
         routes.observe_activity(move |caller| {
-            if !matches!(
-                caller.transport(),
-                Transport::Http {
-                    origin: LocalOrigin::App,
-                    ..
+            let transport = caller.transport();
+            let setup = setup.clone();
+            async move {
+                if !matches!(
+                    transport,
+                    Transport::Http {
+                        origin: LocalOrigin::App,
+                        ..
+                    }
+                ) {
+                    setup.phone_activity().await;
                 }
-            ) {
-                setup.phone_activity();
             }
         });
     }

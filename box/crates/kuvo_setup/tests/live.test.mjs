@@ -282,7 +282,6 @@ test("machine startup and authenticated activity preserve the legacy marker form
   const seen = path.join(box.home, "run", "link.seen");
   assert.equal(fs.existsSync(seen), false);
   assert.equal((await box.ask("GET", "kuvo/setup", undefined, {})).status, 200);
-  await until(() => fs.existsSync(seen), "the legacy Mac can read the activity marker");
   assert.equal(fs.readFileSync(seen).length, 0);
   const before = fs.statSync(seen).mtimeMs;
   assert.equal((await box.ask("GET", "kuvo/setup", undefined, {})).status, 200);

@@ -32,6 +32,7 @@ use crate::{
     storage::Files,
 };
 
+mod activity;
 mod device_access;
 mod edit_delivery;
 mod handover;
@@ -44,11 +45,11 @@ const LINK: &str = "run/link.json";
 const CARD: &str = "run/setup-card.json";
 const WELCOME: &str = "run/welcomed.json";
 const ATTACHED: &str = "run/app-attached.json";
-const PHONE_SEEN: &str = "run/link.seen";
 
 pub struct SetupRuntime {
     handle: SetupHandle,
     task: JoinHandle<()>,
+    activity_task: JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -56,6 +57,7 @@ pub struct SetupHandle {
     pub(crate) inbox: mpsc::Sender<Request>,
     pub(crate) views: watch::Receiver<View>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
+    activity: activity::Sender,
 }
 
 impl SetupHandle {
@@ -63,12 +65,8 @@ impl SetupHandle {
         self.rosters.clone()
     }
 
-    pub fn phone_activity(&self) {
-        let (reply, _) = oneshot::channel();
-        let _ = self.inbox.try_send(Request {
-            command: Command::PhoneActivity,
-            reply,
-        });
+    pub async fn phone_activity(&self) {
+        activity::record(&self.activity, activity::Activity::Seen).await;
     }
 }
 
@@ -120,7 +118,6 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
-    PhoneActivity,
     DeviceChange(device_access::Mutation),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
@@ -283,6 +280,8 @@ impl PreparedSetup {
         for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
             link.extra.shift_remove(field);
         }
+        let (activity, activity_rx) = mpsc::channel(16);
+        let activity_task = tokio::spawn(activity::track(files.clone(), activity_rx));
         let actor = Owner {
             files,
             link,
@@ -305,7 +304,7 @@ impl PreparedSetup {
             next: Instant::now(),
             next_edits: Instant::now(),
             next_digest: Instant::now(),
-            phone_seen: None,
+            activity: activity.clone(),
         };
         actor.write_card()?;
         let task = tokio::spawn(actor.run());
@@ -314,8 +313,10 @@ impl PreparedSetup {
                 inbox: tx,
                 views: view_rx,
                 rosters: roster_rx,
+                activity,
             },
             task,
+            activity_task,
         })
     }
 }
@@ -323,6 +324,7 @@ impl PreparedSetup {
 impl Drop for SetupRuntime {
     fn drop(&mut self) {
         self.task.abort();
+        self.activity_task.abort();
     }
 }
 
@@ -769,7 +771,7 @@ struct Owner {
     next: Instant,
     next_edits: Instant,
     next_digest: Instant,
-    phone_seen: Option<Instant>,
+    activity: activity::Sender,
 }
 
 impl Owner {
@@ -963,9 +965,6 @@ impl Owner {
                 .is_ok_and(|roster| roster.devices().next().is_none());
         let written = tokio::task::spawn_blocking(move || {
             write_link(&files, &next, kind)?;
-            if last_device_gone && let Err(error) = files.remove(PHONE_SEEN) {
-                eprintln!("clearing the last phone activity marker: {error}");
-            }
             if zone_changed
                 && let Err(error) = preferences::zone(&files, &next).and_then(|zone| {
                     zone.as_ref()
@@ -980,7 +979,7 @@ impl Owner {
         .map_err(|_| Error::Invalid("setup write task"))??;
         self.link = written;
         if last_device_gone {
-            self.phone_seen = None;
+            activity::record(&self.activity, activity::Activity::Forget).await;
         }
         if position_changed || membership_changed || names_changed {
             self.rosters
@@ -1032,17 +1031,6 @@ impl Owner {
 
     async fn execute(&mut self, command: Command) -> Result<Response, Error> {
         match command {
-            Command::PhoneActivity => {
-                let now = Instant::now();
-                if self
-                    .phone_seen
-                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(300))
-                {
-                    self.files.write_bytes(PHONE_SEEN, b"")?;
-                    self.phone_seen = Some(now);
-                }
-                Ok(Response::ok(json!({})))
-            }
             Command::ReadEdit(target) => {
                 let setup = self.link.setup()?;
                 let stale = setup.role == Role::Member && !self.lease.holds(&self.link);
