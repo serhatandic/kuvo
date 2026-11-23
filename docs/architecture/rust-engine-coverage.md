@@ -302,10 +302,10 @@ publishes receipt changes through a watch channel.
 
 | Platform | Phase 3.2c checks |
 | --- | --- |
-| macOS | 59 deterministic engine cases against each binary at the catalog and session-writer checkpoint. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters and revoked delivery. |
+| macOS | 82 deterministic engine cases against each binary after merging move admission. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters and revoked delivery. |
 | WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. The held-inventory, old waiting-list, and concurrent-delete scenarios also passed. |
-| Native Windows | 57 deterministic Rust cases at the setup search checkpoint, including Windows project keys. The staged OpenCode pin reports version 2.2.6. |
-| Linux musl | 57 deterministic Rust cases at the setup search checkpoint with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
+| Native Windows | 82 deterministic Rust cases, including the native project key, Windows attachment paths and the delete race. The staged OpenCode pin reports version 2.2.6. |
+| Linux musl | 82 deterministic Rust cases with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
 
 The signed star test makes a change from a member, reads it from both
 computers, then merges older local copies after an unstar. It verifies the
