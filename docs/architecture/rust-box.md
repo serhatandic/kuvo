@@ -331,7 +331,7 @@ parallel.
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | `kuvo_protocol`: codegen from shapes, checker held to `cases.json`, `FEATURES`; desktop takes the features and gate from it | protocol | 0.4 | 5 | B |
 | 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home | store | 0.4, 0.2 | 6 | C |
-| 1.3 | `kuvo_os`: processes, start identity, groups and Job Objects, IPC, watching, platform facts | os | 0.4 | 6 | D |
+| 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | Server: dispatcher, local HTTP, refusals, the line with replay, SSH `route` and `route-to` | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | `kuvo_wire` (shared with the desktop), relay client, paired sessions, mail v1, outbox | wire, peers | 1.1 | 5 ×2 | A |
 | 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities | setup | 1.4, 1.5 | 5 ×2 | A |
