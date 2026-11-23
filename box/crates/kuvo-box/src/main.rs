@@ -97,7 +97,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             if ssh_enroll.is_some() {
                 let joined = kuvo_setup::installer::join_ssh(&home, name, &code).await?;
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
-                start_ssh_resident(&home).await?;
+                start_ssh_resident(&home, &identity).await?;
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;
@@ -120,7 +120,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     result.map(|()| ExitCode::SUCCESS)
 }
 
-async fn start_ssh_resident(home: &Home) -> io::Result<()> {
+async fn start_ssh_resident(home: &Home, identity: &str) -> io::Result<()> {
     use kuvo_os::process::Spawn;
     use std::{fs, time::Duration};
 
@@ -132,7 +132,7 @@ async fn start_ssh_resident(home: &Home) -> io::Result<()> {
     let mut spawn = Spawn::new(env::current_exe()?, environment);
     spawn.args.push("serve".into());
     spawn.cwd = Some(home.root().to_owned());
-    let mut child = spawn.spawn()?;
+    let mut child = spawn.spawn_recoverable(&format!("kuvo-ssh-{identity}"))?;
     let pid = child.identity().pid;
     let record = home.run().join("serve.json");
     let ready = async {
