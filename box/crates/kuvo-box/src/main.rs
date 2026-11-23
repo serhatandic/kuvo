@@ -19,6 +19,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    if word(0) == Some("update") {
+        return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
+    }
+    if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
+        if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
+            return Err("The release names a different engine.".into());
+        }
+        println!("ok");
+        return Ok(ExitCode::SUCCESS);
+    }
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
