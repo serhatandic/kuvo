@@ -40,6 +40,7 @@ struct ListTasks {
     list: tokio::task::JoinHandle<()>,
     feed: tokio::task::JoinHandle<()>,
     models: tokio::task::JoinHandle<()>,
+    limits: tokio::task::JoinHandle<()>,
     stop: CancellationToken,
 }
 
@@ -49,6 +50,7 @@ impl Drop for ListTasks {
         self.feed.abort();
         self.list.abort();
         self.models.abort();
+        self.limits.abort();
     }
 }
 
@@ -135,6 +137,7 @@ impl LocalSessions {
         let stop = CancellationToken::new();
         let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
         let (models_changed, models) = crate::model_refresh::watch(engine.clone());
+        let limits = crate::queue::watch_limits(engine.clone(), stop.clone());
         let feed = crate::conversation::watch(
             engine.clone(),
             refresh.downgrade(),
@@ -207,6 +210,7 @@ impl LocalSessions {
                 list,
                 feed,
                 models,
+                limits,
                 stop,
             }),
         }

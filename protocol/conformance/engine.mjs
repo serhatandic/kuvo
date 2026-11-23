@@ -95,6 +95,11 @@ export async function standInEngine(root, env) {
       if (prompt && request.method === "POST") {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+        if (engine.refusePrompt?.id === given.id) {
+          engine.refusePrompt.seen();
+          engine.refusePrompt = null;
+          return send({ message: "Try the prompt again." }, 503);
+        }
         const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
         if (held) engine.holdPrompt = null;
         const accept = () => {
@@ -127,11 +132,17 @@ export async function standInEngine(root, env) {
       if (waiting) {
         const session = decodeURIComponent(waiting[1]);
         const inbox = engine.inboxes.get(session) ?? [];
-        if (!waiting[2] && request.method === "GET") return send({ data: inbox });
+        if (!waiting[2] && request.method === "GET") {
+          if (engine.inboxUnavailable?.has(session)) return send({}, 503);
+          return send({ data: inbox });
+        }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
         if (request.method === "PATCH") Object.assign(inbox[index], given);
-        else if (request.method === "DELETE") inbox.splice(index, 1);
+        else if (request.method === "DELETE") {
+          if (engine.refuseRemoval?.has(waiting[2])) return send({}, 503);
+          inbox.splice(index, 1);
+        }
         else return send({}, 404);
         publish({ type: "session.inbox.updated", data: { sessionID: session } });
         return send({});

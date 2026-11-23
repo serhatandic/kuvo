@@ -170,6 +170,139 @@ test("a restart beside the same engine scans its queues and preserves an explici
   assert.deepEqual(readJSON(scanned), { formatVersion: 1, [here.engine.record.port]: here.engine.record.pid });
 });
 
+// Deterministic provider errors for side-by-side TS and Rust comparison. The
+// live queue scenario uses OpenCode Go separately.
+test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-limit-missed");
+  const session = "ses_limitWithoutReset";
+  const info = sessionOf({ id: session, directory: here.home, updated: Date.now() });
+  here.engine.sessions.push({ ...info, outcome: "failed" });
+  const error = { type: "limit", message: "The model reached its usage limit." };
+  const latest = { type: "idle", outcome: "failed", error, time: { created: info.time.updated } };
+  here.engine.messages.set(session, [latest]);
+  here.engine.inboxUnavailable = new Set([session]);
+  const route = `kuvo/sessions/${session}/queue`;
+  const resident = here.start();
+  let record = await resident.ready();
+  await until(() => here.engine.subscribers() > 0, "The event watcher did not start.");
+  here.engine.emit({ type: "session.execution.failed", data: { sessionID: session, error } });
+  const file = path.join(here.home, "run", "queues.json");
+  await until(() => {
+    try { return readJSON(file)?.[session]?.limitStop?.message === error.message; }
+    catch { return false; }
+  }, "The stop was lost while the inbox was unavailable.", 6000, 50);
+  assert.match((await request(record, "GET", route)).json.line, /provider didn't say when/);
+  here.engine.inboxUnavailable.clear();
+  assert.deepEqual((await request(record, "POST", route + "/resume")).json, { paused: false, held: [] });
+  await resident.stop();
+  const kept = readJSON(file);
+  delete kept[session].resumed;
+  write(file, JSON.stringify(kept));
+  const scanFile = path.join(here.home, "run", "queues-scanned.json");
+  fs.rmSync(scanFile, { force: true });
+  record = await here.start().ready();
+  await until(() => fs.existsSync(scanFile), "The restart did not scan queues.");
+  assert.deepEqual((await request(record, "GET", route)).json, { paused: false, held: [] });
+});
+
+test("a timed usage limit retries sending the first waiting message at reset", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-limit-reset");
+  const session = "ses_limitWithReset";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The event watcher did not start.");
+  const resetsAt = Date.now() + 3000;
+  const error = {
+    type: "limit", message: "The model reached its usage limit.",
+    limit: { scope: "model", resetsAt },
+  };
+  here.engine.emit({ type: "session.execution.failed", data: { sessionID: session, error } });
+  const route = `kuvo/sessions/${session}/queue`;
+  await until(async () => {
+    const queue = await request(record, "GET", route);
+    return queue.json?.paused && queue.json?.line.includes("It resets at ");
+  }, "The queue did not show its timed stop.", 2000, 50);
+  const id = "msg_waitForReset";
+  let firstAttempt;
+  let refusedAttempt;
+  const refused = new Promise(resolve => { refusedAttempt = resolve; });
+  here.engine.refusePrompt = {
+    id,
+    seen: () => {
+      firstAttempt = Date.now();
+      refusedAttempt();
+    },
+  };
+  const accepted = await request(record, "POST", route + "/add", { id, text: "After reset." });
+  assert.equal(accepted.json.waits, true, accepted.text);
+  assert.equal(firstAttempt, undefined);
+  await refused;
+  const file = path.join(here.home, "run", "queues.json");
+  assert.equal(readJSON(file)[session].limitStop.releasing, true);
+  const later = await request(record, "POST", route + "/add", { id: "msg_afterFirst", text: "After the first message." });
+  assert.equal(later.json.waits, true, later.text);
+  await until(() => here.engine.messages.get(session)?.some(row => row.id === id), "The queue did not retry after the prompt was refused.", 10000, 50);
+  assert.ok(firstAttempt >= resetsAt);
+  assert.equal(here.engine.messages.get(session).filter(row => row.id === id).length, 1);
+  await until(async () => {
+    const done = await request(record, "GET", route);
+    return done.json?.paused === false &&
+      done.json.waiting?.map(row => row.id).join() === "msg_afterFirst";
+  }, "Only the second message should still be waiting.");
+});
+
+test("a missed usage limit is recovered from the transcript and can be resumed", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-limit-scan");
+  const session = "ses_limitScan";
+  const at = Date.now();
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home, updated: at }));
+  here.engine.inboxes.set(session, [{ id: "msg_limitHead", type: "user", delivery: "queue", payload: { text: "Next" } }]);
+  const error = { type: "provider.rate-limit", message: "Rate limit reached. Try again in 2h 30m." };
+  here.engine.messages.set(session, [{ type: "idle", outcome: "failed", error, time: { created: at } }]);
+  write(path.join(here.home, "box", "time-zone.json"), JSON.stringify({ zone: "Pacific/Honolulu" }));
+  const record = await here.start().ready();
+  const route = `kuvo/sessions/${session}/queue`;
+  const resetsAt = at + 2.5 * 3_600_000;
+  const time = value => new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "numeric", minute: "2-digit" }).format(value);
+  const day = value => new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", month: "short", day: "numeric" }).format(value);
+  const expected = `${error.message} It resets at ${day(at) === day(resetsAt) ? "" : day(resetsAt) + ", "}${time(resetsAt)}.`;
+  await until(async () => (await request(record, "GET", route)).json?.line === expected, expected);
+  assert.deepEqual((await request(record, "POST", route + "/resume")).json, { paused: false, held: [] });
+  assert.equal(here.engine.inboxes.get(session)[0].delivery, "steer");
+});
+
+test("a limit reset waits for an unfinished removal before advancing the queue", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-limit-removal");
+  const session = "ses_limitRemoval";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const items = ["msg_beingRemoved", "msg_nextAfterLimit"];
+  here.engine.inboxes.set(session, items.map(id => ({ id, type: "user", delivery: "queue", payload: { text: id } })));
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The event watcher did not start.");
+  const resetsAt = Date.now() + 2500;
+  const error = { type: "limit", message: "Usage limit.", limit: { scope: "model", resetsAt } };
+  here.engine.emit({ type: "session.execution.failed", data: { sessionID: session, error } });
+  const route = `kuvo/sessions/${session}/queue`;
+  const file = path.join(here.home, "run", "queues.json");
+  await until(() => {
+    try { return readJSON(file)?.[session]?.limitStop?.resetsAt === resetsAt; }
+    catch { return false; }
+  }, "The queue did not record the limit reset.", 1500, 25);
+  here.engine.refuseRemoval = new Set([items[0]]);
+  const ticket = route + "/" + items[0] + "?receipt=msg_removalTicket";
+  assert.equal((await request(record, "DELETE", ticket)).status, 502);
+  await until(() => readJSON(file)[session]?.limitStop?.releasing, "The recorded limit did not reset.", 6000, 50);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => row.delivery), ["queue", "queue"]);
+  here.engine.refuseRemoval.clear();
+  assert.equal((await request(record, "DELETE", ticket)).status, 200);
+  await until(() => here.engine.inboxes.get(session)[0]?.delivery === "steer", "The queue did not advance after removal.", 6000, 50);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => row.id), [items[1]]);
+});
+
 test("Stop records messages on their way while it waits for a send in flight", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("stop-in-flight");

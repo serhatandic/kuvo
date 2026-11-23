@@ -114,7 +114,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | — | 6 | 1–5, 7–8 | 3.2 · 1–8 |
 | `box/test/session-notes-writers.test.ts` (7) | — | 1 | 2–7 | 3.2 · 1–7<br>7.3 · 6 |
-| `box/bridge-tests/queue.test.js` (56) | 15–16, 39 | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 17–21, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–14, 17–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25<br>5.4 · 17–21 |
+| `box/bridge-tests/queue.test.js` (56) | 15–21, 39 | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–14, 22–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1, 3 | 2, 4, 6–9 | 5 | 3.2 · 2, 4, 6–9<br>4.1 · 5 |
@@ -240,6 +240,11 @@ Path remapping is exercised through the backup and move consumers in 2.4
 and 2.5, with coding-agent carry in 4.1. Installer address parsing belongs
 to enrollment in 2.3.
 Engine-swap inbox transfer is independent of the release keeper in 7.2.
+Queue limit stops keep their reason even if OpenCode's inbox is unavailable.
+The resident recovers missed failures from the transcript and looks up the
+current engine before it releases a reset. Its next-due task checks the
+persisted state again under the session turn, so a manual Resume or Stop
+wins. The same release can retry a refused send or an in-progress removal.
 
 ### Platform verification
 

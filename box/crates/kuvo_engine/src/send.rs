@@ -460,7 +460,7 @@ async fn deliver(
             .get(session)
             .await
             .map_err(disk_failure)?
-            .shown();
+            .shown(&engine.home);
         answer["waits"] = json!(admitted);
     } else if admitted {
         answer = json!({ "waits": true });
