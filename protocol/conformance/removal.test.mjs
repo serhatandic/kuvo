@@ -57,9 +57,8 @@ test("the main revokes an offline computer once and keeps the unlink receipt aft
   assert.equal(conflict.status, 409, conflict.text);
 });
 
-test("a released computer enrolls again after usage settings follow its standalone setup", {
+test("a released computer enrolls again when its retained work is unchanged", {
   timeout: 120000,
-  skip: !applicant.typescript,
 }, async t => {
   const { computer, leases } = await bench(t);
   const main = await computer("Studio");
@@ -83,7 +82,9 @@ test("a released computer enrolls again after usage settings follow its standalo
   const local = other.connect(await resident.ready());
   const usageFile = path.join(other.home, "agents", "usage", "settings.json");
   const usageScope = () => fs.existsSync(usageFile) && readJSON(usageFile).setup;
-  await until(() => usageScope() === setup, "Usage settings did not follow the initial setup.");
+  if (applicant.typescript) {
+    await until(() => usageScope() === setup, "Usage settings did not follow the initial setup.");
+  }
   const old = await local("GET", "kuvo/setup");
   const key = old.json.you.key;
   const operation = Buffer.alloc(16, 21).toString("base64url");
@@ -100,7 +101,9 @@ test("a released computer enrolls again after usage settings follow its standalo
   assert.equal(kept.status, 200, kept.text);
   assert.notEqual(kept.json.setup, setup);
   assert.deepEqual(kept.json.computers.map(row => [row.key, row.role]), [[key, "primary"]]);
-  await until(() => usageScope() === kept.json.setup, "Usage settings did not follow the standalone setup.");
+  if (applicant.typescript) {
+    await until(() => usageScope() === kept.json.setup, "Usage settings did not follow the standalone setup.");
+  }
   const next = await invite();
   assert.equal(next.status, 201, next.text);
   const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
@@ -122,6 +125,7 @@ test("a released computer enrolls again after usage settings follow its standalo
     restored.close();
     // A write after unlink must still be protected by the Rust applicant.
     const payload = path.join(other.home, "artifacts", "retained-work.json");
+    fs.mkdirSync(path.dirname(payload), { recursive: true });
     fs.writeFileSync(payload, '{"title":"Written after unlink"}', { flag: "wx" });
     try {
       const blocked = await other.join(next.json.code, { joinWith });

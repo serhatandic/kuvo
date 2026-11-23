@@ -16,7 +16,34 @@ use crate::{
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
-pub use join::{Joined, cancellation_receipts, join};
+pub use join::{Joined, cancellation_receipts, join, join_ssh};
+
+pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
+    let files = crate::storage::Files::new(home.root().to_owned());
+    let link: Link = files.read(crate::actor::LINK)?.ok_or(Error::Conflict)?;
+    if link.setup()?.role != crate::model::Role::Member {
+        return Err(Error::Conflict);
+    }
+    let own = crate::model::Identity::read(&link)?.public;
+    let path = files.path("machine-id");
+    let machine = match std::fs::read_to_string(&path) {
+        Ok(text) if text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit()) => text,
+        Ok(_) => return Err(Error::Invalid("machine identity")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let identity = hex::encode(crate::random::<16>()?);
+            files.write_bytes("machine-id", identity.as_bytes())?;
+            identity
+        }
+        Err(source) => {
+            return Err(Error::File {
+                action: "reading",
+                path,
+                source,
+            });
+        }
+    };
+    Ok((own, machine))
+}
 
 pub(super) const INVITE_LIFETIME: u64 = 15 * 60_000;
 pub(super) const CLAIM_LIFETIME: u64 = 24 * 60 * 60_000;
@@ -178,7 +205,7 @@ impl Code {
         }
     }
 
-    fn read(text: &str) -> Option<(Self, Host)> {
+    pub(super) fn read(text: &str) -> Option<(Self, Host)> {
         let text = text.trim();
         if text.len() > 4096 {
             return None;

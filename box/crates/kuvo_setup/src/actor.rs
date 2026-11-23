@@ -124,6 +124,15 @@ pub(crate) enum Command {
     Welcome(bool),
     InstallerCode(Option<Value>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
+    SshAdmission(edits::Submitter),
+    SshAddress {
+        key: String,
+        invite: String,
+        destination: String,
+        identity: String,
+        distro: Option<String>,
+        by: edits::Submitter,
+    },
     RenameComputer(String, String, edits::Submitter),
     UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
@@ -1068,6 +1077,18 @@ impl Owner {
                 self.issue_installer_code(credentials, by).await
             }
             Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
+            Command::SshAdmission(by) => self.ssh_admission(&by),
+            Command::SshAddress {
+                key,
+                invite,
+                destination,
+                identity,
+                distro,
+                by,
+            } => {
+                self.keep_ssh_address(key, invite, destination, identity, distro, by)
+                    .await
+            }
             Command::UnlinkComputer(key, request, explicit, by) => {
                 self.unlink_computer(key, request, explicit, by).await
             }

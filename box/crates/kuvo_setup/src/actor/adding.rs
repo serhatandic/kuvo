@@ -17,6 +17,105 @@ use crate::{
 };
 
 impl Owner {
+    pub(super) fn ssh_admission(&self, by: &Submitter) -> Result<Response, Error> {
+        if !by.current(&self.link) {
+            return Ok(refused(403, "Pair this device before adding a computer."));
+        }
+        let Some(setup) = self.link.setup().ok() else {
+            return Ok(refused(
+                409,
+                "This computer can add members once its setup is ready.",
+            ));
+        };
+        if setup.role != Role::Primary {
+            let main = self
+                .roster()?
+                .boxes
+                .into_iter()
+                .find(|peer| peer.key == setup.position.primary);
+            let name = main
+                .as_ref()
+                .map(|peer| peer.name.as_str())
+                .unwrap_or("your main computer");
+            return Ok(Response {
+                status: 409,
+                value: json!({"message": format!("Add computers on {name}, your main computer."), "primary": setup.position.primary}),
+            });
+        }
+        self.can_write()?;
+        if self.link.relay.is_none() {
+            return Ok(refused(
+                503,
+                "This computer isn’t linked to your other computers yet, so it can’t add one.",
+            ));
+        }
+        Ok(Response::ok(json!({})))
+    }
+
+    pub(super) async fn keep_ssh_address(
+        &mut self,
+        key: String,
+        invite: String,
+        destination: String,
+        identity: String,
+        distro: Option<String>,
+        by: Submitter,
+    ) -> Result<Response, Error> {
+        let allowed = self.ssh_admission(&by)?;
+        if allowed.status != 200 {
+            return Ok(allowed);
+        }
+        let mut roster = self.roster()?;
+        let Some(peer) = roster.boxes.iter_mut().find(|peer| peer.key == key) else {
+            return Ok(refused(
+                409,
+                "The setup changed before the SSH address was saved.",
+            ));
+        };
+        if !self
+            .link
+            .installer_invites
+            .get(&invite)
+            .and_then(|invite| invite.claim.as_ref())
+            .is_some_and(|claim| claim.matches(peer))
+        {
+            return Ok(refused(
+                409,
+                "The setup changed before the SSH address was saved.",
+            ));
+        }
+        peer.extra.insert("id".into(), json!(destination));
+        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let record = addresses
+            .iter_mut()
+            .find(|row| row["destination"] == destination);
+        let mut entry = record
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| json!({"destination": destination}));
+        entry["identity"] = json!(identity);
+        if let Some(distro) = distro {
+            entry["wslDistro"] = json!(distro);
+        }
+        if let Some(record) = record {
+            *record = entry;
+        } else {
+            addresses.push(entry);
+        }
+        let mut next = self.link.clone();
+        next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            serde_json::to_value(roster).expect("roster serializes"),
+            None,
+            None,
+        )?;
+        self.files.write("machines.json", &addresses)?;
+        self.commit(next).await?;
+        self.publish(false).await?;
+        Ok(Response::ok(json!({})))
+    }
+
     pub(super) async fn cancel_installer(
         &mut self,
         receipt: Cancellation,

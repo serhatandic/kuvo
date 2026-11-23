@@ -172,6 +172,14 @@ struct Accepted {
 }
 
 pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
+    join_at(home, name, input, false).await
+}
+
+pub async fn join_ssh(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
+    join_at(home, name, input, true).await
+}
+
+async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
     let text = input.trim();
     if text.len() <= 4096
         && let Some((version, _)) = text
@@ -201,7 +209,11 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
     }
     // Opening for enrollment never starts a move. A fresh applicant can
     // initialize its layout here, after the code is validated.
-    layout::open(home)?;
+    if staged {
+        open_staged_ssh_home(home)?;
+    } else {
+        layout::open(home)?;
+    }
     let files = Files::new(home.root().to_owned());
     // The applicant's installer is the only Rust writer while it replaces the local identity.
     let owner = files.path("run/.client-owner");
@@ -414,6 +426,51 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
         setup: code.setup,
         primary: code.primary,
     })
+}
+
+fn open_staged_ssh_home(home: &Home) -> Result<(), Error> {
+    use std::fs;
+
+    if layout::inspect(home)? != layout::Layout::Unmarked {
+        return Ok(layout::open(home)?);
+    }
+    let _guard = layout::lock_for_move(home, Duration::from_secs(3)).map_err(layout::Error::Io)?;
+    if layout::inspect(home)? != layout::Layout::Unmarked {
+        return Ok(layout::open(home)?);
+    }
+    let ordinary = || {
+        let entries = fs::read_dir(home.root()).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            match entry.file_name().to_str()? {
+                ".folder-upgrade.lock" => (),
+                "run" if fs::read_dir(entry.path()).ok()?.next().is_none() => (),
+                "bin"
+                    if fs::read_dir(entry.path()).ok()?.all(|file| {
+                        file.is_ok_and(|file| {
+                            matches!(
+                                file.file_name().to_str(),
+                                Some("kuvo-box" | "kuvo-box.exe" | "libunwind.dll")
+                            ) && file.file_type().is_ok_and(|kind| kind.is_file())
+                        })
+                    }) =>
+                {
+                    ()
+                }
+                _ => return None,
+            }
+        }
+        Some(())
+    };
+    if ordinary().is_none() {
+        return Err(Error::Installer(
+            "An older installation needs the move before joining.".into(),
+        ));
+    }
+    Ok(layout::publish(home)?)
 }
 
 struct SavedLink<'a> {

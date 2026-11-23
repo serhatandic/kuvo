@@ -4,6 +4,7 @@ const areas = new Map([
   ["peers", "./peers.test.mjs"],
   ["removal", "./removal.test.mjs"],
   ["setup-judge", "./setup-judge.test.mjs"],
+  ["ssh-adding", "./ssh-adding.test.mjs"],
   ["adding", "./adding.test.mjs"],
   ["two-boxes", "./two-boxes.test.mjs"],
   ["moves", "./moves.test.mjs"],

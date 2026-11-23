@@ -9,6 +9,7 @@ pub mod installer;
 mod preferences;
 mod routes;
 pub mod seed;
+mod ssh;
 
 mod lease;
 mod mac_host;
@@ -21,6 +22,8 @@ use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("This computer couldn't read its setup.")]
+    SetupUnavailable,
     #[error("{0}")]
     Installer(String),
     #[error(transparent)]

@@ -1119,6 +1119,7 @@ dependencies = [
  "hmac",
  "http",
  "jiff",
+ "kuvo_os",
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",

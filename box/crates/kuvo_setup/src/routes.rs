@@ -265,13 +265,17 @@ impl SetupHandle {
         });
     }
 
-    async fn request(&self, command: Command) -> Result<Response, Refusal> {
+    pub(crate) async fn request(&self, command: Command) -> Result<Response, Refusal> {
+        self.request_command(command).await.map_err(refusal)
+    }
+
+    pub(crate) async fn request_command(&self, command: Command) -> Result<Response, Error> {
         let (reply, result) = oneshot::channel();
         self.inbox
             .send(Request { command, reply })
             .await
-            .map_err(|_| unavailable())?;
-        result.await.map_err(|_| unavailable())?.map_err(refusal)
+            .map_err(|_| Error::SetupUnavailable)?;
+        result.await.map_err(|_| Error::SetupUnavailable)?
     }
 
     fn register_edits(&self, routes: &mut Registry) {
@@ -581,7 +585,7 @@ fn personality_app(caller: &Caller) -> Result<(), Refusal> {
     }
 }
 
-fn submitter(caller: &Caller) -> Result<Submitter, Refusal> {
+pub(crate) fn submitter(caller: &Caller) -> Result<Submitter, Refusal> {
     match caller {
         Caller::Local(Transport::Http {
             origin: LocalOrigin::App | LocalOrigin::Mac,
@@ -631,6 +635,7 @@ fn refusal(error: Error) -> Refusal {
         ),
         Error::Invalid(_) => (StatusCode::BAD_REQUEST, error.to_string()),
         Error::Capacity => (StatusCode::CONFLICT, error.to_string()),
+        Error::SetupUnavailable => return unavailable(),
         _ => {
             eprintln!("setup route: {error}");
             (
@@ -660,7 +665,7 @@ fn decoded_id(given: Option<&str>) -> Result<String, Refusal> {
         .map_err(|_| Refusal::json(StatusCode::NOT_FOUND, json!({})))
 }
 
-fn typed<R, const STATUS: u16>(value: Value) -> Result<RouteReply<R>, Refusal>
+pub(crate) fn typed<R, const STATUS: u16>(value: Value) -> Result<RouteReply<R>, Refusal>
 where
     R: JsonStatus<STATUS>,
     <R as JsonStatus<STATUS>>::Body: serde::de::DeserializeOwned,

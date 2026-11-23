@@ -21,6 +21,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Mac migration command now carries sessions, attachments, settings, and keys from older Kuvo Code installations.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
+- A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server reads saved move results and shows moves reported by your other computers.

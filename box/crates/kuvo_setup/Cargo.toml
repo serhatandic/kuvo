@@ -18,6 +18,7 @@ hmac = "0.12"
 http = "1"
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 kuvo_peers = { path = "../kuvo_peers" }
+kuvo_os = { path = "../kuvo_os" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_store = { path = "../kuvo_store" }
