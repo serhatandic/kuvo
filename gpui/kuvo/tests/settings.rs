@@ -647,6 +647,39 @@ fn a_device_code_is_shown_and_copied_after_disconnecting(cx: &mut TestAppContext
     assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("WDJB-MJHT"), "copied for the page");
 }
 
+/// One sign-in for every agent (#968): where the box says it ends on a code to paste back
+/// (Claude Code's), the field is there at once, focused, with Continue, and nothing to open first;
+/// where it comes back by itself (Codex), there's no field, only a quiet wait; either way one
+/// thing to do if the page didn't open, and the ×.
+#[gpui::test]
+fn a_code_sign_in_shows_a_focused_field_at_once_and_one_without_shows_none(cx: &mut TestAppContext) {
+    use gpui::Focusable as _;
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Accounts");
+    click(cx, "account-claude-code-menu");
+    click(cx, "menu-item-Sign In Again…");
+    assert!(shown(cx, "sign-in-code") && shown(cx, "sign-in-send-code"), "the field and Continue, at once");
+    let sheet = view.read_with(cx, |view, _| view.sign_in().cloned().expect("the sign-in"));
+    assert!(cx.update(|window, cx| sheet.read(cx).code_field().focus_handle(cx).is_focused(window)), "focused, to paste straight in");
+    assert!(!shown(cx, "sign-in-waiting"));
+    assert!(shown(cx, "sign-in-open") && shown(cx, "sign-in-x"));
+    // Typed straight in, as it was focused: it goes to the box.
+    cx.simulate_input("stand-in-code");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    tick(cx);
+    assert_eq!(step(&view, cx), Some(Step::Done));
+    click(cx, "sign-in-done");
+
+    click(cx, "account-codex-cli-menu");
+    click(cx, "menu-item-Sign In Again…");
+    click(cx, "sign-in-way-0");
+    assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
+    assert!(!shown(cx, "sign-in-code") && !shown(cx, "sign-in-send-code"), "nothing to paste");
+    assert!(shown(cx, "sign-in-waiting") && shown(cx, "sign-in-open"));
+}
+
 #[gpui::test]
 fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -657,7 +690,6 @@ fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
     assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
     let started: Vec<String> = stand_in.seen_at("POST", "kuvo/sign-in/start").into_iter().map(|seen| seen.path).collect();
     assert_eq!(started, vec!["kuvo/sign-in/start?integration=claude-code&agents=1".to_owned()], "through the box, on the agents' bridge");
-    click(cx, "sign-in-paste");
     cx.simulate_input("wrong-code");
     click(cx, "sign-in-send-code");
     assert!(shown(cx, "sign-in-code-error"), "turned down, in the box's words");
@@ -714,7 +746,6 @@ fn claude_continue_explains_when_an_older_box_acknowledges_but_never_confirms(cx
     let view = section(&workspace, cx, "Accounts");
     click(cx, "account-claude-code-menu");
     click(cx, "menu-item-Sign In Again…");
-    click(cx, "sign-in-paste");
     cx.simulate_input("stand-in-code");
     click(cx, "sign-in-send-code");
 
@@ -846,14 +877,13 @@ fn cancelling_a_sign_in_gives_it_up_on_the_engine(cx: &mut TestAppContext) {
     click(cx, "account-cursor-sign-in");
     click(cx, "sign-in-way-0");
     assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
-    click(cx, "sign-in-cancel");
+    // (Close is the one way out of a sign-in under way.)
+    click(cx, "sign-in-x");
     let actions = stand_in.seen_at("POST", "kuvo/sign-in/action");
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].path, "kuvo/sign-in/action?integration=cursor&agents=1");
     assert_eq!(actions[0].body, Some(json!({ "action": "cancel", "attempt": "att_1" })));
-    assert_eq!(step(&view, cx), Some(Step::Choose));
     // Closed: no more asking.
-    click(cx, "sign-in-x");
     let asked = stand_in.seen_at("GET", "kuvo/sign-in/status").len();
     tick(cx);
     assert_eq!(stand_in.seen_at("GET", "kuvo/sign-in/status").len(), asked);

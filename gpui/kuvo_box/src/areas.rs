@@ -646,6 +646,19 @@ pub struct FleetLine {
     /// Where it's `warning`, the few words a narrow place shows.
     #[serde(default)]
     pub short: Option<String>,
+    /// How far along its way it is, as the box says: `getting-ready`, `ready`, `switching`,
+    /// `done` or `off` (none where `tone` says it: it can't update). None from a box from before.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// Getting ready, how far, in thousandths, where the box knows.
+    #[serde(default, deserialize_with = "thousandths")]
+    pub fill: Option<u16>,
+}
+
+/// A share from 0 to 1, kept in thousandths (so the line stays `Eq`); none where it isn't one.
+fn thousandths<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<u16>, D::Error> {
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_f64()).filter(|share| share.is_finite()).map(|share| (share.clamp(0., 1.) * 1000.).round() as u16))
 }
 
 /// Progress across the setup, included in every Computers snapshot.
@@ -665,6 +678,10 @@ pub struct FleetUpdateSummary {
     pub title: Option<String>,
     pub detail: Option<String>,
     pub warning: Option<bool>,
+    /// Where the setup's update is, as the box says: `getting-ready`, `ready`, `switching`,
+    /// `waiting` (the rest up to date, some off) or `done`. None from a box from before.
+    #[serde(default)]
+    pub phase: Option<String>,
 }
 
 /// Your computers, the answering box first.

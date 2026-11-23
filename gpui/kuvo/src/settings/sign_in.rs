@@ -89,6 +89,8 @@ pub struct SignIn {
     /// Drawn in place, under its account's row (the first run), rather than as a sheet: no card
     /// or title of its own.
     in_place: bool,
+    /// Its agent's mark, by the box's service id, beside the title.
+    mark: Option<String>,
     /// Closed: a sign-in still starting is given up on as soon as it has started.
     closed: Arc<AtomicBool>,
     focus: FocusHandle,
@@ -136,6 +138,7 @@ impl SignIn {
             misses: 0,
             wants_focus: true,
             in_place: false,
+            mark: None,
             closed: Arc::new(AtomicBool::new(false)),
             focus: cx.focus_handle(),
             poll: None,
@@ -146,6 +149,12 @@ impl SignIn {
     /// The title supplied for the selected account action.
     pub fn sheet_title(mut self, title: String) -> Self {
         self.sheet_title = title;
+        self
+    }
+
+    /// Its agent's mark beside the title (a service id the box gave, as `claude`).
+    pub fn mark(mut self, service: Option<String>) -> Self {
+        self.mark = service;
         self
     }
 
@@ -307,7 +316,9 @@ impl SignIn {
                     if is_page(&attempt.url) {
                         cx.open_url(&attempt.url);
                     }
+                    // (One that ends on a code to paste: its field is there at once, focused.)
                     this.pasting = attempt.mode == "code" || attempt.paste_address;
+                    this.wants_focus = true;
                     this.sending_code = false;
                     this.code_confirmation = None;
                     this.step = Step::Waiting { attempt, status: None };
@@ -390,6 +401,16 @@ impl SignIn {
                 attempt.instructions = instructions;
             }
             self.pasting = true;
+            self.wants_focus = true;
+        }
+        // Its page came late, and ends on a code (the box says so now): the field, focused.
+        if status.mode.as_deref() == Some("code") && attempt.mode != "code" {
+            attempt.mode = "code".into();
+            if let Some(instructions) = status.instructions.clone() {
+                attempt.instructions = instructions;
+            }
+            self.pasting = true;
+            self.wants_focus = true;
         }
         *shown = Some(status);
         true
@@ -551,6 +572,7 @@ impl Render for SignIn {
                         window.focus(&text.focus_handle(cx), cx);
                     }
                 }
+                Step::Waiting { .. } if self.pasting => window.focus(&self.code.focus_handle(cx), cx),
                 // The sheet itself, so Escape closes it.
                 _ => window.focus(&self.focus, cx),
             }
@@ -610,6 +632,7 @@ impl Render for SignIn {
                     .items_center()
                     .gap(space::S2)
                     .when(self.step == Step::Done, |d| d.child(Icon::new(IconName::Check).size(IconSize::Card).color(c.success)))
+                    .when(self.step != Step::Done, |d| d.children(self.mark.as_deref().and_then(kuvo_ui::icon::Mark::of_service).map(|mark| mark.size(px(16.)))))
                     .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
                     .child(Button::icon_only("sign-in-x", IconName::Close, "Close").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.close(cx)))),
             )
@@ -740,53 +763,24 @@ impl SignIn {
         out
     }
 
+    /// A sign-in under way, one design for every agent: one plain line (the box's); where it ends
+    /// on a code to paste back (as the box says), the field, there at once and focused, with
+    /// Continue; where it comes back by itself, only a quiet wait (with the code to enter on its
+    /// page, where it has one); then one thing to do if the page didn't open. Close is the ×.
     fn waiting(&mut self, attempt: &Attempt, status: Option<&Status>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         let mut out = Vec::new();
         // The code its page asks for, as the box says it apart (`userCode`, when it started the
         // sign-in or in its status since): shown as it is, never read out of the page here.
         let user_code = status.and_then(|status| status.user_code.clone()).or_else(|| attempt.user_code.clone());
-        let instructions = status.and_then(|status| status.instructions.clone()).unwrap_or_else(|| attempt.instructions.clone());
-        if attempt.mode == "code" {
-            if !instructions.is_empty() {
-                out.push(words(&instructions, cx));
-            }
-        } else if let Some(code) = user_code {
-            out.push(words("Enter this code on the page that opened.", cx));
-            let copying = code.clone();
-            out.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S3)
-                    .child(div().debug_selector(|| "sign-in-user-code".into()).font_family(kuvo_ui::theme::MONO_FONT).text_size(kuvo_ui::theme::scaled(px(24.))).medium().text_color(c.text).child(code))
-                    .child(
-                        Button::new("sign-in-copy-code", if self.copied { "Copied" } else { "Copy Code" }).icon(IconName::Copy).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copying.clone()));
-                            this.copied = true;
-                            cx.notify();
-                        })),
-                    )
-                    .into_any_element(),
-            );
+        let instructions = status.and_then(|status| status.instructions.clone()).filter(|words| !words.trim().is_empty()).unwrap_or_else(|| attempt.instructions.clone());
+        let line = if self.pasting || user_code.is_none() {
+            if instructions.trim().is_empty() { "Finish signing in on the page that opened.".to_owned() } else { instructions }
         } else {
-            out.push(words("Finish signing in with your browser. This updates on its own.", cx));
-            if !instructions.trim().is_empty() {
-                out.push(quiet(&instructions, cx));
-            }
-        }
-        // How it's going, in the engine's words (an agent being downloaded first).
-        let going = status.and_then(|status| status.message.clone()).filter(|message| !message.trim().is_empty()).unwrap_or_else(|| "Waiting for you to finish…".into());
-        if self.code_confirmation.is_some() {
-            out.push(working("Code sent. Checking the sign-in…", cx));
-        } else if attempt.mode != "code" && !self.sending_code && self.code_error.is_none() {
-            out.push(div().debug_selector(|| "sign-in-waiting".into()).child(working(&going, cx)).into_any_element());
-        }
-        // A code to paste back: one that ends on it (`mode: code`), or one that may (`acceptsCode`).
+            "Enter this code on the page that opened.".to_owned()
+        };
+        out.push(div().debug_selector(|| "sign-in-line".into()).child(words(&line, cx)).into_any_element());
         if self.pasting {
-            if attempt.mode != "code" && !attempt.paste_address {
-                out.push(quiet("If the page gave you a code, paste it here.", cx));
-            }
             out.push(
                 div()
                     .flex()
@@ -796,34 +790,43 @@ impl SignIn {
                     .child(Button::new("sign-in-send-code", if self.sending_code { "Sending…" } else { "Continue" }).primary().disabled(self.sending_code || self.code_confirmation.is_some()).on_click(cx.listener(|this, _, _, cx| this.send_code(cx))))
                     .into_any_element(),
             );
+            if self.code_confirmation.is_some() {
+                out.push(working("Code sent. Checking the sign-in…", cx));
+            }
             if let Some(error) = &self.code_error {
                 out.push(kuvo_ui::Notice::said("sign-in-code-error", kuvo_ui::Tone::Error, error.clone()).into_any_element());
             }
-        } else if attempt.accepts_code {
-            out.push(
-                div()
-                    .id("sign-in-paste")
-                    .debug_selector(|| "sign-in-paste".into())
-                    .cursor_pointer()
-                    .text_ui(TypeSize::Small)
-                    .text_color(c.accent)
-                    .child("Paste a Code")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.pasting = true;
-                        window.focus(&this.code.focus_handle(cx), cx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
+        } else {
+            if let Some(code) = user_code {
+                let copying = code.clone();
+                out.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S3)
+                        .child(div().debug_selector(|| "sign-in-user-code".into()).font_family(kuvo_ui::theme::MONO_FONT).text_size(kuvo_ui::theme::scaled(px(24.))).medium().text_color(c.text).child(code))
+                        .child(
+                            Button::new("sign-in-copy-code", if self.copied { "Copied" } else { "Copy Code" }).icon(IconName::Copy).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copying.clone()));
+                                this.copied = true;
+                                cx.notify();
+                            })),
+                        )
+                        .into_any_element(),
+                );
+            }
+            // How it's going, in its box's words (an agent being downloaded first), else waiting.
+            let going = status.and_then(|status| status.message.clone()).filter(|message| !message.trim().is_empty()).unwrap_or_else(|| "Waiting for the page…".into());
+            out.push(div().debug_selector(|| "sign-in-waiting".into()).h(px(32.)).flex().items_center().child(waiting_line(&going, cx)).into_any_element());
         }
         let url = attempt.url.clone();
-        let copy = attempt.url.clone();
-        // (In place, its row has Cancel.)
-        let cancel = (!self.in_place).then(|| Button::new("sign-in-cancel", "Cancel").ghost().on_click(cx.listener(|this, _, _, cx| this.back(cx))).into_any_element());
-        out.push(footer(cancel.into_iter().chain([
-            Button::new("sign-in-copy-link", "Copy Link").ghost().on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))).into_any_element(),
-            Button::new("sign-in-open", "Open the Page Again").icon_after(IconName::External).on_click(move |_, _, cx| cx.open_url(&url)).into_any_element(),
-        ]).collect()));
+        out.push(
+            div()
+                .flex()
+                .ml(px(-8.))
+                .child(Button::new("sign-in-open", "Open the Page Again").ghost().size(ButtonSize::Small).icon_after(IconName::External).on_click(move |_, _, cx| cx.open_url(&url)))
+                .into_any_element(),
+        );
         out
     }
 }
@@ -838,6 +841,20 @@ fn quiet(text: &str, cx: &Context<SignIn>) -> AnyElement {
 
 fn working(text: &str, _cx: &Context<SignIn>) -> AnyElement {
     kuvo_ui::small::LoadingLabel::new("sign-in-loading", text.to_owned()).compact().into_any_element()
+}
+
+/// A quiet wait: a small spinner and the words, muted.
+fn waiting_line(text: &str, cx: &Context<SignIn>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    div()
+        .flex()
+        .items_center()
+        .gap(space::S2)
+        .text_ui(TypeSize::Small)
+        .text_color(c.text_muted)
+        .child(kuvo_ui::small::spinner("sign-in-wait", IconSize::Nav, c.text_muted))
+        .child(text.to_owned())
+        .into_any_element()
 }
 
 fn footer(buttons: Vec<AnyElement>) -> AnyElement {

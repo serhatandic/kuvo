@@ -1926,7 +1926,13 @@ impl SettingsView {
 
     fn open_sign_in_titled(&mut self, side: AccountSide, account: &str, name: &str, title: String, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else { return };
-        let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx).sheet_title(title));
+        // (Its agent's mark beside the title, as the box gives it for the account's row.)
+        let mark = match &self.accounts {
+            Reading::Ready(accounts) => (if side == AccountSide::Agents { &accounts.agents } else { &accounts.engine })
+                .iter().find(|entry| entry.integration.id == account).and_then(|entry| entry.service.clone()),
+            _ => None,
+        };
+        let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx).sheet_title(title).mark(mark));
         // Closed, however it ended (a key may have gone in as it closed): Accounts read again.
         self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, closed: &sign_in::Closed, cx| {
             this.sign_in = None;
