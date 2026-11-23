@@ -49,6 +49,16 @@ pub struct Activity {
     pub working: usize,
     pub asking: usize,
     pub sessions: Vec<ActivitySession>,
+    #[serde(default, rename = "lastSeenSessions")]
+    pub last_seen_sessions: Vec<LastSeenSession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LastSeenSession {
+    #[serde(flatten)]
+    pub row: ActivitySession,
+    #[serde(rename = "lastSeen")]
+    pub last_seen: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

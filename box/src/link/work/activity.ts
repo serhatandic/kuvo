@@ -32,21 +32,24 @@ export function localActivity(list: Kept | null = keptList()): ActivityFact[] {
   });
 }
 
-export function activityFacts(list: Kept | null = keptList()): (ActivityFact & { computer?: string })[] {
+type ShownActivity = ActivityFact & { computer?: string; lastSeen?: number };
+
+export function activityFacts(list: Kept | null = keptList()): ShownActivity[] {
   const link = readLink();
   const moved = movedOf(link);
-  const rows = new Map(localActivity(list).map(row => [row.session, row as ActivityFact & { computer?: string }]));
+  const rows = new Map(localActivity(list).map(row => [row.session, row as ShownActivity]));
   const reach = readReach();
   const now = Date.now();
   const peers = peersOf(link).flatMap(peer => {
     const snapshot = readActivity(peer.key);
-    return snapshot ? [{ key: peer.key, ...snapshot }] : [];
-  }).sort((a, b) => b.heard - a.heard);
+    return snapshot ? [{ key: peer.key, ...snapshot, away: peerIsAway(peer.key, snapshot.heard, reach, now) }] : [];
+  }).sort((a, b) => Number(a.away) - Number(b.away) || b.heard - a.heard);
   for (const peer of peers) {
-    if (peerIsAway(peer.key, peer.heard, reach, now)) continue;
     for (const row of peer.rows) {
       const home = moved.get(row.session);
-      if (home ? home === peer.key : !rows.has(row.session)) rows.set(row.session, { ...row, computer: peer.key });
+      if (home ? home === peer.key : !rows.has(row.session)) {
+        rows.set(row.session, { ...row, computer: peer.key, ...(peer.away ? { lastSeen: peer.heard } : {}) });
+      }
     }
   }
   return [...rows.values()];
@@ -56,13 +59,20 @@ export function activityFacts(list: Kept | null = keptList()): (ActivityFact & {
  * `root` besides its own turn, so it's left out (a conversation's activity never lists itself). */
 export function activityOf(rows: ReturnType<typeof activityFacts>, root?: string, bot?: string, besides = false): Activity {
   const sessions: Activity["sessions"][number][] = [];
+  const lastSeenSessions: NonNullable<Activity["lastSeenSessions"]>[number][] = [];
   const counts = { working: 0, asking: 0 };
-  for (const { session, title, state, line, bot: owner, computer, subagent } of rows) {
+  for (const { session, title, state, line, bot: owner, computer, subagent, lastSeen } of rows) {
     if (besides && session === root) continue;
     if (!(root && (session === root || line.includes(root))) && !(bot && owner === bot)) continue;
-    counts[state]++;
-    sessions.push({ session, title, state, ...(computer ? { computer } : {}), ...(subagent ? { subagent } : {}) });
+    const row = { session, title, state, ...(computer ? { computer } : {}), ...(subagent ? { subagent } : {}) };
+    if (lastSeen !== undefined && computer) {
+      lastSeenSessions.push({ ...row, computer, lastSeen });
+    } else {
+      counts[state]++;
+      sessions.push(row);
+    }
   }
   sessions.sort((a, b) => a.session.localeCompare(b.session));
-  return { ...counts, sessions };
+  lastSeenSessions.sort((a, b) => a.session.localeCompare(b.session));
+  return { ...counts, sessions, ...(lastSeenSessions.length ? { lastSeenSessions } : {}) };
 }

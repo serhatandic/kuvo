@@ -794,3 +794,22 @@ test("setup attention lists the original computer of a kept notice and counts it
     expect(states.waiting).toMatchObject({ sessions: 1, bots: 0 });
   } finally { setup.close(); }
 });
+
+test("a delegated session stays in Activity as last seen when its computer goes away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const kept = path.join(near.home, "run", "activity");
+    mkdirSync(kept, { recursive: true });
+    const heard = Date.now();
+    writeFileSync(path.join(kept, far.peer.key + ".json"), JSON.stringify({ at: heard, heard, rows: [{
+      session: far.session, state: "working", title: "Delegated work", line: [near.session],
+    }] }));
+    const answer = await near.run({ kind: "route", path: `kuvo/work/background/${near.session}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    expect(JSON.parse(answer.text).activity).toEqual({
+      working: 0, asking: 0, sessions: [],
+      lastSeenSessions: [{ session: far.session, title: "Delegated work", state: "working", computer: far.peer.key, lastSeen: heard }],
+    });
+  } finally { setup.close(); }
+});

@@ -278,6 +278,10 @@ Each state is `{sessions, bots, queue}`, calculated from the session, bot activi
 copies this box already has, including peer copies in the first state. The count is a setup total.
 The per-computer `kuvo/waiting/events` continues to serve the local computer’s counts.
 
+Conversation activity's optional `lastSeenSessions` names kept delegated sessions whose owner is
+away. Each has its last state and `lastSeen` in milliseconds. Only `sessions` contributes to live
+working and asking counts.
+
 Feature `line.merged-notices` adds `kuvo/setup/notices/events`: `{origins, notices}` from local
 and kept peer notice histories (`noticeCopy` peer mail, `run/peers/<key>/notices-v1.json`).
 Each origin has `{computer: {id, name}, telling, away, lastSeen?}`. Each notice carries its
