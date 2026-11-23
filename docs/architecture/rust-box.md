@@ -393,7 +393,7 @@ parallel.
 | # | Session | Crate | After | Hours | Lane |
 |---|---|---|---|---:|---|
 | 0.1 | **Done.** Binary conformance for the routes, resident and two computers, with side-by-side response and home comparison. | conformance | — | 6 | A |
-| 0.2 | Conformance through binaries: older Macs' vectors, `hold/1` with a TypeScript holder, the four golden homes, digests | conformance | 0.1 | 6 | A |
+| 0.2 | **In progress.** Tagged Mac and machine fixtures, legacy SSH and mail, `hold/1` and document digests are in conformance. The current-beta home still needs the remaining stored families. | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
