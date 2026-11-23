@@ -8,11 +8,10 @@ publish.workspace = true
 
 # No GPUI here: the desktop client's screens use this, and so can any other Rust client.
 [dependencies]
-aes-gcm = "0.10"
 async-channel = "2.5"
 base64 = "0.22"
 getrandom = "0.3"
-hmac = "0.12"
+kuvo_wire = { path = "../../box/crates/kuvo_wire" }
 kuvo_protocol = { path = "../../box/crates/kuvo_protocol" }
 # Pictures made smaller before they go to another computer, as the phone makes them (`parts::carried`).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "gif", "webp"] }
@@ -23,7 +22,6 @@ serde_json = "1"
 sha2 = "0.10"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 webpki-roots = "1"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
