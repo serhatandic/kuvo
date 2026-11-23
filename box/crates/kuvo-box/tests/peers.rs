@@ -115,6 +115,11 @@ async fn start(home: &Path) -> (Child, Value) {
     let executable =
         std::env::var_os("KUVO_TEST_BIN").unwrap_or_else(|| env!("CARGO_BIN_EXE_kuvo-box").into());
     let mut command = Command::new(executable);
+    let marker = home.join(kuvo_store::layout::FILE);
+    if !marker.exists() {
+        kuvo_store::layout::publish(&kuvo_store::home::Home::new(home.to_path_buf()).unwrap())
+            .unwrap();
+    }
     command.env_clear().env("KUVO_HOME", home);
     #[cfg(windows)]
     command.env(
