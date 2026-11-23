@@ -28,7 +28,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let identity = (word(0), args.len()) == (Some("backup-identity"), 1);
     let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
     let command = match (word(0), word(1), args.len()) {
-        (Some("serve"), _, 1) => None,
+        (Some("serve"), None, 1) | (Some("serve"), Some("--resident"), 2) => None,
         _ if join || identity => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
@@ -80,7 +80,25 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(())
         } else {
-            serve::run(home.root()).await
+            let (launch, helper_ended) = if word(1) == Some("--resident")
+                && std::fs::read_to_string(home.root().join("box/kind"))
+                    .is_ok_and(|kind| kind.trim() == "mac")
+            {
+                let (input, received) = tokio::sync::oneshot::channel();
+                let (ended, helper_ended) = tokio::sync::oneshot::channel();
+                tokio::task::spawn_blocking(move || {
+                    let mut stdin = io::stdin().lock();
+                    let launch = kuvo_services::vault::Launch::read(&mut stdin);
+                    if launch.is_ok() && input.send(launch).is_ok() {
+                        let _ = io::copy(&mut stdin, &mut io::sink());
+                    }
+                    let _ = ended.send(());
+                });
+                (received.await.map_err(|_| io::Error::other("The Mac Helper's launch message is unreadable."))??, Some(helper_ended))
+            } else {
+                (kuvo_services::vault::Launch::default(), None)
+            };
+            serve::run(home.root(), launch, helper_ended).await
         }
     });
     // An addressed SSH exchange can finish while its stdin is still open. The

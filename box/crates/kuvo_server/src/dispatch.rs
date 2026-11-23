@@ -26,6 +26,7 @@ pub enum LocalOrigin {
     Direct,
     App,
     Mac,
+    VaultHolder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

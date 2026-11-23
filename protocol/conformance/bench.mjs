@@ -20,10 +20,10 @@ export async function bench(t) {
   });
   return {
     relay, leases,
-    async computer(name, implementation = binary) {
+    async computer(name, implementation = binary, environment = {}) {
       const folder = path.join(root, name);
       const home = path.join(folder, "box");
-      const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off" };
+      const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...environment };
       const engine = await standInEngine(folder, env);
       engines.push(engine);
       // This fixture seeds records in the current layout before either resident starts.

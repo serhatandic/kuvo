@@ -20,8 +20,13 @@ use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(resident) = Resident::bind(home).await? else {
+pub async fn run(
+    home: &Path,
+    mut vault_launch: kuvo_services::vault::Launch,
+    helper_ended: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(resident) = Resident::bind_with_password(home, vault_launch.take_password()).await?
+    else {
         return Ok(());
     };
     let generation = resident.record().generation;
@@ -64,6 +69,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         bootstrap.devices
     };
     let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
+    let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
     let peers = Arc::new(
         ResidentPeers::start(
             home,
@@ -124,13 +130,22 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (None, None)
     };
+    let vault = kuvo_services::vault::Resident::new(
+        home,
+        kind == ComputerKind::Mac,
+        vault_launch,
+        account.clone(),
+        &kuvo_os::platform::Account::current()?.home,
+        vault_machine,
+    );
+    vault.register(&mut routes);
     let _daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
         account,
         setup.handle(),
         backup_mail,
-        None, // Row 6.2 supplies the resident vault holder.
+        Some(vault.clone()),
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
@@ -151,6 +166,14 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
+    let _vault_holder =
+        match kuvo_services::vault::Holder::start(home, vault, dispatcher.clone()).await {
+            Ok(holder) => Some(holder),
+            Err(error) => {
+                eprintln!("The vault's local socket couldn't listen: {error}");
+                None
+            }
+        };
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
     #[cfg(target_os = "macos")]
     if authenticated_helper {
@@ -169,7 +192,19 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
     let result = resident
-        .serve(dispatcher, Arc::new(devices), super::shutdown())
+        .serve(dispatcher, Arc::new(devices), async {
+            let helper = async {
+                if let Some(ended) = helper_ended {
+                    let _ = ended.await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                () = super::shutdown() => {},
+                () = helper => {},
+            }
+        })
         .await;
     session_source.abort();
     result?;

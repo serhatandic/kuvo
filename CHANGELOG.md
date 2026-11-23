@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
+
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
 - The Rust box can verify encrypted backups on disk, over SSH, or on another computer through the relay. Restore keeps recovered pending work paused for review.
