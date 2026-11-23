@@ -1,6 +1,8 @@
 // One real dispatcher, peer mailbox and box home per process. The parent supplies the engine's
 // HTTP endpoint and carries encrypted frames in place of the relay.
 
+import { ArtifactStore } from "../../../src/link/artifacts/store";
+import { artifactRoutes } from "../../../src/link/artifacts/routes";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUN, BRIDGE_FILE } from "../../../src/link/home";
@@ -10,6 +12,7 @@ import type { LinkHost } from "../../../src/link/relay/host";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
+import { shareOutputs } from "../../../src/link/areas/setup-outputs";
 import { shareNotices } from "../../../src/link/areas/notices";
 import { shareLibrary } from "../../../src/link/areas/library";
 import { libraryService } from "../../../src/link/library/service";
@@ -24,7 +27,7 @@ import { engineHandler } from "../../../src/link/server/router";
 import { answerSshRoute, sshLine } from "../../../src/link/server/ssh-route";
 import { bridgeRecordFormat, type EngineRecord } from "../../../src/shared/records";
 
-const { port, bridgePort, command, withLibrary } = await Bun.stdin.json();
+const { port, bridgePort, command, withLibrary, withOutputs } = await Bun.stdin.json();
 if (withLibrary) {
   const name = readLink()!.name!;
   const library = libraryService(join(RUN, "test-library"), {
@@ -35,6 +38,21 @@ if (withLibrary) {
   writeFileSync(file, "brief");
   library.store.hand({ path: file, bot: "bot_ada", how: "shown", at: new Date(Date.UTC(2026, 10, 20 + Number(name === "far"))) });
   const services = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: library.handle });
+  writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ port: services.port, password: "a".repeat(48), pid: process.pid })));
+}
+if (withOutputs) {
+  const name = readLink()!.name!;
+  const folder = join(RUN, "test-outputs");
+  const store = new ArtifactStore(folder, { bots: join(RUN, "test-bots") });
+  if (name === "far") {
+    const file = join(RUN, "delegated.txt");
+    writeFileSync(file, "Work on the far computer");
+    await store.change(file, { by: { kind: "agent", session: "ses_far" }, turn: { session: "ses_far" }, where: { session: "ses_far" }, via: "write" });
+  }
+  const services = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const url = new URL(request.url);
+    return artifactRoutes(store, request.method, url.pathname.split("/").filter(Boolean).slice(4), url.searchParams, async () => ({}), request.signal);
+  } });
   writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ port: services.port, password: "a".repeat(48), pid: process.pid })));
 }
 const readers = {
@@ -67,7 +85,7 @@ async function run() {
       }
       const frames: string[] = [];
       const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); } };
-      await Promise.all([shareSetupLists(host, readers), shareLibrary(host), shareNotices(host)]);
+      await Promise.all([shareSetupLists(host, readers), shareLibrary(host), shareNotices(host), shareOutputs(host)]);
       return frames;
     }
     case "publish-queue": {

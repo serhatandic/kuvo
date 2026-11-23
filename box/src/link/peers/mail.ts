@@ -23,6 +23,7 @@ import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { takeSessionFollow } from "./session-follow";
+import { outputCopies } from "../areas/setup-outputs";
 import { noticeCopies } from "../areas/notices";
 import { libraryCopies } from "../areas/library";
 import { takeSetupLists, tellListsAgain } from "./lists";
@@ -89,6 +90,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     tellListsAgain(sender.key);
     libraryCopies.refresh(sender.key);
     noticeCopies.refresh(sender.key);
+    outputCopies.refresh(sender.key);
     tellMovingAgain();
   }
   if (isObject(payload.sessionFollow)) takeSessionFollow(sender, payload.sessionFollow, host);
@@ -135,7 +137,8 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   }
   const librarySaved = isObject(payload.libraryCopy) ? libraryCopies.take(sender, payload.libraryCopy).catch(() => {}) : undefined;
   const noticesSaved = isObject(payload.noticeCopy) ? noticeCopies.take(sender, payload.noticeCopy).catch(() => {}) : undefined;
-  if (listsSaved || librarySaved || noticesSaved) return Promise.all([listsSaved, librarySaved, noticesSaved]).then(() => {});
+  const outputsSaved = isObject(payload.outputCopy) ? outputCopies.take(sender, payload.outputCopy).catch(() => {}) : undefined;
+  if (listsSaved || librarySaved || noticesSaved || outputsSaved) return Promise.all([listsSaved, librarySaved, noticesSaved, outputsSaved]).then(() => {});
   return undefined;
 }
 
@@ -191,6 +194,7 @@ export function receiveMail(
     tellListsAgain(sender.key);
     libraryCopies.refresh(sender.key);
     noticeCopies.refresh(sender.key);
+    outputCopies.refresh(sender.key);
     heldBack(sender.key);
   }
   if (macsOf(link).includes(sender.key)) heardFromMac(sender.key, payload);

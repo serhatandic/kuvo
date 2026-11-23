@@ -108,7 +108,7 @@ function startCatalog(readers: Readers): Promise<Catalog> {
 
 type LocalRows = Omit<SetupLists, "catalog" | "bots">;
 
-async function readList(readers: Readers, signal?: AbortSignal) {
+export async function readList(readers: Readers, signal?: AbortSignal) {
   return (keepsList() ? await listNow(readers, signal) : null) ?? keptList() ?? await listNow(readers, signal);
 }
 

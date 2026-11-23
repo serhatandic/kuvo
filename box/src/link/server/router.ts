@@ -45,6 +45,7 @@ import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
 import { integrationsRoute } from "../areas/integrations";
 import { namedRoute } from "../areas/named";
+import { setupOutputsRoute } from "../areas/setup-outputs";
 import { noticesRoute, setupNoticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
 import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
@@ -207,6 +208,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "box.ownHome", when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { feature: "attention", when: route => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { feature: "attention", when: route => route === "kuvo/attention", answer: attentionRoute },
+  { feature: "line.merged-outputs", when: route => route === "kuvo/setup/outputs" || route === "kuvo/setup/outputs/events", answer: setupOutputsRoute },
   { feature: "line.merged-notices", when: route => route === "kuvo/setup/notices/events", answer: setupNoticesRoute },
   { feature: "notices", when: route => route === "kuvo/notices" || route === "kuvo/notices/events", answer: noticesRoute },
   { feature: "named", when: route => route === "kuvo/named", answer: namedRoute },

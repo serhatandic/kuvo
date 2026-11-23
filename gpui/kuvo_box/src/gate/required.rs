@@ -50,6 +50,7 @@ pub const REQUIRED: &[&str] = &[
     "line",
     "line.merged-library",
     "line.merged-notices",
+    "line.merged-outputs",
     "line.merged-waiting",
     "marketplace",
     "messages.commands",

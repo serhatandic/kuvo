@@ -12,7 +12,7 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -27,7 +27,7 @@ const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "
 const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
 const codingSession = (agent: string) => `ses_fixture${agent}`;
 
-function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false } = {}) {
+function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false, withOutputs = false } = {}) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
   const boxes = ["near", "far"].map((name, i) => {
@@ -118,7 +118,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
     const run = async (command: object): Promise<any> => {
       const child = Bun.spawn([process.execPath, worker, "kuvo-agents"], {
         env: { ...process.env, KUVO_HOME: home, HOME: root, TMPDIR: root },
-        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary })), stdout: "pipe", stderr: "pipe",
+        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary, withOutputs })), stdout: "pipe", stderr: "pipe",
       });
       try {
         const [status, stdout, stderr] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
@@ -811,5 +811,22 @@ test("a delegated session stays in Activity as last seen when its computer goes 
       working: 0, asking: 0, sessions: [],
       lastSeenSessions: [{ session: far.session, title: "Delegated work", state: "working", computer: far.peer.key, lastSeen: heard }],
     });
+  } finally { setup.close(); }
+});
+
+test("Activity's first Outputs state includes the kept file made by a delegated session on another computer", async () => {
+  const setup = pair(false, false, { withOutputs: true });
+  const { near, far } = setup;
+  try {
+    Object.assign(far.cases[far.session]!, { parentID: near.session });
+    await share(far, near);
+    const outputs = `kuvo/setup/outputs/events?session=${near.session}`;
+    const watch = Buffer.from(JSON.stringify({ outputs })).toString("base64url");
+    const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "outputs", d: { artifacts: [
+      { name: "delegated.txt", computer: far.computer, away: true, lastSeen: expect.any(Number) },
+    ], next: null } });
   } finally { setup.close(); }
 });

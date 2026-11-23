@@ -67,7 +67,22 @@ export const ARTIFACT_CHANGES = oneOf(
   object({ style: words("pair", "none"), from: nullable(number), to: number }),
 );
 
+const OUTPUT_FIELDS = {
+  id: string, path: string, name: string, kind: KIND, type: string,
+  gone: nullable(number), updated: nullable(number), pinned: bool,
+  latest: object({ n: number, hash: nullable(string), "reason?": string }),
+} as const;
+export const OUTPUT_COPY = { artifacts: list(object({ ...OUTPUT_FIELDS, sessions: list(string) })) };
+export const SETUP_OUTPUTS = object({
+  artifacts: list(object({
+    ...OUTPUT_FIELDS, computer: object({ id: string, name: string, "here?": bool }), away: bool, "lastSeen?": number,
+  })),
+  next: nullable(string),
+});
+
 export const ARTIFACT_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/setup/outputs", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
+
   { route: "GET kuvo/artifacts", feature: "artifacts", answers: { 200: ARTIFACT_LIST } },
   { route: "GET kuvo/artifacts/timeline", feature: "artifacts", answers: { 200: ARTIFACT_TIMELINE } },
   { route: "GET kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },

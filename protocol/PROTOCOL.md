@@ -296,7 +296,11 @@ fields. A successful response echoes the destination as `computer: {id, name}`. 
 box returns `409` before creating anything. A local start can omit `computer` or use `here`.
 
 
-#### Opening a conversation through another box
+#### Activity Outputs
+
+With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. Bytes and previews are read from the row's owner through that owner's artifact route. Peers share metadata only, through `outputCopy` mail.
+
+### Opening a conversation through another box
 
 Feature `sessions.location`. Ask the nearest box for `GET kuvo/sessions/<session>/location`
 when opening a session by ID. The box uses its kept session list, newly confirmed starts,
