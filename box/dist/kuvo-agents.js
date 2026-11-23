@@ -12614,9 +12614,9 @@ var init_queue = __esm(() => {
 });
 
 // box/src/agents/shells.ts
-function addShell(sessionID, directory, command, output, stop, started = Date.now(), order = workOrder()) {
+function addShell(sessionID, directory, command, output, stop, started = Date.now(), order = workOrder(), foreground = false) {
   const id = newID("shl");
-  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order } };
+  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order }, ...foreground ? { foreground: true } : {} };
   kept.set(id, { job, output, stop });
   emit("shell.created", { info: job }, directory);
   return id;
@@ -12635,8 +12635,8 @@ function endShell(id, exit) {
 function shells(directory) {
   return [...kept.values()].map((one) => one.job).filter((job) => !directory || job.cwd === directory);
 }
-function runningShells(sessionID) {
-  return [...kept.values()].map((one) => one.job).filter((job) => job.status === "running" && job.metadata.sessionID === sessionID);
+function runningShells(sessionID, foreground = false) {
+  return [...kept.values()].map((one) => one.job).filter((job) => job.status === "running" && job.metadata.sessionID === sessionID && (foreground || !job.foreground));
 }
 function shell(id) {
   return kept.get(id)?.job;
@@ -14791,7 +14791,7 @@ ${input.text}` } : input, this.copies());
 function kuvoTool2(name, input) {
   switch (name) {
     case "Bash":
-      return { name: "shell", input: { command: input.command, description: input.description } };
+      return { name: "shell", input: { command: input.command, description: input.description, ...input.run_in_background === true ? { background: true } : {} } };
     case "Read":
       return { name: "read", input: { path: input.file_path, offset: input.offset, limit: input.limit } };
     case "Write":
@@ -20465,6 +20465,8 @@ class Turn {
   justCompacted = false;
   started = Date.now();
   order = workOrder();
+  stopCommands;
+  commands = new Map;
   tokens = noTokens();
   cost = 0;
   constructor(store, sessionID, directory, model, agent, completed = false) {
@@ -20769,6 +20771,47 @@ class Turn {
     tool.call.time = { ...tool.call.time, ran: tool.call.time?.ran ?? Date.now() };
     this.send("session.tool.called", { assistantMessageID: tool.step.id, id, input });
     this.save(tool.step);
+    this.listCommand(id, tool.call.name, input);
+  }
+  listCommand(id, name, input) {
+    const stop = this.stopCommands;
+    const given = input;
+    if (!stop || name !== "shell" || this.commands.has(id) || typeof given?.command !== "string" || !given.command.trim() || given.background === true)
+      return;
+    const kept = { shell: "", output: "", total: 0 };
+    kept.shell = addShell(this.sessionID, this.directory, given.command, async () => ({ output: kept.output, total: kept.total }), async () => {
+      await stop();
+    }, Date.now(), workOrder(), true);
+    this.commands.set(id, kept);
+  }
+  printed(id, output) {
+    const kept = this.commands.get(id);
+    if (!kept || output === kept.output)
+      return;
+    const before = kept.output;
+    let added = output;
+    if (output.startsWith(before))
+      added = output.slice(before.length);
+    else {
+      const tail = before.slice(-200);
+      const at = tail ? output.lastIndexOf(tail) : -1;
+      if (at >= 0)
+        added = output.slice(at + tail.length);
+    }
+    kept.total += Buffer.byteLength(added);
+    kept.total = Math.max(kept.total, Buffer.byteLength(output));
+    kept.output = output;
+  }
+  endCommand(id, content, exit) {
+    const kept = this.commands.get(id);
+    if (!kept)
+      return;
+    const text = (content ?? []).flatMap((each) => each.type === "text" ? [each.text] : []).join(`
+`);
+    if (text)
+      this.printed(id, text);
+    this.commands.delete(id);
+    endShell(kept.shell, exit);
   }
   toolProgress(id, metadata) {
     const tool = this.tools.get(id);
@@ -20776,6 +20819,8 @@ class Turn {
       return;
     const merged = { ...tool.call.state.metadata ?? {}, ...metadata };
     tool.call.state.metadata = merged;
+    if (typeof metadata.output === "string")
+      this.printed(id, metadata.output);
     this.send("session.tool.progress", { assistantMessageID: tool.step.id, id, metadata: merged });
     this.save(tool.step);
   }
@@ -20792,6 +20837,7 @@ class Turn {
     tool.call.time = { ...tool.call.time, completed: Date.now() };
     this.send("session.tool.success", { assistantMessageID: tool.step.id, id, content, metadata: tool.call.state.metadata });
     this.save(tool.step);
+    this.endCommand(id, content, 0);
   }
   toolFailed(id, message, metadata, type = "tool") {
     const tool = this.tools.get(id);
@@ -20807,6 +20853,7 @@ class Turn {
     tool.call.time = { ...tool.call.time, completed: Date.now() };
     this.send("session.tool.failed", { assistantMessageID: tool.step.id, id, error, content, metadata: kept });
     this.save(tool.step);
+    this.endCommand(id, content);
   }
   notice(text) {
     if (this.ended)
@@ -20936,6 +20983,7 @@ var NOTICE;
 var init_turn = __esm(() => {
   init_context();
   init_events();
+  init_shells();
   init_ids();
   init_work_order();
   NOTICE = { kuvo: { notice: true } };
@@ -22009,12 +22057,12 @@ class Sessions {
   engineTurns() {
     return [...this.live].filter(([, live]) => runOf(live.doing)?.engineTurn).map(([id]) => id);
   }
-  background() {
+  background(foreground = false) {
     const all = {};
     for (const [id, live] of this.live) {
       const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started, order: turn.order }));
       const tasks = [...live.threads.values()].flatMap((thread) => thread.backgroundTasks ?? []);
-      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }));
+      const commands = runningShells(id, foreground).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }));
       if (subagents.length || tasks.length || commands.length)
         all[id] = { commands, subagents, tasks };
     }
@@ -22874,6 +22922,7 @@ ${text.slice(0, 4000)}
       steered: [],
       engineTurn: Boolean(model && !parseProvider(model.providerID))
     };
+    run.turn.stopCommands = () => this.interrupt(id);
     live.doing = { kind: "running", run };
     clearTimeout(live.idle);
     this.runTurn(id, live, record, run, input);
@@ -32043,7 +32092,7 @@ function handler(context, transferring) {
             ...url.searchParams.has("release-switch") ? { engineTurns: sessions.engineTurns() } : {}
           });
         if (a === "background")
-          return json9({ data: sessions.background() });
+          return json9({ data: sessions.background(true) });
         if (a === "import" && method === "POST")
           return json9({ data: sessions.importSession(await body()) });
         const id = a;
@@ -34093,4 +34142,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 7779165654e37d5cf86d3232dd5f10868db754abe3dcee92cdeffe939bd3119b
+// Built from Packages/Box/src/agents fc06376575d3eac34fb4d1bcb775f75da8cb6cdea5518ea616574eca81cabfed

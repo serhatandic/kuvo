@@ -1467,14 +1467,15 @@ export class Sessions {
   /**
    * What still runs for each session besides its own turn (the link's `kuvo/work/background` reads
    * this): commands it left running, subagents at work under it, and other tasks its agent keeps
-   * going. Lanes that can't say what they left running (see PROTOCOL.md) have none here.
+   * going. Lanes that can't say what they left running (see PROTOCOL.md) have none here. With
+   * `foreground` (what clients list), the commands its turn waits on too.
    */
-  background() {
+  background(foreground = false) {
     const all: Record<string, { commands: { id: string; command: string; started: number; order?: WorkOrder }[]; subagents: { id: string; since: number; order?: WorkOrder }[]; tasks: { id: string; since: number; order?: WorkOrder }[] }> = {}
     for (const [id, live] of this.live) {
       const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started, order: turn.order }))
       const tasks = [...live.threads.values()].flatMap((thread) => thread.backgroundTasks ?? [])
-      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }))
+      const commands = runningShells(id, foreground).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }))
       if (subagents.length || tasks.length || commands.length) all[id] = { commands, subagents, tasks }
     }
     return all
@@ -2341,6 +2342,9 @@ export class Sessions {
     const model = input.adopt ?? (input.compact ? this.holdingModel(record) : session.model)
     const run: Run = { turn: new Turn(this.store, id, session.location.directory, session.model!, session.agent ?? "build"),
       abort: new AbortController(), steered: [], engineTurn: Boolean(model && !parseProvider(model.providerID)) }
+    // Stop on a command it waits on stops the turn, as in each agent's own app: none of them can
+    // stop one foreground command alone.
+    run.turn.stopCommands = () => this.interrupt(id)
     live.doing = { kind: "running", run }
     clearTimeout(live.idle)
     void this.runTurn(id, live, record, run, input)

@@ -1,6 +1,7 @@
-// Commands an agent left running in the background, listed as the engine lists its own (the bar
-// over the composer shows them): each with its session, what it runs, what it has printed so
-// far, and a way to stop it. The agent that started one says when it ends.
+// Commands an agent runs, listed as the engine lists its own (a conversation's Processes show
+// them): those it left running in the background, and those its turn waits on in the foreground
+// (`foreground`, which end with their tool call). Each with its session, what it runs, what it has
+// printed so far, and a way to stop it. The agent that started one says when it ends.
 
 import { emit } from "./events"
 import { newID } from "./ids"
@@ -14,6 +15,8 @@ export interface ShellJob {
   exit?: number
   metadata: { sessionID: string }
   time: { started: number; order: WorkOrder }
+  /** Its turn waits on it: it ends with its tool call, never after the turn. */
+  foreground?: true
 }
 
 interface Kept {
@@ -29,9 +32,9 @@ const kept = new Map<string, Kept>()
 const keptAfter = 10 * 60_000
 
 /** A command left running: its id here. */
-export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"], started = Date.now(), order = workOrder()): string {
+export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"], started = Date.now(), order = workOrder(), foreground = false): string {
   const id = newID("shl")
-  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order } }
+  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order }, ...(foreground ? { foreground: true as const } : {}) }
   kept.set(id, { job, output, stop })
   emit("shell.created", { info: job }, directory)
   return id
@@ -52,9 +55,9 @@ export function shells(directory?: string): ShellJob[] {
   return [...kept.values()].map((one) => one.job).filter((job) => !directory || job.cwd === directory)
 }
 
-/** A session's commands running now. */
-export function runningShells(sessionID: string): ShellJob[] {
-  return [...kept.values()].map((one) => one.job).filter((job) => job.status === "running" && job.metadata.sessionID === sessionID)
+/** A session's commands running now that it left running (with `foreground`, its turn's too). */
+export function runningShells(sessionID: string, foreground = false): ShellJob[] {
+  return [...kept.values()].map((one) => one.job).filter((job) => job.status === "running" && job.metadata.sessionID === sessionID && (foreground || !job.foreground))
 }
 
 export function shell(id: string): ShellJob | undefined {

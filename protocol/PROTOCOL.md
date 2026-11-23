@@ -3317,7 +3317,10 @@ client shows it from the same routes.
     subagents under it, on any of your computers, and a bot's sessions in its conversation), never
     the conversation itself; `subagent` marks a subagent's row, which a client draws with its
     subagents rather than as a session of its own.
-    Every command it left running however long it has run (`agents`: a coding agent's, whose output is
+    Every command it left running however long it has run, and each command its turn waits on in the
+    foreground while it runs (a client lists both as Processes; Stop on a coding agent's foreground
+    command stops its turn, as each agent's own app does, since none can stop one command alone)
+    (`agents`: a coding agent's, whose output is
     `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
     with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
     session lists say. **`GET kuvo/work/background/<session>/events`** (ndjson) is the same now and at
@@ -3440,7 +3443,9 @@ client shows it from the same routes.
     command, as typed, is followed by the note). A move to another computer is refused while such
     work runs, as before.
   - **The bridge's side**: `GET api/session/background` → `{data: {<session>: {commands: [{id,
-    command, started}], subagents: [{id, since}], tasks: [{id, since}]}}}`, `DELETE
+    command, started}], subagents: [{id, since}], tasks: [{id, since}]}}}` (`commands`: those its
+    turn waits on in the foreground too, with what each agent streams of their output: Codex,
+    Cursor, Grok and Antigravity; Claude Code says nothing of it until it ends), `DELETE
     api/session/<id>/background` ends them all, and the event `session.background.updated` says to
     look again.
 - **`POST kuvo/bots/<id>/stop-all`** → `{stopped}`: every session of its work that's working,

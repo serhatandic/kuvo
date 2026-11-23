@@ -472,7 +472,7 @@ export function handler(context: Context, transferring?: () => boolean) {
           data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])),
           ...(url.searchParams.has("release-switch") ? { engineTurns: sessions.engineTurns() } : {}),
         })
-        if (a === "background") return json({ data: sessions.background() })
+        if (a === "background") return json({ data: sessions.background(true) })
         // A conversation from the engine, carried on here.
         if (a === "import" && method === "POST") return json({ data: sessions.importSession(await body()) })
         const id = a

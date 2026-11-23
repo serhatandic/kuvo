@@ -26,6 +26,7 @@ import { FIRST_LOOK, finishHeld, workWatcher } from "../../src/link/work/wakes"
 import type { Roster } from "../../src/agents/roster"
 import { Sessions, timing } from "../../src/agents/sessions"
 import { Store } from "../../src/agents/store"
+import { shellOutput, shells, stopShell } from "../../src/agents/shells"
 import type { Message, PermissionRule } from "../../src/agents/wire"
 
 // Each test starts a fake Codex in a Bun process of its own and waits on it: about 0.2–0.8 s on a
@@ -2433,6 +2434,36 @@ describe("Stopping Codex", () => {
     expect(sent().filter((message) => message.method === "turn/interrupt").map((message) => message.params)).toEqual([{ threadId: "t1", turnId: "u1" }])
     expect(sessions.messages(id).at(-1)).toMatchObject({ type: "idle", outcome: "interrupted" })
     expect(tools(id)[0].state).toMatchObject({ status: "error", error: { type: "aborted" }, content: [{ type: "text", text: "Stopped." }] })
+  })
+
+  // Clients list what the bridge's `api/session/background` serves (`background(true)`), read a
+  // command's output through `api/shell/<id>/output` (`shellOutput`) and stop it with `DELETE
+  // api/shell/<id>` (`stopShell`).
+  test("a command Codex waits on in the foreground is listed while it runs, with what it printed, and its Stop stops the turn", async () => {
+    const id = start([["item/started", { item: command("c1", "npm test") }], ["item/commandExecution/outputDelta", { itemId: "c1", delta: "3 passing\n" }], untilStopped])
+    await until(() => tools(id)[0]?.state.metadata?.output === "3 passing\n")
+    const listed = sessions.background(true)[id]?.commands ?? []
+    expect(listed.map((each) => each.command)).toEqual(["npm test"])
+    expect((await shellOutput(listed[0]!.id))?.output).toBe("3 passing\n")
+    // (Not something it left running: nothing waits on it past the turn.)
+    expect(sessions.background()[id]).toBeUndefined()
+    expect(await stopShell(listed[0]!.id)).toBe(true)
+    await until(() => ended(id))
+    expect(sent().filter((message) => message.method === "turn/interrupt").map((message) => message.params)).toEqual([{ threadId: "t1", turnId: "u1" }])
+    expect(sessions.background(true)[id]).toBeUndefined()
+  })
+
+  test("a foreground command that ends leaves the list, what it printed still there to read", async () => {
+    const id = await run([
+      ["item/started", { item: command("c1", "npm run build") }],
+      ["item/commandExecution/outputDelta", { itemId: "c1", delta: "built in 2s\n" }],
+      ["item/completed", { item: command("c1", "npm run build", { status: "completed", exitCode: 0, aggregatedOutput: "built in 2s\n" }) }],
+      ["item/completed", { item: { type: "agentMessage", id: "m1", text: "Built." } }],
+    ])
+    expect(sessions.background(true)[id]).toBeUndefined()
+    const ran = shells().filter((job) => job.metadata.sessionID === id)
+    expect(ran.map((job) => [job.command, job.status])).toEqual([["npm run build", "exited"]])
+    expect((await shellOutput(ran[0]!.id))?.output).toBe("built in 2s\n")
   })
 
   test("its account removed while it works (Settings › Accounts): the turn ends as stopped, without Stop", async () => {

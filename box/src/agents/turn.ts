@@ -4,6 +4,7 @@
 
 import { contextCapacity, sameContextModel, tokenCount } from "../shared/context"
 import { emit } from "./events"
+import { addShell, endShell } from "./shells"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
 import type { AssistantMessage, CompactionMessage, Content, InterruptionReason, Message, ModelRef, NoticeMessage, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
@@ -42,6 +43,14 @@ export class Turn {
   private justCompacted = false
   readonly started = Date.now()
   readonly order = workOrder()
+  /**
+   * Stops what its commands in the foreground are part of (its session sets it: the turn, as no
+   * agent can stop one alone). With it, each command it waits on is listed as it runs, with what
+   * it has printed so far, as those it left running are (shells.ts).
+   */
+  stopCommands?: () => Promise<unknown>
+  /** Each foreground command running: its tool call → its listing, and what it has printed. */
+  private commands = new Map<string, { shell: string; output: string; total: number }>()
   /** What the run used, in all its steps. */
   tokens: TokenUsage = noTokens()
   cost = 0
@@ -360,6 +369,45 @@ export class Turn {
     tool.call.time = { ...tool.call.time, ran: tool.call.time?.ran ?? Date.now() }
     this.send("session.tool.called", { assistantMessageID: tool.step.id, id, input })
     this.save(tool.step)
+    this.listCommand(id, tool.call.name, input)
+  }
+
+  // A command it now waits on in the foreground (one sent to the background returns at once).
+  private listCommand(id: string, name: string, input: unknown) {
+    const stop = this.stopCommands
+    const given = input as { command?: unknown; background?: unknown } | undefined
+    if (!stop || name !== "shell" || this.commands.has(id) || typeof given?.command !== "string" || !given.command.trim() || given.background === true) return
+    const kept = { shell: "", output: "", total: 0 }
+    kept.shell = addShell(this.sessionID, this.directory, given.command, async () => ({ output: kept.output, total: kept.total }), async () => { await stop() }, Date.now(), workOrder(), true)
+    this.commands.set(id, kept)
+  }
+
+  // What it has printed now, whole or its end (an agent keeps the last of it): how much is new is
+  // what follows the end of what it had before.
+  private printed(id: string, output: string) {
+    const kept = this.commands.get(id)
+    if (!kept || output === kept.output) return
+    const before = kept.output
+    let added = output
+    if (output.startsWith(before)) added = output.slice(before.length)
+    else {
+      const tail = before.slice(-200)
+      const at = tail ? output.lastIndexOf(tail) : -1
+      if (at >= 0) added = output.slice(at + tail.length)
+    }
+    kept.total += Buffer.byteLength(added)
+    kept.total = Math.max(kept.total, Buffer.byteLength(output))
+    kept.output = output
+  }
+
+  // It ended: its listing goes, what it printed still read a while (shells.ts).
+  private endCommand(id: string, content: ToolOutput[] | undefined, exit?: number) {
+    const kept = this.commands.get(id)
+    if (!kept) return
+    const text = (content ?? []).flatMap(each => each.type === "text" ? [each.text] : []).join("\n")
+    if (text) this.printed(id, text)
+    this.commands.delete(id)
+    endShell(kept.shell, exit)
   }
 
   /** What a running tool has to show so far (a command's output, as it comes). */
@@ -369,6 +417,7 @@ export class Turn {
     // Added to what it said before (a subagent's session stays with its progress).
     const merged = { ...((tool.call.state.metadata as Record<string, unknown> | undefined) ?? {}), ...metadata }
     tool.call.state.metadata = merged
+    if (typeof metadata.output === "string") this.printed(id, metadata.output)
     this.send("session.tool.progress", { assistantMessageID: tool.step.id, id, metadata: merged })
     this.save(tool.step)
   }
@@ -383,6 +432,7 @@ export class Turn {
     tool.call.time = { ...tool.call.time, completed: Date.now() }
     this.send("session.tool.success", { assistantMessageID: tool.step.id, id, content, metadata: tool.call.state.metadata })
     this.save(tool.step)
+    this.endCommand(id, content, 0)
   }
 
   toolFailed(id: string, message: string, metadata?: Record<string, unknown>, type = "tool") {
@@ -398,6 +448,7 @@ export class Turn {
     tool.call.time = { ...tool.call.time, completed: Date.now() }
     this.send("session.tool.failed", { assistantMessageID: tool.step.id, id, error, content, metadata: kept })
     this.save(tool.step)
+    this.endCommand(id, content)
   }
 
   /** A note in the conversation from Kuvo Code, not the agent: "Going on with Codex…". Marked as

@@ -2545,7 +2545,7 @@ export const claudeSystem = new Set([
 export function kuvoTool(name: string, input: Record<string, any>): { name: string; input: Record<string, unknown> } {
   switch (name) {
     case "Bash":
-      return { name: "shell", input: { command: input.command, description: input.description } }
+      return { name: "shell", input: { command: input.command, description: input.description, ...(input.run_in_background === true ? { background: true } : {}) } }
     case "Read":
       return { name: "read", input: { path: input.file_path, offset: input.offset, limit: input.limit } }
     case "Write":
