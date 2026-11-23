@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.
+- A computer can restart while a message tool waits and still give it the reply.
 - A computer goes back to its previous Rust release if the new one fails to start. Work written during the attempt stays.
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.

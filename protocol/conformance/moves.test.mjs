@@ -909,7 +909,7 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
 });
 
-test("a letter that waits hears the authenticated answer in its tool", { timeout: 45000 }, async t => {
+test("a letter that waits hears the authenticated answer after the sender restarts", { timeout: 55000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("waiting-letter-source"), there = await computer("waiting-letter-target");
   const { main, member } = seedPeerSetup(here.home, relay.url);
@@ -917,7 +917,8 @@ test("a letter that waits hears the authenticated answer in its tool", { timeout
   const sender = "ses_waitingSender", recipient = "ses_waitingRecipient";
   here.engine.sessions.push(sessionOf({ id: sender, title: "Trip plans", directory: path.join(here.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
-  await Promise.all([here.start().ready(), there.start().ready()]);
+  const source = here.start();
+  await Promise.all([source.ready(), there.start().ready()]);
   const listed = (computer, peer, session) => {
     try { return readJSON(path.join(computer.home, "run/peer-agents.json"))[peer.key]?.list?.some(row => row.session === session); }
     catch { return false; }
@@ -932,6 +933,14 @@ test("a letter that waits hears the authenticated answer in its tool", { timeout
   const conversation = await until(() => there.engine.messages.get(recipient), "The letter never reached the other computer", 14000);
   assert.equal(conversation.length, 1);
   assert.match(conversation[0].text, /They're waiting for your reply/);
+  await until(() => fs.existsSync(tool + ".wait"), "The sender did not save the awaited letter");
+  const address = Buffer.from(main.address, "base64url");
+  await source.stop();
+  await until(() => !relay.has(address), "The stopped sender did not leave the relay");
+  const restarted = here.start();
+  await restarted.ready();
+  await until(() => relay.has(address), () => "The sender did not rejoin the relay\n" + restarted.log());
+  fs.utimesSync(tool + ".alive", new Date(), new Date());
   conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
     content: [{ type: "text", text: "The train is booked." }] });
   const answer = await until(() => {

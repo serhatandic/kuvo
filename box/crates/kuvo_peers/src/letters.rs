@@ -133,9 +133,16 @@ impl Letters {
                 .transpose()?
                 .is_some()
         {
-            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
+            self.outbox()?;
         }
         Ok(self.outbox.as_mut())
+    }
+
+    fn outbox(&mut self) -> io::Result<&mut Outbox> {
+        if self.outbox.is_none() {
+            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
+        }
+        Ok(self.outbox.as_mut().expect("opened outbox"))
     }
 
     fn receipts(&mut self) -> io::Result<&mut Receipts> {
@@ -147,12 +154,7 @@ impl Letters {
 
     fn leave_answer(&mut self, id: &Id, mut letter: Letter) -> io::Result<()> {
         letter.at = Some(self.reader.now().max(0) as u64);
-        if self.outbox.is_none() {
-            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
-        }
-        if let Some(outbox) = &mut self.outbox {
-            outbox.enqueue(id, &letter).map_err(io::Error::other)?;
-        }
+        self.outbox()?.enqueue(id, &letter).map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -560,10 +562,8 @@ impl Letters {
     ) -> io::Result<bool> {
         let run = self.reader.run.clone();
         let sender = self.sender(view, key, letter.from.as_deref());
-        let Some(outbox) = self.open_outbox()? else {
-            return Ok(false);
-        };
-        outbox
+        // The awaited letter may be the only record left after a restart.
+        self.outbox()?
             .answer(&key, answered, now, |sent| {
                 if sent.read.is_some() {
                     if !tool_alive(&run, answered, now) {
