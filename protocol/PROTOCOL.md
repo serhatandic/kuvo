@@ -300,6 +300,8 @@ box returns `409` before creating anything. A local start can omit `computer` or
 
 With `line.merged-archives`, Settings Archived Sessions includes each computer's kept groups through `archiveCopy` mail. Rows name the `computer`; away copies add `away` and `lastSeen` and have no actions. Each computer supplies its own Delete All confirmation. The route sends the selected row and revision to its owner, which checks the revision and confirmation again.
 
+With `search.setup`, `GET kuvo/setup/search?q=<words>&limit=<n>` asks this box and the reachable peers to search their own conversations. The originating `computer:{id,name}` travels with each matching result. `awayComputers` names the peers known to be unreachable, and `unavailableComputers` names any other computer whose search did not complete. Queries and matching snippets travel in memory-only peer replies. Each owner keeps its own transcript and index.
+
 ### Activity Outputs
 
 With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. Bytes and previews are read from the row's owner through that owner's artifact route. Peers share metadata only, through `outputCopy` mail.

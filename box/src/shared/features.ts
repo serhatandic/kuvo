@@ -221,6 +221,7 @@ export const FEATURES = [
   "sandbox.reviews.whole",
   "sandbox.words",
   "search",
+  "search.setup",
   "sessions.actions",
   "sessions.agents",
   "sessions.archived-groups",

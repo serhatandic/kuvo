@@ -16,6 +16,7 @@ pub const SEARCHED_FROM: usize = 3;
 pub struct Found {
     pub session: String,
     pub snippet: String,
+    pub computer: Option<crate::areas::SetupComputer>,
     #[serde(default, deserialize_with = "subagent_id")]
     pub subagent: Option<String>,
 }
@@ -25,15 +26,25 @@ fn subagent_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result
     Ok(value.and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_owned)))
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchAnswer {
+    pub results: Vec<Found>,
+    #[serde(default)]
+    pub away_computers: Vec<crate::areas::SetupComputer>,
+    #[serde(default)]
+    pub unavailable_computers: Vec<crate::areas::SetupComputer>,
+}
+
 impl BoxClient {
     /// Sessions whose conversation has `query`, the latest first (at most `limit`).
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Found>> {
-        #[derive(Deserialize)]
-        struct Answer {
-            results: Vec<Found>,
-        }
-        let answer: Answer = self.get(&format!("kuvo/search?q={}&limit={limit}", crate::paths::query_value(query.trim())))?;
-        Ok(answer.results)
+        Ok(self.search_setup(query, limit)?.results)
+    }
+
+    /// What was found and which computers could not be searched.
+    pub fn search_setup(&self, query: &str, limit: usize) -> Result<SearchAnswer> {
+        self.get(&format!("kuvo/setup/search?q={}&limit={limit}", crate::paths::query_value(query.trim())))
     }
 }
 

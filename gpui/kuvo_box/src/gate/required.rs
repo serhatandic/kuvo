@@ -81,6 +81,7 @@ pub const REQUIRED: &[&str] = &[
     "sessions.models",
     "sessions.needsYou",
     "sessions.start.empty",
+    "search.setup",
     "settings",
     "settings.flows",
     "settings.vault",

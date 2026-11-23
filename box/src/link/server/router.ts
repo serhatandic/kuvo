@@ -267,6 +267,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // The Work Queue (PROTOCOL.md, "The Work Queue"), before a bot's work, whose routes it starts like.
   { feature: "work-queue", when: route => route.match(WORK_QUEUE_ROUTE), answer: workQueueRoute },
   { feature: "search", when: route => route === "kuvo/search", answer: searchRoute },
+  { feature: "search.setup", when: route => route === "kuvo/setup/search", answer: searchRoute },
   { feature: "git.backups", when: route => route === "kuvo/git/backups" || route === "kuvo/git/backups/restore", answer: backupsRoute },
   { feature: "git", when: route => route.startsWith("kuvo/git/"), answer: changesRoute },
   { feature: "asks", when: route => route === "kuvo/asks" || route === "kuvo/asks/events", answer: asksRoute },

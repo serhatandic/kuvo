@@ -79,8 +79,11 @@ sessions.mentions
 sessions.models
 sessions.needsYou
 sessions.start.empty
+search.setup
 settings
+search.setup
 settings.flows
+search.setup
 settings.vault
 setup.ready
 setup.welcomed

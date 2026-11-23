@@ -5,14 +5,14 @@ import "./safety"
 // conversations use the same list and peer protocol after the engine/bridge read.
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["search.setup", "work-queue.forward.memory", "line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -41,6 +41,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
     const cases: Record<string, { id: string; title: string; time: typeof time; directory?: string; location?: { directory: string } }> = {
       [session]: { id: session, title: `Session on ${name}`, directory: project, time },
     };
+    const transcript: Record<string, object[]> = {};
     const permissions: Record<string, unknown>[] = [];
     const opened = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
     const prompt = Promise.withResolvers<{ session: string; body: unknown }>();
@@ -70,7 +71,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
           prompt.resolve(sent);
           return data({});
         }
-        if (route.endsWith("/message")) return data([]);
+        if (route.endsWith("/message")) return data(transcript[route.split("/")[3]!] ?? []);
         if (route.endsWith("/permission")) return data(permissions);
         if (route.endsWith("/inbox") || route.endsWith("/form")) return data([]);
         if (route === "/api/session") return data(Object.values(cases));
@@ -134,7 +135,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
       stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port, bridgePort: bridge?.port })),
       stdout: "ignore", stderr: "inherit", ipc,
     });
-    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
+    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions, transcript };
   });
   const setup = (managed ? "set_" : "setup_") + "a".repeat(32);
   for (const box of boxes) {
@@ -879,5 +880,51 @@ test("Settings Archived Sessions shows the kept owner rows with that computer's 
       id: `delete-all-${far.computer.id}`, computer: far.computer,
       actions: expect.arrayContaining([expect.objectContaining({ id: "delete-all", confirm })]),
     }));
+  } finally { setup.close(); }
+}, 30_000);
+
+test("search finds words on a reachable computer without copying its transcript", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    far.transcript[far.session] = [{ id: "msg_remote", type: "user", text: "the plum orchard", time: { created: 1 } }];
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "search") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: { path: "kuvo/setup/search?q=plum" }, replyTo: "search" });
+    const found = await answer.promise;
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({ results: [
+      { session: far.session, snippet: expect.stringContaining("plum orchard"), computer: far.computer },
+    ], awayComputers: [], unavailableComputers: [] });
+    expect(existsSync(path.join(near.home, "search", `engine.${far.session}.json`))).toBe(false);
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
+
+test("search reports the computer it could not search because it was away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const found = await near.run({ kind: "route", path: "kuvo/setup/search?q=plum", away: far.peer.address });
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toEqual({ results: [], awayComputers: [far.computer], unavailableComputers: [] });
   } finally { setup.close(); }
 }, 30_000);

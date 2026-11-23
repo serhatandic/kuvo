@@ -9,6 +9,8 @@ import { RUN, BRIDGE_FILE } from "../../../src/link/home";
 import { sendOwnerMessages } from "../../../src/link/ownership/messages";
 import { machineLink, readLink } from "../../../src/link/state";
 import type { LinkHost } from "../../../src/link/relay/host";
+import { addressOf } from "../../../src/link/crypto/keys";
+import { connectionStarted, fenceBack } from "../../../src/link/relay/dropped";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
@@ -146,9 +148,15 @@ if (command.kind === "conversation") {
   if (bridgePort) writeFileSync(BRIDGE_FILE, JSON.stringify(bridgeRecordFormat.write({
     port: Number(bridgePort), password: "test", pid: process.pid,
   })));
+  const self = addressOf(Buffer.from(readLink()!.secret!, "base64url"));
+  connectionStarted(self);
   const host = {
     welcomed: true,
-    send(frame: Buffer) { process.send!({ frame: frame.toString("base64url") }); },
+    send(frame: Buffer) {
+      const relay = readRelay(frame);
+      if (relay?.kind === "deliver" && relay.address.equals(self)) fenceBack(relay.payload);
+      else process.send!({ frame: frame.toString("base64url") });
+    },
   } as LinkHost;
   machineLink.host = host;
   let stop: AbortController | undefined;
