@@ -65,6 +65,7 @@ pub struct View {
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
+    submission_recovery: bool,
     backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
@@ -136,6 +137,9 @@ impl View {
         }
         if self.work_calls {
             features.push(crate::calls::FEATURE);
+        }
+        if self.submission_recovery {
+            features.push("typed.submission-recovery");
         }
         if self
             .local_lists
@@ -282,6 +286,7 @@ enum Change {
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
+    SubmissionRecovery,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
@@ -378,6 +383,14 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Dispatch(dispatcher)).await;
     }
 
+    /// Advertise submission recovery once the engine has connected its owner handler.
+    pub async fn advertise_engine_submissions(&self) -> io::Result<()> {
+        self.changes
+            .send(Change::SubmissionRecovery)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
+    }
+
     /// Track the roster handed down by setup authority after a durable membership or epoch change.
     pub async fn follow_setup_roster(&self, rosters: watch::Receiver<Option<Arc<Roster>>>) {
         let _ = self.changes.send(Change::SetupRosters(rosters)).await;
@@ -428,6 +441,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
+            submission_recovery: false,
             backup_receiver: false,
             endpoint,
             system: system_name(),
@@ -474,6 +488,12 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     },
+                    Some(Change::SubmissionRecovery) => {
+                        self.view.submission_recovery = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
                     Some(Change::BackupReceiver) => {
                         self.view.backup_receiver = true;
                         publish.send_replace(Arc::new(self.view.clone()));
