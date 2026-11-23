@@ -144,6 +144,19 @@ pub struct OfferedModel {
     /// (`models.offered.free`): left out, it needs one.
     #[serde(default)]
     pub free: bool,
+    /// The speeds it runs at besides Standard, as its agent offers them (Codex's Fast), from a
+    /// box with `models.speed`; none where it has none.
+    #[serde(default)]
+    pub speeds: Vec<Speed>,
+}
+
+/// A speed a model runs at besides Standard (`models.offered.models[].speeds`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Speed {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl OfferedModel {
@@ -189,6 +202,9 @@ pub struct Provider {
     /// Which of your accounts with a coding agent it is (`models.offered.accounts`).
     #[serde(default)]
     pub account: Option<ProviderAccount>,
+    /// The speed picked for it on this box (`models.speed`; none: Standard).
+    #[serde(default)]
+    pub speed: Option<String>,
 }
 
 /// A coding agent's account, as the box names it for a picker (`models.offered.accounts`).
@@ -473,6 +489,22 @@ impl BoxClient {
         let body = json!({ "providerID": model.provider_id, "id": model.id, "starred": starred });
         let told: Told = decode(&self.send(&Request::post("kuvo/models/starred", body))?)?;
         Ok(told.starred)
+    }
+
+    /// Picks the speed `provider`'s models run at on this box (`kuvo/models/speed`; `None`:
+    /// Standard): the speed now, as the box keeps it.
+    pub fn set_speed(&self, provider: &str, speed: Option<&str>) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Told {
+            #[serde(default)]
+            speed: Option<String>,
+        }
+        let response = self.send(&Request::post("kuvo/models/speed", json!({ "providerID": provider, "speed": speed })))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        let told: Told = serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(error.to_string()))?;
+        Ok(told.speed)
     }
 
     /// Puts `session` on `model` (with its effort as `variant`), from its next step.

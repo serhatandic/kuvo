@@ -247,6 +247,8 @@ export interface Model {
   provisional?: true
   /** One its agent still runs but keeps out of its own picker (Codex's): listed only when asked for (`api/model?hidden=1`). */
   hidden?: true
+  /** The speeds it runs at besides its standard one, as its agent lists them (Codex's service tiers: `priority`, its "Fast"); none for a model without, or an agent that has none. */
+  speeds?: { id: string; name: string; description?: string }[]
   capabilities: { tools: boolean; input: string[]; output: string[] }
   variants: { id: string }[]
   time: { released: Millis }

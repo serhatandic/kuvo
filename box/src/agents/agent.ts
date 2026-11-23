@@ -562,7 +562,7 @@ export class ContextWindows {
 }
 
 /** A model as the app lists it, from the little an agent says about one. */
-export function model(providerID: string, id: string, name: string, options: { variants?: string[]; images?: boolean; context?: number; released?: number; family?: string; aliases?: string[]; provisional?: boolean; hidden?: boolean } = {}): Model {
+export function model(providerID: string, id: string, name: string, options: { variants?: string[]; images?: boolean; context?: number; released?: number; family?: string; aliases?: string[]; provisional?: boolean; hidden?: boolean; speeds?: { id: string; name: string; description?: string }[] } = {}): Model {
   return {
     id,
     providerID,
@@ -571,6 +571,7 @@ export function model(providerID: string, id: string, name: string, options: { v
     ...(options.aliases?.length ? { aliases: options.aliases } : {}),
     ...(options.provisional ? { provisional: true as const } : {}),
     ...(options.hidden ? { hidden: true as const } : {}),
+    ...(options.speeds?.length ? { speeds: options.speeds } : {}),
     capabilities: { tools: true, input: options.images ? ["text", "image"] : ["text"], output: ["text"] },
     variants: (options.variants ?? []).map((id) => ({ id })),
     time: { released: options.released ?? 0 },
