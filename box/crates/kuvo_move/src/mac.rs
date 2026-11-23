@@ -18,6 +18,7 @@ mod engine;
 mod history;
 mod letters;
 mod merge;
+mod notices;
 mod paths;
 mod preferences;
 pub(crate) mod processes;
@@ -70,7 +71,6 @@ pub enum ChangePoint {
 #[derive(Debug)]
 pub struct StagedApp {
     pub path: PathBuf,
-    pub dropped_letters: usize,
     pub dropped_waiting_messages: u64,
     counts: counts::Comparison,
     leftovers: Vec<String>,
@@ -91,6 +91,16 @@ pub fn stage(
     completed: impl FnMut(AppStep),
 ) -> Result<StagedApp, Error> {
     let _guard = layout::lock_for_move(destination, Duration::from_secs(3))?;
+    for entry in entries(destination.root())? {
+        let name = entry.file_name();
+        if name != OsStr::new("updates")
+            && name != OsStr::new("desktop")
+            && name != OsStr::new(layout::FILE)
+            && !name.to_string_lossy().starts_with(".folder-upgrade.lock")
+        {
+            return Err(Error::UnknownHome(destination.root().into()));
+        }
+    }
     prepare(destination, account, bundle, release, engine_dir, completed)
 }
 
@@ -122,16 +132,6 @@ fn prepare(
         layout::Layout::Unmarked | layout::Layout::Older { version: 0 }
     ) {
         return Err(Error::UnknownHome(destination.root().into()));
-    }
-    for entry in entries(&disk.0)? {
-        let name = entry.file_name();
-        if name != OsStr::new("updates")
-            && name != OsStr::new("desktop")
-            && name != OsStr::new(layout::FILE)
-            && !name.to_string_lossy().starts_with(".folder-upgrade.lock")
-        {
-            return Err(Error::UnknownHome(destination.root().into()));
-        }
     }
     let journal = disk.path("updates/rehome/journal.json")?;
     if metadata(&journal)?.is_some() {
@@ -204,7 +204,6 @@ fn prepare(
         clone(&release_plugin, &path, true)?;
     }
     let dropped = preferences::take(&source, &staging_disk, account, destination.root())?;
-    let dropped_letters = letters::upgrade(&source, &staging_disk)?;
     let welcome = staging_disk.path("run/welcomed.json")?;
     if metadata(&welcome)?.is_none() {
         files::write_new(&welcome, br#"{"moved":true,"formatVersion":1}"#)?;
@@ -302,7 +301,6 @@ fn prepare(
     completed(AppStep::Check);
     Ok(StagedApp {
         path: staging,
-        dropped_letters,
         dropped_waiting_messages,
         counts,
         leftovers,

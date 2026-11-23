@@ -55,9 +55,9 @@ use authenticated Helper and relay stand-ins.
 | A5 | Staged artifact logs remap paths and path-derived IDs. A future-format line keeps the source and staged file byte for byte and refuses the move. |
 | A6 | A future legacy Mac record refuses the import before any clone. |
 | A7 | Each tagged app move survives 16 PID cuts. The final inventory, source, Git backlink, and Keychain stand-in match the uninterrupted run. A locked Keychain and failed read-back preserve the originals and prevent publication. A source write after the first placement rolls the move back and is carried on retry. |
-| A8 | The command retries one source write in the same invocation and stops after three rounds of continued writes. A late placement collision rolls back and keeps the new file belonging to the other writer. A live status query reads the current staging step. An explicit resume finishes a published plan after a process cut. Imported group files reach the private import boundary before publication, and an external-history rename resumes by file identity. |
+| A8 | The command retries one source write in the same invocation and stops after three rounds of continued writes. A late placement collision rolls back and keeps the new file belonging to the other writer. A live status query reads the current staging step. An explicit resume finishes a published plan after a process cut. Imported group files reach the private import boundary before publication, and an external-history rename resumes by file identity. A shared-memory change and empty WAL appearing at the same checkpoint leave the attempt running. A cut during the displacement of a removed installation preserves its archive. |
 | A9 | A future engine schema is detected on a private database copy before staging. A browser-only app gets its own home, and a staged Claude Code account keeps history under the moved chat's name. |
-| C1 | The rehome conformance area runs the same released app fixture against both commands. It covers installer verdicts, unplaced and torn journals, missing and incompatible engines, a failed database migration, malformed preferences and newer app records, an existing machine home, live writers and a read-only reader, the old keeper's control endpoint, a capped APFS volume, CLI status and validation, legacy bots and group chats, overlapping attachments, Usage and letters, staged and default-account history, and 255 active and archived sessions through the pinned engine. It also checks deferred copied-key settlement, sign-ins already recorded as imported, and the standalone move's Move Back reply. |
+| C1 | The rehome conformance area runs the same released app fixture against both commands. It covers installer verdicts, unplaced and torn journals, file-only legacy placement recovery and retry receipts, missing and incompatible engines, a failed database migration, malformed preferences and newer app records, an existing machine home, archived leftovers from a removed installation, live writers and a read-only reader, older app discovery, the old keeper's control endpoint, a capped APFS volume, CLI status and validation, legacy bots and group chats, overlapping attachments, Usage and letters, staged and default-account history, and 255 active and archived sessions through the pinned engine. It checks the older settings omissions and their notice order, deferred copied-key settlement, sign-ins already recorded as imported, saved sign-in receipts and installer access during settlement, and the standalone move's Move Back reply. |
 | S2 | The authenticated older Mac main converts its checkpoint after receiving the relay lease. A PID kill at lease claim and a restart advance the same setup by one epoch. |
 | S1 | The stored-format conformance scenarios refuse newer, malformed and invalid layout records and reopen a fresh home at 23. |
 
@@ -93,10 +93,10 @@ column. The loop declarations cover each cut or outcome described by that loop.
 | `rehome.test.ts` | 1007, 1032, 1045, 1060, 1098, 1112, 1124 | A3 and A4 cover concurrent changes and database migration and validation. A8 covers retry rounds and rollback on a new destination collision. A9 and C1 cover an unsupported schema at command preflight and the pinned engine's large paginated list. Other rollback variants remain 2.6. |
 | `rehome.test.ts` | 1144 | Existing sign-in handover and rollback remain 2.6 and 6.2. |
 | `rehome-run.test.ts` | 20, 87, 110, 384, 461, 537, 573, 595, 608 | A1, A4 and A7 cover tagged migration, publication, path changes and interruption recovery. C1 checks the old keeper's loopback stop and attachment collisions with the message's rewritten URI. The differential passes with the pinned engine. Remaining upgrade notices stay with 2.6. Helper startup belongs to 7.2. |
-| `rehome-run.test.ts` | 128, 250, 262, 274, 282, 290, 325, 351 | A3 and M6 cover a changed source file and known live writer. A8 covers bounded retry and rollback. C1 verifies the old engine stops, the external writer is left running, and an external reader with the database open can stay. The shared-memory and empty-WAL activity cases and broader Mac-bundle discovery fixtures remain 2.6. |
+| `rehome-run.test.ts` | 128, 250, 262, 274, 282, 290, 325, 351 | A3 and M6 cover a changed source file and known live writer. A8 covers bounded retry and rollback and shared-memory and empty-WAL activity. C1 verifies the old engine and older app stop. The unrelated writer, external reader, chat program and another copy of the current app stay running. |
 | `rehome-run.test.ts` | 159, 174, 198, 209, 395, 420, 435, 506 | A7 covers Keychain copy, verification and rollback through stand-ins. A9 and C1 cover agent history under moved paths. C1 checks settling copied keys and recognizing prior website imports without reading passwords. Passing the added Claude Code account's sign-in to the new name and importing remaining website sign-ins need their 2.6 and 6.2 adapters. Old launch agent cleanup and starting the real Helper need 7.2. |
 | `rehome-run.test.ts` | 216, 224, 237, 371, 494, 553, 583, 623, 632, 643 | A2–A4 and M2–M3 cover selected input readers, the engine gate and startup fences. A8–A9 and C1 cover live Rust status, the future engine schema, browser-only admission, missing engine, two existing installations, malformed preferences and the torn journal. Remaining failure and eligibility variants stay with 2.6. |
-| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | M1 and A1–A4 cover a subset of settings, preferences, the machine list and selected letters. A2 covers local link preferences and personality deletion. C1 covers legacy bots, group records and message filtering, Usage settings precedence and seen-letter history. Other preferences and notices remain 2.6. |
+| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | M1 and A1–A4 cover a subset of settings, preferences, the machine list and selected letters. A2 covers local link preferences and personality deletion. C1 covers legacy bots, group records and message filtering, Usage settings precedence, seen-letter history and the ordered notices for settings left with the prior app. Additional projections remain 2.6. |
 | `rehome-upgrades.test.ts` | 214 | M2 covers the marker fence. App file indexes remain 2.6. |
 | `rehome-upgrades.test.ts` | 251 | Covered by A6. |
 | `rehome-upgrades.test.ts` | 235 | Covered by A5. |
@@ -132,8 +132,11 @@ column. The loop declarations cover each cut or outcome described by that loop.
   installer collision and restart variants, and additional settings, path and
   preflight edge cases. For a standalone move an attachment name collision is
   resolved in the private copy and the combined directory is placed whole.
-  A pre-placement legacy journal with no actions or Keychain receipt can be
-  retried. External history renames
+  Actions from an older file-only journal are validated against its private
+  staging and archive paths and unwound before retry. An explicit resume
+  writes the failure and retry receipt first. Files from a removed destination
+  move to a kept folder through a separate identity-checked plan before cutover.
+  External history renames
   use a separate journaled list with file identities. Grok's index is retired
   after the move reaches its forward-only step. The signed Keychain program for
   website sign-ins belongs to 6.2. The vault seam is the login create and
@@ -172,9 +175,9 @@ Mac-built static executable, and on native Windows using LLVM MinGW.
 The lokum container runs an init so the harness is an ordinary process when
 the live-PID scenario checks it.
 
-With the verified OpenCode 2.2.6 package, C1 passes 22 checks on each
+With the verified OpenCode 2.2.6 package, C1 passes 26 checks on each
 executable, including its enclosing scenario. The focused Rust run passes
-15 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
+16 Mac scenarios, both tagged Mac scenarios, and six machine scenarios
 plus their child harness. No TypeScript implementation was changed.
 The older malformed-journal assertion expects a different sentence from the
 one the TypeScript command emits. C1 checks the live command's receipt.
@@ -263,7 +266,7 @@ fixture's Keychain stand-ins.
 |---|---|
 | `box`, `box/kind`, `folder-version.json`, `updates`, `updates/rehome` and the other published files | **Made identical.** Modes, bytes and symlink targets match, including the attached files, conversations and beta.1's pending letter. |
 | `data/opencode/opencode.db` | **Made identical at the SQLite boundary.** Mode, schema, version and committed typed rows match. For the real engine, nine newly applied migrations have independent `time_completed` values. The earlier migration times and all other stable fields match. Physical pages differ. |
-| `data/opencode/log/opencode.log` | **Made identical** in the real-engine run after accounting for each line's timestamp, run ID, and migration duration. Every stable message and field matches. |
+| `data/opencode/log/opencode.log` | **Made identical** in the real-engine run after accounting for timestamps, run IDs, migration duration, and the optional final line recording the verifier's SIGTERM. Every stable message and field matches. |
 | `updates/rehome/journal.acts`, `updates/rehome/keychain.json` | **Made identical.** Action log and Keychain receipt match byte for byte. |
 | `updates/rehome/journal.json` | **Made identical** after accounting for wall-clock values in `began`, `clonedAt`, and the final component of `kept`. Every stable field, the placement list, the set of names at each database path, and the mode match. |
 | `updates/rehome/state.json` and the command's JSON reply | **Made identical** after accounting for `movedAt`. Inventory counts, audit notes, setup obligations and other stable fields match. |
@@ -277,6 +280,8 @@ The tagged interruption scenario kills the process by PID at five private
 staging boundaries and eleven publication or settlement boundaries per app
 fixture. The full published inventory after restart matches the uninterrupted
 move after projecting the same clock fields. Both source trees stay identical.
+An extra cut after displacing the first file from a removed installation
+checks that its saved files all reach the archive after restart.
 The setup conversion scenario also kills the resident after the relay accepts
 the claim and checks that a restart advances the same setup only once.
 

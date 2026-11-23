@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { boxBinary, isolatedEnv, launch, readJSON, scratch, typescriptRuntime, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, readJSON, scratch, typescriptRuntime, until, write } from "./adapter.mjs";
 import { generateRelease } from "./compat/generate.mjs";
 
 test("a released Mac move refuses unsafe inputs and can be tried again", {
@@ -104,6 +104,21 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     write(path.join(app.K, "box/kind"), "mac\n");
     write(state, '{"state":"done","way":"move","owed":["keychain","passwords"]}');
     judge("ours", null);
+    for (const verb of ["--sign-ins", "--settle"]) {
+      const leftover = launch(process.execPath, ["-e", "console.log('ready');process.stdin.resume()", "rehome", ".kuvo-code", verb], env, app.home, "pipe");
+      try {
+        await once(leftover.child.stdout, "data");
+        write(path.join(app.K, "updates/rehome/lock/pid"), String(leftover.child.pid));
+        assert.deepEqual(judge("ours", null).status.signIns, verb === "--sign-ins" ? { state: "asking" } : null);
+      } finally {
+        await leftover.stop();
+      }
+    }
+    const signInsLast = { state: "failed", at: 123, message: "Read-back failed" };
+    write(state, JSON.stringify({ state: "done", way: "move", owed: ["passwords"], signInsLast }));
+    assert.deepEqual(judge("ours", null).status.signIns, signInsLast);
+    write(state, JSON.stringify({ state: "done", way: "move", owed: [], signInsLast }));
+    assert.equal(judge("ours", null).status.signIns, null);
   });
 
   await t.test("a torn journal blocks startup with the journal preserved", () => {
@@ -131,6 +146,40 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     }));
     assert.equal(move(0).result, "done");
     assert.equal(fs.existsSync(path.join(rehome, "staging/unfinished")), false);
+    assert.deepEqual(fs.readFileSync(path.join(app.K, "chats/c1/notes.md")), original);
+    assert.deepEqual(fs.readFileSync(note), original);
+  });
+
+  await t.test("an earlier interrupted placement takes back its files before retrying", () => {
+    reset();
+    const rehome = path.join(app.K, "updates/rehome");
+    const stage = path.join(rehome, "staging");
+    const bin = path.join(app.K, "bin");
+    const layout = path.join(app.K, "folder-version.json");
+    write(path.join(bin, "partial-program"), "only the interrupted copy");
+    write(layout, '{"version":23}');
+    write(path.join(app.K, "box/kind"), "mac\n");
+    write(path.join(rehome, "journal.json"), JSON.stringify({
+      v: 1, way: "move", began: 1, step: "place", from: app.S, to: app.K,
+      placements: [{ from: path.join(app.release, "bin"), to: bin, staged: path.join(stage, "0-bin"), installed: true }],
+      clearing: [], kept: path.join(rehome, "kept/interrupted"),
+    }));
+    const actions = [
+      { act: "rename", from: path.join(stage, "0-bin"), to: bin },
+      { act: "rename", from: path.join(stage, "work/folder-version.json"), to: layout },
+      { act: "made", path: path.join(app.K, "box"), folder: true },
+      { act: "made", path: path.join(app.K, "box/kind") },
+    ];
+    write(path.join(rehome, "journal.acts"), actions.map(act => JSON.stringify({ ...act, formatVersion: 1 })).join("\n") + "\n");
+    const resumed = command([".kuvo-code", "--resume"], 1);
+    assert.equal(resumed.result, "failed");
+    assert.equal(resumed.message, "It stopped part way (place), so it went back.");
+    assert.equal(resumed.status.tries, 1);
+    assert.equal(resumed.status.nextTry, resumed.status.failed.at + 3_600_000);
+    assert.equal(resumed.status.progress, null);
+    assert.equal(fs.existsSync(layout), false);
+    assert.equal(move(0).result, "done");
+    assert.equal(fs.existsSync(path.join(bin, "partial-program")), false);
     assert.deepEqual(fs.readFileSync(path.join(app.K, "chats/c1/notes.md")), original);
     assert.deepEqual(fs.readFileSync(note), original);
   });
@@ -170,6 +219,27 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     untouched();
   });
 
+  await t.test("a removed installation is kept aside before the move starts a new home", () => {
+    reset();
+    write(path.join(app.K, "box/earlier.md"), "old installation");
+    write(path.join(app.K, "run/off"), "");
+    write(path.join(app.K, "updates/earlier.json"), "[]");
+    write(path.join(app.K, "trash/earlier/note.md"), "old trash");
+    write(path.join(app.K, "updates/rehome/new"), "1\n");
+    write(path.join(app.K, "desktop/window.json"), '{"panel":"files"}');
+    assert.equal(move(0).result, "done");
+    const [kept] = fs.readdirSync(path.join(app.K, "trash"));
+    assert.match(kept, /^earlier-box-/);
+    const keptRoot = path.join(app.K, "trash", kept);
+    assert.equal(fs.readFileSync(path.join(keptRoot, "box/earlier.md"), "utf8"), "old installation");
+    assert.equal(fs.readFileSync(path.join(keptRoot, "updates/earlier.json"), "utf8"), "[]");
+    assert.equal(fs.readFileSync(path.join(keptRoot, "trash/earlier/note.md"), "utf8"), "old trash");
+    assert.equal(fs.readFileSync(path.join(keptRoot, "new-box-mark"), "utf8"), "1\n");
+    assert.deepEqual(readJSON(path.join(app.K, "desktop/window.json")), { panel: "files" });
+    assert.deepEqual(readJSON(path.join(app.K, "folder-version.json")), { version: 23 });
+    assert.deepEqual(fs.readFileSync(note), original);
+  });
+
   await t.test("a live writer is named and the move succeeds once it closes the file", async () => {
     reset();
     const log = path.join(app.S, "Chats/c1/open.log");
@@ -189,6 +259,43 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
       assert.deepEqual(fs.readFileSync(note), original);
     } finally {
       await writer.stop();
+    }
+  });
+
+  await t.test("the older app stops while a chat's program and another current app stay live", async () => {
+    reset();
+    const plist = fs.readFileSync(path.join(app.bundle, "Contents/Info.plist"), "utf8");
+    const appProgram = /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/;
+    const current = appProgram.exec(plist)?.[1];
+    assert.ok(current);
+    function executable(file) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.copyFileSync("/bin/zsh", file);
+      const signed = spawnSync("/usr/bin/codesign", ["--force", "--sign", "-", file], { env, encoding: "utf8" });
+      assert.equal(signed.status, 0, signed.stderr);
+      return file;
+    }
+    function bundle(folder, program) {
+      write(path.join(folder, "Contents/Info.plist"), plist.replace(appProgram, `<key>CFBundleExecutable</key><string>${program}</string>`));
+      return executable(path.join(folder, "Contents/MacOS", program));
+    }
+    const files = [
+      executable(path.join(app.S, "Chats/c1/build/server")),
+      bundle(path.join(app.home, "Downloads/Kuvo.app"), current),
+      bundle(path.join(app.home, "Applications/Earlier.app"), "Kuvo Code"),
+    ];
+    const tasks = files.map(file => launch(file, ["-c", "print ready; read -r line"], env, app.home, "pipe"));
+    try {
+      await Promise.all(tasks.map(task => once(task.child.stdout, "data")));
+      assert.equal(move(0).result, "done");
+      await until(() => tasks[2].child.signalCode || tasks[2].child.exitCode !== null, "The older app did not exit", 3000);
+      assert.equal(tasks[2].child.signalCode, "SIGTERM");
+      for (const task of tasks.slice(0, 2)) {
+        assert.equal(task.child.exitCode, null);
+        assert.equal(task.child.signalCode, null);
+      }
+    } finally {
+      await Promise.all(tasks.map(task => task.stop()));
     }
   });
 
@@ -430,6 +537,50 @@ keeper.listen(0, "127.0.0.1", () => console.log(keeper.address().port));
     assert.deepEqual(readJSON(path.join(app.K, "run/letters-seen.json")), { ltr_valid: at, ltr_other: at });
     assert.equal(fs.existsSync(path.join(app.K, "run/outbox/sending/ltr_away.json")), false);
     assert.ok(reply.status.dropped.includes("A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along."));
+  });
+
+  await t.test("settings left with the old app are named once in the move receipt", () => {
+    reset();
+    const preferences = path.join(app.home, "Library/Preferences", path.basename(app.S) + ".plist");
+    const prop = {
+      composerDrafts: { "ses_one": "draft", "ses_two": "another draft" },
+      botEditsWaiting: { "bot_one": {} }, botEditOutbox: { "bot_one": {} },
+      movesUnderWay: [{ stage: "switched" }, { stage: "copying" }],
+      machineSignOuts: { mini: {} }, "machines.waiting": { mini: {}, tower: {} },
+      projectSettings: { "ssh://mini/work": { terminal: "make shell" } },
+      projectFolders: ["ssh://mini/work"], worktrees: { "ssh://mini/work/tree": {} },
+      "machines.unreadable-1": {}, "kuvo.usage.connectedProviders.v1": ["Z.AI"],
+      lastModel: "the-old-default", "notifications.badge": false, "analytics.enabled": false,
+    };
+    const encoded = Object.entries(prop).map(([key, value]) => {
+      const data = typeof value === "boolean" ? `<${value}/>` : `<data>${Buffer.from(JSON.stringify(value)).toString("base64")}</data>`;
+      return `<key>${key}</key>${data}`;
+    }).join("\n");
+    write(preferences, `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>${encoded}</dict></plist>`);
+    write(path.join(app.S, "Browser/history.json"), "[]");
+    write(path.join(app.S, "projects.unreadable-1.json"), "earlier data");
+    write(path.join(app.S, "Usage/proxy.json"), "earlier usage settings");
+    const { status } = move(0);
+    assert.deepEqual(status.dropped.filter(line => !line.startsWith("Passwords the earlier Kuvo Code")), [
+      "2 messages you'd typed but not sent weren't brought along.",
+      "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history comes along.",
+      "A change you made to a bot on a machine that was away (a name, look, personality or model) wasn't sent there. Make it again once that machine is connected.",
+      "The command that opened in place of the chat for a project isn't kept.",
+      "A move to another computer that hadn't finished cleaning up left its original folder where it was.",
+      "You signed out of an account while a machine was away: it may still be signed in to it. Sign out there too once it's connected.",
+      "2 machines that were away still have files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.",
+      "A project on your machines may have lost its name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.",
+      "A worktree on your machines may show its sessions under another project: the earlier Kuvo Code kept which project it belonged to on this Mac.",
+      "The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.",
+      "An API key you pasted into the usage panel (OpenRouter's or Z.ai's) isn't brought along. Paste it again in the usage panel.",
+      "The model new sessions start with is chosen again in the new app.",
+      "You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.",
+      "You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.",
+      "The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).",
+      "API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.",
+    ]);
+    assert.deepEqual(readJSON(path.join(app.K, "updates/rehome/state.json")).dropped, status.dropped);
+    assert.equal(fs.readFileSync(path.join(app.S, "projects.unreadable-1.json"), "utf8"), "earlier data");
   });
 
   await t.test("settling the copied keys and previously imported sign-ins asks for no passwords", () => {

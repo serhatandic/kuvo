@@ -18,8 +18,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod destination;
 mod git;
 mod keychain;
+mod legacy;
 mod release;
 
 const PENDING: &str = "updates/rehome/publication.json";
@@ -45,6 +47,7 @@ const VERSION: u8 = 1;
 pub enum CutoverStep {
     Staging(AppStep),
     Prepared,
+    FirstDisplacement,
     KeyCopies,
     Keys,
     FirstPlacement,
@@ -90,6 +93,7 @@ pub struct Run<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Phase {
+    Install,
     Keys,
     Place,
     Fix,
@@ -108,6 +112,8 @@ struct Publication {
     identities: BTreeMap<usize, EntryIdentity>,
     input: String,
     repairs: git::Repairs,
+    #[serde(default)]
+    destination: destination::Destination,
     #[serde(default)]
     history: history::External,
     #[serde(default)]
@@ -216,6 +222,24 @@ pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outc
     let publication = match read_pending(&pending) {
         Ok(Some(publication)) => publication,
         Ok(None) => {
+            if let Some(source) = legacy::previous(&disk, account)?
+                && is_account_home(home, system_account)?
+                    == source.file_name().is_some_and(|id| id == "run.kuvo.code")
+            {
+                let _layout = layout::lock_for_move(home, Duration::from_secs(3))?;
+                let _handover = OwnedLock::acquire_rehome(
+                    &disk.path("updates/rehome/lock")?,
+                    Duration::from_secs(3),
+                )?;
+                if let Some(message) = legacy::undo(&disk, &source, layout::inspect(home)?)? {
+                    return Ok(Outcome {
+                        result: "failed",
+                        status: crate::rehome_status(home),
+                        started: None,
+                        message: Some(message),
+                    });
+                }
+            }
             if let Some(outcome) = legacy_fence(&disk)? {
                 return Ok(outcome);
             }
@@ -447,9 +471,18 @@ impl Run<'_> {
         // A legacy record is a startup fence in its own right, even when
         // there is no Rust publication record beside it.
         if metadata(&pending)?.is_none() {
-            let layout = layout::inspect(self.home)?;
-            if layout == layout::Layout::Unmarked {
-                recover_unplaced_legacy(&disk, self.account, &app.id)?;
+            let mut layout = layout::inspect(self.home)?;
+            let origin = self
+                .account
+                .join("Library/Application Support")
+                .join(&app.id);
+            match legacy::undo(&disk, &origin, layout) {
+                Ok(Some(_)) => layout = layout::inspect(self.home)?,
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("The move could not undo the earlier placement: {error}");
+                    return legacy_fence(&disk)?.ok_or(error);
+                }
             }
             if let Some(outcome) = legacy_fence(&disk)? {
                 return Ok(outcome);
@@ -462,7 +495,10 @@ impl Run<'_> {
             if let Some(message) = occupied_home(&disk)? {
                 return Ok(refused(message));
             }
-            if layout != layout::Layout::Unmarked {
+            if !matches!(
+                layout,
+                layout::Layout::Unmarked | layout::Layout::Older { version: 0 }
+            ) {
                 return Err(Error::UnknownHome(disk.0));
             }
         }
@@ -644,10 +680,7 @@ impl Plan {
     }
 
     fn write_journal(&self, disk: &Disk, step: &str) -> Result<(), Error> {
-        let kept_at = jiff::Timestamp::from_millisecond(self.began as i64)
-            .map_err(io::Error::other)?
-            .strftime("%Y-%m-%dT%H-%M-%S-%3fZ")
-            .to_string();
+        let kept_at = stamp(self.began)?;
         write_json(
             &disk.path(JOURNAL)?,
             &json!({
@@ -666,6 +699,7 @@ impl Plan {
 impl Publication {
     fn prepare(plan: Plan, staged: StagedApp, input: String, disk: &Disk) -> Result<Self, Error> {
         let staged_disk = Disk(staged.path.clone());
+        let destination = destination::Destination::capture(disk, plan.began)?;
         let target = disk.path(STAGING)?;
         files::remove_tree_synced(&target)?;
         files::create_private_dirs(&target)?;
@@ -680,7 +714,10 @@ impl Publication {
             let Some(meta) = metadata(&input)? else {
                 continue;
             };
-            if !used.insert(name) || metadata(&disk.path(name)?)?.is_some() {
+            if !used.insert(name)
+                || (metadata(&disk.path(name)?)?.is_some()
+                    && !destination.contains(Path::new(name)))
+            {
                 return Err(Error::Busy(item.to.clone()));
             }
             let entry = disk.path(Path::new(STAGING).join(staged_name(item)?))?;
@@ -695,11 +732,6 @@ impl Publication {
         let repairs = git::plan(&plan, &placed, disk)?;
         layout::publish(&Home::new(target.join("work"))?)?;
         let mut dropped = staged.dropped;
-        match staged.dropped_letters {
-            0 => {}
-            1 => dropped.push("A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along.".into()),
-            count => dropped.push(format!("{count} messages one of your agents sent to an agent on a machine that was away weren't delivered, and aren't brought along.")),
-        }
         match staged.dropped_waiting_messages {
             0 => {}
             1 => dropped.push("A message still waiting to reach an agent when the earlier Kuvo Code last quit wasn't kept: send it again.".into()),
@@ -708,12 +740,13 @@ impl Publication {
         files::sync_tree(&target, &disk.0)?;
         Ok(Self {
             version: VERSION,
-            phase: Phase::Keys,
+            phase: Phase::Install,
             plan,
             placed,
             identities,
             input,
             repairs,
+            destination,
             history: staged.history,
             merged: staged.merged,
             counts: staged.counts,
@@ -775,6 +808,7 @@ impl Publication {
                 return Err(invalid("A saved placement is missing its file identity."));
             }
         }
+        self.destination.validate()?;
         self.history.validate(run.account)?;
         self.repairs.validate()
     }
@@ -791,6 +825,18 @@ impl Publication {
         real: bool,
         complete: &mut impl FnMut(CutoverStep),
     ) -> Result<Outcome, Error> {
+        if self.phase == Phase::Install {
+            self.plan.write_journal(disk, "install")?;
+            if let Err(error) = self.destination.take(disk, self.plan.began, || {
+                complete(CutoverStep::FirstDisplacement)
+            }) {
+                self.advance(Phase::Abort, disk)?;
+                self.rollback(disk, run.account)?;
+                eprintln!("The move stopped at install: {error}");
+                return note_failure(disk, "failed", "install", FAILED);
+            }
+            self.advance(Phase::Keys, disk)?;
+        }
         if self.phase == Phase::Keys {
             self.plan.write_journal(disk, "keys")?;
             let checked = self
@@ -923,6 +969,9 @@ impl Publication {
             log.push_str(&value.to_string());
             log.push('\n');
         };
+        for effect in self.destination.actions(disk, self.plan.began)? {
+            record(effect);
+        }
         for &index in &self.placed {
             let item = &self.plan.placements[index];
             record(
@@ -963,6 +1012,7 @@ impl Publication {
         }
         keychain::uncopy(&self.plan, account)?;
         clean_key_tool_lock(disk)?;
+        self.destination.undo(disk, self.plan.began)?;
         files::remove_tree_synced(&disk.path(STAGING)?)?;
         files::remove_file_synced(&disk.path(JOURNAL)?)?;
         files::remove_file_synced(&disk.path(PENDING)?)?;
@@ -1075,42 +1125,6 @@ fn legacy_fence(disk: &Disk) -> Result<Option<Outcome>, Error> {
     }))
 }
 
-/// A predecessor could stop while making its private copy, before logging
-/// any file actions or creating a Keychain receipt. The source is still
-/// authoritative then. A journal with effects needs its own replay.
-fn recover_unplaced_legacy(disk: &Disk, account: &Path, app: &str) -> Result<(), Error> {
-    let journal = disk.path(JOURNAL)?;
-    if !metadata(&journal)?.is_some_and(|meta| meta.is_file()) {
-        return Ok(());
-    }
-    let Some(record) = json_at::<Value>(&journal).ok().flatten() else {
-        return Ok(());
-    };
-    let source = account.join("Library/Application Support").join(app);
-    let planned_for =
-        |field: &str, expected: &Path| record[field].as_str().map(Path::new) == Some(expected);
-    if record["v"] != 1
-        || record["way"] != "move"
-        || !matches!(
-            record["step"].as_str(),
-            Some("plan" | "install" | "clone" | "upgrade" | "database" | "rewrite" | "check")
-        )
-        || !planned_for("from", &source)
-        || !planned_for("to", &disk.0)
-        || metadata(&disk.path("updates/rehome/keychain.json")?)?.is_some()
-    {
-        return Ok(());
-    }
-    let actions = disk.path(ACTS)?;
-    if metadata(&actions)?.is_some_and(|meta| !meta.is_file() || meta.len() != 0) {
-        return Ok(());
-    }
-    files::remove_tree_synced(&disk.path(STAGING)?)?;
-    files::remove_file_synced(&actions)?;
-    files::remove_file_synced(&journal)?;
-    Ok(())
-}
-
 fn note_failure(
     disk: &Disk,
     result: &'static str,
@@ -1150,6 +1164,13 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn stamp(time: u64) -> Result<String, Error> {
+    Ok(jiff::Timestamp::from_millisecond(time as i64)
+        .map_err(io::Error::other)?
+        .strftime("%Y-%m-%dT%H-%M-%S-%3fZ")
+        .to_string())
 }
 
 fn write_json(path: &Path, value: &impl Serialize, pretty: bool) -> Result<(), Error> {

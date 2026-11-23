@@ -31,8 +31,8 @@ pub(crate) fn status(state: Option<&Value>) -> Value {
         "state":state["state"],"way":state["way"],"step":null,"tries":state["tries"].as_u64().unwrap_or_default(),"nextTry":state["nextTry"],
         "waitingSince":state["waitingSince"],"overdue":overdue,"failed":state["failed"],"movedAt":state["movedAt"],"keptUntil":state["keptUntil"],
         "owed":state["owed"].as_array().cloned().unwrap_or_default(),"asked":state["asked"],"from":state["from"],
-        "to":state["to"],"progress":null,"dropped":state["dropped"].as_array().cloned().unwrap_or_default(),
-        "steps":STEPS.iter().map(|&(step,title)|json!({"step":step,"title":title})).collect::<Vec<_>>(),"signIns":null
+        "to":state["to"],"progress":null,"dropped":state["dropped"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>(),
+        "steps":STEPS.iter().map(|&(step,title)|json!({"step":step,"title":title})).collect::<Vec<_>>(),"signIns":sign_ins_receipt(state)
     })
 }
 
@@ -67,6 +67,9 @@ pub fn rehome_status(home: &Home) -> Value {
         }
     };
     let mut status = status(state.as_ref());
+    if sign_ins_running(&disk) {
+        status["signIns"] = json!({"state":"asking"});
+    }
     if let Some(journal) = journal.filter(|journal| journal["step"] != "done") {
         let step = journal["step"].as_str().expect("validated move step");
         status["state"] = json!(if step == "clear" {
@@ -95,6 +98,31 @@ pub fn rehome_status(home: &Home) -> Value {
     status
 }
 
+fn sign_ins_receipt(state: &Value) -> Value {
+    let receipt = &state["signInsLast"];
+    if !receipt["at"].is_number() {
+        return Value::Null;
+    }
+    match receipt["state"].as_str() {
+        Some("done") => {}
+        Some("failed")
+            if state["owed"]
+                .as_array()
+                .is_some_and(|owed| owed.iter().any(|what| what == "passwords")) => {}
+        _ => return Value::Null,
+    }
+    let mut answer = json!({"state":receipt["state"],"at":receipt["at"]});
+    if receipt["message"].is_string() {
+        answer["message"] = receipt["message"].clone();
+    }
+    for field in ["added", "kept"] {
+        if receipt[field].is_number() {
+            answer[field] = receipt[field].clone();
+        }
+    }
+    answer
+}
+
 pub(crate) fn progress(step: &str) -> Value {
     let count = STEPS.len();
     if step == "settle" {
@@ -116,15 +144,19 @@ pub(crate) fn active_move_lock(disk: &Disk, include_self: bool) -> bool {
 }
 
 fn move_lock(disk: &Disk, include_self: bool) -> Option<bool> {
-    let lock = disk.path("updates/rehome/lock/pid").ok()?;
-    let pid = files::read(&lock).ok()??;
-    let pid = std::str::from_utf8(&pid).ok()?.trim().parse::<u32>().ok()?;
+    let pid = recorded_pid(disk, "updates/rehome/lock/pid")?;
     if !include_self && pid == std::process::id() {
         return Some(false);
     }
-    let folder = lock.parent()?;
+    #[cfg(target_os = "macos")]
+    let role = legacy_role(pid);
+    #[cfg(target_os = "macos")]
+    if matches!(role, Some(LegacyRole::SignIns | LegacyRole::Settle)) {
+        return Some(false);
+    }
+    let folder = disk.path("updates/rehome/lock").ok()?;
     let prefix = format!("owner-{pid}-");
-    let owned = crate::entries(folder)
+    let owned = crate::entries(&folder)
         .ok()?
         .into_iter()
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
@@ -136,29 +168,63 @@ fn move_lock(disk: &Disk, include_self: bool) -> Option<bool> {
                     owner.pid == pid && owner.state() == kuvo_os::process::ProcessState::Live
                 })
         });
-    Some(owned || legacy_lock_holder(pid))
+    #[cfg(target_os = "macos")]
+    let owned = owned || role == Some(LegacyRole::Moving);
+    Some(owned)
+}
+
+fn recorded_pid(disk: &Disk, name: &str) -> Option<u32> {
+    let bytes = files::read(&disk.path(name).ok()?).ok()??;
+    let pid = std::str::from_utf8(&bytes).ok()?.trim().parse().ok()?;
+    (pid > 1).then_some(pid)
+}
+
+fn sign_ins_running(_disk: &Disk) -> bool {
+    #[cfg(target_os = "macos")]
+    return ["updates/rehome/sign-ins.pid", "updates/rehome/lock/pid"]
+        .into_iter()
+        .filter_map(|path| recorded_pid(_disk, path))
+        .any(|pid| legacy_role(pid) == Some(LegacyRole::SignIns));
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 #[cfg(target_os = "macos")]
-fn legacy_lock_holder(pid: u32) -> bool {
-    if pid <= 1 {
-        return false;
-    }
-    let Ok(Some(owner)) = kuvo_os::process::ProcessIdentity::read(pid) else {
-        return false;
-    };
-    let Ok(command) = crate::mac::processes::command_line(pid) else {
-        return false;
-    };
-    let mut words = command.split_ascii_whitespace();
-    let moving = words.any(|word| word == "rehome")
-        && !words.any(|word| matches!(word, "--settle" | "--sign-ins"));
-    moving && owner.state() == kuvo_os::process::ProcessState::Live
+#[derive(PartialEq)]
+enum LegacyRole {
+    Moving,
+    SignIns,
+    Settle,
 }
 
-#[cfg(not(target_os = "macos"))]
-fn legacy_lock_holder(_pid: u32) -> bool {
-    false
+#[cfg(target_os = "macos")]
+fn legacy_role(pid: u32) -> Option<LegacyRole> {
+    let owner = kuvo_os::process::ProcessIdentity::read(pid).ok()??;
+    let command = crate::mac::processes::command_line(pid).ok()?;
+    if owner.state() != kuvo_os::process::ProcessState::Live {
+        return None;
+    }
+    let mut words = command.split_ascii_whitespace();
+    if !words.any(|word| word == "rehome") {
+        let install = command
+            .split_ascii_whitespace()
+            .any(|word| word == "install");
+        let predecessor = command.split_ascii_whitespace().any(|word| {
+            Path::new(word)
+                .file_name()
+                .is_some_and(|name| matches!(name.to_str(), Some("kuvo-link.js" | "main.ts")))
+        });
+        return (install && predecessor).then_some(LegacyRole::Moving);
+    }
+    Some(
+        words
+            .find_map(|word| match word {
+                "--sign-ins" => Some(LegacyRole::SignIns),
+                "--settle" => Some(LegacyRole::Settle),
+                _ => None,
+            })
+            .unwrap_or(LegacyRole::Moving),
+    )
 }
 
 fn now_ms() -> u64 {

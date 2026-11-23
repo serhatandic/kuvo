@@ -664,6 +664,36 @@ fn tagged_published_apps_resume_every_cutover_step() {
         );
         assert!(!previous.exists());
         reset();
+        put(&app.destination.join("box/earlier.md"), b"old note");
+        cut_child(
+            &app.home,
+            Some(&world),
+            "publication_child",
+            &format!("{:?}", CutoverStep::FirstDisplacement),
+        );
+        assert!(!app.destination.join(layout::FILE).exists());
+        assert!(!app.destination.join("box/earlier.md").exists());
+        let home = Home::new(app.destination.clone()).unwrap();
+        let outcome =
+            kuvo_move::mac::resume(&home, &app.home, &app.home.join("unused-system-account"))
+                .unwrap();
+        assert_eq!(
+            outcome.exit_code(),
+            0,
+            "{}",
+            serde_json::to_value(outcome).unwrap()
+        );
+        let kept = fs::read_dir(app.destination.join("trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read(kept.path().join("box/earlier.md")).unwrap(),
+            b"old note"
+        );
+        assert_eq!(snapshot(&app.source), original_source);
+        reset();
     }
 }
 
@@ -878,6 +908,42 @@ fn a_write_during_copy_is_carried_by_the_same_move() {
     assert_eq!(
         fs::read(app.destination.join("chats/c1/new.md")).unwrap(),
         b"written during copy"
+    );
+}
+
+#[test]
+fn sqlite_reader_sidecars_do_not_restart_the_move() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    let database = app.source.join("opencode/data/opencode");
+    fs::create_dir_all(&database).unwrap();
+    let mut checks = 0;
+    let outcome = publish(&app, |step| {
+        if step == CutoverStep::Staging(AppStep::Check) {
+            checks += 1;
+            put(
+                &database.join("opencode.db-shm"),
+                b"rebuildable SQLite index",
+            );
+            put(&database.join("opencode.db-wal"), b"");
+        }
+    });
+    assert_eq!(
+        outcome.exit_code(),
+        0,
+        "{:?}",
+        serde_json::to_value(outcome)
+    );
+    assert_eq!(checks, 1);
+    assert_eq!(
+        fs::read(database.join("opencode.db-shm")).unwrap(),
+        b"rebuildable SQLite index"
+    );
+    assert_eq!(
+        fs::metadata(database.join("opencode.db-wal"))
+            .unwrap()
+            .len(),
+        0
     );
 }
 
