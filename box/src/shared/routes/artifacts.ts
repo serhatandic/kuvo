@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 // What a box's agents made (PROTOCOL.md, `kuvo/artifacts`): a place's list and Timeline, one thing
 // with its versions, a version's bytes and what it changed, pinning, putting a version back, and
 // what the copies take. The coding agents' bridge keeps the record and answers
@@ -73,9 +74,9 @@ const OUTPUT_FIELDS = {
   latest: object({ n: number, hash: nullable(string), "reason?": string }),
 } as const;
 export const OUTPUT_COPY = { artifacts: list(object({ ...OUTPUT_FIELDS, sessions: list(string) })) };
-export const SETUP_OUTPUTS = object({
+export const SETUP_OUTPUTS = object({ ...PENDING_COMPUTERS,
   artifacts: list(object({
-    ...OUTPUT_FIELDS, computer: object({ id: string, name: string, "here?": bool }), away: bool, "lastSeen?": number,
+    ...OUTPUT_FIELDS, artifactId: string, computer: object({ id: string, name: string, "here?": bool }), away: bool, "lastSeen?": number,
   })),
   next: nullable(string),
 });

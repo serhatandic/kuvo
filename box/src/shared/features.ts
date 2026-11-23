@@ -162,6 +162,7 @@ export const FEATURES = [
   "line.merged-sessions",
   "line.merged-waiting",
   "line.peer-conversation",
+  "line.pending-computers",
   "line.setup-lists",
   "marketplace",
   "marketplace.skills.remove",

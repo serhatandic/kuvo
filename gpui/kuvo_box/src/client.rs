@@ -261,6 +261,11 @@ impl BoxClient {
         self.transport.take_back(ids);
     }
 
+    /// The nearest box that serves setup-wide reads. A standalone client reads them on its box.
+    pub(crate) fn setup_reader(&self) -> BoxClient {
+        self.transport.setup_client().unwrap_or_else(|| self.clone())
+    }
+
     /// The box of another of your computers, by its key, as this client reaches it (none where it
     /// doesn't yet).
     pub fn peer(&self, key: &str) -> Option<BoxClient> {

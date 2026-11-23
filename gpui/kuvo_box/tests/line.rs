@@ -191,6 +191,13 @@ impl Transport for StandIn {
                 let _ = live.send(format!("{}\n", json!({ "t": name, "d": { "artifacts": artifacts } })).into_bytes());
             }
         }
+        if let Some(name) = state.names.get("kuvo/setup/notices/events") {
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": {
+                "origins": [{"computer": {"id": "mini", "name": "Mac mini"}, "telling": true, "away": false}],
+                "notices": [{"id": "notice_1", "at": 15, "computer": {"id": "mini", "name": "Mac mini"},
+                    "notice": {"category": "finished"}}]
+            } })).into_bytes());
+        }
         let local_waiting = "kuvo/waiting/events";
         let setup_waiting = "kuvo/setup/waiting/counts/events";
         if let Some(name) = state.names.get(setup_waiting).or_else(|| state.names.get(local_waiting)) {
@@ -453,5 +460,24 @@ fn activity_outputs_follow_the_setup_topic_and_keep_the_owner() {
             assert_eq!(outputs.artifacts[0].computer.as_ref().unwrap().id, "mini");
         }
         kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn notifications_follow_one_setup_history_with_stable_origins() {
+    let box_ = StandIn::default();
+    let client = BoxClient::new(box_.clone());
+    client.line().set_timing(LineTiming { retry_after: Duration::ZERO, ..LineTiming::default() });
+    let follow = client.follow_setup_notices();
+    for _ in 0..2 {
+        match follow.next_blocking().expect("the notice history comes") {
+            kuvo_box::follow::Followed::Now(history) => {
+                assert_eq!(history.origins[0].computer.id, "mini");
+                assert_eq!(history.notices[0].computer.id, "mini");
+                assert_eq!(history.notices[0].told.id, "notice_1");
+            }
+            kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+        }
+        box_.restart();
     }
 }

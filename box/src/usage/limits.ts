@@ -459,7 +459,7 @@ export class Limits {
   }
 
   private saying() {
-    return JSON.stringify([this.shown(), this.rows(), this.notices()])
+    return JSON.stringify([this.shown(), this.rows(), this.notices(), this.peers?.pendingComputers() ?? []])
   }
 
   /** Reads what's due every minute, and listens to what turns hear. */
@@ -1081,12 +1081,13 @@ export class Limits {
     const rows = this.rows()
     this.awaitTurn(rows)
     const notices = this.notices()
-    const now = JSON.stringify([list, rows, notices])
     if (!own || !heard || this.now() - this.lastHeardSave >= 30_000) {
       if (own && heard) this.lastHeardSave = this.now()
       this.save()
     }
     if (own) this.peers?.tell(!heard)
+    const pendingComputers = this.peers?.pendingComputers() ?? []
+    const now = JSON.stringify([list, rows, notices, pendingComputers])
     if (now === this.said) return
     this.said = now
     emit("kuvo.limits.updated", { accounts: list, rows, notices, ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability() })
@@ -1161,6 +1162,7 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
     const usageUpdatedAt = Math.max(0, ...rows.map(row => row.usage?.updatedAt ?? 0)) || undefined
     return json({ data: {
       accounts: limits.shown(), services: limits.services(), rows, rail: railOf(rows), usageUpdatedAt,
+      pendingComputers: limits.peers?.pendingComputers() ?? [],
       refreshPending: !!limits.refreshing, refreshFailed: limits.refreshFailed, refreshCompletedAt: limits.refreshCompletedAt,
       notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices(),
     } })

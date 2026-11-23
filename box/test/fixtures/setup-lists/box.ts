@@ -14,6 +14,7 @@ import { connectionStarted, fenceBack } from "../../../src/link/relay/dropped";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
+import { tellMoving } from "../../../src/link/moves/elsewhere";
 import { shareArchived } from "../../../src/link/areas/settings-pages";
 import { shareOutputs } from "../../../src/link/areas/setup-outputs";
 import { shareNotices } from "../../../src/link/areas/notices";
@@ -24,6 +25,7 @@ import { shareSetupLists } from "../../../src/link/lists/setup";
 import { peerMail, receiveMail } from "../../../src/link/peers/mail";
 import { noteUnreachable } from "../../../src/link/peers/reach";
 import { readFrame, readRelay } from "../../../src/link/relay/frames";
+import { forwardsSoon, sendForwards } from "../../../src/link/work-queue/forward";
 import { pushQueues, takeWorkQueueMail } from "../../../src/link/work-queue/across";
 import { isObject } from "../../../src/shared/json";
 import { engineHandler } from "../../../src/link/server/router";
@@ -87,7 +89,8 @@ async function run() {
         await pauseForUser(command.waiting);
       }
       const frames: string[] = [];
-      const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); } };
+      const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); return true; } };
+      tellMoving(host);
       await Promise.all([shareSetupLists(host, readers), shareLibrary(host), shareNotices(host), shareOutputs(host), shareArchived(host, readers)]);
       return frames;
     }
@@ -159,6 +162,7 @@ if (command.kind === "conversation") {
     },
   } as LinkHost;
   machineLink.host = host;
+  forwardsSoon.send = () => sendForwards(host);
   let stop: AbortController | undefined;
   const waiting = new Map<string, string>();
   process.on("message", async (given: any) => {
@@ -174,7 +178,7 @@ if (command.kind === "conversation") {
         const frame = delivered?.kind === "deliver" && readFrame(delivered.payload);
         if (frame) receiveMail(frame.body, host, (sender, payload) => {
           const result = isObject(payload.workQueue)
-            ? takeWorkQueueMail(sender, payload.workQueue, host, () => ({ targets: [], bridge: true }))
+            ? takeWorkQueueMail(sender, payload.workQueue, host, () => ({ targets: [readers.readEngine()], bridge: Boolean(bridgePort) }))
             : peerMail(sender, payload, host);
           const work = payload.workQueue;
           const receipt = isObject(work) ? (work.ownerDraftReceipt ?? work.ownerMessageReceipt) as { operation: string } | undefined : undefined;

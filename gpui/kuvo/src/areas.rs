@@ -715,7 +715,7 @@ impl AreaView {
                 if let Some(FollowedDuringRead { said, .. }) = followed {
                     self.reachability = Reachability::Reached;
                     let before = ready(&self.bots);
-                    let kept = before.map(|bots| BotsSaid { bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false });
+                    let kept = before.map(|bots| BotsSaid { pending_computers: bots.pending_computers.clone(), bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false });
                     let said = said.keeping(kept.as_ref());
                     self.bots = Reading::Ready(Bots {
                         bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused,
@@ -740,7 +740,7 @@ impl AreaView {
                 let said = match &self.bots {
                     Reading::NotYet => Reading::NotYet,
                     Reading::Failed(why) => Reading::Failed(why.clone()),
-                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
+                    Reading::Ready(bots) => Reading::Ready(BotsSaid { pending_computers: bots.pending_computers.clone(), bots: bots.bots.clone(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
                 };
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));

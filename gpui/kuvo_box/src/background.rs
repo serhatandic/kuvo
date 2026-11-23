@@ -46,6 +46,8 @@ pub struct Subagent {
 /// The box's active session list and counts, including the conversation itself.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Activity {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub working: usize,
     pub asking: usize,
     pub sessions: Vec<ActivitySession>,

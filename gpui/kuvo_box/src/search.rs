@@ -44,7 +44,7 @@ impl BoxClient {
 
     /// What was found and which computers could not be searched.
     pub fn search_setup(&self, query: &str, limit: usize) -> Result<SearchAnswer> {
-        self.get(&format!("kuvo/setup/search?q={}&limit={limit}", crate::paths::query_value(query.trim())))
+        self.setup_reader().get(&format!("kuvo/setup/search?q={}&limit={limit}", crate::paths::query_value(query.trim())))
     }
 }
 

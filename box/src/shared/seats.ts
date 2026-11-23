@@ -28,6 +28,7 @@ export interface SeatBox {
   seats: boolean;
   /** Whether this peer can supply Insights and whether delivery currently reaches it. */
   insights?: "connected" | "away" | "unsupported";
+  limits?: "connected" | "away";
 }
 
 /** A bot on another of your computers, as the link tells the bridge: its computer (`box`, by key),

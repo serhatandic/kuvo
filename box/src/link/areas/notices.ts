@@ -7,6 +7,7 @@ import { NOTICE_COPY } from "../../shared/routes/box";
 import { listComputer } from "../lists/computer";
 import { peersOf } from "../peers/known";
 import { peerSnapshots } from "../peers/lists";
+import { pendingComputers } from "../peers/pending";
 import { readReach } from "../peers/reach";
 import { readLink } from "../state";
 import type { LinkHost } from "../relay/host";
@@ -51,6 +52,7 @@ export async function* setupNoticesRoute(context: RouteContext): AsyncGenerator<
     }));
     const copies = [here, ...peers.flat()];
     return {
+      pendingComputers: pendingComputers("line.merged-notices", key => copies.some(copy => copy.computer.id === key), link),
       origins: copies.map(({ notices: _, ...origin }) => origin),
       notices: copies.flatMap(({ notices, telling: _, ...origin }) => notices.map(notice => ({ ...notice, ...origin })))
         .sort((a, b) => a.at - b.at || a.computer.id.localeCompare(b.computer.id) || a.id.localeCompare(b.id)),

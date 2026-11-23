@@ -67,6 +67,7 @@ import { listComputer } from "../lists/computer";
 import { ownerWrite, sendOwnerWrite } from "../ownership/write";
 import { movedOf, peersOf } from "../peers/known";
 import { peerSnapshots } from "../peers/lists";
+import { pendingComputers } from "../peers/pending";
 import { readReach } from "../peers/reach";
 import type { LinkHost } from "../relay/host";
 import { macLink, readLink } from "../state";
@@ -631,14 +632,20 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
     archivedHere(context),
     Promise.all(peersOf(link).map(async peer => ({ peer, copy: await archiveCopies.read(peer.key) }))),
   ]);
-  const groups: SettingGroup[] = [...here.groups];
+  const local = listComputer(link);
+  const groups: SettingGroup[] = here.groups.map(group => ({
+    ...group, rows: group.rows.map(source => ({
+      ...source, computer: local,
+      ...(source.items ? { items: source.items.map(entry => ({ ...entry, computer: local })) } : {}),
+    })),
+  }));
   for (const { peer, copy } of peers) {
     if (!copy) continue;
     const away = reach[peer.key] !== undefined || Date.now() - copy.seen > 180_000;
     const computer = { id: peer.key, name: peer.name };
     const stamp = { computer, away, ...(away ? { lastSeen: copy.seen } : {}) };
-    const peerRow = (source: SettingItem, id: string, session: string, actions = source.actions) =>
-      item({ ...source, id, ...stamp, value: { peer: peer.key, session, revision: source.revision }, actions: away ? [] : actions });
+    const peerRow = (source: SettingItem, id: string, session: string) =>
+      item({ ...source, id, ...stamp, value: { peer: peer.key, session, revision: source.revision }, actions: away ? [] : source.actions });
     for (const group of copy.groups) {
       const id = `${peer.key}:${group.id}`;
       if (group.id === "archive-controls") {
@@ -660,13 +667,8 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
       if (rows.length) groups.push({ ...group, id, rows });
     }
   }
-  for (let index = 0; index < here.groups.length; index++) {
-    const group = groups[index]!;
-    groups[index] = { ...group, rows: group.rows.map(source => row({ ...source, computer: listComputer(link),
-      ...(source.items ? { items: source.items.map(entry => ({ ...entry, computer: listComputer(link) })) } : {}),
-    })) };
-  }
-  return { ...here, groups, ...(groups.length > here.groups.length ? { notes: here.notes?.filter(note => note.tone !== "quiet") } : {}) };
+  const pending = pendingComputers(ARCHIVE_FEATURE, key => peers.some(({ peer, copy }) => peer.key === key && copy !== null), link);
+  return { ...here, groups, pendingComputers: pending, ...(groups.length > here.groups.length ? { notes: here.notes?.filter(note => note.tone !== "quiet") } : {}) };
 }
 
 /** The owner checks the exact menu and confirmation revision it published before changing anything. */

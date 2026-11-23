@@ -6,6 +6,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Notifications and the Dock count include work from across your setup.
+- Activity Outputs includes files made by sessions delegated to your other computers.
+- Settings lists archived sessions across your setup and confirms deletion on the computer that owns them.
+- Searching inside conversations includes every computer that can answer when you search.
+
 - System notifications and the Dock count come from the setup’s nearest box.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.

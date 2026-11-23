@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 // The box itself (PROTOCOL.md, "Messages in a session" and "Updates"): what it is and runs, its
 // updates, the phones paired with it, whether you're at a computer, and who `&` can name.
 
@@ -529,7 +530,7 @@ export const NOTICE_COPY = { telling: bool, notices: list(TOLD_NOTICE) } as cons
 const NOTICES = object(NOTICE_COPY);
 const NOTICE_COMPUTER = object({ id: string, name: string });
 const NOTICE_ORIGIN = object({ computer: NOTICE_COMPUTER, telling: bool, away: bool, "lastSeen?": number });
-const SETUP_NOTICES = object({
+const SETUP_NOTICES = object({ ...PENDING_COMPUTERS,
   origins: list(NOTICE_ORIGIN),
   notices: list(object({ ...TOLD_NOTICE.object, computer: NOTICE_COMPUTER, away: bool, "lastSeen?": number })),
 });

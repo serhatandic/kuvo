@@ -53,6 +53,7 @@ pub const REQUIRED: &[&str] = &[
     "line.merged-notices",
     "line.merged-outputs",
     "line.merged-waiting",
+    "line.pending-computers",
     "marketplace",
     "messages.commands",
     "messages.compaction-words",

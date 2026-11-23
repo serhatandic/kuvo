@@ -1,4 +1,5 @@
 // The active rows and counts shared by the bot list and conversation activity.
+import { pendingComputers } from "../peers/pending";
 import { keptList, type Kept } from "../lists/sessions";
 import { readActivity } from "./activity-peers";
 import { peerIsAway, readReach } from "../peers/reach";
@@ -74,5 +75,6 @@ export function activityOf(rows: ReturnType<typeof activityFacts>, root?: string
   }
   sessions.sort((a, b) => a.session.localeCompare(b.session));
   lastSeenSessions.sort((a, b) => a.session.localeCompare(b.session));
-  return { ...counts, sessions, ...(lastSeenSessions.length ? { lastSeenSessions } : {}) };
+  const pending = pendingComputers("line.pending-computers", key => readActivity(key) !== undefined);
+  return { ...counts, sessions, ...(pending.length ? { pendingComputers: pending } : {}), ...(lastSeenSessions.length ? { lastSeenSessions } : {}) };
 }

@@ -12,6 +12,8 @@ use crate::follow::{Follow, Followed, follow_lines};
 /// The whole setup's recent notices, retaining their owning computer across reconnects.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SetupTold {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub origins: Vec<NoticeOrigin>,
     pub notices: Vec<SetupNotice>,
 }

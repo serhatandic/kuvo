@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 // Bots (PROTOCOL.md, `kuvo/bots`): the bots that live on the box asked, New Bot's templates, a bot
 // made, changed, deleted, brought here from another computer and told what it is now.
 
@@ -93,7 +94,7 @@ export const REFUSED_EDIT = object({ bot: string, box: string, computer: string,
  * computers, and what those refused lately (`bots.held`); and the bots that live on your other
  * computers, as each last told this box (`bots.elsewhere`). None of the three while this box
  * can't check what it holds: a client keeps what it last heard. */
-export const BOTS = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
+export const BOTS = object({ ...PENDING_COMPUTERS, bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
 /** An edit held here for the computer its bot lives on. */
 export const HELD = object({ held: HELD_EDIT });
 

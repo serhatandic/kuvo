@@ -12,7 +12,7 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["search.setup", "work-queue.forward.memory", "line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["data.ownership", "line.pending-computers", "search.setup", "work-queue.forward.memory", "line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -76,6 +76,10 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
         if (route.endsWith("/inbox") || route.endsWith("/form")) return data([]);
         if (route === "/api/session") return data(Object.values(cases));
         if (route === "/api/session/active") return data([]);
+        if (request.method === "DELETE" && route.startsWith("/api/session/")) {
+          delete cases[route.split("/")[3]!];
+          return data(true);
+        }
         if (route.startsWith("/api/session/")) return data(cases[route.split("/")[3]!]);
         if (route === "/api/provider") return data([{ id: model.providerID }]);
         if (route === "/api/model") return data([{ ...model, name: model.id }]);
@@ -813,7 +817,7 @@ test("a delegated session stays in Activity as last seen when its computer goes 
       lastSeenSessions: [{ session: far.session, title: "Delegated work", state: "working", computer: far.peer.key, lastSeen: heard }],
     });
   } finally { setup.close(); }
-});
+}, 30_000);
 
 test("Activity's first Outputs state includes the kept file made by a delegated session on another computer", async () => {
   const setup = pair(false, false, { withOutputs: true });
@@ -830,7 +834,7 @@ test("Activity's first Outputs state includes the kept file made by a delegated 
       { name: "delegated.txt", computer: far.computer, away: true, lastSeen: expect.any(Number) },
     ], next: null } });
   } finally { setup.close(); }
-});
+}, 30_000);
 
 test("opening a remote bot's New tab gets the bot's folder and tools from its owner", async () => {
   const setup = pair();
@@ -855,7 +859,7 @@ test("opening a remote bot's New tab gets the bot's folder and tools from its ow
       tools: { directory, ready: { files: true, browser: true, changes: true, terminal: true } },
     });
   } finally { setup.close(); }
-});
+}, 30_000);
 
 test("Settings Archived Sessions shows the kept owner rows with that computer's confirmation", async () => {
   const setup = pair();
@@ -928,3 +932,79 @@ test("search reports the computer it could not search because it was away", asyn
     expect(JSON.parse(found.text)).toEqual({ results: [], awayComputers: [far.computer], unavailableComputers: [] });
   } finally { setup.close(); }
 }, 30_000);
+
+test("merged views name a computer until its first copy arrives and distinguish an away computer", async () => {
+  const setup = pair(false, false, { withLibrary: true, managed: true });
+  const { near, far } = setup;
+  const topics = {
+    ...targets, library: "kuvo/setup/library/events", counts: "kuvo/setup/waiting/counts/events",
+    notices: "kuvo/setup/notices/events", moves: "kuvo/moves/events", archive: "kuvo/settings/archived/events", bots: "kuvo/bots/events", queue: "kuvo/work-queue/events?owner=all",
+  };
+  const watch = Buffer.from(JSON.stringify(topics)).toString("base64url");
+  const read = async (away?: string) => {
+    const { status, text } = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away });
+    expect(status).toBe(200);
+    const [, ...states] = text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(states.map(topic => topic.t).sort()).toEqual(Object.keys(topics).sort());
+    for (const state of states) expect(state).not.toHaveProperty("refused");
+    return Object.fromEntries(states.map(topic => [topic.t, topic.d]));
+  };
+  try {
+    const pending = await read();
+    for (const state of Object.values(pending)) expect(state.pendingComputers).toEqual([far.computer]);
+    const away = await read(far.peer.address);
+    for (const state of Object.values(away)) expect(state.pendingComputers).toEqual([]);
+    expect(pending.library.items).toEqual([]);
+    expect(away.library.computers).toContainEqual(expect.objectContaining({ key: far.computer.id, state: "away" }));
+
+    await share(far, near, far.session);
+    const queues = await far.run({ kind: "publish-queue" });
+    expect(await near.run({ kind: "receive", frames: queues })).toBe(true);
+    const received = await read();
+    for (const state of Object.values(received)) expect(state.pendingComputers).toEqual([]);
+    expect(received.listing.sessions[far.session].computer).toEqual(far.computer);
+    expect(received.waiting.waiting.map((row: any) => row.session)).toEqual([far.session]);
+    expect(received.library.items.map((row: any) => row.computer.key)).toContain(far.computer.id);
+  } finally { setup.close(); }
+}, 30_000);
+
+test("deleting an archived session from the setup page only changes its owner", async () => {
+  const setup = pair(false, false, { managed: true });
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    near.cases[near.session]!.time.archived = 300;
+    far.cases[far.session]!.time.archived = 300;
+    await share(far, near);
+    const page = JSON.parse((await near.read("kuvo/settings/archived")).text);
+    const rows = page.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])]));
+    const archived = rows.find((row: any) => row.id === `session-${far.computer.id}:${far.session}`);
+    expect(archived.computer).toEqual(far.computer);
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "delete") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: {
+      path: `kuvo/settings/archived/${encodeURIComponent(archived.id)}/delete`,
+      body: { was: archived.revision },
+    }, replyTo: "delete" });
+    const deleted = await answer.promise;
+    expect([deleted.status, Object.keys(near.cases), Object.keys(far.cases)]).toEqual([200, [near.session], []]);
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 45_000);

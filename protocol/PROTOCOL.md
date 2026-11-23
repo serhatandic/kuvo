@@ -296,17 +296,17 @@ fields. A successful response echoes the destination as `computer: {id, name}`. 
 box returns `409` before creating anything. A local start can omit `computer` or use `here`.
 
 
-#A conversation location read with `?tools=1` also returns `tools:{directory,ready:{files,changes,browser,terminal}}`. The absolute directory belongs to the conversation owner. Its capabilities determine readiness. An away owner can still supply its last known directory and all four tools are unavailable until it returns.
-
 With `line.merged-archives`, Settings Archived Sessions includes each computer's kept groups through `archiveCopy` mail. Rows name the `computer`; away copies add `away` and `lastSeen` and have no actions. Each computer supplies its own Delete All confirmation. The route sends the selected row and revision to its owner, which checks the revision and confirmation again.
 
 With `search.setup`, `GET kuvo/setup/search?q=<words>&limit=<n>` asks this box and the reachable peers to search their own conversations. The originating `computer:{id,name}` travels with each matching result. `awayComputers` names the peers known to be unreachable, and `unavailableComputers` names any other computer whose search did not complete. Queries and matching snippets travel in memory-only peer replies. Each owner keeps its own transcript and index.
 
+Merged list states share `pendingComputers: [{id,name}]` with `line.pending-computers`. It names reachable setup members whose first copy for that list is still on its way. A received empty copy is complete. Away members are reported separately, and a kept copy remains available with its own last-seen timestamp. An omitted or empty `pendingComputers` means no computer is still pending. The waiting counts combine coverage of conversations, bot activity and the Work Queue.
+
 ### Activity Outputs
 
-With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. Bytes and previews are read from the row's owner through that owner's artifact route. Peers share metadata only, through `outputCopy` mail.
+With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. The setup-unique row `id` stays stable across reader boxes. Bytes and previews use the row's `artifactId` through the owner's artifact route. Peers share metadata only, through `outputCopy` mail.
 
-### Opening a conversation through another box
+#### Opening a conversation through another box
 
 Feature `sessions.location`. Ask the nearest box for `GET kuvo/sessions/<session>/location`
 when opening a session by ID. The box uses its kept session list, newly confirmed starts,
@@ -316,6 +316,8 @@ returns `{on: {id, name, away, actions, lastSeen?, updating?}}`, using the merge
 computer and actions. A known away conversation still returns `200`. A lookup returns `404`
 with the box's message only if the session is unknown, or `503` if its local list cannot yet
 say. Use the peer's ID to address live reads and the owner's actions.
+
+A conversation location read with `?tools=1` also returns `tools:{directory,ready:{files,changes,browser,terminal}}`. The absolute directory belongs to the conversation owner. Its capabilities determine readiness. An away owner can still supply its last known directory and all four tools are unavailable until it returns.
 
 Feature `line.peer-conversation`. A bot's existing `session` is the ID of its conversation.
 On the nearest box, use `kuvo/peer-session/<computer>/<session>/<resource>` as a GET or a line

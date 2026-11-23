@@ -9,6 +9,8 @@ use crate::{BoxClient, Follow};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Outputs {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub artifacts: Vec<Artifact>,
     pub next: Option<String>,
 }
@@ -16,6 +18,8 @@ pub struct Outputs {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Artifact {
     pub id: String,
+    #[serde(rename = "artifactId")]
+    pub artifact_id: Option<String>,
     pub path: String,
     pub name: String,
     pub kind: String,
@@ -51,22 +55,24 @@ impl BoxClient {
         if let Some(before) = before {
             route.push_str(&format!("&before={}", segment(before)));
         }
-        self.get(&route)
+        self.setup_reader().get(&route)
     }
 
     pub fn follow_session_outputs(&self, session: &str) -> Follow<Followed<Outputs>> {
         let id = segment(session);
-        follow_lines(self, format!("kuvo/setup/outputs/events?session={id}"))
+        follow_lines(&self.setup_reader(), format!("kuvo/setup/outputs/events?session={id}"))
     }
 
     pub fn artifact_bytes(&self, artifact: &Artifact) -> Result<Vec<u8>> {
-        let id = segment(&artifact.id);
+        let id = segment(artifact.artifact_id.as_deref().unwrap_or(&artifact.id));
         let n = artifact.latest.n;
         let preview = if artifact.kind == "image" { "?preview=1" } else { "" };
+        let setup = self.setup_reader();
         let owner = match &artifact.computer {
             Some(computer) if artifact.away => return Err(Error::Unreachable(computer.name.clone())),
-            Some(computer) if !computer.here => self.peer(&computer.id).ok_or_else(|| Error::Unreachable(computer.name.clone()))?,
-            _ => self.clone(),
+            Some(computer) if !computer.here => setup.peer(&computer.id).ok_or_else(|| Error::Unreachable(computer.name.clone()))?,
+            Some(_) => setup,
+            None => self.clone(),
         };
         let response = owner.send(&Request::get(format!("kuvo/artifacts/{id}/versions/{n}{preview}")))?;
         if response.is_success() {

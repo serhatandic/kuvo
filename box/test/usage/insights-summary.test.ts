@@ -278,13 +278,13 @@ test("Insights waits for a new computer’s first complete copy and counts kept 
   try {
     await db.take([call("ses_local", "one")], priced, now)
     directory.set({ ...peers, boxes: [peer] })
-    expect((await summary()).state).toBe("loading")
+    expect(await summary()).toMatchObject({ state: "loading", pendingComputers: [{ id: "mini", name: "Mac mini" }] })
 
     await insights.take(peer.key, { kind: "insights", action: "page", after: 0, next: 1, more: false,
       epoch: "test", scanned: now, records: [call("ses_remote", "one", { computer: "mini" })] })
     directory.set({ ...peers, boxes: [{ ...peer, insights: "away" }] })
     const first = await summary()
-    expect(first.state).toBe("ready")
+    expect(first).toMatchObject({ state: "ready", pendingComputers: [] })
     expect(list(first, "computers").rows.map(row => [row.name, row.tokens]).sort()).toEqual([
       ["Mac mini", processed()], ["MacBook", processed()],
     ])

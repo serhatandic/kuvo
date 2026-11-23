@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { needsYouIn } from "../areas/waiting";
 import { allItems, queueFollowers as workQueueFollowers } from "../work-queue/store";
-import { itemsElsewhere } from "../work-queue/across";
+import { QUEUES_FEATURE, itemsElsewhere } from "../work-queue/across";
 import { botsWithNow } from "../areas/bots";
 import type { Infer } from "../../shared/shape";
 import { START_CATALOG, type SessionFacts, type SessionList } from "../../shared/routes/sessions";
@@ -20,11 +20,12 @@ import { followedLive } from "../follow";
 import { readAsks } from "../glance/asked";
 import { frozen } from "../moves/records";
 import { movedOf } from "../peers/known";
-import { peerListFollowers, peerSetupLists, pushSetupLists, type SetupLists } from "../peers/lists";
+import { SETUP_LIST_FEATURE, PEER_BOT_ACTIVITY, peerListFollowers, peerSetupLists, pushSetupLists, type SetupLists } from "../peers/lists";
 import type { LinkHost } from "../relay/host";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink } from "../state";
 import { listsHere } from "../work/model-rule";
+import { pendingComputers } from "../peers/pending";
 import { listComputer } from "./computer";
 import { listedProjects, projectPage, shownOfCursor, waitingSessions } from "./rule";
 import { answerFrom, archivedGroups, keepsList, keptList, listFollowers, listNow } from "./sessions";
@@ -174,7 +175,8 @@ type Topic = "session-list" | "sessions" | "waiting" | "queues" | "runs-on";
 async function mergedSessionList(context: RouteContext, link = readLink(), saved = peerSetupLists(link)): Promise<SessionList | undefined> {
   const computer = listComputer(link);
   const [peers, here] = await Promise.all([saved, readList(context, context.signal)]);
-  if (!here && !peers.length) return;
+  const pending = pendingComputers(SETUP_LIST_FEATURE, key => peers.some(({ origin }) => origin.computer.id === key), link);
+  if (!here && !peers.length && !pending.length) return;
   const listing: SessionList = here ? answerFrom(here, null) : {
     at: "peers", full: true, sessions: {}, projects: {}, projectOrder: [], startProject: null,
     needsYou: [], archivedGroups: [],
@@ -216,7 +218,7 @@ async function mergedSessionList(context: RouteContext, link = readLink(), saved
   }
   const needsYou = [...waiting.values()].sort((a, b) =>
     (listing.sessions[b.session]?.asked ?? 0) - (listing.sessions[a.session]?.asked ?? 0) || a.session.localeCompare(b.session));
-  return { ...listing, needsYou, archivedGroups: archived };
+  return { ...listing, needsYou, archivedGroups: archived, pendingComputers: pending };
 }
 
 async function merged(topic: Topic, context: RouteContext) {
@@ -233,6 +235,7 @@ async function merged(topic: Topic, context: RouteContext) {
     if (saved) reading.catch(() => {});
     const [peers, here] = await Promise.all([peerSetupLists(link), saved ? { ...saved, pending: true as const } : reading]);
     return {
+      pendingComputers: pendingComputers(SETUP_LIST_FEATURE, key => peers.some(({ origin }) => origin.computer.id === key), link),
       // (One that's away stays listed, said to be away since it was last seen: never picked.)
       computers: [{ computer, here: true, ...here }, ...peers.map(({ saved, origin }) => ({
         computer: origin.computer, ...saved.catalog,
@@ -242,6 +245,7 @@ async function merged(topic: Topic, context: RouteContext) {
   }
 
   const [peers, here] = await Promise.all([peerSetupLists(link), ownRows(context)]);
+  const pending = pendingComputers(SETUP_LIST_FEATURE, key => peers.some(({ origin }) => origin.computer.id === key), link);
   const boxes = here ? [{ saved: here, origin: local }, ...peers] : peers;
   const moved = movedOf(link);
   const owns = (id: string, owner: string) => !moved.has(id) || moved.get(id) === owner;
@@ -250,14 +254,15 @@ async function merged(topic: Topic, context: RouteContext) {
   switch (topic) {
     case "sessions":
       return {
+        pendingComputers: pending,
         sessions: boxes.flatMap(({ saved, origin }) => rows(saved.sessions, origin, row => row.id))
           .sort((a, b) => b.facts.updated - a.facts.updated || a.id.localeCompare(b.id)),
         projects: boxes.flatMap(({ saved, origin }) => saved.projects.map(project => ({ ...project, ...origin }))),
       };
     case "waiting":
-      return { waiting: boxes.flatMap(({ saved, origin }) => rows(saved.waiting, origin, row => row.session)).sort((a, b) => b.since - a.since) };
+      return { pendingComputers: pending, waiting: boxes.flatMap(({ saved, origin }) => rows(saved.waiting, origin, row => row.session)).sort((a, b) => b.since - a.since) };
     case "queues":
-      return { queues: boxes.flatMap(({ saved, origin }) => rows(saved.queues, origin, row => row.session)) };
+      return { pendingComputers: pending, queues: boxes.flatMap(({ saved, origin }) => rows(saved.queues, origin, row => row.session)) };
   }
 }
 
@@ -280,7 +285,7 @@ export async function* setupListsRoute(context: RouteContext, match: RegExpMatch
   }, signal, { every: 3_000 });
 }
 
-/** Counts for the workspace rail. The notifications client still follows each owner's own counts. */
+/** A single setup-wide count for the workspace rail and notification client. */
 export async function* setupWaitCountsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
@@ -297,10 +302,17 @@ export async function* setupWaitCountsRoute(context: RouteContext, match: RegExp
         if (bot.now.asking > 0 && listing.sessions[bot.session]?.computer?.id === origin.computer.id) bots.add(id);
       }
     }
+    const queue = itemsElsewhere("all", link);
+    const pending = [
+      ...(listing.pendingComputers ?? []),
+      ...pendingComputers(PEER_BOT_ACTIVITY, key => peers.some(({ saved, origin }) => origin.computer.id === key && saved.bots !== undefined), link),
+      ...pendingComputers(QUEUES_FEATURE, key => queue.computers.some(computer => computer.key === key), link),
+    ];
     return {
+      pendingComputers: [...new Map(pending.map(computer => [computer.id, computer])).values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
       sessions: waitingSessions(listing.sessions),
       bots: bots.size,
-      queue: needsYouIn([...allItems(), ...itemsElsewhere("all", link).items], asking),
+      queue: needsYouIn([...allItems(), ...queue.items], asking),
     };
   };
   if (!match[1]) {

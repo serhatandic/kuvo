@@ -33,6 +33,8 @@ pub struct Section {
 /// A section's page.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Page {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub id: String,
     pub title: String,
     #[serde(default)]

@@ -795,6 +795,8 @@ pub struct ResetLabel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
+    #[serde(default)]
+    pub pending_computers: Vec<SetupComputer>,
     #[serde(deserialize_with = "readable")]
     pub rows: Vec<Account>,
     /// The rings to draw, in order, as the box lays them out (`rail`); none from a box before cards.
@@ -1051,8 +1053,10 @@ pub struct HereAtWork {
 }
 
 /// How many things wait on you in each area, across the box, as it counts them (`kuvo/waiting`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Waiting {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<SetupComputer>,
     #[serde(default)]
     pub sessions: usize,
     #[serde(default)]

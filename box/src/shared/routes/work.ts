@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 // A bot's work (PROTOCOL.md, "Work"): the sessions it started and theirs, where each stands, the
 // asks it answered for them, what it started today, and the limits you set for it, if any; a
 // client stopping all of it; what's asked of a bot by its sessions, answered on the box; what a bot
@@ -99,7 +100,7 @@ export const UNANSWERING_LIST = object({ held: list(UNANSWERING) });
 
 const ACTIVITY_SESSION = { session: string, title: string, state: words("working", "asking"), "computer?": string, "subagent?": bool } as const;
 /** A conversation's own turn and the sessions below it, on any computer. */
-export const ACTIVITY = object({
+export const ACTIVITY = object({ ...PENDING_COMPUTERS,
   working: number, asking: number,
   sessions: list(object(ACTIVITY_SESSION)),
   "lastSeenSessions?": list(object({ ...ACTIVITY_SESSION, "computer?": string, lastSeen: number })),

@@ -8,6 +8,7 @@ import { listComputer } from "../lists/computer";
 import { readList } from "../lists/setup";
 import { peersOf } from "../peers/known";
 import { peerListFollowers, peerSetupLists, peerSnapshots } from "../peers/lists";
+import { pendingComputers } from "../peers/pending";
 import { readReach } from "../peers/reach";
 import type { LinkHost } from "../relay/host";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -74,23 +75,26 @@ async function setupOutputs(context: RouteContext, root: string, before: Order |
     localOutputs(sessions, context.signal),
     ...peersOf(link).map(async peer => ({ peer, copy: await outputCopies.read(peer.key) })),
   ]);
-  if (!here && !peers.some(({ copy }) => copy)) return;
-  const rows: Output[] = (here?.artifacts ?? []).map(({ sessions: _, ...row }) => ({
-    ...row, computer: { ...listComputer(link), here: true }, away: false,
-  }));
+  const pending = pendingComputers(FEATURE, key => peers.some(({ peer, copy }) => peer.key === key && copy !== null), link);
+  if (!here && !peers.some(({ copy }) => copy) && !pending.length) return;
+  const rows: Output[] = [];
+  const add = ({ sessions: _, ...row }: OutputCopy["artifacts"][number], computer: Output["computer"], away: boolean, seen?: number) => {
+    rows.push({ ...row, id: `${computer.id}:${row.id}`, artifactId: row.id, computer, away, ...(away ? { lastSeen: seen } : {}) });
+  };
+  const localComputer = { ...listComputer(link), here: true as const };
+  for (const row of here?.artifacts ?? []) add(row, localComputer, false);
   for (const { peer, copy } of peers) {
     if (!copy) continue;
     const away = reach[peer.key] !== undefined || now - copy.seen > 180_000;
-    for (const { sessions: owners, ...row } of copy.artifacts) {
-      if (owners.some(session => sessions.has(session))) rows.push({
-        ...row, computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: copy.seen } : {}),
-      });
+    const computer = { id: peer.key, name: peer.name };
+    for (const row of copy.artifacts) {
+      if (row.sessions.some(session => sessions.has(session))) add(row, computer, away, copy.seen);
     }
   }
   const sorted = rows.filter(row => !before || compare(order(row), before) > 0).sort((a, b) => compare(order(a), order(b)));
   const artifacts = sorted.slice(0, 200);
   const next = sorted.length > artifacts.length ? Buffer.from(JSON.stringify(order(artifacts.at(-1)!))).toString("base64url") : null;
-  return { artifacts, next };
+  return { artifacts, next, pendingComputers: pending };
 }
 
 export async function* setupOutputsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {

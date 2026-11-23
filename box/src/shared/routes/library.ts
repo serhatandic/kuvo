@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 // The Library (PROTOCOL.md, "Library"): what was handed over to you on each of your computers (a
 // file an agent showed, a picture it generated, a file you attached), gathered by the box a client
 // asks; an item's file and thumbnail; removing one from it. Times are seconds since 1970.
@@ -32,7 +33,7 @@ export const LIBRARY_COPY = {
   botNames: map(string),
   sources: object({ bots: list(object(BOT)), you: bool }),
 };
-export const LIBRARY = object({
+export const LIBRARY = object({ ...PENDING_COMPUTERS,
   items: list(LIBRARY_ITEM),
   more: bool,
   sources: object({ bots: list(object({ ...BOT, computer: string })), you: bool }),
