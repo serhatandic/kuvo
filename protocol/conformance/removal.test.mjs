@@ -322,6 +322,10 @@ test("a member forwards an unlink and receives the main’s saved decision", { t
     assert.equal(joined.code, 0, joined.log);
   }
   const ask = member.connect(await member.start().ready());
+  const work = ["bots/bot_retained/notes.md", "agents/sessions/ses_retained/messages.json"]
+    .map(relative => path.join(other.home, relative));
+  for (const file of work) write(file, "local work");
+  const target = other.connect(await other.start().ready());
   const load = home => readJSON(path.join(home, "run", "link.json"));
   const mainState = () => load(main.home).shared.membershipAndAccess;
   const [studio, workshop, lab] = mainState().value.boxes;
@@ -349,6 +353,16 @@ test("a member forwards an unlink and receives the main’s saved decision", { t
   const answered = await pending;
   assert.equal(answered.status, 200, answered.text);
   assert.deepEqual(answered.json.removal, { operation, state: "unlinked", accessRemoved: true });
+  await until(() => mainState().value.removals[lab.key].delivered
+    && load(member.home).shared?.membershipAndAccess?.value.removals?.[lab.key]?.delivered,
+    "Lab's acknowledgment did not reach both remaining computers.");
+  const released = (await target("GET", "kuvo/setup")).json;
+  assert.notEqual(released.setup, setup);
+  assert.equal(released.you.role, "primary");
+  assert.deepEqual(released.computers.map(peer => peer.key), [released.you.key]);
+  assert.deepEqual(load(other.home).phones, []);
+  assert.deepEqual(work.map(file => fs.readFileSync(file, "utf8")), ["local work", "local work"]);
+  assert.deepEqual((await ask("GET", "kuvo/setup")).json.computers.map(peer => peer.key), [studio.key, workshop.key]);
   const accepted = mainState();
   const replay = await primary("POST", route, { operation }, fromMac);
   assert.equal(replay.status, 200, replay.text);

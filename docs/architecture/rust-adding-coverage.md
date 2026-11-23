@@ -32,7 +32,7 @@ the races that span removal, backup, moves, and an authority change.
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
 | U4 | [A main with incoming devices off still revokes a device and delivers a machine unlink](../../box/crates/kuvo_setup/tests/live.test.mjs) | A Rust main reads the persisted off setting through the Mac Helper path. It refuses a new pairing, publishes a signed desktop revocation and finishes a machine unlink while the setting stays off. |
 | U5 | [Uninstalling a stopped machine clears its desktop identity and sign-ins but retains work](../../protocol/conformance/removal.test.mjs) | `uninstall --check` inspects a stopped machine. Uninstall retires the desktop and credential files, marks the machine off, preserves work and can be repeated. Live shutdown, startup entries, backup preparation and remote uninstall remain open. |
-| U6 | [A member forwards an unlink and receives the main’s saved decision](../../protocol/conformance/removal.test.mjs) | The relay holds main-to-member traffic through the commit. The forwarded request and a direct replay return the same signed decision without advancing the membership revision. |
+| U6 | [A member forwards an unlink and receives the main’s saved decision](../../protocol/conformance/removal.test.mjs) | The relay holds main-to-member traffic through the commit. Both remaining computers receive the acknowledgment. The removed computer runs standalone and keeps its session and bot files. Direct replay returns the same signed decision without advancing the membership revision. |
 | U7 | [The only computer commits a wipe and erases only its old installation](../../protocol/conformance/removal.test.mjs) | A standalone Unix resident returns the signed reinstall offer, stops accepting clients and retires its directory. A sibling reached through a symlink stays intact. Rust enrolls again at the same path with fresh keys. The scenario uses an isolated account, no keeper, and no configured backup. |
 | U8 | [A Rust wipe resumes against its detached directory and leaves a replacement alone](../../protocol/conformance/removal.test.mjs) | A fresh process can finish erasing the authorized directory after a crash. The receipt's stored device and inode must match, and the new installation at the original path stays intact. |
 | U9 | [Local uninstall refuses a running main computer before clearing its identity](../../protocol/conformance/removal.test.mjs) | Both binaries refuse before deleting the desktop identity or writing an off marker. The primary and online member keep their setup and answer afterward. |
@@ -174,7 +174,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 21 have coverage and 173 still have open or partial work. Of those, 133 list 2.3 as an owner (107 open, 26 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 22 have coverage and 172 still have open or partial work. Of those, 132 list 2.3 as an owner (106 open, 26 partial).
 
 ### computers-add
 
@@ -435,7 +435,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 21 h
 | [a scoped rename cannot overwrite a later name after primary handover](../../box/bridge-tests/setup-handover-access.test.js#L173) | Open | 2.3 |
 | [live permission replies from paired clients expire across pc5 reconnect](../../box/bridge-tests/setup-handover-access.test.js#L207) | Open | 2.2, 2.3 |
 | [clients share machine changes and revocations across three boxes](../../box/bridge-tests/setup-handover-access.test.js#L303) | Open | 2.3 |
-| [online unlink from a member keeps the target’s sessions and bots standalone](../../box/bridge-tests/setup-handover-removal.test.js#L14) | Open | 2.3, 2.4, 5.1 |
+| [online unlink from a member keeps the target’s sessions and bots standalone](../../box/bridge-tests/setup-handover-removal.test.js#L14) | U6 verifies the target’s standalone setup, unchanged session and bot files, the delivered acknowledgment on both other computers and replay of the original receipt. | — |
 | [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | Open | 2.3, 2.5 |
 | [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover.test.js#L2467) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a shutdown write accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover.test.js#L2467) | Open | 2.3, 2.5, 6.2 |
