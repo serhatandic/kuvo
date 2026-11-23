@@ -20,7 +20,10 @@ use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    home: &Path,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(resident) = Resident::bind(home).await? else {
         return Ok(());
     };
@@ -169,7 +172,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
     let result = resident
-        .serve(dispatcher, Arc::new(devices), super::shutdown())
+        .serve(dispatcher, Arc::new(devices), shutdown)
         .await;
     session_source.abort();
     result?;

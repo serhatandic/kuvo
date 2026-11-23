@@ -24,9 +24,25 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     let identity = (word(0), args.len()) == (Some("backup-identity"), 1);
     let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
+    let keeper = match (word(0), word(1), args.len()) {
+        (Some("keep"), _, 1) => Some(kuvo_keeper::Command::Run),
+        (Some("keep"), Some("select"), 3) => Some(kuvo_keeper::Command::Select(
+            word(2).ok_or("Expected a release target")?.parse()?,
+        )),
+        (Some("keep"), Some("pause"), 2) => Some(kuvo_keeper::Command::Pause),
+        (Some("keep"), Some("off"), 2) => Some(kuvo_keeper::Command::Off),
+        (Some("keep"), Some("handover"), 2) => Some(kuvo_keeper::Command::Handover),
+        _ => None,
+    };
+    let probe = match (word(0), word(1), args.len()) {
+        (Some("resident-info"), Some(pid), 2) => Some(pid.parse::<u32>()?),
+        _ => None,
+    };
+    let supervised =
+        cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
-        _ if join || identity => None,
+        _ if join || identity || keeper.is_some() || probe.is_some() || supervised => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
@@ -38,7 +54,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | install --join | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | keep [select <release> | handover | pause | off] | install --join | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -52,7 +68,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
         return Ok(ExitCode::SUCCESS);
     }
-    if !join {
+    if !join && keeper.is_none() && probe.is_none() {
         let platform = Platform::current();
         let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
         kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
@@ -62,7 +78,16 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        if join {
+        if let Some(keeper) = keeper {
+            kuvo_keeper::execute(&home, env::vars_os().collect(), keeper, shutdown()).await?;
+            Ok(())
+        } else if let Some(pid) = probe {
+            let reply = kuvo_keeper::resident_info(home.root(), pid)
+                .await?
+                .ok_or("The resident has not answered for this start")?;
+            println!("{reply}");
+            Ok(())
+        } else if join {
             use std::io::{BufRead as _, Read as _};
             let mut code = String::new();
             io::stdin().lock().take(4098).read_line(&mut code)?;
@@ -77,13 +102,20 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(())
         } else {
-            serve::run(home.root()).await
+            serve::run(home.root(), resident_shutdown(home.root(), supervised)).await
         }
     });
     // An addressed SSH exchange can finish while its stdin is still open. The
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
     runtime.shutdown_background();
     result.map(|()| ExitCode::SUCCESS)
+}
+
+async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
+    tokio::select! {
+        () = shutdown() => {},
+        () = kuvo_keeper::wait_for_stop(home), if supervised => {},
+    }
 }
 
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
