@@ -1086,6 +1086,7 @@ dependencies = [
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
+ "kuvo_store",
  "kuvo_wire",
  "percent-encoding",
  "reqwest",

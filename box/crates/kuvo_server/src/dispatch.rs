@@ -530,6 +530,9 @@ impl Dispatcher {
         if request.method != Method::GET || !request.body.is_empty() {
             return Err(unavailable_path());
         }
+        if let Some(activity) = self.0.activity.as_ref() {
+            activity(&request.caller);
+        }
         request.path = path::canonical(&request.path).ok_or_else(unavailable_path)?;
         let handler = self.0.socket.as_ref().ok_or_else(unavailable_path)?;
         handler(request, cancel).await

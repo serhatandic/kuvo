@@ -302,6 +302,7 @@ impl PreparedSetup {
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
+            next_digest: Instant::now(),
             phone_seen: None,
         };
         actor.write_card()?;
@@ -760,6 +761,7 @@ struct Owner {
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
+    next_digest: Instant,
     phone_seen: Option<Instant>,
 }
 

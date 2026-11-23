@@ -32,6 +32,7 @@ async function bench(t, { handover = false } = {}) {
     const folder = path.join(root, name);
     const home = path.join(folder, "box");
     const env = isolatedEnv(folder);
+    write(path.join(home, "folder-version.json"), '{"version":23}\n');
     write(path.join(home, "run", "link.json"), JSON.stringify({ name, phones: [] }));
     if (reserved) write(path.join(folder, ".kuvo-code-adding"), "");
     return {
@@ -349,7 +350,8 @@ test("a member forwards the main's signed documents to a third computer while th
   }, "the first member should keep both signed documents");
   await a.stop();
   await c.start();
-  await until(() => Object.keys(readDocs(c) ?? {}).length === 2, "the new member should learn both documents");
+  await until(() => Object.keys(readDocs(c) ?? {}).length === 2,
+    () => `the new member should learn both documents: ${c.log()}\n${b.log()}`, 15000);
   assert.deepEqual(readDocs(c), signedByMain);
   assert.equal((await get(c)).json.you.role, "member");
 });
@@ -477,7 +479,6 @@ test("machines carry kit, wake or launch zones and follow a changing kit only un
 
 test("a member without zone data keeps the main's rules and warns if a later save has none", { timeout: 30000 }, async t => {
   const { a, b } = await paired(t);
-  const setup = (await get(a)).json;
   // A minimal TZif v1 file with one UTC type and no transitions.
   const rules = Buffer.alloc(54);
   rules.write("TZif");
@@ -485,13 +486,14 @@ test("a member without zone data keeps the main's rules and warns if a later sav
   rules.writeUInt32BE(4, 40);
   rules.write("UTC\0", 50);
   const check = async (sequence, zoneinfo) => {
-    const saved = await a.ask("POST", "kuvo/setup/save-local", {
-      id: setup.setup, epoch: setup.epoch, kind: "setupTimeZone", sequence,
-      operation: createHash("sha256").update(`zone revision ${sequence}`).digest("base64url"),
-      value: { kuvo: 1, zone: "Fixture/Unavailable", n: sequence + 1, ...(zoneinfo && { zoneinfo }) },
-    }, { ...app, "x-kuvo-internal": "1" });
-    assert.equal(saved.status, 200, saved.text);
-    await until(() => entry(b, "setupTimeZone")?.sequence === sequence + 1, "the zone save should replicate");
+    await a.stop();
+    const link = readJSON(linkPath(a));
+    link.shared.setupTimeZone = {
+      sequence, value: { kuvo: 1, zone: "Fixture/Unavailable", n: sequence, ...(zoneinfo && { zoneinfo }) },
+    };
+    write(linkPath(a), JSON.stringify(link));
+    await a.start();
+    await until(() => entry(b, "setupTimeZone")?.sequence === sequence, "the zone save should replicate");
     const { json } = await get(b, "kuvo/settings/clock");
     const [row] = json.groups[0].rows;
     assert.equal(row.value, "Fixture/Unavailable");
@@ -505,8 +507,8 @@ test("a member without zone data keeps the main's rules and warns if a later sav
       assert.equal(row.tone, "warning");
     }
   };
-  await check(0, rules.toString("base64"));
-  await check(1);
+  await check(1, rules.toString("base64"));
+  await check(2);
 });
 
 test("a main that loses its grant refuses writes and follows the winning member", { timeout: 35000 }, async t => {

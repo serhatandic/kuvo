@@ -26,6 +26,7 @@ export async function bench(t) {
       const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off" };
       const engine = await standInEngine(folder, env);
       engines.push(engine);
+      write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
       const start = () => {

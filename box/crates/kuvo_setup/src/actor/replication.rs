@@ -91,6 +91,10 @@ impl Owner {
             self.publish(false).await?;
         } else {
             let primary = setup.position.primary.clone();
+            if self.next_digest <= Instant::now() {
+                self.next_digest = Instant::now() + Duration::from_secs(10);
+                self.publish(true).await?;
+            }
             self.send_authority(&primary, json!({
                 "kind": "available", "wantsTip": !self.link.leadership.contains_key(&setup.position.epoch),
             })).await;
@@ -370,10 +374,25 @@ impl Owner {
             self.send_doc(&peer, doc.envelope).await;
         }
         let has_later_tip = remote.is_some_and(|entry| entry.2 > setup.position.epoch);
-        if !reply && (behind || has_later_tip) {
-            self.send(&peer, json!({
-                "docs": {"have": document::header(&self.link, &self.exports), "reply": true}, "at": lease::wall(),
-            })).await;
+        let ours = document::header(&self.link, &self.exports);
+        let has_newer_export = given.iter().any(|entry| {
+            entry.0 == setup.sign
+                && matches!(entry.1, Kind::Peers | Kind::Phones)
+                && ours
+                    .iter()
+                    .find(|known| known.0 == entry.0 && known.1 == entry.1)
+                    .is_none_or(|known| {
+                        known.2 < entry.2 || (known.2 == entry.2 && known.3 > entry.3)
+                    })
+        });
+        if !reply && (behind || has_later_tip || has_newer_export) {
+            self.send(
+                &peer,
+                json!({
+                    "docs": {"have": ours, "reply": true}, "at": lease::wall(),
+                }),
+            )
+            .await;
         }
         Ok(())
     }
