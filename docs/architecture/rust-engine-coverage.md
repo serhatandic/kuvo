@@ -75,8 +75,8 @@ after the first message, restarts the resident, and checks delivery order.
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
 The first inventory recorded 294 cases. Across both inventories, 147 of
-411 declarations are covered, 87 are partial and 177 are gaps.
-Row 3.2 retains 133 partial or gap declarations.
+411 declarations are covered, 88 are partial and 176 are gaps.
+Row 3.2 retains 132 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -120,7 +120,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
 | `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 3.2 · 5 |
 | `box/test/conversation.test.ts` (3) | — | 3 | 1–2 | 3.2 · 1–3 |
-| `box/test/conversation-activity.test.ts` (2) | — | — | 1–2 | 3.2 · 1<br>4.1 · 2<br>5.1 · 2 |
+| `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
 | `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 1–4<br>6.3 · 1–6 |
@@ -165,8 +165,8 @@ transcript ID before returning the recovery copy and avoids repeating a
 confirmed removal. Edit includes retained files alongside carried files.
 A queued handoff records its native POST in the queue index. A reply and
 matching inbox or transcript establish acceptance. The view hides a
-delivered message while its handoff backup persists. Direct sends journal the original
-request before posting. On retry the resident checks the saved answer, the
+delivered message while its handoff backup persists. Direct sends journal
+the original request before posting. On retry the resident checks the saved answer, the
 box queue, the OpenCode inbox and then the exact transcript ID. The journal has
 its own `run/prompt-receipts` family. Fresh session facts publish to the peer
 publisher through an in-memory watch and retain a compatible list on disk.

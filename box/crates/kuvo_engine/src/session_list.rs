@@ -1,5 +1,7 @@
 //! A local session list that can be followed by the line and read by the peers crate.
 
+mod activity;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -27,6 +29,8 @@ use crate::{
     lifetime::{Demand, Lease},
     sessions::{Session, typed},
 };
+
+pub use activity::{Activity, ActivityState};
 
 #[derive(Clone)]
 pub struct LocalSessions {
@@ -1108,7 +1112,8 @@ fn archived_groups(sessions: &Sessions, projects: &Projects, saved: &[Project]) 
                     .get(directory)
                     .and_then(|project| project["name"].as_str())
                     .or_else(|| {
-                        saved.iter()
+                        saved
+                            .iter()
                             .find(|project| project.directory == directory)
                             .and_then(|project| project.name.as_deref())
                     })

@@ -72,7 +72,7 @@ pub use ownership::{
 pub use search::{
     PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
-pub use session_list::LocalSessions;
+pub use session_list::{Activity, ActivityState, LocalSessions};
 pub use session_move::{MoveEngineError, SessionMove};
 pub use waiting::PeerWaiting;
 

@@ -21,9 +21,9 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use kuvo_engine::{
-    AgentCatalog, AgentModel, AgentModelSource, AttachmentConversation, AttachmentRead,
-    AttachmentSource, AutoModel, CatalogRead, Engine, ModelAccount, ModelSpeed, Timing,
-    pinned_version,
+    ActivityState, AgentCatalog, AgentModel, AgentModelSource, AttachmentConversation,
+    AttachmentRead, AttachmentSource, AutoModel, CatalogRead, Engine, LocalSessions, ModelAccount,
+    ModelSpeed, Timing, pinned_version,
 };
 use kuvo_os::process::ProcessIdentity;
 use kuvo_server::{
@@ -58,6 +58,7 @@ fn main() {
             scenarios().await;
             interrupted_inbox_transfer().await;
             attachment_retention().await;
+            local_background_activity().await;
             coding_agent_models().await;
             external_asks().await;
             peer_waiting().await;
@@ -71,6 +72,7 @@ struct Server {
     task: JoinHandle<io::Result<()>>,
     dispatcher: kuvo_server::Dispatcher,
     engine: Engine,
+    sessions: LocalSessions,
     url: String,
     password: String,
     client: reqwest::Client,
@@ -102,7 +104,7 @@ impl Server {
         )
         .unwrap();
         let engine = configure(engine);
-        engine.register(&mut routes);
+        let sessions = engine.register(&mut routes);
         let dispatcher = routes.build(LineTiming::default());
         let stop = CancellationToken::new();
         let url = format!("127.0.0.1:{}", resident.record().port);
@@ -118,6 +120,7 @@ impl Server {
             task,
             dispatcher,
             engine,
+            sessions,
             url,
             password,
             client,
@@ -389,12 +392,12 @@ async fn scenarios() {
         call.method = vector["method"].as_str().unwrap_or("GET").parse().unwrap();
         let answer = server.dispatcher.dispatch(call, cancel.clone()).await;
         assert!(answer.status.is_success(), "{vector}: {}", answer.status);
-        drop(answer);
         assert_eq!(
-            fs::read_to_string(work.join("last-path")).unwrap(),
+            answer.headers[header::CACHE_CONTROL].to_str().unwrap(),
             format!("/{forwarded}"),
             "{vector}"
         );
+        drop(answer);
     }
 
     let refusal = server
@@ -613,6 +616,82 @@ async fn attachment_retention() {
     assert!(!files.join("ses_sourceWin").exists());
     assert!(!files.join("ses_branch").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
+    server.stop().await;
+}
+
+async fn local_background_activity() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    fs::create_dir_all(home.join("workspace")).unwrap();
+    let rows = [
+        json!({"id":"ses_root","title":"Root","metadata":{"kuvo":{"bot":"bot_coordinator"}}}),
+        json!({"id":"ses_sub","title":"Child","parentID":"ses_root"}),
+        json!({"id":"ses_started","title":"Delegated","metadata":{"kuvo":{"startedBy":"ses_sub"}}}),
+        json!({"id":"ses_unrelated","title":"Other"}),
+        json!({"id":"ses_idle","title":"Done","parentID":"ses_root"}),
+    ];
+    fs::write(
+        home.join("workspace/attachments-list.json"),
+        serde_json::to_vec(&rows).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        home.join("workspace/active-sessions.json"),
+        br#"{"ses_root":true,"ses_sub":true,"ses_started":true,"ses_unrelated":true}"#,
+    )
+    .unwrap();
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    until(
+        || {
+            server
+                .sessions
+                .activity()
+                .iter()
+                .any(|row| row.session == "ses_started")
+        },
+        "the active sessions projection",
+    )
+    .await;
+    let current = server.sessions.activity();
+    assert!(current.iter().any(|row| row.session == "ses_root"));
+    let background: Vec<_> = current
+        .iter()
+        .filter(|row| row.works_under("ses_root"))
+        .map(|row| {
+            (
+                row.session.as_str(),
+                row.title.as_str(),
+                row.state,
+                row.subagent,
+                row.bot.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        background,
+        [
+            (
+                "ses_started",
+                "Delegated",
+                ActivityState::Working,
+                false,
+                Some("bot_coordinator")
+            ),
+            (
+                "ses_sub",
+                "Child",
+                ActivityState::Working,
+                true,
+                Some("bot_coordinator")
+            ),
+        ]
+    );
     server.stop().await;
 }
 
@@ -1115,7 +1194,7 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             json!({"message": "engine password required"}),
         );
     } else {
-        fs::write("last-path", req.uri().path_and_query().unwrap().as_str()).unwrap();
+        let route = req.uri().path_and_query().unwrap().as_str().to_owned();
         let text = |header| {
             req.headers()
                 .get(header)
@@ -1130,6 +1209,11 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session/active" if Path::new("active-sessions.json").exists() => {
+                let rows: Value =
+                    serde_json::from_slice(&fs::read("active-sessions.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
             "/api/session" if Path::new("attachments-list.json").exists() => {
                 let mut rows: Vec<Value> =
                     serde_json::from_slice(&fs::read("attachments-list.json").unwrap()).unwrap();
@@ -1231,6 +1315,10 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             "/api/pty/refused/connect" => answer.status = StatusCode::NOT_FOUND,
             _ => {}
         }
+        answer
+            .headers
+            .entry(header::CACHE_CONTROL)
+            .or_insert_with(|| route.parse().unwrap());
     }
     let mut response = Response::new(answer.body);
     *response.status_mut() = answer.status;
