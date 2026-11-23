@@ -10148,10 +10148,10 @@ var init_limits_rows = __esm(() => {
 });
 
 // box/src/usage/pace.ts
-var MINUTE2 = 60000, HOUR, NEW_PERIOD;
+var MINUTE2 = 60000, HOUR, RESET_JITTER;
 var init_pace = __esm(() => {
   HOUR = 60 * MINUTE2;
-  NEW_PERIOD = 5 * MINUTE2;
+  RESET_JITTER = 5 * MINUTE2;
 });
 
 // box/src/usage/notices.ts
@@ -34493,4 +34493,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 4c45d29548041e86f11a4d31213c00368d0a1f277e896383bf571c1a560449f4
+// Built from Packages/Box/src/agents 15ab360a9a73de1ca954f3cc8843c920b60118a53b697c0ea0537f5e2b9536c4

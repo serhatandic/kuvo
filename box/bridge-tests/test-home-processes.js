@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const file = fileURLToPath(import.meta.url);
 const PROCESS_SCOPE = "KUVO_TEST_HOME_PROCESS_SCOPE";
-const uid = process.getuid();
+const uid = process.getuid?.();
 const darwin = process.platform === "darwin";
 // Keep these outside test-safety's filesystem and process hooks.
 const { appendFileSync, copyFileSync, mkdtempSync, rmSync } = fs;

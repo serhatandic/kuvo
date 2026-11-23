@@ -186,3 +186,87 @@ test("an account with no numbers read yet has no ring, rather than an empty one"
   expect(rows.map((row) => row.title)).toEqual(["Antigravity", "Codex"])
   expect(rail.map((item) => item.title)).toEqual(["Codex"])
 })
+
+const WEEK = 7 * 24 * HOUR
+const weekly = (used: number, resetsAt = START + WEEK): LimitReading["windows"][number] =>
+  ({ id: "secondary", used, minutes: WEEK / MINUTE, resetsAt })
+
+async function firstLine(limits: Limits) {
+  return read_((await answer(limits)).rows[0]!.card.lines[0]!.words)
+}
+
+async function busyCodex(file?: string) {
+  const maker = () => account("codex", "default", () => ({ windows: [weekly(0.42)] }))
+  const { limits, clock } = box([maker()], file)
+  for (let minute = 0; minute <= 8 * 60; minute++) {
+    clock.now = START + minute * MINUTE
+    limits.hear("codex-test", weekly(0.42))
+  }
+  return { maker, limits, clock }
+}
+
+test("a weekly window read every minute still shows a forecast after eight hours", async () => {
+  const { limits } = await busyCodex()
+  expect(await firstLine(limits)).toBe("58% left · lasts until reset")
+})
+
+test("a busy weekly window keeps its forecast through a box restart", async () => {
+  const file = join(mkdtempSync(join(base, "weekly-")), "limits.json")
+  const { maker, clock } = await busyCodex(file)
+  expect(await firstLine(new Limits(() => [maker()], file, () => clock.now))).toBe("58% left · lasts until reset")
+})
+
+test("Codex keeps a weekly forecast when its reported reset time moves by a few minutes", async () => {
+  const { limits, clock } = box([account("codex", "default", () => ({ windows: [] }))])
+  for (const hour of [0, 2, 4, 6]) {
+    clock.now = START + hour * HOUR
+    limits.hear("codex-test", weekly(0.42))
+  }
+  clock.now += MINUTE
+  limits.hear("codex-test", weekly(0.42, START + WEEK + 6 * MINUTE))
+  expect(await firstLine(limits)).toBe("58% left · lasts until reset")
+  clock.now += MINUTE
+  limits.hear("codex-test", weekly(0.42))
+  expect(await firstLine(limits)).toBe("58% left · lasts until reset")
+})
+
+test("a downward correction within the same week keeps the forecast", async () => {
+  const { limits, clock } = box([account("claude", "default", () => ({ windows: [] }))])
+  for (const hour of [0, 2, 4, 6]) {
+    clock.now = START + hour * HOUR
+    limits.hear("claude-test", { ...weekly(0.45), id: "seven_day" })
+  }
+  clock.now += MINUTE
+  limits.hear("claude-test", { ...weekly(0.42), id: "seven_day" })
+  expect(await firstLine(limits)).toBe("58% left · lasts until reset")
+})
+
+test("a new quota period starts its own forecast after the last reset", async () => {
+  const { limits, clock } = box([account("codex", "default", () => ({ windows: [] }))])
+  const reset = START + 24 * HOUR
+  for (let minute = 0; minute <= 8 * 60; minute++) {
+    clock.now = START + minute * MINUTE
+    limits.hear("codex-test", weekly(0.42, reset))
+  }
+  expect(await firstLine(limits)).toBe("58% left · lasts until reset")
+  clock.now = reset + MINUTE
+  limits.hear("codex-test", weekly(0.03, reset + WEEK))
+  expect(await firstLine(limits)).toBe("97% left · resets {+11520m}")
+  for (const hour of [2, 4, 7]) {
+    clock.now = reset + hour * HOUR
+    limits.hear("codex-test", weekly(0.03, reset + WEEK))
+  }
+  expect(await firstLine(limits)).toBe("97% left · lasts until reset")
+})
+
+test("Antigravity's unused pools can forecast while Google keeps moving their reset times", async () => {
+  let now = START
+  const { limits, clock } = box([account("antigravity", "default", () => ({
+    windows: [{ id: "gemini-weekly", name: "Gemini · Weekly", minutes: WEEK / MINUTE, used: 0, resetsAt: now + WEEK }],
+  }))])
+  for (let minute = 0; minute <= 360; minute += 10) {
+    now = clock.now = START + minute * MINUTE
+    await limits.tick()
+  }
+  expect(await firstLine(limits)).toBe("100% left · lasts until reset")
+})

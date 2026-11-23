@@ -6997,7 +6997,9 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
       named for what they count, then each model's; each `{window, title, left, tone, words}`:
       `left`, what's left (0 to 1) for its bar; `tone` `calm`, `warning` or `danger`.
     - How fast it's going: the box keeps each window's readings (from any of your computers, as the
-      row has them; through a restart, in `limits.json`'s `paces`) and, where it has three or more
+      row has them; through a restart, in `limits.json`'s `paces`). It keeps readings spaced by
+      time so frequent reads preserve the stretch. Older readings, a moved reset time, and a
+      lower reading alone don't start a new trail. Where the box has three or more readings
       over a quarter of a recent stretch (a fifth of the window, half an hour to a day; a quarter
       hour at least), takes the rate between the stretch's first and last. Used up: "Back at
       {reset}" (`danger`). On pace to be used up before it starts over: "38% left · runs out

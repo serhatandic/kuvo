@@ -259,3 +259,181 @@ fn a_link_to_another_computer_as_the_app_opens_shows_that_computers_session(cx: 
     assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()));
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_releases"));
 }
+
+/// Opens `bot`'s conversation from Bots, as a click on its row would.
+fn open_bot(home: &Entity<Home>, bot: &str, cx: &mut VisualTestContext) {
+    let here = workspace(home, cx);
+    here.update_in(cx, |workspace, window, cx| workspace.show_area(Area::Bots, window, cx));
+    cx.run_until_parked();
+    let session = here.read_with(cx, |workspace, cx| match workspace.area_view(Area::Bots).unwrap().read(cx).bots() {
+        kuvo::areas::Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|each| each.session.clone())
+            .or_else(|| bots.elsewhere.iter().find(|each| each.id == bot).map(|each| each.session.clone())).unwrap(),
+        _ => panic!("bots read"),
+    });
+    here.update_in(cx, |workspace, window, cx| workspace.open_bot_chat(bot, &session, None, window, cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "bot-chat") && !shown(cx, "bot-head"), "its conversation on screen, not its page");
+}
+
+/// Bots read again, as the box's follow does once it answers.
+fn bots_read_again(home: &Entity<Home>, cx: &mut VisualTestContext) {
+    let view = workspace(home, cx).read_with(cx, |workspace, _| workspace.area_view(Area::Bots).unwrap().clone());
+    view.update(cx, |view, cx| view.shown(cx));
+    cx.run_until_parked();
+}
+
+/// A stand-in whose Mira lives on devbox, another of your computers.
+fn mira_on_devbox() -> StandIn {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.move_bot("bot_mira", "devbox");
+    stand_in.peer_box("key_devbox").unwrap().add_bot("bot_mira", "Mira", json!({ "color": "lime", "shape": "pebble", "face": "calm" }));
+    stand_in
+}
+
+fn bot_chat(home: &Entity<Home>, cx: &mut VisualTestContext) -> Option<String> {
+    workspace(home, cx).read_with(cx, |workspace, _| workspace.bot_chat().map(|(bot, _)| bot.to_owned()))
+}
+
+#[gpui::test]
+fn a_bots_chat_opens_again_when_its_box_answers_only_after_the_window_opens(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        open_bot(&home, "bot_mira", cx);
+    }
+    // The app opens before this Mac's box answers (the box still starting): Bots can't be read yet.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.bots_readable(false);
+    let (home, cx) = open_over(cx, &path, stand_in.clone(), |_, _| {});
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.area()), Area::Bots);
+    stand_in.bots_readable(true);
+    bots_read_again(&home, cx);
+    assert_eq!(bot_chat(&home, cx).as_deref(), Some("bot_mira"), "its conversation, not its page");
+    assert!(shown(cx, "bot-chat") && !shown(cx, "bot-head"), "its conversation on screen, not its page");
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["bot"], "bot_mira");
+}
+
+#[gpui::test]
+fn another_computers_bots_chat_opens_again_not_its_page(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open_over(cx, &path, mira_on_devbox(), |_, _| {});
+        open_bot(&home, "bot_mira", cx);
+    }
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["bot"], "bot_mira");
+    let (home, cx) = open_over(cx, &path, mira_on_devbox(), |_, _| {});
+    assert_eq!(bot_chat(&home, cx).as_deref(), Some("bot_mira"), "its conversation, not its page");
+    assert!(shown(cx, "bot-chat") && !shown(cx, "bot-head"), "its conversation on screen, not its page");
+}
+
+#[gpui::test]
+fn another_computers_bots_chat_opens_again_once_the_box_answers(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open_over(cx, &path, mira_on_devbox(), |_, _| {});
+        open_bot(&home, "bot_mira", cx);
+    }
+    let stand_in = mira_on_devbox();
+    stand_in.bots_readable(false);
+    let (home, cx) = open_over(cx, &path, stand_in.clone(), |_, _| {});
+    stand_in.bots_readable(true);
+    bots_read_again(&home, cx);
+    assert_eq!(bot_chat(&home, cx).as_deref(), Some("bot_mira"), "its conversation, not its page");
+    assert!(shown(cx, "bot-chat") && !shown(cx, "bot-head"), "its conversation on screen, not its page");
+}
+
+#[gpui::test]
+fn the_work_queue_opens_again_in_front(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.rail_pressed(Area::Queue, window, cx));
+        cx.run_until_parked();
+    }
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["area"], "queue");
+    let (home, cx) = open(cx, &path);
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.area()), Area::Queue);
+    assert!(shown(cx, "rail-queue"));
+}
+
+/// A wheel's turn over the conversation, as the window routes it (up: positive).
+fn wheel(home: &Entity<Home>, cx: &mut VisualTestContext, up: f32) {
+    let view = workspace(home, cx).read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
+    let at = keys.iter().rev().find_map(|key| cx.debug_bounds(Box::leak(format!("entry-{key}").into_boxed_str()))).expect("a message on screen").center();
+    cx.simulate_event(gpui::ScrollEvent { position: at, delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(up))), ..Default::default() });
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+/// The row at the top of the open conversation, and whether it follows the latest.
+fn reading(home: &Entity<Home>, cx: &mut VisualTestContext) -> (String, bool) {
+    let view = workspace(home, cx).read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    view.read_with(cx, |view, _| {
+        let top = view.list().list_state().logical_scroll_top();
+        (view.entries().get(top.item_ix).map(|entry| entry.key().to_owned()).unwrap_or_default(), view.list().is_following())
+    })
+}
+
+#[gpui::test]
+fn a_conversation_read_up_from_its_end_opens_again_where_it_was_read(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let read_up = {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_lighthouse", window, cx));
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        for _ in 0..6 {
+            wheel(&home, cx, 400.);
+        }
+        let (row, following) = reading(&home, cx);
+        assert!(!following, "read up from the end");
+        row
+    };
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["reading"]["ses_lighthouse"]["row"], read_up.as_str(), "kept as it went");
+
+    let (home, cx) = open(cx, &path);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(opened(&home, cx).as_deref(), Some("ses_lighthouse"));
+    assert_eq!(reading(&home, cx), (read_up.clone(), false), "where it was read, not its end");
+    assert!(shown(cx, &format!("entry-{read_up}")));
+}
+
+#[gpui::test]
+fn a_conversation_at_its_end_opens_again_at_its_end(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_lighthouse", window, cx));
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        wheel(&home, cx, 400.);
+        let jump = cx.debug_bounds("jump-to-latest").expect("the way back to the latest");
+        cx.simulate_click(jump.center(), gpui::Modifiers::default());
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(reading(&home, cx).1, "back at the end");
+    }
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["reading"]["ses_lighthouse"], Value::Null);
+    let (home, cx) = open(cx, &path);
+    assert!(reading(&home, cx).1, "following its latest");
+}
+
+#[gpui::test]
+fn the_side_panel_opens_again_as_it_was(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_limits", window, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-alt-0");
+        cx.run_until_parked();
+        assert!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.is_panel_open()));
+    }
+    let (home, cx) = open(cx, &path);
+    assert!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.is_panel_open()), "open, as it was");
+    assert!(shown(cx, "side-panel"));
+}

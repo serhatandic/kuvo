@@ -14,7 +14,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
 import type { Clock } from "../../src/agents/groups/peer"
-import { Limits, LimitsProblem, limitsRoutes, type LimitedAccount, type LimitsSource } from "../../src/usage/limits"
+import { Limits, LimitsProblem, identityOf, limitsRoutes, type LimitedAccount, type LimitsSource } from "../../src/usage/limits"
 import { LimitsPeers, PEER_AWAY, TELL_AGAIN, type LimitsMail } from "../../src/usage/limits-peers"
 import type { LimitRow } from "../../src/usage/limits-rows"
 import { subscribe } from "../../src/agents/events"
@@ -648,4 +648,61 @@ describe("restoring peer readings", () => {
     expect(heard.at(-1)?.rows.find((row: LimitRow) => row.service === "openrouter")?.balance).toEqual({ left: 7.7, limit: 50, unit: "usd" })
   })
 
+})
+
+test("a weekly forecast combines both computers' readings and survives a fallback to an older reading", async () => {
+  const who = "anthropic:shared"
+  const account = claude(maker, "mac", who)
+  delete account.limits.read // On this Mac, Claude tells its limits through turns.
+  const mac = new Box("key-mac", "MacBook", relay, [account])
+  const other = new Box("key-mini", "Mini", relay, [])
+  const start = time
+  const resetsAt = start + 7 * 24 * 60 * MINUTE
+  const window = { id: "seven_day", used: 0.42, minutes: 10_080, resetsAt }
+  const readPeer = async (windows = [{ ...window, read: time, source: "turn" as const }]) => {
+    const mail = { kind: "limits", at: time, accounts: [{ provider: "claude-code", agent: "claude", service: "claude", identity: identityOf(who), windows }] }
+    await peerRoutes(mac.parts, "POST", ["mail"], async () => ({ from: other.key, mail }))
+  }
+  try {
+    await mac.meet([other])
+    await mac.limits.tick()
+    mac.limits.hear("claude-code", window)
+    pass(2 * 60 * MINUTE)
+    await readPeer()
+    pass(2 * 60 * MINUTE)
+    mac.limits.hear("claude-code", { ...window, used: 0.38 })
+    pass(2 * 60 * MINUTE)
+    await readPeer()
+    const forecast = async () => (await mac.route()).rows.map(row => row.card!.lines[0]!.words.map(word => word.text).join(""))
+    expect(await forecast()).toEqual(["58% left · lasts until reset"])
+    await readPeer([])
+    pass(MINUTE)
+    await readPeer()
+    expect(await forecast()).toEqual(["58% left · lasts until reset"])
+  } finally {
+    mac.stop()
+    other.stop()
+  }
+})
+
+test("a box still shows the weekly forecast it learned from a peer after it restarts", async () => {
+  const mac = new Box("key-mac", "MacBook", relay, [])
+  const other = new Box("key-mini", "Mini", relay, [])
+  const resetsAt = time + 7 * 24 * 60 * MINUTE
+  try {
+    await mac.meet([other])
+    for (let reading = 0; reading < 4; reading++) {
+      const window = { id: "seven_day", used: 0.42, minutes: 10_080, resetsAt, read: time, source: "turn" }
+      const mail = { kind: "limits", at: time, accounts: [{ provider: "claude-code", agent: "claude", service: "claude", identity: identityOf("anthropic:shared"), windows: [window] }] }
+      await peerRoutes(mac.parts, "POST", ["mail"], async () => ({ from: other.key, mail }))
+      if (reading < 3) pass(2 * 60 * MINUTE)
+    }
+    mac.start()
+    await mac.meet([other])
+    const { rows } = await mac.route()
+    expect(rows.map(row => row.card!.lines[0]!.words.map(word => word.text).join(""))).toEqual(["58% left · lasts until reset"])
+  } finally {
+    mac.stop()
+    other.stop()
+  }
 })
