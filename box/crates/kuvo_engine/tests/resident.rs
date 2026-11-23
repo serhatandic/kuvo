@@ -50,7 +50,10 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("serve") {
         executor.block_on(fixture());
     } else {
-        executor.block_on(scenarios());
+        executor.block_on(async {
+            scenarios().await;
+            interrupted_inbox_transfer().await;
+        });
     }
 }
 
@@ -58,6 +61,7 @@ struct Server {
     stop: CancellationToken,
     task: JoinHandle<io::Result<()>>,
     dispatcher: kuvo_server::Dispatcher,
+    engine: Engine,
     url: String,
     password: String,
     client: reqwest::Client,
@@ -99,6 +103,7 @@ impl Server {
             stop,
             task,
             dispatcher,
+            engine,
             url,
             password,
             client,
@@ -538,6 +543,81 @@ async fn fixture() {
     }
 }
 
+// The old inbox is only on the fixture engine; the saved prefix uses the resident's real files.
+async fn interrupted_inbox_transfer() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    let entries = ["A", "B", "C"].map(|word| {
+        json!({ "id": format!("msg_{word}"), "type": "user", "delivery": "queue", "payload": { "text": word } })
+    });
+    fs::write(work.join("inbox-mode"), []).unwrap();
+    fs::write(
+        work.join("inbox.json"),
+        serde_json::to_vec(&entries).unwrap(),
+    )
+    .unwrap();
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/session?limit=1").await.status(), 200);
+
+    assert!(
+        server.engine.keep_inboxes().await.is_err(),
+        "incomplete inventory must defer the switch"
+    );
+    assert!(!home.join("run/queues.json").exists());
+    fs::write(work.join("complete-inventory"), []).unwrap();
+    fs::write(work.join("refuse-B"), []).unwrap();
+    assert!(server.engine.keep_inboxes().await.is_err());
+
+    let session = "kuvo/sessions/ses_inbox";
+    let queue = server
+        .get(&format!("{session}/queue"))
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(queue["waiting"][0]["id"], "msg_A");
+    assert_eq!(queue["waiting"][1]["id"], "msg_B");
+    let sent = server
+        .request(reqwest::Method::POST, &format!("{session}/send"))
+        .json(&json!({ "id":"msg_D", "text":"D" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), 200);
+    assert_eq!(
+        sent.json::<Value>().await.unwrap(),
+        json!({ "waits": true })
+    );
+    assert!(!work.join("delivered").exists());
+
+    server.stop().await;
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/session?limit=1").await.status(), 200);
+    fs::remove_file(work.join("refuse-B")).unwrap();
+    assert_eq!(server.engine.keep_inboxes().await.unwrap(), 2);
+    assert_eq!(server.engine.release_waiting().await.unwrap(), 4);
+    assert_eq!(server.engine.release_waiting().await.unwrap(), 0);
+    assert_eq!(
+        fs::read_to_string(work.join("delivered")).unwrap(),
+        "A\nB\nC\nD\n"
+    );
+    let queue = server
+        .get(&format!("{session}/queue"))
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(queue, json!({ "paused": false, "held": [] }));
+    server.stop().await;
+}
+
 async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_server::Body> {
     let mut answer = Reply::json(StatusCode::OK, json!({"data": []}));
     if !req
@@ -557,6 +637,13 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
+        if Path::new("inbox-mode").exists() {
+            let reply = inbox_fixture(req).await;
+            let mut response = Response::new(reply.body);
+            *response.status_mut() = reply.status;
+            *response.headers_mut() = reply.headers;
+            return response;
+        }
         match req.uri().path() {
             "/api/echo" => {
                 let mut value = json!({
@@ -649,5 +736,76 @@ struct StreamEnded;
 impl Drop for StreamEnded {
     fn drop(&mut self) {
         fs::write("stream-ended", []).unwrap();
+    }
+}
+
+async fn inbox_fixture(req: Request<Incoming>) -> Reply {
+    let route = req.uri().path().to_owned();
+    let tail = |base| route.strip_prefix(base).map(str::to_owned);
+    let session =
+        json!({ "id": "ses_inbox", "title": "Inbox", "time": { "created": 1, "updated": 1 } });
+    let empty = || Reply::json(StatusCode::OK, json!({ "data": [] }));
+    let missing = || Reply::json(StatusCode::NOT_FOUND, json!({}));
+    let mut inbox: Vec<Value> = serde_json::from_slice(&fs::read("inbox.json").unwrap()).unwrap();
+    match (req.method().as_str(), route.as_str()) {
+        ("GET", "/api/session") => {
+            let query = req.uri().query().unwrap_or_default();
+            if query.contains("archived=true") {
+                return empty();
+            }
+            if query.contains("cursor=") {
+                return if Path::new("complete-inventory").exists() {
+                    Reply::json(StatusCode::OK, json!({ "data": [session] }))
+                } else {
+                    Reply::json(StatusCode::OK, json!({}))
+                };
+            }
+            if query.contains("limit=100") {
+                let rows = (0..100)
+                    .map(|index| json!({ "id": format!("ses_page{index}") }))
+                    .collect::<Vec<_>>();
+                return Reply::json(
+                    StatusCode::OK,
+                    json!({ "data": rows, "cursor": { "next": "page 2" } }),
+                );
+            }
+            empty()
+        }
+        ("GET", "/api/session/ses_inbox") => {
+            Reply::json(StatusCode::OK, json!({ "data": session }))
+        }
+        ("GET", "/api/session/ses_inbox/inbox") => {
+            Reply::json(StatusCode::OK, json!({ "data": inbox }))
+        }
+        ("GET", "/api/session/active") => empty(),
+        ("GET", _) if route.ends_with("/inbox") => empty(),
+        ("DELETE", _) if route.starts_with("/api/session/ses_inbox/inbox/") => {
+            let id = tail("/api/session/ses_inbox/inbox/").unwrap();
+            if id == "msg_B" && Path::new("refuse-B").exists() {
+                return Reply::json(StatusCode::SERVICE_UNAVAILABLE, json!({}));
+            }
+            let before = inbox.len();
+            inbox.retain(|row| row["id"] != id);
+            fs::write("inbox.json", serde_json::to_vec(&inbox).unwrap()).unwrap();
+            if before == inbox.len() {
+                missing()
+            } else {
+                Reply::json(StatusCode::OK, json!({}))
+            }
+        }
+        ("POST", "/api/session/ses_inbox/prompt") => {
+            use std::io::Write;
+            let given: Value =
+                serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            let mut delivered = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("delivered")
+                .unwrap();
+            writeln!(delivered, "{}", given["text"].as_str().unwrap()).unwrap();
+            Reply::json(StatusCode::OK, json!({}))
+        }
+        _ => missing(),
     }
 }

@@ -31,9 +31,11 @@ export function isolatedEnv(root) {
   const account = path.join(root, "account");
   const tmp = path.join(root, "tmp");
   for (const folder of [account, tmp]) fs.mkdirSync(folder, { recursive: true });
+  const gitConfig = path.join(account, "gitconfig");
+  write(gitConfig, "");
   return {
     ...env, HOME: account, USERPROFILE: account, TMPDIR: tmp, TEMP: tmp, TMP: tmp, TZ: "UTC",
-    GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Tests", GIT_AUTHOR_EMAIL: "tests@example.com",
     GIT_COMMITTER_NAME: "Tests", GIT_COMMITTER_EMAIL: "tests@example.com",
   };
