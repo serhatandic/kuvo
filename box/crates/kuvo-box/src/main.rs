@@ -8,7 +8,7 @@ use kuvo_store::home::Home;
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => status,
         Err(error) => {
             eprintln!("kuvo-box: {error}");
             ExitCode::FAILURE
@@ -16,9 +16,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    if word(0) == Some("rehome") {
+        return rehome(&args[1..]);
+    }
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
@@ -63,7 +66,81 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // An addressed SSH exchange can finish while its stdin is still open. The
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
     runtime.shutdown_background();
-    result
+    result.map(|()| ExitCode::SUCCESS)
+}
+
+fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use std::{ffi::OsStr, path::Path};
+
+    let usage =
+        "usage: kuvo-box rehome <root> --run --app <bundle> --release <folder> --engine <folder>";
+    let Some((root, options)) = args.split_first() else {
+        return Err(usage.into());
+    };
+    let name = Path::new(root);
+    if name.file_name() != Some(root.as_os_str()) {
+        return Err(usage.into());
+    }
+    let mut options = options.iter();
+    let mut run = false;
+    let (mut app, mut release, mut engine) = (None, None, None);
+    while let Some(word) = options.next() {
+        let target = match word.to_str().ok_or(usage)? {
+            "--run" if !run => {
+                run = true;
+                continue;
+            }
+            "--app" if app.is_none() => &mut app,
+            "--release" if release.is_none() => &mut release,
+            "--engine" if engine.is_none() => &mut engine,
+            _ => return Err(usage.into()),
+        };
+        *target = Some(
+            options
+                .next()
+                .map(Path::new)
+                .filter(|path| path.is_absolute())
+                .ok_or(usage)?,
+        );
+    }
+    let (true, Some(app), Some(release), Some(engine)) = (run, app, release, engine) else {
+        return Err(usage.into());
+    };
+    let account = Account::current()?;
+    let folder = account.home_folder(Platform::current(), &env::vars_os().collect())?;
+    let target = folder.join(root);
+    let home = env::var_os("KUVO_HOME")
+        .filter(|path| path != OsStr::new(""))
+        .map(PathBuf::from)
+        .ok_or("KUVO_HOME must name the destination of the app move")?;
+    if !home.is_absolute() || home.canonicalize()? != target.canonicalize()? {
+        return Err("KUVO_HOME must name the destination of the app move".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = Home::new(target)?;
+        let outcome = kuvo_move::mac::Run {
+            home: &home,
+            account: &folder,
+            system_account: &account.home,
+            bundle: app,
+            release,
+            engine,
+        }
+        .execute(|_| {});
+        println!("{}", serde_json::to_string(&outcome)?);
+        Ok(ExitCode::from(outcome.exit_code()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, release, engine);
+        println!(
+            "{}",
+            serde_json::json!({"result":"refused","message":
+            "Kuvo on this machine is in its own home already: there's nothing to move."})
+        );
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 async fn shutdown() {

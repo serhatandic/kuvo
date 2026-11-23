@@ -143,6 +143,17 @@ pub fn replace_synced(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Publish a staged Mac entry without replacing an entry that appeared at its destination.
+#[cfg(target_os = "macos")]
+pub fn place_mac_entry(from: &Path, to: &Path) -> io::Result<()> {
+    platform::place_exclusive(from, to).map_err(|error| at("placing", to, error))?;
+    sync_parent(to)?;
+    if parent(from)? != parent(to)? {
+        sync_parent(from)?;
+    }
+    Ok(())
+}
+
 /// Retire a file or link without following it. Missing entries are already retired.
 pub fn remove_file_synced(path: &Path) -> io::Result<()> {
     remove_synced(path, |path| fs::remove_file(path))
@@ -151,6 +162,10 @@ pub fn remove_file_synced(path: &Path) -> io::Result<()> {
 /// Retire a directory tree without following its links.
 pub fn remove_tree_synced(path: &Path) -> io::Result<()> {
     remove_synced(path, platform::remove_tree)
+}
+
+pub fn remove_empty_dir_synced(path: &Path) -> io::Result<()> {
+    remove_synced(path, |path| fs::remove_dir(path))
 }
 
 fn remove_synced(path: &Path, remove: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {

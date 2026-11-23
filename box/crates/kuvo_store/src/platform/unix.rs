@@ -33,6 +33,20 @@ pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
+#[cfg(target_os = "macos")]
+pub fn place_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: Both arguments are NUL-terminated paths kept alive for the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     fs::hard_link(from, to)
 }

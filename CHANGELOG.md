@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Mac migration command now carries sessions, attachments, settings, and keys from older Kuvo Code installations.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.

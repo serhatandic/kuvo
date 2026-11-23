@@ -1,7 +1,7 @@
 //! Guards for the on-disk lock protocols.
 
 use crate::{files, platform};
-use kuvo_os::process::ProcessIdentity;
+use kuvo_os::process::{ProcessIdentity, ProcessState};
 use std::{
     fs::{self, File},
     io,
@@ -16,10 +16,22 @@ use std::{
 pub struct OwnedLock {
     path: PathBuf,
     marker: String,
+    rehome_pid: bool,
 }
 
 impl OwnedLock {
     pub fn acquire(path: &Path, wait: Duration) -> io::Result<Self> {
+        Self::take(path, wait, false)
+    }
+
+    /// The signed Mac key handover tool authenticates its parent with this
+    /// PID file. Publish it together with the unique owner marker.
+    #[cfg(target_os = "macos")]
+    pub fn acquire_rehome(path: &Path, wait: Duration) -> io::Result<Self> {
+        Self::take(path, wait, true)
+    }
+
+    fn take(path: &Path, wait: Duration, rehome_pid: bool) -> io::Result<Self> {
         let parent = files::parent(path)?;
         files::create_private_dirs(parent)?;
         let mut token = [0; 8];
@@ -34,13 +46,24 @@ impl OwnedLock {
             .prefix(&prefix)
             .tempdir_in(parent)?;
         platform::restrict_folder(pending.path())?;
-        let file = File::create(pending.path().join(&marker))?;
-        platform::private_file(&file)?;
-        drop(file);
+        if rehome_pid {
+            let identity = ProcessIdentity::read(std::process::id())?.ok_or_else(|| {
+                io::Error::other("couldn't identify the process taking the rehome lock")
+            })?;
+            let bytes = serde_json::to_vec(&identity).map_err(io::Error::other)?;
+            files::write_new(&pending.path().join(&marker), &bytes)?;
+            files::write_new(
+                &pending.path().join("pid"),
+                std::process::id().to_string().as_bytes(),
+            )?;
+        } else {
+            let file = File::create(pending.path().join(&marker))?;
+            platform::private_file(&file)?;
+        }
         with_deadline(wait, Duration::from_millis(10), || {
             match fs::symlink_metadata(path) {
                 Ok(meta) if meta.is_dir() => {
-                    if !reap(path)? {
+                    if !reap(path, rehome_pid)? {
                         return Ok(None);
                     }
                 }
@@ -52,6 +75,7 @@ impl OwnedLock {
                 Ok(()) => Ok(Some(Self {
                     path: path.into(),
                     marker: marker.clone(),
+                    rehome_pid,
                 })),
                 Err(error) if platform::directory_conflict(&error) => Ok(None),
                 Err(error) => Err(error),
@@ -61,7 +85,7 @@ impl OwnedLock {
     }
 }
 
-fn reap(path: &Path) -> io::Result<bool> {
+fn reap(path: &Path, rehome_pid: bool) -> io::Result<bool> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
@@ -75,10 +99,24 @@ fn reap(path: &Path) -> io::Result<bool> {
         let Some(pid) = name.to_str().and_then(owner_pid) else {
             continue;
         };
-        if !matches!(ProcessIdentity::read(pid), Ok(None)) {
+        let saved = rehome_pid
+            .then(|| files::read(&entry.path()).ok().flatten())
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<ProcessIdentity>(&bytes).ok())
+            .filter(|identity| identity.pid == pid);
+        let gone = saved.map_or_else(
+            || matches!(ProcessIdentity::read(pid), Ok(None)),
+            |identity| identity.state() == ProcessState::Stale,
+        );
+        if !gone {
             return Ok(false);
         }
         // Only the waiter that removes this particular marker can remove the directory.
+        // The layout lock serializes rehome reclaimers. Keep the owner marker
+        // until the last deletion so a kill during reclamation can retry it.
+        if rehome_pid {
+            let _ = fs::remove_file(path.join("pid"));
+        }
         if fs::remove_file(entry.path()).is_ok() {
             return Ok(fs::remove_dir(path).is_ok());
         }
@@ -103,6 +141,9 @@ fn owner_pid(marker: &str) -> Option<u32> {
 
 impl Drop for OwnedLock {
     fn drop(&mut self) {
+        if self.rehome_pid && self.path.join(&self.marker).is_file() {
+            let _ = fs::remove_file(self.path.join("pid"));
+        }
         if fs::remove_file(self.path.join(&self.marker)).is_ok() {
             let _ = fs::remove_dir(&self.path);
         }

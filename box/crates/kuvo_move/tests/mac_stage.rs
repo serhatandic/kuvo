@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 
-use kuvo_move::mac::{AppStep, stage};
-use kuvo_store::{home::Home, layout};
+use kuvo_move::mac::{AppStep, CutoverStep, Run, stage};
+use kuvo_store::{files, home::Home, layout};
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::{
@@ -210,6 +210,19 @@ fn binary_mac_preferences_become_box_projects_worktrees_and_settings() {
     );
     preferences.insert("git.branchPrefix".into(), "carried/".into());
     preferences.insert("toolApproval".into(), "askFirst".into());
+    preferences.insert("phoneLink".into(), false.into());
+    preferences.insert(
+        "phoneLink.relay".into(),
+        "wss://relay.example.invalid/".into(),
+    );
+    put(
+        &app.source.join("personalities.json"),
+        br#"[{"id":"custom.keep","name":"Keep","description":"Be precise.","updated":"3"},{"id":"custom.gone","name":"Gone","description":"Already removed."}]"#,
+    );
+    put(
+        &app.source.join("personalities-removed.json"),
+        br#"[{"id":"custom.gone","removed":4}]"#,
+    );
     preferences.insert(
         "favoriteModels".into(),
         "invalid,provider/model,provider/model,provider/with/slash,/model".into(),
@@ -273,6 +286,18 @@ fn binary_mac_preferences_become_box_projects_worktrees_and_settings() {
     assert_eq!(
         read("box/approval.json"),
         serde_json::json!({"last":"askFirst"})
+    );
+    let link = read("run/mac-link.json");
+    assert_eq!(link["phones"], false);
+    assert_eq!(link["relay"], "wss://relay.example.invalid");
+    assert_eq!(
+        read("bots/personalities.json"),
+        serde_json::json!({
+            "kuvo":1,
+            "personalities":[{"id":"custom.keep","name":"Keep","description":"Be precise.","updated":3,
+                "symbol":"person.crop.circle"}],
+            "removed":[{"id":"custom.gone","removed":4}]
+        })
     );
     assert_eq!(fs::read(file).unwrap(), before);
 }
@@ -348,6 +373,32 @@ fn staged_artifact_paths_and_ids_move_with_their_files() {
     assert!(!app.destination.join(layout::FILE).exists());
 }
 
+#[test]
+fn a_future_app_record_is_refused_before_cloning() {
+    let root = tempfile::tempdir().unwrap();
+    let app = example(root.path());
+    let bots = app.source.join("bots.json");
+    let original = br#"[{"formatVersion":2},{"id":"future-bot"}]"#;
+    put(&bots, original);
+    let home = Home::new(app.destination.clone()).unwrap();
+    let result = stage(
+        &home,
+        &app.home,
+        &app.bundle,
+        &app.release,
+        &app.engine,
+        |_| panic!("A future record reached staging"),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Legacy Mac import list")
+    );
+    assert_eq!(fs::read(bots).unwrap(), original);
+    assert!(!app.destination.join(layout::FILE).exists());
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
@@ -360,12 +411,16 @@ impl Drop for ChildGuard {
 }
 
 fn cut(root: &Path, world: Option<&Path>, boundary: AppStep) {
+    cut_child(root, world, "staging_child", &format!("{boundary:?}"));
+}
+
+fn cut_child(root: &Path, world: Option<&Path>, test: &str, boundary: &str) {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", "staging_child", "--nocapture", "--ignored"])
+        .args(["--exact", test, "--nocapture", "--ignored"])
         .env_clear()
         .env("KUVO_MOVE_TEST_MAC_ROOT", root)
-        .env("KUVO_MOVE_TEST_MAC_STEP", format!("{boundary:?}"))
+        .env("KUVO_MOVE_TEST_MAC_STEP", boundary)
         .stdin(Stdio::piped());
     if let Some(world) = world {
         command.env("KUVO_MOVE_TEST_MAC_WORLD", world);
@@ -385,6 +440,183 @@ fn cut(root: &Path, world: Option<&Path>, boundary: AppStep) {
     child.0.kill().unwrap();
     assert!(!child.0.wait().unwrap().success());
     watch.join().unwrap();
+}
+
+fn publish(app: &App, complete: impl FnMut(CutoverStep)) -> kuvo_move::mac::Outcome {
+    let home = Home::new(app.destination.clone()).unwrap();
+    Run {
+        home: &home,
+        account: &app.home,
+        system_account: &app.home.join("unused-system-account"),
+        bundle: &app.bundle,
+        release: &app.release,
+        engine: &app.engine,
+    }
+    .execute(complete)
+}
+
+#[test]
+#[ignore = "subprocess used by the published-home crash scenario"]
+fn publication_child() {
+    let world = PathBuf::from(std::env::var_os("KUVO_MOVE_TEST_MAC_WORLD").unwrap());
+    let app: App = serde_json::from_slice(&fs::read(world).unwrap()).unwrap();
+    let stop = std::env::var("KUVO_MOVE_TEST_MAC_STEP").unwrap();
+    let result = publish(&app, |step| {
+        if format!("{step:?}") == stop {
+            println!("\ncheckpoint");
+            io::stdout().flush().unwrap();
+            io::stdin().read_exact(&mut [0]).unwrap();
+        }
+    });
+    assert_eq!(
+        result.exit_code(),
+        0,
+        "{}",
+        serde_json::to_value(result).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "supply KUVO_MOVE_GOLDEN_ROOT with the generated tagged scratch fixtures"]
+fn tagged_published_apps_resume_every_cutover_step() {
+    let root = PathBuf::from(std::env::var_os("KUVO_MOVE_GOLDEN_ROOT").unwrap());
+    assert!(root.canonicalize().unwrap().starts_with("/private/tmp"));
+    for tag in ["v0.7.2", "v0.8.0-beta.1"] {
+        let world = root.join(tag).join("app-world.json");
+        let app: App = serde_json::from_slice(&fs::read(&world).unwrap()).unwrap();
+        assert!(app.home.starts_with(&root));
+        files::create_private_dirs(&app.home.join("unused-system-account")).unwrap();
+        let backup = tempfile::tempdir_in(root.join(tag)).unwrap();
+        let original_home = backup.path().join("old");
+        files::clone_mac_entry(&app.home, &original_home, false).unwrap();
+        let original_source = snapshot(&app.source);
+        let reset = || {
+            files::remove_tree_synced(&app.home).unwrap();
+            files::clone_mac_entry(&original_home, &app.home, false).unwrap();
+        };
+        let complete = || {
+            let result = publish(&app, |_| {});
+            assert_eq!(
+                result.exit_code(),
+                0,
+                "{tag}: {}",
+                serde_json::to_value(result).unwrap()
+            );
+            assert_eq!(snapshot(&app.source), original_source);
+            assert_eq!(
+                layout::inspect(&Home::new(app.destination.clone()).unwrap()).unwrap(),
+                layout::Layout::Current
+            );
+            let outside = app.home.join("proj/.git/worktrees/feature-one/gitdir");
+            let backlink = fs::read_to_string(&outside).unwrap();
+            assert!(
+                Path::new(backlink.trim()).starts_with(app.destination.canonicalize().unwrap())
+            );
+            assert!(app.home.join("keychain/helper/phone-link.key").is_file());
+            assert!(!app.home.join("keychain/app/phone-link.key").exists());
+            let mut result = published_snapshot(&app.destination);
+            result.insert(outside, Entry::File(backlink.into_bytes()));
+            result
+        };
+        let expected = complete();
+        let repeated =
+            serde_json::to_value(publish(&app, |_| panic!("Done move replayed"))).unwrap();
+        assert_eq!(repeated["result"], "done");
+        assert!(repeated.get("started").is_none());
+        assert!(repeated.get("message").is_none());
+        for cutover in [
+            CutoverStep::Staging(AppStep::Clone),
+            CutoverStep::Staging(AppStep::Import),
+            CutoverStep::Staging(AppStep::Database),
+            CutoverStep::Staging(AppStep::Rewrite),
+            CutoverStep::Staging(AppStep::Check),
+            CutoverStep::Prepared,
+            CutoverStep::KeyCopies,
+            CutoverStep::Keys,
+            CutoverStep::FirstPlacement,
+            CutoverStep::Placed,
+            CutoverStep::FirstGitRepair,
+            CutoverStep::Git,
+            CutoverStep::Layout,
+            CutoverStep::Published,
+            CutoverStep::OriginalKeys,
+            CutoverStep::Settled,
+        ] {
+            reset();
+            cut_child(
+                &app.home,
+                Some(&world),
+                "publication_child",
+                &format!("{cutover:?}"),
+            );
+            assert_eq!(complete(), expected, "{tag} after {cutover:?}");
+        }
+        reset();
+        let locked = app.home.join("keychain-locked");
+        put(&locked, b"locked");
+        let result = publish(&app, |_| {});
+        assert_eq!(result.exit_code(), 1);
+        assert!(
+            serde_json::to_string(&result)
+                .unwrap()
+                .contains("Keychain is locked")
+        );
+        assert!(app.home.join("keychain/app/phone-link.key").is_file());
+        assert!(!app.destination.join(layout::FILE).exists());
+        fs::remove_file(locked).unwrap();
+        assert_eq!(complete(), expected);
+
+        reset();
+        let unreadable = app.home.join("helper-cannot-read");
+        put(&unreadable, b"denied");
+        let result = publish(&app, |_| {});
+        assert_eq!(result.exit_code(), 1);
+        assert!(app.home.join("keychain/app/phone-link.key").is_file());
+        assert!(!app.home.join("keychain/helper/phone-link.key").exists());
+        assert!(!app.destination.join(layout::FILE).exists());
+        fs::remove_file(unreadable).unwrap();
+        assert_eq!(complete(), expected);
+
+        reset();
+        let note = app.source.join("Chats/c1/notes.md");
+        let changed = publish(&app, |step| {
+            if step == CutoverStep::FirstPlacement {
+                put(&note, b"written while placing");
+            }
+        });
+        assert_eq!(changed.exit_code(), 1);
+        assert!(!app.destination.join(layout::FILE).exists());
+        assert!(!app.destination.join("box/kind").exists());
+        assert!(app.home.join("keychain/app/phone-link.key").is_file());
+        assert!(!app.home.join("keychain/helper/phone-link.key").exists());
+        assert_eq!(publish(&app, |_| {}).exit_code(), 0);
+        assert_eq!(
+            fs::read(app.destination.join("chats/c1/notes.md")).unwrap(),
+            b"written while placing"
+        );
+        reset();
+    }
+}
+
+fn published_snapshot(root: &Path) -> BTreeMap<PathBuf, Entry> {
+    let mut tree = snapshot(root);
+    for (file, clocks) in [
+        (
+            "updates/rehome/journal.json",
+            &["began", "clonedAt", "kept"][..],
+        ),
+        ("updates/rehome/state.json", &["movedAt"][..]),
+    ] {
+        let Entry::File(bytes) = tree.get_mut(Path::new(file)).unwrap() else {
+            panic!("Need {file}")
+        };
+        let mut data: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        for clock in clocks {
+            data[clock] = serde_json::Value::Null;
+        }
+        *bytes = serde_json::to_vec(&data).unwrap();
+    }
+    tree
 }
 
 #[test]
@@ -424,7 +656,7 @@ fn staging_child() {
         .unwrap_or_else(|| paths(&home));
     app.stage(|step| {
         if format!("{step:?}") == stop {
-            println!("checkpoint");
+            println!("\ncheckpoint");
             io::stdout().flush().unwrap();
             io::stdin().read_exact(&mut [0]).unwrap();
         }

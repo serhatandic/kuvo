@@ -5,7 +5,7 @@ use kuvo_store::{
     format::{Fields, ObjectFormat, check_version},
 };
 use serde_json::{Value, json};
-use std::{collections::HashSet, io::Cursor, path::Path};
+use std::{collections::HashSet, io::Cursor, path::Path, process::Command};
 
 const GIT: ObjectFormat = ObjectFormat::additive("Git preferences migration record");
 const WORKTREES: ObjectFormat = ObjectFormat::additive("Worktree records");
@@ -41,7 +41,75 @@ pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> 
     worktrees(stage, &given)?;
     machines(stage, &given)?;
     engine_settings(stage, &given, account, home)?;
-    box_preferences(stage, &given)
+    box_preferences(stage, &given)?;
+    mac_link(stage, &given, home)?;
+    personalities(source, stage)
+}
+
+fn mac_link(stage: &Disk, prefs: &Fields, home: &Path) -> Result<(), Error> {
+    const DEFAULT_RELAY: &str = "wss://kuvolink.porigam.com.tr";
+    let phones = prefs.get("phoneLink").and_then(Value::as_bool);
+    let relay = prefs
+        .get("phoneLink.relay")
+        .and_then(Value::as_str)
+        .map(|text| text.trim_end_matches('/'))
+        .filter(|text| url::Url::parse(text).is_ok_and(|url| matches!(url.scheme(), "ws" | "wss")));
+    if phones.is_none() && relay.is_none() {
+        return Ok(());
+    }
+    let file = stage.path("run/mac-link.json")?;
+    if metadata(&file)?.is_some() {
+        return Ok(());
+    }
+    if relay.is_none() {
+        let real = kuvo_os::platform::Account::current()?
+            .home
+            .join(".kuvo-code");
+        if real.canonicalize().ok().as_deref() != Some(home.canonicalize()?.as_path()) {
+            return Ok(());
+        }
+    }
+    let output = Command::new("/usr/sbin/scutil")
+        .env_clear()
+        .args(["--get", "ComputerName"])
+        .output()?;
+    let name = String::from_utf8_lossy(&output.stdout);
+    let name: String = name.trim().chars().take(100).collect();
+    save_json(
+        &file,
+        &json!({"phones": phones.unwrap_or(true), "relay": relay.unwrap_or(DEFAULT_RELAY),
+        "name": if output.status.success() && !name.is_empty() { &name } else { "Mac" }, "app": "" }),
+    )
+}
+
+fn personalities(source: &Path, stage: &Disk) -> Result<(), Error> {
+    let read = |name| -> Result<Option<Vec<Value>>, Error> {
+        match json_at::<Value>(&source.join(name))? {
+            Some(value @ Value::Array(_)) => Ok(Some(kuvo_store::format::read_additive_list(
+                "Legacy Mac import list",
+                value,
+            )?)),
+            _ => Ok(None),
+        }
+    };
+    let (made, removed) = (
+        read("personalities.json")?,
+        read("personalities-removed.json")?,
+    );
+    if made.is_none() && removed.is_none() {
+        return Ok(());
+    }
+    let file = stage.path("bots/personalities.json")?;
+    let kept: Value = json_at(&file)?.unwrap_or_default();
+    check_version("Personality library", kept.get("kuvo"), 0, 1)?;
+    if let Some(next) = kuvo_setup::project_app_personalities(
+        &kept,
+        made.as_deref().unwrap_or_default(),
+        removed.as_deref().unwrap_or_default(),
+    ) {
+        pretty(&file, &next, true)?;
+    }
+    Ok(())
 }
 
 fn as_json(value: plist::Value) -> Result<Value, Error> {
