@@ -307,6 +307,11 @@ async fn load(home: &Path) -> Option<Snapshot> {
             .ok()?,
     )
     .ok()?;
+    for project in saved.projects.values_mut().filter_map(Value::as_object_mut) {
+        for field in ["asking", "working"] {
+            project.entry(field).or_insert_with(|| json!(0));
+        }
+    }
     if saved
         .sessions
         .values()
@@ -453,10 +458,10 @@ async fn all_sessions(
     engine: &Engine,
     lease: &Lease,
 ) -> Result<Vec<Session>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut path = "api/session?limit=100&order=desc".to_owned();
+    let mut path = "api/session?limit=200&order=desc".to_owned();
     let mut seen = BTreeSet::new();
     let mut sessions = Vec::new();
-    for _ in 0..1000 {
+    for _ in 0..500 {
         let response = engine
             .upstream
             .request(&lease.record, Method::GET, &path)
@@ -473,14 +478,14 @@ async fn all_sessions(
         let Some(next) = response
             .cursor
             .and_then(|cursor| cursor.next)
-            .filter(|_| count >= 100)
+            .filter(|_| count > 0)
         else {
             return Ok(sessions);
         };
         if !seen.insert(next.clone()) {
             return Err(io::Error::other("The session page cursor repeated.").into());
         }
-        path = format!("api/session?limit=100&cursor={}", api::segment(&next));
+        path = format!("api/session?limit=200&cursor={}", api::segment(&next));
     }
     Err(io::Error::other("Could not read the full session list.").into())
 }

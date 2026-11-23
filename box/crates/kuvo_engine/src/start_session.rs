@@ -189,7 +189,7 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         .flatten()
         .unwrap_or_default();
     let approval_file = engine.home.join("box/approval.json");
-    let mut approvals = disk::read::<Value>(&approval_file)
+    let approvals = disk::read::<Value>(&approval_file)
         .await
         .ok()
         .flatten()
@@ -462,8 +462,15 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
     };
     let id = made["id"].as_str().expect("checked session id");
     if parent.is_none() && requested.is_some() {
-        approvals["last"] = json!(wanted);
-        let _ = disk::durable(approval_file, approvals).await;
+        let _turn = engine.turn("approval-settings").await;
+        if let Ok(latest) = disk::read::<Value>(&approval_file).await {
+            let mut updated = latest.filter(Value::is_object).unwrap_or_else(|| json!({}));
+            updated["last"] = json!(wanted);
+            if !updated["since"].is_number() {
+                updated["since"] = json!(disk::now());
+            }
+            let _ = disk::durable(approval_file, updated).await;
+        }
     }
     let mut answer =
         json!({ "session": id, "title": title, "folder": folder, "project": project_title });

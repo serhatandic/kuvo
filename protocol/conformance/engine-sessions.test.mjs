@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { request } from "./adapter.mjs";
+import { openLine, request } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
 
@@ -95,7 +95,7 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
   here.engine.running.add(session);
   const resident = await here.start().ready();
   const path = "kuvo/sessions/" + session;
-  const send = (id, words) => request(resident, "POST", path + "/send", { id, words, delivery: "queue" }, { "x-kuvo-client": "app" });
+  const send = (id, words) => request(resident, "POST", path + "/send", { id, words, delivery: "queue" }, { "x-kuvo-from": "app" });
   assert.equal((await send("msg_first", "first")).status, 200);
   assert.equal((await send("msg_edit", "edit me")).status, 200);
   assert.equal((await send("msg_drop", "take back")).status, 200);
@@ -152,7 +152,6 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.equal(started.json.info.metadata.kuvo.chat, started.json.folder);
   assert.equal(started.json.info.metadata.kuvo.approval, "askFirst");
 
-  const { openLine } = await import("./adapter.mjs");
   const watch = Buffer.from(JSON.stringify({ sessions: "kuvo/sessions/list/events" })).toString("base64url");
   const line = await openLine(resident, "?watch=" + watch);
   t.after(() => line.close());
@@ -215,4 +214,54 @@ test("a message removed while on its way can be taken back when it arrives", { t
   assert.equal(after.status, 200);
   assert.equal(after.json.removed.words, "Keep it here first");
   assert.deepEqual(here.engine.messages.get(id) ?? [], []);
+});
+
+test("summary titles agree between a conversation's message page and its live line", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-summary");
+  const session = "ses_summary";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.messages.set(session, [
+    { id: "msg_summary", type: "compaction", status: "completed", text: "Earlier steps" },
+    { id: "msg_text", type: "user", text: "Continue" },
+  ]);
+  const resident = await here.start().ready();
+  const page = await request(resident, "GET", "api/session/" + session + "/message?limit=2");
+  assert.equal(page.status, 200);
+  assert.equal(page.json.data[0].title, "Conversation summarized");
+  assert.deepEqual(page.json.data[1], here.engine.messages.get(session)[1]);
+
+  const watch = Buffer.from(JSON.stringify({ conversation: "api/event" })).toString("base64url");
+  const line = await openLine(resident, "?watch=" + watch);
+  t.after(() => line.close());
+  for await (const frame of line.frames()) {
+    if (frame.d?.type === "server.connected") {
+      here.engine.emit({ type: "session.compaction.ended", data: { sessionID: session } });
+    }
+    if (frame.d?.type === "session.compaction.ended") {
+      assert.deepEqual(frame.d.data, { sessionID: session, title: page.json.data[0].title });
+      return;
+    }
+  }
+  assert.fail("the summary did not reach the line");
+});
+
+test("a send keeps what the user wrote and the parts that went with it", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-parts");
+  const id = "ses_sendParts";
+  here.engine.sessions.push(sessionOf({ id, directory: here.home }));
+  const record = await here.start().ready();
+  const supported = vectors.compose.filter(row => !row.kept && !row.fields.named && !row.parts.agents?.length &&
+    !row.text.startsWith("Hi\n<named-agents>"));
+  assert.ok(supported.length >= 12);
+  for (const [index, row] of supported.entries()) {
+    const given = { ...row.fields, id: "msg_parts" + index };
+    const response = await request(record, "POST", "kuvo/sessions/" + id + "/send", given,
+      row.phone ? {} : { "x-kuvo-from": "app" });
+    assert.equal(response.status, 200, row.about);
+    const stored = here.engine.messages.get(id).find(message => message.id === given.id);
+    assert.equal(stored.text, row.text, row.about);
+    assert.deepEqual(stored.metadata.kuvo.parts, row.parts, row.about);
+  }
 });

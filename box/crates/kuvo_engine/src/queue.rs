@@ -39,7 +39,7 @@ pub(crate) struct QueueStore {
 
 type Index = BTreeMap<String, Queue>;
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct Queue {
     paused: bool,
@@ -65,7 +65,7 @@ pub(crate) struct Queue {
     unknown: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 struct LimitStop {
     message: String,
     #[serde(rename = "resetsAt", skip_serializing_if = "Option::is_none")]
@@ -74,7 +74,7 @@ struct LimitStop {
     releasing: bool,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 struct Waiting {
     id: String,
     text: String,
@@ -206,6 +206,7 @@ impl QueueStore {
             .await
             .expect("queue edits stay open");
         let mut index = self.index().await?;
+        let before = index.get(session).cloned();
         let state = index.entry(session.to_owned()).or_default();
         edit(state);
         let now = disk::now();
@@ -219,6 +220,9 @@ impl QueueStore {
         }
         let result = state.clone();
         index.retain(|_, queue| queue.has_state());
+        if before.as_ref() == index.get(session) {
+            return Ok(result);
+        }
         let path = self.run.join("queues.json");
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -1313,6 +1317,9 @@ async fn remove_reply(
         .map_err(save_failed)?
         .shown();
     let mut removed = removal.removed;
+    removed["attached"] = json!(sendable(
+        removed["files"].as_array().map_or(&[], Vec::as_slice)
+    ));
     removed["receipt"] = json!(removal.token);
     shown["removed"] = removed;
     Ok(RouteReply::json::<200>(sessions::typed(shown)?))
@@ -1334,7 +1341,6 @@ fn removed_value(
     if let Some(metadata) = metadata {
         removed["metadata"] = metadata.clone();
     }
-    removed["attached"] = json!(sendable(files));
     removed
 }
 
