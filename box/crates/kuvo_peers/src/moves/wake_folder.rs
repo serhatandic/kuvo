@@ -1,6 +1,7 @@
 //! A chat's wake-up directory is paused by the move that owns it.
 
 use std::{
+    collections::HashSet,
     io,
     path::{Path, PathBuf},
 };
@@ -8,19 +9,48 @@ use std::{
 use kuvo_store::files;
 use serde_json::Value;
 
-use super::{Journal, move_id};
+use super::{Journal, journals, move_id};
 use crate::reach::Millis;
 
 pub(super) fn at(run: &Path, session: &str) -> io::Result<PathBuf> {
     if !super::driver::session_id(session) {
         return Err(invalid());
     }
+    Ok(root(run).join(session))
+}
+
+fn root(run: &Path) -> PathBuf {
     let home = run.parent().expect("resident has a home");
-    let root = std::env::var_os("KUVO_WAKES")
+    std::env::var_os("KUVO_WAKES")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("wakes"));
-    Ok(root.join(session))
+        .unwrap_or_else(|| home.join("wakes"))
+}
+
+pub(super) fn release_orphans(run: &Path) -> io::Result<()> {
+    let known: HashSet<_> = journals(run)
+        .map_err(io::Error::other)?
+        .into_iter()
+        .map(|row| row.thing)
+        .collect();
+    let folders = match std::fs::read_dir(root(run)) {
+        Ok(folders) => folders,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in folders {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|id| super::driver::session_id(id) && !known.contains(id))
+            && entry.file_type()?.is_dir()
+            && before(&entry.path())?.as_deref().and_then(owner) == Some("moving")
+        {
+            files::remove_file_synced(&entry.path().join("paused"))?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn original(run: &Path, row: &Journal) -> io::Result<Option<PathBuf>> {
@@ -97,10 +127,23 @@ pub(super) fn release(run: &Path, row: &Journal) -> io::Result<()> {
     }
     let folder = at(run, &row.thing)?;
     let paused = before(&folder)?;
-    if paused.as_deref().and_then(owner) != Some(row.id.as_str()) {
-        return Ok(());
-    }
     let path = folder.join("paused");
+    match paused.as_deref().and_then(owner) {
+        Some(held) if held == row.id => {}
+        Some("moving") if row.extra.get("pauseRecorded") != Some(&Value::Bool(true)) => {
+            if journals(run)
+                .map_err(io::Error::other)?
+                .iter()
+                .any(|other| other.id != row.id && other.thing == row.thing && other.live())
+            {
+                return Ok(());
+            }
+        }
+        Some(_) => return Ok(()),
+        None if paused.is_some() => return files::sync_file_through(&path, &folder),
+        None if folder.is_dir() => return files::sync_folder_through(&folder, &folder),
+        None => return Ok(()),
+    }
     if row.extra.get("wasPaused") == Some(&Value::Bool(true)) {
         let was = row
             .extra
@@ -158,7 +201,7 @@ fn owner(value: &str) -> Option<&str> {
     } else {
         value
             .strip_prefix("moving:")
-            .filter(|id| move_id(id).is_some())
+            .filter(|id| move_id(id).is_some_and(|suffix| suffix.len() <= 40))
     }
 }
 

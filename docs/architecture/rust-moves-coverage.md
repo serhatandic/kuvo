@@ -19,8 +19,10 @@ for addressed work and receipt lookup.
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
 | Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
-| Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. Before pausing a chat, the receiver can refuse a missing engine provider. A retry after sign-in moves the original. |
+| Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash and report failure for an unknown copy. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
+| Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. Before pausing a chat, an unanswered check returns HTTP 503 and a missing engine provider returns a sign-in refusal. A retry after sign-in moves the original. |
 | Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains a backup with its conversation. Rust also moves the unpaused folder back. |
+| Legacy wake-up hold | Both residents restore the saved pause in a failed v0 journal, remove an orphaned bare `moving` marker and retain a pause that names another move. |
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it once through its saved letter ID and authenticated destination. |
 | Refused letter | Both residents give the original sender the authenticated refusal as one queued note and leave the archived recipient untouched. Rust finishes a durable refusal if it restarts before writing the notice. |
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
@@ -90,8 +92,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eleven have full scenario coverage, 24 have partial proof,
-and 177 remain open or assigned to their existing owner. Mixed-only portions are recorded
+below counts 212 declarations. Fourteen have full scenario coverage, 23 have partial proof,
+and 175 remain open or assigned to their existing owner. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -109,17 +111,19 @@ separately where they appear.
 | | 4–5 | Partial, first snapshot and explicit clear cross the relay. Prove minute refresh, rejected sends, reconnect timing and the waiting bit in 2.4. |
 | [moves-lanes](../../box/bridge-tests/moves-lanes.test.js) | 1–9 | Open, native transfer 2.4 and 4.6. |
 | [moves-lanes-races](../../box/bridge-tests/moves-lanes-races.test.js) | 1–16 | Open, transfer checks and recovery 2.4, native carry and retention 4.6. |
-| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24, 26, 31 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, and durable drop are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
+| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24, 26 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, and durable drop are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
 | | 19 | Partial, Rust loads durable departures and source switch journals into peer lookup. Add the reference's multi-hop and advertisement expiry scenarios in 2.4. |
 | | 20, 34 | Partial, switch recovery or terminal client receipt is exercised with seeded state. Add removal fencing (2.3 and 2.4) and source cleanup against a failing engine (2.4 and 3.2). |
+| | 31 | Covered by the live lost switch acknowledgement and by a restarted destination replying only with its durable decision. |
+| | 36 | Covered by the authenticated oversized offer, exact refusal and empty destination. |
 | | 37 | Partial, live progress names come from accepted membership in the third-computer scenario. Add source and recipient progress during an initiated transfer in 2.4. |
 | | 39 | Covered by a live source whose durable switch is unanswered for 90 seconds and whose repeated switch later recovers the destination receipt. |
 | | 45 | Partial, a live chat returns to the same computer and discards the earlier move's backup. The pre-activation retention and timed cleanup checks remain 2.4. |
 | | 50, 52 | Partial, the receiver refuses an unavailable OpenCode provider before the source holds its work and permits a retry after sign-in. Native coding-agent preflight and replacement account notes remain 2.4 and 4.6. |
-| | 1–8, 10–18, 21–23, 25, 27–30, 32–33, 35–36, 38, 40–44, 46–49, 51, 53–55 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
-| [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5, 7, 21 | Covered by the fresh arrival reply after a lost reply, an interrupted engine import and its rollback, and an older held copy without import ownership. |
+| | 1–8, 10–18, 21–23, 25, 27–30, 32–33, 35, 38, 40–44, 46–49, 51, 53–55 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
-| | 1–4, 6, 8–9, 11–12, 15–17, 22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
+| | 1–4, 8–9, 11–12, 15–17, 22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
 | | 13–14, 18–20, 23–24 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3, 9–18 | Open, 2.4 owner mutation claims, observations, replay and handoff evidence. Queue and session effects depend on 5.2 and 3.2. |
 | | 4–6 | Setup-owned, 2.1. See [setup coverage](rust-setup-coverage.md). |

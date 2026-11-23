@@ -316,6 +316,78 @@ test("a restarted source drives a request saved before its first check", { timeo
   await until(() => !here.engine.sessions.some(record => record.id === session), "The retired source was not removed");
 });
 
+async function moveMail(t, relay, main) {
+  const from = Buffer.alloc(32, 2), to = Buffer.from(main.key, "base64url");
+  const address = Buffer.from(main.address, "base64url");
+  const sender = relay.device(Buffer.alloc(32, 52));
+  t.after(() => sender.leave());
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const receive = async () => {
+    const datagram = readFrame((await sender.next(15000)).subarray(17));
+    return datagram?.kind === Frame.mail && JSON.parse(openOneWay(datagram.body, from, to).payload);
+  };
+  let welcomed = false;
+  return async movement => {
+    if (!welcomed) {
+      await until(async () => (await receive())?.agents, "The destination did not announce itself to the peer", 15000);
+      welcomed = true;
+    }
+    const { message } = sealOneWay(Buffer.from(JSON.stringify({ formatVersion: 1, at: Date.now(), move: movement })), from, to);
+    sender.send(address, frame(Frame.mail, 0, message));
+    return until(async () => {
+      const answer = (await receive())?.move;
+      return answer?.id === movement.id && answer;
+    }, () => "The destination never answered " + movement.id);
+  };
+}
+
+test("a destination reports the same held copy and refuses an unknown arrival", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("arrival-query");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const id = "mov_recordedArrival", unknown = "mov_unknownArrival";
+  const session = "ses_recordedArrival", hash = "A".repeat(43);
+  save("run/moves/" + id + ".json", {
+    formatVersion: 1, id, thing: session, name: "Notes", kind: "chat", from: member.key,
+    to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
+    started: Date.now(), safeSwitch: true, twoComputers: true, complete: true, setUpAt: Date.now(),
+    generation: 1, hash, verifyPayloads: true, payloads: { sessions: [], queue: [] },
+  });
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  await here.start().ready();
+  assert.deepEqual(await ask({ op: "arrive", id, generation: 1, hash }),
+    { op: "arrived", id, generation: 1, hash, verifiedPayloads: true });
+  const refused = await ask({ op: "arrive", id: unknown, generation: 1, hash });
+  assert.equal(refused.op, "failed");
+  assert.equal(refused.generation, 1);
+  assert.equal(refused.hash, hash);
+});
+
+test("a destination refuses an oversized offer before creating a copy", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("oversized-offer");
+  const { main } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const resident = await here.start().ready();
+  const id = "mov_oversizedOffer", hash = "A".repeat(43);
+  const movement = { op: "offer", id, generation: 1, hash, kind: "chat", thing: "ses_bigVideos",
+    name: "“Videos”", size: 1_000_000_001, safeSwitch: true, twoComputers: true };
+  const refused = await ask(movement);
+  assert.deepEqual(refused, { op: "refused", id, generation: 1, hash,
+    message: "“Videos” is more than 1 GB, too big to move to another computer, so it stays where it is." });
+  const list = await request(resident, "GET", "kuvo/moves");
+  assert.equal(list.status, 200, list.text);
+  assert.deepEqual(list.json.moves, []);
+  assert.deepEqual(list.json.away, []);
+  assert.equal(fs.existsSync(path.join(here.home, "run/moves", id + ".json")), false);
+  assert.equal(here.engine.sessions.length, 0);
+});
+
 test("an older incoming copy without import proof stays held after a drop", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -515,6 +587,41 @@ test("move destinations show the other computer and wait for a running turn", { 
     why: `${member.name} isn’t connected. Connect to it, then try again.`, note: "Can’t be reached" }] });
 });
 
+test("a waiting move reports an unanswered destination as unavailable", {
+  timeout: 110000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("unanswered-move-source"), there = await computer("unanswered-move-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_unansweredMove", chats = path.join(here.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory: chats }));
+  const pause = path.join(here.home, "wakes", session, "paused");
+  write(pause, "user-paused");
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, session, member);
+  const { openOneWay } = await testMail(t, boxBinary(wireFixture));
+  let checked = false;
+  const remove = relay.intercept(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"), packet => {
+    if (packet.payload[0] !== 5) return false;
+    try {
+      const mail = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+      if (JSON.parse(mail.payload).move?.op !== "check") return false;
+      checked = true;
+      return true;
+    } catch { return false; }
+  });
+  t.after(remove);
+  const refused = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key }, {}, 80000);
+  assert.equal(checked, true);
+  assert.equal(refused.status, 503, refused.text);
+  assert.deepEqual(refused.json, { message: `${member.name} isn’t connected. Connect to it, then try again.` });
+  assert.equal(here.engine.sessions[0]?.id, session);
+  assert.equal(there.engine.sessions.length, 0);
+  assert.equal(fs.readFileSync(pause, "utf8"), "user-paused");
+});
+
 test("a destination missing the chat's sign-in refuses before its work is held", { timeout: 45000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("account-source"), there = await computer("account-target");
@@ -558,6 +665,31 @@ test("a destination missing the chat's sign-in refuses before its work is held",
     return reply.json?.state === "done";
   }, "The chat did not move once its provider was signed in", 20000);
   assert.equal(there.engine.sessions.find(session => session.id === id)?.id, id);
+});
+
+test("a restart restores legacy wake-up holds without releasing another move", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("legacy-wake-holds");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const held = "ses_formerWakeHold", orphan = "ses_legacyOrphan", owned = "ses_namedWakeHold";
+  const paused = id => path.join(here.home, "wakes", id, "paused");
+  write(paused(held), "moving");
+  write(paused(orphan), "moving");
+  write(paused(owned), "moving:mov_otherMove");
+  const id = "mov_legacyWakeHold";
+  save("run/moves/" + id + ".json", {
+    formatVersion: 0, id, thing: held, name: "The previous chat", kind: "chat",
+    from: main.key, to: member.key, peer: member.key, role: "from", stage: "holding",
+    sessions: [held], step: "done", started: 1, failed: "It stayed here.",
+    folder: path.dirname(paused(held)), wasPaused: true, pausedAs: "user-paused",
+  });
+  const source = here.start();
+  await source.ready();
+  await until(() => {
+    try { return fs.readFileSync(paused(held), "utf8") === "user-paused" && !fs.existsSync(paused(orphan)); }
+    catch { return false; }
+  }, () => "The resident left old wake-ups held\n" + source.log(), 8000);
+  assert.equal(fs.readFileSync(paused(owned), "utf8"), "moving:mov_otherMove");
 });
 
 test("a chat's wake-up folder stays held until its new computer owns it", {

@@ -165,24 +165,52 @@ struct Outcome {
     movement: Option<Shown>,
     note: Option<String>,
     message: Option<String>,
+    status: Option<u16>,
 }
 
-fn dead_end(message: String) -> Value {
-    json!({ "state": "failed", "message": message })
+enum Report {
+    Moving(WithWords),
+    Done(WithWords, Option<String>),
+    Failed(StatusCode, String),
 }
 
-fn report(view: &View, run: &Path, id: &str) -> Result<Value, Refusal> {
+impl Report {
+    fn failed(message: String, status: Option<u16>) -> Self {
+        let status = status
+            .and_then(|status| StatusCode::from_u16(status).ok())
+            .unwrap_or(StatusCode::CONFLICT);
+        Self::Failed(status, message)
+    }
+
+    fn public(self) -> Value {
+        match self {
+            Self::Moving(shown) => json!({ "state": "moving", "move": shown }),
+            Self::Done(shown, note) => {
+                let mut result = json!({ "state": "done", "message": format!("Moved to {}.", shown.place), "move": shown });
+                if let Some(note) = note {
+                    result["note"] = note.into();
+                }
+                result
+            }
+            Self::Failed(_, message) => json!({ "state": "failed", "message": message }),
+        }
+    }
+}
+
+fn report(view: &View, run: &Path, id: &str) -> Result<Report, Refusal> {
     let record = journals(run)
         .map_err(format_refusal)?
         .into_iter()
         .find(|record| record.id == id);
-    if let Some(message) = record
-        .as_ref()
-        .filter(|record| record.role == Role::From)
-        .and_then(|record| record.failed.as_ref())
-        .filter(|message| !message.is_empty())
+    if let Some(record) = record.as_ref().filter(|record| record.role == Role::From)
+        && let Some(message) = record.failed.as_ref().filter(|message| !message.is_empty())
     {
-        return Ok(dead_end(message.clone()));
+        let status = record
+            .extra
+            .get("failedStatus")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok());
+        return Ok(Report::failed(message.clone(), status));
     }
     let kept = match move_id(id) {
         Some(_) => match OUTCOME.read(&run.join("moves").join(format!("{id}.outcome.json"))) {
@@ -195,7 +223,7 @@ fn report(view: &View, run: &Path, id: &str) -> Result<Value, Refusal> {
     let (movement, done, note) = if let Some(outcome) = kept {
         if !outcome.ok {
             if let Some(message) = outcome.message {
-                return Ok(dead_end(message));
+                return Ok(Report::failed(message, outcome.status));
             }
             return Err(result_unavailable());
         }
@@ -227,13 +255,9 @@ fn report(view: &View, run: &Path, id: &str) -> Result<Value, Refusal> {
     let peer = name_of(&view.roster, &movement.to);
     let shown = movement.with_words(peer, None);
     if done {
-        let mut result = json!({ "state": "done", "message": format!("Moved to {}.", shown.place), "move": shown });
-        if let Some(note) = note.filter(|note| !note.is_empty()) {
-            result["note"] = note.into();
-        }
-        Ok(result)
+        Ok(Report::Done(shown, note.filter(|note| !note.is_empty())))
     } else {
-        Ok(json!({ "state": "moving", "move": shown }))
+        Ok(Report::Moving(shown))
     }
 }
 
@@ -361,19 +385,15 @@ pub(crate) fn register_start(
                 return Ok(RouteReply::json::<202>(route_shape(json!({"move":move_view}))?));
             }
             loop {
-                let answer = report(&peers.view(), &peers.run, &row.id)?;
-                if answer["state"] == "done" {
-                    // The waiting route historically returns the move itself, with no derived progress fields.
-                    let mut movement = answer["move"].clone();
-                    if let Value::Object(fields) = &mut movement { fields.remove("place"); fields.remove("progress"); }
-                    let mut reply = json!({"move":movement});
-                    if let Some(note) = answer.get("note") { reply["note"] = note.clone(); }
-                    return Ok(RouteReply::json::<200>(route_shape(reply)?));
+                match report(&peers.view(), &peers.run, &row.id)? {
+                    Report::Done(shown, note) => {
+                        let mut reply = json!({"move":shown.movement});
+                        if let Some(note) = note { reply["note"] = note.into(); }
+                        return Ok(RouteReply::json::<200>(route_shape(reply)?));
+                    }
+                    Report::Failed(status, message) => return Err(Refusal::new(status, message)),
+                    Report::Moving(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                 }
-                if answer["state"] == "failed" {
-                    return Err(Refusal::new(StatusCode::CONFLICT, answer["message"].as_str().unwrap_or("It couldn’t go there.")));
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     });
@@ -404,6 +424,7 @@ pub(crate) fn register(registry: &mut Registry, peers: &Reader) {
         let id = query(&call.request.path, "id").unwrap_or_default();
         std::future::ready(
             report(&state.view(), &state.run, &id)
+                .map(Report::public)
                 .and_then(route_shape)
                 .map(RouteReply::json::<200>),
         )

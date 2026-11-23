@@ -34,7 +34,9 @@ use super::{
     move_id, read_json,
     receipt::{self, Bundle, Decided, Decision, Payloads, Receipts},
     session_files, session_notes,
-    transfer::{BundleSize, Flight, IncomingBundle, OutgoingBundle, PART_BYTES, Receiving},
+    transfer::{
+        BundleSize, Flight, IncomingBundle, MAX_BUNDLE_BYTES, OutgoingBundle, PART_BYTES, Receiving,
+    },
     wake_folder,
 };
 use crate::{
@@ -146,6 +148,9 @@ impl Driver {
         mut events: broadcast::Receiver<std::sync::Arc<RelayEvent>>,
         mut commands: mpsc::Receiver<Begin>,
     ) {
+        if let Err(error) = wake_folder::release_orphans(self.run_dir()) {
+            eprintln!("Keeping orphaned wake-up holds: {error}");
+        }
         let mut tick = time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         loop {
@@ -1215,13 +1220,14 @@ impl Driver {
         };
         let thing = given["thing"].as_str().unwrap_or_default();
         let size = given["size"].as_u64().unwrap_or_default();
+        let hash_valid = bundle.hash.as_ref().is_some_and(|hash| {
+            decode_exact::<32>(hash).is_some_and(|digest| encode(&digest) == *hash)
+        });
         if given["kind"] != "chat"
             || given["lane"] == true
             || !session_id(thing)
-            || bundle
-                .hash
-                .as_deref()
-                .is_none_or(|hash| BundleSize::new(size, hash).is_err())
+            || !hash_valid
+            || size == 0
         {
             send(&self.relay, view, key, refused("That isn’t a move.")).await;
             return Ok(());
@@ -1232,6 +1238,16 @@ impl Driver {
                 view,
                 key,
                 refused("Update Kuvo on the source computer before trying the move again."),
+            )
+            .await;
+            return Ok(());
+        }
+        if listing::checkpointed(self.run_dir()) && given["twoComputers"] != true {
+            send(
+                &self.relay,
+                view,
+                key,
+                refused("Update both computers and wait for their current setup before trying the move again."),
             )
             .await;
             return Ok(());
@@ -1269,6 +1285,14 @@ impl Driver {
             send(&self.relay, view, key, refused(MOVING)).await;
             return Ok(());
         }
+        let name = given["name"].as_str().unwrap_or("It");
+        if size > MAX_BUNDLE_BYTES {
+            let message = format!(
+                "{name} is more than 1 GB, too big to move to another computer, so it stays where it is."
+            );
+            send(&self.relay, view, key, refused(&message)).await;
+            return Ok(());
+        }
         let engine = match self.engine.session_move().await {
             Ok(engine) if engine.ready().await.is_ok() => engine,
             _ => {
@@ -1279,14 +1303,13 @@ impl Driver {
         let Some(here) = view.roster.here else {
             return Ok(());
         };
-        let name = given["name"].as_str().unwrap_or("It").to_owned();
         let now = self.reader.now();
         let started = before.as_ref().map_or(now, |row| row.started);
         let mut row = new_journal(
             id.to_owned(),
             Kind::Chat,
             thing.into(),
-            name,
+            name.to_owned(),
             encode(&key),
             encode(&here),
             Role::To,
