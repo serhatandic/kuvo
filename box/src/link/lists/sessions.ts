@@ -226,12 +226,11 @@ function withViewed(read: EngineSession, before: EngineSession | undefined): Eng
   return viewed > (Number(read.time?.viewed) || 0) ? { ...read, time: { ...read.time, viewed } } : read;
 }
 
-/** Every session in `sessions` (the engine's or the bridge's, each once) with its facts, and the
- * projects. */
-export function listOfSessions(sessions: EngineSession[], place: ListPlace, known?: BoxKnows): { sessions: Record<string, SessionFacts>; projects: Record<string, ListedProject> } {
+/** Every session in `sessions` (the engine's or the bridge's, each once) with its facts. */
+function sessionFacts(sessions: EngineSession[], place: ListPlace, known?: BoxKnows): Record<string, SessionFacts> {
   const facts: Record<string, SessionFacts> = {};
   for (const session of sessions) if (typeof session?.id === "string" && !(session.id in facts)) facts[session.id] = factsNow(session, place, known);
-  return { sessions: facts, projects: listedProjects(facts, place) };
+  return facts;
 }
 
 /** Every session on `target`, subagents' too, page after page; null where its list can't be read. */
@@ -306,7 +305,18 @@ function sameFacts(a: SessionFacts, b: SessionFacts, ignoring?: "updated"): bool
   if (a === b) return true;
   const keys = Object.keys(a) as (keyof SessionFacts)[];
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every(key => key === ignoring || a[key] === b[key]);
+  return keys.every(key => {
+    if (key === ignoring || a[key] === b[key]) return true;
+    // These are rebuilt as the list is worked out. Their values, including subagent order,
+    // determine what clients need to hear again.
+    if (key === "subagents" || key === "line") {
+      const before = a[key], after = b[key];
+      return before !== undefined && after !== undefined &&
+        before.length === after.length && before.every((id, at) => id === after[at]);
+    }
+    if (key === "messages") return a.messages?.via === b.messages?.via && a.messages?.note === b.messages?.note;
+    return false;
+  });
 }
 
 const projectsSaid = (projects: Record<string, ListedProject>, withUpdated: boolean) =>
@@ -808,7 +818,7 @@ const pendingPlaces = (): string[] => (places.has("bridge") || bridgeTarget() ==
  * `before` had them. */
 function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>, wakeTurns?: ReadonlySet<string>): Listed {
   const box = placeNow(running, sessions, knows, undefined, stopped);
-  const listed = listOfSessions(sessions, { ...box, wakeTurns }, knows).sessions;
+  const listed = sessionFacts(sessions, { ...box, wakeTurns }, knows);
   const work: Record<string, ListedWork> = {};
   for (const session of sessions) {
     const entry = listedWork(session);
