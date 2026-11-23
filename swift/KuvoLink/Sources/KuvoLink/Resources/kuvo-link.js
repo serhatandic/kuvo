@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 1408762559e4
+// Kuvo folder layout 23 353d09336b38
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1408762559e4";
+var BRIDGE_VERSION = "353d09336b38";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -4209,6 +4209,8 @@ async function* followedLive(read, listen, signal, { look = () => "", every = 15
         yield { body: Buffer.from(`
 `) };
       }
+      if (due || signal?.aborted)
+        continue;
       await new Promise((done) => {
         const timer = setTimeout(done, 1000);
         wake = () => {
