@@ -34,6 +34,7 @@ use crate::{
 
 const ARRIVING_FOR: u64 = 120_000;
 
+mod handoff;
 mod limit;
 mod views;
 
@@ -72,6 +73,8 @@ pub(crate) struct Queue {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     inbox_moved: Vec<String>,
     format_version: u64,
+    #[serde(flatten)]
+    handoffs: handoff::Handoffs,
     #[serde(flatten)]
     unknown: BTreeMap<String, Value>,
 }
@@ -375,6 +378,7 @@ impl QueueStore {
                 state.held.retain(|held| held != id);
                 state.order.retain(|ordered| ordered != id);
                 state.came_held.retain(|held| held != id);
+                state.handoffs.clear(id);
             })
             .await?;
         if let Ok(path) = self.waiting_file(id) {
@@ -405,6 +409,7 @@ impl Queue {
             || self.limit_stop.is_some()
             || !self.arriving.is_empty()
             || !self.inbox_moved.is_empty()
+            || !self.handoffs.is_empty()
             || !self.unknown.is_empty()
     }
 
@@ -560,7 +565,14 @@ fn file_names(files: &[Value]) -> Vec<String> {
         .collect()
 }
 
-async fn with_items(engine: &Engine, queue: &Queue, inbox: &[Inbox]) -> Result<Value, Refusal> {
+async fn with_items(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    queue: Queue,
+    inbox: &[Inbox],
+) -> Result<Value, Refusal> {
+    let queue = handoff::pending(engine, lease, session, queue, inbox).await?;
     let mut shown = queue.shown(&engine.home);
     let mut items = Vec::new();
     for id in queue.order(inbox) {
@@ -677,12 +689,10 @@ pub(crate) async fn snapshot(
     if !items {
         return Ok(queue.shown(&engine.home));
     }
-    let read = async {
-        let lease = engine.acquire(Demand::Passive).await?;
-        inbox(engine, &lease, session).await.ok()
-    };
-    if let Some(inbox) = read.await {
-        with_items(engine, &queue, &inbox).await
+    if let Some(lease) = engine.acquire(Demand::Passive).await
+        && let Ok(inbox) = inbox(engine, &lease, session).await
+    {
+        with_items(engine, &lease, session, queue, &inbox).await
     } else {
         let mut shown = queue.shown(&engine.home);
         shown["items"] = Value::Null;
@@ -910,26 +920,9 @@ pub(crate) async fn advance(
         .is_some_and(|rows| rows.iter().any(|row| row == session))
         || active.get(session).is_some_and(|value| !value.is_null());
     if current.contains(id) {
-        let Some(mut prompt) = engine
-            .queues
-            .waiting_prompt(id)
-            .await
-            .map_err(save_failed)?
-        else {
+        if !handoff::send(engine, lease, session, id, true).await? {
             return Ok(false);
-        };
-        if !reached(engine, lease, session, id)
-            .await
-            .map_err(queue_failed)?
-        {
-            prompt.delivery = Delivery::Steer;
-            send::post(engine, lease, session, &prompt).await?;
         }
-        engine
-            .queues
-            .clear(session, id)
-            .await
-            .map_err(save_failed)?;
         engine
             .queues
             .put(session, Queue::release)
@@ -941,6 +934,13 @@ pub(crate) async fn advance(
                 .map_err(queue_failed)?;
         }
         return Ok(true);
+    }
+    if saved_removal(engine, session, id)
+        .await
+        .map_err(save_failed)?
+        .is_some_and(|removal| !removal.complete)
+    {
+        return Ok(false);
     }
     let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
     let Some(item) = inbox.iter().find(|item| item.id == id && item.is_message()) else {
@@ -1558,7 +1558,7 @@ async fn reorder_reply(
         .await
         .map_err(save_failed)?;
     Ok(RouteReply::json::<200>(sessions::typed(
-        with_items(engine, &queue, &inbox).await?,
+        with_items(engine, &lease, &session, queue, &inbox).await?,
     )?))
 }
 
@@ -1654,6 +1654,19 @@ async fn remove_reply(
             "Give a valid removal receipt.",
         ));
     }
+    // Do not wait for a native POST to return just to tell the composer that
+    // that POST still owns this waiting draft.
+    let prior = engine.queues.get(&session).await.map_err(save_failed)?;
+    if prior.contains(&id) && let Err(refusal) = prior.handoffs.check(&id) {
+        if let Some(token) = &token
+            && tokio::fs::try_exists(spent_path(engine, &session, &id, token))
+                .await
+                .map_err(save_failed)?
+        {
+            return Err(not_waiting());
+        }
+        return Err(refusal);
+    }
     let _turn = engine.turn(&session).await;
     let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let file = removal_file(engine, &session, &id);
@@ -1693,6 +1706,18 @@ async fn remove_reply(
         let (from, mut removed) = if let Some(waiting) =
             current.waiting.iter().find(|row| row.id == id)
         {
+            if !handoff::removable(
+                engine,
+                lease.as_ref(),
+                &session,
+                &id,
+                &current.handoffs,
+                items.as_deref(),
+            )
+            .await?
+            {
+                return Err(not_waiting());
+            }
             let prompt = engine
                 .queues
                 .waiting_prompt(&id)
@@ -1781,24 +1806,32 @@ async fn remove_reply(
                 Some(lease) => lease,
                 None => command_target(engine, &session).await?,
             };
-            let path = format!("{}/inbox/{}", sessions::path(&session), api::segment(&id));
-            if let Err(error) = engine
-                .call::<Value>(&lease, Method::DELETE, &path, None)
-                .await
-                && !error.missing()
-            {
-                return Err(queue_failed(error));
-            }
-            if inbox(engine, &lease, &session)
-                .await
-                .map_err(queue_failed)?
-                .iter()
-                .any(|row| row.id == id)
-            {
-                return Err(Refusal::new(
-                    StatusCode::BAD_GATEWAY,
-                    "It couldn't be taken back. Try again in a moment.",
-                ));
+            let items = match items {
+                Some(items) => items,
+                None => inbox(engine, &lease, &session)
+                    .await
+                    .map_err(queue_failed)?,
+            };
+            if items.iter().any(|row| row.id == id) {
+                let path = format!("{}/inbox/{}", sessions::path(&session), api::segment(&id));
+                if let Err(error) = engine
+                    .call::<Value>(&lease, Method::DELETE, &path, None)
+                    .await
+                    && !error.missing()
+                {
+                    return Err(queue_failed(error));
+                }
+                if inbox(engine, &lease, &session)
+                    .await
+                    .map_err(queue_failed)?
+                    .iter()
+                    .any(|row| row.id == id)
+                {
+                    return Err(Refusal::new(
+                        StatusCode::BAD_GATEWAY,
+                        "It couldn't be taken back. Try again in a moment.",
+                    ));
+                }
             }
             if transcript_has(engine, &lease, &session, &id)
                 .await
@@ -1828,9 +1861,9 @@ async fn remove_reply(
         .map_err(save_failed)?
         .shown(&engine.home);
     let mut removed = removal.removed;
-    removed["attached"] = json!(sendable(
-        removed["files"].as_array().map_or(&[], Vec::as_slice)
-    ));
+    let carried = sendable(removed["files"].as_array().map_or(&[], Vec::as_slice));
+    removed["attached"] =
+        json!(crate::attachments::for_edit(&engine.home, &removed, carried).await);
     removed["receipt"] = json!(removal.token);
     shown["removed"] = removed;
     Ok(RouteReply::json::<200>(sessions::typed(shown)?))
@@ -2137,23 +2170,19 @@ async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Res
         else {
             break;
         };
-        let mut prompt = engine
-            .queues
-            .waiting_prompt(id)
-            .await?
-            .ok_or_else(|| io::Error::other("The waiting message's contents are missing."))?;
-        if !reached(engine, lease, session, id)
-            .await
-            .map_err(io::Error::other)?
-        {
-            if steer {
-                prompt.delivery = Delivery::Steer;
+        match handoff::send(engine, lease, session, id, steer).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(io::Error::other(
+                    "The waiting message's contents are missing.",
+                ));
             }
-            send::post(engine, lease, session, &prompt)
-                .await
-                .map_err(|_| io::Error::other("The engine didn't confirm the waiting message."))?;
+            Err(_) => {
+                return Err(io::Error::other(
+                    "The engine didn't confirm the waiting message.",
+                ));
+            }
         }
-        engine.queues.clear(session, id).await?;
         steer = false;
         sent += 1;
     }
@@ -2579,12 +2608,6 @@ async fn drain(
         || active.get(session).is_some_and(|value| !value.is_null())
     {
         return Ok(true);
-    }
-    if saved_removal(engine, session, id)
-        .await?
-        .is_some_and(|removal| !removal.complete)
-    {
-        return Ok(false);
     }
     advance(engine, lease, session, id, true)
         .await

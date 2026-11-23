@@ -164,6 +164,7 @@ export async function standInEngine(root, env) {
           engine.refusePrompt = null;
           return send(refusal.body ?? { message: "Try the prompt again." }, refusal.status ?? 503);
         }
+        if (engine.unconfirmedPrompt === given.id) return send({});
         const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
         if (held) engine.holdPrompt = null;
         const accept = () => {
@@ -188,6 +189,7 @@ export async function standInEngine(root, env) {
         accept();
         if (held) {
           held.accepted();
+          if (held.release) void held.release.then(() => send({}, held.status));
           return;
         }
         return send({});
@@ -208,6 +210,7 @@ export async function standInEngine(root, env) {
         else if (request.method === "DELETE") {
           if (engine.refuseRemoval?.has(waiting[2])) return send({}, 503);
           inbox.splice(index, 1);
+          engine.afterInboxRemoval?.(session, decodeURIComponent(waiting[2]));
         }
         else return send({}, 404);
         publish({ type: "session.inbox.updated", data: { sessionID: session } });
@@ -215,6 +218,7 @@ export async function standInEngine(root, env) {
       }
       const message = url.pathname.match(/^\/api\/session\/([^/]+)\/message\/([^/]+)$/);
       if (message && request.method === "GET") {
+        if (engine.messageUnavailable?.has(decodeURIComponent(message[2]))) return send({}, 503);
         const stored = engine.messages.get(decodeURIComponent(message[1]))?.find(row => row.id === decodeURIComponent(message[2]));
         return stored ? send({ data: stored }) : send({}, 404);
       }

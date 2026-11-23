@@ -93,7 +93,7 @@ impl Views {
                 let result = async {
                     let queue = home.queues.get(&session).await.ok()?;
                     let inbox = super::inbox(&home, &lease, &session).await.ok()?;
-                    super::with_items(&home, &queue, &inbox)
+                    super::with_items(&home, &lease, &session, queue, &inbox)
                         .await
                         .ok()
                         .map(Arc::new)

@@ -1286,6 +1286,18 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
         }
         ("GET", "/api/session/active") => empty(),
         ("GET", _) if route.ends_with("/inbox") => empty(),
+        ("GET", _) if route.starts_with("/api/session/ses_inbox/message/") => {
+            let id = tail("/api/session/ses_inbox/message/").unwrap();
+            let found = fs::read_to_string("delivered-ids")
+                .unwrap_or_default()
+                .lines()
+                .any(|saved| saved == id);
+            if found {
+                Reply::json(StatusCode::OK, json!({ "data": { "id": id } }))
+            } else {
+                missing()
+            }
+        }
         ("DELETE", _) if route.starts_with("/api/session/ses_inbox/inbox/") => {
             let id = tail("/api/session/ses_inbox/inbox/").unwrap();
             if id == "msg_B" && Path::new("refuse-B").exists() {
@@ -1311,6 +1323,12 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
                 .open("delivered")
                 .unwrap();
             writeln!(delivered, "{}", given["text"].as_str().unwrap()).unwrap();
+            let mut ids = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("delivered-ids")
+                .unwrap();
+            writeln!(ids, "{}", given["id"].as_str().unwrap()).unwrap();
             Reply::json(StatusCode::OK, json!({}))
         }
         _ => missing(),

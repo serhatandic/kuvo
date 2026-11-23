@@ -298,6 +298,271 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
     [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
+test("a stopped queue shows messages in order and Edit returns carried and retained files", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-edit-files");
+  const session = "ses_editFiles";
+  const id = "msg_editFiles";
+  const route = `kuvo/sessions/${session}`;
+  const queue = route + "/queue";
+  const directory = here.home;
+  const words = "Look at both attachments.";
+  const picture = { name: "shot.png", uri: "data:image/png;base64,YQ==" };
+  const zip = { name: "logs.zip", uri: "data:application/zip;base64,UEsDBA==" };
+  const attached = { uri: "file:///team/held.png", name: "held.png" };
+  const held = { id: "msg_heldFile", type: "user", delivery: "steer", payload: { text: "First.", files: [attached] } };
+  const mail = { id: "msg_mail", type: "user", delivery: "queue", payload: {
+    text: "Check this.", metadata: { kuvo: { parts: { words: "Check this.", mail: { name: "Mira", session: "ses_mira" } } } },
+  } };
+  const model = { id: "picture-reader", providerID: "local", capabilities: { input: ["text", "image"] } };
+  here.engine.sessions.push({ ...sessionOf({ id: session, directory }), model });
+  here.engine.inboxes.set(session, [held, mail]);
+  here.engine.running.add(session);
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", queue + "/hold")).json.paused, true);
+  for (const invalid of [route + "/send", queue + "/add"]) {
+    const refusal = await request(resident, "POST", invalid, { id: "msg_bad_id", text: "Keep it.", kept: true, delivery: "queue" });
+    assert.equal(refusal.status, 400, refusal.text);
+    assert.match(refusal.json.message, /Send it again as a new message/);
+  }
+  assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", "msg_bad_id.json")), false);
+  const send = await request(resident, "POST", queue + "/add", { id, words, files: [picture, zip] }, { "x-kuvo-from": "app" });
+  assert.equal(send.status, 200, send.text);
+  assert.equal(send.json.waits, true);
+  const found = await until(async () => {
+    const response = await request(resident, "GET", queue + "?items=1");
+    return response.json?.items?.length === 3 && response.json;
+  }, "the queue to show the two engine messages and the saved message");
+  assert.deepEqual(found.held, [held.id]);
+  assert.deepEqual(found.items.slice(0, 2), [
+    { id: held.id, words: "First.", files: [attached.name], from: null, on: "engine", delivery: "queue", held: true },
+    { id: mail.id, words: "Check this.", files: [], from: "Mira", on: "engine", delivery: "queue", held: false },
+  ]);
+  assert.deepEqual(found.items[2], { id, words, files: [picture.name], from: null, on: "box", delivery: "queue", held: false });
+  const editHeld = await request(resident, "DELETE", queue + "/" + held.id + "?receipt=msg_editHeld");
+  assert.equal(editHeld.status, 200, editHeld.text);
+  assert.deepEqual(editHeld.json.removed.attached, [attached]);
+  assert.equal(editHeld.json.removed.before, mail.id);
+  assert.deepEqual(editHeld.json.held, []);
+  const edit = await request(resident, "DELETE", queue + "/" + id + "?receipt=msg_editBoth");
+  assert.equal(edit.status, 200, edit.text);
+  assert.equal(edit.json.removed.draft, words);
+  assert.deepEqual(edit.json.removed.files, [picture]);
+  assert.deepEqual(edit.json.removed.attached.map(file => file.name), ["shot.png", "logs.zip"]);
+  assert.equal(edit.json.removed.attached[0].uri, picture.uri);
+  assert.deepEqual(fs.readFileSync(new URL(edit.json.removed.attached[1].uri)), Buffer.from("PK\x03\x04"));
+  for (const [item, receipt] of [[held.id, "msg_editHeld"], [id, "msg_editBoth"]]) {
+    assert.equal((await request(resident, "POST", queue + "/" + item + "/ack", { receipt })).status, 200);
+    assert.equal((await request(resident, "DELETE", queue + "/" + item + "?receipt=" + receipt)).status, 404);
+  }
+});
+
+for (const unreadable of ["inbox", "transcript"]) {
+  test(`Edit recovers an inbox draft after the ${unreadable} read fails`, { timeout: 45000 }, async t => {
+    const { computer } = await bench(t);
+    const here = await computer("queue-edit-recovery");
+    const session = "ses_editRecovery";
+    const id = "msg_editRecovery";
+    const words = "Keep these notes.";
+    const file = { uri: "file:///team/notes.png", name: "notes.png" };
+    const metadata = { kuvo: { parts: { words } } };
+    const queue = `kuvo/sessions/${session}/queue`;
+    const edit = queue + "/" + id + "?receipt=msg_recoverEdit";
+    const payload = { text: words + "\n\n<attached-files>\n- /team/notes.png\n</attached-files>", files: [file], metadata };
+    const after = { id: "msg_afterEdit", type: "user", delivery: "queue", payload: { text: "Next." } };
+    here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+    here.engine.running.add(session);
+    here.engine.inboxes.set(session, [{ id, type: "user", delivery: "steer", payload }, after]);
+    here.engine.inboxUnavailable = new Set();
+    here.engine.messageUnavailable = new Set();
+    here.engine.afterInboxRemoval = () => {
+      if (unreadable === "inbox") here.engine.inboxUnavailable.add(session);
+      else here.engine.messageUnavailable.add(id);
+    };
+    const first = here.start();
+    const record = await first.ready();
+    const blocked = await request(record, "DELETE", edit);
+    assert.equal(blocked.status, 502, blocked.text);
+    assert.equal(blocked.json.removed, undefined);
+    assert.deepEqual(here.engine.inboxes.get(session), [after]);
+    await first.stop();
+
+    const next = await here.start().ready();
+    const checking = await request(next, "DELETE", edit);
+    assert.equal(checking.status, 502, checking.text);
+    here.engine.inboxUnavailable.clear();
+    here.engine.messageUnavailable.clear();
+    const recovered = await request(next, "DELETE", edit);
+    assert.equal(recovered.status, 200, recovered.text);
+    assert.deepEqual(recovered.json.removed, {
+      id, text: payload.text, words, draft: words, delivery: "steer",
+      files: [file], attached: [file], metadata, before: after.id, receipt: "msg_recoverEdit",
+    });
+    assert.deepEqual((await request(next, "DELETE", edit)).json, recovered.json);
+    assert.equal(here.engine.asked.filter(row => row.method === "DELETE" && row.path.endsWith("/" + id)).length, 1);
+    const ack = await request(next, "POST", queue + "/" + id + "/ack", { receipt: "msg_recoverEdit" });
+    assert.equal(ack.status, 200, ack.text);
+    assert.equal((await request(next, "DELETE", edit)).status, 404);
+  });
+}
+
+test("Edit refuses an inbox draft when delivery wins and the exact lookup fails", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-edit-delivered");
+  const session = "ses_editDelivered";
+  const id = "msg_editDelivered";
+  const edit = `kuvo/sessions/${session}/queue/${id}?receipt=msg_deliveredEdit`;
+  const payload = { text: "Already delivered." };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  here.engine.inboxes.set(session, [{ id, type: "user", delivery: "queue", payload }]);
+  here.engine.afterInboxRemoval = () => {
+    here.engine.messages.set(session, [{ id, type: "user", ...payload }]);
+    here.engine.messageUnavailable = new Set([id]);
+  };
+  const resident = await here.start().ready();
+  const blocked = await request(resident, "DELETE", edit);
+  assert.equal(blocked.status, 502, blocked.text);
+  assert.equal(blocked.json.removed, undefined);
+  here.engine.messageUnavailable.clear();
+  for (const expected of [404, 404]) {
+    const delivered = await request(resident, "DELETE", edit);
+    assert.equal(delivered.status, expected, delivered.text);
+    assert.equal(delivered.json.removed, undefined);
+  }
+  assert.deepEqual(here.engine.messages.get(session), [{ id, type: "user", ...payload }]);
+});
+
+test("Send Now keeps the waiting payload until OpenCode confirms the exact message", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-unconfirmed");
+  const session = "ses_unconfirmed";
+  const id = "msg_unconfirmed";
+  const queue = `kuvo/sessions/${session}/queue`;
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", `kuvo/sessions/${session}/stop`)).status, 200);
+  assert.equal((await request(resident, "POST", queue + "/add", { id, words: "Wait for proof.", delivery: "queue" })).json.waits, true);
+  const file = path.join(here.home, "run", "waiting", id + ".json");
+  here.engine.unconfirmedPrompt = id;
+  const response = await request(resident, "POST", queue + "/" + id + "/now");
+  assert.equal(response.status, 502, response.text);
+  assert.equal(fs.existsSync(file), true);
+  assert.deepEqual((await request(resident, "GET", queue)).json.waiting.map(row => row.id), [id]);
+  here.engine.unconfirmedPrompt = null;
+  assert.equal((await request(resident, "POST", queue + "/" + id + "/now")).status, 200);
+  assert.equal(fs.existsSync(file), false);
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [id]);
+});
+
+test("Edit protects a queued handoff until OpenCode replies and confirms the inbox", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-inflight");
+  const session = "ses_inflight";
+  const id = "msg_inflight";
+  const queue = `kuvo/sessions/${session}/queue`;
+  const item = queue + "/" + id;
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", `kuvo/sessions/${session}/stop`)).status, 200);
+  assert.equal((await request(resident, "POST", queue + "/add", { id, words: "Keep my backup.", delivery: "queue" })).json.waits, true);
+  const arrived = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  here.engine.holdPrompt = { id, accepted: arrived.resolve, release: release.promise };
+  const sending = request(resident, "POST", item + "/now");
+  sending.catch(() => {});
+  try {
+    await arrived.promise;
+    const editing = await request(resident, "DELETE", item, undefined, {}, 3000);
+    assert.equal(editing.status, 502, editing.text);
+    assert.deepEqual(here.engine.inboxes.get(session).map(row => row.id), [id]);
+    assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", id + ".json")), true);
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await sending).status, 200);
+  assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", id + ".json")), false);
+});
+
+test("Edit requires the exact message lookup after a refused queued handoff", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-refused");
+  const session = "ses_refused";
+  const id = "msg_refused";
+  const queue = `kuvo/sessions/${session}/queue`;
+  const item = queue + "/" + id;
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", `kuvo/sessions/${session}/stop`)).status, 200);
+  assert.equal((await request(resident, "POST", queue + "/add", { id, words: "Keep my draft.", delivery: "queue" })).json.waits, true);
+  const file = path.join(here.home, "run", "waiting", id + ".json");
+  here.engine.refusePrompt = { id };
+  assert.equal((await request(resident, "POST", item + "/now")).status, 502);
+  here.engine.messageUnavailable = new Set([id]);
+  const blocked = await request(resident, "DELETE", item);
+  assert.equal(blocked.status, 502, blocked.text);
+  assert.equal(fs.existsSync(file), true);
+  here.engine.messageUnavailable.clear();
+  const removed = await request(resident, "DELETE", item);
+  assert.equal(removed.status, 200, removed.text);
+  assert.equal(removed.json.removed.draft, "Keep my draft.");
+  assert.equal(removed.json.paused, true);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).length, 1);
+});
+
+test("a delivered message leaves the displayed queue while its handoff backup survives", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-handoff-backup");
+  const session = "ses_handoffBackup";
+  const id = "msg_handoffBackup";
+  const queue = `kuvo/sessions/${session}/queue`;
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", `kuvo/sessions/${session}/stop`)).status, 200);
+  const queued = await request(resident, "POST", queue + "/add", { id, words: "Keep my backup." });
+  assert.equal(queued.json.waits, true);
+  const line = await openLine(resident, "", queue + "/events");
+  t.after(() => line.close());
+  const frames = line.frames();
+  assert.deepEqual((await frames.next()).value.items.map(item => item.id), [id]);
+  await until(() => here.engine.subscribers() > 0, "the queue to follow engine events");
+  const release = Promise.withResolvers();
+  here.engine.holdPrompt = { id, accepted: release.resolve, release: release.promise, status: 503 };
+  const now = await request(resident, "POST", queue + "/" + id + "/now");
+  assert.equal(now.status, 502, now.text);
+  here.engine.emit({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: id } });
+  for await (const update of frames) {
+    if (update.items?.length === 0) break;
+  }
+  const listing = await request(resident, "GET", queue + "?items=1");
+  assert.deepEqual(listing.json.items, []);
+  assert.equal((await request(resident, "DELETE", queue + "/" + id)).status, 404);
+  assert.deepEqual((await request(resident, "GET", queue)).json.waiting.map(row => row.id), [id]);
+  assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", id + ".json")), true);
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [id]);
+});
+
+test("an old unconfirmed native handoff does not become safe to retry", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-legacy-handoff");
+  const session = "ses_oldHandoff";
+  const id = "msg_oldHandoff";
+  const queue = `kuvo/sessions/${session}/queue`;
+  const item = queue + "/" + id;
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const index = path.join(here.home, "run", "queues.json");
+  write(index, JSON.stringify({ [session]: { paused: true, held: [], handoff: [id], waiting: [{ id, text: "Pending.", at: 1 }] } }));
+  const file = path.join(here.home, "run", "waiting", id + ".json");
+  write(file, JSON.stringify({ id, text: "Pending.", delivery: "queue" }));
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", item + "/now")).status, 502);
+  assert.equal((await request(resident, "DELETE", item)).status, 502);
+  assert.equal(fs.existsSync(file), true);
+  assert.equal(here.engine.asked.some(row => row.method === "POST" && row.path.endsWith("/prompt")), false);
+});
+
 test("queue reads keep the last complete inbox and the live line skips unreadable inboxes", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-queue-incomplete");

@@ -100,7 +100,7 @@ pub(crate) struct Parts<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     comments: Vec<Comment<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    paths: Vec<&'a str>,
+    pub(crate) paths: Vec<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     agents: Vec<Agent<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]

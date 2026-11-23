@@ -89,6 +89,38 @@ pub(crate) fn session_folder(name: &str) -> bool {
     name.starts_with("ses_") && (5..=124).contains(&name.len()) && crate::sessions::valid_id(name)
 }
 
+/// Files kept beside the transcript are shown after the files carried in its prompt.
+pub(crate) async fn for_edit(home: &Path, removed: &Value, mut files: Vec<Value>) -> Vec<Value> {
+    let metadata = removed.pointer("/metadata/kuvo/parts");
+    let paths = match metadata.filter(|parts| parts["words"].is_string()) {
+        Some(parts) => parts["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect(),
+        None => crate::parts::read_parts(removed["text"].as_str().unwrap_or_default()).paths,
+    };
+    let root = home.join("attachments");
+    let legacy = std::env::var_os("KUVO_MAC_ATTACHMENTS")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from);
+    for path in paths.into_iter().map(Path::new) {
+        if !(path.starts_with(&root) || legacy.as_ref().is_some_and(|root| path.starts_with(root)))
+            || !fs::metadata(path).await.is_ok_and(|file| file.is_file())
+        {
+            continue;
+        }
+        let (Ok(uri), Some(name)) = (url::Url::from_file_path(path), path.file_name()) else {
+            continue;
+        };
+        if !files.iter().any(|file| file["uri"] == uri.as_str()) {
+            files.push(serde_json::json!({ "uri": uri.as_str(), "name": name.to_string_lossy() }));
+        }
+    }
+    files
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct Expiry(Arc<AtomicU64>);
 
