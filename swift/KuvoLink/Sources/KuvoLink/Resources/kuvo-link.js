@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 1c50af5fd864
+// Kuvo folder layout 23 301ce9ca2179
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1c50af5fd864";
+var BRIDGE_VERSION = "301ce9ca2179";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24854,8 +24854,8 @@ var init_sessions2 = __esm(() => {
 // box/src/shared/routes/bots.ts
 var LOOKS, LOOK, MODEL2, DELETES, BOT, BOT_ACTIVITY, BOT_ELSEWHERE, HELD_EDIT, REFUSED_EDIT, BOTS2, HELD2, TEMPLATES, MADE, CHANGED, BOT_ROUTES;
 var init_bots = __esm(() => {
-  init_list_computers();
   init_shape();
+  init_list_computers();
   init_work2();
   init_sessions2();
   LOOKS = {
@@ -25478,9 +25478,9 @@ var init_mac = __esm(() => {
 // box/src/shared/routes/box.ts
 var UPDATE_NOTICE, PIECE, COMPATIBILITY, WSL_FACTS, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING2, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED2, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, TOLD_NOTICE, NOTICE_COPY, NOTICES, NOTICE_COMPUTER, NOTICE_ORIGIN, SETUP_NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
-  init_list_computers();
   init_features();
   init_shape();
+  init_list_computers();
   init_mac();
   init_setup_save();
   UPDATE_NOTICE = object({
@@ -71645,8 +71645,8 @@ var init_settings_vault = __esm(() => {
 // box/src/shared/routes/settings-pages.ts
 var SETTING_KINDS, SETTING_CAN, SETTING_CONFIRM, SETTING_CHOICE, SETTING_FOLDER, SETTING_FIELD_KINDS, SETTING_FIELD_SHOWS, SETTING_FIELD, SETTING_FORM, SETTING_ACTION, SETTING_BADGE_TONES, SETTING_BADGE, SETTING_FLOW_STATES, SETTING_FLOW, SETTING_WINDOW, SETTING_PART, ROW_FIELDS, SETTING_ITEM, SETTING_ROW, SETTING_GROUP, SETTING_NOTE, SETTINGS_PAGE, SETTINGS_SECTION, SETTINGS_SECTIONS, SETTINGS_STALE, SETTINGS_CHANGE, REFUSED4, SETTING_FIELD_WORDS, SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_CHECKED, SETTINGS_FORM_REFUSED, SETTINGS_PAGE_ROUTES;
 var init_settings_pages = __esm(() => {
-  init_list_computers();
   init_shape();
+  init_list_computers();
   SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
   SETTING_CAN = oneOf(literal(true), object({ why: string }));
   SETTING_CONFIRM = object({ title: string, body: string, button: string });
@@ -77010,8 +77010,8 @@ var init_settings_pages2 = __esm(() => {
 // box/src/shared/routes/artifacts.ts
 var KIND2, VERSION3, HEADER2, ARTIFACT, ARTIFACT_LIST, ARTIFACT_TIMELINE, ARTIFACT_STORAGE, ARTIFACT_CHANGES, OUTPUT_FIELDS, OUTPUT_COPY, SETUP_OUTPUTS, ARTIFACT_ROUTES;
 var init_artifacts2 = __esm(() => {
-  init_list_computers();
   init_shape();
+  init_list_computers();
   KIND2 = words("memory", "skill", "image", "page", "document", "download", "code", "file");
   VERSION3 = object({
     n: number,
@@ -77078,6 +77078,7 @@ var init_artifacts2 = __esm(() => {
   });
   ARTIFACT_ROUTES = [
     { route: "GET kuvo/setup/outputs", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
+    { route: "GET kuvo/setup/outputs/events", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
     { route: "GET kuvo/artifacts", feature: "artifacts", answers: { 200: ARTIFACT_LIST } },
     { route: "GET kuvo/artifacts/timeline", feature: "artifacts", answers: { 200: ARTIFACT_TIMELINE } },
     { route: "GET kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },
@@ -78726,8 +78727,8 @@ var init_notices2 = __esm(() => {
 // box/src/shared/routes/library.ts
 var LIBRARY_ITEM, BOT2, LIBRARY_COPY, LIBRARY, LIBRARY_ROUTES;
 var init_library2 = __esm(() => {
-  init_list_computers();
   init_shape();
+  init_list_computers();
   LIBRARY_ITEM = object({
     id: string,
     name: string,

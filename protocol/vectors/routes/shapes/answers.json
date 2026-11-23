@@ -1080,6 +1080,103 @@
    }
   },
   {
+   "route": "GET kuvo/setup/outputs/events",
+   "feature": "line.merged-outputs",
+   "answers": {
+    "200": {
+     "object": {
+      "pendingComputers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "artifacts": {
+       "list": {
+        "object": {
+         "id": "string",
+         "path": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "memory"
+           },
+           {
+            "literal": "skill"
+           },
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "download"
+           },
+           {
+            "literal": "code"
+           },
+           {
+            "literal": "file"
+           }
+          ]
+         },
+         "type": "string",
+         "gone": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "updated": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         },
+         "pinned": "bool",
+         "latest": {
+          "object": {
+           "n": "number",
+           "hash": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "reason?": "string"
+          }
+         },
+         "artifactId": "string",
+         "computer": {
+          "object": {
+           "id": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         },
+         "away": "bool",
+         "lastSeen?": "number"
+        }
+       }
+      },
+      "next": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/artifacts",
    "feature": "artifacts",
    "answers": {
