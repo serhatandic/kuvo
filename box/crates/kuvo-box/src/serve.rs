@@ -24,6 +24,7 @@ pub async fn run(
     home: &Path,
     mut vault_launch: kuvo_services::vault::Launch,
     helper_ended: Option<tokio::sync::oneshot::Receiver<()>>,
+    shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(resident) = Resident::bind_with_password(home, vault_launch.take_password()).await?
     else {
@@ -70,17 +71,24 @@ pub async fn run(
     };
     let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
-    let peers = Arc::new(
-        ResidentPeers::start(
-            home,
-            roster,
-            relay,
-            Some(devices.clone()),
-            kind == ComputerKind::Mac,
-            Arc::new(system_clock),
-        )
-        .await?,
+    let mut peers = ResidentPeers::start(
+        home,
+        roster,
+        relay,
+        Some(devices.clone()),
+        kind == ComputerKind::Mac,
+        Arc::new(system_clock),
+    )
+    .await?;
+    let authority = setup.handle();
+    let ownership = kuvo_peers::ownership::Handle::new(
+        peers.reader(),
+        peers.relay_handle(),
+        devices.clone(),
+        move || authority.ownership_state(),
     );
+    peers.attach_moves(engine.clone(), ownership).await?;
+    let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
     let mut routes = Registry::new();
     if kind == ComputerKind::Machine {
@@ -106,6 +114,7 @@ pub async fn run(
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
     setup.handle().register(&mut routes);
+    setup.handle().register_ssh(&mut routes, home);
     let account = kuvo_os::platform::Account::current()?.home_folder(
         kuvo_os::platform::Platform::current(),
         &std::env::vars_os().collect(),
@@ -114,10 +123,11 @@ pub async fn run(
         &mut routes,
         kuvo_services::files::Places {
             home: account.clone(),
+            box_home: home.to_owned(),
             platform: kuvo_os::platform::Platform::current(),
         },
     );
-    let (backup_mail, _backup_receiver) = if let Some(relay) = peers.relay_handle()
+    let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
             account.clone(),
@@ -139,7 +149,7 @@ pub async fn run(
         vault_machine,
     );
     vault.register(&mut routes);
-    let _daily_backups = kuvo_setup::backup::routes::register(
+    let daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
         account,
@@ -148,6 +158,7 @@ pub async fn run(
         Some(vault.clone()),
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();
@@ -191,6 +202,7 @@ pub async fn run(
         });
     }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let finishing = setup.handle();
     let result = resident
         .serve(dispatcher, Arc::new(devices), async {
             let helper = async {
@@ -201,7 +213,8 @@ pub async fn run(
                 }
             };
             tokio::select! {
-                () = super::shutdown() => {},
+                () = shutdown => {},
+                () = finishing.wait_for_local_wipe() => {},
                 () = helper => {},
             }
         })
@@ -210,6 +223,10 @@ pub async fn run(
     if let Some(holder) = vault_holder {
         holder.shutdown().await;
     }
+    let _ = session_source.await;
+    drop(daily_backups);
+    drop(backup_receiver);
+    drop(setup);
     result?;
     Ok(())
 }

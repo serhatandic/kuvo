@@ -8,7 +8,7 @@ import { joinWindowsPath, windowsEnvValue, windowsNativePath, windowsWirePath } 
 import { windowsProcessState } from "../src/shared/windows-process"
 
 // Protocol vectors and the real box adapters, with Windows OS observations supplied as inputs.
-const vectors = JSON.parse(readFileSync(new URL("fixtures/file-addresses/windows.json", import.meta.url), "utf8")) as {
+const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/file-addresses/windows.json", import.meta.url), "utf8")) as {
   paths: { native: string; wire: string }[]
   refused: string[]
 }

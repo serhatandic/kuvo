@@ -20,18 +20,18 @@ export async function bench(t) {
   });
   return {
     relay, leases,
-    async computer(name, implementation = binary, environment = {}) {
+    async computer(name, implementation = binary, configure = () => ({})) {
       const folder = path.join(root, name);
       const home = path.join(folder, "box");
-      const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...environment };
+      const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...configure(folder) };
       const engine = await standInEngine(folder, env);
       engines.push(engine);
       // This fixture seeds records in the current layout before either resident starts.
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
-      const start = (runWith = implementation) => {
-        const child = startBox({ binary: runWith, home, env, relay });
+      const start = (runWith = implementation, overrides = {}) => {
+        const child = startBox({ binary: runWith, home, env: { ...env, ...overrides }, relay });
         children.push(child);
         return child;
       };
@@ -67,7 +67,15 @@ export async function bench(t) {
         }
       };
       const connect = record => (method, route, body, headers) => request(record, method, route, body, headers);
-      return { home, engine, start, join, connect };
+      const command = async (args, input) => {
+        const child = boxCommand(implementation, home, env, relay, args, {}, "pipe");
+        children.push(child);
+        let text = "";
+        child.child.stdout.setEncoding("utf8").on("data", chunk => { text += chunk; });
+        child.child.stdin.end(input);
+        return { ...await child.exited, text, log: child.log() };
+      };
+      return { home, engine, start, join, connect, command };
     },
   };
 }

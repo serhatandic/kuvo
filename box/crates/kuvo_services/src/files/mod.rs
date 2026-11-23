@@ -8,6 +8,7 @@ mod folders;
 mod git;
 mod opened;
 mod order;
+mod suggested;
 
 pub use folders::Places;
 
@@ -20,7 +21,7 @@ use http::header::{CONTENT_LENGTH, HeaderValue};
 use kuvo_protocol::JsonStatus;
 use kuvo_protocol::routes::{
     get_kuvo_file, get_kuvo_file_info, get_kuvo_file_text, get_kuvo_files_find, get_kuvo_folders,
-    get_kuvo_folders_tree, post_kuvo_folders,
+    get_kuvo_folders_suggested, get_kuvo_folders_tree, post_kuvo_folders,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde::Serialize;
@@ -88,6 +89,11 @@ fn register_folders(registry: &mut Registry, places: &Places) {
                 folders::tree(&places, &query, folders::TREE_LIMIT, &call.cancel).await?,
             )
         }
+    });
+    let here = places.clone();
+    registry.register::<get_kuvo_folders_suggested::Spec, _, _>(Access::Any, move |_| {
+        let places = here.clone();
+        async move { blocking(move || typed::<_, 200>(suggested::answer(&places))).await }
     });
     let here = places.clone();
     registry.register::<get_kuvo_files_find::Spec, _, _>(Access::Any, move |call| {
@@ -359,28 +365,31 @@ fn bytes(query: &Query) -> Result<Download, Refusal> {
 }
 
 impl Download {
-    /// Streams the length announced, even if the file grows, and breaks the answer if it shrinks.
-    fn reply(self) -> RouteReply<get_kuvo_file::Spec> {
+    /// The announced length of the file's bytes, even if it grows; an error if it shrinks.
+    fn pieces(self) -> impl futures_util::Stream<Item = io::Result<Bytes>> + Send + 'static {
         let file = tokio::fs::File::from_std(self.file);
-        let pieces =
-            futures_util::stream::unfold((file, self.size), |(mut file, left)| async move {
-                if left == 0 {
-                    return None;
+        futures_util::stream::unfold((file, self.size), |(mut file, left)| async move {
+            if left == 0 {
+                return None;
+            }
+            let mut piece = vec![0; left.min(32 * 1024) as usize];
+            match file.read(&mut piece).await {
+                Ok(0) => Some((Err(io::Error::other(CHANGED)), (file, 0))),
+                Ok(read) => {
+                    piece.truncate(read);
+                    Some((Ok(Bytes::from(piece)), (file, left - read as u64)))
                 }
-                let mut piece = vec![0; left.min(32 * 1024) as usize];
-                match file.read(&mut piece).await {
-                    Ok(0) => Some((Err(io::Error::other(CHANGED)), (file, 0))),
-                    Ok(read) => {
-                        piece.truncate(read);
-                        Some((Ok(Bytes::from(piece)), (file, left - read as u64)))
-                    }
-                    Err(error) => Some((Err(error), (file, 0))),
-                }
-            });
-        let mut reply = RouteReply::stream::<200>(self.content_type, pieces);
+                Err(error) => Some((Err(error), (file, 0))),
+            }
+        })
+    }
+
+    fn reply(self) -> RouteReply<get_kuvo_file::Spec> {
+        let (content_type, size) = (self.content_type, self.size);
+        let mut reply = RouteReply::stream::<200>(content_type, self.pieces());
         reply
             .headers_mut()
-            .insert(CONTENT_LENGTH, HeaderValue::from(self.size));
+            .insert(CONTENT_LENGTH, HeaderValue::from(size));
         reply
     }
 }
@@ -388,6 +397,41 @@ impl Download {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
+
+    /// A file that changes once its length is announced: the announced length of what's there
+    /// when it grew, and a broken answer when it shrank.
+    #[tokio::test]
+    async fn bytes_keep_the_announced_length_when_a_file_changes() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("changing.txt");
+        let address = |file: &Path| {
+            let uri = url::Url::from_file_path(file).unwrap();
+            Query::of(&format!(
+                "kuvo/file?uri={}&max=3",
+                form_urlencoded::byte_serialize(uri.as_str().as_bytes()).collect::<String>()
+            ))
+        };
+        std::fs::write(&file, "old").unwrap();
+        let growing = bytes(&address(&file)).ok().unwrap();
+        assert_eq!(growing.size, 3);
+        std::fs::write(&file, "new longer content").unwrap();
+        let sent: Vec<io::Result<Bytes>> = growing.pieces().collect().await;
+        let sent: Vec<u8> = sent
+            .into_iter()
+            .flat_map(|piece| piece.unwrap().to_vec())
+            .collect();
+        assert_eq!(sent, b"new");
+
+        std::fs::write(&file, "old").unwrap();
+        let shrinking = bytes(&address(&file)).ok().unwrap();
+        std::fs::File::create(&file).unwrap();
+        let sent: Vec<io::Result<Bytes>> = shrinking.pieces().collect().await;
+        assert_eq!(
+            sent.last().unwrap().as_ref().unwrap_err().to_string(),
+            CHANGED
+        );
+    }
 
     #[test]
     fn max_reads_as_javascript_numbers_do() {

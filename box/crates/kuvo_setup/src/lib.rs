@@ -3,11 +3,15 @@
 mod actor;
 pub mod backup;
 mod checkpoint;
+mod cleanup;
+mod discovery;
 mod document;
 mod edits;
 pub mod installer;
 mod preferences;
 mod routes;
+pub mod seed;
+mod ssh;
 
 mod lease;
 mod mac_host;
@@ -20,6 +24,8 @@ use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("This computer couldn't read its setup.")]
+    SetupUnavailable,
     #[error("{0}")]
     Installer(String),
     #[error(transparent)]
@@ -76,6 +82,10 @@ pub use actor::{
     ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
     SetupRuntime,
 };
+pub use discovery::locate;
 pub use model::{Receipt, SharedKind};
 
 pub use preferences::{project_app_personalities, project_kit_personalities};
+
+pub mod uninstall;
+pub mod wipe;

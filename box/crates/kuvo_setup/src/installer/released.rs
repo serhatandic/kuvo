@@ -1,5 +1,6 @@
-//! Read the TypeScript unlink baseline for a stopped machine home. A changed
-//! physical SQLite inventory still requires the logical database reader.
+//! Read the TypeScript unlink baseline for a stopped machine home.
+
+mod sqlite;
 
 use std::{
     fs::{self, File},
@@ -15,23 +16,22 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, model::Link, storage::Files};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct Baseline {
     physical: String,
+    logical: Option<String>,
     usage: Usage,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct Usage {
+    #[serde(skip_serializing_if = "Option::is_none")]
     scope: Option<String>,
     digest: String,
     imported: bool,
 }
 
 pub(super) fn unchanged(files: &Files, link: &Link) -> Result<bool, Error> {
-    let Some(record) = link.extra.get("releasedScopedWork") else {
-        return Ok(false);
-    };
     let Some(release) = link.extra.get("releasedSetup").and_then(Value::as_str) else {
         return Ok(false);
     };
@@ -42,20 +42,52 @@ pub(super) fn unchanged(files: &Files, link: &Link) -> Result<bool, Error> {
     {
         return Ok(false);
     }
-    let baseline: Baseline = serde_json::from_value(record.clone())
-        .map_err(|_| Error::Invalid("released work baseline"))?;
-    if !unchanged_usage(files, &baseline.usage)? || pending_work(files)? {
+    if pending_work(files)? {
         return Ok(false);
     }
-    Ok(fingerprint(files).is_ok_and(|stamp| stamp == baseline.physical))
+    if let Some(record) = link.extra.get("releasedScopedWork") {
+        let baseline: Baseline = serde_json::from_value(record.clone())
+            .map_err(|_| Error::Invalid("released work baseline"))?;
+        if !unchanged_usage(files, &baseline.usage)? {
+            return Ok(false);
+        }
+        return Ok(
+            inventory_matches(files, true, &baseline.physical, baseline.logical.as_deref())
+                .unwrap_or(false),
+        );
+    }
+    let Some(physical) = link.extra.get("releasedWork").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let logical = link
+        .extra
+        .get("releasedDatabaseWork")
+        .and_then(Value::as_str);
+    Ok(inventory_matches(files, false, physical, logical).unwrap_or(false))
 }
 
 fn unchanged_usage(files: &Files, before: &Usage) -> Result<bool, Error> {
+    let Some(now) = usage(files)? else {
+        return Ok(false);
+    };
+    let unchanged = now.digest == before.digest && now.imported == before.imported;
+    let reset = before.scope.is_some()
+        && now.scope != before.scope
+        && now.digest == empty_usage_digest()
+        && !now.imported;
+    Ok(unchanged || reset)
+}
+
+fn empty_usage_digest() -> String {
+    hex::encode(Sha256::digest(b"[]"))[..32].into()
+}
+
+fn usage(files: &Files) -> Result<Option<Usage>, Error> {
     let kept = files
         .read::<Value>("agents/usage/settings.json")?
         .unwrap_or_else(|| json!({"units": {}}));
     let Some(settings) = kept.as_object() else {
-        return Ok(false);
+        return Ok(None);
     };
     if !settings
         .keys()
@@ -64,10 +96,10 @@ fn unchanged_usage(files: &Files, before: &Usage) -> Result<bool, Error> {
             .get("kuvo")
             .is_some_and(|version| version.as_u64().is_none_or(|n| n > 1))
     {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(units) = kept.get("units").and_then(Value::as_object) else {
-        return Ok(false);
+        return Ok(None);
     };
     let imported = kept.get("imported") == Some(&Value::Bool(true));
     let mut entries = Vec::new();
@@ -78,7 +110,7 @@ fn unchanged_usage(files: &Files, before: &Usage) -> Result<bool, Error> {
         let stamp = &unit["stamp"];
         if stamp["v"].as_u64().is_none() || !stamp["by"].is_string() || unit.get("value").is_none()
         {
-            return Ok(false);
+            return Ok(None);
         }
         entries.push(json!([
             name,
@@ -89,14 +121,51 @@ fn unchanged_usage(files: &Files, before: &Usage) -> Result<bool, Error> {
         ]));
     }
     let digest = hex::encode(Sha256::digest(canonical(&json!(entries))));
-    let unchanged = digest[..32] == before.digest && imported == before.imported;
-    let reset = before
-        .scope
-        .as_deref()
-        .is_some_and(|scope| kept.get("setup").and_then(Value::as_str) != Some(scope))
-        && units.is_empty()
-        && !imported;
-    Ok(unchanged || reset)
+    Ok(Some(Usage {
+        scope: kept.get("setup").and_then(Value::as_str).map(str::to_owned),
+        digest: digest[..32].into(),
+        imported,
+    }))
+}
+
+pub(crate) fn keep_baseline(files: &Files, link: &mut Link) {
+    let baseline = || -> Result<_, Box<dyn std::error::Error>> {
+        let (physical, logical) = work_stamp(files, false)?;
+        let (scoped_physical, scoped_logical) = work_stamp(files, true)?;
+        let usage = usage(files)?.ok_or(Error::Invalid("usage settings"))?;
+        let released = Baseline {
+            physical: scoped_physical,
+            logical: scoped_logical,
+            usage,
+        };
+        Ok((physical, logical, released))
+    };
+    match baseline() {
+        Ok((physical, logical, scoped)) => {
+            link.extra.insert("releasedWork".into(), json!(physical));
+            if let Some(logical) = logical {
+                link.extra
+                    .insert("releasedDatabaseWork".into(), json!(logical));
+            }
+            link.extra
+                .insert("releasedScopedWork".into(), json!(scoped));
+        }
+        Err(_) => {
+            link.extra.insert("releasedWork".into(), Value::Null);
+        }
+    }
+}
+
+fn work_stamp(files: &Files, omit_usage: bool) -> io::Result<(String, Option<String>)> {
+    let before = inventory(files, omit_usage)?;
+    let Some(logical) = before.logical()? else {
+        return Ok((before.physical, None));
+    };
+    let after = inventory(files, omit_usage)?;
+    if after.stability != before.stability {
+        return Err(io::Error::other("retained work changed during the scan"));
+    }
+    Ok((after.physical, Some(logical)))
 }
 
 fn pending_work(files: &Files) -> Result<bool, Error> {
@@ -165,7 +234,46 @@ fn pending_work(files: &Files) -> Result<bool, Error> {
     Ok(false)
 }
 
-fn fingerprint(files: &Files) -> io::Result<String> {
+fn inventory_matches(
+    files: &Files,
+    omit_usage: bool,
+    physical: &str,
+    logical: Option<&str>,
+) -> io::Result<bool> {
+    let before = inventory(files, omit_usage)?;
+    if before.physical == physical {
+        return Ok(true);
+    }
+    let Some(expected) = logical else {
+        return Ok(false);
+    };
+    Ok(before.logical()?.as_deref() == Some(expected)
+        && inventory(files, omit_usage)?.stability == before.stability)
+}
+
+struct Inventory {
+    physical: String,
+    stability: String,
+    content: Sha256,
+    databases: Vec<(std::path::PathBuf, bool)>,
+    bytes: u64,
+}
+
+impl Inventory {
+    fn logical(&self) -> io::Result<Option<String>> {
+        if self.bytes > 64 * 1024 * 1024 {
+            return Ok(None);
+        }
+        let mut hash = self.content.clone();
+        match sqlite::stamp(&mut hash, &self.databases) {
+            Ok(()) => Ok(Some(encode(&hash.finalize()))),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn inventory(files: &Files, omit_usage: bool) -> io::Result<Inventory> {
     // A machine opened with relocated TypeScript data needs the move reader.
     // Do not check a substitute path for that data.
     for key in [
@@ -192,6 +300,7 @@ fn fingerprint(files: &Files) -> io::Result<String> {
         "run/work-queue/labels.json",
         "run/work-queue/categories.json",
         "box/time-zone.json",
+        "agents/usage/settings.json",
         "run/session-settings.json",
         "run/named.json",
         "run/archived.json",
@@ -206,24 +315,54 @@ fn fingerprint(files: &Files) -> io::Result<String> {
         "run/work-queue/files",
         "run/work/notes",
     ] {
-        stamp(&files.path(name), &bots, &mut hash)?;
-    }
-    let engine = files.path("data/opencode");
-    for name in names(&engine)? {
-        if name.starts_with("opencode") && name.ends_with(".db") {
-            stamp(&engine.join(&name), &bots, &mut hash)?;
-            stamp(&engine.join(format!("{name}-wal")), &bots, &mut hash)?;
-            // The historical physical hash doesn't cover a pending rollback journal.
-            if engine
-                .join(format!("{name}-journal"))
-                .symlink_metadata()
-                .is_ok()
-            {
-                return Err(io::Error::other("retained database has a rollback journal"));
-            }
+        if !omit_usage || name != "agents/usage/settings.json" {
+            stamp(&files.path(name), &bots, &mut hash)?;
         }
     }
-    Ok(encode(&hash.finalize()))
+    let content = hash.clone();
+    let mut stable = hash.clone();
+    let mut databases = Vec::new();
+    let mut bytes = 0u64;
+    let engine = files.path("data/opencode");
+    for name in names(&engine)? {
+        if !name.starts_with("opencode") || !name.ends_with(".db") {
+            continue;
+        }
+        let path = engine.join(&name);
+        let (main, size) =
+            file_entry(&path)?.ok_or_else(|| io::Error::other("missing retained database"))?;
+        hash.update(&main);
+        stable.update(main);
+        bytes = bytes.saturating_add(size);
+        let mut immutable = true;
+        for (suffix, physical) in [("-wal", true), ("-journal", false)] {
+            if let Some((entry, size)) = file_entry(&engine.join(format!("{name}{suffix}")))? {
+                if physical {
+                    hash.update(&entry);
+                }
+                if size > 0 {
+                    stable.update(entry);
+                    bytes = bytes.saturating_add(size);
+                    immutable = false;
+                    if !physical {
+                        return Err(io::Error::other("retained database has a rollback journal"));
+                    }
+                }
+            }
+        }
+        if !immutable {
+            // A live WAL read may use the SQLite shared-memory sidecar.
+            file_entry(&engine.join(format!("{name}-shm")))?;
+        }
+        databases.push((path, immutable));
+    }
+    Ok(Inventory {
+        physical: encode(&hash.finalize()),
+        stability: encode(&stable.finalize()),
+        content,
+        databases,
+        bytes,
+    })
 }
 
 fn names(folder: &Path) -> io::Result<Vec<String>> {
@@ -258,19 +397,30 @@ fn stamp(path: &Path, bots: &Path, hash: &mut Sha256) -> io::Result<()> {
         }
         return Ok(());
     }
-    if !info.is_file() {
-        return Err(io::Error::other("invalid retained work path"));
+    let (entry, _) = file_entry(path)?.ok_or_else(|| io::Error::other("retained file changed"))?;
+    hash.update(entry);
+    Ok(())
+}
+
+fn file_entry(path: &Path) -> io::Result<Option<(String, u64)>> {
+    match path.symlink_metadata() {
+        Ok(info) if info.is_file() => (),
+        Ok(_) => return Err(io::Error::other("invalid retained work path")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     }
     let _readable = File::open(path)?;
     let file = file_stamp(path)?.ok_or_else(|| io::Error::other("retained file changed"))?;
     let text = path
         .to_str()
         .ok_or_else(|| io::Error::other("non-Unicode retained path"))?;
-    hash.update(canonical(&json!([
-        text,
-        file.file.to_string(),
-        file.size.to_string(),
-        file.changed_ns.to_string()
-    ])));
-    Ok(())
+    Ok(Some((
+        canonical(&json!([
+            text,
+            file.file.to_string(),
+            file.size.to_string(),
+            file.changed_ns.to_string()
+        ])),
+        file.size,
+    )))
 }

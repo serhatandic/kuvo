@@ -212,7 +212,7 @@ test("asks wait for the user, a grant is used once, and command output is masked
   skip: process.platform === "win32",
 }, async t => {
   const { computer } = await bench(t);
-  const box = await computer("Vault", boxBinary(), { KUVO_VAULT_AGENTS: "1", KUVO_TEST_LOGIN_ENV: "off" });
+  const box = await computer("Vault", boxBinary(), () => ({ KUVO_VAULT_AGENTS: "1", KUVO_TEST_LOGIN_ENV: "off" }));
   const secret = value();
   const { ask, proc, key, item } = await create(box, secret);
   const project = path.join(box.home, "project");
@@ -435,7 +435,7 @@ test("the conversation's SSH agent offers the vault keys and signs without relea
   const root = fs.realpathSync(scratch());
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { computer } = await bench(t);
-  const box = await computer("V", boxBinary(), { KUVO_VAULT_AGENTS: "1", KUVO_TEST_LOGIN_ENV: "off" });
+  const box = await computer("V", boxBinary(), () => ({ KUVO_VAULT_AGENTS: "1", KUVO_TEST_LOGIN_ENV: "off" }));
   const { ask, proc } = await create(box, value());
   const project = path.join(root, "project");
   const other = path.join(root, "other");

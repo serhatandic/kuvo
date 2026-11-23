@@ -1,11 +1,12 @@
 // Files and folders (rust-box.md row 6.3a): a file's info, text and bytes, the same from both boxes.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { scratch } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, scratch, until } from "./adapter.mjs";
+import { sessionOf } from "./engine.mjs";
 import { bench } from "./bench.mjs";
 
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -182,6 +183,29 @@ test("a file's info, text and bytes", async t => {
     assert.equal(home.json.path, home.json.home);
   });
 
+  await t.test("names in other scripts, in the root collation's order", async () => {
+    const names = ["Ölçü", "ıspanak", "İzmir", "ilk", "zebra", "Ärger", "ça", "cz", "日本", "中文", "한국", "Δέλτα", "alpha", "Привет",
+      "ябло", "العربية", "file10", "file9", "_x", "ﬁle", "😀", "a b", "ab"];
+    const top = make(path.join(realpathSync(root), "scripts"), names.map(name => `${name}/x`));
+    const reply = await ask("GET", `kuvo/folders?path=${encodeURIComponent(top)}`);
+    assert.deepEqual(reply.json.folders.map(each => each.name), ["_x", "😀", "a b", "ab", "alpha", "Ärger", "ça", "cz", "ﬁle", "file9", "file10",
+      "ilk", "İzmir", "ıspanak", "Ölçü", "zebra", "Δέλτα", "Привет", "ябло", "العربية", "한국", "中文", "日本"]);
+  });
+
+  await t.test("a folder that can't be read for another reason says the system's words", async () => {
+    const top = path.join(realpathSync(root), "unreadable");
+    mkdirSync(top);
+    const loop = path.join(top, "loop");
+    symlinkSync(loop, loop);
+    const long = path.join(top, "x".repeat(300));
+    for (const [at, reason] of [[loop, "Too many symbolic links encountered"], [long, "Name too long"]]) {
+      for (const route of [`kuvo/folders?path=${encodeURIComponent(at)}`, `kuvo/folders/tree?path=${encodeURIComponent(at)}`]) {
+        const reply = await ask("GET", route);
+        assert.deepEqual([reply.status, reply.json], [500, { message: `${at} can't be read here.`, reason }], route);
+      }
+    }
+  });
+
   await t.test("a new folder where asked", async () => {
     const top = path.join(realpathSync(root), "making");
     mkdirSync(top);
@@ -261,4 +285,78 @@ test("a file's info, text and bytes", async t => {
       assert.equal((await find(top, typed)).json.url, url, typed);
     }
   });
+});
+
+test("folders worth starting in: those worked in, newest first, then repositories", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("Suggested");
+  const outside = realpathSync(scratch());
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const folder = (at, repository = false) => {
+    mkdirSync(path.join(at, repository ? ".git" : ""), { recursive: true });
+    return at;
+  };
+  const api = folder(path.join(outside, "work", "api"), true);
+  const scratchFolder = folder(path.join(outside, "scratch"));
+  const gone = path.join(outside, "gone");
+  box.engine.sessions.push(
+    sessionOf({ id: "ses_api", directory: api, updated: 450 }),
+    sessionOf({ id: "ses_scratch", directory: scratchFolder, updated: 500 }),
+    sessionOf({ id: "ses_api_old", directory: api + "/", updated: 100 }),
+    sessionOf({ id: "ses_gone", directory: gone, updated: 600 }),
+    sessionOf({ id: "ses_archived", directory: folder(path.join(outside, "old"), true), updated: 900, archived: 900 }),
+  );
+  const ask = box.connect(await box.start().ready());
+  const first = await ask("GET", "kuvo/folders/suggested");
+  assert.equal(first.status, 200, first.text);
+  const home = first.json.home;
+  const projects = folder(path.join(home, "Projects", "website"), true);
+  folder(path.join(home, "Projects", "plain"));
+  folder(path.join(home, "Projects", ".hidden"), true);
+  folder(path.join(home, "Projects", "deep", "inner"), true);
+  const dotfiles = folder(path.join(home, "Developer", "dotfiles"), true);
+  writeFileSync(path.join(home, "Projects", "README.md"), "not a folder");
+  let reply;
+  await until(async () => {
+    reply = await ask("GET", "kuvo/folders/suggested");
+    return reply.json?.folders?.some(each => each.seen !== null);
+  }, "the sessions' folders suggested", 20000, 100);
+  assert.deepEqual(reply.json.folders.slice(0, 2), [
+    { path: scratchFolder, name: "scratch", seen: 500 },
+    { path: api, name: "api", repository: true, seen: 450 },
+  ]);
+  assert.deepEqual(reply.json.folders.slice(2).map(each => [each.path, each.name, each.repository, each.seen]).sort(),
+    [[dotfiles, "dotfiles", true, null], [projects, "website", true, null]]);
+});
+
+test("a file through the computer's own route command, its mode with its bytes where asked", async t => {
+  const bench_ = await bench(t);
+  const box = await bench_.computer("Routed");
+  await box.start().ready();
+  const folder = realpathSync(scratch());
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const launchFile = path.join(folder, "launch");
+  const report = path.join(folder, "report.txt");
+  writeFileSync(launchFile, "echo extensionless", { mode: 0o700 });
+  writeFileSync(report, "normal text", { mode: 0o600 });
+  const binary = boxBinary();
+  const env = { ...isolatedEnv(path.dirname(box.home)), KUVO_SANDBOX: "off" };
+  const routed = async route => {
+    const command = boxCommand(binary, box.home, env, bench_.relay, binary.typescript ? ["box", "route"] : ["route"], {}, "pipe");
+    let out = "";
+    command.child.stdout?.on("data", chunk => { out += chunk; });
+    command.child.stdin.end(JSON.stringify({ method: "GET", path: route }));
+    const { code } = await command.exited;
+    assert.equal(code, 0, command.log());
+    return JSON.parse(out);
+  };
+  const info = await routed(at(report));
+  assert.equal(info.status, 200);
+  assert.deepEqual(JSON.parse(info.body), { exists: true, name: "report.txt", size: 11, kind: "text", mime: "text/plain" });
+  for (const [file, executable, body] of [[launchFile, "1", "echo extensionless"], [report, "0", "normal text"]]) {
+    const answer = await routed(at(file, "") + "&withMode=1");
+    assert.equal(answer.status, 200);
+    assert.equal(answer.type, `application/vnd.kuvo.file; executable=${executable}`);
+    assert.equal(Buffer.from(answer.bodyBase64, "base64").toString(), body);
+  }
 });

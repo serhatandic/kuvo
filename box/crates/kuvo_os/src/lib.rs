@@ -5,3 +5,6 @@ pub mod platform;
 pub mod process;
 pub mod sandbox;
 pub mod watch;
+
+#[cfg(windows)]
+pub mod windows;

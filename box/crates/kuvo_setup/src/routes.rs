@@ -15,9 +15,10 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     Error, SetupHandle,
-    actor::{Command, Request, Response, Unlink, View},
+    actor::{Command, Request, Response, Unlink, View, computer_requests::ComputerRequest},
     edits::{Edit, Submitter, Target},
     preferences::PersonalityChange,
+    seed::source::Selection,
 };
 
 impl SetupHandle {
@@ -41,6 +42,33 @@ impl SetupHandle {
             async move {
                 let given: Welcome = read(&call.request.body)?;
                 respond(setup.request(Command::Welcome(given.welcomed)).await?)
+            }
+        });
+
+        let setup = self.clone();
+        routes.register::<post_kuvo_setup_judge::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                let body =
+                    serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
+                let probe = body["probe"]
+                    .as_str()
+                    .filter(|text| text.encode_utf16().count() <= 200_000)
+                    .ok_or_else(|| {
+                        Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "Send what the probe printed, as probe.",
+                        )
+                    })?;
+                let verdict = crate::discovery::judge(probe, &setup.views.borrow().setup).map_err(
+                    |message| {
+                        Refusal::json(
+                            StatusCode::CONFLICT,
+                            json!({"code": "unsupportedFormatVersion", "message": message}),
+                        )
+                    },
+                )?;
+                typed::<post_kuvo_setup_judge::Spec, 200>(json!(verdict))
             }
         });
 
@@ -125,6 +153,27 @@ impl SetupHandle {
             }
         });
         let setup = self.clone();
+        routes.register::<get_kuvo_computers_add_credentials::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    let by = submitter(&call.request.caller)?;
+                    let answer = setup
+                        .request(Command::ComputerViaMain(
+                            crate::actor::computer_requests::ComputerRequest::Checklist,
+                            by,
+                        ))
+                        .await?;
+                    if answer.status == 200 {
+                        typed::<get_kuvo_computers_add_credentials::Spec, 200>(answer.value)
+                    } else {
+                        Err(response_refusal(answer))
+                    }
+                }
+            },
+        );
+        let setup = self.clone();
         routes.register::<post_kuvo_computers_add_code::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
@@ -134,9 +183,16 @@ impl SetupHandle {
                     let credentials = serde_json::from_slice::<Value>(&call.request.body)
                         .ok()
                         .and_then(|mut given| given.as_object_mut()?.shift_remove("credentials"));
+                    let selection = Selection::read(credentials).ok_or_else(|| {
+                        Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "Choose sign-ins and keys by their checklist IDs.",
+                        )
+                    })?;
                     let answer = setup
-                        .request(Command::InstallerCode(credentials, by))
-                        .await?;
+                        .installer_on_main(selection, by)
+                        .await
+                        .map_err(refusal)?;
                     if answer.status == 201 {
                         typed::<post_kuvo_computers_add_code::Spec, 201>(answer.value)
                     } else {
@@ -145,6 +201,39 @@ impl SetupHandle {
                 }
             },
         );
+        let setup = self.clone();
+        routes.register::<InstallerRecovery, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                if !matches!(
+                    call.request.caller,
+                    Caller::Local(Transport::Http {
+                        origin: LocalOrigin::App | LocalOrigin::Mac,
+                        ..
+                    })
+                ) {
+                    return Err(Refusal::new(
+                        StatusCode::FORBIDDEN,
+                        "Apply the receipt directly on the setup’s main computer.",
+                    ));
+                }
+                let given =
+                    serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
+                let receipt = given["receipt"].as_str().ok_or_else(|| {
+                    Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Enter an installer cancellation receipt.",
+                    )
+                })?;
+                let receipt = crate::installer::Cancellation::read(receipt)
+                    .map_err(|error| Refusal::new(StatusCode::CONFLICT, error.to_string()))?;
+                respond(
+                    setup
+                        .request(Command::InstallerCancellation(receipt))
+                        .await?,
+                )
+            }
+        });
         let setup = self.clone();
         routes.register::<patch_kuvo_computers_key::Spec, _, _>(
             Access::DesktopOrPaired,
@@ -168,14 +257,15 @@ impl SetupHandle {
                 }
             },
         );
-        self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, false);
-        self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, true);
+        self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, None);
+        self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, Some(false));
+        self.register_unlink::<post_kuvo_computers_key_unlink_and_wipe::Spec>(routes, Some(true));
         self.register_edits(routes);
         self.register_personalities(routes);
         self.register_clock(routes);
     }
 
-    fn register_unlink<R>(&self, routes: &mut Registry, explicit: bool)
+    fn register_unlink<R>(&self, routes: &mut Registry, wipe: Option<bool>)
     where
         R: RouteSpec<Body = ()> + JsonStatus<200> + Send + Sync + 'static,
         <R as JsonStatus<200>>::Body: serde::de::DeserializeOwned,
@@ -187,7 +277,7 @@ impl SetupHandle {
                 let by = submitter(&call.request.caller)?;
                 let key = call.param("key").unwrap_or_default().to_owned();
                 let body = &call.request.body;
-                let request = if body.is_empty() {
+                let mut request = if body.is_empty() {
                     Unlink::default()
                 } else {
                     serde_json::from_slice::<Option<Unlink>>(body)
@@ -196,9 +286,13 @@ impl SetupHandle {
                         })?
                         .unwrap_or_default()
                 };
+                request.on_route(wipe);
                 respond(
                     setup
-                        .request(Command::UnlinkComputer(key, request, explicit, by))
+                        .request(Command::ComputerViaMain(
+                            ComputerRequest::Unlink { key, request },
+                            by,
+                        ))
                         .await?,
                 )
             }
@@ -206,12 +300,16 @@ impl SetupHandle {
     }
 
     pub(crate) async fn request(&self, command: Command) -> Result<Response, Refusal> {
+        self.request_command(command).await.map_err(refusal)
+    }
+
+    pub(crate) async fn request_command(&self, command: Command) -> Result<Response, Error> {
         let (reply, result) = oneshot::channel();
         self.inbox
             .send(Request { command, reply })
             .await
-            .map_err(|_| unavailable())?;
-        result.await.map_err(|_| unavailable())?.map_err(refusal)
+            .map_err(|_| Error::SetupUnavailable)?;
+        result.await.map_err(|_| Error::SetupUnavailable)?
     }
 
     fn register_edits(&self, routes: &mut Registry) {
@@ -479,6 +577,21 @@ impl JsonStatus<200> for SaveLocal {
     type Body = crate::Receipt;
 }
 
+struct InstallerRecovery;
+impl RouteSpec for InstallerRecovery {
+    type Body = Value;
+    const ROUTE: &'static Route = &Route {
+        method: "POST",
+        path: crate::installer::RECOVERY_ROUTE,
+        feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))],
+        body: Some(&Shape::Primitive(Primitive::Any)),
+    };
+}
+impl JsonStatus<200> for InstallerRecovery {
+    type Body = Value;
+}
+
 #[derive(Deserialize)]
 struct Usage {
     kind: crate::SharedKind,
@@ -506,7 +619,7 @@ fn personality_app(caller: &Caller) -> Result<(), Refusal> {
     }
 }
 
-fn submitter(caller: &Caller) -> Result<Submitter, Refusal> {
+pub(crate) fn submitter(caller: &Caller) -> Result<Submitter, Refusal> {
     match caller {
         Caller::Local(Transport::Http {
             origin: LocalOrigin::App | LocalOrigin::Mac,
@@ -556,6 +669,7 @@ fn refusal(error: Error) -> Refusal {
         ),
         Error::Invalid(_) => (StatusCode::BAD_REQUEST, error.to_string()),
         Error::Capacity => (StatusCode::CONFLICT, error.to_string()),
+        Error::SetupUnavailable => return unavailable(),
         _ => {
             eprintln!("setup route: {error}");
             (
@@ -585,7 +699,7 @@ fn decoded_id(given: Option<&str>) -> Result<String, Refusal> {
         .map_err(|_| Refusal::json(StatusCode::NOT_FOUND, json!({})))
 }
 
-fn typed<R, const STATUS: u16>(value: Value) -> Result<RouteReply<R>, Refusal>
+pub(crate) fn typed<R, const STATUS: u16>(value: Value) -> Result<RouteReply<R>, Refusal>
 where
     R: JsonStatus<STATUS>,
     <R as JsonStatus<STATUS>>::Body: serde::de::DeserializeOwned,
@@ -624,7 +738,7 @@ where
     }
 }
 
-fn response_refusal(response: Response) -> Refusal {
+pub(crate) fn response_refusal(response: Response) -> Refusal {
     Refusal::json(
         StatusCode::from_u16(response.status).expect("setup response status"),
         response.value,

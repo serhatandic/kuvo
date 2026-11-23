@@ -56,6 +56,34 @@ pick() {
   fi
 }
 pick
+# Read the top-level launch field of the selected pack without requiring its engine or executable.
+# A failed Rust executable still needs the keeper and guard to be able to roll it back.
+rust_release() {
+  [ -f "$K/bin/../box.json" ] || return 1
+  LC_ALL=C awk '
+    {
+      rest = $0
+      while (length(rest)) {
+        sub(/^[[:space:]]+/, "", rest)
+        if (!length(rest)) break
+        if (match(rest, /^"([^"\\]|\\.)*"/)) {
+          token = substr(rest, 1, RLENGTH)
+          rest = substr(rest, RLENGTH + 1)
+        } else {
+          token = substr(rest, 1, 1)
+          rest = substr(rest, 2)
+        }
+        if (depth == 1 && want && token == "\"rust\"") { rust = 1; exit }
+        if (token == "{" || token == "[") depth++
+        if (token == "}" || token == "]") depth--
+        want = depth == 1 && token == ":" && key
+        key = depth == 1 && member && token == "\"launch\""
+        member = depth == 1 && (token == "{" || token == ",")
+      }
+    }
+    END { exit !rust }
+  ' "$K/bin/../box.json"
+}
 # A committed checkpoint exactly matches the layout declared by the installed link.
 # Anything older, newer or interrupted must go through the folder runner.
 folder_current() {
@@ -72,7 +100,7 @@ folder_current() {
 case "${1:-keep}" in
 stop|engine-stop|engine-idle|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|switch-engine|route|route-to) ;;
 *)
-  if [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; then :
+  if rust_release || { [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; }; then :
   elif [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
     KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
       # A broken trial may be unable to run even the judge. Restore before starting any workers.
@@ -187,6 +215,11 @@ export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/st
 mkdir -p "$K/data" "$K/config" "$K/state" "$K/cache" "$K/workspace" "$K/integrations" "$K/tmp"
 find "$K/tmp" -mindepth 1 -maxdepth 1 -mtime +3 -exec rm -rf {} + 2>/dev/null
   export PATH="$K/bin:$PATH" KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
+}
+rust_command() {
+  export KUVO_HOME="$K"
+  unset BUN_BE_BUN BUN_RUNTIME_TRANSPILER_CACHE_PATH
+  exec "$K/bin/kuvo-box" "$@"
 }
 # One start or stop at a time, as the launch takes it; one whose holder is gone goes
 # (`launchLock`). False when it isn't had within $1 tenths of a second.
@@ -436,7 +469,9 @@ client_pids() {
 stop_clients() {
   local pid
   for pid in $(client_pids); do
-    if is "$pid" 'kuvo-link.js run' || is "$pid" 'kuvo-link.js serve'; then
+    if worker_here "$pid" "$K/bin/kuvo-box serve"; then
+      stop_worker "$pid" "$K/bin/kuvo-box serve" || return 1
+    elif is "$pid" 'kuvo-link.js run' || is "$pid" 'kuvo-link.js serve'; then
       stop_worker "$pid" "$K/bin/kuvo-link.js" || return 1
     fi
   done
@@ -581,6 +616,8 @@ keep)
   # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
   # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
   # engine it watched isn't the one in run/engine.json any more.)
+  # A test's keeper goes round as often as it says.
+  r=${KUVO_TEST_KEEP_ROUND:-15}; case $r in '' | *[!0-9]* | 0) r=15 ;; esac
   fails=0; next=0; started=; round=0; bfails=0; bnext=0; saw_trial=; bstarted=
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
@@ -594,6 +631,20 @@ keep)
     fi
     if [ -f "$R/previous" ] && [ "$(previous)" = "$selected" ]; then rm -f "$R/previous"; fi
     hold
+    if rust_release; then
+      if ! own_mac && [ ! -e "$R/off" ] && [ ! -e "$R/paused" ] && [ ! -d "$R/.rolling-back" ] &&
+         ! worker_here "$(cat "$R/link.pid" 2>/dev/null)" "$K/bin/kuvo-box serve" &&
+         ! worker_here "${resident_starting-}" "$K/bin/kuvo-box serve"; then
+        if stop_clients; then
+          (environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+           unset BUN_BE_BUN BUN_RUNTIME_TRANSPILER_CACHE_PATH
+           exec env KUVO_HOME="$K" "$S" "$K/bin/kuvo-box" serve) >"$R/serve.log" 2>&1 </dev/null &
+          resident_starting=$!
+        fi
+      fi
+      sleep "$r"
+      continue
+    fi
     if recover_machine_job; then sleep 1; continue; fi
     # The old keeper yields once the new machine job is in place. Its detached workers
     # stay up until the hand-over has held new work and can restart them.
@@ -863,12 +914,11 @@ keep)
       waking=$!
       printf "%s\n" "$waking" >"$R/wake.pid"
     fi
-    # (A test's keeper goes round as often as it says.)
-    r=${KUVO_TEST_KEEP_ROUND:-15}; case $r in '' | *[!0-9]* | 0) r=15 ;; esac
     sleep "$r"
   done
   ;;
 engine)
+  rust_release && exit 0
   switch_waiting && exit 0
   if machine_helper && ! under_helper; then
     { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
@@ -902,6 +952,7 @@ engine)
   exit 1
   ;;
 bridge)
+  rust_release && exit 0
   switch_waiting && exit 0
   machine_handover && exit 0
   if machine_helper && ! under_helper; then
@@ -924,6 +975,7 @@ bridge)
   bridge_runs
   ;;
 bridge-again)
+  rust_release && exit 0
   # Try Again, from whoever asks the box (`kuvo/agents/start`): Kuvo's programs repaired from the
   # release this box runs; a bridge this keeper started that never said where it listens (no
   # run/bridge.json of its own) a minute on, ended by the number it noted, under the launch's lock
@@ -965,6 +1017,10 @@ serve)
   # in the foreground, as the helper's own child (it goes when its stdin closes).
   own_mac || { echo "Only a Mac's own box's helper runs its server so." >&2; exit 3; }
   { [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
+  if rust_release; then
+    environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+    rust_command serve >"$R/serve.log" 2>&1
+  fi
   [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] || exit 1
   environment; cd "$K/workspace" 2>/dev/null || cd "$K"
   export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
@@ -974,6 +1030,10 @@ serve)
 route|route-to)
   # A client over SSH: its request on stdin, run by the engine this keeper runs (`pick`), never one
   # a client picks for itself.
+  if rust_release; then
+    environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+    rust_command "$1"
+  fi
   [ -f "$K/bin/kuvo-link.js" ] || { echo "Kuvo Code isn't set up on this machine." >&2; exit 3; }
   [ -n "$V" ] && [ -x "$K/engine/$V/opencode" ] || { echo "Kuvo Code's engine isn't on this machine." >&2; exit 3; }
   export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"
@@ -986,6 +1046,7 @@ start)
     exec sh "$K/bin/kuvo-start" box
   fi
   rm -f "$R/stopped"
+  if rust_release; then exec sh "$K/bin/kuvo-start" box; fi
   sh "$K/bin/kuvo-start" engine
   sh "$K/bin/kuvo-start" bridge
   sh "$K/bin/kuvo-start" box
@@ -1105,7 +1166,14 @@ start-guard)
       [ "$(previous)" = "$old" ] && [ "$(bin_target)" = "$selected" ]
   }
   while still_selected && [ "$(date +%s)" -lt "$deadline" ]; do
-    if up && bridge_runs && folder_current; then
+    if rust_release; then
+      pid=$(cat "$R/link.pid" 2>/dev/null)
+      if worker_here "$pid" "$K/bin/kuvo-box serve" &&
+         (rust_command resident-info "$pid" >/dev/null 2>&1 </dev/null) && still_selected; then
+        rm -f "$R/update-cannot" "$R/previous"
+        exit 0
+      fi
+    elif up && bridge_runs && folder_current; then
       reply="$R/.update-info.$$"
       if resident_release; then
         link_command box resident-info >"$reply" 2>/dev/null </dev/null &

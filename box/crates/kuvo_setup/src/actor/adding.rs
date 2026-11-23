@@ -9,14 +9,247 @@ use crate::{
     Error, document,
     edits::Submitter,
     installer::{
-        self, Applicant, CLAIM_LIFETIME, Claim, Code, Device, INVITE_LIFETIME, Invitation, hash,
-        relay_url,
+        self, Applicant, CLAIM_LIFETIME, Cancellation, Claim, Device, INVITE_LIFETIME, Invitation,
+        hash, relay_url,
     },
-    model::{Peer, Role, SharedKind, safe_token},
+    model::{Peer, Role, SharedKind, Status, safe_token},
     random,
+    seed::source::Consent,
 };
 
 impl Owner {
+    pub(super) fn ssh_admission(&self, by: &Submitter) -> Result<Response, Error> {
+        if !by.current(&self.link) {
+            return Ok(refused(403, "Pair this device before adding a computer."));
+        }
+        let Some(setup) = self.link.setup().ok() else {
+            return Ok(refused(
+                409,
+                "This computer can add members once its setup is ready.",
+            ));
+        };
+        if setup.role != Role::Primary {
+            let main = self
+                .roster()?
+                .boxes
+                .into_iter()
+                .find(|peer| peer.key == setup.position.primary);
+            let name = main
+                .as_ref()
+                .map(|peer| peer.name.as_str())
+                .unwrap_or("your main computer");
+            return Ok(Response {
+                status: 409,
+                value: json!({"message": format!("Add computers on {name}, your main computer."), "primary": setup.position.primary}),
+            });
+        }
+        self.can_write()?;
+        if self.link.relay.is_none() {
+            return Ok(refused(
+                503,
+                "This computer isn’t linked to your other computers yet, so it can’t add one.",
+            ));
+        }
+        Ok(Response::ok(json!({})))
+    }
+
+    pub(super) async fn keep_ssh_address(
+        &mut self,
+        key: String,
+        invite: String,
+        destination: String,
+        identity: String,
+        distro: Option<String>,
+        by: Submitter,
+    ) -> Result<Response, Error> {
+        let allowed = self.ssh_admission(&by)?;
+        if allowed.status != 200 {
+            return Ok(allowed);
+        }
+        let mut roster = self.roster()?;
+        let Some(peer) = roster.boxes.iter_mut().find(|peer| peer.key == key) else {
+            return Ok(refused(
+                409,
+                "The setup changed before the SSH address was saved.",
+            ));
+        };
+        if !self
+            .link
+            .installer_invites
+            .get(&invite)
+            .and_then(|invite| invite.claim.as_ref())
+            .is_some_and(|claim| claim.matches(peer))
+        {
+            return Ok(refused(
+                409,
+                "The setup changed before the SSH address was saved.",
+            ));
+        }
+        peer.extra.insert("id".into(), json!(destination));
+        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let record = addresses
+            .iter_mut()
+            .find(|row| row["destination"] == destination);
+        let mut entry = record
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| json!({"destination": destination}));
+        entry["identity"] = json!(identity);
+        if let Some(distro) = distro {
+            entry["wslDistro"] = json!(distro);
+        }
+        if let Some(record) = record {
+            *record = entry;
+        } else {
+            addresses.push(entry);
+        }
+        let mut next = self.link.clone();
+        next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            serde_json::to_value(roster).expect("roster serializes"),
+            None,
+            None,
+        )?;
+        self.files.write("machines.json", &addresses)?;
+        self.commit(next).await?;
+        self.publish(false).await?;
+        Ok(Response::ok(json!({})))
+    }
+
+    pub(super) fn keep_ssh_alias(
+        &self,
+        identity: &str,
+        expected_key: Option<&str>,
+        destination: &str,
+        by: &Submitter,
+    ) -> Result<Response, Error> {
+        let allowed = self.ssh_admission(by)?;
+        if allowed.status != 200 {
+            return Ok(allowed);
+        }
+        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let Some(machine) = addresses.iter_mut().find(|row| {
+            row["identity"].as_str() == Some(identity) && row["destination"] != destination
+        }) else {
+            return Ok(refused(404, "That isn't one of your computers."));
+        };
+        let roster = self.roster()?;
+        let Some(known) = roster.boxes.iter().find(|peer| {
+            machine["destination"]
+                .as_str()
+                .is_some_and(|saved| peer.extra.get("id").and_then(Value::as_str) == Some(saved))
+                && expected_key.is_none_or(|expected| peer.key == expected)
+        }) else {
+            return Ok(refused(404, "That isn't one of your computers."));
+        };
+        let mut aliases = machine["otherAddresses"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !aliases.iter().any(|alias| alias == destination) {
+            aliases.push(json!(destination));
+            machine["otherAddresses"] = json!(aliases);
+            self.files.write("machines.json", &addresses)?;
+        }
+        Ok(Response::ok(json!({"key": known.key, "name": known.name})))
+    }
+
+    pub(super) async fn cancel_installer(
+        &mut self,
+        receipt: Cancellation,
+    ) -> Result<Response, Error> {
+        const SAVE_FAILED: &str = "The main computer could not save this cancellation. Check its connection to Kuvo’s relay, then retry the receipt.";
+        let Ok(setup) = self.link.setup() else {
+            return Ok(refused(
+                409,
+                "Run this command on the current main computer of the setup that issued the code.",
+            ));
+        };
+        let position = setup.position.clone();
+        if setup.role != Role::Primary || position.id != receipt.setup {
+            return Ok(refused(
+                409,
+                "Run this command on the current main computer of the setup that issued the code.",
+            ));
+        }
+        let mut roster = self.roster()?;
+        if roster.left.contains(&receipt.key)
+            && self.link.shared_outcomes.iter().any(|(id, outcome)| {
+                outcome.kind == SharedKind::MembershipAndAccess
+                    && outcome.status == Status::Committed
+                    && *id == receipt.operation(outcome.epoch)
+            })
+        {
+            return Ok(Response::ok(
+                json!({"message": "The provisional installer entry was already retired."}),
+            ));
+        }
+        let mut recoveries = installer::recoveries(&self.link, &roster);
+        let entry = recoveries.get(&receipt.key);
+        if entry.is_none_or(|entry| {
+            entry["invite"] != receipt.invite || entry["commitment"] != hash(&receipt.secret)
+        }) {
+            return Ok(refused(
+                409,
+                "The accepted roster has no matching installer recovery entry. No computer was retired.",
+            ));
+        }
+        if self.can_write().is_err()
+            || position.primary == receipt.key
+            || roster
+                .extra
+                .get("wipePreparations")
+                .and_then(|rows| rows.get(&receipt.key))
+                .is_some()
+            || self
+                .link
+                .installer_invites
+                .get(&receipt.invite)
+                .is_some_and(|invite| {
+                    ["activated", "credentialsCompleted"]
+                        .iter()
+                        .any(|flag| invite.extra.get(*flag) == Some(&Value::Bool(true)))
+                })
+        {
+            return Ok(refused(409, SAVE_FAILED));
+        }
+        let Some(index) = roster.boxes.iter().position(|peer| peer.key == receipt.key) else {
+            return Ok(refused(409, SAVE_FAILED));
+        };
+        let peer = roster.boxes.remove(index);
+        let mut next = self.link.clone();
+        recoveries.shift_remove(&receipt.key);
+        installer::keep_recoveries(&mut next, &mut roster, recoveries)?;
+        super::removal::retire_computer(&mut roster, &position.id, &peer, &position.primary)?;
+        if let Some(invite) = next.installer_invites.get_mut(&receipt.invite)
+            && invite
+                .claim
+                .as_ref()
+                .is_some_and(|claim| claim.matches(&peer))
+        {
+            invite.extra.insert("cancelled".into(), json!(true));
+            invite.extra.shift_remove("credentialSeed");
+            invite.extra.shift_remove("credentialSelectionDigest");
+        }
+        let write = next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            serde_json::to_value(roster).expect("roster serializes"),
+            None,
+            Some(receipt.operation(position.epoch)),
+        );
+        if write.is_err() || self.commit(next).await.is_err() {
+            return Ok(refused(409, SAVE_FAILED));
+        }
+        if let Err(error) = self.publish(false).await {
+            eprintln!("publishing installer cancellation: {error}");
+        }
+        Ok(Response::ok(
+            json!({"message": "The provisional installer entry was retired."}),
+        ))
+    }
+
     pub(super) async fn rename_computer(
         &mut self,
         key: String,
@@ -51,27 +284,25 @@ impl Owner {
 
     pub(super) async fn issue_installer_code(
         &mut self,
-        credentials: Option<Value>,
+        credentials: Option<crate::seed::source::Prepared>,
         submitter: Submitter,
     ) -> Result<Response, Error> {
-        if let Some(given) = credentials {
-            let Some(ids) = given.as_array().filter(|ids| {
-                ids.len() <= 300
-                    && ids
-                        .iter()
-                        .all(|id| id.as_str().is_some_and(|id| safe_token(id, 43, 43)))
-            }) else {
-                return Ok(refused(
-                    400,
-                    "Choose sign-ins and keys by their checklist IDs.",
-                ));
-            };
-            if !ids.is_empty() {
-                return Ok(refused(
-                    503,
-                    "Some selected sign-ins or keys are no longer available. Open the checklist again.",
-                ));
-            }
+        let token = encode(&random::<24>()?);
+        let consent = credentials.map_or(Consent::None, Consent::Selected);
+        let offer = self
+            .issue_installer_offer(hash(&token), consent, submitter)
+            .await?;
+        installer::complete_offer(offer, token)
+    }
+
+    pub(super) async fn issue_installer_offer(
+        &mut self,
+        id: String,
+        credentials: Consent,
+        submitter: Submitter,
+    ) -> Result<Response, Error> {
+        if !safe_token(&id, 43, 43) {
+            return Ok(refused(400, "Send the installer invitation hash."));
         }
         let Some(setup) = self
             .link
@@ -104,19 +335,44 @@ impl Owner {
             return Ok(refused(503, "This computer can't reach your relay yet."));
         };
         let own = self.own()?;
-        let token = encode(&random::<24>()?);
         let now = lease::wall();
-        let expires = now + INVITE_LIFETIME;
-        let code = Code::new(
-            expires,
-            position.id.clone(),
-            relay.clone(),
-            Host {
-                key: decode_exact(&own.public).ok_or(Error::Invalid("installer primary key"))?,
-                address: address_of(&own.secret),
-            },
-            token,
-        );
+        let prior = self.link.installer_invites.get(&id);
+        let requested = credentials.digest();
+        if let Some(prior) = prior
+            && (prior.setup != position.id
+                || prior.epoch != position.epoch
+                || !prior.live(now)
+                || prior.actor != actor
+                || prior
+                    .extra
+                    .get("credentialSelectionDigest")
+                    .and_then(Value::as_str)
+                    != requested
+                || prior.extra.get("credentialsCompleted") == Some(&Value::Bool(true))
+                || prior.extra.contains_key("merge"))
+        {
+            return Ok(refused(
+                409,
+                "This installer invitation is no longer available.",
+            ));
+        }
+        let expiry = prior.map_or(now + INVITE_LIFETIME, |prior| prior.expires);
+        let answer = Response {
+            status: 201,
+            value: json!({
+                "expires": expiry, "setup": position.id, "relay": relay,
+                "primary": own.public, "address": encode(&address_of(&own.secret)),
+            }),
+        };
+        if prior.is_some() {
+            return Ok(answer);
+        }
+        if matches!(credentials, Consent::Kept(_)) {
+            return Ok(refused(
+                409,
+                "This installer invitation is no longer available.",
+            ));
+        }
         let mut next = self.link.clone();
         next.installer_invites.retain(|_, entry| entry.live(now));
         if next.installer_invites.len() >= 32 {
@@ -125,22 +381,25 @@ impl Owner {
                 "There are too many installers waiting to join. Use an existing code or wait for it to expire.",
             ));
         }
+        let mut fields = serde_json::Map::new();
+        if let Consent::Selected(chosen) = credentials {
+            let sealed = installer::credentials::seal(&chosen.seed, &own.key, &id)?;
+            fields.insert("credentialSeed".into(), json!(sealed));
+            fields.insert("credentialSelectionDigest".into(), json!(chosen.digest));
+        }
         next.installer_invites.insert(
-            hash(&code.token),
+            id,
             Invitation {
                 setup: position.id,
                 epoch: position.epoch,
-                expires,
+                expires: expiry,
                 actor,
                 claim: None,
-                extra: Default::default(),
+                extra: fields,
             },
         );
         self.commit(next).await?;
-        Ok(Response {
-            status: 201,
-            value: json!({"code": code.encoded(), "expires": expires}),
-        })
+        Ok(answer)
     }
 
     fn installer_device(&self, device: &Device) -> bool {
@@ -175,7 +434,7 @@ impl Owner {
             || given.name.encode_utf16().count() > 100
             || given.cancel
             || given.merging
-            || given.credential_ack
+            || (given.credential_ack && given.activation_ack)
         {
             return Ok(());
         }
@@ -232,7 +491,14 @@ impl Owner {
                 json!({"message": "This installer code is no longer available. Get a new code from your setup."}),
             )
         } else if invite.extra.contains_key("credentialSeed")
-            || invite.extra.contains_key("credentialSelectionDigest")
+            && !given.credential_receipt
+            && !given.activation_ack
+        {
+            Some(
+                json!({"message": "Update this computer’s installer to copy the sign-ins and keys selected for this code.", "retrySameSetup": true}),
+            )
+        } else if (invite.extra.contains_key("credentialSelectionDigest")
+            && !invite.extra.contains_key("credentialSeed"))
             || invite
                 .extra
                 .get("credentials")
@@ -255,6 +521,13 @@ impl Owner {
         if given.activation_ack {
             if claimed && enrolled {
                 self.activate_installer(&to, &given.nonce, &id, &peer)
+                    .await?;
+            }
+            return Ok(());
+        }
+        if given.credential_ack {
+            if claimed && enrolled {
+                self.ack_installer_credentials(&to, &given.nonce, &id)
                     .await?;
             }
             return Ok(());
@@ -441,6 +714,32 @@ impl Owner {
         self.publish(false).await
     }
 
+    async fn ack_installer_credentials(
+        &mut self,
+        to: &Host,
+        nonce: &str,
+        id: &str,
+    ) -> Result<(), Error> {
+        let mut next = self.link.clone();
+        let invite = next.installer_invites.get_mut(id).ok_or(Error::Conflict)?;
+        if invite.extra.get("credentialsCompleted") != Some(&Value::Bool(true)) {
+            if !invite.extra.contains_key("credentialSeed")
+                || invite.extra.get("activated") != Some(&Value::Bool(true))
+            {
+                return Ok(());
+            }
+            invite.extra.shift_remove("credentialSeed");
+            invite.extra.shift_remove("credentialSelectionDigest");
+            invite
+                .extra
+                .insert("credentialsCompleted".into(), json!(true));
+            self.commit(next).await?;
+        }
+        self.installer_reply(to, nonce, json!({"credentialComplete": true}))
+            .await;
+        Ok(())
+    }
+
     async fn installer_membership(
         &mut self,
         to: &Host,
@@ -455,7 +754,14 @@ impl Owner {
         let Some((_, envelope)) = exports.into_iter().find(|(kind, _)| *kind == Kind::Peers) else {
             return Ok(());
         };
-        let mut answer = json!({"copyCredentials": false});
+        let invite = self.link.installer_invites.get(id).ok_or(Error::Conflict)?;
+        let seed = invite.extra.get("credentialSeed").and_then(Value::as_str);
+        let mut answer = json!({"copyCredentials": seed.is_some()});
+        if seed.is_some()
+            && let Some(claim) = &invite.claim
+        {
+            answer["credentialUntil"] = json!(claim.until);
+        }
         if given.activation_ack_capable {
             answer["activationReceipt"] = json!(true);
         }
@@ -482,7 +788,41 @@ impl Owner {
                 self.installer_reply(to, &given.nonce, answer.clone()).await;
             }
         }
+        if let Some(seed) = seed {
+            self.send_installer_credentials(to, &given.nonce, id, seed)
+                .await?;
+        }
         self.publish(false).await
+    }
+
+    async fn send_installer_credentials(
+        &self,
+        to: &Host,
+        nonce: &str,
+        id: &str,
+        seed: &str,
+    ) -> Result<(), Error> {
+        use installer::credentials::{COPY_FAILED, open, split};
+        match open(seed, &self.own()?.key, id) {
+            Some(payload) if payload.len() < 34_000 => {
+                let body = match serde_json::from_slice::<Value>(&payload) {
+                    Ok(seed) => json!({"seed": seed}),
+                    Err(_) => json!({"credentialProblem": COPY_FAILED}),
+                };
+                self.installer_reply(to, nonce, body).await;
+            }
+            Some(payload) => {
+                for part in split(&payload)? {
+                    self.installer_reply(to, nonce, json!({"seedPart": part}))
+                        .await;
+                }
+            }
+            None => {
+                self.installer_reply(to, nonce, json!({"credentialProblem": COPY_FAILED}))
+                    .await
+            }
+        }
+        Ok(())
     }
 
     async fn installer_reply(&self, to: &Host, nonce: &str, mut answer: Value) {

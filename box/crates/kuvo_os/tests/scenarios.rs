@@ -3,7 +3,8 @@
 use kuvo_os::{
     ipc::{Channel, Endpoint, windows_pipe_path},
     platform::{
-        Account, Environment, Platform, box_home, join_path, windows_native_path, windows_wire_path,
+        Account, Environment, Platform, box_home, join_path, windows_extended_path,
+        windows_native_path, windows_wire_path,
     },
     process::{ChildGroup, ProcessIdentity, ProcessState, Spawn, Stdio},
     watch::{Backend, Notice, Options, Subscription, WatchHub},
@@ -21,7 +22,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const LIMIT: Duration = Duration::from_secs(10);
 const ADDRESS_VECTORS: &str = include_str!("../../../test/fixtures/file-addresses/addresses.json");
-const WINDOWS_VECTORS: &str = include_str!("../../../test/fixtures/file-addresses/windows.json");
+const WINDOWS_VECTORS: &str =
+    include_str!("../../../../protocol/vectors/file-addresses/windows.json");
 
 fn scratch() -> TempDir {
     tempfile::Builder::new().prefix("rs13-").tempdir().unwrap()
@@ -43,6 +45,17 @@ fn windows_paths_round_trip_exact_case_and_refuse_ambiguous_names() {
         let native = case["native"].as_str().unwrap();
         assert_eq!(windows_wire_path(native).as_deref(), Some(wire), "{native}");
         assert_eq!(windows_native_path(wire).as_deref(), Some(native), "{wire}");
+        if let Some(extended) = case["extended"].as_str() {
+            assert_eq!(
+                windows_extended_path(wire).as_deref(),
+                Some(extended),
+                "{wire}"
+            );
+            assert_eq!(
+                kuvo_os::platform::windows_conventional_path(Path::new(extended)).as_deref(),
+                Some(Path::new(native)),
+            );
+        }
     }
     for value in vectors["refused"].as_array().unwrap() {
         let path = value.as_str().unwrap();

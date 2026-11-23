@@ -21,6 +21,7 @@ hex = "0.4"
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
+icu_collator = "2"
 kuvo_os = { path = "../kuvo_os" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }

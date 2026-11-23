@@ -261,6 +261,9 @@ async fn finish(
                 (status, body)
             }
         };
+    if crate::session_move::refused(status, &response) {
+        return Ok(false);
+    }
     saved.receipt.outcome = if status == StatusCode::OK && response["message"] == id {
         Outcome::Committed {
             accepted_at: response["acceptedAt"].as_u64().unwrap_or_else(disk::now),

@@ -35,7 +35,14 @@ export async function standInEngine(root, env) {
       }
       if (route === "GET /api/session") {
         const parent = url.searchParams.get("parentID");
-        return send({ data: engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent)) });
+        const data = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
+        const limit = Number(url.searchParams.get("limit"));
+        if (parent && parent !== "null" && limit > 0) {
+          const start = Number(url.searchParams.get("cursor"));
+          const end = start + limit;
+          return send({ data: data.slice(start, end), ...(end < data.length ? { cursor: { next: String(end) } } : {}) });
+        }
+        return send({ data });
       }
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {
@@ -50,6 +57,27 @@ export async function standInEngine(root, env) {
         return send({ data: made });
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);
+      const moveExport = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/export$/);
+      if (moveExport && request.method === "GET") {
+        const id = decodeURIComponent(moveExport[1]);
+        const info = engine.sessions.find(each => each.id === id);
+        return info ? send({ data: { info, messages: engine.messages.get(id) ?? [] } }) : send({}, 404);
+      }
+      if (route === "POST /api/experimental/session/import") {
+        const id = given.info?.id;
+        if (!id || engine.sessions.some(each => each.id === id)) return send({ message: "Session already exists." }, 409);
+        const info = { ...given.info, location: given.location };
+        engine.sessions.push(info);
+        engine.messages.set(id, given.messages);
+        publish({ type: "session.created", data: { sessionID: id, info } });
+        if (engine.holdImport?.id === id) {
+          const held = engine.holdImport;
+          engine.holdImport = null;
+          held.accepted();
+          return;
+        }
+        return send({ data: info });
+      }
       if (one && request.method === "GET") {
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
         return found ? send({ data: found }) : send({ message: "No such session." }, 404);
@@ -141,6 +169,11 @@ export async function standInEngine(root, env) {
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });
+      if (route === "POST /api/credential") {
+        if (engine.blockCredentialImport) return send({ message: "The credential store is not ready." }, 503);
+        engine.credentials.push(given);
+        return send({ data: given });
+      }
       // Its tools connected (Kuvo Code's own browser's, no integration's), so nothing waits for them.
       if (route === "GET /api/mcp") return send({ data: [{ name: "kuvo-browser", status: { status: "connected" } }] });
       if (["GET /api/skill", "GET /api/provider"].includes(route)) return send({ data: [] });
