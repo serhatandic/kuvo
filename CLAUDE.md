@@ -40,4 +40,4 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - `docs/upstreams.md`: the engine and other upstreams; the lead checks them weekly.
 - `docs/docs-map.md`: which website page each change touches (parked).
 - `CONTRIBUTING.md`: setup, builds, Rust through `scripts/cargo-locked.sh`, route scenarios, what branches don't edit by hand, compatibility markers.
-- `protocol/PROTOCOL.md`: how boxes and clients talk; document what a box tells clients here.
+- `protocol/PROTOCOL.md`: how boxes and clients talk. Routes are documented in their definition (`box/src/shared/routes`); `scripts/check-built.sh --build` writes `protocol/ROUTES.md` for a readable list. Add to PROTOCOL.md only a rule a client must know that the route can't say, in a few lines.
