@@ -36,7 +36,7 @@ bar) show what a box says and ask it to change things. Computers reach each othe
 - **Coding-agent accounts:** an account is one agent pointed at one folder on one box. The first is the agent's own sign-in, and the agent renews it and reports its usage itself (`agent-accounts.md`; `box/src/agents/accounts.ts`).
 - **Usage:** each box reads its own accounts and tells its peers, so every box lists them all. The menu bar shows the limits (`box/src/usage/`; `mac/helper/.../MenuBarItem.swift`).
 - **Insights:** each box keeps a SQLite index and swaps pages of usage metadata with its peers (`box/src/usage/insights*.ts`).
-- **Library:** each box keeps what was handed to you there, and the box you ask gathers the other computers' parts (`library/`).
+- **Library:** each box keeps what was handed to you there and mails the metadata to its peers. The nearest box filters and combines its kept copies (`library/`, `peers/lists.ts`).
 - **Delivery:** the desktop shows sends immediately and retries the same ID. The box settles interrupted sends and the agents bridge keeps queued messages across restarts. The shared event line carries merged session, waiting and queue lists for clients that subscribe to them. See [Message delivery](message-delivery.md).
 - **Side panel:** files, terminals, Changes and the browser. Each is a box route that the app draws (`files.ts`, `git.ts`, `areas/*`; `gpui/kuvo`).
 

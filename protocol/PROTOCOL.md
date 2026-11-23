@@ -264,13 +264,19 @@ again when opening the line so an existing subscription can switch after a box u
 The merged topic sends full `kuvo/sessions/list` snapshots,
 including the answering box's project order, start project and pending runtimes. Archived
 groups include each peer's archived sessions. If the answering box has no local list yet,
-it can still serve its peers' last snapshots, with a null start project. Every session and
+it can still serve its peers' last snapshots, with a null start project. `needsYou` includes
+peer chat and project asks from the same snapshots. Every session and
 project includes `computer: {id, name}`. Remote rows also carry
 `on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
 `<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
 chooses one row for each session ID. A remote project's `shown`, `total` and `more` are
 computed from the merged rows. Pass the same project key to `GET kuvo/sessions/page` with
 the supplied cursor. The answering box pages its last saved copy even while the peer is away.
+
+Feature `line.merged-waiting` adds `GET kuvo/setup/waiting/counts` and its `/events` topic.
+Each state is `{sessions, bots, queue}`, calculated from the session, bot activity and Work Queue
+copies this box already has, including peer copies in the first state. The count is a setup total.
+The per-computer `kuvo/waiting/events` remains for clients combining per-computer system notifications.
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start
@@ -8159,9 +8165,11 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?},
-  items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
-  `mentionTargets` (stable IDs it mentions), an issue's or pull
+  items, removed?, owners, labels}}}`. `items` are active items as a view gives them (without `can`)
+  and the latest Done items. The optional `removed` contains deleted summaries and their deletion
+  stamps. The first Work Queue state puts kept removed summaries in Deleted, with their computer
+  and Restore available only while the owner answers. Each summary may have `handedFrom` (who handed
+  it on) and `mentionTargets` (stable IDs it mentions). An issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the
@@ -10753,6 +10761,15 @@ seconds since 1970.
   other computer's part as last read (`run/library/peers/<key>.json`, the latest lists asked, never a
   search with words): one away or not answering is listed with that part and `seen` (ms, when it was
   read), its `message` saying it's as last seen, and none only the very first time.
+- `GET kuvo/setup/library/events?…` (feature `line.merged-library`) is the Library's topic on
+  `kuvo/line`. It takes the same filters and returns the same shape. Boxes publish their own
+  Library metadata as authenticated peer mail (`libraryCopy`, optionally in parts), independently
+  of a Library being open. Each receiver keeps the latest copy in `run/peers/<key>/library-v1.json`.
+  The first state includes kept copies, and changing tabs, bots or search words filters those
+  copies on the box. Before a reachable peer has ever supplied a copy, there is no partial first
+  state. An away peer's rows keep their computer and `seen` time, with `there` and `thumbnail`
+  false. The snapshot carries metadata and source names, with bytes read from the file's owner
+  only when asked. The previous list routes remain available to older clients.
 - `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
   part changes or, asked again every 20 seconds, another's does. Its first line doesn't wait for your
   other computers: each is its part as last read (`state: there` with `seen`), until it answers.
@@ -13179,6 +13196,12 @@ whole Insights screen as a box makes it. It takes `period` (7, 30 or 90),
 `zone`, and at most one of `bot`, `provider`, `account`, `model` (a model
 row's `id`), `computer` or `session` to narrow it. Every grouping is made
 by the box; a client draws it as it comes:
+
+For a selected computer, or across the setup, a reachable Insights peer without a completed
+first copy keeps the summary in `loading`. The final peer page records coverage, and the first
+ready summary includes the records already indexed from those peers. An away computer's
+indexed usage remains included. The saved summary key includes the selected peers and the
+presence of their kept copies, so a summary from before a computer joined can't stand in for it.
 
 - `totals`: `cost` (USD at current API rates), `tokens` (every token,
   cache reads included) and `cacheRate` (cached input over all input,

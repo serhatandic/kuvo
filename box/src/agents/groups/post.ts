@@ -219,8 +219,10 @@ export async function peerRoutes(parts: PeerParts | undefined, method: string, p
 }
 
 /** Your other computers and their bots, as the link last said. */
+type PeerBox = { name: string; seats: boolean; insights?: "connected" | "away" | "unsupported" }
+
 export class LinkDirectory implements PeerDirectory, LimitsDirectory {
-  private boxes = new Map<string, { name: string; seats: boolean }>()
+  private boxes = new Map<string, PeerBox>()
   private origins = new Map<string, string>()
   private listed: PeerBot[] = []
   private homes = new Map<string, RemoteHome>()
@@ -242,9 +244,11 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   /** What the link says (`SeatPeers`, src/shared/seats.ts: `{boxes: [{key, name, seats}], bots: [{id, name, job, box, session, look?}]}`), checked as it's taken. False for what isn't that. */
   set(given: any): boolean {
     if (!given || typeof given !== "object" || !Array.isArray(given.boxes) || !Array.isArray(given.bots)) return false
-    const boxes = new Map<string, { name: string; seats: boolean }>()
+    const boxes = new Map<string, PeerBox>()
     for (const box of given.boxes) {
-      if (box && typeof box.key === "string" && box.key) boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true })
+      if (!box || typeof box.key !== "string" || !box.key) continue
+      const insights = box.insights === "connected" || box.insights === "away" || box.insights === "unsupported" ? box.insights : undefined
+      boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, insights })
     }
     this.boxes = boxes
     const self = given.self
@@ -276,6 +280,10 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   /** Your other computers by key and name. */
   peerBoxes(): { key: string; name: string }[] {
     return [...this.boxes].map(([key, box]) => ({ key, name: box.name }))
+  }
+
+  insightPeers() {
+    return [...this.boxes].map(([key, { insights }]) => ({ key, insights }))
   }
 
   insightOrigins(): { key: string; name: string }[] {

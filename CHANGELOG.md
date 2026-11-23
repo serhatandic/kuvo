@@ -8,6 +8,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
 
+- The Work Queue’s Deleted list includes items kept on your other computers.
+
+- The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.
+- The workspace badges count items waiting on you across your computers.
+- Insights waits for a reachable computer’s first usage copy before showing a total for the setup.
 - Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
 - Editing or deleting a bot that’s gone tells you the bot is no longer there.
 

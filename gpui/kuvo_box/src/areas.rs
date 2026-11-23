@@ -1315,13 +1315,18 @@ impl BoxClient {
         }
     }
 
-    /// How many things wait on you in each area.
+    /// How many things wait on you in each area across your computers.
     pub fn waiting(&self) -> Result<Waiting> {
-        self.get("kuvo/waiting")
+        self.get("kuvo/setup/waiting/counts")
     }
 
-    /// Follows what waits on you: the counts now, and again as they change.
+    /// Follows the setup's waiting counts as they change.
     pub fn follow_waiting(&self) -> Follow<Followed<Waiting>> {
+        follow_lines(self, "kuvo/setup/waiting/counts/events".into())
+    }
+
+    /// This computer's contribution to the system notification badge.
+    pub fn follow_waiting_on_computer(&self) -> Follow<Followed<Waiting>> {
         follow_lines(self, "kuvo/waiting/events".into())
     }
 }
