@@ -46,6 +46,6 @@ a signal and orderly shutdown. A Rust resident adopting a TypeScript holder end 
 part of phase 4.1.
 
 Generate the ignored `protocol/vectors/wire.json` with
-`UPDATE_WIRE_VECTORS=1 scripts/test-box.sh box test/wire-vectors.test.ts`. The Rust wire test
+`scripts/build-built.sh`. The Rust wire test
 consumes the six signed document kinds, their exchange hashes and the canonical JSON
 digests from that file.

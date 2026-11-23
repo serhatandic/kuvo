@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -72,29 +71,11 @@ impl Files {
 
     pub fn write_bytes(&self, relative: &str, bytes: &[u8]) -> Result<(), Error> {
         let path = self.path(relative);
-        let parent = path.parent().expect("a home-relative file has a parent");
-        let publish = || -> io::Result<()> {
-            fs::create_dir_all(parent)?;
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-            temporary.write_all(bytes)?;
-            temporary.as_file().sync_all()?;
-            temporary.persist(&path)?;
-            sync_directory(parent)?;
-            if parent == self.path("run/setup-checkpoints") {
-                sync_directory(&self.path("run"))?;
-            }
-            Ok(())
+        let published = if relative.starts_with("run/setup-checkpoints/") {
+            kuvo_store::files::write_atomic_through(&path, bytes, &self.path("run"))
+        } else {
+            kuvo_store::files::write_atomic(&path, bytes)
         };
-        publish().map_err(|source| file_error(&path, "publish", source))
+        published.map_err(|error| file_error(&path, "publish", error))
     }
-}
-
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> io::Result<()> {
-    fs::File::open(path)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_directory(_path: &Path) -> io::Result<()> {
-    Ok(())
 }

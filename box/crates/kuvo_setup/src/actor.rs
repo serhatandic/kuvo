@@ -32,6 +32,7 @@ use crate::{
     storage::Files,
 };
 
+mod activity;
 mod device_access;
 mod edit_delivery;
 mod handover;
@@ -48,6 +49,7 @@ const ATTACHED: &str = "run/app-attached.json";
 pub struct SetupRuntime {
     handle: SetupHandle,
     task: JoinHandle<()>,
+    activity_task: JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -55,11 +57,16 @@ pub struct SetupHandle {
     pub(crate) inbox: mpsc::Sender<Request>,
     pub(crate) views: watch::Receiver<View>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
+    activity: activity::Sender,
 }
 
 impl SetupHandle {
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    pub async fn phone_activity(&self) {
+        activity::record(&self.activity, activity::Activity::Seen).await;
     }
 }
 
@@ -99,7 +106,7 @@ impl Pairings for SetupHandle {
 #[derive(Clone)]
 pub(crate) struct View {
     pub setup: Value,
-    pub personalities: Value,
+    pub personalities: Result<Value, String>,
     pub clock: Value,
     access: PairedAccess,
 }
@@ -172,7 +179,20 @@ impl SetupRuntime {
         };
         let (link, identity) = tokio::task::spawn_blocking({
             let (home, files, name) = (home.to_owned(), files.clone(), name.clone());
-            move || open(&home, &files, &name, kind, relay, overlay)
+            move || {
+                let (link, identity) = open(&home, &files, &name, kind, relay, overlay)?;
+                if kind == ComputerKind::Machine {
+                    preferences::follow_carried_zone(
+                        &files,
+                        &link,
+                        std::env::var("KUVO_TZ").ok().as_deref(),
+                    )?;
+                }
+                if let Some(zone) = preferences::zone(&files, &link)? {
+                    preferences::apply_zone(&files, &zone)?;
+                }
+                Ok::<_, Error>((link, identity))
+            }
         })
         .await
         .map_err(|_| Error::Invalid("setup startup task"))??;
@@ -205,6 +225,15 @@ pub struct PreparedSetup {
 }
 
 impl PreparedSetup {
+    /// The legacy machine link marker uses the resident build identifier and has no newline.
+    pub fn record_build(&self, build: &str) -> Result<(), Error> {
+        if self.kind == ComputerKind::Machine {
+            self.files
+                .write_bytes("run/link.version", build.as_bytes())?;
+        }
+        Ok(())
+    }
+
     pub fn relay_config(&self) -> Result<Option<relay::Config>, Error> {
         self.identity
             .as_ref()
@@ -251,6 +280,8 @@ impl PreparedSetup {
         for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
             link.extra.shift_remove(field);
         }
+        let (activity, activity_rx) = mpsc::channel(16);
+        let activity_task = tokio::spawn(activity::track(files.clone(), activity_rx));
         let actor = Owner {
             files,
             link,
@@ -272,6 +303,8 @@ impl PreparedSetup {
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
+            next_digest: Instant::now(),
+            activity: activity.clone(),
         };
         actor.write_card()?;
         let task = tokio::spawn(actor.run());
@@ -280,8 +313,10 @@ impl PreparedSetup {
                 inbox: tx,
                 views: view_rx,
                 rosters: roster_rx,
+                activity,
             },
             task,
+            activity_task,
         })
     }
 }
@@ -289,6 +324,7 @@ impl PreparedSetup {
 impl Drop for SetupRuntime {
     fn drop(&mut self) {
         self.task.abort();
+        self.activity_task.abort();
     }
 }
 
@@ -331,7 +367,16 @@ fn open(
         overlay.apply(&mut link);
     }
     if link.relay.is_none() {
-        link.relay = relay;
+        link.relay = relay
+            .filter(|value| {
+                reqwest::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "ws" | "wss"))
+            })
+            .map(|mut value| {
+                if value.ends_with('/') {
+                    value.pop();
+                }
+                value
+            });
     }
     if let Some(setup) = &link.setup {
         validate_position(&setup.position)?;
@@ -364,6 +409,9 @@ fn open(
             {
                 return Err(Error::Invalid("missing stored leadership"));
             }
+        }
+        if remember_link_key(&mut link, &identity, kind) {
+            write_link(files, &link, kind)?;
         }
         return Ok((link, Some(identity)));
     }
@@ -428,8 +476,48 @@ fn open(
     link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
     link.format_version = 1;
     link.extra.entry("phones").or_insert_with(|| json!([]));
+    remember_link_key(&mut link, &own, kind);
     write_link(files, &link, kind)?;
     Ok((link, Some(own)))
+}
+
+fn remember_link_key(link: &mut Link, own: &Identity, kind: ComputerKind) -> bool {
+    if link
+        .extra
+        .get("macRotation")
+        .is_some_and(|value| !value.is_null())
+        || kind == ComputerKind::Machine
+            && (link
+                .extra
+                .get("mac")
+                .and_then(Value::as_str)
+                .is_some_and(|mac| !mac.is_empty())
+                || link
+                    .extra
+                    .get("macs")
+                    .and_then(Value::as_array)
+                    .is_some_and(|macs| !macs.is_empty()))
+    {
+        return false;
+    }
+    let former = link.extra.get("keyNow").and_then(Value::as_str);
+    if former == Some(&own.public) {
+        return false;
+    }
+    if let Some(former) = former.filter(|key| !key.is_empty()) {
+        let mut before = link
+            .extra
+            .get("keysBefore")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        before.retain(|key| key != &own.public && key != former);
+        before.push(json!(former));
+        before.drain(..before.len().saturating_sub(8));
+        link.extra.insert("keysBefore".into(), json!(before));
+    }
+    link.extra.insert("keyNow".into(), json!(own.public));
+    true
 }
 
 fn write_link(files: &Files, link: &Link, kind: ComputerKind) -> Result<(), Error> {
@@ -652,7 +740,11 @@ fn make_view(
     Ok(View {
         setup: view,
         access,
-        personalities: preferences::library(files, link)?.document(),
+        personalities: match preferences::library(files, link) {
+            Ok(library) => Ok(library.document()),
+            Err(Error::PersonalityVersion(version)) => Err(version),
+            Err(error) => return Err(error),
+        },
         clock: preferences::clock(files, link, name)?,
     })
 }
@@ -678,6 +770,8 @@ struct Owner {
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
+    next_digest: Instant,
+    activity: activity::Sender,
 }
 
 impl Owner {
@@ -730,6 +824,12 @@ impl Owner {
     }
 
     fn refresh(&self) {
+        if self.kind == ComputerKind::Machine
+            && let Ok(Some(zone)) = preferences::follow_carried_zone(&self.files, &self.link, None)
+            && let Err(error) = preferences::apply_zone(&self.files, &zone)
+        {
+            eprintln!("following the time zone from the Mac kit: {error}");
+        }
         if let Ok(view) = make_view(
             &self.files,
             &self.link,
@@ -832,6 +932,9 @@ impl Owner {
         {
             project_membership(&mut next, &roster, own)?;
         }
+        if let Some(own) = &self.identity {
+            remember_link_key(&mut next, own, self.kind);
+        }
         let names_changed = self
             .link
             .shared
@@ -852,6 +955,14 @@ impl Owner {
                 .get(&SharedKind::SetupTimeZone)
                 .map(|entry| &entry.value);
         let kind = self.kind;
+        let last_device_gone = membership_changed
+            && self
+                .link
+                .member_list()
+                .is_ok_and(|roster| roster.devices().next().is_some())
+            && next
+                .member_list()
+                .is_ok_and(|roster| roster.devices().next().is_none());
         let written = tokio::task::spawn_blocking(move || {
             write_link(&files, &next, kind)?;
             if zone_changed
@@ -867,6 +978,9 @@ impl Owner {
         .await
         .map_err(|_| Error::Invalid("setup write task"))??;
         self.link = written;
+        if last_device_gone {
+            activity::record(&self.activity, activity::Activity::Forget).await;
+        }
         if position_changed || membership_changed || names_changed {
             self.rosters
                 .send_replace(peer_roster(&self.link, self.identity.as_ref()).map(Arc::new));
@@ -987,11 +1101,12 @@ impl Owner {
             }
             Command::Personalities(change) => {
                 let before = preferences::library(&self.files, &self.link)?;
-                let (after, response) = before.change(change)?;
+                let managed = self.link.setup().is_ok();
+                let (after, response) = before.change(change, managed);
                 if response.status != 200 {
                     return Ok(response);
                 }
-                if self.link.setup.is_none() {
+                if !managed {
                     preferences::keep_local_library(&self.files, &after)?;
                     self.refresh();
                     return Ok(response);

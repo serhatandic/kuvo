@@ -193,9 +193,23 @@ async function run(binary, home, sequence, relay) {
     write(engineFile, JSON.stringify(engine.record));
     const mac = fs.existsSync(path.join(home, "box", "kind")) && fs.readFileSync(path.join(home, "box", "kind"), "utf8").trim() === "mac";
     box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
-    const record = await box.ready();
-    for (const { method, path: route, body } of sequence) {
-      const answer = await request(record, method, route.replaceAll("{{home}}", encodeURIComponent(home)), substitute(body, home));
+    let record = await box.ready();
+    for (const { method, path: route, body, headers, engineRunning, restartAfterAcceptance } of sequence) {
+      if (engineRunning) engine.running = new Set(engineRunning);
+      const dispatch = () => request(record, method, route.replaceAll("{{home}}", encodeURIComponent(home)), substitute(body, home), headers);
+      if (restartAfterAcceptance) {
+        const accepted = new Promise(resolve => { engine.holdPrompt = { id: body.id, accepted: resolve }; });
+        const response = dispatch().then(answer => ({ answer }), error => ({ error }));
+        await Promise.race([accepted, response.then(() => { throw new Error("Send finished before the engine held its answer."); })]);
+        box.child.kill("SIGKILL");
+        await box.exited;
+        assert.ok((await response).error, "The interrupted sender must lose its reply");
+        answers.push({ interrupted: true });
+        box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
+        record = await box.ready();
+        continue;
+      }
+      const answer = await dispatch();
       const name = `${method.toUpperCase()} ${route.split("?")[0]}`;
       const output = { status: answer.status };
       if (answer.json !== undefined) output.json = normalise(answer.json, name, home);
@@ -210,7 +224,12 @@ async function run(binary, home, sequence, relay) {
       await engine.close();
     }
   }
-  return { answers, files: inventory(home, { enginePort: engine.record.port }) };
+  const transcript = normalise({
+    sessions: engine.sessions,
+    messages: Object.fromEntries(engine.messages),
+    inboxes: Object.fromEntries(engine.inboxes),
+  }, "engine", home);
+  return { answers, files: inventory(home, { enginePort: engine.record.port }), transcript };
 }
 
 function difference(label, a, b, out) {
@@ -231,6 +250,13 @@ export async function compare(seed, sequence, a, b) {
   for (const step of sequence) {
     assert.ok(typeof step.method === "string" && /^[A-Za-z]+$/.test(step.method) && typeof step.path === "string"
       && step.path && !step.path.startsWith("/"), 'Each request needs a method and a box-relative path.');
+    if (step.engineRunning !== undefined) {
+      assert.ok(Array.isArray(step.engineRunning) && step.engineRunning.every(id => typeof id === "string"));
+    }
+    if (step.restartAfterAcceptance) {
+      assert.ok(step.method.toUpperCase() === "POST" && typeof step.body?.id === "string",
+        "To interrupt a send, name its prompt ID in the body.");
+    }
   }
   const root = fs.realpathSync(scratch());
   const relay = await localRelay();
@@ -246,6 +272,7 @@ export async function compare(seed, sequence, a, b) {
     for (const [index, step] of sequence.entries()) {
       difference(`request ${index + 1} ${step.method} ${step.path}`, first.answers[index], second.answers[index], out);
     }
+    difference("engine", first.transcript, second.transcript, out);
     for (const name of [...new Set([...first.files.keys(), ...second.files.keys()])].sort()) {
       difference(`home/${name}`, first.files.get(name), second.files.get(name), out);
     }

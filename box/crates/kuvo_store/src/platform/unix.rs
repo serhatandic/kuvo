@@ -93,3 +93,11 @@ pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
         size: meta.len(),
     })
 }
+
+pub fn remove_tree(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}

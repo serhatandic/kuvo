@@ -8,11 +8,14 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
-  const engine = { sessions: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  const engine = { sessions: [], models: [], messages: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
   const streams = new Set();
+  const publish = value => {
+    for (const stream of streams) stream.write(`data: ${JSON.stringify(value)}\n\n`);
+  };
   const server = http.createServer((request, response) => {
     let body = "";
     request.on("data", chunk => { body += chunk; });
@@ -37,7 +40,11 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });
+        for (const field of ["metadata", "permissions", "agent", "model", "parentID"]) {
+          if (Object.hasOwn(given, field)) made[field] = given[field];
+        }
         engine.sessions.push(made);
+        publish({ type: "session.created", data: { sessionID: made.id, info: made } });
         return send({ data: made });
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);
@@ -50,12 +57,71 @@ export async function standInEngine(root, env) {
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
         if (!found) return send({ message: "No such session." }, 404);
         Object.assign(found, given);
+        publish({ type: "session.updated", data: { sessionID: found.id, info: found } });
         return send({ data: found });
       }
+      if (one && request.method === "DELETE") {
+        const at = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        if (at < 0) return send({ message: "No such session." }, 404);
+        const [removed] = engine.sessions.splice(at, 1);
+        publish({ type: "session.deleted", data: { sessionID: removed.id } });
+        return send({ data: true });
+      }
+      const prompt = url.pathname.match(/^\/api\/session\/([^/]+)\/prompt$/);
+      if (prompt && request.method === "POST") {
+        const session = decodeURIComponent(prompt[1]);
+        if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+        const messages = engine.messages.get(session) ?? [];
+        const inbox = engine.inboxes.get(session) ?? [];
+        if (!messages.some(row => row.id === given.id) && !inbox.some(row => row.id === given.id)) {
+          if (engine.running.has(session)) {
+            const { id, delivery, ...payload } = given;
+            inbox.push({ id, delivery, type: "user", payload });
+            engine.inboxes.set(session, inbox);
+          } else {
+            messages.push({ ...given, type: "user" });
+            engine.messages.set(session, messages);
+          }
+          publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
+        }
+        if (engine.holdPrompt && engine.holdPrompt.id === given.id) {
+          const held = engine.holdPrompt;
+          engine.holdPrompt = null;
+          held.accepted();
+          return;
+        }
+        return send({});
+      }
+      const waiting = url.pathname.match(/^\/api\/session\/([^/]+)\/inbox(?:\/([^/]+))?$/);
+      if (waiting) {
+        const session = decodeURIComponent(waiting[1]);
+        const inbox = engine.inboxes.get(session) ?? [];
+        if (!waiting[2] && request.method === "GET") return send({ data: inbox });
+        const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
+        if (index < 0) return send({}, 404);
+        if (request.method === "PATCH") Object.assign(inbox[index], given);
+        else if (request.method === "DELETE") inbox.splice(index, 1);
+        else return send({}, 404);
+        publish({ type: "session.inbox.updated", data: { sessionID: session } });
+        return send({});
+      }
+      const message = url.pathname.match(/^\/api\/session\/([^/]+)\/message\/([^/]+)$/);
+      if (message && request.method === "GET") {
+        const stored = engine.messages.get(decodeURIComponent(message[1]))?.find(row => row.id === decodeURIComponent(message[2]));
+        return stored ? send({ data: stored }) : send({}, 404);
+      }
+      const interrupt = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/);
+      if (interrupt && request.method === "POST") {
+        engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
+        return send({});
+      }
+      if (route === "GET /api/model") return send({ data: engine.models });
+      const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
+      if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       // Its tools connected (Kuvo Code's own browser's, no integration's), so nothing waits for them.
       if (route === "GET /api/mcp") return send({ data: [{ name: "kuvo-browser", status: { status: "connected" } }] });
-      if (["GET /api/skill", "GET /api/provider"].includes(route) || /^GET \/api\/session\/[^/]+\/(message|inbox)$/.test(route)) return send({ data: [] });
+      if (["GET /api/skill", "GET /api/provider"].includes(route)) return send({ data: [] });
       // Worktrees, made and removed with git as the engine does, beside the scenario's repositories:
       // a folder's project is its repository's, by an id of its own, and a worktree is made of the
       // project its id names.
@@ -86,9 +152,7 @@ export async function standInEngine(root, env) {
     server.listen(0, "127.0.0.1", resolve);
   });
   return Object.assign(engine, {
-    emit(value) {
-      for (const stream of streams) stream.write(`data: ${JSON.stringify(value)}\n\n`);
-    },
+    emit: publish,
     record: { port: server.address().port, password: "engine", version: "0.0.0", pid: process.pid },
     close: () => new Promise(resolve => {
       server.close(resolve);

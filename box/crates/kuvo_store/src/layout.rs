@@ -91,7 +91,7 @@ pub fn open(home: &Home) -> Result<(), Error> {
     if !empty(home.root())? {
         return require_current(inspect(home)?);
     }
-    let _guard = OwnedLock::acquire(&home.root().join(LOCK), Duration::from_secs(3))?;
+    let _guard = lock_for_move(home, Duration::from_secs(3))?;
     let inside = inspect(home)?;
     if inside != Layout::Unmarked || !empty(home.root())? {
         return require_current(inside);
@@ -125,14 +125,16 @@ fn empty(root: &Path) -> io::Result<bool> {
             Some(LOCK | FILE) => (),
             Some(name)
                 if name.starts_with(".folder-upgrade.lock.pending-")
-                    || name.starts_with(files::DRAFT_PREFIX) =>
-            {
-                ()
-            }
+                    || name.starts_with(files::DRAFT_PREFIX) => {}
             _ => return Ok(false),
         }
     }
     Ok(true)
+}
+
+/// Serialize publishing the frozen layout with a fresh opener or another mover.
+pub fn lock_for_move(home: &Home, wait: Duration) -> io::Result<OwnedLock> {
+    OwnedLock::acquire(&home.root().join(LOCK), wait)
 }
 
 /// Publish a frozen checkpoint after the move has safely placed its staged data.

@@ -20,13 +20,16 @@ jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
+kuvo_store = { path = "../kuvo_store" }
 kuvo_wire = { path = "../kuvo_wire" }
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
-tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -31,9 +31,11 @@ export function isolatedEnv(root) {
   const account = path.join(root, "account");
   const tmp = path.join(root, "tmp");
   for (const folder of [account, tmp]) fs.mkdirSync(folder, { recursive: true });
+  const gitConfig = path.join(account, "gitconfig");
+  write(gitConfig, "");
   return {
     ...env, HOME: account, USERPROFILE: account, TMPDIR: tmp, TEMP: tmp, TMP: tmp, TZ: "UTC",
-    GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Tests", GIT_AUTHOR_EMAIL: "tests@example.com",
     GIT_COMMITTER_NAME: "Tests", GIT_COMMITTER_EMAIL: "tests@example.com",
   };
@@ -97,7 +99,7 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
     ["serve", ...(binary.typescript ? ["--resident"] : []), ...args],
     mac ? { OPENCODE_PASSWORD: "conformance-local", KUVO_TEST_NO_PEERS: "1" } : {});
   const file = path.join(home, "run", "serve.json");
-  const ready = () => Promise.race([
+  const ready = (timeout = 25000) => Promise.race([
     until(() => {
       if (proc.child.exitCode !== null || proc.child.signalCode !== null || !proc.child.pid) {
         throw new Error(`serve exited before publishing ${file}\n${proc.log()}`);
@@ -108,7 +110,7 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
       assert.ok(Number.isInteger(record.port) && record.port > 0 && record.port <= 65535, "serve.json contains a TCP port");
       assert.ok(typeof record.password === "string" && record.password.length, "serve.json contains a password");
       return record;
-    }, () => `serve did not publish ${file}\n${proc.log()}`, 25000),
+    }, () => `serve did not publish ${file}\n${proc.log()}`, timeout),
     proc.exited.then(result => { throw new Error(`serve exited before readiness: ${JSON.stringify(result)}\n${proc.log()}`); }),
   ]);
   return { ...proc, ready };
@@ -117,12 +119,12 @@ export function startBox({ binary, home, env, relay, mac = false, args = [] }) {
 const authorization = password => "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
 
 // Use origin-form paths directly so encoded paths reach the server without URL rewriting.
-export async function request(record, method, route, body, headers = {}) {
+export async function request(record, method, route, body, headers = {}, timeout = 10000) {
   const data = body === undefined ? undefined : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
   const reply = await new Promise((resolve, reject) => {
     const req = http.request({
       host: "127.0.0.1", port: record.port, method, path: "/" + route, agent: false,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(timeout),
       headers: { authorization: authorization(record.password), "x-kuvo-route-version": "1",
         ...(data ? { "content-type": "application/json", "content-length": data.length } : {}),
         ...headers },
