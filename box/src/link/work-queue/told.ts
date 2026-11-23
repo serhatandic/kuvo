@@ -39,6 +39,7 @@ export interface Told extends Numbering {
   at: number;
   heard: number;
   items: ToldItem[];
+  removed?: ToldItem[];
   owners: OwnerFacts[];
   labels: Label[];
 }
@@ -111,6 +112,7 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
     ...(isObject(given.handing) && typeof given.handing.to === "string" && OWNER.test(given.handing.to) ? { handing: { to: given.handing.to, name: words(given.handing.name, 100) } } : {}),
     created: stamp(given.created),
     updated: stamp(given.updated),
+    ...(isObject(given.removed) ? { removed: stamp(given.removed) } : {}),
     ...(typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}),
   };
 }
@@ -138,10 +140,14 @@ export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | 
   if (!Array.isArray(given.labels)) return null;
   const seen = new Set<string>();
   const latest = Math.min(given.at, now);
-  const items = given.items.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest)).filter((each): each is ToldItem => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const items = given.items.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest)).filter((each): each is ToldItem => each !== null && !each.removed && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const removed = Array.isArray(given.removed)
+    ? given.removed.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest))
+      .filter((each): each is ToldItem => each !== null && !!each.removed && !seen.has(each.id) && seen.add(each.id) !== undefined)
+    : undefined;
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each): each is OwnerFacts => each !== null);
   const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
-  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
+  return { id: given.id, at: Math.min(given.at, now), items, ...(removed ? { removed } : {}), owners, labels, ...numberingOf(given) };
 }
 
 const toldFormat = additiveObjectFormat("Work Queue peer summary");
@@ -186,18 +192,19 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
   const fresh = toldItemOf(item);
   // (An answer this box can't read changes nothing.)
   if (!fresh || fresh.id !== id) return;
-  const removed = isObject(item) && isObject(item.removed) && typeof item.removed.at === "number" ? item.removed.at : 0;
-  const answered = Math.max(fresh.updated.at, removed);
+  const answered = Math.max(fresh.updated.at, fresh.removed?.at ?? 0);
   try {
     locked(LOCK, () => {
       const kept = readTold(key);
       if (!kept) return;
-      const before = kept.items.find(each => each.id === id);
-      if (before && before.updated.at > answered) return;
+      const before = kept.items.find(each => each.id === id) ?? kept.removed?.find(each => each.id === id);
+      if (before && Math.max(before.updated.at, before.removed?.at ?? 0) > answered) return;
       const others = kept.items.filter(each => each.id !== id);
       const items = deleted ? others
-        : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
-      writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...kept, items })));
+        : [...others, before ? { ...before, ...fresh, removed: undefined, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
+      const removed = (kept.removed ?? []).filter(each => each.id !== id);
+      if (deleted && fresh.removed) removed.unshift(fresh);
+      writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...kept, items, removed: removed.slice(0, MOST_TOLD) })));
     }, { required: true });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) console.error(error.message);

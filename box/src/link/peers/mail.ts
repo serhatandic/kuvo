@@ -23,6 +23,7 @@ import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { takeSessionFollow } from "./session-follow";
+import { libraryCopies } from "../areas/library";
 import { takeSetupLists, tellListsAgain } from "./lists";
 import { noteHeard, peerIsAway } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
@@ -85,6 +86,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   if (payload.ask === "agents") {
     tellQueuesAgain(sender.key);
     tellListsAgain(sender.key);
+    libraryCopies.refresh(sender.key);
     tellMovingAgain();
   }
   if (isObject(payload.sessionFollow)) takeSessionFollow(sender, payload.sessionFollow, host);
@@ -129,7 +131,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     letterWent(sender, payload.delivered as unknown as Delivered);
     if (payload.delivered.ok === true) rowsWent(sender, payload.delivered.id);
   }
-  return listsSaved;
+  const librarySaved = isObject(payload.libraryCopy) ? libraryCopies.take(sender, payload.libraryCopy).catch(() => {}) : undefined;
+  if (listsSaved || librarySaved) return Promise.all([listsSaved, librarySaved]).then(() => {});
+  return undefined;
 }
 
 const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id })?.local;
@@ -182,6 +186,7 @@ export function receiveMail(
     rowsBack();
     queuesBack(sender.key);
     tellListsAgain(sender.key);
+    libraryCopies.refresh(sender.key);
     heldBack(sender.key);
   }
   if (macsOf(link).includes(sender.key)) heardFromMac(sender.key, payload);

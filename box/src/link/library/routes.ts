@@ -70,8 +70,15 @@ export function filterOf(query: URLSearchParams): Filter | string {
 export function listed(store: LibraryStore, host: LibraryHost, filter: Filter) {
   const all = store.list(filter, (bot) => host.botName(bot), host.computer())
   const items = all.slice(0, listLimit).map((item) => clientItem(item, host))
+  return { items, more: all.length > items.length, sources: sources(store, host) }
+}
+
+function sources(store: LibraryStore, host: LibraryHost) {
   const { bots, you } = store.sources()
-  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null, ...(host.botLook(id) ? { look: host.botLook(id) } : {}) })), you } }
+  return { bots: bots.map((id) => {
+    const look = host.botLook(id)
+    return { id, name: host.botName(id) ?? null, ...(look ? { look } : {}) }
+  }), you }
 }
 
 /**
@@ -86,6 +93,13 @@ export async function libraryRoutes(store: LibraryStore | undefined, host: Libra
     const filter = filterOf(query)
     if (typeof filter === "string") return message(400, filter)
     return json(listed(store, host, filter))
+  }
+  if (first === "peer-copy") {
+    if (method !== "GET") return message(405, "Read it with GET.")
+    const items = [...store.list(), ...store.list({ hidden: true })].map(item => clientItem(item, host))
+    const botNames = Object.fromEntries([...new Set(items.flatMap(item => item.bot ? [item.bot] : []))]
+      .map(id => [id, host.botName(id) ?? ""]))
+    return json({ items, sources: sources(store, host), botNames })
   }
   if (first === "events") {
     if (method !== "GET") return message(405, "Follow it with GET.")
