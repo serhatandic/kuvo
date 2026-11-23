@@ -1319,10 +1319,10 @@ test("an account enrolled after the probe keeps its data when the second setup i
   const saved = path.join(kuvo, "run", "link.json");
   const keyFile = path.join(kuvo, "box", "keys", "KUVO_KEY_EXISTING");
   const mac = crypto.randomBytes(32).toString("base64url");
-  const state = JSON.stringify({ mac, macs: [mac], phones: [] }, null, 2);
+  const state = { mac, macs: [mac], phones: [], sign: link.newSigningSeed(), formatVersion: 1 };
   try {
     joining = await added("race", found => found?.steps.find(step => step.id === "joining")?.state === "now");
-    write(saved, state);
+    write(saved, JSON.stringify(state));
     write(keyFile, "existing-key", 0o600);
   } finally {
     fs.rmSync(hold);
@@ -1330,7 +1330,7 @@ test("an account enrolled after the probe keeps its data when the second setup i
   const refused = await over(joining.id);
   assert.equal(refused.state, "failed");
   assert.match(refused.failure.message, /connect over SSH to your own OS account/);
-  assert.equal(fs.readFileSync(saved, "utf8"), state);
+  assert.deepEqual(read(saved), state);
   assert.equal(fs.readFileSync(keyFile, "utf8"), "existing-key");
 });
 
