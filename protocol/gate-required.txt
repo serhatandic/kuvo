@@ -71,6 +71,7 @@ sessions.archived-groups
 sessions.asks
 sessions.asks.box
 sessions.list
+sessions.location
 sessions.mentions
 sessions.models
 sessions.needsYou

@@ -228,6 +228,7 @@ export const FEATURES = [
   "sessions.list",
   "sessions.list.pages",
   "sessions.list.start",
+  "sessions.location",
   "sessions.mentions",
   "sessions.models",
   "sessions.move",

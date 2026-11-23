@@ -7,14 +7,63 @@ import { acquireSessionEngine } from "../engine/lifetime";
 import { targetsOf } from "../letters/tools";
 import { awaySessions } from "../moves/records";
 import { ownerOf, mayActivate } from "../ownership/resolve";
-import { keptList } from "./sessions";
+import { createdRuntime, keptList } from "./sessions";
+import { movedOf, ownKey, peersOf } from "../peers/known";
+import { peerSetupLists } from "../peers/lists";
+import { readLink } from "../state";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 const SESSION = "(ses_[A-Za-z0-9_-]{1,95})";
-const RESOURCES = "(session|messages|events|queue(?:/events)?|asks(?:/events)?)";
+const RESOURCES = "(location|session|messages|events|queue(?:/events)?|asks(?:/events)?)";
 export const PEER_CONVERSATION = new RegExp(`^kuvo/peer-session/([A-Za-z0-9_-]{43}|here)/${SESSION}/${RESOURCES}$`);
+export const CONVERSATION_LOCATION = new RegExp(`^kuvo/sessions/${SESSION}/location$`);
 export const OWN_CONVERSATION = new RegExp(`^kuvo/session-read/${SESSION}/${RESOURCES}$`);
 export const CONVERSATION_FEATURE = "line.peer-conversation";
+
+const gone = { message: "That conversation isn’t there any more." };
+const notReady = { message: "The conversation’s engine isn’t answering." };
+
+function localLocation(list: ReturnType<typeof keptList>, id: string) {
+  const entry = list?.sessions[id];
+  if (!entry) return list?.gone[id] ? undefined : createdRuntime(id);
+  if (entry.facts.away) return;
+  if (entry.place !== "engine" && entry.place !== "bridge") return;
+  return { place: entry.place === "bridge" ? "agents" : "engine", running: entry.facts.running === true };
+}
+
+/** Locate a conversation from the local list and the lists already received over peer mail. */
+export async function* conversationLocation(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
+  const id = match[1]!;
+  const link = readLink();
+  const journal = movedOf(link).get(id);
+  const owner = ownerOf({ kind: "conversations", id }, { link, name: context.info.name });
+  const list = keptList();
+  const here = localLocation(list, id);
+  if (here && owner?.local !== false && (!journal || (link && journal === ownKey(link))) && mayActivate({ kind: "conversations", id }, { link }))
+    return yield* json(200, here);
+
+  const peers = await peerSetupLists(link);
+  const destination = journal ?? owner?.key;
+  for (const { saved, origin } of peers) {
+    if (destination && destination !== origin.computer.id) continue;
+    const row = saved.sessions.find(row => row.id === id);
+    if (!row) continue;
+    const { computer, away, ...details } = origin;
+    return yield* json(200, { on: { ...computer, away, ...details, actions: away ? [] : row.actions } });
+  }
+
+  // A move or an ownership announcement can arrive before its destination's list.
+  const peer = peersOf(link).find(peer => peer.key === destination);
+  if (peer) {
+    const saved = peers.find(({ origin }) => origin.computer.id === peer.key)?.origin;
+    const away = saved?.away ?? (owner?.key === peer.key ? !owner.reachable : true);
+    return yield* json(200, { on: { id: peer.key, name: peer.name, away, actions: away ? [] : ["open"] } });
+  }
+  if (!list || list.pending?.length || list.sessions[id] || owner || journal) return yield* json(503, notReady);
+  return yield* json(404, gone);
+}
 
 function eventFor(block: string, session: string): boolean {
   const lines = block.split(/\r?\n/);
@@ -66,26 +115,28 @@ export async function* ownConversation(context: RouteContext, match: RegExpMatch
     return yield* read(`kuvo/sessions/${id}/${resource}${resource === "queue" ? "?items=1" : ""}`);
   }
 
-  // An event subscription on a known runtime is passive, like the local event route. In
-  // particular, reopening a stream to a parked engine must not wake it and keep it running.
-  const known = keptList()?.sessions[id]?.place;
-  if (resource === "events" && (known === "engine" || known === "bridge")) {
-    const prefix = known === "bridge" ? "kuvo/agents/" : "";
-    return yield* scopedEvents(read(prefix + "api/event"), id);
+  const list = keptList();
+  const known = localLocation(list, id);
+  if (resource === "location") {
+    if (known) return yield* json(200, known);
+    if (!list || list.pending?.length || list.sessions[id]) return yield* json(503, notReady);
+    return yield* json(404, gone);
   }
 
-  // Discover an unlisted conversation, or open it actively to read its page.
-  const release = await acquireSessionEngine(id);
-  let prefix: string;
-  try {
-    const agents = bridge();
-    const targets = targetsOf(context);
-    const place = await sessionHere(targets, id, stop).catch(() => undefined);
-    if (place === undefined || (!place && !targets.length))
-      return yield* json(503, { message: "The conversation’s engine isn’t answering." });
-    if (!place) return yield* json(404, { message: "There’s no such conversation here." });
-    prefix = place.target.port === agents?.port ? "kuvo/agents/" : "";
-  } finally { release(); }
+  // Known conversations use the same runtime for pages and events. An event subscription is
+  // passive, so reopening it to a parked engine does not wake it up.
+  let prefix = known?.place === "agents" ? "kuvo/agents/" : "";
+  if (!known) {
+    const release = await acquireSessionEngine(id);
+    try {
+      const agents = bridge();
+      const targets = targetsOf(context);
+      const place = await sessionHere(targets, id, stop).catch(() => undefined);
+      if (place === undefined || (!place && !targets.length)) return yield* json(503, notReady);
+      if (!place) return yield* json(404, gone);
+      prefix = place.target.port === agents?.port ? "kuvo/agents/" : "";
+    } finally { release(); }
+  }
 
   if (resource === "events") return yield* scopedEvents(read(prefix + "api/event"), id);
   const base = prefix + `api/session/${id}`;

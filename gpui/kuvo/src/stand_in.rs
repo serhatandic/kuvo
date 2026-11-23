@@ -3098,6 +3098,13 @@ impl StandIn {
                 state.emit("session.model.selected", json!({ "sessionID": session }));
                 answer(200, json!({}))
             }
+            ("GET", ["kuvo", "sessions", session, "location"]) => {
+                if state.sessions.contains_key(*session) {
+                    answer(200, json!({ "place": "engine", "running": state.running.contains(*session) }))
+                } else {
+                    answer(404, json!({ "message": "That conversation isn’t there any more." }))
+                }
+            }
             ("GET", ["api", "session", "active"]) => {
                 let active: serde_json::Map<String, Value> = state.running.iter().map(|session| (session.clone(), json!({}))).collect();
                 answer(200, json!({ "data": active }))

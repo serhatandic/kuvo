@@ -203,9 +203,9 @@ impl ConversationView {
         &self.client
     }
 
-    /// A conversation of `client`'s box. `live`: follow it there (the app); else it shows what
+    /// A conversation of `client`'s box, followed through `nearest`. Otherwise it shows what
     /// it's handed ([`ConversationView::take`]), for tests and shots.
-    pub fn new(client: BoxClient, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {
+    pub fn new(client: BoxClient, nearest: &BoxClient, computer: Option<&str>, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {
         let outgoing = cx.subscribe(&composer, |this: &mut ConversationView, _, event: &ComposerEvent, cx| {
             if matches!(event, ComposerEvent::Outgoing) {
                 this.show_outgoing(cx);
@@ -273,7 +273,7 @@ impl ConversationView {
         // Its Activity pinned or unpinned: drawn again, with the card or without.
         cx.subscribe(&view.bars, |_, _, _: &crate::work_bars::PinChanged, cx| cx.notify()).detach();
         if live {
-            let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
+            let follow = Rc::new(nearest.follow_conversation(&session, Timing::default()));
             let updates = follow.updates().clone();
             view.follow = Some(follow);
             view._follow_task = Some(cx.spawn(async move |this, cx| {
@@ -284,7 +284,7 @@ impl ConversationView {
                 }
             }));
             // What it asks, as the box words it, now and as it changes.
-            let asks = client.follow_asks(&session);
+            let asks = computer.map_or_else(|| client.follow_asks(&session), |computer| nearest.follow_peer_asks(&session, computer));
             let updates = asks.updates().clone();
             view._asks_follow = Some(asks);
             // What waits its turn, now and as it changes.
@@ -2007,10 +2007,11 @@ impl ConversationView {
 #[cfg(feature = "stand-in")]
 pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box::Conversation> {
     use kuvo_box::Conversation;
-    use kuvo_box::messages::{self, Page};
-    let place = client.where_is(session)?;
-    let page: Page = client.get(&messages::newest_route(place, session, 100))?;
-    let running: Option<bool> = client.get::<serde_json::Value>(&format!("{}api/session/active", place.prefix())).ok().map(|active| active["data"].get(session).is_some());
+    let location = client.where_is(session)?;
+    let runtime = client.conversation_runtime(session, &location)?;
+    let place = runtime.place;
+    let page = client.conversation_page(session, &location, place, 100)?;
+    let running = Some(runtime.running);
     let earlier = page.earlier(100);
     let mut conversation = Conversation::new(session, place);
     conversation.catch_up(page.data, earlier, &[], running);

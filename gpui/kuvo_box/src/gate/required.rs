@@ -73,6 +73,7 @@ pub const REQUIRED: &[&str] = &[
     "sessions.asks",
     "sessions.asks.box",
     "sessions.list",
+    "sessions.location",
     "sessions.mentions",
     "sessions.models",
     "sessions.needsYou",

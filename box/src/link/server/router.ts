@@ -54,7 +54,7 @@ import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { keepsList, LIST_ROUTE, listRoute } from "../lists/sessions";
-import { OWN_CONVERSATION, PEER_CONVERSATION, ownConversation } from "../lists/conversation";
+import { CONVERSATION_LOCATION, OWN_CONVERSATION, PEER_CONVERSATION, conversationLocation, ownConversation } from "../lists/conversation";
 import { peerConversation } from "../peers/session-follow";
 import { DELIVERY_RECEIPT_EVENTS, deliveryReceiptEvents, deliveryRoute } from "../lists/delivery";
 import { PAGE_ROUTE, pageRoute, SETUP_LIST_ROUTE, SETUP_SESSION_LIST_ROUTE, SETUP_WAIT_COUNTS, setupWaitCountsRoute, setupListsRoute } from "../lists/setup";
@@ -238,6 +238,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sessions.glance", when: route => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { feature: "sessions.list", when: route => route.match(LIST_ROUTE), answer: listRoute },
   { feature: "sessions.list.pages", when: route => route.match(PAGE_ROUTE), answer: pageRoute },
+  { feature: "sessions.location", when: route => route.match(CONVERSATION_LOCATION), answer: conversationLocation },
   { feature: "line.peer-conversation", when: route => route.match(PEER_CONVERSATION), answer: peerConversation },
   { feature: "line.peer-conversation", when: route => route.match(OWN_CONVERSATION), answer: ownConversation },
   { feature: DELIVERY_FEATURE, when: route => route.match(DELIVERY_RECEIPT_EVENTS), answer: deliveryReceiptEvents },

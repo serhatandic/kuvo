@@ -95,6 +95,11 @@ async function run() {
     case "route":
       if (command.away) noteUnreachable(Buffer.from(command.away, "base64url"));
       return await route(command.path);
+    case "start-and-locate": {
+      const started = await route("kuvo/sessions", { chat: true, title: "Started here" });
+      const { session } = JSON.parse(started.text);
+      return { started: started.status, location: await route(`kuvo/sessions/${session}/location`) };
+    }
     case "start": {
       const computer = command.target;
       const handshake = new IKInitiator(Buffer.from(command.device, "base64url"), Buffer.from(computer, "base64url"), Buffer.from("kuvo-ssh v1"));
