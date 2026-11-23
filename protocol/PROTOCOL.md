@@ -260,12 +260,15 @@ and `messages` for the per-session queue. The owning box validates each action w
 
 Feature `line.merged-sessions` adds `kuvo/setup/sessions/list/events`. Follow this topic in
 place of the single-box session-list topic. It sends full `kuvo/sessions/list` snapshots,
-including the answering box's project order, start project, pending runtimes and archived
-groups. Every session and project includes `computer: {id, name}`. Remote rows also carry
+including the answering box's project order, start project and pending runtimes. Archived
+groups include each peer's archived sessions. If the answering box has no local list yet,
+it can still serve its peers' last snapshots, with a null start project. Every session and
+project includes `computer: {id, name}`. Remote rows also carry
 `on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
 `<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
-chooses one row for each session ID. The snapshot includes every listed session in a remote
-project, so remote projects have no paging cursor.
+chooses one row for each session ID. A remote project's `shown`, `total` and `more` are
+computed from the merged rows. Pass the same project key to `GET kuvo/sessions/page` with
+the supplied cursor. The answering box pages its last saved copy even while the peer is away.
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start

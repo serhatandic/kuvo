@@ -24,7 +24,7 @@ import { filedProjects, projectFollowers, readProjects } from "../areas/projects
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
-import { factsOf, folderOf, kindOf, listedProjects, needsYou, projectOrder, projectPage, shownOfCursor, withSubagents, type ListPlace, type Stopped } from "./rule";
+import { factsOf, folderOf, kindOf, listedProjects, needsYou, projectOrder, withSubagents, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
 import { listedWork, workBot, type ListedWork } from "../work/listed-work";
 import { inTime, repositoryOf } from "../work/project-trees";
@@ -38,7 +38,6 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { backgroundFollowers, readBackground } from "../work/background";
 
 export const LIST_ROUTE = /^kuvo\/sessions\/list(\/events)?$/;
-export const PAGE_ROUTE = /^kuvo\/sessions\/page$/;
 export const LIST_FILE = path.join(RUN, "lists", "sessions.json");
 
 /** How many sessions gone are kept for `since`, and for how long. */
@@ -1034,22 +1033,4 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
   } finally {
     listFollowers.delete(told);
   }
-}
-
-/** `GET kuvo/sessions/page?project=<folder>&cursor=<its more's>`: a project's list as far as "Show
- * more" has opened it, in the box's order (PROTOCOL.md, "Session lists"); without a cursor, as far
- * as it shows first. A client asks again with the same cursor as the list changes. */
-export async function* pageRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-  const project = query.get("project");
-  if (!project) return yield* json(400, { message: "Name the project: project=<its folder>." });
-  const cursor = query.get("cursor");
-  const at = cursor ? shownOfCursor(cursor) : undefined;
-  if (at === null) return yield* json(400, { message: "That cursor isn't one this box gave. Read the list again." });
-  const list = await listNow(context, signal ?? undefined);
-  if (!list) return yield* json(503, { message: "The engine isn’t running." });
-  const facts = Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts]));
-  return yield* json(200, { project, ...projectPage(facts, project, at) });
 }
