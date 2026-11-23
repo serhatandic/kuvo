@@ -213,6 +213,11 @@ pub(crate) fn executable(home: &Path, version: &str) -> PathBuf {
 
 fn environment(home: &Path, password: &str, mut env: Environment) -> io::Result<Environment> {
     let platform = Platform::current();
+    if cfg!(windows) {
+        // Cmd includes per-drive working directories as entries such as "=C:".
+        // OpenCode and its workspace already start from absolute paths.
+        env.retain(|name, _| !name.as_encoded_bytes().starts_with(b"="));
+    }
     let mut set = |key: &str, value: OsString| {
         if cfg!(windows) {
             env.retain(|name, _| !name.to_string_lossy().eq_ignore_ascii_case(key));

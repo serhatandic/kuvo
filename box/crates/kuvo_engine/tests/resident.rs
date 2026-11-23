@@ -72,6 +72,9 @@ impl Server {
             .collect();
         env.insert("HOME".into(), home.into());
         env.insert("USERPROFILE".into(), home.into());
+        if cfg!(windows) {
+            env.insert("=C:".into(), home.into());
+        }
         let engine = Engine::new(
             home.to_owned(),
             env,
