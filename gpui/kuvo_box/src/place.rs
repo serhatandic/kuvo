@@ -2,7 +2,7 @@
 //! "A home of its own", "The app attached to this Mac's own box").
 //!
 //! - The app's box in its own folder, `~/Library/Application Support/run.kuvo.code/box`, whose
-//!   keeper runs `kuvo-link.js serve` and records where it answers in `run/serve.json`.
+//!   keeper runs the resident, which records where it answers in `run/serve.json`.
 //! - This Mac's box once it moved into a home of its own, `~/.kuvo-code` with `box/kind` `mac`,
 //!   whose helper keeps its server up, recorded the same way.
 //!
@@ -101,10 +101,13 @@ pub fn server(place: &HomeFolder, label: &str) -> Result<LocalServer> {
     Ok(LocalServer::recorded(place.folder.clone(), place.speaker, label))
 }
 
-/// Whether process `pid` runs as a box's server: its command line has `kuvo-link.js serve` (as
-/// the box itself believes its record, and the Mac app checks it).
+/// Whether process `pid` runs as the TypeScript or Rust box's server.
 pub fn runs_serve(pid: i64) -> bool {
-    arguments_of(pid).is_some_and(|arguments| is_serve_command(&arguments.join(" ")))
+    arguments_of(pid).is_some_and(|arguments| {
+        matches!(arguments.as_slice(), [bin, mode, ..]
+            if mode == "serve" && std::path::Path::new(bin).file_name().is_some_and(|name| name == "kuvo-box" || name == "kuvo-box.exe"))
+            || is_serve_command(&arguments.join(" "))
+    })
 }
 
 /// Whether a command line is `… kuvo-link.js serve …`.

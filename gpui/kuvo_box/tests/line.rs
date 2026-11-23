@@ -481,3 +481,70 @@ fn notifications_follow_one_setup_history_with_stable_origins() {
         box_.restart();
     }
 }
+
+/// The real resident opens, resumes, and changes a line through this client's recorded HTTP
+/// transport. Area fixtures above continue to exercise conversation and merged-list behavior.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+#[ignore = "set KUVO_BOX_BIN to a built Rust kuvo-box"]
+fn the_desktop_reads_and_resumes_a_real_residents_line() {
+    use std::io::BufRead;
+    use std::process::{Child, Command, Stdio};
+    use kuvo_box::local::{LocalServer, Speaker};
+
+    struct Resident(Child);
+    impl Drop for Resident {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let binary = std::env::var_os("KUVO_BOX_BIN").expect("path to kuvo-box");
+    let home = tempfile::tempdir().unwrap();
+    let mut server = Resident(Command::new(binary).arg("serve").env_clear()
+        .env("KUVO_HOME", home.path()).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap());
+    let (sent, ready) = channel();
+    let mut stdout = BufReader::new(server.0.stdout.take().unwrap());
+    std::thread::spawn(move || {
+        let mut announcement = String::new();
+        stdout.read_line(&mut announcement).unwrap();
+        sent.send(announcement).unwrap();
+    });
+    let ready: Value = serde_json::from_str(&ready.recv_timeout(Duration::from_secs(10)).unwrap()).unwrap();
+    assert!(ready["url"].as_str().unwrap().starts_with("http://127.0.0.1:"));
+
+    let local = LocalServer::recorded(home.path(), Speaker::Mac, "fixture");
+    let topics = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"info":"kuvo/info"}"#);
+    let mut stream = local.open(&Request::get(format!("kuvo/line?watch={topics}")), &|_| true).unwrap();
+    let read = |stream: &mut Stream| -> Value {
+        let mut line = String::new();
+        stream.reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let hello = read(&mut stream);
+    assert_eq!(hello["hello"]["fresh"], true);
+    let id = hello["hello"]["line"].as_str().unwrap();
+    let info = read(&mut stream);
+    assert_eq!((info["t"].as_str(), info["n"].as_u64()), (Some("info"), Some(1)));
+    assert_eq!(info["d"]["features"], json!(["info", "line"]));
+    drop(stream);
+    let mut resumed = local.open(&Request::get(format!("kuvo/line?watch={topics}&line={id}&after=0")), &|_| true).unwrap();
+    assert_eq!(read(&mut resumed)["hello"], json!({"fresh":false,"line":id,"beat":5000}));
+    assert_eq!(read(&mut resumed), info);
+    let reply = local.send(&Request::post("kuvo/line/watch", json!({"line":id,"watch":{"missing":"kuvo/not-installed"}}))).unwrap();
+    assert_eq!(reply.status, 200);
+    assert_eq!(read(&mut resumed), json!({"n":2,"t":"missing","refused":{"status":404,"message":"{}","said":{}}}));
+    drop(resumed);
+
+    let client = BoxClient::new(local);
+    let waiting = client.follow_waiting();
+    let updates = waiting.updates().clone();
+    let (send, update) = channel();
+    std::thread::spawn(move || { let _ = send.send(updates.recv_blocking()); });
+    assert!(matches!(
+        update.recv_timeout(Duration::from_secs(10)).unwrap().unwrap(),
+        kuvo_box::follow::Followed::Failed(Error::Refused(refusal)) if refusal.status == 404
+    ));
+    assert!(client.line().heard_within(Duration::from_secs(10)));
+}
