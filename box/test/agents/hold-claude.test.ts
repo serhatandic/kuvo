@@ -2,7 +2,7 @@
 // client is killed (SIGKILL) while Claude Code waits on a permission ask; Claude Code lives on; a new
 // SDK `query()` attaches to the same process with the next generation, is asked again, answers, and
 // the turn ends with its result, the command run once. The stand-in CLI does on a second
-// `initialize` what Claude Code 2.1.325 did in spike S1 (.claude/notes/update-handover.md): it
+// `initialize` what Claude Code 2.1.325 did in spike S1: it
 // accepts it and names the open ask in `pending_permission_requests`. The ask is asked once: the
 // holder never replays Claude Code's control requests, which it asks again itself.
 

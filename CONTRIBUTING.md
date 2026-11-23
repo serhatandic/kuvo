@@ -63,7 +63,12 @@ is stamped with, so after a change there `scripts/check-built.sh` asks for
 
 Read [the testing guide](docs/testing.md) and run focused checks for the area you change and its callers:
 
-- Desktop: `scripts/cargo-locked.sh` from `gpui/`, with the package and test filter.
+- Desktop: `../scripts/cargo-locked.sh` from `gpui/`, with the package and test filter. Builds,
+  tests, checks, Clippy and shots all take the one Rust slot, wherever the checkout is; use
+  `scripts/heavy.sh rust <command>` for several steps in the same slot. Keep `CARGO_TARGET_DIR`
+  per checkout: with a shared target, Cargo can reuse another checkout's executable, which keeps
+  that checkout's `CARGO_MANIFEST_DIR`, so shots write to and tests read fixtures from the wrong
+  place.
 - Box and bridge: `scripts/test-box.sh [box|bridge|all] [filter]`. Use
   `scripts/heavy.sh box scripts/test-linux.sh <ssh-host> <test file>` for a Linux
   bridge check. The scripts keep test data in scratch directories.

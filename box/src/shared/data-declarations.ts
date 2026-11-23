@@ -1,5 +1,5 @@
 // Policy for durable and transient Box data (#848, rules 28–50 and 55).
-// Family names refer to "Stored formats" in .claude/notes/848-U-versions-inventory.md.
+// Family names refer to "Stored formats" in docs/architecture/stored-formats.md.
 // An inventory family can contain several kinds with different policies. The owner is the
 // authority for a record, regardless of where a replica, journal or imported copy lives.
 import { OWNER, YOURS } from "./work-queue-owner";

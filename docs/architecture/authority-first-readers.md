@@ -1,6 +1,6 @@
 # First readers for Box authority and destructive work
 
-Scope comes from priority 1 of `bdcea87cb:docs/architecture/audit-45410efb8.md`, the [receipt and version boundaries](receipt-ownership-and-versions.md), and the [format inventory](../../.claude/notes/848-U-versions-inventory.md). The original comparison starts at `0dc01540a`. The follow-up starts at `bb9fb668a`. The audit's rule 31 entry identifies current grants, primary writes, and local denial. The draft containing its full wording was unavailable in this checkout and the audit Git object.
+Scope comes from priority 1 of `bdcea87cb:docs/architecture/audit-45410efb8.md`, the [receipt and version boundaries](receipt-ownership-and-versions.md), and the [format inventory](stored-formats.md). The original comparison starts at `0dc01540a`. The follow-up starts at `bb9fb668a`. The audit's rule 31 entry identifies current grants, primary writes, and local denial. The draft containing its full wording was unavailable in this checkout and the audit Git object.
 
 The current keeper and native Helper supervise `serve --resident` on supported
 releases. Installed Swift app writers and split process records below describe

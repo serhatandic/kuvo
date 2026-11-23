@@ -4,7 +4,6 @@
 # identity) reads it over the tailnet and updates itself from it like anyone's, through Sparkle.
 # Nothing is published: the feed and its disk images stay in a folder on this Mac, served on
 # 127.0.0.1 and, through `tailscale serve`, over https to the user's tailnet only.
-# (.claude/notes/private-feed.md: why, the one-time setup, and the move to the real feed at 0.8.)
 #
 #   scripts/private-feed.sh setup      once, in your Terminal: the folder, the feed's update key
 #                                      (made here, kept in the login keychain), and a login agent

@@ -17,3 +17,6 @@ box/src/**/.unresolved-*.ts
 # Move Config/Signing.local.xcconfig to swift/Config/, and delete Packages/. Goes once no checkout has them.
 /Config/Signing.local.xcconfig
 /Packages/
+
+# Session notes, drafts and shots stay on disk, never in the repo.
+/.claude/
