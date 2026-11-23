@@ -388,6 +388,66 @@ test("a destination refuses an oversized offer before creating a copy", {
   assert.equal(here.engine.sessions.length, 0);
 });
 
+test("a one-part move waits for the acknowledgement of part zero", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("one-part-source"), there = await computer("one-part-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_onePart", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const { openOneWay, sealOneWay, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const [sourceKey, targetKey] = [main, member].map(peer => Buffer.from(peer.key, "base64url"));
+  const [sourceSecret, targetSecret] = [here, there].map(peer =>
+    Buffer.from(readJSON(path.join(peer.home, "run/link.json")).key, "base64url"));
+  const barrier = "mov_ackBarrier";
+  let part, checked;
+  const release = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), targetSecret, sourceKey);
+    const move = JSON.parse(payload).move;
+    if (move?.op === "part") {
+      part ??= { packet, move };
+      return true;
+    }
+    if (move?.op === "failed" && move.id === barrier) checked = true;
+    return false;
+  });
+  t.after(release);
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id } = begun.json.move;
+  await until(() => part, "The source did not send its part");
+  const { generation, hash, i, of } = part.move;
+  assert.equal(i, 0);
+  assert.equal(of, 1);
+  const send = move => {
+    const { message } = sealOneWay(Buffer.from(JSON.stringify({ formatVersion: 1, at: Date.now(), move })),
+      targetSecret, sourceKey);
+    relay.replay({ from: to, to: from, payload: frame(Frame.mail, 0, message) });
+  };
+  send({ op: "got", id, generation, hash, i: 1 });
+  // The next request on the same connection proves the source handled the preceding ack.
+  send({ op: "arrive", id: barrier, generation, hash });
+  await until(() => checked, "The source did not answer the following arrival query");
+  const before = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(before.status, 200, before.text);
+  assert.equal(before.json.move.sent ?? 0, 0, "An out-of-range acknowledgement must not count as copied bytes");
+  release();
+  relay.replay(part.packet);
+  await until(async () => {
+    const reply = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.notEqual(reply.json?.state, "failed", reply.text);
+    return reply.json?.state === "done";
+  }, "The move did not finish after the real acknowledgement");
+  assert.ok(there.engine.sessions.some(record => record.id === session));
+});
+
 test("an older incoming copy without import proof stays held after a drop", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

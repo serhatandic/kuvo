@@ -1795,15 +1795,17 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (sending) sending.since = performance.now();
       return sendParts(readMove(id)!);
     case "got": {
-      if (mine?.role !== "from" || !matched || mine.step !== "parts" || !Number.isInteger(given.i)) return;
+      if (mine?.role !== "from" || !matched || mine.step !== "parts") return;
+      const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
+      const i = given.i;
+      if (typeof i !== "number" || !Number.isInteger(i) || i < 0 || i >= of) return;
       const state = outgoing.get(id);
       if (!state) return;
       // (One lost and then come after all counts too, as it's no longer on its way.)
-      const fresh = !state.got.has(given.i as number);
-      state.got.add(given.i as number);
-      state.flying.delete(given.i as number);
+      const fresh = !state.got.has(i);
+      state.got.add(i);
+      state.flying.delete(i);
       if (fresh) state.window = Math.min(IN_FLIGHT, (state.window ?? IN_FLIGHT) + 1);
-      const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
       if (state.got.size === of) {
         const pending = changeMove(id, each => { each.sent = each.size; each.step = "arrive"; each.sentAt = Date.now(); });
         if (pending) markedRetry(pending);
