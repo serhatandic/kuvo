@@ -2,17 +2,21 @@
 //! driver, after it verifies the manifest and the move's ownership.
 
 use std::{
+    collections::BTreeMap,
     fs::File,
-    io,
+    io::{self, Read, Write},
     path::{Component, Path},
 };
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use kuvo_store::files;
+use kuvo_wire::keys::encode;
+use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, Header};
 
 use super::{
-    manifest::{self, Manifest},
+    manifest::{self, Manifest, SessionFile},
+    session_files,
     transfer::MAX_BUNDLE_BYTES,
 };
 
@@ -90,8 +94,23 @@ pub fn write_manifest_only(path: &Path, manifest: &Manifest) -> Result<(), Error
     if needs_files(manifest) {
         return Err(Error::RequiresFiles);
     }
+    write_chat(path, manifest, None)
+}
+
+pub(super) fn write_chat(
+    path: &Path,
+    manifest: &Manifest,
+    staged: Option<&Path>,
+) -> Result<(), Error> {
+    if manifest.folder.is_some() || manifest.lane.is_some() || manifest.work_queue.is_some() {
+        return Err(Error::RequiresFiles);
+    }
+    let payloads = manifest.session_files.as_deref().unwrap_or_default();
     let bytes = manifest.encode()?;
-    if bytes.len() as u64 > MAX_BUNDLE_BYTES {
+    if payloads.iter().fold(bytes.len() as u64, |n, file| {
+        n.saturating_add(file.proof.size)
+    }) > MAX_BUNDLE_BYTES
+    {
         return Err(Error::TooLarge);
     }
     files::write_generated(path, |file| {
@@ -100,9 +119,88 @@ pub fn write_manifest_only(path: &Path, manifest: &Manifest) -> Result<(), Error
         header.set_size(bytes.len() as u64);
         header.set_mode(0o600);
         archive.append_data(&mut header, MANIFEST, bytes.as_slice())?;
+        for file in payloads {
+            let root = staged.ok_or_else(|| io::Error::other("No staged attachments"))?;
+            let source = session_files::checked_path(root, Path::new(&file.relative))?;
+            let contents = files::open_payload(&source)?;
+            let mut header = Header::new_gnu();
+            header.set_size(file.proof.size);
+            header.set_mode(0o600);
+            archive.append_data(
+                &mut header,
+                format!("session-files/{}", file.relative),
+                contents,
+            )?;
+        }
         archive.into_inner()?.finish()?;
         Ok(())
     })?;
+    Ok(())
+}
+
+pub(super) fn unpack_chat_files(
+    path: &Path,
+    stage: &Path,
+    payloads: &[SessionFile],
+) -> Result<(), Error> {
+    let mut expected: BTreeMap<_, _> = payloads
+        .iter()
+        .map(|file| (format!("session-files/{}", file.relative), file))
+        .collect();
+    let mut archive = Archive::new(GzDecoder::new(File::open(path)?));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let name = entry
+            .path()?
+            .to_str()
+            .ok_or(Error::Invalid)?
+            .trim_end_matches('/')
+            .to_owned();
+        let kind = entry.header().entry_type();
+        if name == MANIFEST && kind.is_file() {
+            continue;
+        }
+        if kind.is_dir()
+            && entry.size() == 0
+            && payloads.iter().any(|file| {
+                name == "session-files"
+                    || name.strip_prefix("session-files/").is_some_and(|parent| {
+                        file.relative
+                            .strip_prefix(parent)
+                            .is_some_and(|tail| tail.starts_with('/'))
+                    })
+            })
+        {
+            continue;
+        }
+        let file = expected.remove(&name).ok_or(Error::Invalid)?;
+        if !kind.is_file() || entry.size() != file.proof.size {
+            return Err(Error::Invalid);
+        }
+        let destination = session_files::checked_path(stage, Path::new(&file.relative))?;
+        files::write_generated(&destination, |to| {
+            let mut hash = Sha256::new();
+            let mut bytes = vec![0; 64 * 1024];
+            loop {
+                let length = entry.read(&mut bytes)?;
+                if length == 0 {
+                    break;
+                }
+                hash.update(&bytes[..length]);
+                to.write_all(&bytes[..length])?;
+            }
+            if encode(&hash.finalize()) != file.proof.sha256 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "A session attachment did not match its receipt.",
+                ));
+            }
+            Ok(())
+        })?;
+    }
+    if !expected.is_empty() {
+        return Err(Error::RequiresFiles);
+    }
     Ok(())
 }
 

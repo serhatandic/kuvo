@@ -2,11 +2,12 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    io,
-    path::PathBuf,
+    io::{self, Read},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use http::{Method, StatusCode};
 use kuvo_protocol::routes::{
     delete_kuvo_sessions_id_queue_item as remove, get_kuvo_sessions_id_queue as read,
@@ -951,7 +952,7 @@ pub(crate) async fn pack_move(
                     .waiting_prompt(id)
                     .await?
                     .ok_or_else(unreadable_move_queue)?;
-                message.files = portable_files(&message.files)?;
+                message.files = carry_prompt_files(std::mem::take(&mut message.files)).await?;
                 let mut shown = shown.clone();
                 shown.files = file_names(&message.files);
                 CarriedWaiting { shown, message }
@@ -965,7 +966,7 @@ pub(crate) async fn pack_move(
                 } else {
                     format!("msg_{}", &hex::encode(Sha256::digest(id.as_bytes()))[..32])
                 };
-                let files = portable_files(entry.files())?;
+                let files = carry_prompt_files(entry.files().to_owned()).await?;
                 let (words, from) = entry.shown();
                 CarriedWaiting {
                     shown: Waiting {
@@ -1104,6 +1105,88 @@ fn portable_files(files: &[Value]) -> io::Result<Vec<Value>> {
         return Err(unreadable_move_queue());
     }
     Ok(portable)
+}
+
+async fn carry_prompt_files(files: Vec<Value>) -> io::Result<Vec<Value>> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || files.iter().map(carry_prompt_file).collect()).await?
+}
+
+fn carry_prompt_file(file: &Value) -> io::Result<Value> {
+    const MAX: u64 = 20 * 1024 * 1024;
+    let name = file["name"].as_str();
+    let uri = file
+        .pointer("/source/uri")
+        .and_then(Value::as_str)
+        .or_else(|| file["uri"].as_str());
+    let mime = file["mime"].as_str().filter(|mime| !mime.is_empty());
+    let (uri, name) = if let Some(uri) = uri.filter(|uri| {
+        uri.starts_with("data:")
+            && uri
+                .split_once(',')
+                .is_some_and(|(label, _)| label.ends_with(";base64"))
+    }) {
+        (uri.to_owned(), name.map(str::to_owned))
+    } else if let Some(data) = file["data"].as_str() {
+        let mime = mime.unwrap_or("application/octet-stream");
+        (
+            format!("data:{mime};base64,{data}"),
+            name.map(str::to_owned),
+        )
+    } else {
+        let path = uri
+            .filter(|uri| uri.starts_with("file:"))
+            .and_then(|uri| url::Url::parse(uri).ok())
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(unreadable_move_queue)?;
+        let before = std::fs::metadata(&path).map_err(|_| unreadable_move_queue())?;
+        if !before.is_file() || before.len() > MAX {
+            return Err(unreadable_move_queue());
+        }
+        let file = std::fs::File::open(&path).map_err(|_| unreadable_move_queue())?;
+        let mut bytes = Vec::with_capacity(before.len() as usize);
+        file.take(MAX + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unreadable_move_queue())?;
+        if bytes.len() as u64 != before.len() {
+            return Err(unreadable_move_queue());
+        }
+        let mime = mime.unwrap_or_else(|| carried_mime(&path));
+        let name = name
+            .or_else(|| path.file_name().and_then(|name| name.to_str()))
+            .map(str::to_owned);
+        (
+            format!("data:{mime};base64,{}", STANDARD.encode(bytes)),
+            name,
+        )
+    };
+    let mut carried = json!({"uri":uri});
+    if let Some(name) = name {
+        carried["name"] = name.into();
+    }
+    Ok(carried)
+}
+
+fn carried_mime(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("heic") => "image/heic",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        Some("md") => "text/markdown",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    }
 }
 
 fn unreadable_move_queue() -> io::Error {

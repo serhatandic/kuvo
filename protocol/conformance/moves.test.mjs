@@ -417,6 +417,104 @@ for (const reverse of binary.typescript ? [false] : [false, true]) {
   });
 }
 
+test("a managed attachment moves with both its typed references and its receipt", { timeout: 90000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const source = await computer("attachment-source"), target = await computer("attachment-target");
+  const { member } = seedPeerSetup(source.home, relay.url);
+  seedPeerSetup(target.home, relay.url, 2);
+  const session = "ses_attachmentMove", child = "ses_attachmentChild", message = "msg_attachedFile";
+  const chats = path.join(source.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  source.engine.sessions.push(sessionOf({ id: session, directory: chats }));
+  source.engine.sessions.push(sessionOf({ id: child, directory: chats, parent: session }));
+  const original = path.join(source.home, "attachments", session, "proof space.txt");
+  const outside = path.join(source.home, "export only.txt");
+  const heading = "Open these attached files with your tools if you need them:";
+  const block = file => `Here is the file.\n<attached-files>\n${heading}\n${file}\n</attached-files>`;
+  const fileUrl = file => pathToFileURL(file).href + "?version=1#page";
+  const seedReference = file => {
+    source.engine.messages.set(session, [
+      { id: "msg_quotedAttachment", type: "assistant", content: [{ type: "text", text: block(file) }] },
+      { id: message, type: "user", content: [
+      { type: "text", text: block(file) },
+      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+    ] }]);
+    source.engine.messages.set(child, [{ id: "msg_childAttachment", type: "user", content: [
+      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+    ] }]);
+  };
+  write(outside, "This file stays with the source.");
+  seedReference(outside);
+  const sourceProcess = source.start(), targetProcess = target.start();
+  const [here] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(source.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "The source did not hear the destination's move capability", 15000);
+  const begin = async description => {
+    const reply = await request(here, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true }, {}, 25000)
+      .catch(error => { throw new Error(`Starting the ${description} move: ${sourceProcess.log()}`, { cause: error }); });
+    assert.equal(reply.status, 202, reply.text);
+    return reply.json.move.id;
+  };
+  const outcome = id => until(async () => {
+    const reply = await request(here, "GET", "kuvo/moves/receipt?id=" + id, undefined, {}, 25000);
+    if (reply.json?.state === "done" || reply.json?.state === "failed") return reply.json;
+  }, "The move never published an outcome " + id, 30000, 100);
+  const exportOnly = await outcome(await begin("export-only"));
+  assert.equal(exportOnly.state, "failed");
+  assert.match(exportOnly.message, /outside the managed roots/);
+  const bytes = "These are the managed bytes.\n";
+  write(original, bytes);
+  fs.unlinkSync(original);
+  seedReference(original);
+  const refused = await outcome(await begin("expired attachment"));
+  assert.equal(refused.state, "failed");
+  assert.match(refused.message, /attachment.*missing|attachment.*unreadable/i);
+  assert.ok(source.engine.sessions.some(each => each.id === session));
+  assert.equal(target.engine.sessions.length, 0);
+
+  write(original, bytes);
+  const waiting = "msg_attachmentWaiting";
+  write(path.join(source.home, "run/queues.json"), JSON.stringify({
+    [session]: { formatVersion: 1, paused: true, held: [], userPaused: true, waiting: [{ id: waiting, text: "Here is the file.", at: 1 }] },
+  }));
+  write(path.join(source.home, "run/waiting", waiting + ".json"), JSON.stringify({
+    formatVersion: 1, id: waiting, delivery: "queue", text: block(original),
+    metadata: { kuvo: { parts: { words: "Here is the file.", paths: [original] } } },
+    files: [{ name: "proof space.txt", uri: fileUrl(original) }],
+  }));
+  const move = await begin("available attachment");
+  const completed = await outcome(move);
+  assert.equal(completed.state, "done", JSON.stringify(completed));
+  const receipt = readJSON(path.join(target.home, "run/moves/decisions", move + ".json"));
+  const slot = createHash("sha256").update(original).digest("hex");
+  const relative = `${session}/move-${move}/${slot}/proof space.txt`;
+  const installed = path.join(target.home, "attachments", ...relative.split("/"));
+  assert.deepEqual(receipt.payloads.sessions, [{
+    from: original, relative, size: Buffer.byteLength(bytes), sha256: createHash("sha256").update(bytes).digest("base64url"),
+  }]);
+  await sourceProcess.stop();
+  fs.unlinkSync(original);
+  await targetProcess.stop();
+  const reopened = await target.start().ready();
+  const file = await request(reopened, "GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(fileUrl(installed))}`);
+  assert.equal(file.status, 200, file.text);
+  assert.equal(file.text, bytes);
+  const copied = target.engine.messages.get(session).find(entry => entry.id === message);
+  assert.equal(copied.content[0].text, block(installed));
+  assert.equal(copied.content[1].url, fileUrl(installed));
+  assert.equal(target.engine.messages.get(session)[0].content[0].text, block(original));
+  assert.equal(target.engine.messages.get(child)[0].content[0].url, fileUrl(installed));
+  const saved = readJSON(path.join(target.home, "run/waiting", waiting + ".json"));
+  assert.equal(saved.text, block(installed));
+  assert.equal(saved.files[0].uri, "data:text/plain;base64," + Buffer.from(bytes).toString("base64"));
+  assert.deepEqual(saved.metadata.kuvo.parts.paths, [installed]);
+  assert.ok(target.engine.asked.some(call => call.method === "PUT"
+    && call.path.endsWith("/instructions/entries/kuvo.moved")
+    && call.json?.value.includes(`The attachment at ${original} is at ${installed} now.`)));
+});
+
 test("both residents create and clear the same peer reach files", {
   timeout: 90000, skip: !mixed && "Select both binaries to compare their reach files",
 }, async t => {

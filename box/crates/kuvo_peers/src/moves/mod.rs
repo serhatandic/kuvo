@@ -1,6 +1,7 @@
 //! Stored move state shared with the TypeScript resident.
 
 pub mod archive;
+mod attachment_paths;
 mod driver;
 mod forward_evidence;
 mod handoff;
@@ -9,6 +10,7 @@ mod listing;
 pub mod manifest;
 mod notices;
 pub mod receipt;
+mod session_files;
 mod session_notes;
 pub mod transfer;
 

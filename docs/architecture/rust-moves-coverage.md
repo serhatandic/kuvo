@@ -1,8 +1,8 @@
 # Rust moves and ownership coverage
 
 Phase 2.4 is open. The Rust resident moves ordinary OpenCode chats and their
-descendants, held prompt queues, ordinary note histories and session-scoped
-forwarded decisions. A destination reply proves the generation and hash it
+descendants, managed attachments, held prompt queues, ordinary note histories
+and session-scoped forwarded decisions. A destination reply proves the generation and hash it
 committed. The source saves a backup before retiring its original. The peer
 resident routes ordinary letters and notes through the same owner lookup used
 for addressed work and receipt lookup.
@@ -18,6 +18,7 @@ for addressed work and receipt lookup.
 | Lost arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source retries arrival after a minute and receives a fresh reply. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
+| Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
 | Prompt fence | A journal survives a resident restart and refuses direct prompts, commands, sends and queue resumes. The Rust composer keeps a saved draft pending during the hold, then delivers it once after release. |
 | Owner requests | A relay test binds both directions of the exchange to the accepted setup, peer, request nonce and operation. A new durable journal takes effect without a new list snapshot. A replacement can answer for the original issuer. A restart test checks allowed, revoked and checking device states. |
 | Owner request limits | Two Rust residents exchange an addressed 5 MiB draft and a 128 KiB scoped submission, each with a multipart reply. Both reject one byte over the draft limit. The TypeScript Work Queue sender and reassembler match the decrypted part fields in all four exchanges. Accepted membership exposes cached peer features while a computer is offline. |
@@ -42,12 +43,13 @@ move reads the durable fence and waits for existing writers before comparing
 its final snapshot. `kuvo_store` seals bytes before their part acknowledgement
 and publishes activation receipts under a scoped lock.
 
-The live transfer run passed all 10 scenarios on macOS. WSL2 with GNU libc,
-static Linux musl on WSL2, and native Windows each passed nine, with the
-two-binary reach comparison selected on macOS. Focused transfer, relay, receipt
-and engine tests passed on all four. The TypeScript resident passed its seven
-applicable route scenarios. The tests use disposable residents, a loopback
-relay and an OpenCode stand-in.
+The full move area passed 11 scenarios on macOS and 10 each on WSL2 with
+GNU libc and static Linux musl on WSL2. The native Windows run before the
+attachment extension passed nine. The two-binary reach comparison ran on macOS.
+Focused transfer, relay, receipt and engine tests passed on all four platforms.
+The TypeScript resident passed the seven shared scenarios before the attachment
+extension and the attachment scenario separately. The tests use disposable
+residents, a loopback relay and an OpenCode stand-in.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -78,14 +80,16 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Five have full scenario coverage, 17 have partial proof,
-and 190 remain open or assigned to their existing owner. Mixed-only portions are recorded
+below counts 212 declarations. Seven have full scenario coverage, 19 have partial proof,
+and 186 remain open or assigned to their existing owner. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
 |---|---|---|
 | [moves](../../box/bridge-tests/moves.test.js) | 3, 7, 11 | Partial, an ordinary letter follows a live move, a child moves over the relay, and a paused prompt queue still delivers after resume. The exact message tool path, transfer of the paginated tree and multiple-item queue order are 2.4 and 3.2. |
-| | 1–2, 4–6, 8–10, 12–16 | Open, 2.4 destination choices, wake-ups, concurrent starts, Autopilot, attachments and other transfer shapes. Engine attachment and queue effects are 3.2. Bot and group runtime parts are 4.6, 5.1 and 5.3. |
+| | 12, 14 | Partial, typed managed files travel with the root, its child and a held prompt. Engine-held order with multiple attachments, duplicate basenames, and the Mac app's separate attachment root are still 2.4 and 3.2. |
+| | 15–16 | Covered by a live source refusing an expired attachment and a file path outside its managed roots. |
+| | 1–2, 4–6, 8–10, 13 | Open, 2.4 destination choices, wake-ups, concurrent starts, Autopilot and other transfer shapes. Engine queue effects are 3.2. Bot and group runtime parts are 4.6, 5.1 and 5.3. |
 | [moves-elsewhere](../../box/bridge-tests/moves-elsewhere.test.js) | 1 | Partial, authenticated snapshots and a stream removal are exercised. Add both parties' successive clear and independent projections in 2.4. |
 | | 2 | Partial, filtering one's own moves is exercised. Add malformed inputs, non-members, sender clock changes and injected expiry in 2.4. |
 | | 3 | Open, prove expiry on a quiet peer with an injected clock in 2.4. |
@@ -128,7 +132,7 @@ order and count a parameterized declaration once.
 
 ## Remaining transfer and delivery work
 
-- 2.4 owns retry and waiting progress parity, wake-up and managed attachment transport,
+- 2.4 owns retry and waiting progress parity, wake-up transport and remaining attachment cases,
   source and destination contention, handoff recovery for forwarded edits and ordinary
   letters that wait for a reply or carry transcript reads.
 - 3.2 owns the effect and receipt adapter behind the new ownership handle, typed consent

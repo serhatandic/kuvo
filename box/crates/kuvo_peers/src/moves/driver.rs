@@ -32,7 +32,7 @@ use super::{
     manifest::{Manifest, Origin},
     move_id, read_json,
     receipt::{self, Bundle, Decided, Decision, Payloads, Receipts},
-    session_notes,
+    session_files, session_notes,
     transfer::{BundleSize, Flight, IncomingBundle, OutgoingBundle, PART_BYTES, Receiving},
 };
 use crate::{
@@ -503,6 +503,8 @@ impl Driver {
             "ready" if row.step.as_deref() == Some("offer") && self.sending.contains_key(id) => {
                 if given["safeSwitch"] != true
                     || (row.verify_payloads && given["verifyPayloads"] != true)
+                    || (row.extra.get("typedAttachmentPaths") == Some(&Value::Bool(true))
+                        && given["typedAttachmentPaths"] != true)
                 {
                     return self
                         .fail_source(
@@ -551,7 +553,10 @@ impl Driver {
                 if row.stage == Stage::Copying
                     && row.extra.get("safeSwitch") == Some(&Value::Bool(true)) =>
             {
-                if row.verify_payloads && given["verifiedPayloads"] != true {
+                if (row.verify_payloads && given["verifiedPayloads"] != true)
+                    || (row.extra.get("typedAttachmentPaths") == Some(&Value::Bool(true))
+                        && given["typedAttachmentPaths"] != true)
+                {
                     return self
                         .fail_source(
                             view,
@@ -652,18 +657,15 @@ impl Driver {
                 "Update the destination computer before moving these forwarded decisions.",
             ));
         }
-        let location = self
-            .run_dir()
-            .parent()
-            .expect("resident has a home")
-            .join("chats");
-        let manifest = Manifest {
+        let home = self.run_dir().parent().expect("resident has a home");
+        let location = home.join("chats");
+        let mut manifest = Manifest {
             kind: Kind::Chat,
             thing: row.thing.clone(),
             name: row.display_name().into(),
             exports,
             queues: (!queues.is_empty()).then_some(queues),
-            session_files: Some(vec![]),
+            session_files: None,
             was_paused: Some(false),
             was: Some(Origin {
                 place: view.roster.name.clone(),
@@ -678,9 +680,36 @@ impl Driver {
             session_notes: notes,
             extra: Default::default(),
         };
-        let path = self.staged(&row.id).join("bundle.tgz");
-        archive::write_manifest_only(&path, &manifest).map_err(io::Error::other)?;
-        let (size, hash) = BundleSize::measure(&path)?;
+        let directory = self.staged(&row.id);
+        let home = home.to_owned();
+        let id = row.id.clone();
+        let sessions = row.sessions.clone();
+        let (manifest, path, size, hash) = tokio::task::spawn_blocking(move || {
+            let stage = directory.join("sending-files");
+            let path = directory.join("bundle.tgz");
+            files::remove_tree_synced(&stage)?;
+            let mut queues = manifest.queues.take().unwrap_or_default();
+            let packed = (|| {
+                let payloads = session_files::stage(
+                    &home,
+                    &id,
+                    &sessions,
+                    &mut manifest.exports,
+                    &mut queues,
+                    &stage,
+                    super::transfer::MAX_BUNDLE_BYTES,
+                )?;
+                manifest.queues = (!queues.is_empty()).then_some(queues);
+                manifest.session_files = Some(payloads);
+                archive::write_chat(&path, &manifest, Some(&stage)).map_err(io::Error::other)
+            })();
+            let cleaned = files::remove_tree_synced(&stage);
+            packed?;
+            cleaned?;
+            let (size, hash) = BundleSize::measure(&path)?;
+            Ok::<_, io::Error>((manifest, path, size, hash))
+        })
+        .await??;
         let identity = row.bundle.generation.map_or(1, |generation| generation + 1);
         let bytes = BundleSize::new(size, &hash)?;
         let now = Instant::now();
@@ -696,6 +725,16 @@ impl Driver {
             hash: Some(hash),
         };
         row.size = Some(size);
+        row.verify_payloads = sender
+            .manifest
+            .session_files
+            .as_ref()
+            .is_some_and(|files| !files.is_empty());
+        if row.verify_payloads {
+            row.extra.insert("typedAttachmentPaths".into(), true.into());
+        } else {
+            row.extra.shift_remove("typedAttachmentPaths");
+        }
         row.sent = Some(0);
         row.stage = Stage::Copying;
         row.extra.insert("offered".into(), true.into());
@@ -706,10 +745,14 @@ impl Driver {
 
     async fn offer(&mut self, view: &View, key: ComputerKey, row: &Journal) {
         self.mark_retry(row);
-        self.tell(view, key, row, "offer", json!({
+        let mut payload = json!({
             "safeSwitch":true, "twoComputers":true, "wasPaused":false, "kind":row.kind, "thing":row.thing,
             "name":row.name, "size":row.size, "from":row.from,
-        })).await;
+        });
+        if row.verify_payloads {
+            payload["verifyPayloads"] = true.into();
+        }
+        self.tell(view, key, row, "offer", payload).await;
     }
 
     async fn send_parts(&mut self, view: &View, key: ComputerKey, row: &Journal) -> io::Result<()> {
@@ -772,6 +815,15 @@ impl Driver {
             row.save(self.run_dir())?;
             return Ok(());
         }
+        let home = self.run_dir().parent().expect("resident has a home");
+        session_files::source_unchanged(
+            home,
+            sending
+                .manifest
+                .session_files
+                .as_deref()
+                .unwrap_or_default(),
+        )?;
         row.stage = Stage::Switching;
         row.extra
             .insert("switchSince".into(), self.reader.now().into());
@@ -969,15 +1021,8 @@ impl Driver {
 
     fn check_payloads(&self, row: &Journal) -> io::Result<()> {
         let run = self.run_dir();
-        let home = run.parent().expect("resident has a home");
         let decided = read_json(&run.join("work/decided.json"))?;
         for session in &row.sessions {
-            let folder = home.join("attachments").join(session);
-            if folder.try_exists()? && std::fs::read_dir(&folder)?.next().is_some() {
-                return Err(io::Error::other(
-                    "The move’s session attachments could not be verified.",
-                ));
-            }
             if decided
                 .as_ref()
                 .and_then(|rows| rows[session].as_array())
@@ -1356,22 +1401,28 @@ impl Driver {
             row.bundle.hash.as_deref().unwrap_or_default(),
         )?;
         let staged = IncomingBundle::open(&self.staged(&row.id), size)?;
-        let manifest = archive::read_manifest_only(staged.verify()?).map_err(io::Error::other)?;
+        let bundle = staged.verify()?;
+        let mut manifest = archive::read_manifest(bundle).map_err(io::Error::other)?;
         if manifest.thing != row.thing
             || manifest.kind != Kind::Chat
             || manifest.group.is_some()
             || manifest.decided.is_some()
             || (row.verify_payloads && manifest.session_files.is_none())
-            || manifest.exports.iter().any(attachment)
+            || manifest.folder.is_some()
+            || manifest.lane.is_some()
+            || manifest.work_queue.is_some()
         {
             return Err(io::Error::other("What came isn’t a move."));
         }
         let sessions = tree(&manifest.exports, &row.thing)?;
-        let directory = self
-            .run_dir()
-            .parent()
-            .expect("resident has a home")
-            .join("chats");
+        let home = self.run_dir().parent().expect("resident has a home");
+        let directory = home.join("chats");
+        let payloads = manifest.session_files.take().unwrap_or_default();
+        session_files::validate(&row.id, &sessions, &payloads)?;
+        let staged_files = self.staged(&row.id).join("received-files");
+        archive::unpack_chat_files(bundle, &staged_files, &payloads).map_err(io::Error::other)?;
+        let mut queues = manifest.queues.take().unwrap_or_default();
+        session_files::rewrite(home, &payloads, &mut manifest.exports, &mut queues)?;
         let engine = self.engine.session_move().await.map_err(io::Error::other)?;
         for id in &sessions {
             if engine.lookup(id).await.map_err(io::Error::other)?.is_some() {
@@ -1380,16 +1431,23 @@ impl Driver {
                 ));
             }
         }
+        session_files::require_unused_paths(home, &payloads)?;
         row.sessions = sessions;
         row.extra.insert("createdSessions".into(), json!([]));
+        if !payloads.is_empty() {
+            row.extra.insert("typedAttachmentPaths".into(), true.into());
+        }
         row.payloads = Some(Payloads {
-            sessions: vec![],
+            sessions: payloads,
             queue: vec![],
         });
         if let Some(was) = manifest.was {
             row.extra.insert("was".into(), serde_json::to_value(was)?);
         }
         row.save(self.run_dir())?;
+        if let Some(payloads) = row.payloads.as_ref() {
+            session_files::install(home, &staged_files, &payloads.sessions)?;
+        }
         files::create_private_dirs(&directory)?;
         let receipt = row.import_receipt()?;
         let mut created = Vec::new();
@@ -1407,7 +1465,7 @@ impl Driver {
             row.save(self.run_dir())?;
         }
         let unpaused = engine
-            .place_queues(&row.sessions, manifest.queues.unwrap_or_default())
+            .place_queues(&row.sessions, queues)
             .await
             .map_err(io::Error::other)?;
         if !unpaused.is_empty() {
@@ -1428,11 +1486,35 @@ impl Driver {
     }
 
     async fn took(&self, view: &View, key: ComputerKey, row: &Journal) {
-        let extra = if row.verify_payloads {
+        if let Some(payloads) = row.payloads.as_ref() {
+            let home = self.run_dir().parent().expect("resident has a home");
+            if session_files::validate(&row.id, &row.sessions, &payloads.sessions)
+                .and_then(|()| session_files::verify(home, &payloads.sessions))
+                .is_err()
+            {
+                self.tell(
+                    view,
+                    key,
+                    row,
+                    "failed",
+                    json!({"message":self.could_not_set_up(view)}),
+                )
+                .await;
+                return;
+            }
+        }
+        let mut extra = if row.verify_payloads {
             json!({"verifiedPayloads":true})
         } else {
             json!({})
         };
+        if row
+            .payloads
+            .as_ref()
+            .is_some_and(|payloads| !payloads.sessions.is_empty())
+        {
+            extra["typedAttachmentPaths"] = true.into();
+        }
         self.tell(view, key, row, "arrived", extra).await;
     }
 
@@ -1457,6 +1539,11 @@ impl Driver {
                 return Err(io::Error::other(
                     "The move’s file inventory is unavailable.",
                 ));
+            }
+            if let Some(payloads) = row.payloads.as_ref() {
+                let home = self.run_dir().parent().expect("resident has a home");
+                session_files::validate(&row.id, &row.sessions, &payloads.sessions)?;
+                session_files::verify(home, &payloads.sessions)?;
             }
             let engine = self.engine.session_move().await.map_err(io::Error::other)?;
             let needed = row
@@ -1505,6 +1592,22 @@ impl Driver {
             words.push_str(&format!(
                 " Paths in your conversation under {from} are under {to} now."
             ));
+        }
+        if let Some(payloads) = row.payloads.as_ref() {
+            let root = self
+                .run_dir()
+                .parent()
+                .expect("resident has a home")
+                .join("attachments");
+            for file in &payloads.sessions {
+                if let Ok(target) = session_files::checked_path(&root, Path::new(&file.relative)) {
+                    words.push_str(&format!(
+                        " The attachment at {} is at {} now.",
+                        file.from,
+                        target.display()
+                    ));
+                }
+            }
         }
         words.push_str(&format!(" Other paths on {place} aren't here, and the sessions you started there stay there: reach them with list_agents, send_message and read_conversation."));
         if let Err(error) = engine.moved_instruction(&row.thing, &words).await {
@@ -1570,6 +1673,11 @@ impl Driver {
     async fn clear_copy(&self, row: &Journal) -> io::Result<()> {
         if row.sessions.is_empty() {
             return Ok(());
+        }
+        if let Some(payloads) = row.payloads.as_ref() {
+            let home = self.run_dir().parent().expect("resident has a home");
+            session_files::validate(&row.id, &row.sessions, &payloads.sessions)?;
+            session_files::discard(home, &payloads.sessions)?;
         }
         let created = row.extra.get("createdSessions").and_then(Value::as_array);
         let importing = row.extra.get("importingSession").and_then(Value::as_str);
@@ -1687,34 +1795,11 @@ async fn snapshot(
         let id = export["info"]["id"].as_str().unwrap_or_default();
         row.sessions.iter().position(|session| session == id)
     });
-    if exports.iter().any(|record| {
-        record["messages"]
-            .as_array()
-            .is_some_and(|messages| messages.iter().any(attachment))
-    }) {
-        return Err(io::Error::other(
-            "The move’s session attachments could not be verified.",
-        ));
-    }
     let queues = engine
         .queue_snapshot(&row.sessions)
         .await
         .map_err(io::Error::other)?;
     Ok((exports, queues))
-}
-
-fn attachment(value: &Value) -> bool {
-    match value {
-        Value::Object(fields) => {
-            fields
-                .get("uri")
-                .and_then(Value::as_str)
-                .is_some_and(|uri| uri.starts_with("file:"))
-                || fields.values().any(attachment)
-        }
-        Value::Array(values) => values.iter().any(attachment),
-        _ => false,
-    }
 }
 
 fn tree(exports: &[Value], root: &str) -> io::Result<Vec<String>> {

@@ -105,6 +105,21 @@ pub fn write_generated(
     .map_err(|error| at("generating", path, error))
 }
 
+/// Stream a private file into a new name, leaving any existing entry in place.
+pub fn write_generated_new(
+    path: &Path,
+    generate: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    publish_prepared(
+        path,
+        None,
+        platform::publish_new,
+        platform::private_file,
+        generate,
+    )
+    .map_err(|error| at("generating new file", path, error))
+}
+
 fn publish_prepared(
     path: &Path,
     through: Option<&Path>,
@@ -300,6 +315,16 @@ pub fn file_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(at("reading the file stamp of", path, error)),
     }
+}
+
+/// Open a managed payload without following its leaf or reading a file shared
+/// with another path through a hard link.
+pub fn open_payload(path: &Path) -> io::Result<fs::File> {
+    platform::open_payload(path).map_err(|error| at("opening managed file", path, error))
+}
+
+pub fn opened_file_stamp(file: &fs::File) -> io::Result<FileStamp> {
+    platform::opened_file_stamp(file)
 }
 
 /// Copy a legacy Mac entry into private staging, preserving modes and links.

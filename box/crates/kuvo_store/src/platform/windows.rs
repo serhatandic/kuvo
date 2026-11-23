@@ -187,14 +187,46 @@ pub fn directory_id(path: &Path) -> Option<u64> {
 
 pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
     };
 
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
+    opened_file_stamp(&file)
+}
+
+pub fn open_payload(path: &Path) -> io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        GetFileInformationByHandle,
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the file is open and info is valid writable storage for its metadata.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if !file.metadata()?.is_file()
+        || info.nNumberOfLinks != 1
+        || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Managed payload is not a regular file with one link",
+        ));
+    }
+    Ok(file)
+}
+
+pub fn opened_file_stamp(file: &File) -> io::Result<crate::files::FileStamp> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+    };
     let mut times = FILE_BASIC_INFO::default();
     let mut id = FILE_ID_INFO::default();
     // SAFETY: file is live and each buffer is valid for the requested information class.
