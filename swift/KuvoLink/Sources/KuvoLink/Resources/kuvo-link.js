@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 2dd3d393ffe0
+// Kuvo folder layout 23 a47c58a79113
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2dd3d393ffe0";
+var BRIDGE_VERSION = "a47c58a79113";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -108825,12 +108825,27 @@ async function recentEngineActivity(target, id, created, previous) {
     return previous;
   return page.data[0]?.time?.created ?? created;
 }
+function noteSessionCreated(id, place, now = Date.now()) {
+  justCreated.set(id, { place, at: now });
+  if (justCreated.size > 256)
+    justCreated.delete(justCreated.keys().next().value);
+}
+function createdRuntime(id, now = Date.now()) {
+  const created = justCreated.get(id);
+  if (created && now - created.at < 60000)
+    return { place: created.place, running: false };
+  return;
+}
 async function noteListEvent(name, target, event) {
   if (!keepsList() || typeof event?.type !== "string")
     return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
   if (typeof id !== "string" || !id.startsWith("ses"))
     return;
+  if (event.type === "session.created")
+    noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
+  if (event.type === "session.deleted")
+    justCreated.delete(id);
   if (event.type === "session.viewed") {
     reading3.get(name)?.add(id);
     return noteViewed(name, id, Number(event.data?.idle));
@@ -109161,7 +109176,7 @@ async function* listRoute(context, match) {
     listFollowers.delete(told);
   }
 }
-var LIST_ROUTE, LIST_FILE2, GONE_KEPT = 2000, GONE_FOR2, READ_EVERY, RELOADS, STARTS = "session.execution.started", DELIVERED = "session.inbox.delivered", ENDS2, LOST_GAP = 1e6, STARTED3, latest2 = null, places3, listFollowers, moments, cursorOf = (list) => `${list.epoch}.${list.seq}`, engineWorktrees, gitProjects, factsMade, projectsSaid = (projects, withUpdated) => JSON.stringify(withUpdated ? projects : Object.fromEntries(Object.entries(projects).map(([folder, { updated: _, ...rest }]) => [folder, rest]))), LIST_FILES, BOT_FILES, placeTargets, reading3, runningReads, wholeReads, asked8, deleted, eventCount = 0, wasStopped = (list) => Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => facts.blocked && !facts.retrying && facts.unread !== undefined ? [[id, { by: facts.blocked, idle: facts.unread }]] : []), workOutTimer, pendingPlaces = () => places3.has("bridge") || bridgeTarget() === null ? [] : ["bridge"], keptList = () => latest2 ?? readList2(), known3 = null, watchesWhole = () => true, WRITE_EVERY = 1000, QUIET_WRITE_EVERY = 1e4, lastWrite = -Infinity, writeTimer, writeDue2 = Infinity;
+var LIST_ROUTE, LIST_FILE2, GONE_KEPT = 2000, GONE_FOR2, READ_EVERY, RELOADS, STARTS = "session.execution.started", DELIVERED = "session.inbox.delivered", ENDS2, LOST_GAP = 1e6, STARTED3, latest2 = null, places3, listFollowers, moments, cursorOf = (list) => `${list.epoch}.${list.seq}`, engineWorktrees, gitProjects, factsMade, projectsSaid = (projects, withUpdated) => JSON.stringify(withUpdated ? projects : Object.fromEntries(Object.entries(projects).map(([folder, { updated: _, ...rest }]) => [folder, rest]))), LIST_FILES, BOT_FILES, placeTargets, reading3, runningReads, wholeReads, asked8, deleted, eventCount = 0, justCreated, wasStopped = (list) => Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => facts.blocked && !facts.retrying && facts.unread !== undefined ? [[id, { by: facts.blocked, idle: facts.unread }]] : []), workOutTimer, pendingPlaces = () => places3.has("bridge") || bridgeTarget() === null ? [] : ["bridge"], keptList = () => latest2 ?? readList2(), known3 = null, watchesWhole = () => true, WRITE_EVERY = 1000, QUIET_WRITE_EVERY = 1e4, lastWrite = -Infinity, writeTimer, writeDue2 = Infinity;
 var init_sessions3 = __esm(() => {
   init_files2();
   init_home();
@@ -109203,6 +109218,7 @@ var init_sessions3 = __esm(() => {
   wholeReads = new Map;
   asked8 = new Map;
   deleted = new Map;
+  justCreated = new Map;
   process.once("exit", () => {
     if (writeTimer)
       writeNow();
@@ -110260,8 +110276,10 @@ ${goalNote}` : ""}` : "") : task;
       return no(502, `Couldn't start the session in ${folder} on Autopilot: its agent couldn't be told how to work on it.`);
     }
     const info = await call(target, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, place.signal).catch(() => null);
+    noteSessionCreated(session, agents ? "agents" : "engine");
     return { started: { session, ...making.started, ...isObject(info) ? { info } : {}, ...treeMade ? { worktree: treeMade } : {} } };
   }
+  noteSessionCreated(session, agents ? "agents" : "engine");
   const id = making.prompt.id;
   try {
     if (starter && by)
@@ -110375,6 +110393,7 @@ var init_start2 = __esm(() => {
   init_notes();
   init_queue();
   init_sessions();
+  init_sessions3();
   init_home();
   init_state();
   init_text();
@@ -117608,7 +117627,9 @@ var init_notices2 = __esm(() => {
 import { StringDecoder as StringDecoder3 } from "node:string_decoder";
 function localLocation(list, id) {
   const entry = list?.sessions[id];
-  if (!entry || entry.facts.away)
+  if (!entry)
+    return list?.gone[id] ? undefined : createdRuntime(id);
+  if (entry.facts.away)
     return;
   if (entry.place !== "engine" && entry.place !== "bridge")
     return;
@@ -117624,7 +117645,7 @@ async function* conversationLocation(context, match) {
   const owner = ownerOf4({ kind: "conversations", id }, { link, name: context.info.name });
   const list = keptList();
   const here = localLocation(list, id);
-  if (here && owner?.local && (!journal || journal === owner.key))
+  if (here && owner?.local !== false && (!journal || link && journal === ownKey(link)) && mayActivate({ kind: "conversations", id }, { link }))
     return yield* json(200, here);
   const peers = await peerSetupLists(link);
   const destination = journal ?? owner?.key;
