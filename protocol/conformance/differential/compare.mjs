@@ -34,12 +34,17 @@ const volatile = new Map([
   ["run/work/told.json", { since: "notice scan start time", "sinces/bridge": "bridge notice scan start time" }],
   ["run/notices/teller", { "": "notice publisher PID" }],
   ["agents/usage/insights.sqlite/state/local", { scanned: "local index scan timestamp" }],
+  ["updates/rehome/journal.json", { began: "move start time", clonedAt: "clone start time" }],
+  ["updates/rehome/state.json", { movedAt: "move publication time" }],
 ]);
 
 function normalise(value, name, home, enginePort, field = "") {
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
   const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
+  if (name === "updates/rehome/journal.json" && field === "kept" && typeof value === "string") {
+    value = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/, "<move start time>");
+  }
   if (typeof value === "string") return value.replaceAll(home, "<home>");
   if (Array.isArray(value)) return value.map((item, index) => normalise(item, name, home, enginePort, field + "/" + index));
   if (value && typeof value === "object") {
@@ -54,7 +59,8 @@ function normalise(value, name, home, enginePort, field = "") {
 // Compare schema and typed rows from a private read copy. The inventory still
 // checks that the journal and its rebuildable shared-memory index paths exist.
 const insights = "agents/usage/insights.sqlite";
-function sqliteContents(file, home) {
+const databases = new Set([insights, "data/opencode/opencode.db"]);
+export function sqliteContents(file, home, { migrationClockAfter } = {}) {
   const tmp = scratch();
   const target = path.join(tmp, "copy.sqlite");
   try {
@@ -68,6 +74,11 @@ function sqliteContents(file, home) {
         const read = db.prepare('SELECT * FROM "' + name.replaceAll('"', '""') + '"');
         read.setReadBigInts(true);
         const rows = read.all().map(row => {
+          if (migrationClockAfter && name === "migration" && typeof row.id === "string"
+              && row.id > migrationClockAfter && typeof row.time_completed === "bigint"
+              && row.time_completed > 0n) {
+            row.time_completed = "<engine migration time>";
+          }
           if (name === "state" && row.key === "local" && typeof row.body === "string") {
             let body;
             try { body = JSON.parse(row.body); } catch {}
@@ -108,7 +119,7 @@ function inventory(home, { seed = false, enginePort } = {}) {
         }
         entries.set(key, { type: "symlink", target: normalise(target, key, home, enginePort) });
       } else if (stat.isFile()) {
-        if (!seed && key === insights) {
+        if (!seed && databases.has(key)) {
           try {
             entries.set(key, { type: "sqlite", value: normalise(sqliteContents(file, home), key, home, enginePort) });
             continue;
@@ -117,7 +128,7 @@ function inventory(home, { seed = false, enginePort } = {}) {
             // A damaged database and its sidecars still show their raw differences.
           }
         }
-        if (!seed && [insights + "-wal", insights + "-shm"].includes(key) && entries.get(insights)?.type === "sqlite") {
+        if (!seed && /-(wal|shm)$/.test(key) && entries.get(key.slice(0, -4))?.type === "sqlite") {
           entries.set(key, { type: key.endsWith("-wal") ? "sqlite journal" : "sqlite journal index" });
           continue;
         }
@@ -232,7 +243,7 @@ async function run(binary, home, sequence, relay) {
   return { answers, files: inventory(home, { enginePort: engine.record.port }), transcript };
 }
 
-function difference(label, a, b, out) {
+export function difference(label, a, b, out) {
   if (isDeepStrictEqual(a, b)) return;
   if (a && b && typeof a === "object" && typeof b === "object" && Array.isArray(a) === Array.isArray(b)) {
     for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
@@ -244,8 +255,9 @@ function difference(label, a, b, out) {
   out.push(`${label}\n  A  ${show(a)}\n  B  ${show(b)}`);
 }
 
-export async function compare(seed, sequence, a, b) {
+export async function compare(seed, sequence, a, b, secondSeed = seed) {
   seed = checkSeed(seed);
+  secondSeed = checkSeed(secondSeed);
   assert.ok(Array.isArray(sequence) && sequence.length, "The sequence must be a nonempty JSON list.");
   for (const step of sequence) {
     assert.ok(typeof step.method === "string" && /^[A-Za-z]+$/.test(step.method) && typeof step.path === "string"
@@ -265,7 +277,7 @@ export async function compare(seed, sequence, a, b) {
     const two = path.join(root, "b", "box");
     const options = { recursive: true, verbatimSymlinks: true, preserveTimestamps: true };
     fs.cpSync(seed, one, options);
-    fs.cpSync(one, two, options);
+    fs.cpSync(secondSeed, two, options);
     const first = await run(a, one, sequence, relay);
     const second = await run(b, two, sequence, relay);
     const out = [];
