@@ -13142,21 +13142,29 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   box. For a catalog skill, `POST skills/<id>/add` takes the available `{version,revision,was?}`.
   `POST skills/create` takes `{name,description,instructions}`. To edit an authored or folder
   skill, use `PATCH skills/<id>` with `{description,instructions,was}`. `DELETE skills/<id>`
-  takes `{was}` for a shared skill. `was` is the installed revision from details. To update an
+  takes `{was}`, the revision from details, for any installed skill. The details supply the
+  destructive action and its confirmation words, including for `origin: "found"` cards. A folder
+  skill is removed setup-wide by skill name and each computer moves its own folders to Recently
+  Deleted. The same removal suppresses a skill if its original service syncs it back. A removed
+  built-in has no trash entry. It appears in the Kuvo catalog with `available` and an `add` action,
+  using the same add route as other catalog skills. To update an
   installed GitHub skill, explicitly ask `POST skills/<id>/update-preview` and install with its
-  preview ID and the previous revision. Legacy local skills still use the existing skills routes.
+  preview ID and the previous revision. Older clients can still use the legacy local skills routes.
 - **This computer's skills.** Marketplace › Skills holds what Settings › Skills did, for the computer
   answering. The skills area carries `here`: `{computer, switchTitle, deleted, places}`, or
   `{problem}` (words) when they can't be read. Each installed skill, and each skill its engine finds
   in another folder (`origin: "found"`, with `location`: a path or "Built in"), has `enabled`, and
   `switchWhy` when it can't be switched. `POST skills/<id>/enabled` with `{on}` turns it on or off
   on this computer. `deleted` is Recently Deleted (`{title, note, items, action}`): `POST
-  skills/restore` with `{id}` brings one back. `places` is Other Places (`{title, note, items, add,
+  skills/restore` with `{id}` restores a folder to its original location and lifts the
+  setup-wide removal. Each computer restores the copies it archived. `places` is Other Places (`{title, note, items, add,
   remove}`): `POST skills/places` with `{place}` adds one; `DELETE skills/places` with `{index}`
   removes one. The skills area's `preview` and `create` actions, and a skill's `edit`, carry the
   `form` a client draws as it is (fields with `kind` `lines` for several lines, `mono`, `value`
   and `line`, the words under a field). A skill in this computer's own folder answers its details
-  like any other, with its text as `revision`.
+  like any other, with an opaque `revision` for edits and removals. The
+  `marketplace.skills.remove` feature advertises setup-wide removal and restore support between boxes.
+  The setup primary signs the removal or restore, and each box applies it when received.
 - **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
   primary and published in signed setup state. The Work Queue peer mail carries requests to the
   primary and bot creation to the selected owner. An offline computer projects the last accepted

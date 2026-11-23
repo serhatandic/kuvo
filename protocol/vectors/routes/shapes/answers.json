@@ -11251,6 +11251,9 @@
             "literal": "marketplace"
            },
            {
+            "literal": "marketplace.skills.remove"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -12226,6 +12229,9 @@
            },
            {
             "literal": "marketplace"
+           },
+           {
+            "literal": "marketplace.skills.remove"
            },
            {
             "literal": "mcp.catalog"
