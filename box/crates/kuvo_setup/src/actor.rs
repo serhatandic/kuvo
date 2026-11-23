@@ -36,6 +36,7 @@ mod activity;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod predecessor;
 mod replication;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
@@ -177,6 +178,9 @@ impl SetupRuntime {
         } else {
             None
         };
+        if let Some(overlay) = &overlay {
+            predecessor::convert(&files, overlay, test_clock).await?;
+        }
         let (link, identity) = tokio::task::spawn_blocking({
             let (home, files, name) = (home.to_owned(), files.clone(), name.clone());
             move || {
@@ -225,6 +229,10 @@ pub struct PreparedSetup {
 }
 
 impl PreparedSetup {
+    pub fn has_mac_identity(&self) -> bool {
+        self.kind == ComputerKind::Mac && self.identity.is_some()
+    }
+
     /// The legacy machine link marker uses the resident build identifier and has no newline.
     pub fn record_build(&self, build: &str) -> Result<(), Error> {
         if self.kind == ComputerKind::Machine {
