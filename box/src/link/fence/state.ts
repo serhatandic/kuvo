@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listOf, textOf, writePrivate } from "../files";
-import { observeProcess, sandboxGeneration } from "../../shared/platform";
+import { isWindowsHost, observeProcess, sandboxGeneration } from "../../shared/platform";
 import { accountHome, BOTS, BRIDGE_FILE, CHATS, ENGINE_CONFIG, ENGINE_DATA, ENGINE_FILE, IN_TEST_FOLDER, K, RUN, SANDBOX_NOTE, SESSION_WAKES, SOCKET_KEY_FILE, SSH_AGENTS, SSH_FOR } from "../home";
 import { tellLauncher } from "./allowed";
 import { agentShellScript, agentsNote, launcherScript, pluginScript, type FencePlaces } from "./files";
@@ -69,7 +69,7 @@ export interface FenceState {
   needsYou?: true;
 }
 
-export type FenceReason = "kernel" | "namespaces" | "macos" | "engineMissing" | "checking" | "checkFailed" | "plugin" | "engineDown" | "waiting";
+export type FenceReason = "windows" | "kernel" | "namespaces" | "macos" | "engineMissing" | "checking" | "checkFailed" | "plugin" | "engineDown" | "waiting";
 export type FenceAction = "help" | "softwareUpdate" | "retry" | "fix" | "restartEngine";
 export type FenceGap = "services" | "git";
 export type FenceCheck = "folder" | "tempFiles" | "readsOwn" | "writesOwn" | "services" | "didntRun" | "setup";
@@ -99,6 +99,7 @@ const DECIDED = path.join(FOLDER, "decided");
 // bots allow no command, the vault stays shut (`engineCommandsInSandbox`, `agentsCommandsInSandbox`).
 // A slow or failed check never leaves a command outside it that wouldn't ask.
 const HELD = path.join(FOLDER, "held");
+// The sandbox scripts only have macOS and Linux variants. Windows never uses them.
 const platform: "darwin" | "linux" = process.platform === "darwin" ? "darwin" : "linux";
 
 const places: FencePlaces = {
@@ -122,7 +123,7 @@ const VERSION = crypto.createHash("sha256")
 /** The sandbox is on wherever it can run, with no switch: only Kuvo Code's own kill switch, for a
  * rollout (`KUVO_SANDBOX=off` in the box's environment as it starts), turns it off. */
 export function fenceWanted(): boolean {
-  return process.env.KUVO_SANDBOX !== "off";
+  return !isWindowsHost() && process.env.KUVO_SANDBOX !== "off";
 }
 
 /** `unfinished`: the check didn't finish in time, which says nothing of whether it works here. */
@@ -131,8 +132,14 @@ let checked: Checked = { able: false, passed: false, why: "It hasn't been checke
 let failures = 0;
 let lastProfiles = "";
 
+/** Windows lacks the sandbox and Auto, including on WSL. */
+export function windowsFenceReason(): { reason: "windows"; why: string } | undefined {
+  return isWindowsHost() ? { reason: "windows", why: WHY.windows } : undefined;
+}
+
 /** Why it isn't on, for a reason whose check left no words of its own: every reason has a sentence. */
 export const WHY: Record<FenceReason, string> = {
+  windows: "Coming soon on Windows.",
   kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
   namespaces: "This machine doesn't let commands have a namespace of their own.",
   macos: "macOS's sandbox isn't on this Mac.",
@@ -210,6 +217,8 @@ export function worded(state: FenceState): FenceState {
 
 /** Whether the sandbox is on here: read each time from what the box knows, without waiting. */
 function fenceNow(): FenceState {
+  const windows = windowsFenceReason();
+  if (windows) return { on: false, able: false, agents: false, ...windows };
   // `agents`: every coding agent's process here runs in it, or none runs (what opens the vault to agents).
   const said = bridgeSays();
   const base = { able: checked.able, agents: said === "none" || said === "inside", ...(said === "outside" ? { outside: true } : {}), ...(asksToRestart() ? { restart: true } : {}) };
@@ -454,6 +463,8 @@ const namespaceHere = async () => {
  * try didn't finish keeps the one last found, or with none yet, `unshare`'s: never none for that, as
  * commands would reach your login's services (where they can't have one, they fail meanwhile). */
 async function able(found?: string | null | typeof UNFINISHED): Promise<Checked> {
+  const windows = windowsFenceReason();
+  if (windows) return { able: false, passed: false, ...windows };
   if (platform === "darwin") return fs.existsSync("/usr/bin/sandbox-exec") ? { able: true, passed: false } : { able: false, passed: false, why: "macOS's sandbox isn't on this Mac.", reason: "macos" };
   if (!runtime()) return { able: false, passed: false, why: "The engine isn't installed here yet.", reason: "engineMissing" };
   if (!fs.existsSync("/sys/kernel/security/landlock") && !/landlock/.test(textOf("/sys/kernel/security/lsm") ?? "landlock")) {

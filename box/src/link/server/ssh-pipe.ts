@@ -1,11 +1,12 @@
 // A private bridge from the SSH command's stdio to the resident dispatcher.
 import fs from "node:fs";
-import net from "node:net";
+import type net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
 import { privateFolder } from "../../shared/files";
 import { isObject } from "../../shared/json";
+import { localIpc } from "../../shared/local-ipc.js";
 import { ROUTE_VERSION } from "../../shared/route-version";
 import { ChunkQueue } from "../browser/buffers";
 import { localToolRequest } from "./tool-call";
@@ -76,7 +77,8 @@ async function clearStaleSocket(): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  const found = net.createConnection(socketPath);
+  const opening = localIpc(socketPath).connect();
+  const found = opening instanceof Promise ? await opening : opening;
   try {
     await once(found, "connect", { signal: AbortSignal.timeout(2000) });
   } catch (error) {
@@ -88,9 +90,10 @@ async function clearStaleSocket(): Promise<void> {
 }
 
 export async function serveSshPipe(handle: LinkHandler, addressedHandle: LinkHandler = handle): Promise<void> {
+  const ipc = localIpc(socketPath);
   socketKey();
   await clearStaleSocket();
-  const server = net.createServer(socket => {
+  await ipc.listen(socket => {
     const disconnected = new AbortController();
     socket.on("end", () => disconnected.abort());
     socket.on("close", () => disconnected.abort());
@@ -112,12 +115,7 @@ export async function serveSshPipe(handle: LinkHandler, addressedHandle: LinkHan
       await packet(socket, Buffer.alloc(0));
       socket.end();
     })().catch(() => socket.destroy()).finally(() => clearTimeout(deadline));
-  });
-  const listening = once(server, "listening");
-  const old = process.umask(0o177);
-  try { server.listen(socketPath); }
-  finally { process.umask(old); }
-  await listening;
+  }, { modeMask: 0o177 }).ready;
 }
 
 async function unavailable(): Promise<void> {
@@ -137,7 +135,8 @@ async function openPipe(command: SshCommand, signal: AbortSignal, until: number)
       // A present socket with the wrong permissions is never used.
       if (!socketIsPrivate()) return;
       const key = socketKey({ create: false });
-      socket = net.createConnection(socketPath);
+      const opening = localIpc(socketPath).connect();
+      socket = opening instanceof Promise ? await opening : opening;
       socket.on("error", () => {}); // Reported by the exchange.
       signal.addEventListener("abort", close, { once: true });
       timer = setTimeout(close, Math.min(5000, until - Date.now())).unref();

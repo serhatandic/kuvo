@@ -19,7 +19,7 @@ import { any, bool, type Infer, list, literal, NOTHING, number, object, type Rou
  * warns (`needsYou`: off, or on with `services`), the one fact every client draws it by. */
 export const SANDBOX = object({
   on: bool, "why?": string, able: bool, agents: bool, "outside?": bool, "restart?": bool,
-  "reason?": words("kernel", "namespaces", "macos", "engineMissing", "checking", "checkFailed", "plugin", "engineDown", "waiting"),
+  "reason?": words("windows", "kernel", "namespaces", "macos", "engineMissing", "checking", "checkFailed", "plugin", "engineDown", "waiting"),
   "action?": words("help", "softwareUpdate", "retry", "fix", "restartEngine"),
   "route?": string, "actionLabel?": string, "opens?": string, "opensHere?": literal(true), "needs?": string,
   "check?": words("folder", "tempFiles", "readsOwn", "writesOwn", "services", "didntRun", "setup"),

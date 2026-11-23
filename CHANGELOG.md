@@ -7,6 +7,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.
+- The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
+
 - The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
 - Every skill in Marketplace has Remove. Folder skills go to Recently Deleted on each computer, and removed built-ins can be added again from the Kuvo catalog.
 

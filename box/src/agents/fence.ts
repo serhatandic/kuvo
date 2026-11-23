@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Dirent } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
-import { processRuns, sandboxGeneration } from "../shared/platform"
+import { isWindowsHost, processRuns, sandboxGeneration } from "../shared/platform"
 import { machineHome } from "./machine"
 
 /** What commands may do: everything read but `hidden`; written only in the session's folder and
@@ -60,7 +60,7 @@ export function fenceOff(): boolean {
 /** Whether the box's sandbox is on here: its commands run in it. */
 export function fenceOn(): boolean {
   const where = folder()
-  return Boolean(where) && process.env.KUVO_SANDBOX !== "off" && existsSync(join(where!, "on"))
+  return !isWindowsHost() && Boolean(where) && process.env.KUVO_SANDBOX !== "off" && existsSync(join(where!, "on"))
 }
 
 /**
@@ -72,7 +72,7 @@ export function fenceOn(): boolean {
  */
 export async function untilSandboxDecided(bound = 30_000): Promise<void> {
   const where = folder()
-  if (!where || process.env.KUVO_SANDBOX === "off") return
+  if (!where || isWindowsHost() || process.env.KUVO_SANDBOX === "off") return
   const run = dirname(where)
   // On a machine, only while its box runs or its keeper starts it (`run/link.needed`): one with
   // nothing to answer doesn't run, so nothing would say. (This Mac's app starts its box first.)
@@ -127,7 +127,7 @@ export function noteAgentsInside(inside: boolean) {
 /** The box's rules, while its sandbox is on here; undefined when it's off, or can't be read. */
 export function fenceRules(): FenceRules | undefined {
   const where = folder()
-  if (!where || process.env.KUVO_SANDBOX === "off" || !existsSync(join(where, "on"))) return undefined
+  if (!where || isWindowsHost() || process.env.KUVO_SANDBOX === "off" || !existsSync(join(where, "on"))) return undefined
   try {
     const read = JSON.parse(readFileSync(join(where, "policy.json"), "utf8"))
     const paths = (value: unknown) => (Array.isArray(value) ? value.filter((each): each is string => typeof each === "string" && each.startsWith("/")) : [])

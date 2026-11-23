@@ -8810,6 +8810,55 @@ address. The bridge reads the file every 30 seconds: a phone taken off loses its
 and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
 used the machine (`run/link.seen`).
 
+### Windows box primitives (#699)
+
+This is the contract for the native Windows port. A WSL box uses POSIX paths, process records
+and Unix sockets. The box recognizes native Windows as `win32` and WSL as Linux with a
+WSL/Microsoft kernel release or `WSL_DISTRO_NAME`. This is independent of the box's role
+(`kind`). The WSL kernel signal works on stock kernels with Windows interop off.
+
+- **Paths.** On native Windows a box sends file and folder paths with forward slashes, including
+  the drive letter or UNC share (`C:/Users/Ada/Project`, `//Server/Share/Project`). A client
+  quotes the value as required by JSON or its URL field and sends the same spelling back, with
+  both UNC leading slashes and all case intact. The box converts separators at the OS edge.
+  The lexical codec rejects relative and current-drive paths, device and extended namespace
+  paths, streams and dot segments. It neither resolves a junction nor decides whether two paths
+  name the same file. Native file identity and access checks must use OS handles, including on
+  NTFS directories with case sensitivity enabled. The shared
+  [vectors](vectors/file-addresses/windows.json) cover drive roots, UNC share roots, casing and
+  paths with spaces and Unicode. Existing POSIX paths and `file:` URL fields keep their
+  respective formats.
+- **Profile and programs.** Native Kuvo starts under the selected user's local profile
+  (`%USERPROFILE%\.kuvo-code`). `HOME` from Git Bash does not pick a different profile.
+  Before opening a native box, the launcher needs to verify the profile's ownership by token SID
+  and check that its ACL keeps the box's keys private. The native PATH reads environment names
+  case-insensitively and separates absolute entries with semicolons, including quoted entries
+  with an embedded semicolon. Explicit executable and shim resolution belongs to native
+  launcher work. WSL uses Linux paths and executables.
+- **Process records.** Native `run/serve.json`, `run/engine.json`, `run/bridge.json`
+  and holder records pair `pid` with `startIdentity`, the exact unsigned creation FILETIME
+  in decimal string form. This preserves all 64 bits and is distinct from `started` timestamps
+  used for display. The Windows adapter opens the process, reads its creation FILETIME and
+  checks that its handle is unsignaled. A missing, unreadable or incomplete identity gives no
+  authority to attach, signal or remove the record. A confirmed exit or mismatched identity is
+  stale. A stop that must terminate uses the same checked handle so PID reuse cannot redirect
+  it. The auth password and generation still apply. The check is box-owned, and macOS and Linux
+  still use their existing record readers.
+- **Private IPC.** The resident SSH dispatcher and agent holders use the same local byte-stream
+  abstraction with the same framing and keys as before. The native endpoint name is
+  `\\.\pipe\kuvo-<hex>`, where hex is HMAC-SHA256 keyed by the box's existing
+  `run/socket.key` bytes over `kuvo-local-ipc-v1`, NUL, the user SID, NUL, and `ssh` or
+  `holder:<id>`. The name alone grants no access. The adapter creates a first instance with
+  an explicit protected, user-SID DACL and `PIPE_REJECT_REMOTE_CLIENTS`. A pre-existing pipe
+  blocks a new owner. The client checks the server's SID on the opened handle before sending
+  the SSH socket key or the holder's own key. Holders retain their per-holder keys, sequence
+  and generation checks during handover. Failed bind, SID verification or key exchange closes
+  the connection. Unix keeps the existing socket addresses, ownership checks and cleanup.
+
+The Windows path codec, process comparison and IPC contract are testable on Unix. Native
+launcher and route adoption and the Win32 SID, handle and named-pipe bindings require the
+Windows trials in the [port plan](../docs/architecture/windows.md).
+
 ### This Mac's box
 
 The active Mac box lives in `~/.kuvo-code`. Kuvo Helper supervises it
@@ -11458,6 +11507,11 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   client asks you the first time you pick it), for a bot's conversation and its work as for any
   other (before bridge 0.9.188 bots had Auto at most). A bot's conversation from before there were
   approvals starts with this computer's default, as a new one (before bridge 0.9.189, Auto).
+- On native Windows and WSL, Auto is unavailable. Both option lists return `unavailable:
+  {reason: "windows", why: "Coming soon on Windows."}` for Auto, and setting Auto on an existing
+  conversation returns 409 with that reason. Ask First replaces Auto as the default and is
+  effective for a conversation that already names Auto. Ask First, Accept Edits and confirmed
+  Full Access are available as usual.
 - Where one can't be had now, it fails closed: a conversation set to Auto asks first while the
   sandbox isn't running, and one set to Full Access comes down to Auto while it isn't confirmed on
   this computer. It stays set to what you picked, and comes back to it once it can.
@@ -11505,7 +11559,7 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   you picked, what it comes to here now (`held` `{reason, why}`, the last step down, when that's
   less), whether it's in Plan mode, and each one (`options`: `{approval, held?, unavailable?}`):
   `held` where it can be picked and asks first for now (Auto without the sandbox), `unavailable`
-  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `fullAccessOff`
+  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `windows` (Auto unavailable on Windows), `fullAccessOff`
   (and `bot` from a box before 0.9.188). Only a read: its rules come to what it shows within the box's round. 404 `{message}` for a
   conversation that isn't here, 503 with no engine or bridge. A coding agent's subagent (#950) asks
   in the conversation that started it, so it runs with that one's approval: it answers that one's,
@@ -11513,7 +11567,7 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
 - `PUT kuvo/sessions/<id>/approval` `{approval}`: sets it, on the engine's conversation or the
   coding agents'; 200 as `GET` answers (Auto without the sandbox is kept, `held`), 400 for one that
   isn't one of them or a coding agent's subagent (changed in its conversation), 409 `{message, reason}` for Full Access where it can't be picked
-  (`fullAccessOff`), 502 where the engine didn't take it.
+  (`fullAccessOff`) or Auto on Windows (`windows`), 502 where the engine didn't take it.
 - `GET kuvo/approval`: this computer's `{fullAccess, default, auto: {engine, agents}, otherComputers?}`
   (#764: and `options: {engine, agents}`, each mode a new conversation can start in there, as a
   conversation's own `options` say them, which a new conversation's mode menu shows as they are)
@@ -11774,6 +11828,8 @@ what may be decided without asking. Every conversation is Interactive until it's
 
 Each box runs its agents' commands in a sandbox (`sandbox` in `features` and its asks, `sandbox.asks`, bridge 0.9.118) wherever
 it can, with no switch: the way out is per command (the card that asks you about one it refused).
+Native Windows and WSL return `able: false, on: false, agents: false, reason: "windows"`, with
+`why: "Coming soon on Windows."` and no retry action.
 On, each command the engine runs (an agent's shell tool, and yours with `!`) reads everything but
 what's below, and in your home folder adds and changes files (`homeWrites`) but never deletes or
 moves one there (on macOS, Seatbelt's `file-write-unlink`, which a move takes too, is left out; on
