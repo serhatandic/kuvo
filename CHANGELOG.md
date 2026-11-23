@@ -20,6 +20,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Activity shows finished bot sessions and opens command output even if the command finishes as you open it. Claude Code keeps its final command output, and Codex background terminals appear under Processes.
 - Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
+- **+** next to Projects in the Sessions sidebar, and **File › Open Folder…** (⌘O), pick a folder on this Mac and add it as a project.
+- The filter button beside the sidebar's search is gone; archived sessions are in **Settings › Archived Sessions**.
+- A pinned Activity card stays pinned as you switch conversations and after a restart.
+- The pinned Activity card shows only what's live (context, sessions, subagents and processes running), with **Summary** and **Full** to switch between that and everything. Rows open inside the card, so the conversation no longer jumps, and **Unpin** just closes it.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.
 
@@ -37,7 +41,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
-- Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.
+- Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading.
 - The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
 
 - Reopening the app goes back to the bot's conversation you left, on this computer or another, instead of the bot's settings page when its computer took a moment to answer. A conversation you'd scrolled up in opens where you were reading, and the side panel opens again if you'd left it open.

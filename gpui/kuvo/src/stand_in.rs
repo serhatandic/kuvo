@@ -2524,6 +2524,16 @@ impl StandIn {
             }
             return answer(status, value);
         }
+        // A folder kept as a project, as the box's `PUT kuvo/projects` keeps it (one kept stays).
+        if (method, route) == ("PUT", "kuvo/projects") {
+            let Some(directory) = query(path, "directory").map(decoded).filter(|directory| directory.starts_with('/')) else {
+                return answer(400, json!({ "message": "Say which folder (directory)." }));
+            };
+            let name = directory.rsplit('/').find(|part| !part.is_empty()).unwrap_or(&directory).to_owned();
+            state.projects.entry(directory.clone()).or_insert_with(|| json!({ "name": name }));
+            state.list_changed();
+            return answer(200, json!({ "project": { "directory": directory, "folders": [] } }));
+        }
         let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();
         let now = state.made.unwrap_or_else(now_ms);
         // (A box from before a bot's job fields doesn't know the route that takes them: it answers
