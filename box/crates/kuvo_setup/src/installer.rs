@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Error,
+    actor::Response,
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
@@ -187,25 +188,21 @@ pub(super) struct Code {
     merge: Option<serde_json::Value>,
 }
 
-impl Code {
-    pub(super) fn new(
-        expires: u64,
-        setup: String,
-        relay: String,
-        primary: Host,
-        token: String,
-    ) -> Self {
-        Self {
-            expires,
-            setup,
-            relay,
-            address: encode(&primary.address),
-            primary: encode(&primary.key),
-            token,
-            merge: None,
+pub(crate) fn complete_offer(mut response: Response, token: String) -> Result<Response, Error> {
+    if response.status == 201 {
+        response.value["token"] = json!(token);
+        let code: Code = serde_json::from_value(response.value)
+            .map_err(|_| Error::Invalid("installer offer"))?;
+        let encoded = code.encoded();
+        if Code::read(&encoded).is_none() {
+            return Err(Error::Invalid("installer offer"));
         }
+        response.value = json!({"expires": code.expires, "code": encoded});
     }
+    Ok(response)
+}
 
+impl Code {
     pub(super) fn read(text: &str) -> Option<(Self, Host)> {
         let text = text.trim();
         if text.len() > 4096 {
@@ -246,7 +243,7 @@ pub(super) struct Invitation {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct Device {
     pub key: String,
     pub pairing: String,

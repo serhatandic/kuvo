@@ -18,12 +18,11 @@ use crate::{
     actor::{Command, Request, Response, Unlink, View},
     edits::{Edit, Submitter, Target},
     preferences::PersonalityChange,
-    seed::source::{Inventory, Prepared, Selection},
-    storage::Files,
+    seed::source::Selection,
 };
 
 impl SetupHandle {
-    pub fn register(&self, routes: &mut Registry, home: &std::path::Path) {
+    pub fn register(&self, routes: &mut Registry) {
         let setup = self.clone();
         routes.register::<get_kuvo_setup::Spec, _, _>(Access::Any, move |_| {
             let answer = typed::<get_kuvo_setup::Spec, 200>(setup.views.borrow().setup.clone());
@@ -153,15 +152,24 @@ impl SetupHandle {
                 )
             }
         });
-        let files = Files::new(home.to_owned());
-        let checklist_files = files.clone();
+        let setup = self.clone();
         routes.register::<get_kuvo_computers_add_credentials::Spec, _, _>(
             Access::DesktopOrPaired,
-            move |_| {
-                let files = checklist_files.clone();
+            move |call| {
+                let setup = setup.clone();
                 async move {
-                    let inventory = Inventory::read(&files).await;
-                    typed::<get_kuvo_computers_add_credentials::Spec, 200>(inventory.checklist())
+                    let by = submitter(&call.request.caller)?;
+                    let answer = setup
+                        .request(Command::AddViaMain(
+                            crate::actor::add_forward::AddRequest::Checklist,
+                            by,
+                        ))
+                        .await?;
+                    if answer.status == 200 {
+                        typed::<get_kuvo_computers_add_credentials::Spec, 200>(answer.value)
+                    } else {
+                        Err(response_refusal(answer))
+                    }
                 }
             },
         );
@@ -170,7 +178,6 @@ impl SetupHandle {
             Access::DesktopOrPaired,
             move |call| {
                 let setup = setup.clone();
-                let files = files.clone();
                 async move {
                     let by = submitter(&call.request.caller)?;
                     let credentials = serde_json::from_slice::<Value>(&call.request.body)
@@ -182,26 +189,10 @@ impl SetupHandle {
                             "Choose sign-ins and keys by their checklist IDs.",
                         )
                     })?;
-                    let credentials = if selection.empty() {
-                        None
-                    } else {
-                        let inventory = Inventory::read(&files).await;
-                        let seed = inventory.capture(&files, &selection).map_err(
-                            |(status, message)| {
-                                Refusal::new(
-                                    StatusCode::from_u16(status).expect("selection status"),
-                                    message,
-                                )
-                            },
-                        )?;
-                        Some(Prepared {
-                            digest: selection.digest(),
-                            seed,
-                        })
-                    };
                     let answer = setup
-                        .request(Command::InstallerCode(credentials, by))
-                        .await?;
+                        .installer_on_main(selection, by)
+                        .await
+                        .map_err(refusal)?;
                     if answer.status == 201 {
                         typed::<post_kuvo_computers_add_code::Spec, 201>(answer.value)
                     } else {

@@ -8,6 +8,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kuvo_os::platform::{Account, Platform};
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
@@ -29,6 +30,30 @@ pub(super) struct Destination {
     root: String,
     distro: Option<String>,
     target: Target,
+    existing: Option<Existing>,
+}
+
+pub(super) struct Existing {
+    pub(super) identity: Option<String>,
+    pub(super) key: Option<String>,
+}
+
+impl Existing {
+    fn read(lines: &[&str]) -> Option<Self> {
+        if !lines.iter().any(|line| line.trim() == "installed") {
+            return None;
+        }
+        let identity = lines.iter().find_map(|line| {
+            let id = line.strip_prefix("kuvo id ")?.trim();
+            (id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| id.to_owned())
+        });
+        let key = lines.iter().find_map(|line| {
+            let card = serde_json::from_str::<Value>(line.strip_prefix("card ")?).ok()?;
+            card["self"]["key"].as_str().map(str::to_owned)
+        });
+        Some(Self { identity, key })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -106,6 +131,7 @@ impl Destination {
             root,
             distro: None,
             target: Target { os: "", cpu: "" },
+            existing: None,
         };
         let probe = format!(
             r#"uname -sm
@@ -116,7 +142,11 @@ if [ "$(uname -s)" = Darwin ]; then
 elif ldd --version 2>&1 | grep -qi musl; then
   echo musl
 fi
-if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/kuvo-link.js" ]; then echo installed; fi
+if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/kuvo-link.js" ]; then
+  echo installed
+  if [ -f "$K/machine-id" ] && [ ! -L "$K/machine-id" ]; then printf 'kuvo id %s\n' "$(head -c 34 "$K/machine-id")"; fi
+  if [ -f "$K/run/setup-card.json" ] && [ ! -L "$K/run/setup-card.json" ]; then printf 'card %s\n' "$(head -c 200000 "$K/run/setup-card.json")"; fi
+fi
 if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuvo.code" ]; then echo older; fi
 "#,
             candidate.root
@@ -197,11 +227,7 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
                 "{name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again."
             ));
         }
-        if found.contains(&"installed") {
-            return Err(format!(
-                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-            ));
-        }
+        candidate.existing = Existing::read(&found);
         candidate.target = Target { os, cpu };
         Ok(candidate)
     }
@@ -271,6 +297,10 @@ ln "$T" "$K/bin/kuvo-box"
 
     pub(super) fn name(&self) -> &str {
         &self.name
+    }
+
+    pub(super) fn existing(&self) -> Option<&Existing> {
+        self.existing.as_ref()
     }
 
     async fn shell(

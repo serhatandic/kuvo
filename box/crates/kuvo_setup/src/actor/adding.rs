@@ -9,11 +9,12 @@ use crate::{
     Error, document,
     edits::Submitter,
     installer::{
-        self, Applicant, CLAIM_LIFETIME, Cancellation, Claim, Code, Device, INVITE_LIFETIME,
-        Invitation, hash, relay_url,
+        self, Applicant, CLAIM_LIFETIME, Cancellation, Claim, Device, INVITE_LIFETIME, Invitation,
+        hash, relay_url,
     },
     model::{Peer, Role, SharedKind, Status, safe_token},
     random,
+    seed::source::Consent,
 };
 
 impl Owner {
@@ -114,6 +115,44 @@ impl Owner {
         self.commit(next).await?;
         self.publish(false).await?;
         Ok(Response::ok(json!({})))
+    }
+
+    pub(super) fn keep_ssh_alias(
+        &self,
+        identity: &str,
+        expected_key: Option<&str>,
+        destination: &str,
+        by: &Submitter,
+    ) -> Result<Response, Error> {
+        let allowed = self.ssh_admission(by)?;
+        if allowed.status != 200 {
+            return Ok(allowed);
+        }
+        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let Some(machine) = addresses.iter_mut().find(|row| {
+            row["identity"].as_str() == Some(identity) && row["destination"] != destination
+        }) else {
+            return Ok(refused(404, "That isn't one of your computers."));
+        };
+        let roster = self.roster()?;
+        let Some(known) = roster.boxes.iter().find(|peer| {
+            machine["destination"]
+                .as_str()
+                .is_some_and(|saved| peer.extra.get("id").and_then(Value::as_str) == Some(saved))
+                && expected_key.is_none_or(|expected| peer.key == expected)
+        }) else {
+            return Ok(refused(404, "That isn't one of your computers."));
+        };
+        let mut aliases = machine["otherAddresses"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !aliases.iter().any(|alias| alias == destination) {
+            aliases.push(json!(destination));
+            machine["otherAddresses"] = json!(aliases);
+            self.files.write("machines.json", &addresses)?;
+        }
+        Ok(Response::ok(json!({"key": known.key, "name": known.name})))
     }
 
     pub(super) async fn cancel_installer(
@@ -248,6 +287,23 @@ impl Owner {
         credentials: Option<crate::seed::source::Prepared>,
         submitter: Submitter,
     ) -> Result<Response, Error> {
+        let token = encode(&random::<24>()?);
+        let consent = credentials.map_or(Consent::None, Consent::Selected);
+        let offer = self
+            .issue_installer_offer(hash(&token), consent, submitter)
+            .await?;
+        installer::complete_offer(offer, token)
+    }
+
+    pub(super) async fn issue_installer_offer(
+        &mut self,
+        id: String,
+        credentials: Consent,
+        submitter: Submitter,
+    ) -> Result<Response, Error> {
+        if !safe_token(&id, 43, 43) {
+            return Ok(refused(400, "Send the installer invitation hash."));
+        }
         let Some(setup) = self
             .link
             .setup()
@@ -279,19 +335,44 @@ impl Owner {
             return Ok(refused(503, "This computer can't reach your relay yet."));
         };
         let own = self.own()?;
-        let token = encode(&random::<24>()?);
         let now = lease::wall();
-        let expires = now + INVITE_LIFETIME;
-        let code = Code::new(
-            expires,
-            position.id.clone(),
-            relay.clone(),
-            Host {
-                key: decode_exact(&own.public).ok_or(Error::Invalid("installer primary key"))?,
-                address: address_of(&own.secret),
-            },
-            token,
-        );
+        let prior = self.link.installer_invites.get(&id);
+        let requested = credentials.digest();
+        if let Some(prior) = prior
+            && (prior.setup != position.id
+                || prior.epoch != position.epoch
+                || !prior.live(now)
+                || prior.actor != actor
+                || prior
+                    .extra
+                    .get("credentialSelectionDigest")
+                    .and_then(Value::as_str)
+                    != requested
+                || prior.extra.get("credentialsCompleted") == Some(&Value::Bool(true))
+                || prior.extra.contains_key("merge"))
+        {
+            return Ok(refused(
+                409,
+                "This installer invitation is no longer available.",
+            ));
+        }
+        let expiry = prior.map_or(now + INVITE_LIFETIME, |prior| prior.expires);
+        let answer = Response {
+            status: 201,
+            value: json!({
+                "expires": expiry, "setup": position.id, "relay": relay,
+                "primary": own.public, "address": encode(&address_of(&own.secret)),
+            }),
+        };
+        if prior.is_some() {
+            return Ok(answer);
+        }
+        if matches!(credentials, Consent::Kept(_)) {
+            return Ok(refused(
+                409,
+                "This installer invitation is no longer available.",
+            ));
+        }
         let mut next = self.link.clone();
         next.installer_invites.retain(|_, entry| entry.live(now));
         if next.installer_invites.len() >= 32 {
@@ -300,9 +381,8 @@ impl Owner {
                 "There are too many installers waiting to join. Use an existing code or wait for it to expire.",
             ));
         }
-        let id = hash(&code.token);
         let mut fields = serde_json::Map::new();
-        if let Some(chosen) = credentials {
+        if let Consent::Selected(chosen) = credentials {
             let sealed = installer::credentials::seal(&chosen.seed, &own.key, &id)?;
             fields.insert("credentialSeed".into(), json!(sealed));
             fields.insert("credentialSelectionDigest".into(), json!(chosen.digest));
@@ -312,17 +392,14 @@ impl Owner {
             Invitation {
                 setup: position.id,
                 epoch: position.epoch,
-                expires,
+                expires: expiry,
                 actor,
                 claim: None,
                 extra: fields,
             },
         );
         self.commit(next).await?;
-        Ok(Response {
-            status: 201,
-            value: json!({"code": code.encoded(), "expires": expires}),
-        })
+        Ok(answer)
     }
 
     fn installer_device(&self, device: &Device) -> bool {

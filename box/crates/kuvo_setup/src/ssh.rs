@@ -72,6 +72,11 @@ struct Computer {
     name: String,
 }
 
+enum Completed {
+    New(Computer),
+    Known(Computer),
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct Attempt {
     id: String,
@@ -87,6 +92,8 @@ struct Attempt {
     failure: Option<Failure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     computer: Option<Computer>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    known: bool,
 }
 
 impl Attempt {
@@ -119,6 +126,7 @@ impl Attempt {
             question: None,
             failure: None,
             computer: None,
+            known: false,
         }
     }
 
@@ -175,7 +183,7 @@ enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
     HostKey(Vec<HostKey>, oneshot::Sender<()>),
-    Done(Result<Computer, String>),
+    Done(Result<Completed, String>),
 }
 
 enum Message {
@@ -579,10 +587,25 @@ impl Owner {
                     return;
                 }
                 match result {
-                    Ok(computer) => {
+                    Ok(completed) => {
                         now.seen.state = State::Done;
                         now.seen.question = None;
-                        now.seen.title = format!("{} is one of your computers", now.seen.name);
+                        let computer = match completed {
+                            Completed::Known(computer) => {
+                                now.seen.known = true;
+                                now.seen.name.clone_from(&computer.name);
+                                now.seen.title = format!(
+                                    "{} is {}, already one of your computers",
+                                    now.seen.destination, computer.name
+                                );
+                                computer
+                            }
+                            Completed::New(computer) => {
+                                now.seen.title =
+                                    format!("{} is one of your computers", now.seen.name);
+                                computer
+                            }
+                        };
                         now.seen.computer = Some(computer);
                         for step in &mut now.seen.steps {
                             step.state = StepState::Done;
@@ -629,12 +652,44 @@ impl Job {
         self.send(Progress::Step(id, state, detail.into())).await
     }
 
-    async fn add(&self, destination: Address) -> Result<Computer, String> {
+    async fn add(&self, destination: Address) -> Result<Completed, String> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
             .await?;
         let remote = Destination::inspect(self, destination.clone(), &name).await?;
         let name = remote.name();
+        if let Some(existing) = remote.existing() {
+            if let Some(identity) = &existing.identity {
+                let result = self
+                    .setup
+                    .request_command(Command::SshAlias {
+                        identity: identity.clone(),
+                        key: existing.key.clone(),
+                        destination: destination.as_str().into(),
+                        by: self.by.clone(),
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if result.status == 200 {
+                    let computer: Computer = serde_json::from_value(result.value)
+                        .map_err(|_| "Couldn’t keep the SSH address.")?;
+                    let detail = format!("It’s {}, already one of your computers", computer.name);
+                    for id in ["files", "engine", "starting", "seeding", "joining"] {
+                        self.step(id, StepState::Done, &detail).await?;
+                    }
+                    return Ok(Completed::Known(computer));
+                }
+                if result.status != 404 {
+                    return Err(result.value["message"]
+                        .as_str()
+                        .unwrap_or("Couldn’t keep the SSH address.")
+                        .to_owned());
+                }
+            }
+            return Err(format!(
+                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
+            ));
+        }
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
         }
@@ -678,7 +733,7 @@ impl Job {
                 .unwrap_or("Couldn’t keep the SSH address.")
                 .into());
         }
-        Ok(computer)
+        Ok(Completed::New(computer))
     }
 }
 

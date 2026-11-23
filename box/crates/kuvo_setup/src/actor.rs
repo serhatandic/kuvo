@@ -33,6 +33,7 @@ use crate::{
 };
 
 mod activity;
+pub(crate) mod add_forward;
 mod adding;
 mod device_access;
 mod edit_delivery;
@@ -127,9 +128,16 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
+    AddViaMain(add_forward::AddRequest, edits::Submitter),
     InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
     SshAdmission(edits::Submitter),
+    SshAlias {
+        identity: String,
+        key: Option<String>,
+        destination: String,
+        by: edits::Submitter,
+    },
     SshAddress {
         key: String,
         invite: String,
@@ -339,6 +347,7 @@ impl PreparedSetup {
             pending_handover: None,
             unlink_challenge: None,
             pending_devices: HashMap::new(),
+            forwarding: add_forward::Forwarding::default(),
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
@@ -850,6 +859,7 @@ struct Owner {
     pending_handover: Option<Handover>,
     unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
+    forwarding: add_forward::Forwarding,
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
@@ -862,10 +872,16 @@ impl Owner {
         loop {
             let until = self.next.min(self.next_edits);
             let event = self.network.as_mut().map(|relay| &mut relay.events);
+            let adding = !self.forwarding.jobs.is_empty();
             tokio::select! {
                 command = self.rx.recv() => {
                     let Some(request) = command else { return; };
                     self.request(request).await;
+                }
+                finished = self.forwarding.jobs.join_next(), if adding => {
+                    if let Some(Ok(finished)) = finished {
+                        self.finish_add_request(finished).await;
+                    }
                 }
                 incoming = async {
                     match event {
@@ -906,6 +922,7 @@ impl Owner {
                     }
                     self.expire_handover().await;
                     self.expire_device_changes();
+                    self.retry_add_requests().await;
                     self.refresh();
                 }
             }
@@ -1114,6 +1131,12 @@ impl Owner {
             self.ask_device_change(mutation, reply).await;
             return;
         }
+        if let Command::AddViaMain(request, by) = command {
+            if let Err(error) = self.begin_add_request(request, by, reply).await {
+                eprintln!("sending installer request: {error}");
+            }
+            return;
+        }
         let result = self.execute(command).await;
         let _ = reply.send(result);
     }
@@ -1167,6 +1190,12 @@ impl Owner {
             }
             Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
             Command::SshAdmission(by) => self.ssh_admission(&by),
+            Command::SshAlias {
+                identity,
+                key,
+                destination,
+                by,
+            } => self.keep_ssh_alias(&identity, key.as_deref(), &destination, &by),
             Command::SshAddress {
                 key,
                 invite,
@@ -1351,7 +1380,7 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } | Command::DeviceChange(_) => {
+            Command::Handover { .. } | Command::DeviceChange(_) | Command::AddViaMain(..) => {
                 unreachable!("this request can wait on relay mail")
             }
         }

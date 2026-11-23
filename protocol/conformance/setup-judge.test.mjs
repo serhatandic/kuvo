@@ -36,6 +36,32 @@ test("the probe distinguishes an older installation from another setup on the sa
   assert.equal(withApp.json.joins, false);
   const member = await judge(lone.replace('"primary"', '"member"'));
   assert.equal(member.json.verdict, "elsewhere");
+  const current = (await ask("GET", "kuvo/setup")).json;
+  const found = fields => `box machine .kuvo-code\ncard ${JSON.stringify({ ...card, ...fields })}`;
+  const theirs = { key: Buffer.alloc(32, 23).toString("base64url"), name: "Other Mac", heard: 1 };
+  const verdicts = [
+    ["", "free", false],
+    [found({ setup: current.setup, role: "member" }), "ours", false],
+    [found({ self: { key: current.you.key, name: "Studio", kind: "mac" } }), "self", false],
+    [found({ role: "member", primary: theirs, computers: 3, items: 12 }), "elsewhere", false],
+    [found({ role: "primary", primary: theirs, computers: 3, items: 0 }), "main", false],
+    [found({ role: "primary", primary: theirs, computers: undefined, items: "unknown" }), "main", false],
+    [found({ app: true }), "main", false],
+    [found({ setup: undefined, role: undefined, macs: [theirs] }), "elsewhere", false],
+    [found({ setup: undefined, role: undefined, macs: [{ key: current.you.key, name: "Studio" }] }), "ours", false],
+    [found({ setup: undefined, role: undefined }), "free", false],
+    [found({ role: "member", primary: { key: current.you.key, name: "Studio", heard: 1 } }), "ours", false],
+    [`box machine .kuvo-code\nlink mac ${current.you.key}`, "ours", false],
+    ["box machine .kuvo-code\nlink phones some", "older", false],
+    ["box machine .kuvo-code\nlink phones none", "free", false],
+    ["box app Library/Application Support/run.kuvo.code/box\nlink phones none", "older", false],
+  ];
+  for (const [probe, verdict, joins] of verdicts) {
+    const answer = await judge(probe);
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual([answer.json.verdict, answer.json.joins], [verdict, joins]);
+  }
+  assert.equal((await judge(undefined)).status, 400);
 
   const future = await judge(lone.replace('"formatVersion":1', '"formatVersion":2'));
   assert.equal(future.status, 409, future.text);

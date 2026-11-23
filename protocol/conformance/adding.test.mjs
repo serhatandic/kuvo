@@ -324,3 +324,57 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   assert.equal((await remote.join(issued.json.code)).code, 0);
   assert.equal(remote.engine.credentials.length, 1);
 });
+
+test("a member lists the main computer’s keys and issues an installer code through it", { timeout: 120000 }, async t => {
+  const { computer, leases, relay } = await bench(t);
+  const main = await computer("Studio");
+  const member = await computer("Workshop");
+  const applicant = await computer("Laptop");
+  const primary = main.connect(await main.start().ready());
+  const setup = (await primary("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
+  const headers = { "x-kuvo-from": "mac" };
+  const first = await primary("POST", "kuvo/computers/add/code", {}, headers);
+  assert.equal(first.status, 201, first.text);
+  const enrolled = await member.join(first.json.code);
+  assert.equal(enrolled.code, 0, enrolled.log);
+  const ask = member.connect(await member.start().ready());
+  const key = "KUVO_KEY_STUDIO_TOKEN";
+  write(path.join(main.home, "box", "keys", key), "studio-test-key");
+  write(path.join(member.home, "box", "keys", "KUVO_KEY_WORKSHOP_TOKEN"), "workshop-test-key");
+  const checklist = await until(async () => {
+    const answer = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+    if (answer.status === 200 && answer.json.items.some(item => item.label === key)) return answer.json;
+    if (answer.status === 200) throw new Error("The member answered with its own checklist.");
+  }, "The main computer did not answer the member’s checklist.", 25000);
+  assert.deepEqual(checklist.items.map(item => item.label), [key]);
+  const mainLink = () => readJSON(path.join(main.home, "run", "link.json"));
+  const roster = mainLink().shared.membershipAndAccess.value.boxes;
+  const studio = roster.find(computer => computer.name === "Studio");
+  const workshop = roster.find(computer => computer.name === "Workshop");
+  let droppedAfterOffer = false;
+  const drop = relay.intercept(Buffer.from(studio.address, "base64url"), Buffer.from(workshop.address, "base64url"), () => {
+    droppedAfterOffer ||= Object.keys(mainLink().installerInvites).length === 2;
+    return true;
+  });
+  let granted;
+  const forwarded = ask("POST", "kuvo/computers/add/code", { credentials: [checklist.items[0].id] }, headers);
+  try {
+    await until(() => droppedAfterOffer,
+      "The main did not save the forwarded invitation before sending its reply.");
+    fs.unlinkSync(path.join(main.home, "box", "keys", key));
+  } finally {
+    drop();
+    granted = await forwarded;
+  }
+  assert.equal(granted.status, 201, granted.text);
+  const recorded = mainLink().installerInvites;
+  assert.equal(Object.keys(recorded).length, 2);
+  const token = JSON.parse(Buffer.from(granted.json.code.split('.')[1], "base64url")).token;
+  assert.ok(recorded[createHash("sha256").update(token).digest("base64url")]);
+  assert.ok(!JSON.stringify(mainLink()).includes(token));
+  assert.equal(Object.keys(readJSON(path.join(member.home, "run", "link.json")).installerInvites ?? {}).length, 0);
+  const adopted = await applicant.join(granted.json.code);
+  assert.equal(adopted.code, 0, adopted.log);
+  assert.equal(fs.readFileSync(path.join(applicant.home, "box", "keys", key), "utf8"), "studio-test-key");
+});

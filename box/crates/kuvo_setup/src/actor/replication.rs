@@ -273,6 +273,8 @@ impl Owner {
                     "scopedOfflineEdit",
                     "offlineEditReceipt",
                     "phoneSync",
+                    "act",
+                    "acted",
                 ]
                 .iter()
                 .any(|field| envelope.0.contains_key(*field)) =>
@@ -299,6 +301,16 @@ impl Owner {
                 }
                 if let Some(receipt) = envelope.0.get("offlineEditReceipt") {
                     self.receive_edit_receipt(&from, receipt)?;
+                }
+                if let Some(act) = envelope
+                    .0
+                    .get("act")
+                    .filter(|act| act["area"] == "addComputer")
+                {
+                    self.receive_add_request(&from, act).await?;
+                }
+                if let Some(answer) = envelope.0.get("acted") {
+                    self.receive_add_answer(&from, answer);
                 }
             }
             _ => {}

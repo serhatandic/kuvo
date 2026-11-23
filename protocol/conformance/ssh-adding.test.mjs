@@ -80,4 +80,53 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(member.json.setup, setup);
   assert.equal(member.json.you.key, done.computer.key);
   assert.equal(member.json.you.role, "member");
+
+  fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `second ssh-ed25519 ${key}\n`);
+  const alias = await ask("POST", "kuvo/computers/add", { destination: "second" }, headers);
+  assert.equal(alias.status, 202, alias.text);
+  const aliasID = alias.json.try.id;
+  const remembered = await until(async () => {
+    const attempt = (await page()).json.tries.find(attempt => attempt.id === aliasID);
+    if (attempt?.state === "failed") throw new Error(attempt.failure.message);
+    return attempt?.state === "done" && attempt;
+  }, "The known computer was not found at its other address.");
+  assert.equal(remembered.known, true);
+  assert.equal(remembered.title, "second is lab, already one of your computers");
+  assert.deepEqual(remembered.computer, done.computer);
+  assert.deepEqual(readJSON(path.join(main.home, "machines.json")), [{ destination: "lab", identity, otherAddresses: ["second"] }]);
+  assert.equal((await ask("GET", "kuvo/setup")).json.computers.length, 2);
+
+  const fake = path.join(path.dirname(remote), "ssh");
+  const copied = path.join(path.dirname(remote), "copied");
+  write(path.join(fake, "home-copied"), copied);
+  fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `copied ssh-ed25519 ${key}\n`);
+  write(path.join(copied, "box", "machine-id"), identity);
+  write(path.join(copied, "box", "run", "setup-card.json"), JSON.stringify({ formatVersion: 1,
+    self: { key: Buffer.alloc(32, 14).toString("base64url"), name: "Copy", kind: "machine" } }));
+  const refusedCopy = await ask("POST", "kuvo/computers/add", { destination: "copied" }, headers);
+  assert.equal(refusedCopy.status, 202, refusedCopy.text);
+  await until(async () => (await page()).json.tries.some(attempt => attempt.id === refusedCopy.json.try.id && attempt.state === "failed"),
+    "Copying a machine ID must not let another resident claim an alias.");
+  assert.deepEqual(readJSON(path.join(main.home, "machines.json"))[0].otherAddresses, ["second"]);
+
+  const wsl1 = path.join(path.dirname(remote), "wsl1");
+  fs.mkdirSync(wsl1);
+  write(path.join(fake, "home-windows-no-wsl2"), wsl1);
+  write(path.join(fake, "windows-windows-no-wsl2"), "");
+  const windows = await ask("POST", "kuvo/computers/add", { destination: "windows-no-wsl2" }, headers);
+  assert.equal(windows.status, 202, windows.text);
+  const windowsID = windows.json.try.id;
+  const windowsTry = async () => (await page()).json.tries.find(attempt => attempt.id === windowsID);
+  const windowsQuestion = await until(async () => {
+    const attempt = await windowsTry();
+    return attempt?.state === "asking" && attempt.question;
+  }, "The Windows host key was never shown.");
+  const trusted = await ask("POST", `kuvo/computers/add/${windowsID}/answer`, { answer: "trust", at: windowsQuestion.at }, headers);
+  assert.equal(trusted.status, 200, trusted.text);
+  const noWsl2 = await until(async () => {
+    const attempt = await windowsTry();
+    return attempt?.state === "failed" && attempt.failure;
+  }, "The Windows account without WSL 2 should be refused.");
+  assert.equal(noWsl2.message, "Install Ubuntu with WSL 2 on desktop-test, then open Ubuntu once and try again.");
+  assert.deepEqual(fs.readdirSync(wsl1), []);
 });

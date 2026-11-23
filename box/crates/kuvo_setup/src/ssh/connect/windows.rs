@@ -1,4 +1,4 @@
-use super::{Computer, Destination, Job, Ran, Target, read_binary, run};
+use super::{Computer, Destination, Existing, Job, Ran, Target, read_binary, run};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::atomic::AtomicBool, time::Duration};
@@ -10,7 +10,17 @@ impl Destination {
 [Console]::WriteLine($env:PROCESSOR_ARCHITECTURE)
 if ((Test-Path -LiteralPath (Join-Path $K 'run/setup-card.json')) -or
     (Test-Path -LiteralPath (Join-Path $K 'run/link.json')) -or
-    (Test-Path -LiteralPath (Join-Path $K 'bin/kuvo-link.js'))) { [Console]::WriteLine('installed') }
+    (Test-Path -LiteralPath (Join-Path $K 'bin/kuvo-link.js'))) {
+    [Console]::WriteLine('installed')
+    foreach ($path in @('machine-id', 'run/setup-card.json')) {
+        $item = Get-Item -LiteralPath (Join-Path $K $path) -Force -ErrorAction SilentlyContinue
+        $limit = if ($path -eq 'machine-id') { 34 } else { 200000 }
+        if ($item -and !$item.PSIsContainer -and $item.Length -le $limit -and !($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            $tag = if ($path -eq 'machine-id') { 'kuvo id ' } else { 'card ' }
+            [Console]::WriteLine($tag + (Get-Content -Raw -LiteralPath $item.FullName))
+        }
+    }
+}
 "#;
         let ran = self.powershell(job, probe, Vec::new(), 30).await?;
         let text = String::from_utf8_lossy(&ran.stdout);
@@ -24,12 +34,13 @@ if ((Test-Path -LiteralPath (Join-Path $K 'run/setup-card.json')) -or
                 ));
             }
         };
-        if !ran.status.success() || lines.any(|line| line.trim() == "installed") {
+        if !ran.status.success() {
             return Err(format!(
                 "Kuvo Code on {host} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
             ));
         }
         self.target = Target { os: "windows", cpu };
+        self.existing = Existing::read(&lines.collect::<Vec<_>>());
         Ok(self)
     }
 

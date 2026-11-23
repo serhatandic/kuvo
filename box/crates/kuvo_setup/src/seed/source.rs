@@ -20,6 +20,22 @@ pub(crate) struct Prepared {
     pub seed: Vec<u8>,
 }
 
+pub(crate) enum Consent {
+    None,
+    Selected(Prepared),
+    Kept(String),
+}
+
+impl Consent {
+    pub fn digest(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Selected(value) => Some(&value.digest),
+            Self::Kept(digest) => Some(digest),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Selection(Vec<String>);
 
@@ -42,6 +58,10 @@ impl Selection {
 
     pub fn empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub fn ids(&self) -> &[String] {
+        &self.0
     }
 
     pub fn digest(&self) -> String {
