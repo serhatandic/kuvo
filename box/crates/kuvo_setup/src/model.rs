@@ -248,7 +248,7 @@ pub(crate) struct Link {
     pub shared_setup: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shared: Shared,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub shared_outcomes: Outcomes,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub leadership: BTreeMap<u64, Envelope>,
