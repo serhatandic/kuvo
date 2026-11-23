@@ -254,7 +254,7 @@ async function stillShown(places: Target[], ids: string[]): Promise<Set<string>>
   for (const [id, { places }] of sessions) {
     if (!leadsBack(id, new Set([id]))) continue;
     for (const place of places) {
-      const words = JSON.stringify(await conversationOf(place, id));
+      const words = JSON.stringify(await conversationOf(place, id)).replaceAll("\\\\", "/");
       for (const each of ids) if (new RegExp(`attachments/${each}/`, "i").test(words)) shown.add(each);
     }
   }
