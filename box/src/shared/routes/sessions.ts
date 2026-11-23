@@ -277,8 +277,12 @@ const REMOTE_LIST_COMPUTER = object({
   ...LIST_COMPUTER.object, away: bool, "lastSeen?": number, "updating?": bool, actions: list(words("open", "manage")),
 });
 
-export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool });
-export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER }));
+const CONVERSATION_TOOLS = object({
+  directory: nullable(string),
+  ready: object({ files: bool, changes: bool, browser: bool, terminal: bool }),
+});
+export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool, "tools?": CONVERSATION_TOOLS });
+export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER, "tools?": CONVERSATION_TOOLS }));
 
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),

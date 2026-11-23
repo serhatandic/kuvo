@@ -830,3 +830,28 @@ test("Activity's first Outputs state includes the kept file made by a delegated 
     ], next: null } });
   } finally { setup.close(); }
 });
+
+test("opening a remote bot's New tab gets the bot's folder and tools from its owner", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const bot = "bot_far";
+    const folder = path.join(far.home, "bots", bot);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Remote bot" }));
+    writeFileSync(path.join(folder, "session"), far.session);
+
+    // Its owner advertises live browser, filesystem, Changes and Terminal support over peer mail.
+    const directory = path.join(far.home, "project");
+    writeFileSync(path.join(near.home, "run", "peer-agents.json"), JSON.stringify({
+      [far.computer.id]: { list: [], at: 100, features: [...features, "browser.view", "folders.files", "git.status", "pty.socket"] },
+    }));
+    await share(far, near);
+    const found = await near.read(`kuvo/sessions/${far.session}/location?tools=1`);
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({
+      on: far.computer,
+      tools: { directory, ready: { files: true, browser: true, changes: true, terminal: true } },
+    });
+  } finally { setup.close(); }
+});

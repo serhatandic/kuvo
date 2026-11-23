@@ -296,7 +296,9 @@ fields. A successful response echoes the destination as `computer: {id, name}`. 
 box returns `409` before creating anything. A local start can omit `computer` or use `here`.
 
 
-#### Activity Outputs
+#A conversation location read with `?tools=1` also returns `tools:{directory,ready:{files,changes,browser,terminal}}`. The absolute directory belongs to the conversation owner. Its capabilities determine readiness. An away owner can still supply its last known directory and all four tools are unavailable until it returns.
+
+### Activity Outputs
 
 With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. Bytes and previews are read from the row's owner through that owner's artifact route. Peers share metadata only, through `outputCopy` mail.
 
