@@ -147,6 +147,12 @@ contains 222 declarations across the listed files, including adjacent work.
 | `a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for_a_start` | Unsigned roster and an empty relay setting | Signed roster with the relay setting absent | The test needs accepted origins while keeping the other computer away. |
 | `a_local_app_pairs_once_and_removal_survives_a_resident_restart` | A link in an unmarked temporary home | A link in a reserved standalone home | The reservation keeps the fixture on the standalone pairing path. |
 
+The real resident fixtures in `kuvo_setup/tests/live.test.mjs` and
+`protocol/conformance/bench.mjs` now stamp layout 23 alongside their
+synthetic link records. Since 1.2 the executable opens unmarked folders
+only when they are empty. The tagged compatibility cases still open
+unmarked historical homes and exercise that boundary.
+
 ## Structure and compatibility boundaries
 
 - One Tokio task owns mutable setup state. Subscribers see a watch snapshot.
@@ -157,8 +163,8 @@ contains 222 declarations across the listed files, including adjacent work.
 - The new resident uses the existing signed envelope, lease request, Noise mail
   and shared replica formats. The handover readiness exchange uses typed
   request state in the resident and setup authority mail. It has no TypeScript
-  forward-spool dependency. Old-model conversion stays with the TypeScript box
-  and the migration boundary.
+  forward-spool dependency. Members retry digest exchange periodically and can
+  relay the current signer's documents. Old-model conversion belongs to 2.6.
 - `ResidentPeers` owns the relay and setup subscribes through its
   `RelayHandle`. `SetupHandle::change_devices` provides the signed managed
   device writer. Its primary and forwarded paths use the same durable
@@ -185,18 +191,20 @@ contains 222 declarations across the listed files, including adjacent work.
   the current layout-23 golden-home scenario. Rust passes the personality
   validation case. The other scenarios first stop at the installer-code, bot
   templates and project-list routes, respectively.
-- TypeScript opens both tagged machine homes. The Rust run on the 0.7.2 home
-  leaves its layout marker absent, and the 0.8.0-beta.1 run stops before the
-  legacy peers document is projected. These checks still need migration and
-  historical relay integration.
+- TypeScript opens both tagged machine homes. After the shared layout gate
+  landed, Rust refuses both unmarked homes at startup with the requirement to
+  move to layout 23. Tagged migration and released peer interop are assigned
+  in the cross-area table.
 - The scoped Rust check of the current TypeScript golden home preserves its
   certified identity, leadership, accepted shared values and personality
   library bytes. The live Rust pair uses a signed enrollment fixture until the
   installer route is available. It confirms a member's save commits at the
   main, then survives the main's exit, lease expiry and member promotion.
-- On the same stopped setup home the differential runner matches the setup
-  view, personality list and a direct caller's personality-document refusal.
-  The clock uses the 445 IDs offered by the TypeScript box on Bun 1.4.2.
+- On the same stopped setup home the differential runner matches all four
+  normalized responses. The comparison covers the
+  setup view, personality list, direct personality-document refusal and
+  complete clock page. The clock uses the 445 IDs offered by the TypeScript
+  box on Bun 1.4.2.
   To refresh the vector after a reference runtime change, run the command
   below with the replacement Bun and run the clock conformance case on
   both boxes. Jiff supplies offsets and rules for the same IDs.
@@ -212,14 +220,15 @@ covered the desktop, released and current link sources, scripts, and the Rust
 resident. Reproduce the reader search with
 `git grep -n -E 'link[.](seen|version)|SEEN_FILE|VERSION_FILE|PROCESS_RECORD|setup-card[.]json|socket[.]key|keyNow' -- gpui scripts box/src box/crates`
 and `git grep -n -F 'run/link.seen' v0.7.2 -- '*.swift'`.
-The file paths in the table also serve as search terms. Some writers split
+Two runs reported 53 and 55 startup leaf differences as background services wrote
+their files. The paths in the table also serve as search terms. Some writers split
 paths into components, including `RUN`, `BOX`, `BOTS` and `WORK_FOLDER`.
 
 | Differing paths or fields | Readers and result | Owner phase |
 |---|---|---|
 | `run/link.seen` | Released `RemoteEngine.swift` uses its mtime to leave an engine running on quit. Rust writes an empty marker on authenticated non-app traffic with the same five-minute throttle. | Covered in B22 for the resident. 7.3 and 9.3 for the released reader drill. |
 | `run/link.version` | `link/areas/info.ts` reports it and the legacy setup command compares it with the running link's own build. The move's `PROCESS_RECORD` excludes it. Rust writes its resident build as plain UTF-8 without a newline. Build identifiers differ. | Covered in B22 for the writer. 7.1 for selector and rollback. |
-| `run/link.json` relay, `keyNow`, `own` and `sharedOutcomes` | `setup/lead.ts`, `main.ts` and `documents/work.ts` read these fields. Both preserve an existing relay. The startup fallback accepts ws/wss and strips a terminal slash. Rust carries the current static key and keeps the prior eight, publishes signed counters on connection, and treats absent outcomes as empty. Installed link identity changes and caller ordering remain covered by the respective integration phases. | 2.3 rotation and installer. 9.3 mixed startup order. |
+| `run/link.json` relay, `keyNow`, `own` and `sharedOutcomes` | `setup/lead.ts`, `main.ts` and `documents/work.ts` read these fields. Both preserve an existing relay. The differential run preserved that field. The startup fallback accepts ws/wss and strips a terminal slash. Rust carries the current static key and keeps the prior eight, publishes signed counters on connection, and treats absent outcomes as empty. Installed link identity changes and caller ordering remain covered by the respective integration phases. | 2.3 rotation and installer. 9.3 mixed startup order. |
 | `run/setup-card.json` | `add/scripts.ts` prints it and `setup/judge.ts` reads it. Rust writes the versioned card at startup. The TS bench can finish before its periodic write. Active queue item and live usage inputs depend on their owner. | 2.3 discovery. 5.2 queue and card input. |
 | `run/socket.key`, `run/route/ssh`, `run/ssh-for`, `run/vault.sock` | `server/ssh-pipe.ts` and the Rust server use the same local secret encoding and addressed socket. Independently created secrets vary. Rust closes its socket on shutdown. Vault and SSH session directory state are read by `vault/ssh.ts` and `vault/holder.ts`. | 1.4 local transport. 6.2 vault and session directory. |
 | `run/lists/sessions.json`, `run/notices/teller`, `run/outbox/sending`, `run/moves` | Reader in `notices/told.ts` checks the live writer PID; peer list and move code read the session and move records. A move preserves durable records. Empty runtime directories have no desktop, installer or updater reader in the search. | 2.2 lists and notices. 2.4 moves. 1.5 letter interoperability. |
