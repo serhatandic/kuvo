@@ -22,7 +22,7 @@ import { Auto } from "./auto"
 import { Deps } from "./deps"
 import { EngineAgent, EngineLink } from "./engine"
 import { subscribe } from "./events"
-import { Goals, type GoalPlaces } from "./goals"
+import type { SessionPlaces } from "./session-places"
 import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
@@ -372,9 +372,7 @@ if (groupFolders) {
   }
 }
 
-// Goals conversations work toward, the engine's and the coding agents' here alike, kept in the
-// bridge's folder and run with no client there.
-const places: GoalPlaces = {
+const places: SessionPlaces = {
   engine: {
     api: link,
     listen: (session, told) => link.listen(session, { event: (event) => told.event(event.type, event.data), reconnected: told.reconnected }),
@@ -392,11 +390,6 @@ const places: GoalPlaces = {
     }
   },
 }
-const goals = new Goals(join(home, "goals.json"), places)
-// Goals paused at a limit, looked at once a minute too: a timer can come late after the computer
-// slept.
-setInterval(() => goals.resumeDue(), 60_000).unref?.()
-// Its other keywords, for the same conversations: side questions, handoffs and reviews.
 const sideQuestions = new SideQuestions(join(home, "side-questions.json"), places)
 const handoffs = new Handoffs(places)
 const reviews = new Reviews(join(home, "reviews.json"), places)
@@ -406,7 +399,7 @@ roster.observeLimits(agent => {
 })
 store.origin = () => boxServices.attribution().computer ?? directory.own()?.key ?? ""
 store.usageAccount = provider => boxServices.attribution().accounts?.[provider]
-// Nothing starts a coding agent before it listens (an app's first ask, a group chat, a goal), and it
+// Nothing starts a coding agent before it listens (an app's first ask, a group chat), and it
 // listens once the box has set up its sandbox: on this Mac the app starts it before the box, so an
 // agent started then would run outside the sandbox until it stops.
 await untilSandboxDecided()
@@ -440,7 +433,7 @@ let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
 let transferring = false
-const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
+const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, sideQuestions, handoffs, places, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 setInterval(() => {
@@ -483,7 +476,6 @@ void link.whenReady().then(() => {
   // bridge before this one held for it goes.
   sessions.wakeLost()
   sessions.wakeHeld()
-  goals.start()
   sideQuestions.start()
   reviews.resume()
   try {
@@ -561,7 +553,7 @@ let launchSaid: { at: number; lets: boolean } | undefined
 const wholeWork = () => {
   const here = sessions.work()
   const outsideTurns = answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
-  const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting()
+  const other = here.other || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting()
   return { turns: here.turns || outsideTurns, other, outsideTurns }
 }
 const transferBuilds = new Set<string>()
@@ -757,8 +749,6 @@ function stop(reason: string, handOver = false, startReplacement = true) {
       writeSecret(join(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }))
     } catch {}
   }
-  // Goals first: the turns cut short as it stops aren't theirs to read as yours.
-  goals.stopAll()
   sideQuestions.stopAll()
   reviews.stopAll()
   cancelSignIns()

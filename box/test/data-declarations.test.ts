@@ -40,7 +40,6 @@ const REQUIRED_KINDS = [
   "sessionFiles",
   "sessionNotes",
   "pendingSessionWork",
-  "sessionGoals",
   "sessionSchedules",
   "sessionLettersAndDelivery",
   "offlineEditOutbox",

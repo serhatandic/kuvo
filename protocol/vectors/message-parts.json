@@ -583,22 +583,6 @@
   ],
   "read": [
     {
-      "about": "a /goal before it went in the block",
-      "text": "[Goal] ship v2\n\n(The user asked for this as a goal: plan it, check what it needs, and put it to them with propose_goal before doing any of the work.)",
-      "parts": {
-        "keyword": "/goal",
-        "words": "ship v2"
-      }
-    },
-    {
-      "about": "a /goal in a bot's chat",
-      "text": "Summarize the commits weekly\n\n<sent-with>\nThe user sent this as a goal, with Kuvo Code's /goal. Plan it, check what it needs, and put it to them with propose_goal before doing any of the work:\n/goal\nPlan it as a lead whose sessions do the work.\n</sent-with>",
-      "parts": {
-        "keyword": "/goal",
-        "words": "Summarize the commits weekly"
-      }
-    },
-    {
       "about": "a marker alone isn't a goal",
       "text": "[Goal] ship it",
       "parts": {
@@ -707,13 +691,6 @@
       }
     },
     {
-      "about": "a keyword block whose line isn't a keyword",
-      "text": "Hi\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\nplan\n</sent-with>",
-      "parts": {
-        "words": "Hi\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\nplan\n</sent-with>"
-      }
-    },
-    {
       "about": "a name with a bracket in it",
       "text": "[Message from Ops] bot · ses_abc] (They're waiting for your reply: just answer, in your words.)\n\nCan you check?\n\nThanks.",
       "parts": {
@@ -729,71 +706,6 @@
       "text": "[Message from Ada · not-a-session] hi",
       "parts": {
         "words": "[Message from Ada · not-a-session] hi"
-      }
-    },
-    {
-      "about": "an older message's keyword, as typed",
-      "text": "check CI\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/loop every hour\n</sent-with>",
-      "parts": {
-        "keyword": "/loop every hour",
-        "words": "check CI"
-      }
-    },
-    {
-      "about": "an older message's keyword on one line, naming no one",
-      "text": "check CI\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/loop every hour ＆ ＆Scout\n</sent-with>",
-      "parts": {
-        "keyword": "/loop every hour ＆ ＆Scout",
-        "words": "check CI"
-      }
-    },
-    {
-      "about": "an older message's keyword with nothing written",
-      "text": "\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/plan\n</sent-with>",
-      "parts": {
-        "keyword": "/plan",
-        "words": ""
-      }
-    },
-    {
-      "about": "an older message with a keyword and everything else, in order",
-      "text": "Ask &Scout about it\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/plan\n</sent-with>\n\n<named-agents>\nAgents the user named with & in this message, by their address. Read one's conversation with read_conversation only when what the user asks needs what it knows or did, and write to it with send_message only to ask it something or hand it work; when the user only mentions one, do neither:\n- &Scout (ses_scout): bot, on the Mac: Watches the build\n</named-agents>\n\n<review-comments>\nComments on lines of the current changes:\n\n[a.js:4]\n> x()\nHere\n</review-comments>\n\n<attached-files>\nOpen these attached files with your tools if you need them:\n/x/y.txt\n</attached-files>",
-      "parts": {
-        "agents": [
-          {
-            "name": "Scout",
-            "session": "ses_scout"
-          }
-        ],
-        "comments": [
-          {
-            "file": "a.js",
-            "line": 4,
-            "side": "new",
-            "snippet": "x()",
-            "text": "Here"
-          }
-        ],
-        "keyword": "/plan",
-        "paths": [
-          "/x/y.txt"
-        ],
-        "words": "Ask &Scout about it"
-      }
-    },
-    {
-      "about": "an older message from a phone, naming an agent, with a keyword and files kept",
-      "text": "Ask &Scout\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/plan\n</sent-with>\n\n<named-agents>\nAgents the user named with & in this message, by their address. Read one's conversation with read_conversation only when what the user asks needs what it knows or did, and write to it with send_message only to ask it something or hand it work; when the user only mentions one, do neither:\n- &Scout (ses_scout): bot, on the Mac: Watches the build\n</named-agents>\n\n<attached-files>\nThe attached files are on disk here (what's in them is in this message already):\n/home/me/.kuvo-code/attachments/ses_1/0a1b2c3d/p.jpg\n</attached-files>\n\n<from-phone>\nThe user sent this from Kuvo Code on their iPhone.\nThey read your reply on a small screen, and can't open file paths, links to files on the computer or Kuvo Code's side panel there. Keep your reply short and easy to read on a phone. To show them a file (a picture, a chart, a PDF, a document you made or found), use show_file: it puts the file in this conversation, where they see it. A widget (show_widget) shows there too: keep it narrow, and make it work with taps rather than hovering.\n</from-phone>",
-      "parts": {
-        "agents": [
-          {
-            "name": "Scout",
-            "session": "ses_scout"
-          }
-        ],
-        "keyword": "/plan",
-        "phone": true,
-        "words": "Ask &Scout"
       }
     }
   ]

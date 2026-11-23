@@ -15,7 +15,6 @@ import {
 } from "./home";
 import { LIST_FILE, PHONE_LINK_FILE } from "./mac/machines";
 import { VAULT_FOLDER } from "./home";
-import { APPS } from "./work/apps";
 
 /** How this box is laid out: in a home of its own (a machine's, or a Mac's in `~/.kuvo-code`), or in
  * its app's folder (this Mac's, `<support>/box`). */
@@ -36,7 +35,6 @@ export function boxPlaces() {
     keyFiles: APP_KEY_FILES ?? BOX_KEYS,
     updates: UPDATES,
     search: SEARCH,
-    apps: APPS,
     browser: path.join(K, "browser"),
     trash: path.join(K, "trash"),
     temporary: path.join(K, "t"),

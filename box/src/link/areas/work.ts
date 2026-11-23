@@ -8,12 +8,8 @@ import { askingNow } from "../work/tree";
 // (`kuvo/work/subagents/<session>`, and its events); `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
 // turn with what it was still to hear of them. What a bot asks
 // you before it does it (`kuvo/work/asks`, its events, and your answer, `POST kuvo/work/asks/<id>`),
-// where new projects go (`kuvo/work/settings`), a project made (`POST kuvo/projects/new`), and a
-// bot's goal (`kuvo/work/goals`, its events, a goal asked for, `POST kuvo/work/goals/ask`, and your
-// answer to one, `POST kuvo/work/goals/<id>`), and the icon of an app its steps are done in
-// (`kuvo/work/apps/icon`).
+// where new projects go (`kuvo/work/settings`), and making a project (`POST kuvo/projects/new`).
 
-import fs from "node:fs";
 import path from "node:path";
 import { listOf } from "../files";
 import { readAsks } from "../glance/asked";
@@ -22,7 +18,7 @@ import { followed, followersOf } from "../follow";
 import { botHere } from "../bots/here";
 import { targetsOf } from "../letters/tools";
 import { answersOn } from "../work/answers";
-import { noteWorkChanged, readWorkChanges, WORK_FOLDER, workFollowers } from "../work/changes";
+import { readWorkChanges, WORK_FOLDER, workFollowers } from "../work/changes";
 import { stopBotWork } from "../work/stop";
 import { oversightFollowers, readOversight } from "../work/oversight";
 import { botLimits } from "../work/limits";
@@ -32,9 +28,7 @@ import { startOfDay } from "../work/clock";
 import { patchWorkSettings, folderGiven, KEEPS_AWAKE_REFUSED, setKeepsAwake, setProjectsFolder, workSettings } from "../work/settings";
 import { awakeForWork, keepsMacAwakeItself } from "../work/awake";
 import { unansweringList, unansweringNow } from "../work/unanswering";
-import { answerGoal, askGoal, goalFollowers, goalPlans } from "../work/goals";
 import { call } from "../engine/client";
-import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
 import { BOTS, HERE } from "../home";
 import { backgroundFollowers, readBackground, readSessionBackground, readStopped } from "../work/background";
@@ -42,7 +36,7 @@ import { commandOf, followOutput, outputReader } from "../work/command-output";
 import { subagentsOf } from "../work/subagents";
 import type { Target } from "../../shared/records";
 import { keptList, LIST_FILE, listFollowers, listNow } from "../lists/sessions";
-import { botOfConversation, describeWork, ofBot, workSessions } from "../work/tree";
+import { describeWork, ofBot, workSessions } from "../work/tree";
 import { activityFacts, activityOf } from "../work/activity";
 import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { workAccounts } from "../work/accounts";
@@ -54,8 +48,6 @@ export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/
 export const COMMAND_OUTPUT_ROUTE = /^kuvo\/work\/background\/([^/]+)\/commands\/([^/]+)\/output(\/events)?$/;
 export const SUBAGENTS_ROUTE = /^kuvo\/work\/subagents\/([^/]+)(\/events)?$/;
 export const WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
-export const GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
-export const APP_ICON_ROUTE = "kuvo/work/apps/icon";
 
 // A bot's work as clients show it.
 async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
@@ -361,47 +353,4 @@ export async function* newProjectRoute(context: RouteContext): AsyncGenerator<An
     return yield* json(status, refusal);
   }
   return yield* json(201, { project: outcome.made.project, text: madeWords(outcome.made, HERE) });
-}
-
-// The goals here (each bot's latest), their events, a goal asked for in a bot's chat (/goal), and
-// your answer to one: start (with your switches and limits), decline or stop.
-export async function* goalsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, signal, json } = context;
-  const method = request.method.toUpperCase();
-  if (!match[1] || match[1] === "events") {
-    if (method !== "GET") return yield* json(405, {});
-    if (!match[1]) return yield* json(200, { goals: goalPlans() });
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ goals: goalPlans() }), goalFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (method !== "POST") return yield* json(405, {});
-  const given = parsed(request.body);
-  const targets = () => targetsOf({ readEngine, bridge });
-  if (match[1] === "ask") {
-    if (!isObject(given) || typeof given.session !== "string" || !botOfConversation(given.session)) return yield* json(400, { message: "Send {session, goal}: a bot's conversation, and the goal in your words." });
-    const outcome = await askGoal(given.session, typeof given.goal === "string" ? given.goal : "", targets);
-    if ("refused" in outcome) return yield* json(outcome.refused.status, { message: outcome.refused.message });
-    return yield* json(200, outcome);
-  }
-  const outcome = await answerGoal(decodeURIComponent(match[1]), isObject(given) ? given : {}, targets);
-  if ("refused" in outcome) {
-    const { status, ...refusal } = outcome.refused;
-    return yield* json(status, refusal);
-  }
-  return yield* json(200, outcome);
-}
-
-// `kuvo/work/apps/icon?app=<id>`: the icon of an app on this computer that a goal's step or what
-// waits names, by the id the box gave it: a PNG; 404 for one it has none of.
-export async function* appIconRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const id = new URLSearchParams(request.path.split("?")[1] ?? "").get("app");
-  if (!isAppID(id)) return yield* json(400, { message: "Name the app by its id: kuvo/work/apps/icon?app=<id>." });
-  const file = appIcon(id);
-  let bytes: Buffer | null = null;
-  try { bytes = file ? fs.readFileSync(file) : null; } catch {}
-  if (!bytes) return yield* json(404, { message: "There's no icon for that app here." });
-  yield { head: { status: 200, headers: { "content-type": "image/png", "content-length": String(bytes.length) } } };
-  yield { body: bytes };
 }

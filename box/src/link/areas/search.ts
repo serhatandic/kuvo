@@ -310,17 +310,14 @@ export function searchText(messages: EngineMessage[], directory: string): string
   return [said, done].filter(Boolean).join("\n\n");
 }
 
-/** A message as you wrote it: what Kuvo Code adds to its end comes off (who's named, a keyword it
- * was sent with, the widget it answers, that it's from your phone), but for your review comments, and the names of the
+/** A message as you wrote it: what Kuvo Code adds to its end comes off (who's named,
+ * the widget it answers, that it's from your phone), but for your review comments, and the names of the
  * files it brought. */
 function ownWords(written: string): string {
   let words = written.trim();
-  // /goal in a bot's chat as a box sent it before it went in the block: its marker, then the note.
-  const oldGoal = "\n\n(The user asked for this as a goal: plan it, check what it needs, and put it to them with propose_goal before doing any of the work.)";
-  if (words.startsWith("[Goal] ") && words.endsWith(oldGoal)) return words.slice("[Goal] ".length, -oldGoal.length).trim();
   const kept: string[] = [];
   for (;;) {
-    const block = [["<attached-files>", "</attached-files>"], ["<review-comments>", "</review-comments>"], ["<named-agents>", "</named-agents>"], ["<sent-with>", "</sent-with>"], ["<from-widget>", "</from-widget>"], ["<from-phone>", "</from-phone>"]]
+    const block = [["<attached-files>", "</attached-files>"], ["<review-comments>", "</review-comments>"], ["<named-agents>", "</named-agents>"], ["<from-widget>", "</from-widget>"], ["<from-phone>", "</from-phone>"]]
       .find(([, end]) => words.endsWith("\n" + end));
     const open = block ? words.lastIndexOf(block[0] + "\n") : -1;
     if (!block || open < 0 || (open > 0 && words[open - 1] !== "\n")) break;

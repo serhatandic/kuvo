@@ -10,7 +10,6 @@ import { MOVING } from "../bots/here";
 import { messageID } from "../engine/sessions";
 import { isRefused, placeOfSessionPatiently } from "../letters/letter";
 import { heldAsItComes, underWay } from "../messages/arriving";
-import { keptCommand } from "../messages/commands";
 import { composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
 import { withAttachedNote } from "../peers/naming";
 import type { MessageFields } from "../messages/parts";
@@ -249,10 +248,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   return yield* answering(answer);
 }
 
-// `kuvo/messages/parts`: `{texts, ids?, session?}`, the texts of messages from before (which carry
-// no parts) and their ids, read as `{parts}`, one for each, in order: one that ran one of the
-// engine's commands (when Kuvo still sent them) as it was typed (commands.ts), any other from its
-// text. (`session`, which older clients send, is no longer needed.)
+// `kuvo/messages/parts`: read one set of parts per message text, in order.
 export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Send the texts with POST." });
@@ -260,8 +256,5 @@ export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerP
   const texts = isObject(given) && Array.isArray(given.texts) ? given.texts : null;
   if (!texts || texts.some(text => typeof text !== "string")) return yield* json(400, { message: "Send the messages' texts (texts)." });
   if (texts.length > PARTS_MOST) return yield* json(400, { message: `Send at most ${PARTS_MOST} texts at once.` });
-  const ids = isObject(given) && Array.isArray(given.ids) ? given.ids : null;
-  if (ids && (ids.length !== texts.length || ids.some(id => typeof id !== "string"))) return yield* json(400, { message: "Send an id for each text (ids)." });
-  const commands = ids?.map(id => keptCommand(id as string)) ?? [];
-  return yield* json(200, { parts: (texts as string[]).map((text, at) => commands[at] ?? partsOf(text)) });
+  return yield* json(200, { parts: (texts as string[]).map(partsOf) });
 }

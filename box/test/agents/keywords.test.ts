@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { sideQuestionRoutes, SideQuestions } from "../../src/agents/btw"
 import { EngineLink } from "../../src/agents/engine"
 import { subscribe } from "../../src/agents/events"
-import type { GoalPlaces } from "../../src/agents/goals"
+import type { SessionPlaces } from "../../src/agents/session-places"
 import { server } from "../../src/agents/groups/api"
 import { branchRoutes } from "../../src/agents/branch"
 import { handoffMarker, handoffRoutes, Handoffs } from "../../src/agents/handoff"
@@ -15,7 +15,7 @@ import { gitChanges, readScope, reviewChoices, reviewRoutes, Reviews, type Parts
 import type { ServerEvent } from "../../src/agents/wire"
 import { StandIn } from "./support/standin"
 
-// The box's keywords besides /goal, as a box runs them for a conversation on the engine or with
+// Side questions, handoffs, and reviews on the engine or with
 // the coding agents: side questions (/btw), handoffs (/handoff) and reviews with fresh eyes
 // (/review), against a stand-in engine through the bridge's real link to it.
 
@@ -45,7 +45,7 @@ function deleted(session: string) {
   for (const each of following.filter((each) => each.session === session)) each.event("session.deleted", { sessionID: session })
 }
 
-function places(bridge = false): GoalPlaces {
+function places(bridge = false): SessionPlaces {
   return {
     engine: { api: link, listen },
     bridge: { api: server(engine.url, "x"), listen },
@@ -55,7 +55,7 @@ function places(bridge = false): GoalPlaces {
 
 /** As `places`, the engine's events heard through its real link (a session under another is
  * heard through its parent's feed, as on a box). */
-function linkedPlaces(): GoalPlaces {
+function linkedPlaces(): SessionPlaces {
   // As the box's own (agents/main.ts) hears it.
   return { ...places(), engine: { api: link, listen: (session, told) => link.listen(session, { event: (event) => told.event(event.type, event.data), reconnected: told.reconnected }) } }
 }

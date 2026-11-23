@@ -64,7 +64,7 @@ export function conversationMarkdown(title: string, messages: ReadMessage[], age
       // Its parts, as the box keeps them, or reads one from before (messages/parts.ts).
       const parts = keptParts(message.metadata) ?? partsOf(written);
       const work = /^\[Work from (.*) · [^\]\n]+\]\n\n([\s\S]*?)(\n\n---\n[\s\S]*)?$/.exec(written);
-      // What the box told the agent (a goal's word, its sessions' news): never the user's, and
+      // What the box told the agent (its sessions' news): never the user's, and
       // whole, as the agent read it (the export shows its line).
       const note = boxNoteOf(written, message.metadata);
       if (note) say(note.from, written.trim());
@@ -72,7 +72,7 @@ export function conversationMarkdown(title: string, messages: ReadMessage[], age
       else if (written.startsWith("[Wake-up] ")) say("Wake-up", written.slice("[Wake-up] ".length));
       else if (work) say(`Work from ${work[1]}`, work[2].trim());
       else {
-        const words = parts.keyword ? `${parts.keyword} ${parts.words}` : parts.words.trim();
+        const words = parts.words.trim();
         const files = (message.files ?? []).map(file => file.name).filter(Boolean);
         if (words || files.length) say("User", [words, files.length ? "Attached: " + files.join(", ") : ""].filter(Boolean).join("\n\n"));
       }

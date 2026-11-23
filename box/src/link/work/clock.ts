@@ -1,7 +1,4 @@
-// A goal's clock (PROTOCOL.md, "Work › Goals"): days, weeks and months as you live them, in your time
-// zone (the box's setting, "Your time zone"; else `KUVO_TZ`, which an older Mac gave a machine's
-// box; else this computer's), for a spend cap's period, a daily limit's midnight, and an end
-// written without a zone.
+// Daily work limits use midnight in your time zone.
 
 import { yourZone } from "../../shared/zone";
 
@@ -35,53 +32,4 @@ export function instant(year: number, month: number, day: number, hour = 0, minu
 export function startOfDay(at: number): number {
   const now = wall(at);
   return instant(now.year, now.month, now.day);
-}
-
-/** The next midnight after `at`. */
-export function nextMidnight(at: number): number {
-  const now = wall(at);
-  return instant(now.year, now.month, now.day + 1);
-}
-
-/** An ISO week's name, "2026-W44", for a date. */
-function isoWeek(year: number, month: number, day: number): string {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const weekday = (date.getUTCDay() + 6) % 7;
-  date.setUTCDate(date.getUTCDate() + 3 - weekday);
-  const first = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
-  const week = 1 + Math.round(((date.getTime() - first.getTime()) / 86_400_000 - 3 + ((first.getUTCDay() + 6) % 7)) / 7);
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
-}
-
-export type Period = "day" | "week" | "month" | "goal";
-
-/** The period a moment falls in, by its name ("2026-10-29", "2026-W44", "2026-10", or "goal"). */
-export function periodOf(per: Period, at: number): string {
-  if (per === "goal") return "goal";
-  const { year, month, day } = wall(at);
-  const pad = (number: number) => String(number).padStart(2, "0");
-  if (per === "month") return `${year}-${pad(month)}`;
-  if (per === "day") return `${year}-${pad(month)}-${pad(day)}`;
-  return isoWeek(year, month, day);
-}
-
-/** When the period a moment falls in ends (the midnight starting the next), or never for the goal's. */
-export function periodEnd(per: Period, at: number): number | undefined {
-  if (per === "goal") return undefined;
-  const { year, month, day } = wall(at);
-  if (per === "day") return instant(year, month, day + 1);
-  if (per === "month") return instant(year, month + 1, 1);
-  const weekday = (new Date(Date.UTC(year, month - 1, day)).getUTCDay() + 6) % 7;
-  return instant(year, month, day - weekday + 7);
-}
-
-/** A time written as a date (and a time), without a zone, in yours; one with a zone as it says; ms as
- * they are. Null for what isn't one. */
-export function timeGiven(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value !== "string") return null;
-  const local = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::\d{2})?)?$/);
-  if (local) return instant(Number(local[1]), Number(local[2]), Number(local[3]), Number(local[4] ?? 0), Number(local[5] ?? 0));
-  const at = Date.parse(value);
-  return Number.isFinite(at) ? at : null;
 }

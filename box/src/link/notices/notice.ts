@@ -35,10 +35,10 @@ export interface NoticeData {
   vaultAsk?: string;
   /** A command an agent wants to run outside the sandbox (`kuvo/sandbox/asks`). */
   sandboxAsk?: string;
-  /** "1": shown quietly (what a goal needs of you, its digest): in the list, never lighting the
+  /** "1": shown quietly: in the list, never lighting the
    * screen or making a sound. */
   quiet?: "1";
-  /** "1": what a goal needs of you, where you asked to be woken (shown, with its sound, not quietly). */
+  /** "1": shown with sound. */
   wake?: "1";
 }
 

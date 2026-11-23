@@ -53,7 +53,6 @@ line.merged-outputs
 line.merged-waiting
 line.pending-computers
 marketplace
-messages.commands
 messages.compaction-words
 messages.send
 models.offered
@@ -64,7 +63,6 @@ models.readiness
 names.titles
 pty.socket
 queue.items
-queue.removed.keyword
 queue.stop.arriving
 sandbox.needsYou
 sandbox.opens

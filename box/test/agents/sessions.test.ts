@@ -1454,8 +1454,8 @@ describe("titles and one-off answers", () => {
     await until(() => sessions.get(third).title === "Something else entirely")
     expect(asked).toBeUndefined()
     await expect(sessions.generate(third, "a commit message")).rejects.toThrow()
-    // A goal's check may have another agent answer, as the title was.
-    expect(await sessions.generate(third, "is the goal met?", { orAnother: true })).toBe("Something else entirely")
+    // A one-off answer can use another agent, as the title did.
+    expect(await sessions.generate(third, "summarize the result", { orAnother: true })).toBe("Something else entirely")
     // Not if it's signed out: no title from the bridge (the app names it).
     b.signedIn = false
     const fourth = create()
@@ -1466,7 +1466,7 @@ describe("titles and one-off answers", () => {
     delete (b as any).generate
   })
 
-  test("a first message sent with a keyword, or from the phone, is named from your words alone", async () => {
+  test("a first message from the phone is named from your words alone", async () => {
     const prompts: string[] = []
     ;(a as any).generate = async (prompt: string) => {
       prompts.push(prompt)
@@ -1476,11 +1476,6 @@ describe("titles and one-off answers", () => {
     send(id, [
       "the parser drops the last line",
       "",
-      "<sent-with>",
-      "The user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:",
-      "/plan",
-      "</sent-with>",
-      "",
       "<from-phone>",
       "The user sent this from Kuvo Code on their iPhone.",
       "</from-phone>",
@@ -1489,7 +1484,6 @@ describe("titles and one-off answers", () => {
     await until(() => sessions.get(id).title === "Plan the parser fix")
     const told = prompts.find((prompt) => prompt.includes("<message>")) ?? ""
     expect(told).toContain("the parser drops the last line")
-    expect(told).not.toContain("keyword")
     expect(told).not.toContain("iPhone")
     delete (a as any).generate
   })

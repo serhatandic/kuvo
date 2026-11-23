@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { branch } from "../../src/agents/branch"
 import { SeatAPI, type Requester } from "../../src/agents/groups/api"
-import type { GoalPlaces } from "../../src/agents/goals"
+import type { SessionPlaces } from "../../src/agents/session-places"
 import { notesBeside } from "../../src/agents/notes"
 import { notesLock, waitingAcross } from "../../src/shared/session-notes"
 
@@ -61,7 +61,7 @@ test("a branch's mark keeps what was written to the copy since it was made, and 
     const copy = sessions.get(id)!
     copy.metadata = { ...copy.metadata, "kuvo.pinned": "again", kuvo: { ...copy.metadata!.kuvo, approval: "acceptEdits", applied: "acceptEdits", chat: "/chats" } }
   })
-  const places: GoalPlaces = { engine: { api, listen: () => () => {} }, bridge: { api, listen: () => () => {} }, isBridge: () => false }
+  const places: SessionPlaces = { engine: { api, listen: () => () => {} }, bridge: { api, listen: () => () => {} }, isBridge: () => false }
   const copy = await branch(places, "ses_work", "msg_1")
   expect(sessions.get(copy.id)!.metadata).toEqual({ "kuvo.pinned": "again", color: "blue", kuvo: { goal: "g", approval: "acceptEdits", applied: "acceptEdits", chat: "/chats", branchedFrom: "ses_work" } })
   expect(copy.metadata).toEqual(sessions.get(copy.id)!.metadata)
@@ -70,7 +70,7 @@ test("a branch's mark keeps what was written to the copy since it was made, and 
 test("a branch whose place answers the copy without its metadata takes off what it carried of its source all the same", async () => {
   const { api, sessions } = place({ forkSaysMetadata: false })
   sessions.set("ses_work", { id: "ses_work", metadata: { "kuvo.pinned": true, kuvo: { startedBy: "ses_lead", goal: "g" } } })
-  const places: GoalPlaces = { engine: { api, listen: () => () => {} }, bridge: { api, listen: () => () => {} }, isBridge: () => false }
+  const places: SessionPlaces = { engine: { api, listen: () => () => {} }, bridge: { api, listen: () => () => {} }, isBridge: () => false }
   const copy = await branch(places, "ses_work", "msg_1")
   expect(sessions.get(copy.id)!.metadata).toEqual({ kuvo: { goal: "g", branchedFrom: "ses_work" } })
 })

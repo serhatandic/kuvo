@@ -16,8 +16,6 @@ import { rewriteOn } from "../engine/notes";
 import { sendInto } from "../engine/queue";
 import { locked, textOf, writePrivate } from "../files";
 import { askedBy, asksIn, decisionChanged, recommendationOf, sessionsWaitingOnServer, type PendingQuestion, type Recommendation } from "./answers";
-import { addDecided, runningGoalOf, carriedOnGoal, forgottenOnGoal, yoursOnGoal } from "./goals";
-import { worksFor } from "./tree";
 import { WORK_FOLDER } from "./changes";
 import type { EngineSession } from "../engine/sessions";
 import type { Target } from "../../shared/records";
@@ -41,7 +39,7 @@ export const AUTOPILOT_WORDS = [
 ].join(" ");
 
 /** What an agent on Autopilot hears of a question that can't go ahead, as it's declined. */
-export const LEFT_UNDONE_WORDS = "This is on Autopilot: nothing was put to the user, and nothing was chosen for you. If your own research settles it, decide it, say in a line what you chose and why, and go on. If only the user can do it (paying, signing in, making an account, handing over a key, or anything destructive that can't be undone), don't decide it, do it or ask again: leave that step undone, keep it as waiting if you're at a goal (goal_progress), carry on with everything else, and list what's left for them in your final reply.";
+export const LEFT_UNDONE_WORDS = "This is on Autopilot: nothing was put to the user, and nothing was chosen for you. If your own research settles it, decide it, say in a line what you chose and why, and go on. If only the user can do it (paying, signing in, making an account, handing over a key, or anything destructive that can't be undone), don't decide it, do it or ask again: leave that step undone, carry on with everything else, and list what's left for them in your final reply.";
 
 /** Whether `session` is on Autopilot. */
 export const isAutopilot = (session: Pick<EngineSession, "metadata"> | null | undefined): boolean =>
@@ -95,13 +93,11 @@ export function carryDecided(from: string, to: string, file = DECIDED_FILE): voi
     all[to] = [...(all[to] ?? []), ...(all[from] ?? [])].slice(-KEPT);
     delete all[from];
   }, file);
-  carriedOnGoal(from, to);
 }
 
 /** Those of a conversation that's gone from this box. */
 export function forgetDecided(session: string, file = DECIDED_FILE): void {
   if (decidedIn(session, file).length) changeAll(all => { delete all[session]; }, file);
-  forgottenOnGoal(session);
 }
 
 /** Turns Autopilot on or off for `session` (on `target`): kept in its notes, and its agent told
@@ -146,7 +142,7 @@ export async function tellAutopilot(target: Target, session: string, on: boolean
 /** A question asked in `conversation` (on Autopilot), by it or one of its subagents (`form`, as
  * the engine or the coding agents' bridge on `target` has it): answered with the choice it marked
  * "(Recommended)", and kept as a call it made; any other form, declined. What was kept, or null
- * where it still waits (its goal paused, or the engine didn't take it). */
+ * where it still waits (the engine didn't take it). */
 export async function goAheadOnAutopilot(target: Target, conversation: Pick<EngineSession, "id" | "metadata">, form: Record<string, unknown>, file = DECIDED_FILE, signal?: AbortSignal): Promise<DecidedShape[] | null> {
   const asker = typeof form.sessionID === "string" ? form.sessionID : null;
   if (!asker || typeof form.id !== "string") return null;
@@ -168,7 +164,7 @@ async function lookAtWaiting(target: Target, conversation: Pick<EngineSession, "
     if (signal?.aborted) break;
     const calls = await goAheadOnQuestion(target, conversation, question, file, signal);
     if (calls) made.push(...calls);
-    else if (!pausedByYou(conversation)) settled = false;
+    else settled = false;
   }
   await declineSharedIn(target, conversation, signal);
   return { made, settled };
@@ -206,7 +202,7 @@ export async function catchUpAutopilot(target: Target, file = DECIDED_FILE, sign
  * on you: the box's word to its clients, who show that and judge nothing. On Autopilot the box does
  * what it does with one first, as when it hears it asked, whichever comes first; so the answer needs
  * no waiting on anything. What's gone doesn't wait, and what the engine won't list is taken as
- * waiting. On Autopilot, only your paused goal or an engine that won't take the answer leave it so. */
+ * waiting. On Autopilot, an engine that won't take the answer leaves it so. */
 export async function waitsOnYou(target: Target, conversation: Pick<EngineSession, "id" | "metadata" | "location">, form: string, file = DECIDED_FILE, signal?: AbortSignal): Promise<boolean> {
   const before = await asksIn(target, conversation.id, signal);
   const asked = before.questions.find(each => each.id === form);
@@ -225,7 +221,7 @@ export async function waitsOnYou(target: Target, conversation: Pick<EngineSessio
 
 /** A form an MCP server asks in `folder` (`form`, filed under no session), declined where it holds
  * only conversations on Autopilot: those with a tool of that server under way there. Never where it
- * might be another's, one you're at, or while you have a goal paused. Whether it was. */
+ * might be another's, or one you're at. Whether it was. */
 export async function declineSharedOnAutopilot(target: Target, form: Record<string, unknown>, folder: string | undefined, signal?: AbortSignal): Promise<boolean> {
   const server = isObject(form.metadata) && form.metadata.kind === "mcp-elicitation" ? form.metadata.server : null;
   if (typeof server !== "string" || !folder || typeof form.id !== "string") return false;
@@ -235,7 +231,7 @@ export async function declineSharedOnAutopilot(target: Target, form: Record<stri
   for (const id of waiting) {
     let conversation = (await get(`api/session/${encodeURIComponent(id)}`) as { data?: EngineSession } | null)?.data;
     for (let step = 0; conversation?.parentID && step < 5; step++) conversation = (await get(`api/session/${encodeURIComponent(conversation.parentID)}`) as { data?: EngineSession } | null)?.data;
-    if (!conversation || !isAutopilot(conversation) || runningGoalOf(conversation.id, worksFor(conversation)?.bot ?? null)?.heldByYou) return false;
+    if (!conversation || !isAutopilot(conversation)) return false;
   }
   return decline(target, SHARED, form.id, signal, folder);
 }
@@ -244,13 +240,8 @@ export async function declineSharedOnAutopilot(target: Target, form: Record<stri
 const decline = (target: Target, asker: string, id: string, signal?: AbortSignal, folder?: string): Promise<boolean> =>
   call(target, "DELETE", `/api/session/${encodeURIComponent(asker)}/form/${encodeURIComponent(id)}?message=${encodeURIComponent(LEFT_UNDONE_WORDS)}`, undefined, signal, folder).then(() => true, () => false);
 
-// Answered with what it recommends, and kept: with the conversation, and on its bot's running goal
-// (as the goal's own Autopilot keeps it), so the goal shows it too; declined where it recommends
-// nothing. Not while you have that goal paused: it waits for you.
-const pausedByYou = (conversation: Pick<EngineSession, "id" | "metadata">) => !!runningGoalOf(conversation.id, worksFor(conversation)?.bot ?? null)?.heldByYou;
-async function goAhead(target: Target, conversation: Pick<EngineSession, "id" | "metadata">, asker: string, id: string, recommended: Recommendation | null, file: string, signal?: AbortSignal, asked?: string | null): Promise<DecidedShape[] | null> {
-  const goal = runningGoalOf(conversation.id, worksFor(conversation)?.bot ?? null);
-  if (goal?.heldByYou) return null;
+// Answer with the recommendation and keep it with the conversation, or decline.
+async function goAhead(target: Target, conversation: Pick<EngineSession, "id">, asker: string, id: string, recommended: Recommendation | null, file: string, signal?: AbortSignal, asked?: string | null): Promise<DecidedShape[] | null> {
   if (!recommended) return await decline(target, asker, id, signal) ? [] : null;
   const went = await call(target, "POST", `/api/session/${encodeURIComponent(asker)}/form/${encodeURIComponent(id)}/reply`, { answer: recommended.answer }, signal).then(() => true, () => false);
   if (!went) return null;
@@ -269,7 +260,6 @@ async function goAhead(target: Target, conversation: Pick<EngineSession, "id" | 
     all[conversation.id] = [...list, made].slice(-KEPT);
     return made;
   }), file);
-  if (goal) for (const { key, ...each } of recommended.calls) addDecided(goal.bot, { ...each, session: conversation.id }, undefined, `ask:${conversation.id}:${callID(key)}`);
   return kept;
 }
 
@@ -290,6 +280,5 @@ export async function decidedByYou(target: Target, conversation: string, id: str
     const kept = all[conversation]?.find(each => each.id === id);
     if (kept) kept.yours = { choice, at: Date.now() };
   }, file);
-  yoursOnGoal(conversation, id, choice);
   return { decided: decidedIn(conversation, file) };
 }
