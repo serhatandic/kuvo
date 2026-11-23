@@ -132,7 +132,9 @@ export interface LinkState {
   leadership?: Record<number, SignedDoc>;
   /** The previous main asked this computer to unlink it once it takes over at `epoch` + 1 (`takeover.ts`). */
   unlinkAfterHandover?: { setup: string; epoch: number; key: string; wipe: boolean };
-  /** COMPAT(standby): an unfinished standby proposal from before the relay lease; dropped once the main holds its lease. */
+  /**
+   * COMPAT(layout.4 setup): keep an unfinished proposal until the main holds its lease. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
+   */
   leadershipPending?: SignedDoc;
   sharedSetup?: string;
   shared?: SharedValues;

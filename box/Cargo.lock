@@ -941,6 +941,7 @@ dependencies = [
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
+ "kuvo_services",
  "kuvo_setup",
  "kuvo_store",
  "kuvo_wire",
@@ -1106,15 +1107,32 @@ dependencies = [
 [[package]]
 name = "kuvo_services"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "form_urlencoded",
+ "futures-util",
+ "http",
+ "kuvo_protocol",
+ "kuvo_server",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "kuvo_setup"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "async-stream",
  "base64 0.22.1",
+ "ctr",
  "ed25519-dalek",
  "getrandom 0.3.4",
+ "ghash",
  "hex",
  "hmac",
  "http",
@@ -1125,12 +1143,14 @@ dependencies = [
  "kuvo_server",
  "kuvo_store",
  "kuvo_wire",
+ "libc",
  "percent-encoding",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",

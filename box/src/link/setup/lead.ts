@@ -4,6 +4,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import { newKey } from "../crypto/keys";
 import { noteDocsChanged } from "../documents/changed";
 import { newSigningSeed, ownSign } from "../documents/format";
@@ -102,10 +103,11 @@ export function startSetup(link: LinkState, id = newSetupID()): void {
 /** Initialize an independent machine before any client needs to pair or add a member.
  * An account reserved by SSH setup gets its identity and trust from that setup command. */
 export function initializeMachineSetup(): void {
-  if (IS_MAC) return;
+  if (IS_MAC || setupLayoutDeferred(K)) return;
   const kept = readLink();
   if (kept && (macsOf(kept).length || (kept.relay && followedSetup(kept)))) return;
   const changed = updateLink(current => {
+    if (setupLayoutDeferred(K)) return null;
     if (current && (macsOf(current).length || current.localUnlink || current.localWipe || current.removalSource
       || current.installerClaim && !current.installerClaim.adopted && current.installerClaim.until > Date.now())) return null;
     if (sshAccountReserved()) return null;

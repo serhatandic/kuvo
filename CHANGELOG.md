@@ -8,7 +8,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
 - A computer with a retained session database can rejoin after unlinking when its saved work hasn't changed. A Rust computer clears its machine sign-ins and keys before completing unlink.
+- The Rust box can verify encrypted backups on disk, over SSH, or on another computer through the relay. Restore keeps recovered pending work paused for review.
 
+- Older computers can update after goals and slash commands were retired. An interrupted trial preserves the existing setup.
 - A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.
 - Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.

@@ -1,4 +1,4 @@
-// COMPAT(0.8 Claude on a Mac): before 22 November 2026, Claude Code on a Mac ran on Kuvo's own
+// Before 22 November 2026, Claude Code on a Mac ran on Kuvo's own
 // sign-in rather than yours: a `claude setup-token` token in `claude/tokens/<account>.json`, or an
 // Anthropic Console sign-in in Kuvo's folder (`claude/console`). Taken over once, on each Mac box,
 // as docs/architecture/agent-accounts.md says ("Existing sign-ins on update"):

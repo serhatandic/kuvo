@@ -1,6 +1,7 @@
 //! Setup authority, signed checkpoints and the shared values accepted by the main computer.
 
 mod actor;
+pub mod backup;
 mod checkpoint;
 mod discovery;
 mod document;

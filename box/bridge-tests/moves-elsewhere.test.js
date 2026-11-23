@@ -1,5 +1,5 @@
 // Moves on your other computers (PROTOCOL.md, "Peers", `moving`, and `kuvo/moves`' `elsewhere`): a
-// move between two machines (one a phone asked for, say) is seen on every box, so a client that
+// move between two machines is seen on every box, so a client that
 // follows one box (the Mac follows its own) sees it too. Each box tells its peers what it moves as
 // that changes, again each minute while it moves, and once that it's over; each lists what its
 // peers said, until they say it's over or go quiet a few minutes. One box, real (this Mac's), with
@@ -45,6 +45,7 @@ const computer = name => {
 };
 const machines = [computer("lab"), computer("pi")];
 const [lab, pi] = machines.map(each => each.peer);
+const pending = peer => ({ id: peer.key, name: peer.name });
 link.writeLink({ macPeers: [lab, pi] });
 const key = link.newKey();
 link.macLink.overlay = { key: key.toString("base64url"), secret: crypto.randomBytes(32).toString("base64url"), relay: "wss://relay.test", name: "Studio Mac" };
@@ -106,24 +107,25 @@ function writeRecord(record) {
 
 test("a move between two other computers shows here as they say it, and goes once each says it's over", async () => {
   const events = follow();
-  assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
+  assert.deepEqual(underWay(await events.next()), { moves: [], away: [], pendingComputers: [pending(lab), pending(pi)] });
   const leaving = move("mov_lp1", lab.key, pi.key, "from", "copying", { sent: 30_000, size: 90_000 });
   mail(lab, { moving: { moves: [leaving] } });
   const listed = await ask("kuvo/moves");
   assert.deepEqual(listed, {
-    moves: [], away: [], elsewhere: [{ box: lab.key, moves: [{ ...leaving, place: "pi", progress: "Moving to pi…" }] }],
+    moves: [], away: [], pendingComputers: [pending(pi)], elsewhere: [{ box: lab.key, moves: [{ ...leaving, place: "pi", progress: "Moving to pi…" }] }],
   });
   assert.deepEqual(await events.next(), listed, "a client following this box hears it");
   const arriving = move("mov_lp1", lab.key, pi.key, "to", "copying");
   mail(pi, { moving: { moves: [arriving] } });
   const both = await ask("kuvo/moves");
+  assert.deepEqual(both.pendingComputers, []);
   assert.equal(both.elsewhere.find(each => each.box === pi.key).moves[0].progress, "Moving to pi…");
   assert.deepEqual(remoteFacts(both.elsewhere).sort((one, other) => one.box.localeCompare(other.box)), [{ box: lab.key, moves: [leaving] }, { box: pi.key, moves: [arriving] }].sort((one, other) => one.box.localeCompare(other.box)));
   // Lab switched to pi's copy and let its own go; then pi's done too.
   mail(lab, { moving: { moves: [] } });
   assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: pi.key, moves: [arriving] }]);
   mail(pi, { moving: { moves: [] } });
-  assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [] });
+  assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [], pendingComputers: [] });
   events.stop();
 });
 
@@ -160,8 +162,10 @@ test("what a computer said goes once it's been quiet a few minutes; what isn't a
 });
 
 test("a computer gone quiet mid-move: a client following this box hears its move go, at the look after the few minutes", async () => {
+  mail(lab, { moving: { moves: [] } });
+  mail(pi, { moving: { moves: [] } });
   const events = follow();
-  assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
+  assert.deepEqual(underWay(await events.next()), { moves: [], away: [], pendingComputers: [] });
   const one = move("mov_g1", lab.key, pi.key, "from", "copying");
   mail(lab, { moving: { moves: [one] } });
   assert.deepEqual(remoteFacts((await events.next()).elsewhere), [{ box: lab.key, moves: [one] }]);
@@ -169,8 +173,8 @@ test("a computer gone quiet mid-move: a client following this box hears its move
   // reading lab meanwhile reads it until then, and no longer).
   moveTime(link, Date.now() + 60_000);
   moveTime(link, Date.now() + 4 * 60_000);
-  assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
-  assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [] });
+  assert.deepEqual(underWay(await events.next()), { moves: [], away: [], pendingComputers: [] });
+  assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [], pendingComputers: [] });
   events.stop();
 });
 
@@ -183,8 +187,13 @@ const shown = (stage, extra = {}) => ({ id: "mov_here1", kind: "chat", thing: "s
 test("this box tells each of your computers what it moves at its next look: as it changes, each minute while it moves, and once that it's over", async () => {
   const start = Date.now() + 10_000;
   told.length = 0;
+  link.peerMail(pi, { ask: "agents", at: ++clock }, null);
   moveTime(link, start);
-  assert.deepEqual(told, [], "nothing moving here: nothing said");
+  assert.deepEqual(told.map(each => each.peer).sort(), [lab.key, pi.key].sort());
+  assert.deepEqual(told.map(each => each.moving), [{ moves: [] }, { moves: [] }], "an empty first snapshot completes the list");
+  told.length = 0;
+  moveTime(link, start + 500);
+  assert.deepEqual(told, [], "nothing changed: nothing said");
   coming("copying");
   moveTime(link, start + 1_000);
   assert.deepEqual(told.map(each => each.peer).sort(), [lab.key, pi.key].sort(), "every computer told");

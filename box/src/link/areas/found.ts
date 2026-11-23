@@ -1,4 +1,5 @@
-// COMPAT(0.7 first launch): what this computer already has that Kuvo Code can use, as Kuvo Code
+// COMPAT(0.7 first-launch): the account discovery route used at first launch. Goes on the user's word, once no Mac from before 1.0 connects.
+// What this computer already has that Kuvo Code can use, as Kuvo Code
 // 0.7's first launch asked (PROTOCOL.md, "kuvo/accounts/found"); Kuvo Code 1.0's first run reads
 // the accounts themselves (`kuvo/sign-in/accounts`), where an agent's own sign-in is its first
 // account. The coding agents' programs and their sign-ins, as the agents bridge sees them; the keys and sign-ins of an opencode you use apart

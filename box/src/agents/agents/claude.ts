@@ -296,7 +296,7 @@ export class ClaudeAgent implements Agent {
     }
     const account = await this.known.read(fresh, async () => {
       const status = await this.readStatus()
-      // COMPAT(0.8 Claude on a Mac): an earlier version's token runs it until Claude Code's own
+      // An earlier version's token runs it until Claude Code's own
       // sign-in is there, which then takes over (a session's next message starts without it).
       const earlier = legacyToken(this.context.home, this.instance.id)
       if (status.loggedIn && earlier) {
