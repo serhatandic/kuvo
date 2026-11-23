@@ -66,6 +66,9 @@ pub fn sky(hour: f32, cx: &App) -> impl IntoElement {
         .top_0()
         .left_0()
         .size_full()
+        // (Its staggered rows reach a dot past each side: kept inside, so none shows over the
+        // sidebar beside it.)
+        .overflow_hidden()
         .bg(linear_gradient(180., linear_color_stop(top, 0.), linear_color_stop(bottom, 1.)))
         .child(
             canvas(

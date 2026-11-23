@@ -14,6 +14,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
 - Editing or deleting a bot that’s gone tells you the bot is no longer there.
 
+- **+2** under the usage rings, where the rail hasn't room for them all, shows the other rings beside it, each opening its card as the rail's do, instead of pointing to Insights.
+- In Marketplace, the picked category ("All") shows its whole edge, no longer cut at its sides.
+- A Work Queue item's chip written in parentheses, like "(#975)", no longer shows the parentheses around it.
+- The new-session background stays inside the main view instead of showing a strip of dots over the sidebar's edge.
+- With a bot on another of your computers open, the title bar names the bot instead of saying "Bots".
 - Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
