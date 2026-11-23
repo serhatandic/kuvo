@@ -306,6 +306,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-look", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_look) },
     Screen { slug: "bot-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_delete) },
     Screen { slug: "bot-held", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_held) },
+    // A bot on another computer, its conversation open: the title names it.
+    Screen { slug: "bot-chat-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat_elsewhere) },
     Screen { slug: "bot-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere) },
     Screen { slug: "bot-elsewhere-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere_delete) },
     Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
@@ -406,6 +408,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     // The rail's rings, each filled with what's left, and a ring's card open beside it.
     Screen { slug: "rail-ring-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    // The rings past the rail's room, open beside "+2", and one of their cards.
+    Screen { slug: "rail-more", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(rings_more) },
+    Screen { slug: "rail-more-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(rings_more_card) },
     // The box's cards (#952): on pace to run out, used up, Codex's resets and its confirm, an
     // agent's many accounts (20, and 4), one before its first reading, and one Google doesn't count.
     Screen { slug: "rail-card-claude-max", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
@@ -836,6 +841,11 @@ fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
     workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
 }
 /// New Bot: ready-made bots are in the Marketplace.
+fn bot_chat_elsewhere(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    workspace.open_bot_chat("bot_wren", "ses_wren", None, window, cx);
+}
+
 fn bot_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "new", window, cx);
 }
@@ -2313,7 +2323,8 @@ fn stage_work_item_hover(stand_in: &StandIn) {
         "labels": ["lbl_design"],
         "assignee": null,
     }), None);
-    let reply = "Added. It's now part of #840, the shared text-row fix for single-line truncation and wrapping options.";
+    // (In parentheses, as agents often write it: the chip stands in for them.)
+    let reply = "Added. It's now part of the shared text-row fix (#840), for single-line truncation and wrapping options.";
     let start = reply.find("#840").unwrap();
     stand_in.work_queue_mention_fixture(reply, json!([
         { "start": start, "end": start + 4, "number": 840 }
@@ -2427,6 +2438,17 @@ fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gp
 
 fn ring_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.rings().update(cx, |rings, cx| rings.show_card(0, cx));
+}
+
+fn rings_more(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_more(cx));
+}
+
+fn rings_more_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| {
+        rings.show_more(cx);
+        rings.show_card(4, cx);
+    });
 }
 
 fn ring_card_1(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
