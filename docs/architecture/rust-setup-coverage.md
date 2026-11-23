@@ -165,6 +165,10 @@ contains 222 declarations across the listed files, including adjacent work.
   the current layout-23 golden-home scenario. Rust passes the personality
   validation case. The other scenarios first stop at the installer-code, bot
   templates and project-list routes, respectively.
+- TypeScript opens both tagged machine homes. The Rust run on the 0.7.2 home
+  leaves its layout marker absent, and the 0.8.0-beta.1 run stops before the
+  legacy peers document is projected. These checks still need migration and
+  historical relay integration.
 - The scoped Rust check of the current TypeScript golden home preserves its
   certified identity, leadership, accepted shared values and personality
   library bytes. The live Rust pair uses a signed enrollment fixture until the
