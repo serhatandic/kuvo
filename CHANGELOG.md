@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
+- The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
 - While a computer switches to a new Kuvo release, its bots and sessions keep their usual look, saying "Updating…", instead of turning grey. A computer that's quiet for under a minute is shown as live; "seen …" is only for one that's really off.
 - Local builds and tests generate the box bundles and route vectors from the checkout.
