@@ -3,6 +3,7 @@ use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 use kuvo_engine::{Engine, State, Timing};
 use kuvo_peers::{
     devices::Devices,
+    lists::Local,
     relay::Relay,
     session::ComputerKind,
     setup_lists::{ResidentPeers, system_clock},
@@ -58,18 +59,20 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         bootstrap.devices
     };
     let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
-    let peers = ResidentPeers::start(
-        home,
-        roster,
-        relay,
-        Some(devices.clone()),
-        kind == ComputerKind::Mac,
-        Arc::new(system_clock),
-    )
-    .await?;
+    let peers = Arc::new(
+        ResidentPeers::start(
+            home,
+            roster,
+            relay,
+            Some(devices.clone()),
+            kind == ComputerKind::Mac,
+            Arc::new(system_clock),
+        )
+        .await?,
+    );
     peers.follow_setup_roster(setup.handle().rosters()).await;
     let mut routes = Registry::new();
-    engine.register(&mut routes);
+    let sessions = engine.register(&mut routes);
     setup.handle().register(&mut routes);
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
@@ -91,10 +94,34 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
-    resident
+    let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let result = resident
         .serve(dispatcher, Arc::new(devices), super::shutdown())
-        .await?;
+        .await;
+    session_source.abort();
+    result?;
     Ok(())
+}
+
+async fn publish_local_sessions(
+    run: std::path::PathBuf,
+    peers: Arc<ResidentPeers>,
+    mut sessions: kuvo_engine::LocalSessions,
+) {
+    loop {
+        if let Some(record) = sessions.latest_record()
+            && let Ok(list) = serde_json::from_value(record)
+        {
+            let run = run.clone();
+            if let Ok(mut local) = tokio::task::spawn_blocking(move || Local::load(&run)).await {
+                local.list = Some(list);
+                peers.local(local).await;
+            }
+        }
+        if !sessions.changed().await {
+            break;
+        }
+    }
 }
 
 fn info(

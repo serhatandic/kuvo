@@ -125,10 +125,7 @@ fn empty(root: &Path) -> io::Result<bool> {
             Some(LOCK | FILE) => (),
             Some(name)
                 if name.starts_with(".folder-upgrade.lock.pending-")
-                    || name.starts_with(files::DRAFT_PREFIX) =>
-            {
-                ()
-            }
+                    || name.starts_with(files::DRAFT_PREFIX) => {}
             _ => return Ok(false),
         }
     }

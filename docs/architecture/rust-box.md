@@ -408,7 +408,7 @@ parallel.
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
 | 2.6 | The move: 0.5–0.7.2 app folders and machines, 0.8.0-beta.1 homes, into the frozen layout; resumable; the taken-in-once items; reads all four golden homes<br>Inherits `peers.test.js`, `mac-peers.test.js`. | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
-| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
+| 3.2 | **Half done (3.2a, local OpenCode routes).** See [coverage and remaining parity work](rust-engine-coverage.md#phase-32a-local-opencode-conversations). Asks, waiting, models and search follow in 3.2b.<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
