@@ -96,10 +96,12 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
 // (A box that numbers from another takes that one's labels, and changes none of them itself.)
 
 /** What this box tells of its Work Queue now: its items (not deleted ones; the latest Done ones
- * only), the owners they name, its labels, and how it numbers. */
+ * only), retained deleted items, the owners they name, its labels, and how it numbers. */
 export async function tellingNow(targets: Target[], link: LinkState | null, signal?: AbortSignal, cache?: Map<string, unknown>): Promise<Telling> {
   const facts = await factsOf(targets, signal);
-  const all = allItems().filter(item => OWNER.test(item.owner) && !item.removed);
+  const own = allItems().filter(item => OWNER.test(item.owner));
+  const all = own.filter(item => !item.removed);
+  const removed = own.filter(item => item.removed).sort((a, b) => b.removed!.at - a.removed!.at).slice(0, MOST_TOLD);
   // (An issue closed on GitHub is Done here too: among the latest Done, not the open ones.)
   const isDone = (item: Item) => isClosed(item.status) || Boolean(item.source && doneByRead(seenOf(item.source)));
   // (When it was Done: an issue Done on GitHub, when it was closed there or, gone, since when, as
@@ -110,9 +112,10 @@ export async function tellingNow(targets: Target[], link: LinkState | null, sign
   };
   const done = all.filter(isDone).sort((a, b) => doneTime(b) - doneTime(a)).slice(0, MOST_TOLD_DONE);
   const items = [...all.filter(item => !isDone(item)).sort((a, b) => b.updated.at - a.updated.at).slice(0, MOST_TOLD - done.length), ...done];
-  const { owners, titles } = await ownersOf("all", items, facts, targets, cache);
+  const { owners, titles } = await ownersOf("all", [...items, ...removed], facts, targets, cache);
   const told = items.map(item => toldItem(item, facts.working, titles));
-  const content = { items: told, owners, labels: labelsHere(), ...numberingNow(link) };
+  const content = { items: told, ...(removed.length ? { removed: removed.map(item => toldItem(item, facts.working, titles)) } : {}),
+    owners, labels: labelsHere(), ...numberingNow(link) };
   // (When GitHub was last asked of an issue goes with it, so the others don't ask again meanwhile,
   // but isn't a change: what's told goes again only once something else changes.)
   const unchecked = { ...content, items: told.map(item => (item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item)) };
@@ -205,10 +208,22 @@ export async function pushQueues(host: Pick<LinkHost, "send">, link: LinkState |
 // What's told, as mails for `peer`: whole, or, too big even in parts, with its items cut (Done ones
 // and the longest unchanged first: they're last in the list), said in the box's log.
 function fittedMails(peer: Peer, telling: Telling, link: LinkState, now: number): Buffer[] | null {
-  const told = telling.payload.told as { items: unknown[] } & Record<string, unknown>;
-  for (const most of [told.items.length, 1000, 500, 200, 50]) {
-    if (most > told.items.length) continue;
-    const mails = mailsFor(peer, most === told.items.length ? telling.payload : { told: { ...told, items: told.items.slice(0, most) } }, link, now);
+  const told = telling.payload.told as { items: unknown[]; removed?: unknown[] } & Record<string, unknown>;
+  const full = mailsFor(peer, telling.payload, link, now);
+  if (full) return full;
+  // Keep active items before deleted summaries if the combined snapshot exceeds mail limits.
+  const { removed, ...active } = told;
+  if (removed?.length) for (const most of [500, 100, 20, 0]) {
+    if (most >= removed.length) continue;
+    const mails = mailsFor(peer, { told: { ...active, ...(most ? { removed: removed.slice(0, most) } : {}) } }, link, now);
+    if (mails) {
+      console.error(`Work Queue: ${removed.length} deleted items were too many to tell ${computerName(peer)} alongside its active items. Told ${most}.`);
+      return mails;
+    }
+  }
+  for (const most of [1000, 500, 200, 50]) {
+    if (most >= active.items.length) continue;
+    const mails = mailsFor(peer, { told: { ...active, items: active.items.slice(0, most) } }, link, now);
     if (mails) {
       if (most < told.items.length) console.error(`Work Queue: ${told.items.length} items were too many to tell ${computerName(peer)} at once: told the ${most} latest.`);
       return mails;
@@ -372,6 +387,7 @@ function shadowedHere(item: ToldItem, live: ReadonlySet<string>, removed: Readon
  * stale copy on its way here. */
 export function itemsElsewhere(owner: string, link: LinkState | null = readLink(), here?: Set<string>, deleted?: Set<string>, { asTold = false }: { asTold?: boolean } = {}): {
   items: ItemElsewhere[];
+  removed: ItemElsewhere[];
   owners: OwnerFacts[];
   labels: Label[];
   computers: (Computer & { at: number; away?: number })[];
@@ -396,7 +412,8 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
     const computer: Computer = { key: peer.key, name: computerName(peer), kind: peer.kind, ...(peer.id ? { id: peer.id } : {}) };
     const away = awaySince(peer.key, reach);
     computers.push({ ...computer, at: told.at, ...(away !== null ? { away } : {}) });
-    for (const item of told.items) {
+    for (const item of [...told.items, ...(told.removed ?? [])]) {
+      if (item.removed && deleted.has(item.id)) continue;
       // (Not one here; nor one deleted here that this one told of on its way here: it got here.)
       if (shadowedHere(item, here, deleted)) continue;
       const other = best.get(item.id);
@@ -405,10 +422,12 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
     for (const each of told.owners) if (!owners.has(each.owner)) owners.set(each.owner, each);
     for (const each of told.labels) if (!removedLabels.has(each.id) && !custom.has(each.id)) custom.set(each.id, each);
   }
-  const items = [...best.values()].map(each => each.item)
-    .filter(item => visibleItem(item, { owner, overseen: overseen ?? undefined }));
-  const named = new Set(items.flatMap(item => [item.owner, ...(item.handedBy ? [item.handedBy] : [])]));
-  return { items, owners: [...owners.values()].filter(each => named.has(each.owner)), labels: [...custom.values()], computers };
+  const visible = [...best.values()].map(each => each.item)
+    .filter(item => visibleItem(item, { owner, overseen: overseen ?? undefined, deleted: true }));
+  const items = visible.filter(item => !item.removed);
+  const removed = visible.filter(item => item.removed);
+  const named = new Set(visible.flatMap(item => [item.owner, ...(item.handedBy ? [item.handedBy] : [])]));
+  return { items, removed, owners: [...owners.values()].filter(each => named.has(each.owner)), labels: [...custom.values()], computers };
 }
 
 /** The item another computer told of that `ref` names (by id, number or source), or null: of two,
@@ -423,7 +442,8 @@ export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(),
   const computerOf = (peer: Peer): Computer => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...(peer.id ? { id: peer.id } : {}) });
   for (const peer of peers) {
     const told = readTold(peer.key);
-    const item = told?.items.find(each => refNames(ref, each) && !shadowedHere(each, liveHere, deletedHere) && visibleItem(each, { owner: "all" }));
+    const items = told ? deleted ? [...told.items, ...(told.removed ?? [])] : told.items : [];
+    const item = items.find(each => refNames(ref, each) && !shadowedHere(each, liveHere, deletedHere) && visibleItem(each, { owner: "all", deleted }));
     if (item && (!found || newer(item, told!.at, found.item, found.at))) found = { item: { ...(asTold ? item : asAway(item, awaySince(peer.key))), computer: computerOf(peer) }, at: told!.at };
   }
   if (!found && deleted) {
@@ -432,7 +452,7 @@ export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(),
       const item = toldItemOf(each.item);
       if (peer && item && refNames(ref, item)) {
         const removed = (each.item as Pick<Item, "removed">).removed ?? { at: each.at, by: { user: true } };
-        return { ...item, removed, computer: computerOf(peer) };
+        return { ...item, removed: item.removed ?? removed, computer: computerOf(peer) };
       }
     }
   }
@@ -512,4 +532,6 @@ const asAway = (item: ToldItem, away: number | null): ToldItem =>
 
 // Whether `a` (told at `aAt`) is newer word of an item than `b`: changed later, or the same and
 // told later.
-const newer = (a: ToldItem, aAt: number, b: ToldItem, bAt: number): boolean => a.updated.at > b.updated.at || (a.updated.at === b.updated.at && aAt > bAt);
+const changedAt = (item: ToldItem) => Math.max(item.updated.at, item.removed?.at ?? 0);
+const newer = (a: ToldItem, aAt: number, b: ToldItem, bAt: number): boolean =>
+  changedAt(a) > changedAt(b) || (changedAt(a) === changedAt(b) && aAt > bAt);

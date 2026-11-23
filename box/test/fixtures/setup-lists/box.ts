@@ -17,7 +17,7 @@ import { shareSetupLists } from "../../../src/link/lists/setup";
 import { peerMail, receiveMail } from "../../../src/link/peers/mail";
 import { noteUnreachable } from "../../../src/link/peers/reach";
 import { readFrame, readRelay } from "../../../src/link/relay/frames";
-import { takeWorkQueueMail } from "../../../src/link/work-queue/across";
+import { pushQueues, takeWorkQueueMail } from "../../../src/link/work-queue/across";
 import { isObject } from "../../../src/shared/json";
 import { engineHandler } from "../../../src/link/server/router";
 import { answerSshRoute, sshLine } from "../../../src/link/server/ssh-route";
@@ -69,13 +69,22 @@ async function run() {
       await Promise.all([shareSetupLists(host, readers), shareLibrary(host)]);
       return frames;
     }
+    case "publish-queue": {
+      const frames: string[] = [];
+      await pushQueues({ send: frame => { frames.push(frame.toString("base64url")); } }, readLink(), [readers.readEngine()]);
+      return frames;
+    }
     case "receive": {
       for (const encoded of command.frames) {
         const delivered = readRelay(Buffer.from(encoded, "base64url"));
         const frame = delivered?.kind === "deliver" && readFrame(delivered.payload);
         if (!frame) throw new Error("Expected mail on the relay.");
         let saved: ReturnType<typeof peerMail>;
-        receiveMail(frame.body, null, (sender, payload) => { saved = peerMail(sender, payload, null); });
+        receiveMail(frame.body, null, (sender, payload) => {
+          saved = isObject(payload.workQueue)
+            ? takeWorkQueueMail(sender, payload.workQueue, null, () => ({ targets: [readers.readEngine()], bridge: false }))
+            : peerMail(sender, payload, null);
+        });
         await saved!;
       }
       return true;

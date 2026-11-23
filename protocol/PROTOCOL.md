@@ -8154,9 +8154,11 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?},
-  items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
-  `mentionTargets` (stable IDs it mentions), an issue's or pull
+  items, removed?, owners, labels}}}`. `items` are active items as a view gives them (without `can`)
+  and the latest Done items. The optional `removed` contains deleted summaries and their deletion
+  stamps. The first Work Queue state puts kept removed summaries in Deleted, with their computer
+  and Restore available only while the owner answers. Each summary may have `handedFrom` (who handed
+  it on) and `mentionTargets` (stable IDs it mentions). An issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the
