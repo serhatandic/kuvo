@@ -34,7 +34,7 @@ import type { Computer } from "../work-queue/view";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 export const LIBRARY_FEATURE = "library";
-export const MERGED_LIBRARY_FEATURE = "line.merged-library";
+const MERGED_LIBRARY_FEATURE = "line.merged-library";
 export const MERGED_LIBRARY_ROUTE = "kuvo/setup/library/events";
 const copyShape = object(LIBRARY_COPY);
 type LibraryCopy = Infer<typeof copyShape>;
