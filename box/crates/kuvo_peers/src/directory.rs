@@ -2,9 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kuvo_protocol::routes::types::GetKuvoSetupOutputsStatus200PendingComputersItem as Computer;
+use kuvo_protocol::routes::types::{
+    GetKuvoComputersStatus200ComputersItemAgents as ComputerAgents,
+    GetKuvoComputersStatus200ComputersItemAgentsState4 as AgentState,
+    GetKuvoComputersStatus200ComputersItemAtWorkItem as AtWork,
+    GetKuvoSetupOutputsStatus200PendingComputersItem as Computer,
+};
 use kuvo_wire::keys::{Address, Host, encode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -120,12 +126,134 @@ pub enum AgentKind {
     Bot,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ComputerFacts {
     #[serde(rename = "fleetUpdate", skip_serializing_if = "Option::is_none")]
     pub release: Option<FleetUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kuvo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_work: Option<Vec<AtWork>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<ComputerAgents>,
+    // Compatibility fields for consumers of the retained announcement, including older boxes.
     #[serde(flatten)]
-    pub facts: BTreeMap<String, serde_json::Value>,
+    extra: BTreeMap<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for ComputerFacts {
+    fn deserialize<D: Deserializer<'de>>(value: D) -> Result<Self, D::Error> {
+        let mut given = serde_json::Map::<String, Value>::deserialize(value)?;
+        let release = given
+            .remove("fleetUpdate")
+            .and_then(|field| serde_json::from_value(field).ok());
+        let working = given.remove("working").and_then(|field| {
+            let count = field.as_f64()?;
+            ((0.0..=10_000.0).contains(&count) && count.fract() == 0.0).then_some(count as u64)
+        });
+        let at_work = given.remove("atWork").and_then(|rows| {
+            working?;
+            Some(
+                rows.as_array()?
+                    .iter()
+                    .filter_map(active_session)
+                    .take(20)
+                    .collect(),
+            )
+        });
+        let agents = given.remove("agents").and_then(|field| {
+            let state: AgentState = serde_json::from_value(field.get("state")?.clone()).ok()?;
+            let why = field
+                .get("why")
+                .and_then(Value::as_str)
+                .filter(|why| {
+                    state == AgentState::Down
+                        && matches!(
+                            *why,
+                            "engine"
+                                | "notInstalled"
+                                | "outdated"
+                                | "keeper"
+                                | "crashing"
+                                | "stuck"
+                                | "notStarting"
+                                | "app"
+                        )
+                })
+                .map(str::to_owned);
+            Some(ComputerAgents { state, why })
+        });
+        let mut short = |key, limit| {
+            let given = given.remove(key)?;
+            let text = given.as_str()?;
+            (!text.is_empty() && text.encode_utf16().count() <= limit).then(|| text.to_owned())
+        };
+        let version = short("version", 40);
+        let engine = short("engine", 40);
+        let system = short("system", 80);
+        let kuvo = short("kuvo", 40);
+        let extra = given
+            .into_iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "wsl"
+                        | "layout"
+                        | "installedSha256"
+                        | "staged"
+                        | "cannot"
+                        | "candidate"
+                        | "releaseManifest"
+                        | "runningManifest"
+                        | "waiting"
+                        | "asking"
+                        | "oldApp"
+                        | "addresses"
+                        | "release"
+                )
+            })
+            .collect();
+        Ok(Self {
+            release,
+            version,
+            engine,
+            system,
+            kuvo,
+            working,
+            at_work,
+            agents,
+            extra,
+        })
+    }
+}
+
+fn active_session(value: &Value) -> Option<AtWork> {
+    let id = value.get("id")?.as_str()?;
+    if !record_id(id, "ses_") {
+        return None;
+    }
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .and_then(work_title);
+    Some(AtWork {
+        id: id.into(),
+        title,
+    })
+}
+
+pub(crate) fn work_title(text: &str) -> Option<String> {
+    let title = crate::calls::plain(text, 200);
+    (!title.is_empty()).then_some(title)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -295,17 +423,6 @@ impl Announcement {
             .is_some_and(serde_json::Value::is_object)
         {
             input.remove("computer");
-        }
-        if let Some(computer) = input
-            .get_mut("computer")
-            .and_then(serde_json::Value::as_object_mut)
-            && computer
-                .get("fleetUpdate")
-                .and_then(|state| state.get("state"))
-                .and_then(serde_json::Value::as_str)
-                .is_none()
-        {
-            computer.remove("fleetUpdate");
         }
         let mut announcement: Self = serde_json::from_value(given).ok()?;
         announcement.heard = Some(now);
