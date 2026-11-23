@@ -1,4 +1,4 @@
-// This box's own settings (PROTOCOL.md, "kuvo/config"), Also Apply, Settings › MCP Servers'
+// This box's own settings (PROTOCOL.md, "Per area"), Also Apply, Settings › MCP Servers'
 // popular servers, and its integrations' keys.
 
 import { any, bool, type Infer, list, map, NOTHING, number, object, oneOf, type RouteShape, string, words } from "../shape";
@@ -70,18 +70,27 @@ export type ClaudeCodeImport = Infer<typeof CLAUDE_CODE_IMPORT>;
 export type ClaudeCode = Infer<typeof CLAUDE_CODE>;
 
 export const SETTINGS_ROUTES: RouteShape[] = [
+  // This computer's own engine settings, the whole document; each computer keeps its own.
   { route: "GET kuvo/config", feature: "config", answers: { 200: CONFIG } },
+  // Changes some settings (`{changes: [{path, value, was?}]}`); a stale `was` is a 409: read again.
   { route: "PATCH kuvo/config", feature: "config", answers: { 200: oneOf(CONFIG, CONFIG_WITH_RECEIPTS) } },
+  // Also Apply: another computer's changes made here too, as this one names its own; `dry` changes nothing.
   { route: "POST kuvo/config/apply", feature: "config.apply", answers: { 200: oneOf(CONFIG_APPLIED, APPLY_PREVIEW, APPLY_RESULT), 202: APPLY_RESULT } },
+  // Keeps the changes named by `PATCH kuvo/config`'s receipts as one change set for Also Apply elsewhere.
   { route: "POST kuvo/config/change-sets", feature: "config.apply.from", body: object({ receipts: list(string) }),
     answers: { 201: object({ changeSet: string, expires: number }) } },
+  // How an Also Apply plan went.
   { route: "GET kuvo/config/apply/:plan", feature: "config.apply.from",
     answers: { 200: APPLY_RESULT } },
+  // Settings › MCP Servers' popular servers, and whether each is added here.
   { route: "GET kuvo/mcp/catalog", feature: "mcp.catalog", answers: { 200: MCP_CATALOG } },
+  // Adds a popular server as its Add button does; turn it off or remove it through `kuvo/config`.
   { route: "POST kuvo/mcp/catalog/:id", feature: "mcp.catalog", answers: { 200: oneOf(CONFIG, CONFIG_WITH_RECEIPTS) } },
+  // The names of this computer's integrations' keys (`KUVO_KEY_…`); set a key before adding what names it.
   { route: "GET kuvo/keys", feature: "keys", answers: { 200: KEYS } },
   { route: "GET kuvo/keys/:name", feature: "keys", answers: { 200: KEY } },
   { route: "PUT kuvo/keys/:name", feature: "keys", answers: { 200: NOTHING } },
   { route: "DELETE kuvo/keys/:name", feature: "keys", answers: { 200: NOTHING } },
+  // Claude Code's agents here (`~/.claude/agents`) to bring over: import by writing `settings` at `path`.
   { route: "GET kuvo/claude-code", feature: "claude-code", answers: { 200: CLAUDE_CODE } },
 ];

@@ -297,10 +297,6 @@ test("what an MCP server asks in a folder, filed under no session, comes back de
   // No conversation of it at work: nothing to say whose it is.
   atWorkOn = {};
   await hears(asked("frm_c"));
-  // At work in one on Autopilot whose goal you have paused.
-  goalIn("ses_away", { heldByYou: true });
-  atWorkOn = { ses_away: "probe" };
-  await hears(asked("frm_d"));
   assert.deepEqual(declined.map(each => each.form), ["frm_a"]);
   assert.deepEqual(answered, []);
 });

@@ -7,7 +7,7 @@ import { askingNow } from "../work/tree";
 // (`kuvo/work/subagents/<session>`, and its events); `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
 // turn with what it was still to hear of them. What a bot asks
 // you before it does it (`kuvo/work/asks`, its events, and your answer, `POST kuvo/work/asks/<id>`),
-// where new projects go (`kuvo/work/settings`), a project made (`POST kuvo/projects/new`), and a
+// where new projects go (`kuvo/work/settings`), and making a project (`POST kuvo/projects/new`).
 
 import path from "node:path";
 import { listOf } from "../files";

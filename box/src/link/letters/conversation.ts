@@ -64,7 +64,7 @@ export function conversationMarkdown(title: string, messages: ReadMessage[], age
       // Its parts, as the box keeps them, or reads one from before (messages/parts.ts).
       const parts = keptParts(message.metadata) ?? partsOf(written);
       const work = /^\[Work from (.*) · [^\]\n]+\]\n\n([\s\S]*?)(\n\n---\n[\s\S]*)?$/.exec(written);
-      // What the box told the agent (a goal's word, its sessions' news): never the user's, and
+      // What the box told the agent (its sessions' news): never the user's, and
       // whole, as the agent read it (the export shows its line).
       const note = boxNoteOf(written, message.metadata);
       if (note) say(note.from, written.trim());

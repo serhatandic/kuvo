@@ -59,8 +59,7 @@ export interface FenceState {
   /** While it's on, what it can't keep commands from on this computer: `services`, the services
    * your login runs (systemd, your keyring, your SSH agent), and git's own files in the repositories
    * they write (fence/landlock.ts, KEEP_GIT), where commands can't have a namespace of their own
-   * (`needs` says what for). The vault isn't open to agents there, nor do goals go on
-   * alone: `fenceWhole`. And `git`: on a Linux machine where a folder can't be made read-only in a
+   * (`needs` says what for). The vault is closed to agents there (`fenceWhole`). And `git`: on a Linux machine where a folder can't be made read-only in a
    * command's namespace (fence/landlock.ts, `readOnlyHere`), each command in a repository refuses
    * rather than run with git's own files open to it. */
   gaps?: FenceGap[];
@@ -239,8 +238,8 @@ const PENDING_WHY = "Its check didn't finish in time (this computer may be busy)
 /** Whether commands here are kept from all it hides, Kuvo Code's own included, by the sandbox as
  * any of the box's processes can tell: a Mac's always; a Linux machine's only where each command
  * has a namespace of its own (`run/fence/namespace` names its unshare), or one could have the
- * services your login runs start anything outside it (`systemd-run --user`). What the vault and a
- * Auto requires besides `on`. */
+ * services your login runs start anything outside it (`systemd-run --user`). What the vault and
+ * Auto require besides `on`. */
 export function fenceWhole(): boolean {
   return platform === "darwin" || (textOf(path.join(FOLDER, "namespace")) ?? "").startsWith("/");
 }

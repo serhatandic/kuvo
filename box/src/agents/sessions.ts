@@ -4012,7 +4012,7 @@ function promptFile(file: { uri: string; name?: string }): PromptFile {
 /**
  * Your words in a message, without the blocks the app adds at its end (that it's from your phone,
  * the note of attached files, your comments on the changes, the agents you named with "&", the
- * widget it answers, the keyword it was sent with), as the app's SentMessage reads it.
+ * widget it answers), as the app's SentMessage reads it.
  */
 export function ownWords(message: string): string {
   let text = message.trimEnd()

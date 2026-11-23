@@ -1,5 +1,5 @@
 #!/bin/sh
-# Writes protocol/vectors/routes/box: what a box's release brings that its routes read (the
+# Writes box/test/fixtures/routes/box: what a box's release brings that its routes read (the
 # integrations it offers, the popular MCP servers), from the box's own table
 # (box/src/shared/integrations), as a release writes them. The machine's runner of the route
 # scenarios (box/bridge-tests/contract.test.js) sets its box up with them, and the box's tests
@@ -26,13 +26,13 @@ fi
 [ -n "${BUN:-}" ] || { echo "scripts/route-vectors.sh needs Bun: install it, or name one with BUN=." >&2; exit 1; }
 real_app_guard "scripts/route-vectors.sh" "$BUN"
 
-mkdir -p protocol/vectors/routes/box
+mkdir -p box/test/fixtures/routes/box
 BUN_BE_BUN=1 "$BUN" -e '
 import fs from "node:fs";
 import { integrationsCatalog, mcpCatalog } from "./box/src/shared/integrations/catalogs.ts";
-const write = (name, catalog) => fs.writeFileSync(`protocol/vectors/routes/box/${name}`, JSON.stringify(JSON.parse(catalog), null, 2) + "\n");
+const write = (name, catalog) => fs.writeFileSync(`box/test/fixtures/routes/box/${name}`, JSON.stringify(JSON.parse(catalog), null, 2) + "\n");
 write("integrations.json", integrationsCatalog(false));
 write("mcp-catalog.json", mcpCatalog());
 '
 
-echo "Wrote protocol/vectors/routes/box"
+echo "Wrote box/test/fixtures/routes/box"

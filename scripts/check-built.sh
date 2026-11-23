@@ -6,7 +6,9 @@
 # with CI paused nothing else checks them before they're built into the app.
 #   scripts/check-built.sh          each script's --check; 1 if one is stale, 2 if one couldn't run
 #                                   for want of a Bun (the others checked, nothing stale found)
-#   scripts/check-built.sh --build  builds all four again (then commit what changed)
+#   scripts/check-built.sh --build  builds all four again (then commit what changed), and writes
+#                                   protocol/ROUTES.md, every route with its comment, for people
+#                                   (never kept in git, so never checked)
 #   BUN   the Bun to build with (as scripts/build-box.sh finds it)
 set -u
 cd "$(dirname "$0")/.."

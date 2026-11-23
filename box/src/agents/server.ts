@@ -57,7 +57,7 @@ export interface Context {
   peers?: PeerParts
   /** Restarts the agents' processes started before the box's sandbox was on, as you said to (main.ts). */
   restartOutside?: () => void
-  /** The box's other keywords: side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
+  /** Side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
   sideQuestions?: SideQuestions
   handoffs?: Handoffs
   /** Where conversations are, for branching one (branch.ts). */

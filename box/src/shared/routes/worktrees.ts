@@ -1,4 +1,4 @@
-// Worktrees (PROTOCOL.md, "Worktrees"): the git worktrees the box's sessions run in, each on a
+// Worktrees: the git worktrees the box's sessions run in, each on a
 // branch of its own, made, listed and removed by the box, and where new ones go.
 
 import { bool, type Infer, list, NOTHING, nullable, number, object, oneOf, type RouteShape, string } from "../shape";
@@ -91,9 +91,12 @@ export const WORKTREE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/worktrees/events", feature: "worktrees.events", answers: { 200: WORKTREES } },
   // A new one, for a session to run in: as the box keeps it.
   { route: "POST kuvo/worktrees", feature: "worktrees", answers: { 200: WORKTREE_RECORD } },
+  // Remove a worktree as Remove… does: its folder, and with `discard` what wasn't committed.
   { route: "POST kuvo/worktrees/remove", feature: "worktrees", answers: { 200: NOTHING } },
   // A removed one back where it was, for its sessions: as the box keeps it again.
   { route: "POST kuvo/worktrees/restore", feature: "worktrees", answers: { 200: WORKTREE_RECORD } },
+  // Keep a worktree an older Mac kept before its box did (`removed`: one it removed).
   { route: "POST kuvo/worktrees/record", feature: "worktrees", answers: { 200: NOTHING } },
+  // Where new worktrees go, as the engine reads it, with each project's folder for them.
   { route: "GET kuvo/worktrees/where", feature: "worktrees.where", answers: { 200: WHERE } },
 ];

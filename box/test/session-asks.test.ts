@@ -187,7 +187,7 @@ test("a conversation's asks, its subagents' too, come worded as the cards show t
 
 test("Always's words, whole and as they're said, are the apps' own, case for case", async () => {
   const { alwaysWords } = await import("../src/link/notices/news")
-  const vectors = JSON.parse(readFileSync(join(import.meta.dir, "../../protocol/vectors/always-words.json"), "utf8"))
+  const vectors = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/always-words.json"), "utf8"))
   for (const each of vectors.cases) {
     const words = alwaysWords(each, each.home ?? null)
     expect({ plain: words.named === null ? words.title : `${words.title} ${words.named}`, help: words.help, spoken: words.spoken }).toEqual({ plain: each.plain, help: each.help, spoken: each.spoken })

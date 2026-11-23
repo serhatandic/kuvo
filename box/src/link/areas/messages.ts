@@ -256,7 +256,5 @@ export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerP
   const texts = isObject(given) && Array.isArray(given.texts) ? given.texts : null;
   if (!texts || texts.some(text => typeof text !== "string")) return yield* json(400, { message: "Send the messages' texts (texts)." });
   if (texts.length > PARTS_MOST) return yield* json(400, { message: `Send at most ${PARTS_MOST} texts at once.` });
-  const ids = isObject(given) && Array.isArray(given.ids) ? given.ids : null;
-  if (ids && (ids.length !== texts.length || ids.some(id => typeof id !== "string"))) return yield* json(400, { message: "Send an id for each text (ids)." });
   return yield* json(200, { parts: (texts as string[]).map(partsOf) });
 }

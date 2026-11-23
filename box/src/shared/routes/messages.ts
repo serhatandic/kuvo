@@ -22,7 +22,9 @@ export const MESSAGE_PARTS = object({
 });
 
 export const MESSAGE_ROUTES: RouteShape[] = [
+  // Send a message into a session; to an owner elsewhere it's saved here and answered 202.
   // (The engine's answer, or its coding agents' bridge's, as it gave it.)
   { route: "POST kuvo/sessions/:id/send", feature: "messages.send", answers: { 200: any, 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: oneOf(OWNER_MESSAGE_INTERRUPTED, REFUSED), 503: REFUSED } },
+  // The parts of messages from before parts were kept (`texts`, at most 500).
   { route: "POST kuvo/messages/parts", feature: "messages.send", answers: { 200: object({ parts: list(MESSAGE_PARTS) }), 400: REFUSED, 405: REFUSED } },
 ];

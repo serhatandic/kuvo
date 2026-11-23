@@ -1034,7 +1034,7 @@ export async function holdQueue(target: Target, session: string, since?: number,
   if (limitStop && (limitStop.resetsAt === undefined || limitStop.resetsAt > Date.now())) {
     // An inbox read can fail or stall. Keep the reason before asking it to move its messages.
     const state = await changeQueueLater(session, state =>
-      (state.paused && !state.limitStop) || resumedSince(state)
+      state.userPaused || (state.paused && !state.limitStop) || resumedSince(state)
         ? state : { ...state, paused: true, limitStop });
     if (state.limitStop?.resetsAt !== undefined) scheduleLimitRelease(target, session, state.limitStop.resetsAt);
   }

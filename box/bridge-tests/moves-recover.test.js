@@ -1,7 +1,7 @@
 // Move to Computer when something on the way goes wrong (PROTOCOL.md, `kuvo/moves`): a word between
-// the boxes lost, a box started again partway, its engine or group chats not answering, a bot at
-// work on a goal. Whatever it is, a move ends, and never leaves a second live copy, a group chat
-// held for good, or a goal left behind with nobody at it. One box, real (this Mac's), against a
+// the boxes lost, a box started again partway, its engine or group chats not answering.
+// Whatever it is, a move ends without a second live copy or a group chat held for good.
+// One box, real (this Mac's), against a
 // scripted other computer whose mail goes to the script instead of the relay (`sendMovesWith`); its
 // engine and its group chats' bridge are stand-ins.
 //

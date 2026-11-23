@@ -83,7 +83,6 @@ export interface Waiting {
   from?: string;
   text: string;
   files?: string[];
-  /** The keyword it was sent with, as typed (its parts'), shown in front of its words. */
   at: number;
 }
 

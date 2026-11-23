@@ -1,11 +1,12 @@
 import type { RouteFeature } from "./routes/feature";
 
 // What a route's answer looks like, written once as data (`shared/routes`): the contract suite holds
-// every answer both boxes give to it (protocol/vectors/routes/shapes, which scripts/route-shapes.sh writes
-// from these), and the box's own code gets its types from the same definitions (`Infer`).
+// every answer both boxes give to it (protocol/vectors/routes/shapes/answers.json, which
+// scripts/route-shapes.sh writes from these, and which the desktop app reads too), and the box's own
+// code gets its types from the same definitions (`Infer`).
 //
-// A shape is JSON itself, so both runners read it: the bridge's (contract-runner.js) and the Mac's
-// (RouteContractTests.swift), each held to protocol/vectors/routes/shapes/cases.json.
+// A shape is JSON itself, so any runner reads it: the bridge's (contract-runner.js), held to
+// box/test/fixtures/routes/shapes/cases.json.
 
 /** One shape: a kind of value, a list or a map of one shape, an object with these fields and no
  * others (a field whose name ends in "?" may be left out), one of several shapes, or one value. */

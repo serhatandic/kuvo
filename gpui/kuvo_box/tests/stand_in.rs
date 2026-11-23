@@ -637,7 +637,7 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
     let newest: Vec<Value> = (100..200)
         .rev()
         .map(|n| match n {
-            199 => user_with(n, json!({ "kuvo": { "parts": { "words": "kept words", "keyword": "/plan" } } })),
+            199 => user_with(n, json!({ "kuvo": { "parts": { "words": "kept words", "widget": "Build" } } })),
             198 => user_with(n, json!({ "kuvo": { "note": { "from": "Wake-up", "line": "x" } } })),
             _ => user_with(n, json!(null)),
         })
@@ -648,10 +648,10 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
         (_, "kuvo/sessions/ses_1/location") => Answer::json(200, json!({ "place": "engine", "running": false })),
         (_, "api/session/ses_1/message?limit=100&order=desc") => Answer::json(200, json!({ "data": newest, "cursor": { "next": "c1" } })),
         (_, "api/session/ses_1/message?limit=100&cursor=c1") => Answer::json(200, json!({ "data": older, "cursor": { "next": "c2" } })),
-        // The box reads each text from before: "text 5" was sent with /goal.
+        // The box reads each text from before.
         ("POST", "kuvo/messages/parts") => {
             let texts: Vec<String> = serde_json::from_value(seen.body.as_ref().unwrap()["texts"].clone()).unwrap();
-            Answer::json(200, json!({ "parts": texts.iter().map(|text| json!({ "words": format!("read {text}"), "keyword": "/goal" })).collect::<Vec<_>>() }))
+            Answer::json(200, json!({ "parts": texts.iter().map(|text| json!({ "words": format!("read {text}") })).collect::<Vec<_>>() }))
         }
         _ => Answer::json(404, json!({})),
     });
@@ -666,8 +666,8 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
         user.parts()
     };
     // Kept with it; read by its box; the box's note as it is.
-    assert_eq!((parts(&shown, "msg_199").words.as_str(), parts(&shown, "msg_199").keyword.as_deref()), ("kept words", Some("/plan")));
-    assert_eq!((parts(&shown, "msg_150").words.as_str(), parts(&shown, "msg_150").keyword.as_deref()), ("read text 150", Some("/goal")));
+    assert_eq!((parts(&shown, "msg_199").words.as_str(), parts(&shown, "msg_199").widget.as_deref()), ("kept words", Some("Build")));
+    assert_eq!(parts(&shown, "msg_150").words, "read text 150");
     assert_eq!(parts(&shown, "msg_198").words, "text 198");
     let asked = |stand_in: &StandInBox| -> Vec<Vec<String>> {
         stand_in.seen().iter().filter(|seen| seen.route() == "kuvo/messages/parts").map(|seen| serde_json::from_value(seen.body.as_ref().unwrap()["texts"].clone()).unwrap()).collect()
@@ -690,35 +690,6 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
     assert_eq!(shown.messages[0].id(), "msg_001");
     assert_eq!(parts(&shown, "msg_150").words, "read text 150");
     assert_eq!(asked(&stand_in).len(), 2);
-}
-
-#[test]
-fn a_message_that_ran_a_command_reads_as_typed_by_its_id() {
-    // The engine kept the prompt the command made; its box keeps what was typed, by the message's id.
-    let made = json!({ "type": "user", "id": "msg_cmd", "time": { "created": 2 }, "text": "Review the code on this branch: look for bugs" });
-    let plain = json!({ "type": "user", "id": "msg_plain", "time": { "created": 1 }, "text": "hello" });
-    let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
-        (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-        (_, "kuvo/sessions/ses_1/location") => Answer::json(200, json!({ "place": "engine", "running": false })),
-        (_, "api/session/ses_1/message") => Answer::json(200, json!({ "data": [made.clone(), plain.clone()] })),
-        ("POST", "kuvo/messages/parts") => {
-            let body = seen.body.clone().unwrap();
-            let ids: Vec<String> = serde_json::from_value(body["ids"].clone()).unwrap_or_default();
-            let texts: Vec<String> = serde_json::from_value(body["texts"].clone()).unwrap();
-            // (Each with its id, and the conversation they're in.)
-            if ids.len() != texts.len() || body["session"] != json!("ses_1") {
-                return Answer::json(400, json!({ "message": "Send an id for each text (ids)." }));
-            }
-            Answer::json(200, json!({ "parts": ids.iter().zip(&texts).map(|(id, text)| if id == "msg_cmd" { json!({ "words": "this branch", "keyword": "/review", "command": true }) } else { json!({ "words": text }) }).collect::<Vec<_>>() }))
-        }
-        _ => Answer::json(404, json!({})),
-    });
-    let _events = stand_in.stream_for("api/event");
-    let (_home, _serve, client) = this_mac(&stand_in);
-    let follow = client.follow_conversation("ses_1", at_once());
-    let ConversationUpdate::Conversation(shown) = follow.next_blocking().unwrap() else { panic!() };
-    let Some(Message::User(user)) = shown.messages.iter().find(|message| message.id() == "msg_cmd") else { panic!() };
-    assert_eq!((user.parts().words.as_str(), user.parts().keyword.as_deref()), ("this branch", Some("/review")));
 }
 
 #[test]

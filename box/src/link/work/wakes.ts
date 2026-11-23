@@ -304,7 +304,7 @@ const hashed = (text: string) => crypto.createHash("sha256").update(text).digest
  * for whoever started it), what the session left running ending or its agent carrying on by itself,
  * the box's own word (what a session it started did, a limit that reset: what comes of it may be the
  * result a lead waits for, so it's told, but it doesn't set a stopped session going), its own
- * wake-up, or a word of another kind (a goal given to it). */
+ * wake-up or another message. */
 interface Began { kind: "asked" | "you" | "left" | "word" | "timer" | "other"; at: number | null; order?: WorkOrder }
 const messageTime = (message: { time?: unknown } | undefined) => isObject(message?.time) && typeof message.time.created === "number" ? message.time.created : null;
 const messageOrder = (time: unknown): WorkOrder | undefined => {
@@ -496,7 +496,7 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
     let posted = false;
     try {
       if (!place) throw new Error("Not reached.");
-      // Archived (from any app): kept until it's brought back, as its own wake-ups and goal wait,
+      // Archived (from any app): kept until it's brought back, as its own wake-ups wait,
       // rather than running a turn no one sees; a week at most.
       if (isPutAway(place.data as PutAwayable)) {
         if (now() - waiting.since > ARCHIVED_FOR) return;
@@ -613,7 +613,7 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
   };
   // Whether a session stopped hasn't been set going since, so nothing of it is news. What it left
   // running ending, or the box's own word, doesn't set it going; anything else written since does
-  // (your message, a goal you gave it, a wake-up you added), and it's noted that it isn't stopped any more.
+  // (your message or a wake-up you added), and it's noted that it isn't stopped any more.
   const staysStopped = (session: string, last: LastReply | null): boolean => {
     const at = readStopped(stoppedFile)[session];
     if (at === undefined) return false;

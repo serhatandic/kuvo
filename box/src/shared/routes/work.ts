@@ -130,7 +130,7 @@ export const OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
 export const WORK_CHANGED = object({ changed: map(number) });
 
 /** What still runs for each session here besides its own turn (`kuvo/work/background`, PROTOCOL.md
- * "Work › Background work"), by its id: how many commands it left running, subagents at work under
+ * "Work"), by its id: how many commands it left running, subagents at work under
  * it and other tasks its agent keeps going, and since when (ms). One here counts as at work; one that
  * never ends stops counting a while after it started. Clients take this as it is. */
 export const BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
@@ -186,24 +186,39 @@ export type OversightMark = Infer<typeof OVERSIGHT_MARK>;
 export type OversightKind = OversightMark["kind"];
 
 export const WORK_ROUTES: RouteShape[] = [
+  // A bot's work (`?bot=`): its sessions latest first, the asks it answered, today's counts, its limits.
   { route: "GET kuvo/work", feature: "work", answers: { 200: WORK, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+  // `{changed: {<bot>: ms}}` as each bot's work changes; read that bot's work again when it moves.
   { route: "GET kuvo/work/events", feature: "work", answers: { 200: WORK_CHANGED } },
+  // What still runs for each session besides its own turn: commands, subagents, tasks.
   { route: "GET kuvo/work/background", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
   { route: "GET kuvo/work/background/events", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
+  // Each command, subagent and session at work for one conversation, for its composer's bars.
   { route: "GET kuvo/work/background/:session", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
   { route: "GET kuvo/work/background/:session/events", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
+  // The end of a command's output (24,000 bytes), read where it runs; `cut` when there was more.
   { route: "GET kuvo/work/background/:session/commands/:id/output", feature: "work.background.output", answers: { 200: BACKGROUND_OUTPUT } },
+  // That output as it grows or its state changes, read about once a second while followed.
   { route: "GET kuvo/work/background/:session/commands/:id/output/events", feature: "work.background.output", answers: { 200: BACKGROUND_OUTPUT } },
+  // A conversation's subagents: those at work, and those done (three deep, the latest 100).
   { route: "GET kuvo/work/subagents/:session", feature: "work.subagents", answers: { 200: SUBAGENTS, 503: REFUSED } },
   { route: "GET kuvo/work/subagents/:session/events", feature: "work.subagents", answers: { 200: SUBAGENTS } },
+  // Stop All for a bot: every session of its work that's working, and its own turn.
   { route: "POST kuvo/bots/:id/stop-all", feature: "work", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
+  // What bots just did to their own sessions (started, told, read, answered, stopped, finished).
   { route: "GET kuvo/work/oversight", feature: "work", answers: { 200: OVERSIGHT } },
   { route: "GET kuvo/work/oversight/events", feature: "work", answers: { 200: OVERSIGHT } },
+  // What agents ask before they act (make or clone a project, use a limit reset), waiting on you.
   { route: "GET kuvo/work/asks", feature: "work.projects", answers: { 200: WORK_ASKS } },
   { route: "GET kuvo/work/asks/events", feature: "work.projects", answers: { 200: WORK_ASKS } },
+  // Answer one (`allow`, `always`, `deny`): allowed, it's done there and then.
   { route: "POST kuvo/work/asks/:id", feature: "work.projects", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED, 404: REFUSED } },
+  // Where bots make new projects here (`projectsFolder`), and on a Mac whether it keeps awake.
   { route: "GET kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS } },
+  // Pick the projects folder (a full path, or null), or on a Mac `keepsAwake`.
   { route: "PATCH kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS, 400: REFUSED, 409: REFUSED } },
+  // Models held back after failing at an account's or model's limit, until reset or answered.
   { route: "GET kuvo/work/unanswering", feature: "work.unanswering", answers: { 200: UNANSWERING_LIST } },
+  // Make a project from a client in the projects folder (403 `needs` until one is picked).
   { route: "POST kuvo/projects/new", feature: "work.projects", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED, 403: object({ message: string, needs: string }), 409: REFUSED, 502: REFUSED } },
 ];

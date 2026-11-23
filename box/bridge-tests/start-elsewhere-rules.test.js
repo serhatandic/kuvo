@@ -531,10 +531,6 @@ test("what the caller's computer refuses before anything goes", async () => {
   assert.equal(await refusal({ computer: "nowhere", project: "api" }), "There's no computer called nowhere. Your other computers: mac, mini, third.");
   assert.equal(await refusal({ computer: "third", project: "api" }), "third runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on third lets it: ask the user.");
   assert.match(await refusal({ computer: "mini" }), /^Say where it works on mini: one of its projects \(project; list_projects with computer "mini" lists them\)/);
-  // During a goal, its sessions stay on its bot's computer (until goals reach across computers).
-  write(path.join(run, "work", "goals.json"), { goals: [{ id: "gol_1", bot: "bot_foreman0001", state: "running", goal: "Ship", steps: [], checks: [], spend: [] }] });
-  assert.match(await refusal({ computer: "mini", project: "api" }), /^Your goal's sessions start on this machine for now/);
-  fs.rmSync(path.join(run, "work", "goals.json"));
   assert.deepEqual(sending(), []);
   // Here, by this computer's own name: as start_session always did.
   const local = await tool("start_session", { computer: "devbox", project: "api", task: "Fix the sign-in." });

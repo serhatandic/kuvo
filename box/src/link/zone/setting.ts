@@ -3,7 +3,7 @@
 // (`zone: {zone, n, zoneinfo?}`), the pick counted highest winning. Until you pick one, each box goes by
 // its own clock, as before; a machine keeps what an older Mac gave it, for itself alone. What goes by
 // it: bots' and conversations' wake-ups (the `timezone` file `kuvo-wake` reads beside them), a
-// `/loop`'s time of day, goals' days, the night's window, and the times limits reset.
+// daily work limits, the night's window, and the times limits reset.
 // Platform: the same on a Mac's box and a machine's; on a Mac, bots go by its clock while no zone is
 // picked (no zone file), as they always have.
 

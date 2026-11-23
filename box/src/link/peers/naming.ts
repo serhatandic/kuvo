@@ -1,7 +1,7 @@
 // "&" in a message from a phone (the Mac's AgentReferences, in the same words)
 // A message names another conversation with "&Name"; a block at its end tells the agent who each
 // one is, with its address, so it can read it (read_conversation) or write to it (send_message).
-// Both sides read the same cases (protocol/vectors/routes/names/agent-naming.json), so they can't drift.
+// Both sides read the same cases (box/test/fixtures/routes/names/agent-naming.json), so they can't drift.
 
 import { ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK, messageBlock } from "../../shared/message-block";
 export { ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK, messageBlock } from "../../shared/message-block";

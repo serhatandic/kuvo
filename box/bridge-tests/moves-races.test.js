@@ -1316,7 +1316,7 @@ test("what came with it doesn't count as having run here, whatever the other com
   assert.deepEqual(heard().map(move => move.at), [at + 60_000]);
 });
 
-test("asked where it can go, it says what stays here: the sessions it started, what it asked you, the goal it proposed", async () => {
+test("asked where it can go, it says what stays here: the sessions it started, and what it asked you", async () => {
   chat("ses_stays1");
   chat("ses_stays2");
   engine.sessions.set("ses_stays1w", { id: "ses_stays1w", title: "Its work", directory: chats, messages: [], metadata: { kuvo: { startedBy: "ses_stays1", depth: 1 } }, time: { created: 2 } });
@@ -1325,16 +1325,14 @@ test("asked where it can go, it says what stays here: the sessions it started, w
   fs.mkdirSync(work, { recursive: true });
   const asked = { id: "ask_stays1", action: "makeProject", session: "ses_stays1", name: "“Trip plans”", project: "trip", folderName: "trip", folder: null, at: Date.now(), given: { name: "trip" } };
   fs.writeFileSync(path.join(work, "asks.json"), JSON.stringify({ asks: [asked] }));
-  fs.writeFileSync(path.join(work, "goals.json"), JSON.stringify({ goals: [{ id: "goal_stays1", bot: "", session: "ses_stays1", name: "Book it", state: "proposed", proposed: Date.now(), projects: [] }] }));
   try {
     const places = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_stays1");
     assert.equal(places.status, 200, JSON.stringify(places.json));
-    assert.deepEqual(places.json.stays, { sessions: 2, asks: 1, goals: 1 });
+    assert.deepEqual(places.json.stays, { sessions: 2, asks: 1 });
     // Another chat, with none of it: nothing said.
     assert.equal((await ask("GET", "kuvo/moves/places?kind=chat&id=ses_stays2")).json.stays, undefined);
   } finally {
     fs.rmSync(path.join(work, "asks.json"), { force: true });
-    fs.rmSync(path.join(work, "goals.json"), { force: true });
     for (const id of ["ses_stays1", "ses_stays2", "ses_stays1w", "ses_stays1ww"]) engine.sessions.delete(id);
   }
 });

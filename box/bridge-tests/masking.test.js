@@ -1,5 +1,5 @@
 // What a box's notice for your phones shows of an agent's words: secrets as dots, everything else
-// as written, by the same rules as KuvoLink's SecretMask (protocol/vectors/masking.json, which its tests
+// as written, by the same rules as KuvoLink's SecretMask (box/test/fixtures/masking.json, which its tests
 // write from those rules).
 //
 // Run with `node --test box/bridge-tests/masking.test.js`.
@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { masked, showsAll } from "../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js";
 import "./at-end.js";
 
-const { cases } = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/masking.json", import.meta.url), "utf8"));
+const { cases } = JSON.parse(fs.readFileSync(new URL("../test/fixtures/masking.json", import.meta.url), "utf8"));
 
 test("a notice shows of each line what KuvoLink's SecretMask shows, and says when that isn't all", () => {
   assert.ok(cases.length > 30);

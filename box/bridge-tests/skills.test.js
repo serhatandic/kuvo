@@ -120,7 +120,7 @@ test("a skill written, read, changed and put away in the machine's trash; a new 
 });
 
 test("a skill's name from what's typed, as Settings previews it (the shared vector)", () => {
-  const vector = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/routes/names/skill-names.json", import.meta.url), "utf8"));
+  const vector = JSON.parse(fs.readFileSync(new URL("../test/fixtures/routes/names/skill-names.json", import.meta.url), "utf8"));
   assert.ok(vector.cases.length > 8);
   for (const { typed, name } of vector.cases) assert.equal(link.skillName(typed), name, JSON.stringify(typed));
 });
