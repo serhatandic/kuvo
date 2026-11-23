@@ -18,6 +18,7 @@ const areas = new Map([
   ["engine-live", "./engine-live.test.mjs"],
   ["engine-worktree", "./engine-worktree.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
+  ["files", "./files.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

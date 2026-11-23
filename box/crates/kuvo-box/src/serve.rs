@@ -101,6 +101,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
     setup.handle().register(&mut routes);
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    kuvo_services::files::register(&mut routes);
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();
@@ -181,6 +182,7 @@ fn info(
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
+    features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }
