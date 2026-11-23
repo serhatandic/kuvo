@@ -10,6 +10,7 @@ import type { LinkHost } from "../../../src/link/relay/host";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
+import { shareNotices } from "../../../src/link/areas/notices";
 import { shareLibrary } from "../../../src/link/areas/library";
 import { libraryService } from "../../../src/link/library/service";
 import { servicesFile, servicesRecordFormat } from "../../../src/shared/box-services";
@@ -66,7 +67,7 @@ async function run() {
       }
       const frames: string[] = [];
       const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); } };
-      await Promise.all([shareSetupLists(host, readers), shareLibrary(host)]);
+      await Promise.all([shareSetupLists(host, readers), shareLibrary(host), shareNotices(host)]);
       return frames;
     }
     case "publish-queue": {

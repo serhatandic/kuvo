@@ -524,7 +524,15 @@ const NOTICE = object({
   "title?": string, "subtitle?": string, "body?": string, category: string,
   "thread?": string, "data?": map(string),
 });
-const NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
+export const TOLD_NOTICE = object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") });
+export const NOTICE_COPY = { telling: bool, notices: list(TOLD_NOTICE) } as const;
+const NOTICES = object(NOTICE_COPY);
+const NOTICE_COMPUTER = object({ id: string, name: string });
+const NOTICE_ORIGIN = object({ computer: NOTICE_COMPUTER, telling: bool, away: bool, "lastSeen?": number });
+const SETUP_NOTICES = object({
+  origins: list(NOTICE_ORIGIN),
+  notices: list(object({ ...TOLD_NOTICE.object, computer: NOTICE_COMPUTER, away: bool, "lastSeen?": number })),
+});
 
 const WIPE_EXPORT = object({ source: string, id: string, at: number });
 const COMPUTER_REMOVAL = object({ operation: string, accessRemoved: bool,
@@ -615,6 +623,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/attention", feature: "attention", answers: { 200: object({ for: number }) } },
   { route: "POST kuvo/attention/notice", feature: "attention", answers: { 200: NOTHING } },
   { route: "POST kuvo/attention/answered", feature: "attention", answers: { 200: NOTHING } },
+  { route: "GET kuvo/setup/notices/events", feature: "line.merged-notices", answers: { 200: SETUP_NOTICES } },
   { route: "GET kuvo/notices", feature: "notices", answers: { 200: NOTICES } },
   { route: "GET kuvo/notices/events", feature: "notices", answers: { 200: NOTICES } },
   { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },

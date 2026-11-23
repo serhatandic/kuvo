@@ -3,8 +3,15 @@
 // `telling`: whether the box is telling its news now (this Mac's box always; a machine's while a
 // bridge that does runs). A client shows its own only where it isn't.
 
-import { followed } from "../follow";
-import { TOLD_FOLDER, tellingNow, toldFollowers, toldLately } from "../notices/told";
+import { NOTICE_COPY } from "../../shared/routes/box";
+import { listComputer } from "../lists/computer";
+import { peersOf } from "../peers/known";
+import { peerSnapshots } from "../peers/lists";
+import { readReach } from "../peers/reach";
+import { readLink } from "../state";
+import type { LinkHost } from "../relay/host";
+import { followed, followedLive } from "../follow";
+import { TOLD_FOLDER, tellingNow, toldFollowers, toldLately, noticeIsRecent } from "../notices/told";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 const lately = () => ({ telling: tellingNow(), ...toldLately() });
@@ -16,4 +23,41 @@ export async function* noticesRoute(context: RouteContext): AsyncGenerator<Answe
   if (route === "kuvo/notices") return yield* json(200, lately());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   return yield* followed(lately, toldFollowers, signal, { folders: [TOLD_FOLDER], recursive: false });
+}
+
+type NoticeCopy = ReturnType<typeof lately>;
+export const noticeCopies = peerSnapshots<NoticeCopy>("noticeCopy", "notices-v1.json", "line.merged-notices", NOTICE_COPY, undefined, 0);
+
+// The notice and its id stay the publisher's, even if a client changes which box it follows.
+export const shareNotices = (host: Pick<LinkHost, "send">) => noticeCopies.push(host, async () => lately());
+
+export async function* setupNoticesRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  yield* followedLive(async () => {
+    const link = readLink();
+    const reach = readReach();
+    const now = Date.now();
+    const here = { computer: listComputer(link), away: false, ...lately() };
+    const peers = await Promise.all(peersOf(link).map(async peer => {
+      const saved = await noticeCopies.read(peer.key);
+      if (!saved) return [];
+      const away = reach[peer.key] !== undefined || now - saved.seen > 180_000;
+      return [{
+        computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}),
+        telling: !away && saved.telling, notices: saved.notices.filter(notice => noticeIsRecent(notice, now)),
+      }];
+    }));
+    const copies = [here, ...peers.flat()];
+    return {
+      origins: copies.map(({ notices: _, ...origin }) => origin),
+      notices: copies.flatMap(({ notices, telling: _, ...origin }) => notices.map(notice => ({ ...notice, ...origin })))
+        .sort((a, b) => a.at - b.at || a.computer.id.localeCompare(b.computer.id) || a.id.localeCompare(b.id)),
+    };
+  }, tell => {
+    toldFollowers.add(tell);
+    noticeCopies.followers.add(tell);
+    return () => { toldFollowers.delete(tell); noticeCopies.followers.delete(tell); };
+  }, signal, { every: 3_000 });
 }

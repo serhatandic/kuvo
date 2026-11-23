@@ -276,7 +276,15 @@ the supplied cursor. The answering box pages its last saved copy even while the 
 Feature `line.merged-waiting` adds `GET kuvo/setup/waiting/counts` and its `/events` topic.
 Each state is `{sessions, bots, queue}`, calculated from the session, bot activity and Work Queue
 copies this box already has, including peer copies in the first state. The count is a setup total.
-The per-computer `kuvo/waiting/events` remains for clients combining per-computer system notifications.
+The per-computer `kuvo/waiting/events` continues to serve the local computer’s counts.
+
+Feature `line.merged-notices` adds `kuvo/setup/notices/events`: `{origins, notices}` from local
+and kept peer notice histories (`noticeCopy` peer mail, `run/peers/<key>/notices-v1.json`).
+Each origin has `{computer: {id, name}, telling, away, lastSeen?}`. Each notice carries its
+original ID and computer, with `away` and `lastSeen` where applicable. Deduplicate by computer
+and notice ID. An away computer's history is kept without delivering it as new system
+notifications. The desktop follows the nearest box and uses the setup's waiting counts once.
+
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start

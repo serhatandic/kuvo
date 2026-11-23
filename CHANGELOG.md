@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- System notifications and the Dock count come from the setup’s nearest box.
+
 - The Work Queue’s Deleted list includes items kept on your other computers.
 
 - The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.

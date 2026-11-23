@@ -93,8 +93,10 @@ export function keepTold(notice: Notice, { by, now = Date.now(), at = now, unles
   return entry;
 }
 
+export const noticeIsRecent = (entry: ToldNotice, now: number) => now - entry.at < NEWS_KEPT && keptStill(entry, now);
+
 /** What clients follow (`kuvo/notices`): the news of the last minutes, oldest first. */
-export const toldLately = (now = Date.now()): { notices: ToldNotice[] } => ({ notices: readTold().filter(each => now - each.at < NEWS_KEPT && keptStill(each, now)) });
+export const toldLately = (now = Date.now()): { notices: ToldNotice[] } => ({ notices: readTold().filter(each => noticeIsRecent(each, now)) });
 
 /** Tells `tell` (your phones) each notice an agent sends on purpose from now on, whichever process
  * kept it, once each: as the folder changes, and looked at every few seconds too. `look`: looked at

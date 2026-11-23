@@ -1322,11 +1322,6 @@ impl BoxClient {
     pub fn follow_waiting(&self) -> Follow<Followed<Waiting>> {
         follow_lines(self, "kuvo/setup/waiting/counts/events".into())
     }
-
-    /// This computer's contribution to the system notification badge.
-    pub fn follow_waiting_on_computer(&self) -> Follow<Followed<Waiting>> {
-        follow_lines(self, "kuvo/waiting/events".into())
-    }
 }
 
 #[cfg(test)]

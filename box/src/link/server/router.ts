@@ -45,7 +45,7 @@ import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
 import { integrationsRoute } from "../areas/integrations";
 import { namedRoute } from "../areas/named";
-import { noticesRoute } from "../areas/notices";
+import { noticesRoute, setupNoticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
 import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
 import { DESKTOP_UNINSTALL_ROUTE, desktopUninstallRoute } from "../uninstall";
@@ -207,6 +207,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "box.ownHome", when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { feature: "attention", when: route => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { feature: "attention", when: route => route === "kuvo/attention", answer: attentionRoute },
+  { feature: "line.merged-notices", when: route => route === "kuvo/setup/notices/events", answer: setupNoticesRoute },
   { feature: "notices", when: route => route === "kuvo/notices" || route === "kuvo/notices/events", answer: noticesRoute },
   { feature: "named", when: route => route === "kuvo/named", answer: namedRoute },
   { feature: "agent-tools", when: route => route === "kuvo/agent-tools", answer: agentToolsRoute },

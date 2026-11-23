@@ -12,7 +12,7 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -767,5 +767,30 @@ test("the Work Queue’s first Deleted list keeps items from a computer that is 
         removed: stamp, can: { restore: false, edit: false, delete: false },
       }],
     } });
+  } finally { setup.close(); }
+});
+
+test("setup attention lists the original computer of a kept notice and counts its ask once", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const folder = path.join(far.home, "run", "notices");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "told.json"), JSON.stringify([{
+      id: "ntc_far", at: Date.now(), notice: { category: "finished", data: { session: far.session } },
+    }]));
+    await share(far, near, far.session);
+    const watch = Buffer.from(JSON.stringify({
+      notices: "kuvo/setup/notices/events", waiting: "kuvo/setup/waiting/counts/events",
+    })).toString("base64url");
+    const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    const [, ...frames] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    const states = Object.fromEntries(frames.map(frame => [frame.t, frame.d]));
+    expect(states.notices?.notices).toEqual([expect.objectContaining({
+      id: "ntc_far", computer: far.computer, away: true, lastSeen: expect.any(Number),
+      notice: { category: "finished", data: { session: far.session } },
+    })]);
+    expect(states.waiting).toMatchObject({ sessions: 1, bots: 0 });
   } finally { setup.close(); }
 });

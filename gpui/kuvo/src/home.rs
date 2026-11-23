@@ -286,22 +286,6 @@ impl Home {
         cx.notify();
     }
 
-    /// The computers this device's notifications come from: the nearest, and each other one it
-    /// reaches.
-    fn notified(&self) -> Vec<(String, Option<u64>, BoxClient)> {
-        let nearest = self.boxes.nearest_key();
-        let mut clients: Vec<(String, Option<u64>, BoxClient)> = self.boxes.nearest().map(|client| (NEAREST.to_owned(), None, client)).into_iter().collect();
-        for row in self.boxes.rows() {
-            if !row.usable() || Some(row.key()) == nearest.as_deref() {
-                continue;
-            }
-            if let Some(client) = self.boxes.client(row.key()) {
-                clients.push((row.key().to_owned(), self.boxes.client_made(row.key()), client));
-            }
-        }
-        clients
-    }
-
     /// The workspace shown.
     pub fn workspace(&self) -> &Entity<Workspace> {
         &self.workspaces[&self.shown].0
@@ -501,8 +485,8 @@ impl Home {
             self.sync_shown(cx);
         }
         if self.live {
-            let clients = self.notified();
-            self.notifier.update(cx, |notifier, cx| notifier.follow(clients, cx));
+            let nearest = self.boxes.nearest();
+            self.notifier.update(cx, |notifier, cx| notifier.follow(nearest, cx));
         }
         // Your computers are known (the nearest box listed them, or there's none here and the
         // kept list is all there is): the computer shown last time, if it's reached.

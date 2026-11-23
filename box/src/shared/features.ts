@@ -156,6 +156,7 @@ export const FEATURES = [
   "limits.titles",
   "line",
   "line.merged-library",
+  "line.merged-notices",
   "line.merged-sessions",
   "line.merged-waiting",
   "line.peer-conversation",

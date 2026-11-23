@@ -16,6 +16,7 @@ import { sendRemovalUpdates } from "../setup/removal";
 import { noteSetupNow } from "../setup/lead";
 import { refreshReceipts } from "../ownership/receipt-worker";
 import { sendSetupCopies } from "../setup/seed";
+import { shareNotices } from "../areas/notices";
 import { shareLibrary } from "../areas/library";
 import { shareSetupLists } from "../lists/setup";
 import { pushQueues } from "../work-queue/across";
@@ -94,6 +95,7 @@ export function runMacPeers(): void {
       sendSetupCopies(host).catch(() => {});
       if (host) try { refreshPhoneTrust(host); } catch {}
       if (host?.welcomed) {
+        void shareNotices(host).catch(() => {});
         void shareLibrary(host).catch(() => {});
         void shareSetupLists(host).catch(() => {});
         pushRows(host, readLink(), peerTargets()).catch(() => {});
