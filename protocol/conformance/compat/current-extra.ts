@@ -7,7 +7,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 import { execFileSync } from "node:child_process";
 import { gzipSync } from "node:zlib";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Accounts } from "../../../box/src/agents/accounts";
 import { saveMacConfig } from "../../../box/src/link/mac/link";
 import { refreshOwn } from "../../../box/src/link/peers/agents";
@@ -187,6 +187,14 @@ export async function writeExtra(home: string, directory: string, own: string, s
   const dbFile = path.join(home, "data/opencode/opencode.db");
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new Database(dbFile);
-  try { db.exec(fs.readFileSync(engineSchema, "utf8").replaceAll("@HOME@", path.dirname(home))); }
+  const sqlPath = (folder: string) => process.platform === "win32" ? folder.replaceAll("\\", "/") : folder;
+  const rootCommit = git("rev-list", "--max-parents=0", "HEAD").toString("utf8").trim();
+  const sql = fs.readFileSync(engineSchema, "utf8")
+    .replaceAll("@S_URL@", pathToFileURL(home).href.slice("file://".length))
+    .replaceAll("@S@", sqlPath(home)).replaceAll("@HOME@/proj", sqlPath(directory))
+    .replaceAll("@HOME@", sqlPath(path.dirname(home)))
+    .replaceAll("@ROOT6@", rootCommit.slice(0, 6)).replaceAll("@ROOT@", rootCommit)
+    .replace(/@ID:([^@]+)@/g, (_, folder: string) => crypto.createHash("sha1").update(`directory:${folder}`).digest("hex"));
+  try { db.exec(sql); }
   finally { db.close(); }
 }
