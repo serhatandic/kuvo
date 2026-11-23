@@ -176,8 +176,8 @@ export function takeRows(sender: { key: string }, given: unknown, now = Date.now
       const kept = readRows(sender.key);
       if (kept && kept.at > at) return;
       taken = true;
-      if (!Object.keys(leads).length) fs.rmSync(keptFile(sender.key), { force: true });
-      else writePrivate(keptFile(sender.key), JSON.stringify({ at, heard: now, leads } satisfies RowsKept));
+      // An empty snapshot clears the rows and keeps its timestamp so older mail can't restore them.
+      writePrivate(keptFile(sender.key), JSON.stringify({ at, heard: now, leads } satisfies RowsKept));
     });
   } catch {}
   if (taken) noteHomes(Object.values(leads).flat().map(row => row.session), sender.key, at);

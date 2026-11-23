@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.
 - Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.
 - Adding a Mac over SSH starts the engine in time to verify the installation and copy sign-ins.
