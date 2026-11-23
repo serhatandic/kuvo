@@ -1,6 +1,6 @@
-# What a client needs a box to have before it uses it (PROTOCOL.md, "The update gate"): a box whose
-# `kuvo/info` features lack any of these is held until it's updated. The same names as KuvoClient's
-# BoxGate.required and gpui's kuvo_box (src/gate/required.rs), which gpui's tests hold to this.
+# Features used by the update gate (PROTOCOL.md, "The update gate").
+# An absent baseline feature holds the gate. Other absent requirements leave it behind.
+# Baseline: clients.kind messages.send queue.stop.arriving sessions.list sessions.start.empty
 # One name a line, in order (LC_ALL=C sort): git merges this file by union (.gitattributes), so
 # branches that each add a name merge without a conflict (two added side by side may land in
 # either order, which is fine). Change nothing else here.

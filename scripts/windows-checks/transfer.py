@@ -62,7 +62,7 @@ def history(root, selected):
 def snapshot(output, root, runner, config, wsl):
     # Match the Linux runners' test inputs, including sibling sources and built resources.
     scopes = ("box", "catalog", "protocol", "scripts", "swift", "mac/helper/Sources",
-              "gpui/kuvo_box/src/gate/required.rs", "docs/architecture/stored-formats.md")
+              "docs/architecture/stored-formats.md")
     tracked = {Path(os.fsdecode(name)) for name in git(root, "ls-files", "-z", "--", *scopes).split(b"\0") if name}
     with tarfile.open(fileobj=output, mode="w|gz", format=tarfile.PAX_FORMAT, dereference=not wsl) as tar:
         for name in sorted(tracked):

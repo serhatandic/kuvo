@@ -13,6 +13,7 @@ async-channel = "2.5"
 base64 = "0.22"
 getrandom = "0.3"
 hmac = "0.12"
+kuvo_protocol = { path = "../../box/crates/kuvo_protocol" }
 # Pictures made smaller before they go to another computer, as the phone makes them (`parts::carried`).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "gif", "webp"] }
 percent-encoding = "2.3"

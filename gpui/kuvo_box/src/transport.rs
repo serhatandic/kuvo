@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
-pub(crate) const ROUTE_VERSION_HEADER: &str = "x-kuvo-route-version";
-const ROUTE_VERSION: &str = "1";
+pub(crate) use kuvo_protocol::version::ROUTE_VERSION_HEADER;
+use kuvo_protocol::version::ROUTE_VERSION;
 
 pub(crate) fn check_route_version(given: Option<&str>) -> Result<()> {
     match given {

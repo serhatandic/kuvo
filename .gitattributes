@@ -7,7 +7,6 @@ CHANGELOG.md merge=union
 # twice, or one missing from another, fails gpui's (kuvo_box/tests/vectors.rs); two names side by
 # side in either order are fine.
 box/src/shared/features.ts merge=union
-gpui/kuvo_box/src/gate/required.rs merge=union
 protocol/gate-required.txt merge=union
 # What's built from sources and kept in git: two branches that both built one conflict on it, and
 # neither side is right after the merge. The kuvo-built driver keeps the side checked out, so the

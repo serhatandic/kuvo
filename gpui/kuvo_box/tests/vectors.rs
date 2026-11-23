@@ -139,6 +139,9 @@ fn a_box_of_this_version_passes_the_gate() {
         // A Mac's names what it includes at least; a machine's, its whole list.
         let said = &expect[kind]["json"]["features"];
         let names: Vec<String> = serde_json::from_value(said.get("<includes>").unwrap_or(said).clone()).unwrap();
+        if kind == "machine" {
+            assert_eq!(kuvo_box::FEATURES, names, "all advertised machine features");
+        }
         let missing: Vec<&str> = gate::REQUIRED.iter().copied().filter(|name| !names.iter().any(|has| has == name)).collect();
         assert_eq!(missing, Vec::<&str>::new(), "{kind}");
     }
@@ -162,7 +165,7 @@ fn the_gate_matches_the_protocols_update_gate_list() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/gate-required.txt");
     let protocol = std::fs::read_to_string(path).unwrap();
     let names: Vec<&str> = protocol.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
-    assert_eq!(names_once(names, "gate-required.txt"), names_once(gate::REQUIRED.to_vec(), "gate/required.rs"));
+    assert_eq!(names_once(names, "gate-required.txt"), names_once(gate::REQUIRED.to_vec(), "kuvo_protocol::REQUIRED"));
 }
 
 /// A message's parts as every client reads them, kept with a message or read by its box from one

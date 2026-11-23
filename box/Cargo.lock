@@ -294,6 +294,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "kuvo_protocol",
  "serde",
  "serde_json",
  "subtle",
@@ -340,6 +341,10 @@ version = "0.1.0"
 [[package]]
 name = "kuvo_protocol"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "kuvo_server"

@@ -18,12 +18,16 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
+use kuvo_protocol::{
+    gate::compatibility,
+    version::{
+        ROUTE_VERSION, ROUTE_VERSION_HEADER, SERVE_RECORD_VERSION, UnsupportedFormatVersion,
+    },
+};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 
-const ROUTE_VERSION_HEADER: &str = "x-kuvo-route-version";
-const ROUTE_VERSION: &str = "1";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -53,7 +57,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     serde_json::to_writer(
         &mut record,
         &json!({
-            "formatVersion": 1,
+            "formatVersion": SERVE_RECORD_VERSION,
             "pid": std::process::id(),
             "port": port,
             "password": password,
@@ -97,18 +101,12 @@ fn info(home: &Path) -> io::Result<serde_json::Value> {
         Err(error) => return Err(error),
     };
     // The scaffold serves only info. It must not pass the desktop's compatibility gate yet.
-    let mut missing: Vec<_> = include_str!("../../../../protocol/gate-required.txt")
-        .lines()
-        .map(str::trim)
-        .filter(|name| !name.is_empty() && !name.starts_with('#') && *name != "info")
-        .collect();
-    missing.sort_unstable();
-    missing.dedup();
+    let features = ["info"];
     let mut answer = json!({
         "kind": if is_mac { "mac" } else { "machine" },
         "name": name.to_string_lossy(),
-        "features": ["info"],
-        "compatibility": {"state": "held", "missing": missing},
+        "features": features,
+        "compatibility": compatibility(&features),
         "agents": false,
         "started": null,
         "engineState": "idle",
@@ -143,22 +141,12 @@ fn answer(request: Request<Incoming>, authorization: &str, info: &Bytes) -> Resp
 
     let mut versions = request.headers().get_all(ROUTE_VERSION_HEADER).iter();
     if let Some(version) = versions.next() {
-        let duplicated = versions.next().is_some();
-        if version != ROUTE_VERSION || duplicated {
-            let found = version
-                .to_str()
-                .ok()
-                .filter(|text| {
-                    !duplicated
-                        && text.len() <= 15
-                        && text.bytes().all(|byte| byte.is_ascii_digit())
-                })
-                .and_then(|text| text.parse::<u64>().ok())
-                .map_or_else(|| "invalid".into(), |number| number.to_string());
-            return response(StatusCode::BAD_REQUEST, Bytes::from(json!({
-                "code": "unsupportedFormatVersion",
-                "message": format!("Kuvo route format version {found} is unsupported (this build writes {ROUTE_VERSION})."),
-            }).to_string()));
+        let header = version.to_str().ok().filter(|_| versions.next().is_none());
+        if let Some(refusal) = UnsupportedFormatVersion::for_route(Some(header.unwrap_or(""))) {
+            return response(
+                StatusCode::BAD_REQUEST,
+                Bytes::from(json!(refusal).to_string()),
+            );
         }
     }
 

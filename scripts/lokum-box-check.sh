@@ -88,7 +88,7 @@ if [[ -f "$inventory" ]]; then extra+=("$inventory"); fi
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
     box/src box/test box/eval catalog \
-    protocol/vectors protocol/gate-required.txt gpui/kuvo_box/src/gate/required.rs \
+    protocol/vectors protocol/gate-required.txt \
     box/bridge-tests \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
     scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js \
