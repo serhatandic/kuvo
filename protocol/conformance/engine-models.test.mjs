@@ -132,6 +132,54 @@ test("the model picker offers models that run and chooses a supported starting m
     "This conversation uses provider models. Start a new conversation to use a coding agent’s models.");
 });
 
+test("catalog reads are reused until a credential change publishes the new picker", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-cache");
+  const first = { ...reference("anthropic", "first"), name: "First" };
+  const go = { ...reference("opencode-go", "go"), name: "Go" };
+  here.engine.providers.push({ id: "anthropic" });
+  here.engine.models.push(first, go);
+  here.engine.integrations.push(
+    { id: "anthropic", name: "Anthropic", methods: [{ type: "key" }], connections: [{}] },
+    { id: "opencode-go", name: "OpenCode Go", methods: [{ type: "key" }], connections: [] },
+  );
+  here.engine.sessions.push({
+    ...session(here, "ses_providerBot", first),
+    metadata: { kuvo: { bot: "bot_provider" } },
+  });
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The box did not subscribe to catalog changes.");
+  const read = async (refresh = false) => {
+    const answer = await request(record, "GET", "kuvo/models/offered" + (refresh ? "?refresh=1" : ""));
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.models.map(model => model.id);
+  };
+  const reads = () => here.engine.asked.filter(call => call.path === "/api/model").length;
+  assert.deepEqual(await read(), ["first"]);
+  const firstReads = reads();
+  assert.deepEqual(await read(), ["first"]);
+  assert.equal(reads(), firstReads);
+  assert.deepEqual(await read(true), ["first"]);
+  const reopenReads = reads();
+  assert.equal(reopenReads, firstReads + 1);
+  assert.deepEqual(await read(true), ["first"]);
+  assert.equal(reads(), reopenReads);
+
+  here.engine.providers.push({ id: "opencode-go" });
+  here.engine.integrations[1].connections.push({});
+  here.engine.emit({ type: "credential.updated", data: {} });
+  await until(async () => (await read(true)).join() === "first,go", "The refreshed credentials did not reach the picker.");
+  const bot = await request(record, "GET", "kuvo/models/offered?session=ses_providerBot");
+  assert.equal(bot.status, 200, bot.text);
+  assert.equal(bot.json.scoped, true);
+  assert.deepEqual(bot.json.models.map(model => model.id), ["first", "go"]);
+  assert.equal(bot.json.note, "To use a coding agent in this bot, change its model in Edit Bot.");
+  here.engine.providers.pop();
+  here.engine.integrations[1].connections.length = 0;
+  here.engine.emit({ type: "credential.switched", data: {} });
+  await until(async () => (await read()).join() === "first", "The picker kept the signed-out credentials.");
+});
+
 test("the engine's catalog distinguishes a working model, an account key and no default", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-models");

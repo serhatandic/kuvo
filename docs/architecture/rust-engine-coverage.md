@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 75 of
-411 declarations are covered, 113 are partial and 223 are gaps.
-Row 3.2 retains 213 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 76 of
+411 declarations are covered, 114 are partial and 221 are gaps.
+Row 3.2 retains 210 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -137,7 +137,7 @@ Each row uses the same one-based numbering and ownership rule.
 | --- | --- | --- | --- | --- |
 | `box/test/session-asks.test.ts` (19) | 3–4, 14–15, 18 | 1, 6–11, 19 | 2, 5, 12–13, 16–17 | 3.2 · 1–2, 5, 13, 16–17, 19<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
 | `box/test/model-readiness.test.ts` (1) | — | 1 | — | 3.2 · 1 |
-| `box/test/models-offered.test.ts` (15) | — | 1–2, 4–6, 8–15 | 3, 7 | 3.2 · 3–4, 6–7, 10–13<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
+| `box/test/models-offered.test.ts` (15) | 7 | 1–2, 4–6, 8–15 | 3 | 3.2 · 3–4, 6, 10–11, 13<br>4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
 | `box/test/models-starred.test.ts` (7) | 1–2, 4–7 | — | 3 | 7.3 · 3 |
 | `box/test/models-speed.test.ts` (3) | 2–3 | 1 | — | 4.2 · 1 |
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
@@ -148,7 +148,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1–2, 4–11 | 3 | — | 3.2 · 3<br>4.1 · 3 |
-| `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 18–19, 32 | 2, 4, 6–17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 16–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
+| `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 16, 18–19, 32 | 2, 4, 6–15, 17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 17–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
 ### Implementation and remaining parity work
@@ -220,7 +220,9 @@ response is removed only after a complete inventory shows no conversation
 using it. Ambiguous transport failures leave the worktree kept.
 
 Model readiness reads the conversation folder's OpenCode catalog and
-remembers its names. The picker applies model order, availability, defaults,
+remembers its names. Concurrent clients share reads by engine and folder.
+Credential and model events invalidate saved reads, and reopening the picker
+within two seconds reuses its refresh. The picker applies model order, availability, defaults,
 and preferences. Speed and standalone stars share the existing preference
 file. The setup actor saves stars as a signed `SetupStarredModels` value.
 A member sends the change to the current main through the setup authority

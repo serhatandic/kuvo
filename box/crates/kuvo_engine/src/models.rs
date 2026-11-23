@@ -1,5 +1,8 @@
 //! Read the local OpenCode catalog and apply the conversation's model rules.
 
+mod cache;
+pub(crate) use cache::CatalogCache;
+
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
@@ -628,10 +631,7 @@ async fn picker(
     };
     let read_engine = async {
         let lease = lease.as_ref()?;
-        if refresh {
-            crate::model_refresh::revalidate_picker(engine, lease, directory).await;
-        }
-        Catalog::read(engine, lease, directory).await
+        engine.catalogs.get(engine, lease, directory, refresh).await
     };
     let read_agents = async { engine.agent_models.as_ref()?.catalog(refresh).await.ok() };
     let (catalog, agents, starred, speeds) = tokio::join!(
@@ -640,7 +640,7 @@ async fn picker(
         model_preferences::picked_stars(engine),
         model_preferences::picked_speeds(engine),
     );
-    let engine_models = catalog.as_ref().map(Catalog::offered).unwrap_or_default();
+    let engine_models = catalog.as_deref().map(Catalog::offered).unwrap_or_default();
     let mut models = engine_models
         .iter()
         .map(|model| model.picker_row())
@@ -782,7 +782,10 @@ impl Names {
 }
 
 pub(crate) async fn readiness(engine: &Engine, lease: &Lease, session: &Session) -> Option<Value> {
-    let catalog = Catalog::read(engine, lease, session.directory()).await?;
+    let catalog = engine
+        .catalogs
+        .get(engine, lease, session.directory(), false)
+        .await?;
     let model = session
         .extra
         .get("model")

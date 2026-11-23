@@ -125,6 +125,7 @@ pub(crate) fn watch(
             if let Ok(Ok(response)) = connected
                 && response.status().is_success()
             {
+                engine.catalogs.invalidate(false);
                 if new_generation {
                     generation = Some(pin);
                     if let Some(previous) = scan.take() {
@@ -177,6 +178,7 @@ pub(crate) fn watch(
                             .strip_prefix(b"data:")
                             .and_then(|data| serde_json::from_slice::<Event>(data).ok())
                         {
+                            engine.catalogs.event(&event.kind, &event.data);
                             if event.kind == "session.deleted"
                                 && let Some(attachments) = &attachments
                                 && let Some(session) = event.data["sessionID"].as_str()

@@ -47,6 +47,7 @@ pub enum State {
 pub struct Engine {
     pub(crate) upstream: Upstream,
     pub(crate) context_windows: crate::context::Windows,
+    pub(crate) catalogs: crate::models::CatalogCache,
     pub(crate) home: PathBuf,
     pub(crate) account_home: PathBuf,
     pub(crate) queues: crate::queue::QueueStore,
@@ -165,6 +166,7 @@ impl Engine {
             draft_turns: Turns::new(),
             decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
             context_windows: crate::context::Windows::open(&home),
+            catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),
             attachment_expiry: Default::default(),
             attachment_source: None,
