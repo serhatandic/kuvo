@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 124 of
-411 declarations are covered, 90 are partial and 197 are gaps.
-Row 3.2 retains 160 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 130 of
+411 declarations are covered, 92 are partial and 189 are gaps.
+Row 3.2 retains 153 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -107,11 +107,11 @@ owners on the same case each own the part described by their phase.
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
 | `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | 3 | — | 3.2 · 3 |
-| `box/test/queue-items.test.ts` (25) | 7, 9–10, 22 | 1–6, 13, 21, 23 | 8, 11–12, 14–20, 24–25 | 3.2 · 1–6, 8, 11–21, 23–24<br>4.1 · 25<br>5.1 · 21 |
+| `box/test/queue-items.test.ts` (25) | 7, 9–10, 22, 24 | 1–6, 12–14, 21, 23 | 8, 11, 15–20, 25 | 3.2 · 1–6, 8, 11–21, 23<br>4.1 · 25<br>5.1 · 21 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 4–5, 10, 24, 27 | 3, 15–16, 19–20, 23, 46 | 1–2, 6–9, 11–14, 17–18, 21–22, 25–26, 28–45, 47 | 3.2 · 1–3, 6–9, 11–17, 19–23, 26, 28–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
+| `box/test/session-lists.test.ts` (47) | 1, 4–6, 10, 22, 24, 26–27 | 3, 15–16, 19–20, 23, 29, 46 | 2, 7–9, 11–14, 17–18, 21, 25, 28, 30–45, 47 | 3.2 · 2–3, 7–9, 11–17, 19–21, 23, 28, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 28–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | 2 | 6 | 1, 3–5, 7–8 | 3.2 · 1, 3–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
@@ -147,7 +147,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.3 · 1–3 |
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
-| `box/bridge-tests/search.test.js` (11) | 1–2, 4–11 | 3 | — | 3.2 · 3<br>4.1 · 3 |
+| `box/bridge-tests/search.test.js` (11) | 1–11 | — | — | — |
 | `box/bridge-tests/session-models.test.js` (33) | 1–4, 10, 13–14, 17, 20, 22, 28–30, 33 | 5, 16, 18–19, 26, 32 | 6–9, 11–12, 15, 21, 23–25, 27, 31 | 3.2 · 5, 9, 12, 18–19, 23–25, 27, 32<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
@@ -254,6 +254,13 @@ The resident recovers missed failures from the transcript and looks up the
 current engine before it releases a reset. Its next-due task checks the
 persisted state again under the session turn, so a manual Resume or Stop
 wins. The same release can retry a refused send or an in-progress removal.
+Resume preflights every waiting payload and returns the protocol format
+refusal before changing state if a saved queue is newer. Readers share a
+background inbox request, keeping the last complete view during malformed
+or unavailable responses. The feed publishes reasoning after two seconds
+and clears it after a tool or text break lasts a second and a half, without
+reading the session again. Inventory changes invalidate rows fetched before
+the event; old lists without Needs you derive it from their saved facts.
 
 ### Platform verification
 
@@ -296,7 +303,7 @@ publishes receipt changes through a watch channel.
 | Platform | Phase 3.2c checks |
 | --- | --- |
 | macOS | 59 deterministic engine cases against each binary at the catalog and session-writer checkpoint. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters and revoked delivery. |
-| WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. |
+| WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. The held-inventory, old waiting-list, and concurrent-delete scenarios also passed. |
 | Native Windows | 57 deterministic Rust cases at the setup search checkpoint, including Windows project keys. The staged OpenCode pin reports version 2.2.6. |
 | Linux musl | 57 deterministic Rust cases at the setup search checkpoint with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
 
@@ -308,8 +315,8 @@ and reads the terminal receipt through the new pairing.
 
 ### Differential file verdicts
 
-The latest model preference run reported 81 differing paths, and the
-ten-step desktop run reported 93. The table includes the older baseline paths as well.
+The latest model preference run reported 78 differing paths, and the
+ten-step desktop run reported 90. The table includes the older baseline paths as well.
 A position such as "run/link.json/value/key" is a field difference inside
 "run/link.json". Wildcards cover only the generated filenames at the stated
 depth. The row remains responsible for its files and for proving compatibility
