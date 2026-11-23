@@ -88,13 +88,7 @@ pub struct Follow<T> {
 }
 
 impl Follow<ConversationUpdate> {
-    fn earlier_page(client: &BoxClient, location: &messages::Location, place: Where, session: &str, cursor: &str) -> crate::Result<(Vec<Message>, Option<String>)> {
-    let page: Page = client.get(&location.message_route(session, messages::earlier_route(place, session, cursor, READ)))?;
-    let earlier = page.earlier(READ);
-    Ok((page.data, earlier))
-}
-
-/// Reads the messages before those shown (as you scroll up), and puts them ahead of them: the
+    /// Reads the messages before those shown (as you scroll up), and puts them ahead of them: the
     /// conversation that follows has them, and `earlier` says whether there are more.
     pub fn load_earlier(&self) {
         if let Some(wants) = &self.wants {
@@ -462,6 +456,12 @@ impl Shown {
 
 /// How many of a conversation's newest messages a follow reads.
 const READ: usize = 100;
+
+fn earlier_page(client: &BoxClient, location: &messages::Location, place: Where, session: &str, cursor: &str) -> crate::Result<(Vec<Message>, Option<String>)> {
+    let page: Page = client.get(&location.message_route(session, messages::earlier_route(place, session, cursor, READ)))?;
+    let earlier = page.earlier(READ);
+    Ok((page.data, earlier))
+}
 
 /// On a reconnect, bridge a gap wider than one page of an already visible running turn. Stop
 /// paging at the old transcript's time range if there is no shared message (such as after Undo).
