@@ -1,6 +1,6 @@
 # What Kuvo Code leaves on people's computers
 
-CLAUDE.md's strict rule, "Keep the footprint contained", points here for the details.
+CLAUDE.md's strict rule, "Footprint contained", points here for the details.
 
 Kuvo Code must never spread files across the user's Mac or their machines. Everything it needs is packaged, kept in its own folders, organized inside them, and gone when those folders are deleted.
 
@@ -18,5 +18,5 @@ Kuvo Code must never spread files across the user's Mac or their machines. Every
   the running release. Older installations may still have a real `bin` directory.
   The active box also keeps its engine data under the keeper's `XDG_DATA_HOME`,
   with bridge and group stores in the box home.
-- **Removing the folders removes everything**: `uninstall.md` and `privacy.md` list them all; anything new keeps that true and updates them.
+- **Removing the folders removes everything**: `uninstall.md` and `privacy.md` list them all; anything new keeps that true and updates them. After a change, list what's new in the computer's home folder and `/tmp`.
 - **Tests and demo copies too**: they use folders of their own (`KUVO_DEMO_MACHINE_ROOT`, `~/.kuvo-code-test`), keep test files inside them, and clean up what they leave on a machine or the Mac when done. A home folder of a test's own doesn't keep a script from `crontab` or `launchctl`, which are the account's: stand-ins come first on its PATH, and a run that changes the real ones fails.
