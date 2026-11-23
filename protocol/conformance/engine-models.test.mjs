@@ -315,6 +315,63 @@ test("session readiness retries a default the engine could not answer", { timeou
   assert.deepEqual(await read(), { ses_default: ready, ses_explicit: ready });
 });
 
+test("session readiness distinguishes sign-in, project credentials, and a model turned off", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-credentials");
+  const openai = reference("openai", "main");
+  const copilot = reference("github-copilot", "base");
+  const free = reference("opencode", "free");
+  const zenPaid = reference("opencode", "paid");
+  const local = reference("ollama", "default");
+  const disabled = reference("ollama", "previous");
+  here.engine.providers.push({ id: "opencode" });
+  here.engine.models.push(
+    { ...openai, name: "Main" }, { ...copilot, name: "Base" }, { ...free, name: "Free" },
+    { ...local, name: "Local" }, { ...disabled, name: "Previous", enabled: false },
+  );
+  here.engine.integrations.push(
+    { id: "openai", name: "OpenAI", connections: [], methods: [{ type: "key" }] },
+    { id: "github-copilot", name: "GitHub Copilot", connections: [], methods: [{ type: "oauth", id: "device" }] },
+    { id: "opencode", name: "OpenCode Zen", connections: [], methods: [{ type: "key" }, { type: "oauth", id: "device" }] },
+    { id: "ollama", name: "Ollama", methods: [] },
+  );
+  const entries = [[openai, "key"], [copilot, "signIn"], [free, "free"], [zenPaid, "paid"],
+    [local, "local"], [disabled, "disabled"]];
+  here.engine.sessions.push(...entries.map(([model, id]) => session(here, "ses_" + id, model)));
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow accounts");
+  const read = async () => {
+    const reply = await request(record, "GET", "kuvo/sessions/models?sessions=" + entries.map(([, id]) => "ses_" + id).join(","));
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json.sessions;
+  };
+  const start = await read();
+  assert.equal(start.ses_key.missing, "key");
+  assert.equal(start.ses_key.plan.agent, "Codex");
+  assert.deepEqual(start.ses_signIn, {
+    model: copilot, name: "Base", runs: false, missing: "signIn",
+    account: { id: "github-copilot", name: "GitHub Copilot" },
+    refusal: "Base needs a sign-in to GitHub Copilot: sign in, or choose another model.",
+    action: { do: "signIn", label: "Sign In", help: "Sign in to GitHub Copilot" },
+  });
+  assert.equal(start.ses_paid.missing, "signIn");
+  assert.deepEqual(start.ses_free, { model: free, name: "Free", runs: true });
+  assert.deepEqual(start.ses_local, { model: local, name: "Local", runs: true });
+  assert.equal(start.ses_disabled.missing, "gone");
+  assert.equal(start.ses_disabled.refusal, "Previous is no longer among Ollama’s models: choose another model.");
+
+  here.engine.providers.push({ id: "openai" });
+  here.engine.models.push({ ...zenPaid, name: "Zen Paid" });
+  here.engine.emit({ type: "provider.updated", data: {} });
+  await until(async () => (await read()).ses_key?.runs, "the engine’s own credentials to reach the picker");
+  const next = await read();
+  assert.deepEqual(next.ses_key, { model: openai, name: "Main", runs: true });
+  assert.deepEqual(next.ses_paid, { model: zenPaid, name: "Zen Paid", runs: true });
+  const picker = await request(record, "GET", "kuvo/models/offered?provider=openai&model=main");
+  assert.ok(picker.json.models.some(model => model.providerID === "openai" && model.id === "main"));
+  assert.deepEqual(picker.json.starting, openai);
+});
+
 test("a model removed from a catalog keeps the name the box last knew", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-model-name");
