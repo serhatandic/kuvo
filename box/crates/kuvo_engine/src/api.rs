@@ -1,6 +1,6 @@
 //! Requests made by the resident to its own engine.
 
-use std::{fmt, time::Duration};
+use std::{error::Error as _, fmt, io, time::Duration};
 
 use http::{HeaderMap, Method, StatusCode};
 use kuvo_server::Refusal;
@@ -65,6 +65,23 @@ pub(crate) enum Error {
 impl Error {
     pub(crate) fn missing(&self) -> bool {
         matches!(self, Self::Status(StatusCode::NOT_FOUND, _))
+    }
+
+    pub(crate) fn connection_refused(&self) -> bool {
+        let Self::Transport(error) = self else {
+            return false;
+        };
+        let mut source = error.source();
+        while let Some(cause) = source {
+            if cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::ConnectionRefused)
+            {
+                return true;
+            }
+            source = cause.source();
+        }
+        false
     }
 }
 

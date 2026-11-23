@@ -1,6 +1,6 @@
 //! Keep a native prompt's backup until the inbox or transcript confirms it.
 
-use std::{collections::BTreeMap, error::Error as _, io, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use http::{Method, StatusCode};
 use kuvo_os::process::ProcessIdentity;
@@ -8,7 +8,8 @@ use kuvo_server::Refusal;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Delivery, Inbox, Queue, inbox, queue_failed, reached, save_failed, saved_removal, transcript_has,
+    Delivery, Inbox, Queue, inbox, queue_failed, reached, save_failed, saved_removal,
+    transcript_has,
 };
 use crate::{Engine, api, lifetime::Lease, sessions};
 
@@ -69,23 +70,7 @@ fn busy(message: &str) -> Refusal {
 }
 
 fn settled(error: &api::Error) -> bool {
-    match error {
-        api::Error::Status(_, _) => true,
-        api::Error::Transport(error) => {
-            let mut source = error.source();
-            while let Some(cause) = source {
-                if cause
-                    .downcast_ref::<io::Error>()
-                    .is_some_and(|io| io.kind() == io::ErrorKind::ConnectionRefused)
-                {
-                    return true;
-                }
-                source = cause.source();
-            }
-            false
-        }
-        api::Error::Invalid(_) => false,
-    }
+    matches!(error, api::Error::Status(_, _)) || error.connection_refused()
 }
 
 pub(super) async fn send(

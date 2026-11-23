@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 147 of
-411 declarations are covered, 88 are partial and 176 are gaps.
-Row 3.2 retains 132 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 149 of
+411 declarations are covered, 89 are partial and 173 are gaps.
+Row 3.2 retains 130 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -114,7 +114,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/session-lists.test.ts` (47) | 1, 4–6, 10, 22, 24, 26–27 | 3, 15–16, 19–20, 23, 29, 46 | 2, 7–9, 11–14, 17–18, 21, 25, 28, 30–45, 47 | 3.2 · 2–3, 7–9, 11–17, 19–21, 23, 28, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 28–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | 1–3, 6 | — | 4–5, 7–8 | 3.2 · 4–5, 7–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
-| `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
+| `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39, 52–53 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 51, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–50, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51, 54–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
@@ -321,8 +321,11 @@ and reads the terminal receipt through the new pairing.
 
 ### Differential file verdicts
 
-The latest model preference run reported 78 differing paths, and the
-ten-step desktop run reported 90. The table includes the older baseline paths as well.
+The latest model preference run reported 78 differing home paths, the
+ten-step desktop run reported 90, and the nine-step queue run reported 84.
+The queue run agreed on the engine transcript. Five reply fields differed in
+the waiting entries' wall-clock timestamps. The table includes older baseline
+paths as well.
 A position such as "run/link.json/value/key" is a field difference inside
 "run/link.json". Wildcards cover only the generated filenames at the stated
 depth. The row remains responsible for its files and for proving compatibility
@@ -351,5 +354,7 @@ records or runtime endpoint they hold.
 | `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
 | `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
 | `run/prompt-receipts`, `run/prompt-receipts/*.json` | Unread by released readers | `rg -n -F prompt-receipts box/src box/crates gpui` finds only the Rust send journal. Released clients read the route, queue and transcript. Scoped and listing receipts use separate records. |
+| `run/queue-removals/spent/*` | Identical | Both boxes now write the same empty marker keyed by session, draft and edit receipt. An earlier queue differential compared empty bytes with Rust's JSON `null`. |
+| `run/queues.json/value/*/resumed` | 3.2 | Both writers record when Send Now resumes the queue. The two runs happened at different wall-clock times. |
 | `run/route/ssh`, `run/socket.key` | 1.4 | Resident IPC endpoint and its random local credential |
 | `run/vault.sock`, `run/ssh-for` | 6.2 | Vault IPC and session SSH-agent registration |

@@ -112,6 +112,67 @@ test("queue add preserves fields, replays, and saved parts", { timeout: 45000 },
   assert.deepEqual(latest().metadata.kuvo.parts, parts);
 });
 
+test("queue Add distinguishes a slow OpenCode lookup from a missing conversation", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-slow-engine");
+  const id = "ses_slowLookup";
+  const resident = await here.start().ready();
+  const queued = { id: "msg_slowLookup", text: "Check the notes." };
+  const add = session => request(resident, "POST", `kuvo/sessions/${session}/queue/add`, queued);
+  assert.equal((await add("ses_missing")).status, 404);
+  here.engine.unavailableSession = id;
+  const busy = await add(id);
+  assert.equal(busy.status, 504, busy.text);
+  assert.equal(busy.json.busy, true);
+  assert.match(busy.json.message, /engine didn't answer in time/);
+  assert.equal(here.engine.asked.filter(call => call.method === "POST" && call.path.endsWith("/prompt")).length, 0);
+  here.engine.unavailableSession = null;
+  here.engine.sessions.push(sessionOf({ id, directory: here.home }));
+  const seen = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(release.resolve);
+  here.engine.holdSessionRead = { when: session => session === id, accepted: seen.resolve, release: release.promise };
+  const adding = add(id);
+  adding.catch(() => {});
+  await seen.promise;
+  release.resolve();
+  const accepted = await adding;
+  assert.equal(accepted.status, 200, accepted.text);
+  assert.equal(accepted.json.waits, false);
+  assert.deepEqual(here.engine.messages.get(id).map(row => row.id), [queued.id]);
+  await here.engine.close();
+  const gone = await add("ses_offlineEngine");
+  assert.equal(gone.status, 503, gone.text);
+  assert.deepEqual(gone.json, { message: "The engine isn't running." });
+});
+
+test("a stopped queue refuses Add when the payload cannot be saved and accepts a clean retry", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-save-failure");
+  const session = "ses_saveQueue";
+  const id = "msg_saveQueue";
+  const route = `kuvo/sessions/${session}`;
+  const queue = route + "/queue";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const resident = await here.start().ready();
+  assert.equal((await request(resident, "POST", route + "/stop")).status, 200);
+  const file = path.join(here.home, "run", "waiting", id + ".json");
+  fs.mkdirSync(file, { recursive: true });
+  const add = () => request(resident, "POST", queue + "/add", { id, words: "Save it." }, { "x-kuvo-from": "app" });
+  const failed = await add();
+  assert.equal(failed.status, 500, failed.text);
+  assert.match(failed.json.message, /couldn.t save the message/);
+  const saved = path.join(here.home, "run", "queues.json");
+  assert.deepEqual(readJSON(saved)[session].waiting ?? [], []);
+  assert.equal(here.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")), false);
+  fs.rmdirSync(file);
+  const retried = await add();
+  assert.equal(retried.status, 200, retried.text);
+  assert.equal(retried.json.waits, true);
+  assert.deepEqual(readJSON(saved)[session].waiting.map(row => row.id), [id]);
+  assert.equal(readJSON(file).text, "Save it.");
+});
+
 test("a session reports the latest measured step until a summary supersedes it", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-context");
@@ -441,6 +502,9 @@ for (const unreadable of ["inbox", "transcript"]) {
     assert.equal(here.engine.asked.filter(row => row.method === "DELETE" && row.path.endsWith("/" + id)).length, 1);
     const ack = await request(next, "POST", queue + "/" + id + "/ack", { receipt: "msg_recoverEdit" });
     assert.equal(ack.status, 200, ack.text);
+    const spent = path.join(here.home, "run", "queue-removals", "spent");
+    const [receipt] = fs.readdirSync(spent);
+    assert.equal(fs.readFileSync(path.join(spent, receipt)).length, 0);
     assert.equal((await request(next, "DELETE", edit)).status, 404);
   });
 }

@@ -680,6 +680,40 @@ async fn command_target(engine: &Engine, session: &str) -> Result<Lease, Refusal
     Ok(lease)
 }
 
+pub(crate) async fn check_add_target(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+) -> Result<(), Refusal> {
+    match engine
+        .call_raw(
+            lease,
+            Method::GET,
+            &sessions::path(session),
+            None,
+            Duration::from_secs(1),
+        )
+        .await
+    {
+        Ok(answer) if answer["data"]["id"] == session => Ok(()),
+        Err(error) if error.missing() => Err(Refusal::new(
+            StatusCode::NOT_FOUND,
+            "There's no such conversation here.",
+        )),
+        Err(error) if error.connection_refused() => Err(Refusal::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The engine isn't running.",
+        )),
+        _ => Err(Refusal::json(
+            StatusCode::GATEWAY_TIMEOUT,
+            json!({
+                "message": "This computer is busy: its engine didn't answer in time. Try again in a moment.",
+                "busy": true,
+            }),
+        )),
+    }
+}
+
 pub(crate) async fn snapshot(
     engine: &Engine,
     session: &str,
@@ -1594,7 +1628,8 @@ fn spent_path(engine: &Engine, session: &str, id: &str, token: &str) -> PathBuf 
 }
 
 async fn spend(engine: &Engine, session: &str, id: &str, token: &str) -> io::Result<()> {
-    disk::durable(spent_path(engine, session, id, token), ()).await
+    let path = spent_path(engine, session, id, token);
+    tokio::task::spawn_blocking(move || kuvo_store::files::write_atomic(&path, &[])).await?
 }
 
 async fn forget_removal(engine: &Engine, session: &str, id: &str, token: &str) -> io::Result<()> {
@@ -1657,7 +1692,9 @@ async fn remove_reply(
     // Do not wait for a native POST to return just to tell the composer that
     // that POST still owns this waiting draft.
     let prior = engine.queues.get(&session).await.map_err(save_failed)?;
-    if prior.contains(&id) && let Err(refusal) = prior.handoffs.check(&id) {
+    if prior.contains(&id)
+        && let Err(refusal) = prior.handoffs.check(&id)
+    {
         if let Some(token) = &token
             && tokio::fs::try_exists(spent_path(engine, &session, &id, token))
                 .await

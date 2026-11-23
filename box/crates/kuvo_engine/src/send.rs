@@ -107,6 +107,19 @@ fn disk_failure(error: io::Error) -> Refusal {
     )
 }
 
+fn waiting_failure(form: Form, error: io::Error) -> Refusal {
+    match form {
+        Form::Send => disk_failure(error),
+        Form::Add => queue::format_refusal(&error).unwrap_or_else(|| {
+            eprintln!("Saving a waiting message: {error}");
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "This computer couldn’t save the message. Try sending it again.",
+            )
+        }),
+    }
+}
+
 fn engine_busy() -> Refusal {
     Refusal::new(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -388,19 +401,23 @@ async fn deliver(
     let mut answer = json!({});
     if !admitted {
         let lease = api::start(engine).await?;
-        let route = sessions::path(session);
-        match engine
-            .call::<Value>(&lease, Method::GET, &route, None)
-            .await
-        {
-            Ok(_) => {}
-            Err(error) if error.missing() => {
-                return Err(Refusal::new(
-                    StatusCode::NOT_FOUND,
-                    "There's no such conversation here.",
-                ));
+        if request.form == Form::Add {
+            queue::check_add_target(engine, &lease, session).await?;
+        } else {
+            let route = sessions::path(session);
+            match engine
+                .call::<Value>(&lease, Method::GET, &route, None)
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if error.missing() => {
+                    return Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "There's no such conversation here.",
+                    ));
+                }
+                Err(_) => return Err(engine_busy()),
             }
-            Err(_) => return Err(engine_busy()),
         }
         if interrupted {
             delivered = queue::reached(engine, &lease, session, id)
@@ -430,7 +447,7 @@ async fn deliver(
                     &inbox,
                 )
                 .await
-                .map_err(disk_failure)?;
+                .map_err(|error| waiting_failure(request.form, error))?;
             if !admitted {
                 let mut prompt = request.prompt.clone();
                 if arriving {
