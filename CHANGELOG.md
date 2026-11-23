@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A computer goes back to its previous Rust release if the new one fails to start. Work written during the attempt stays.
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
 - A computer with a retained session database can rejoin after unlinking when its saved work hasn't changed. A Rust computer clears its machine sign-ins and keys before completing unlink.

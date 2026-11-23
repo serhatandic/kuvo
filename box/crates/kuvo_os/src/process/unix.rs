@@ -107,7 +107,11 @@ impl Drop for Owner {
     }
 }
 
-pub(super) fn spawn(spec: &Spawn, _recovery_name: Option<&str>) -> io::Result<ChildGroup> {
+pub(super) fn spawn(
+    spec: &Spawn,
+    _recovery_name: Option<&str>,
+    _resident: bool,
+) -> io::Result<ChildGroup> {
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
     }

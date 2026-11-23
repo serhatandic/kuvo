@@ -20,7 +20,10 @@ use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    home: &Path,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(resident) = Resident::bind(home).await? else {
         return Ok(());
     };
@@ -175,7 +178,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .serve(dispatcher, Arc::new(devices), async {
             tokio::select! {
                 () = finishing.wait_for_local_wipe() => {},
-                () = super::shutdown() => {},
+                () = shutdown => {},
             }
         })
         .await;
