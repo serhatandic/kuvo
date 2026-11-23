@@ -23,7 +23,7 @@ use tokio::{
 };
 
 use crate::{
-    Error, checkpoint, edits, lease, mac_host,
+    Error, checkpoint, edits, installer, lease, mac_host,
     model::{
         ComputerKind, Identity, Link, Membership, Position, Role, Setup, SharedKind, safe_token,
         validate_position, validate_shared,
@@ -123,6 +123,7 @@ pub(crate) struct Request {
 pub(crate) enum Command {
     Welcome(bool),
     InstallerCode(Option<Value>, edits::Submitter),
+    InstallerCancellation(installer::Cancellation),
     RenameComputer(String, String, edits::Submitter),
     UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
@@ -1066,6 +1067,7 @@ impl Owner {
             Command::InstallerCode(credentials, by) => {
                 self.issue_installer_code(credentials, by).await
             }
+            Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
             Command::UnlinkComputer(key, request, explicit, by) => {
                 self.unlink_computer(key, request, explicit, by).await
             }

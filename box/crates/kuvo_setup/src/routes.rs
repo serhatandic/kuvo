@@ -173,6 +173,39 @@ impl SetupHandle {
             },
         );
         let setup = self.clone();
+        routes.register::<InstallerRecovery, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                if !matches!(
+                    call.request.caller,
+                    Caller::Local(Transport::Http {
+                        origin: LocalOrigin::App | LocalOrigin::Mac,
+                        ..
+                    })
+                ) {
+                    return Err(Refusal::new(
+                        StatusCode::FORBIDDEN,
+                        "Apply the receipt directly on the setup’s main computer.",
+                    ));
+                }
+                let given =
+                    serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
+                let receipt = given["receipt"].as_str().ok_or_else(|| {
+                    Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Enter an installer cancellation receipt.",
+                    )
+                })?;
+                let receipt = crate::installer::Cancellation::read(receipt)
+                    .map_err(|error| Refusal::new(StatusCode::CONFLICT, error.to_string()))?;
+                respond(
+                    setup
+                        .request(Command::InstallerCancellation(receipt))
+                        .await?,
+                )
+            }
+        });
+        let setup = self.clone();
         routes.register::<patch_kuvo_computers_key::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
@@ -504,6 +537,21 @@ impl RouteSpec for SaveLocal {
 }
 impl JsonStatus<200> for SaveLocal {
     type Body = crate::Receipt;
+}
+
+struct InstallerRecovery;
+impl RouteSpec for InstallerRecovery {
+    type Body = Value;
+    const ROUTE: &'static Route = &Route {
+        method: "POST",
+        path: crate::installer::RECOVERY_ROUTE,
+        feature: "",
+        answers: &[(200, &Shape::Primitive(Primitive::Any))],
+        body: Some(&Shape::Primitive(Primitive::Any)),
+    };
+}
+impl JsonStatus<200> for InstallerRecovery {
+    type Body = Value;
 }
 
 #[derive(Deserialize)]

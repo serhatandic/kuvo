@@ -12,7 +12,7 @@ use kuvo_wire::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Applicant, CLAIM_LIFETIME, Code, hash};
+use super::{Applicant, CLAIM_LIFETIME, Cancellation, Code, hash};
 use crate::{
     Error,
     actor::{LINK, new_setup, project_membership, remember_link_key, validate_disk, write_link},
@@ -63,6 +63,74 @@ struct LocalClaim {
 struct Recovery {
     key: String,
     secret: String,
+}
+
+impl LocalClaim {
+    fn cancellation(&self) -> Option<Cancellation> {
+        let recovery = self.recovery.as_ref().filter(|_| !self.adopted)?;
+        Some(Cancellation {
+            setup: self.setup.clone(),
+            invite: self.invite.clone(),
+            key: recovery.key.clone(),
+            secret: recovery.secret.clone(),
+        })
+    }
+}
+
+pub fn cancellation_receipts(home: &Home) -> Result<Vec<String>, Error> {
+    let files = Files::new(home.root().to_owned());
+    let previous: Option<Value> = files.read(LINK)?;
+    let Some(value) = previous.clone() else {
+        return Err(refused(
+            "This computer has no installer cancellation receipt.",
+        ));
+    };
+    let mut link: Link =
+        serde_json::from_value(value).map_err(|_| Error::Invalid("installer link"))?;
+    let mut archived = link
+        .extra
+        .get("installerCancellations")
+        .cloned()
+        .map(serde_json::from_value::<Vec<Cancellation>>)
+        .transpose()
+        .map_err(|_| Error::Invalid("installer cancellation receipts"))?
+        .unwrap_or_default();
+    if link
+        .setup
+        .as_ref()
+        .is_none_or(|setup| setup.role != Role::Member)
+        && !link.extra.contains_key("macRotation")
+        && let Some(mut claim) = local_claim(&link)?
+        && let Some(receipt) = claim.cancellation()
+        && (claim.cancel_pending
+            || claim.until <= lease::wall()
+            || has_work(&files, &link).unwrap_or(true))
+    {
+        if !claim.cancel_pending {
+            claim.cancel_pending = true;
+            SavedLink {
+                files: &files,
+                previous,
+            }
+            .keep_claim(&mut link, &claim)?;
+        }
+        archived.push(receipt);
+    }
+    if archived.is_empty() {
+        return Err(refused(
+            "This computer has no installer cancellation receipt.",
+        ));
+    }
+    Ok(archived.iter().map(Cancellation::encode).collect())
+}
+
+fn local_claim(link: &Link) -> Result<Option<LocalClaim>, Error> {
+    link.extra
+        .get("installerClaim")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::Invalid("installer claim"))
 }
 
 #[derive(Deserialize)]
@@ -160,13 +228,7 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
         .map_err(|_| Error::Invalid("installer link"))?
         .unwrap_or_default();
     let id = hash(&code.token);
-    let mut claim = link
-        .extra
-        .get("installerClaim")
-        .cloned()
-        .map(serde_json::from_value::<LocalClaim>)
-        .transpose()
-        .map_err(|_| Error::Invalid("installer claim"))?;
+    let mut claim = local_claim(&link)?;
     let already_joined = link.setup.as_ref().is_some_and(|setup| {
         setup.role == Role::Member
             && setup.position.primary == code.primary
@@ -200,6 +262,14 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
             link.shared_setup = None;
             link.shared.clear();
             link.shared_outcomes.clear();
+            if let Some(receipt) = claim.as_ref().and_then(LocalClaim::cancellation) {
+                link.extra
+                    .entry("installerCancellations")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or(Error::Invalid("installer cancellation receipts"))?
+                    .push(json!(receipt));
+            }
             for field in ["own", "docs", "setupReplica", "installerClaim"] {
                 link.extra.shift_remove(field);
             }
@@ -430,7 +500,7 @@ fn check_join(
     }
     let now = lease::wall();
     if let Some(claim) = claim {
-        if !claim.adopted && claim.until > now && claim.invite != id {
+        if !claim.adopted && !claim.cancel_pending && claim.until > now && claim.invite != id {
             return Err(refused(
                 "An installer enrollment is already in progress. Retry with its original code.",
             ));

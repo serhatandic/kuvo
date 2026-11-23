@@ -22,10 +22,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
+    if word(0) == Some("here") {
+        return here(&args[1..]);
+    }
     let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
+    let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
+    let recovery = match (word(0), word(1), args.len()) {
+        (Some("installer-recovery"), Some("issue"), 2) => Some(false),
+        (Some("installer-recovery"), Some("apply"), 2) => Some(true),
+        _ => None,
+    };
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
-        _ if join => None,
+        _ if join || seed || recovery.is_some() => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
@@ -37,7 +46,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | install --join | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -47,7 +56,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
-    if !join {
+    if !join && !seed && recovery.is_none() {
         let platform = Platform::current();
         let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
         kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
@@ -57,10 +66,26 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        if join {
-            use std::io::{BufRead as _, Read as _};
-            let mut code = String::new();
-            io::stdin().lock().take(4098).read_line(&mut code)?;
+        if seed {
+            use std::io::Read as _;
+            let mut input = Vec::new();
+            io::stdin().lock().read_to_end(&mut input)?;
+            let answer = kuvo_setup::seed::take(&home, &input).await;
+            println!("{}", serde_json::to_string(&answer)?);
+            Ok(())
+        } else if let Some(apply) = recovery {
+            if apply {
+                let receipt = read_installer_input(514)?;
+                let message = kuvo_setup::installer::apply_cancellation(&home, &receipt).await?;
+                println!("{message}");
+            } else {
+                for receipt in kuvo_setup::installer::cancellation_receipts(&home)? {
+                    println!("{receipt}");
+                }
+            }
+            Ok(())
+        } else if join {
+            let code = read_installer_input(4098)?;
             let name = hostname::get()?.to_string_lossy().into_owned();
             let joined = kuvo_setup::installer::join(&home, name, &code).await?;
             println!("{}", serde_json::to_string(&joined)?);
@@ -79,6 +104,38 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
     runtime.shutdown_background();
     result.map(|()| ExitCode::SUCCESS)
+}
+
+fn read_installer_input(limit: u64) -> io::Result<String> {
+    use std::io::{BufRead as _, Read as _};
+    let mut input = String::new();
+    io::stdin().lock().take(limit).read_line(&mut input)?;
+    Ok(input)
+}
+
+fn here(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use std::path::Path;
+
+    let root = match args {
+        [root] => Path::new(root),
+        _ => Path::new(""),
+    };
+    let app = env::var_os("KUVO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let engine = env::var_os("KUVO_ENGINE_DATA").map(PathBuf::from);
+    let account =
+        Account::current()?.home_folder(Platform::current(), &env::vars_os().collect())?;
+    match kuvo_setup::locate(&account, root, &app, engine.as_deref()) {
+        Ok(found) => {
+            println!("{}", serde_json::to_string(&found)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            Ok(ExitCode::from(2))
+        }
+    }
 }
 
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {

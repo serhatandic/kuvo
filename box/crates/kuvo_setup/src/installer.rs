@@ -3,9 +3,12 @@
 mod join;
 pub(crate) mod released;
 
+use std::time::Duration;
+
+use kuvo_store::home::Home;
 use kuvo_wire::keys::{Host, decode, encode};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -13,11 +16,118 @@ use crate::{
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
-pub use join::{Joined, join};
+pub use join::{Joined, cancellation_receipts, join};
 
 pub(super) const INVITE_LIFETIME: u64 = 15 * 60_000;
 pub(super) const CLAIM_LIFETIME: u64 = 24 * 60 * 60_000;
 const PREFIX: &str = "kuvo-add-1.";
+const CANCELLATION: &str = "kuvo-cancel-";
+pub(crate) const RECOVERY_ROUTE: &str = "kuvo/setup/installer-recovery";
+
+pub async fn apply_cancellation(home: &Home, receipt: &str) -> Result<String, Error> {
+    #[derive(Deserialize)]
+    struct LocalService {
+        port: u16,
+        password: String,
+    }
+
+    let files = crate::storage::Files::new(home.root().to_owned());
+    let service = files
+        .read::<LocalService>("run/serve.json")
+        .ok()
+        .flatten()
+        .filter(|service| service.port != 0 && !service.password.is_empty())
+        .ok_or_else(|| Error::Installer("Start Kuvo on the main computer and try again.".into()))?;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()?
+        .post(format!(
+            "http://127.0.0.1:{}/{RECOVERY_ROUTE}",
+            service.port
+        ))
+        .basic_auth("opencode", Some(service.password))
+        .header("x-kuvo-from", "mac")
+        .header("x-kuvo-route-version", "1")
+        .json(&json!({"receipt": receipt.trim()}))
+        .send()
+        .await?;
+    let success = response.status().is_success();
+    let body = response.json::<Value>().await?;
+    let message = body["message"]
+        .as_str()
+        .unwrap_or("The roster retirement could not be confirmed.");
+    if success {
+        Ok(message.into())
+    } else {
+        Err(Error::Installer(message.into()))
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Cancellation {
+    pub setup: String,
+    pub invite: String,
+    pub key: String,
+    pub secret: String,
+}
+
+impl Cancellation {
+    pub(crate) fn read(input: &str) -> Result<Self, Error> {
+        const INVALID: &str = "Enter an installer cancellation receipt.";
+        let (version, payload) = input
+            .strip_prefix(CANCELLATION)
+            .filter(|_| input.len() < 512)
+            .and_then(|rest| rest.split_once('.'))
+            .ok_or_else(|| Error::Installer(INVALID.into()))?;
+        if version != "1" {
+            let version = version
+                .parse::<u64>()
+                .ok()
+                .filter(|_| version.len() <= 15 && version.bytes().all(|c| c.is_ascii_digit()))
+                .map_or_else(|| "invalid".to_owned(), |n| n.to_string());
+            return Err(Error::Installer(format!(
+                "kuvo-cancel format version {version} is unsupported (this build writes 1)."
+            )));
+        }
+        let receipt: Self = decode(payload)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .ok_or_else(|| Error::Installer(INVALID.into()))?;
+        if !receipt
+            .setup
+            .strip_prefix("set_")
+            .is_some_and(|id| safe_token(id, 22, 22))
+            || !safe_token(&receipt.invite, 43, 43)
+            || !safe_token(&receipt.key, 43, 43)
+            || !safe_token(&receipt.secret, 32, 32)
+        {
+            return Err(Error::Installer(INVALID.into()));
+        }
+        Ok(receipt)
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{CANCELLATION}1.{}",
+            encode(&serde_json::to_vec(self).expect("receipt serializes"))
+        )
+    }
+
+    pub(super) fn operation(&self, epoch: u64) -> String {
+        hash(
+            &json!([
+                "installer-cancellation",
+                self.setup,
+                self.invite,
+                self.key,
+                self.secret,
+                epoch
+            ])
+            .to_string(),
+        )
+    }
+}
 
 pub(super) fn hash(token: &str) -> String {
     encode(&Sha256::digest(token))

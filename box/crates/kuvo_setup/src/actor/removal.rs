@@ -585,7 +585,7 @@ fn released_link(before: &Link, setup: &Setup, key: &str) -> Link {
     link
 }
 
-fn retire_computer(
+pub(super) fn retire_computer(
     roster: &mut Membership,
     setup: &str,
     peer: &Peer,

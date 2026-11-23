@@ -67,7 +67,15 @@ export async function bench(t) {
         }
       };
       const connect = record => (method, route, body, headers) => request(record, method, route, body, headers);
-      return { home, engine, start, join, connect };
+      const command = async (args, input) => {
+        const child = boxCommand(implementation, home, env, relay, args, {}, "pipe");
+        children.push(child);
+        let text = "";
+        child.child.stdout.setEncoding("utf8").on("data", chunk => { text += chunk; });
+        child.child.stdin.end(input);
+        return { ...await child.exited, text, log: child.log() };
+      };
+      return { home, engine, start, join, connect, command };
     },
   };
 }

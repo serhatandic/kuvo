@@ -141,6 +141,10 @@ export async function standInEngine(root, env) {
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });
+      if (route === "POST /api/credential") {
+        engine.credentials.push(given);
+        return send({ data: given });
+      }
       // Its tools connected (Kuvo Code's own browser's, no integration's), so nothing waits for them.
       if (route === "GET /api/mcp") return send({ data: [{ name: "kuvo-browser", status: { status: "connected" } }] });
       if (["GET /api/skill", "GET /api/provider"].includes(route)) return send({ data: [] });

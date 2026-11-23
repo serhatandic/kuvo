@@ -1,5 +1,8 @@
 //! A probe supplies discovery hints. It never grants membership or access.
 
+mod here;
+pub use here::locate;
+
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
@@ -356,28 +359,7 @@ pub(crate) fn judge<'a>(text: &'a str, setup: &Value) -> Result<Judgment<'a>, St
     let (found, app) = read_probe(text)?;
     let boxes: Vec<_> = found
         .iter()
-        .map(|found| {
-            let card = found.card.as_ref();
-            let verdict = verdict(found, &ours);
-            JudgedBox {
-                folder: found.folder,
-                app: found.app,
-                verdict,
-                key: card.and_then(|card| card.key.clone()),
-                name: card.map(|card| card.name.clone()).unwrap_or_default(),
-                kind: card.and_then(|card| card.kind),
-                setup: card.and_then(|card| card.setup.clone()),
-                role: card.and_then(|card| card.role),
-                primary: card.and_then(|card| card.primary.clone()).or_else(|| {
-                    (verdict == Verdict::Older)
-                        .then(|| found.legacy.as_ref()?.primary())
-                        .flatten()
-                }),
-                macs: macs(found),
-                computers: card.and_then(|card| card.computers),
-                items: card.and_then(|card| card.items),
-            }
-        })
+        .map(|found| describe(found, verdict(found, &ours)))
         .collect();
     let mut occupied = boxes.iter().filter(|found| found.verdict != Verdict::Free);
     let first = occupied.next();
@@ -414,4 +396,28 @@ pub(crate) fn judge<'a>(text: &'a str, setup: &Value) -> Result<Judgment<'a>, St
         joins,
         boxes,
     })
+}
+
+fn describe<'a>(found: &Found<'a>, verdict: Verdict) -> JudgedBox<'a> {
+    let card = found.card.as_ref();
+    JudgedBox {
+        folder: found.folder,
+        app: found.app,
+        verdict,
+        key: card.and_then(|card| card.key.clone()),
+        name: card.map(|card| card.name.clone()).unwrap_or_default(),
+        kind: card.and_then(|card| card.kind),
+        setup: card.and_then(|card| card.setup.clone()),
+        role: card.and_then(|card| card.role),
+        primary: card.and_then(|card| card.primary.clone()).or_else(|| {
+            if verdict == Verdict::Older {
+                found.legacy.as_ref()?.primary()
+            } else {
+                None
+            }
+        }),
+        macs: macs(found),
+        computers: card.and_then(|card| card.computers),
+        items: card.and_then(|card| card.items),
+    }
 }

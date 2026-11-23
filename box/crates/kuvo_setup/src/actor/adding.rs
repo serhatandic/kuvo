@@ -9,14 +9,109 @@ use crate::{
     Error, document,
     edits::Submitter,
     installer::{
-        self, Applicant, CLAIM_LIFETIME, Claim, Code, Device, INVITE_LIFETIME, Invitation, hash,
-        relay_url,
+        self, Applicant, CLAIM_LIFETIME, Cancellation, Claim, Code, Device, INVITE_LIFETIME,
+        Invitation, hash, relay_url,
     },
-    model::{Peer, Role, SharedKind, safe_token},
+    model::{Peer, Role, SharedKind, Status, safe_token},
     random,
 };
 
 impl Owner {
+    pub(super) async fn cancel_installer(
+        &mut self,
+        receipt: Cancellation,
+    ) -> Result<Response, Error> {
+        const SAVE_FAILED: &str = "The main computer could not save this cancellation. Check its connection to Kuvo’s relay, then retry the receipt.";
+        let Ok(setup) = self.link.setup() else {
+            return Ok(refused(
+                409,
+                "Run this command on the current main computer of the setup that issued the code.",
+            ));
+        };
+        let position = setup.position.clone();
+        if setup.role != Role::Primary || position.id != receipt.setup {
+            return Ok(refused(
+                409,
+                "Run this command on the current main computer of the setup that issued the code.",
+            ));
+        }
+        let mut roster = self.roster()?;
+        if roster.left.contains(&receipt.key)
+            && self.link.shared_outcomes.iter().any(|(id, outcome)| {
+                outcome.kind == SharedKind::MembershipAndAccess
+                    && outcome.status == Status::Committed
+                    && *id == receipt.operation(outcome.epoch)
+            })
+        {
+            return Ok(Response::ok(
+                json!({"message": "The provisional installer entry was already retired."}),
+            ));
+        }
+        let mut recoveries = installer::recoveries(&self.link, &roster);
+        let entry = recoveries.get(&receipt.key);
+        if entry.is_none_or(|entry| {
+            entry["invite"] != receipt.invite || entry["commitment"] != hash(&receipt.secret)
+        }) {
+            return Ok(refused(
+                409,
+                "The accepted roster has no matching installer recovery entry. No computer was retired.",
+            ));
+        }
+        if self.can_write().is_err()
+            || position.primary == receipt.key
+            || roster
+                .extra
+                .get("wipePreparations")
+                .and_then(|rows| rows.get(&receipt.key))
+                .is_some()
+            || self
+                .link
+                .installer_invites
+                .get(&receipt.invite)
+                .is_some_and(|invite| {
+                    ["activated", "credentialsCompleted"]
+                        .iter()
+                        .any(|flag| invite.extra.get(*flag) == Some(&Value::Bool(true)))
+                })
+        {
+            return Ok(refused(409, SAVE_FAILED));
+        }
+        let Some(index) = roster.boxes.iter().position(|peer| peer.key == receipt.key) else {
+            return Ok(refused(409, SAVE_FAILED));
+        };
+        let peer = roster.boxes.remove(index);
+        let mut next = self.link.clone();
+        recoveries.shift_remove(&receipt.key);
+        installer::keep_recoveries(&mut next, &mut roster, recoveries)?;
+        super::removal::retire_computer(&mut roster, &position.id, &peer, &position.primary)?;
+        if let Some(invite) = next.installer_invites.get_mut(&receipt.invite)
+            && invite
+                .claim
+                .as_ref()
+                .is_some_and(|claim| claim.matches(&peer))
+        {
+            invite.extra.insert("cancelled".into(), json!(true));
+            invite.extra.shift_remove("credentialSeed");
+            invite.extra.shift_remove("credentialSelectionDigest");
+        }
+        let write = next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            serde_json::to_value(roster).expect("roster serializes"),
+            None,
+            Some(receipt.operation(position.epoch)),
+        );
+        if write.is_err() || self.commit(next).await.is_err() {
+            return Ok(refused(409, SAVE_FAILED));
+        }
+        if let Err(error) = self.publish(false).await {
+            eprintln!("publishing installer cancellation: {error}");
+        }
+        Ok(Response::ok(
+            json!({"message": "The provisional installer entry was retired."}),
+        ))
+    }
+
     pub(super) async fn rename_computer(
         &mut self,
         key: String,

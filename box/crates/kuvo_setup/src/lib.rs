@@ -8,6 +8,7 @@ mod edits;
 pub mod installer;
 mod preferences;
 mod routes;
+pub mod seed;
 
 mod lease;
 mod mac_host;
@@ -76,6 +77,7 @@ pub use actor::{
     ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
     SetupRuntime,
 };
+pub use discovery::locate;
 pub use model::{Receipt, SharedKind};
 
 pub use preferences::{project_app_personalities, project_kit_personalities};
