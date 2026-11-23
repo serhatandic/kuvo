@@ -179,6 +179,36 @@ test("two retries recover a draft that never reached the engine before restart",
   assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).length, 2);
 });
 
+test("a retry waiting for the original draft leaves other requests responsive", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-draft-contended");
+  here.engine.sessions.push(sessionOf({ id: conversation, directory: here.home }));
+  const record = await here.start().ready();
+  const draft = { id: "msg_contended", text: "Only once.", message: {} };
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  here.engine.holdPrompt = { id: draft.id, beforeAcceptance: true, accepted: entered.resolve, release: release.promise };
+  const submit = () => request(record, "POST", base + "/draft", draft, desktop);
+  const first = submit();
+  await entered.promise;
+  let retryFinished = false;
+  const retry = submit().finally(() => { retryFinished = true; });
+  try {
+    const probe = await request(record, "GET", "kuvo/nonexistent");
+    assert.equal(probe.status, 404, probe.text);
+    assert.equal(retryFinished, false, "The probe should finish while the draft is still waiting.");
+  } finally {
+    release.resolve();
+    await Promise.allSettled([first, retry]);
+  }
+  const [original, repeated] = await Promise.all([first, retry]);
+  assert.equal(original.status, 200, original.text);
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.equal(repeated.json.message, draft.id);
+  assert.equal(here.engine.messages.get(conversation).filter(row => row.id === draft.id).length, 1);
+});
+
 test("a scoped draft keeps its receipt and preserves the earlier send across restart", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-scoped-draft");
