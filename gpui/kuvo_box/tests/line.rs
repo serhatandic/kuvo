@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
-use kuvo_box::follow::{ConversationUpdate, Timing};
+use kuvo_box::follow::{ConversationUpdate, ListUpdate, Timing};
 use kuvo_box::line::LineTiming;
 use kuvo_box::messages::{Content, Message};
 use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
@@ -40,6 +40,7 @@ struct State {
     /// `404` with nothing said.
     before_the_line: bool,
     restarts: usize,
+    session_info: Option<(u16, Value)>,
 }
 
 #[derive(Clone, Default)]
@@ -110,6 +111,10 @@ impl Transport for StandIn {
         }
         let json = |status: u16, value: Value| Ok(Response { status, content_type: Some("application/json".into()), body: value.to_string().into_bytes() });
         match (request.method.as_str(), request.route()) {
+            ("GET", "kuvo/info") if state.session_info.is_some() => {
+                let (status, value) = state.session_info.as_ref().unwrap();
+                json(*status, value.clone())
+            }
             ("GET", "api/session/ses_1") => json(200, json!({ "data": { "id": SESSION } })),
             ("GET", "api/session/active") => json(200, json!({ "data": { (SESSION): {} } })),
             ("GET", "api/session/ses_1/message") => {
@@ -154,6 +159,18 @@ impl Transport for StandIn {
                 }
             }
         }
+        let local = "kuvo/sessions/list/events";
+        let merged = "kuvo/setup/sessions/list/events";
+        if let Some(name) = state.names.get(merged).or_else(|| state.names.get(local)) {
+            let mut sessions = json!({ "ses_here": { "kind": "chat", "directory": "/chats", "created": 1, "updated": 1 } });
+            if state.names.contains_key(merged) {
+                sessions["ses_peer"] = json!({ "kind": "chat", "directory": "/chats", "created": 2, "updated": 2,
+                    "on": { "id": "peer", "name": "Another Mac", "away": false, "actions": ["open"] } });
+            }
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": {
+                "at": state.line, "full": true, "archivedGroups": [], "sessions": sessions,
+            } })).into_bytes());
+        }
         state.live = Some(live);
         hold(Closer::nothing());
         Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(BufReader::new(Pipe(receiver, Vec::new()))), closer: Closer::nothing() })
@@ -166,6 +183,34 @@ impl Transport for StandIn {
     fn describe(&self) -> String {
         "Mac mini".into()
     }
+}
+
+#[test]
+fn a_session_list_picks_up_peer_sessions_after_a_failed_first_box_info_read() {
+    session_list_picks_up_peer_sessions_after_reconnect(503, json!({ "message": "The box is starting." }));
+}
+
+#[test]
+fn a_session_list_picks_up_peer_sessions_after_the_box_updates() {
+    session_list_picks_up_peer_sessions_after_reconnect(200, json!({ "kind": "mac", "name": "Mac mini", "features": [] }));
+}
+
+fn session_list_picks_up_peer_sessions_after_reconnect(status: u16, initial_info: Value) {
+    let box_ = StandIn::default();
+    box_.state().session_info = Some((status, initial_info));
+    let client = BoxClient::new(box_.clone());
+    let follow = client.follow_sessions(at_once());
+    let ListUpdate::Listing(first) = follow.next_blocking().unwrap() else { panic!("the local list") };
+    assert_eq!(first.sidebar().chats, ["ses_here"]);
+
+    // The next connection can read the capabilities of the box that now answers.
+    box_.state().session_info = Some((200, json!({ "kind": "mac", "name": "Mac mini", "features": ["line.merged-sessions"] })));
+    box_.restart();
+    let ListUpdate::Listing(next) = follow.next_blocking().unwrap() else { panic!("the list after reconnect") };
+    assert_eq!(next.sidebar().chats, ["ses_peer", "ses_here"]);
+    assert_eq!(next.computer_of("ses_peer").unwrap().name, "Another Mac");
+    follow.stop();
+    box_.drop_stream();
 }
 
 fn at_once() -> Timing {
