@@ -30,6 +30,7 @@ pub mod git;
 pub mod groups;
 pub mod ids;
 pub mod library;
+pub mod marketplace;
 pub mod image_names;
 pub mod info;
 pub mod install;

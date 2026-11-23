@@ -486,6 +486,19 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "library-images", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-menu", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-empty", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-apps", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-category", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-connect", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-connect-oauth", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-custom", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-agents", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-add-agent", width: 1280., height: 980., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-skills", width: 1280., height: 980., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-yours", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-preview", width: 1280., height: 980., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-new-skill", width: 1280., height: 980., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-loading", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "market-narrow", width: 820., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -784,10 +797,9 @@ fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
     workspace.show_area(Area::Bots, window, cx);
     workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
 }
-/// New Bot, a template picked.
+/// New Bot: ready-made bots are in the Marketplace.
 fn bot_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "new", window, cx);
-    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::PickTemplate(Some("inbox".into())), cx));
 }
 /// New Bot, turned down by the box (no name).
 fn bot_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2660,6 +2672,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug.starts_with("library-") {
                 stand_in.library_sample(screen.slug == "library-empty");
             }
+            if screen.slug.starts_with("market-") {
+                stand_in.marketplace_sample(kuvo::stand_in::marketplace::Sample::InUse);
+            }
             match screen.slug {
                 "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
@@ -3266,6 +3281,9 @@ fn main() -> anyhow::Result<()> {
                     if screen.slug.starts_with("library-") {
                         workspace.library_sample(screen.slug, NOW, window, cx);
                     }
+                    if screen.slug.starts_with("market-") {
+                        workspace.marketplace_sample(screen.slug, window, cx);
+                    }
                     if let Some(panel) = screen.panel {
                         panel(workspace, window, cx);
                     }
@@ -3286,6 +3304,13 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "panel-terminal" {
                 shell.pty_print("pty_1", b"\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf bun test src/components/SignupForm.test.tsx\r\n\r\n \x1b[32m\xe2\x9c\x93\x1b[0m keeps the email on 409 \x1b[2m9ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m focuses the email after the error \x1b[2m6ms\x1b[0m\r\n \x1b[32m\xe2\x9c\x93\x1b[0m submits a new account \x1b[2m14ms\x1b[0m\r\n\r\n \x1b[32m3 pass\x1b[0m \x1b[2m0 fail [42ms]\x1b[0m\r\n\r\n\x1b[1;34m~/website\x1b[0m \x1b[2mfix/signup-taken-email\x1b[0m\r\n\xe2\x9d\xaf ");
+                cx.run_until_parked();
+            }
+            if screen.slug == "market-custom" || screen.slug == "market-new-skill" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).marketplace().clone().update(cx, |view, cx| view.open_sample_form(screen.slug, window, cx));
+                })?;
                 cx.run_until_parked();
             }
             if screen.slug == "library-menu" {

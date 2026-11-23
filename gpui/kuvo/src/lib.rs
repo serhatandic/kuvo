@@ -31,6 +31,7 @@ pub mod moves;
 mod landing;
 pub mod launch;
 pub mod library;
+pub mod marketplace;
 pub mod notifications;
 pub mod panel;
 pub mod pasted;

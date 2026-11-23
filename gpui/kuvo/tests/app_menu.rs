@@ -159,7 +159,7 @@ fn the_menu_bar_has_kuvo_file_edit_view_window_and_help_and_names_its_window_men
         names(&menus, "View"),
         // (View › Library comes once the window in front shows a computer whose Kuvo has it:
         // tests/library.rs.)
-        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
+        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Marketplace", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
     );
     assert_eq!(names(&menus, "Help"), ["Kuvo Help"]);
 }

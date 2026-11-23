@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Marketplace is in the desktop app, on the rail (⌃8): connect apps with their own logos and add your own MCP servers, add ready-made agents as bots on any of your computers (their routines start off until you turn them on), and browse, preview and install skills, from a GitHub link or a folder too. It's free, and what you add is there on all your computers.
+- Settings › Integrations and Settings › Skills are gone: everything they did is in the Marketplace, including turning a skill off on one computer, Recently Deleted and Other Places.
+- New Bot no longer has templates to start from; it points to Marketplace › Agents instead.
+
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
 - While the agent runs a command or thinks, its steps line is the only spinner: "Working…" shows only between steps.
 - Pictures in conversations, the composer, the panel, Activity and the Library have one clean rounded edge, with no corners showing past it.

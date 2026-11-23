@@ -528,14 +528,11 @@ fn new_bot_is_made_as_the_box_offers_it_and_opens_its_conversation(cx: &mut Test
     assert!(stand_in.seen_at("GET", "kuvo/bots/templates").is_empty(), "asked only as New Bot opens");
     click(cx, "new-bot");
     assert_eq!(title(&workspace, cx).as_deref(), Some("New Bot"));
-    assert!(shown(cx, "new-bot-page") && shown(cx, "template-blank") && shown(cx, "template-ci"), "the box's templates");
+    assert!(shown(cx, "new-bot-page"));
+    // (Ready-made bots are the Marketplace's now: none to start from here.)
+    assert!(!shown(cx, "template-ci") && !shown(cx, "template-blank"));
 
     // Without a name the box says so; nothing is made, and what was picked stays.
-    click(cx, "template-inbox");
-    let view = page(&workspace, cx);
-    assert_eq!(view.read_with(cx, |page, cx| page.new_name_field().read(cx).text().to_owned()), "Courier", "the template's name, to change");
-    // (The keyboard is back in its name.)
-    cx.simulate_keystrokes("cmd-a backspace");
     click(cx, "new-create");
     assert!(shown(cx, "new-error"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/bots").len(), 1, "no bot was made: the list isn't read again");
@@ -547,17 +544,16 @@ fn new_bot_is_made_as_the_box_offers_it_and_opens_its_conversation(cx: &mut Test
     click(cx, "new-create");
     let sent = bodies(&stand_in, "POST", "kuvo/bots");
     assert_eq!(sent.len(), 2);
-    // Only what was picked is sent: the template's look and personality are the box's to give.
+    // Only what was picked is sent: the rest is the box's to give.
     let mut made = sent[1].clone();
     let request = made.as_object_mut().and_then(|made| made.remove("request")).and_then(|request| request.as_str().map(str::to_owned)).expect("a request id");
-    assert_eq!(made, json!({ "name": "Postie", "template": "inbox", "project": "/Users/sam/Projects/api" }));
+    assert_eq!(made, json!({ "name": "Postie", "project": "/Users/sam/Projects/api" }));
     assert_eq!(sent[0]["request"], json!(request), "a retry carries the same request, so the bot is made once");
 
-    // On to its conversation, in Bots, its job in the composer to edit and send.
-    let (bot, composer) = workspace.read_with(cx, |workspace, cx| workspace.bot_chat().map(|(bot, view)| (bot.to_owned(), view.read(cx).composer().clone())).expect("its conversation"));
+    // On to its conversation, in Bots.
+    let bot = workspace.read_with(cx, |workspace, _| workspace.bot_chat().map(|(bot, _)| bot.to_owned()).expect("its conversation"));
     assert!(shown(cx, &format!("bot-{bot}")), "listed in the sidebar");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Postie"));
-    assert_eq!(composer.read_with(cx, |composer, cx| composer.field().read(cx).text().to_owned()), "Read my mail twice a day and draft replies to what needs one.");
 }
 
 #[gpui::test]

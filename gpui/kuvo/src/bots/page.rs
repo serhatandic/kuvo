@@ -145,7 +145,7 @@ impl BotsView {
                 .children(busy.then(|| div().pt(px(3.)).child(spinner("bots-reading", IconSize::Nav, c.text_muted))))
                 .child(div().flex_1().min_w_0().child(words))
                 .into_any_element(),
-            Item::Templates { picked } => self.templates_grid(picked, cx),
+            Item::Marketplace => self.marketplace_row(cx),
             Item::Foot { error, creating } => div()
                 .pt(space::S5)
                 .flex()
@@ -616,38 +616,39 @@ impl BotsView {
     }
 
     /// New Bot's templates as the box offers them, with a blank one first.
-    fn templates_grid(&mut self, picked: Option<String>, cx: &mut Context<Self>) -> AnyElement {
+    /// Where ready-made bots are: a card leading to Marketplace › Agents.
+    fn marketplace_row(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let templates = self.templates().map(|templates| templates.templates.clone()).unwrap_or_default();
-        let tile = |id: Option<String>, leading: AnyElement, name: String, line: String, on: bool, cx: &mut Context<Self>| {
-            let selector = format!("template-{}", id.as_deref().unwrap_or("blank"));
-            div()
-                .id(SharedString::from(selector.clone()))
-                .debug_selector(move || selector)
-                .w(px(228.))
-                .h(px(104.))
-                .flex()
-                .flex_col()
-                .gap(space::S2)
-                .p(space::S3)
-                .rounded(radius::POPOVER)
-                .bg(c.card)
-                .border_1()
-                .border_color(if on { c.accent } else { c.border })
-                .when(on, |d| d.shadow(cx.theme().selected_shadow()))
-                .cursor_pointer()
-                .hover(|s| s.border_color(if on { c.accent } else { c.border_strong }))
-                .on_click(cx.listener(move |this, _, _, cx| this.act(Act::PickTemplate(id.clone()), cx)))
-                .child(div().flex().items_center().gap(space::S2).child(leading).child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(name)))
-                .child(div().line_clamp(2).text_ellipsis().text_ui(TypeSize::Small).text_color(c.text_muted).child(line))
-        };
-        let blank = div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(IconName::Plus).color(c.icon)).into_any_element();
-        let mut tiles = vec![tile(None, blank, "Blank".into(), "Tell it its job yourself, in its chat.".into(), picked.is_none(), cx)];
-        for template in templates {
-            let leading = face_or_blank(&format!("template:{}", template.id), template.look.as_ref(), px(28.), cx);
-            tiles.push(tile(Some(template.id.clone()), leading, template.name, template.job, picked.as_ref() == Some(&template.id), cx));
-        }
-        div().debug_selector(|| "new-templates".into()).flex().flex_wrap().gap(space::S3).children(tiles).into_any_element()
+        div()
+            .id("new-marketplace")
+            .debug_selector(|| "new-marketplace".into())
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .p(space::S3)
+            .rounded(radius::POPOVER)
+            .bg(c.card)
+            .border_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .hover(|s| s.border_color(c.border_strong))
+            .on_click(cx.listener(|this, _, _, cx| this.act(Act::Marketplace, cx)))
+            .child(div().flex().flex_none().items_center().justify_center().size(px(32.)).rounded(radius::NAV).bg(c.sunken).child(Icon::new(IconName::Grid).size(IconSize::Nav).color(c.icon_on)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(div().text_role(kuvo_ui::TextRole::RowTitle).text_color(c.text).child("Ready-made agents"))
+                    .child(div().text_role(kuvo_ui::TextRole::RowDetail).text_color(c.text_muted).child("Bots with their instructions, skills and routines set up, in the Marketplace.")),
+            )
+            .child(Button::new("new-marketplace-open", "Browse Agents").size(ButtonSize::Small).icon_after(IconName::ChevronRight).on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.act(Act::Marketplace, cx);
+            })))
+            .into_any_element()
     }
 
     /// Nothing picked: what the area is for, and the way to a new bot.
