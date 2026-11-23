@@ -92,7 +92,9 @@ export async function standInEngine(root, env) {
         return send({ data: found });
       }
       if (one && request.method === "DELETE") {
-        const at = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        const id = decodeURIComponent(one[1]);
+        if (engine.refuseDelete === id) return send({ message: "The engine cannot remove this copy yet." }, 503);
+        const at = engine.sessions.findIndex(each => each.id === id);
         if (at < 0) return send({ message: "No such session." }, 404);
         const [removed] = engine.sessions.splice(at, 1);
         publish({ type: "session.deleted", data: { sessionID: removed.id } });

@@ -445,6 +445,53 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
   assert.equal(refused.hash, hash);
 });
 
+test("a dropped copy stays held through an engine failure and a late switch", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("held-drop");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const id = "mov_droppedCopy", session = "ses_droppedCopy", hash = "A".repeat(43), generation = 1;
+  const journal = "run/moves/" + id + ".json";
+  const folder = path.join(here.home, "wakes", session);
+  const paused = path.join(folder, "paused");
+  write(paused, "moving:" + id);
+  const imported = sessionOf({ id: session, directory: path.join(here.home, "chats") });
+  imported.metadata = { "kuvo.moveImport": `${id}:${generation}:${hash}` };
+  here.engine.sessions.push(imported);
+  here.engine.refuseDelete = session;
+  save(journal, {
+    formatVersion: 1, id, thing: session, name: "Held copy", kind: "chat", from: member.key,
+    to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
+    started: Date.now(), safeSwitch: true, twoComputers: true, complete: true, setUpAt: Date.now(),
+    generation, hash, createdSessions: [session], placed: true, folder,
+  });
+  const process = here.start(), resident = await process.ready();
+  const drop = { op: "drop", id, generation, hash };
+  const proof = await ask(drop);
+  assert.equal(proof.op, "dropped");
+  assert.equal(proof.neverSwitched, true);
+  const remove = call => call.method === "DELETE" && call.path === "/api/session/" + session;
+  await until(() => here.engine.asked.some(remove), "The destination did not try to delete the held import");
+  assert.ok(here.engine.sessions.some(record => record.id === session));
+  const list = await request(resident, "GET", "kuvo/moves");
+  assert.equal(list.status, 200, list.text);
+  assert.deepEqual(list.json.moves, []);
+  assert.ok(list.json.away.includes(session));
+  assert.equal(fs.readFileSync(paused, "utf8"), "moving:" + id);
+  assert.deepEqual(await ask({ ...drop, op: "switch", safeSwitch: true }), proof);
+  const blocked = await request(resident, "POST", "api/session/" + session + "/prompt", { text: "Stay held." });
+  assert.equal(blocked.status, 409, blocked.text);
+  here.engine.refuseDelete = undefined;
+  // The source repeats its durable decision query once the engine is back.
+  assert.deepEqual(await ask(drop), proof);
+  await until(() => !fs.existsSync(path.join(here.home, journal)) && !fs.existsSync(folder),
+    () => "The destination did not clean up the rejected copy\n" + process.log());
+  assert.equal(here.engine.sessions.some(record => record.id === session), false);
+  assert.deepEqual(await ask(drop), proof);
+});
+
 test("a destination refuses an oversized offer before creating a copy", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
