@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 78 of
-411 declarations are covered, 114 are partial and 219 are gaps.
-Row 3.2 retains 208 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 90 of
+411 declarations are covered, 103 are partial and 218 are gaps.
+Row 3.2 retains 196 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -111,14 +111,14 @@ owners on the same case each own the part described by their phase.
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
+| `box/test/session-lists.test.ts` (47) | 4–5, 10 | 3, 15–16, 19–20, 23–24, 46 | 1–2, 6–9, 11–14, 17–18, 21–22, 25–45, 47 | 3.2 · 1–3, 6–9, 11–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | 2 | 6 | 1, 3–5, 7–8 | 3.2 · 1, 3–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
-| `box/test/typed.test.ts` (9) | 1, 3 | 2, 4, 6–9 | 5 | 3.2 · 2, 4, 6–9<br>4.1 · 5 |
-| `box/test/draft-orphan.test.ts` (5) | 2 | 1, 3–4 | 5 | 3.2 · 1, 3–5 |
+| `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
+| `box/test/draft-orphan.test.ts` (5) | 1–4 | — | 5 | 3.2 · 5 |
 | `box/test/conversation.test.ts` (3) | — | 3 | 1–2 | 3.2 · 1–3 |
 | `box/test/conversation-activity.test.ts` (2) | — | — | 1–2 | 3.2 · 1<br>4.1 · 2<br>5.1 · 2 |
 | `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
@@ -295,10 +295,10 @@ publishes receipt changes through a watch channel.
 
 | Platform | Phase 3.2c checks |
 | --- | --- |
-| macOS | 46 engine conformance cases against each binary, including the beta fixture and the real model. The Rust resident scenario also verifies the owner adapters and revoked delivery. |
-| WSL GNU | 43 deterministic Rust cases and the real model, with the Mac-built executable. |
-| Native Windows | 43 deterministic Rust cases with the Mac-built executable. The staged OpenCode pin reports version 2.2.6. |
-| Linux on Lokum | 35 deterministic Rust cases before the peer delivery and shared star additions, with a Mac-built static musl executable. The lead will rerun merged areas in a separate batch. |
+| macOS | 59 deterministic engine cases against each binary at the catalog and session-writer checkpoint. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters and revoked delivery. |
+| WSL GNU | 57 deterministic Rust cases at the setup search checkpoint and the earlier OpenCode Go live scenario, with Mac-built executables. |
+| Native Windows | 57 deterministic Rust cases at the setup search checkpoint, including Windows project keys. The staged OpenCode pin reports version 2.2.6. |
+| Linux musl | 57 deterministic Rust cases at the setup search checkpoint with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
 
 The signed star test makes a change from a member, reads it from both
 computers, then merges older local copies after an unstar. It verifies the
@@ -308,8 +308,8 @@ and reads the terminal receipt through the new pairing.
 
 ### Differential file verdicts
 
-The model preference run reported 82 paths and the ten-step desktop run
-reported 93. The table includes the older baseline paths as well.
+The latest model preference run reported 81 differing paths, and the
+ten-step desktop run reported 91. The table includes the older baseline paths as well.
 A position such as "run/link.json/value/key" is a field difference inside
 "run/link.json". Wildcards cover only the generated filenames at the stated
 depth. The row remains responsible for its files and for proving compatibility
@@ -329,7 +329,7 @@ records or runtime endpoint they hold.
 | `run/.queue-handoffs` | Unread outside the old lock | `rg -n -F .queue-handoffs box/src box/crates` finds only the TypeScript per-item lock in `engine/queue.ts`. Rust uses the session turn. |
 | `run/glance`, `run/glance/asks.json` | Identical | Both writers publish the `asks` object that the TypeScript reader in `glance/asked.ts` consumes. |
 | `run/glance-source.json` | Unread by released readers | `rg -n -F glance-source.json box/src box/crates gpui` finds only the Rust checkpoint reader and writer. The digest binds the checkpoint to its OpenCode process. |
-| `run/lists/sessions.json` | 3.2 | Both boxes and the Rust peer publisher read the list. Rust writes the same owner, start identity and `workByBot` fields and advances each inventory as one revision. The desktop restart still differed in the saved floor and the affected row's sequence. |
+| `run/lists/sessions.json` | 3.2 | Both boxes and the Rust peer publisher read the list. Rust writes the same owner, start identity and `workByBot` fields and advances each inventory as one revision. The latest desktop run agreed on this file. A prior run differed in the saved floor and row sequence. The cursor scenario now proves a cached first frame, a later inventory, and full refresh for an old cursor across resident restart. |
 | `run/notes` | 3.2, 7.3 | TypeScript keeps per-session writer locks. Rust orders these writes through the resident. Compatibility with the released lock and stale lock cleanup still need proof. |
 | `run/queues-scanned.json` | Identical | Both writers use a format-one port-to-process map. A same-process restart with a saved receipt resumes its inbox and preserves a stopped session in the conformance scenario. |
 | `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward`, `run/work-queue/model.json`, `run/work-queue/numbers.json` | 5.2 | Work Queue model, numbering, forwarding and GitHub credential exchange |
