@@ -161,6 +161,9 @@ this row. Installed Helper cases still need the released supervision path.
   credential move and injected rollback and resume cases.
 - Native Windows passed all four applicable Rust scenarios. The Unix socket,
   command and SSH checks, the Mac Helper, and the second-binary run were skipped.
+- The static x86-64 musl binary passed all seven applicable Rust scenarios
+  in Ubuntu 24.04 under WSL. This run also covered Linux's everyone-only
+  SSH grants. The Mac Helper and second-binary run were skipped.
 - Six differential vault replies and the saved vault files matched. The full
   home comparison retains differences for other areas, including generated
   setup identities and runtime records.
