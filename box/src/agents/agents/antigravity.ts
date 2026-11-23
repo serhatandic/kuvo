@@ -892,6 +892,7 @@ export class AntigravityAgent implements Agent {
         // (`agy`, or Google's earlier agent pinned to its version.)
         held: { kind: "antigravity", provider: agent.providerID, version: agent.runtime() === "agy" ? "agy" : version },
         fileSystem: true,
+        readsUnsaid: true,
         whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
         authenticatesFirst: true,
         resumes: true,

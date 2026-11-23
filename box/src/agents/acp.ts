@@ -63,6 +63,12 @@ export interface AcpFlavor {
    * the agent does it itself then, in the sandbox.
    */
   fileSystem: boolean
+  /**
+   * Its reads end only as its turn does (Antigravity's `agy`: its own view_file is done at once,
+   * and said to be "Tool execution failed" as the turn ends): each shows done once it goes on,
+   * saying something or starting a tool that isn't a read, in the sandbox or not.
+   */
+  readsUnsaid?: boolean
   /** `_meta` sent with `initialize`. */
   initializeMeta?: Record<string, unknown>
   /** The way to sign in, when it asks (`authenticate`). */
@@ -1128,7 +1134,7 @@ export class AcpThread implements Thread {
    * hasn't said the file of yet waits for it (`all`: not as the turn ends).
    */
   private settleReads(active: Active, all: boolean) {
-    if (!this.files) return
+    if (!this.flavor.readsUnsaid) return
     for (const [id, call] of active.tools) {
       if (!this.openRead(call) || call.settled) continue
       const path = this.readPath(call)
@@ -1173,6 +1179,8 @@ export class AcpThread implements Thread {
     if (merged.settled) return
     const kuvo = kuvoTool(merged)
     if (!turn.hasTool(id)) {
+      // It went on to something else: the reads before are over.
+      if (merged.kind !== "read") this.settleReads(active, false)
       active.toolsSinceText = true
       turn.toolStart(id, kuvo.name, kuvo.input)
     } else {

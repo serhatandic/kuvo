@@ -274,7 +274,7 @@ function program(script: string, path: string): string {
 }
 
 /** An ACP agent (no agent's own ways) whose prompt goes as `fakeAcp` says; its command's argument is the mode it's started for. */
-function agentSaying(updates: [string, any][], later: [string, any][] = [], request?: any, options: Script & { fileSystem?: boolean; noteContext?: (model: string, size: number) => void } = {}): Agent {
+function agentSaying(updates: [string, any][], later: [string, any][] = [], request?: any, options: Script & { fileSystem?: boolean; readsUnsaid?: boolean; noteContext?: (model: string, size: number) => void } = {}): Agent {
   const script = fakeAcp(updates, later, request, options)
   return {
     id: "grok",
@@ -284,7 +284,7 @@ function agentSaying(updates: [string, any][], later: [string, any][] = [], requ
     methods: () => [],
     account: async () => ({ installed: true, signedIn: true }),
     models: async () => [],
-    thread: (session, state) => new AcpThread({ fileSystem: options.fileSystem ?? false, authMethod: () => undefined, command: async (mode) => ({ argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }), selectModel: async () => {}, noteContext: options.noteContext }, session, state, "Agent"),
+    thread: (session, state) => new AcpThread({ fileSystem: options.fileSystem ?? false, readsUnsaid: options.readsUnsaid ?? options.fileSystem, authMethod: () => undefined, command: async (mode) => ({ argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }), selectModel: async () => {}, noteContext: options.noteContext }, session, state, "Agent"),
   }
 }
 
@@ -471,6 +471,42 @@ describe("ACP agents, nothing dropped", () => {
     expect(JSON.stringify(gone.state)).toContain("There's no such file.")
     expect(own).toMatchObject({ id: "r3", name: "read", state: { status: "completed" } })
     expect(notes).toMatchObject({ id: "r2", name: "read", state: { status: "completed", content: [{ type: "text", text: "first\nsecond" }] } })
+  })
+
+  // #926: \`agy\` 1.5 reads a file itself (view_file) at once, but says nothing more of it until its
+  // turn ends, and then that it failed ("Tool execution failed"), though it had the file.
+  describe("Antigravity's own reads end as read once it goes on", () => {
+    const file = () => join(root, "src", "sidebar.rs")
+    const read = (id: string, path: string) => ["s1", { sessionUpdate: "tool_call", toolCallId: id, title: "Running view_file", kind: "read", status: "in_progress", locations: [{ path }], rawInput: { absolute_path: path } }] as [string, any]
+    const ran = (id: string) => ["s1", { sessionUpdate: "tool_call", toolCallId: id, title: "Running run_command", kind: "execute", status: "completed", rawInput: { CommandLine: "cargo check" }, rawOutput: { output: "ok" } }] as [string, any]
+    const failedLate = (id: string) => ["s1", { sessionUpdate: "tool_call_update", toolCallId: id, status: "failed", content: [{ type: "content", content: { type: "text", text: "Tool execution failed" } }] }] as [string, any]
+    const reads = (id: string) => tools(id).filter((tool: any) => tool.name === "read")
+
+    test("a read, then a command, then its late failure: Read, done", async () => {
+      mkdirSync(join(root, "src"))
+      writeFileSync(file(), "fn main() {}\n")
+      const agent = new TestAntigravity(fakeAcp([read("r1", file()), read("r2", join(root, "src", "gone.rs")), ran("c1"), failedLate("r1"), failedLate("r2"), said("Done.")]), root)
+      const id = await run(agent)
+      const [one, gone] = reads(id)
+      expect(one).toMatchObject({ id: "r1", state: { status: "completed", input: { path: file() } } })
+      expect(JSON.stringify(one.state)).not.toContain("Tool execution failed")
+      // One of a file that isn't there still says so.
+      expect(gone).toMatchObject({ id: "r2", state: { status: "error" } })
+      expect(JSON.stringify(gone.state)).toContain("There's no such file.")
+    })
+
+    test("in the box's sandbox too (no reads through the bridge), a read it never ends doesn't spin on", async () => {
+      mkdirSync(join(root, "src"))
+      writeFileSync(file(), "fn main() {}\n")
+      const id = await run(agentSaying([read("r1", file()), ran("c1"), read("r2", file())], [], undefined, { fileSystem: false, readsUnsaid: true }))
+      expect(reads(id).map((tool: any) => tool.state.status)).toEqual(["completed", "completed"])
+    })
+
+    test("Grok's reads, which it ends itself, are left as it says", async () => {
+      writeFileSync(join(root, "a.txt"), "a")
+      const id = await run(agentSaying([read("r1", join(root, "a.txt")), ran("c1"), failedLate("r1")]))
+      expect(reads(id)[0]).toMatchObject({ state: { status: "error" } })
+    })
   })
 
   test("one of Kuvo Code's tools that the agent wraps in its own call (Grok's UseTool) shows with its own arguments, and its tool search as one", async () => {
