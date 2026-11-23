@@ -13,14 +13,12 @@ export const REVIEW_COMMENT = object({ file: string, line: number, side: words("
 /** A message's parts, as clients draw it (`metadata.kuvo.parts`, or read from one from before). */
 export const MESSAGE_PARTS = object({
   words: string,
-  "keyword?": string,
   "widget?": string,
   "comments?": list(REVIEW_COMMENT),
   "paths?": list(string),
   "agents?": list(object({ name: string, session: string })),
   "phone?": literal(true),
   "mail?": object({ name: string, session: string }),
-  "command?": literal(true),
 });
 
 export const MESSAGE_ROUTES: RouteShape[] = [

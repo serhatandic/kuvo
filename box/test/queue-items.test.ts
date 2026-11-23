@@ -40,11 +40,11 @@ beforeEach(() => {
   delivered = {}
   inboxes = {
     ses_q: [
-      // Yours, its parts kept with it: what you wrote, and the keyword, not what the agent reads.
+      // Yours, its parts kept with it: what you wrote.
       { id: "msg_steer", sessionID: "ses_q", type: "user", delivery: "steer", payload: {
         text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
         files: [{ mime: "image/png", name: "shot.png", data: "iVBORw0K", source: { type: "uri", uri: "file:///Users/me/shot.png" } }],
-        metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
+        metadata: { kuvo: { parts: { words: "Use the blue one." } } },
       } },
       // Another agent's letter, in its own words.
       { id: "msg_mail", sessionID: "ses_q", type: "user", delivery: "queue", payload: { text: "[Message from Mira · ses_mira] (Answer with send_message.)\n\nCan you check the build?" } },
@@ -196,9 +196,9 @@ test("the queue lists every message waiting, in the order they go, as each was w
   expect(json.paused).toBe(true)
   expect(json.held).toEqual(["msg_steer"])
   expect(json.items).toEqual([
-    { id: "msg_steer", words: "Use the blue one.", files: ["shot.png"], keyword: "/goal", from: null, on: "engine", delivery: "queue", held: true },
-    { id: "msg_mail", words: "Can you check the build?", files: [], keyword: null, from: "Mira", on: "engine", delivery: "queue", held: false },
-    { id: box, words: "Also the docs.", files: ["notes.md"], keyword: null, from: null, on: "box", delivery: "queue", held: false },
+    { id: "msg_steer", words: "Use the blue one.", files: ["shot.png"], from: null, on: "engine", delivery: "queue", held: true },
+    { id: "msg_mail", words: "Can you check the build?", files: [], from: "Mira", on: "engine", delivery: "queue", held: false },
+    { id: box, words: "Also the docs.", files: ["notes.md"], from: null, on: "box", delivery: "queue", held: false },
   ])
 })
 
@@ -209,9 +209,8 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect(json.removed).toEqual({
     id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
     files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], attached: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
-    // (Its words alone: an old message's keyword no longer does anything when sent again.)
-    keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
-    metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
+    draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+    metadata: { kuvo: { parts: { words: "Use the blue one." } } },
   })
   expect(got).toContainEqual({ method: "DELETE", path: "/api/session/ses_q/inbox/msg_steer" })
   // Gone from the list, and from what's held.
@@ -277,8 +276,8 @@ for (const failedRead of ["inbox", "transcript"] as const) {
     expect(recovered.json.removed).toEqual({
       id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
       files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], attached: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "steer", words: "Use the blue one.",
-      keyword: "/goal", draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
-      metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
+      draft: "Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+      metadata: { kuvo: { parts: { words: "Use the blue one." } } },
     })
     expect(await ask(handler, "DELETE", route)).toEqual(recovered)
     expect(got.filter(call => call.method === "DELETE" && call.path.endsWith("/msg_steer"))).toHaveLength(1)

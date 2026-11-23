@@ -68,16 +68,12 @@ impl Item {
     }
 }
 
-/// One taken back: its words as shown, the keyword it went with, what goes back in the composer as
-/// its box says (`draft`: its words with the command or keyword in front, a /loop's alone), and its
-/// files as the send takes them.
+/// A removed message with the draft and attachments the box returns for editing.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Removed {
     pub id: String,
     #[serde(default)]
     pub words: String,
-    #[serde(default)]
-    pub keyword: Option<String>,
     #[serde(default)]
     pub draft: String,
     #[serde(default)]

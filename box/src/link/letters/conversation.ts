@@ -72,7 +72,7 @@ export function conversationMarkdown(title: string, messages: ReadMessage[], age
       else if (written.startsWith("[Wake-up] ")) say("Wake-up", written.slice("[Wake-up] ".length));
       else if (work) say(`Work from ${work[1]}`, work[2].trim());
       else {
-        const words = parts.keyword ? `${parts.keyword} ${parts.words}` : parts.words.trim();
+        const words = parts.words.trim();
         const files = (message.files ?? []).map(file => file.name).filter(Boolean);
         if (words || files.length) say("User", [words, files.length ? "Attached: " + files.join(", ") : ""].filter(Boolean).join("\n\n"));
       }

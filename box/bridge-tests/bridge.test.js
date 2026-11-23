@@ -1753,7 +1753,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
-    "messages.commands": ["POST", "kuvo/messages/parts"],
     "messages.compaction-words": ["GET", "api/session/none/message"],
     "messages.send": ["POST", "kuvo/messages/parts"],
     // (Each message page the box forwards: a tool step's title and doing, a lead's news of its sessions.)
@@ -1805,7 +1804,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "queue.items": ["GET", "kuvo/sessions/ses_none/queue"],
     // (queue/add taking a message once by its id, sent again.)
     "queue.once": ["POST", "kuvo/sessions/ses_none/queue/add"],
-    "queue.removed.keyword": ["DELETE", "kuvo/sessions/ses_none/queue/msg_none"],
     // (An item sent at the agent's next step; one that isn't waiting is a 404 of its own.)
     "queue.steer": ["POST", "kuvo/sessions/ses_none/queue/msg_none/steer"],
     "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],

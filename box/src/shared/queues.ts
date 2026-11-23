@@ -87,7 +87,6 @@ export interface Waiting {
   text: string;
   files?: string[];
   /** The keyword it was sent with, as typed (its parts'), shown in front of its words. */
-  keyword?: string;
   at: number;
 }
 
@@ -174,7 +173,7 @@ export class InvalidWaitingID extends Error {
 export const keptWaiting = (value: unknown): Waiting[] => (Array.isArray(value) ? value : []).flatMap(item => {
   if (!isObject(item) || !isWaitingID(item.id) || typeof item.text !== "string") return [];
   const files = Array.isArray(item.files) ? item.files.filter((name): name is string => typeof name === "string") : [];
-  return [{ id: item.id, ...(typeof item.from === "string" ? { from: item.from } : {}), text: item.text, ...(files.length ? { files } : {}), ...(typeof item.keyword === "string" ? { keyword: item.keyword } : {}), at: typeof item.at === "number" ? item.at : 0 }];
+  return [{ id: item.id, ...(typeof item.from === "string" ? { from: item.from } : {}), text: item.text, ...(files.length ? { files } : {}), at: typeof item.at === "number" ? item.at : 0 }];
 });
 
 const queueFormat = additiveObjectFormat("Conversation queue");
@@ -347,9 +346,7 @@ const last: Place = (state, item) => ({ ...state, waiting: [...(state.waiting ??
 
 function waitingEntry(message: Outgoing & { id: string }, { from, words }: Shown): Waiting {
   const names = fileNames(message.files);
-  const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
-  const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
-  return { id: message.id, ...(from ? { from } : {}), text: words ?? message.text, ...(names.length ? { files: names } : {}), ...(keyword ? { keyword } : {}), at: Date.now() };
+  return { id: message.id, ...(from ? { from } : {}), text: words ?? message.text, ...(names.length ? { files: names } : {}), at: Date.now() };
 }
 
 /** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while its engine is

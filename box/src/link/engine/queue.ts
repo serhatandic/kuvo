@@ -9,7 +9,6 @@
 
 import { keepsList } from "../server/resident-state";
 import { admitPrompt } from "../moves/admission";
-import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -514,9 +513,9 @@ export async function dropWaiting(session: string, item: string, inbox: InboxEnt
       if (!message) throw new Error("The waiting draft couldn't be read.");
       const order = orderOf(inbox, state);
       const before = order[order.indexOf(item) + 1];
-      const { from, text: words, keyword } = shown;
-      await saveRemoved({ ...message, ...(from ? { from } : {}), words, keyword: keyword ?? null,
-        draft: from ? words : draftOf({ words }), ...(before ? { before } : {}) });
+      const { from, text: words } = shown;
+      await saveRemoved({ ...message, ...(from ? { from } : {}), words,
+        draft: words, ...(before ? { before } : {}) });
     }
     dropped = true;
     return { ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting!.filter(each => each !== shown) };
@@ -552,7 +551,7 @@ export const inboxFollowers = new Set<(session: string) => void>();
  * (another agent, a wake-up, the box's own note; none for yours), what you wrote (its kept parts'
  * words, or its text without what the box added for the agent), the keyword it was sent with, and
  * its files' names. */
-function shownOfInbox(entry: InboxEntry, summarizeWake = false): { from: string | null; words: string; keyword: string | null; files: string[] } {
+function shownOfInbox(entry: InboxEntry, summarizeWake = false): { from: string | null; words: string; files: string[] } {
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const metadata = entry.payload?.metadata;
   const files = (Array.isArray(entry.payload?.files) ? entry.payload.files : []).flatMap(file => {
@@ -563,16 +562,16 @@ function shownOfInbox(entry: InboxEntry, summarizeWake = false): { from: string 
     try { return [uri.startsWith("file:") ? path.basename(fileURLToPath(uri)) : "file"]; } catch { return ["file"]; }
   });
   const note = boxNoteOf(text, metadata);
-  if (note) return { from: note.from, words: note.line, keyword: null, files };
+  if (note) return { from: note.from, words: note.line, files };
   // (One that runs one of the engine's commands, as it was typed.)
-  const parts = keptParts(metadata) ?? keptCommand(entry.id) ?? partsOf(text);
-  if (parts.mail) return { from: parts.mail.name, words: parts.words, keyword: null, files };
+  const parts = keptParts(metadata) ?? partsOf(text);
+  if (parts.mail) return { from: parts.mail.name, words: parts.words, files };
   const wake = summarizeWake ? wakeCard(text, metadata) : null;
-  if (wake) return { from: "Wake-up", words: wake.summary, keyword: null, files };
+  if (wake) return { from: "Wake-up", words: wake.summary, files };
   const held = shownOfHeld(text);
-  if (held.from) return { from: held.from, words: held.words ?? text, keyword: null, files };
-  if (wakeMarkOf(metadata)) return { from: "Wake-up", words: parts.words, keyword: null, files };
-  return { from: null, words: parts.words, keyword: parts.keyword ?? null, files };
+  if (held.from) return { from: held.from, words: held.words ?? text, files };
+  if (wakeMarkOf(metadata)) return { from: "Wake-up", words: parts.words, files };
+  return { from: null, words: parts.words, files };
 }
 
 /** Every message waiting for `session`, in the order clients show them (`orderOf`), with `inbox`
@@ -588,7 +587,7 @@ export function queueItems(inbox: InboxEntry[], state: QueueState): QueueItem[] 
       if (message?.delivery === "steer") delivery = "steer";
       const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
       if (wake) words = wake.summary;
-      return [{ id, words, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
+      return [{ id, words, files: kept.files ?? [], from: kept.from ?? null, on: "box", delivery, held }];
     }
     const entry = inbox.find(each => each.id === id);
     return entry ? [{ id, ...shownOfInbox(entry, true), on: "engine", delivery: entry.delivery, held }] : [];
@@ -610,7 +609,7 @@ export function sendableFiles(given: unknown): { uri: string; name?: string }[] 
 
 export type RemovedWaiting = {
   id: string; text: string; files?: unknown[]; delivery: "steer" | "queue";
-  from?: string; words: string; keyword: string | null; draft: string; before?: string;
+  from?: string; words: string; draft: string; before?: string;
 } & Pick<Outgoing, "metadata">;
 
 type Undo = { posted: boolean; settled?: boolean; pid?: number };
@@ -710,8 +709,8 @@ function removedInbox(entry: InboxEntry, before: string | undefined): RemovedWai
   return {
     id: entry.id, text, ...(files.length ? { files } : {}), delivery: entry.delivery,
     ...(isObject(metadata) ? { metadata } : {}), ...(shown.from ? { from: shown.from } : {}),
-    words: shown.words, keyword: shown.keyword,
-    draft: shown.from ? shown.words : draftOf(shown),
+    words: shown.words,
+    draft: shown.words,
     ...(before ? { before } : {}),
   };
 }
@@ -1201,7 +1200,7 @@ async function transferInbox(target: Target, session: string): Promise<number> {
     const attachments = sendableFiles(entry.payload?.files);
     const message = { id: own, text, delivery: entry.delivery, ...(attachments.length ? { files: attachments } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
     const shown = shownOfInbox(entry);
-    const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
+    const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), at: Date.now() };
     // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
     // it's taken from the engine: cut off between the two, it's in both rather than in neither.
     const saved = waitingFile(own);

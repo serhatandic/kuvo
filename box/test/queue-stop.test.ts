@@ -1,13 +1,7 @@
-// An older message that ran a command still shows as it was typed, a queued message taken back to
-// edit says its keyword and puts back its words alone, and Stop takes the messages still on their
-// way with it (PROTOCOL.md, "A message's parts" and "The queue"): `kuvo/sessions/<id>/send`, `kuvo/messages/parts`, the queue's items and DELETE, and
-// `stop`, with the engine and the agents bridge as stand-ins (their HTTP APIs, and the engine's
-// inbox events as the box's watcher hands them on) and the box's code real.
+// Stop takes the messages still on their way with it. The engine and bridge are stand-ins.
 
 import "./safety"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
-import { mkdirSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
 import type { AnswerPiece, RouteContext } from "../src/link/server/context"
 
 type Asked = { method: string; path: string; body: any }
@@ -35,7 +29,6 @@ const tell = (each: Asked) => {
 
 let mod: {
   sendRoute: typeof import("../src/link/areas/messages").sendRoute
-  partsRoute: typeof import("../src/link/areas/messages").partsRoute
   SEND_ROUTE: RegExp
   queueRoute: typeof import("../src/link/areas/queue").queueRoute
   QUEUE_ROUTE: RegExp
@@ -43,18 +36,10 @@ let mod: {
 
 const session = (id: string) => Response.json({ data: { id, location: { directory: "/srv/app" }, time: { created: 1, updated: 1 } } })
 
-/** A message that ran the engine's /review before Kuvo stopped running commands, as its box kept it. */
-const RAN = { id: "msg_ran", text: "Review the code: this branch", parts: { words: "this branch", keyword: "/review", command: true } }
-
 beforeAll(async () => {
   const messages = await import("../src/link/areas/messages")
   const queue = await import("../src/link/areas/queue")
-  // (Kept as a box that ran commands before left it, and read afresh: another file may have read it.)
-  const { RUN } = await import("../src/link/home")
-  mkdirSync(RUN, { recursive: true })
-  writeFileSync(join(RUN, "commands.json"), JSON.stringify({ [RAN.id]: RAN.parts }))
-  ;(await import("../src/link/messages/commands")).forgetKept()
-  mod = { sendRoute: messages.sendRoute, partsRoute: messages.partsRoute, SEND_ROUTE: messages.SEND_ROUTE, queueRoute: queue.queueRoute, QUEUE_ROUTE: queue.QUEUE_ROUTE }
+  mod = { sendRoute: messages.sendRoute, SEND_ROUTE: messages.SEND_ROUTE, queueRoute: queue.queueRoute, QUEUE_ROUTE: queue.QUEUE_ROUTE }
   engine = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -158,56 +143,10 @@ const send = (to: string, body: unknown) => {
   return ask(context => mod.sendRoute(context, route.match(mod.SEND_ROUTE)!), "POST", route, body)
 }
 const queueAsk = (method: string, route: string, body: unknown) => ask(context => mod.queueRoute(context, route.split("?")[0]!.match(mod.QUEUE_ROUTE)!), method, route, body)
-const readParts = (body: unknown) => ask(context => mod.partsRoute(context), "POST", "kuvo/messages/parts", body)
 
 /** A message from before in the engine's inbox, waiting: `parts` as its box kept them. */
 const older = (id: string, text: string, parts?: unknown) =>
   inbox.push({ id, type: "user", delivery: "queue", payload: { text, ...(parts ? { metadata: { kuvo: { parts } } } : {}) } })
-
-describe("an older message that ran a command still shows as typed", () => {
-  test("read by its id, for every client alike", async () => {
-    const { json } = await readParts({ ids: [RAN.id, "msg_other"], texts: [RAN.text, "Hello"] })
-    expect(json.parts).toEqual([RAN.parts, { words: "Hello" }])
-  })
-
-  test("waiting in the queue, and taken back to edit: its words alone go back", async () => {
-    older(RAN.id, RAN.text)
-    const { json } = await queueAsk("GET", "kuvo/sessions/ses_cmd/queue?items=1", undefined)
-    expect(json.items).toEqual([expect.objectContaining({ id: RAN.id, words: "this branch", keyword: "/review", from: null })])
-    const taken = await queueAsk("DELETE", `kuvo/sessions/ses_cmd/queue/${RAN.id}`, undefined)
-    // (Typed again, "/review this branch" would only be words to the agent.)
-    expect(taken.json.removed).toMatchObject({ words: "this branch", keyword: "/review", draft: "this branch" })
-  })
-
-  test("words starting with \"/\" sent now are a message like any other", async () => {
-    expect((await send("ses_cmd", { id: "msg_slash", words: "/review this branch", delivery: "queue" })).status).toBe(200)
-    expect(engineAsked.some(each => each.path.endsWith("/command"))).toBe(false)
-    const { json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_slash", undefined)
-    expect(json.removed).toMatchObject({ words: "/review this branch", keyword: null, draft: "/review this branch" })
-  })
-})
-
-describe("a queued message taken back to edit says its keyword, and puts back its words alone", () => {
-  test("one the engine holds, sent with a keyword (a bot's /goal, an older /plan)", async () => {
-    older("msg_goal", "all tests pass", { words: "all tests pass", keyword: "/goal" })
-    older("msg_plan", "sketch it", { words: "sketch it", keyword: "/plan" })
-    expect((await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_goal", undefined)).json.removed).toMatchObject({ id: "msg_goal", keyword: "/goal", draft: "all tests pass" })
-    expect((await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_plan", undefined)).json.removed).toMatchObject({ id: "msg_plan", keyword: "/plan", draft: "sketch it" })
-  })
-
-  test("one waiting on the box", async () => {
-    await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", {})
-    await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/add", { id: "msg_loop", text: "check CI\n\n<sent-with>…</sent-with>", kept: true, words: "check CI", metadata: { kuvo: { parts: { words: "check CI", keyword: "/loop every hour" } } }, delivery: "queue" })
-    const { json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_loop", undefined)
-    expect(json.removed).toMatchObject({ id: "msg_loop", words: "check CI", keyword: "/loop every hour", draft: "check CI" })
-  })
-
-  test("a plain one says it has none", async () => {
-    await send("ses_cmd", { id: "msg_plain", words: "then this", delivery: "queue" })
-    const { json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_plain", undefined)
-    expect(json.removed).toMatchObject({ words: "then this", keyword: null, draft: "then this" })
-  })
-})
 
 describe("Stop takes what's on its way with it", () => {
   test("a message the client named as on its way is held as it comes, on the box: never set going", async () => {

@@ -11786,9 +11786,6 @@
             "literal": "mcp.catalog"
            },
            {
-            "literal": "messages.commands"
-           },
-           {
             "literal": "messages.compaction-words"
            },
            {
@@ -11901,9 +11898,6 @@
            },
            {
             "literal": "queue.once"
-           },
-           {
-            "literal": "queue.removed.keyword"
            },
            {
             "literal": "queue.steer"
@@ -12787,9 +12781,6 @@
             "literal": "mcp.catalog"
            },
            {
-            "literal": "messages.commands"
-           },
-           {
             "literal": "messages.compaction-words"
            },
            {
@@ -12902,9 +12893,6 @@
            },
            {
             "literal": "queue.once"
-           },
-           {
-            "literal": "queue.removed.keyword"
            },
            {
             "literal": "queue.steer"
@@ -27469,12 +27457,6 @@
            "files": {
             "list": "string"
            },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
            "from": {
             "oneOf": [
              "string",
@@ -27572,12 +27554,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -27732,12 +27708,6 @@
            "files": {
             "list": "string"
            },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
            "from": {
             "oneOf": [
              "string",
@@ -27825,12 +27795,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -29134,12 +29098,6 @@
            "files": {
             "list": "string"
            },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
            "from": {
             "oneOf": [
              "string",
@@ -29212,12 +29170,6 @@
            "words": "string",
            "files": {
             "list": "string"
-           },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
            },
            "from": {
             "oneOf": [
@@ -30181,12 +30133,6 @@
            "files": {
             "list": "string"
            },
-           "keyword": {
-            "oneOf": [
-             "string",
-             "null"
-            ]
-           },
            "from": {
             "oneOf": [
              "string",
@@ -30655,12 +30601,6 @@
         },
         "from?": "string",
         "words": "string",
-        "keyword": {
-         "oneOf": [
-          "string",
-          "null"
-         ]
-        },
         "draft": "string",
         "before?": "string",
         "receipt?": "string",
@@ -43175,7 +43115,6 @@
        "list": {
         "object": {
          "words": "string",
-         "keyword?": "string",
          "widget?": "string",
          "comments?": {
           "list": {
@@ -43216,9 +43155,6 @@
            "name": "string",
            "session": "string"
           }
-         },
-         "command?": {
-          "literal": true
          }
         }
        }

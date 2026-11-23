@@ -1905,7 +1905,7 @@ the same for every client and with none connected, and keeps them in `run/queues
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
   composer: its words alone, without the keyword or command an older one went with;
-  `before`, what came after it, left out when it was last; `queue.removed.keyword`; `attached`,
+  `before`, what came after it, left out when it was last; `attached`,
   everything it went with for Edit to put back, `{uri, name?}` as a send takes them: the files it
   carries, then those the box kept for the agent to open, which its note names and `files`
   doesn't carry, as `file://` on the box. Undo keeps to `files`). A successful
@@ -8520,31 +8520,19 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   `＆`; words ending like the named, comments' or files' block get a space after its tag, so they
   stay words.
 - **Parts:** kept in the engine message's (and inbox item's) `metadata.kuvo.parts`: `{words,
-  keyword?, widget?, comments?, paths?, agents?: [{name, session}], phone?: true, mail?: {name,
-  session}, command?: true}` (`paths`: files its note names that it doesn't carry; `mail`: another agent wrote it,
-  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote; `keyword`, a bot's
-  `/goal`, or the keyword an older message was sent with; `command`: an older message ran a command,
-  `keyword` (`/review`), with `words` as its arguments). Those sent here and
+  widget?, comments?, paths?, agents?: [{name, session}], phone?: true, mail?: {name,
+  session}}` (`paths`: files its note names that it doesn't carry; `mail`: another agent wrote it,
+  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote). Those sent here and
   `queue/add`'s with fields keep them, as do a started session's task and a bot's /goal; a letter
   between agents, a prompt passed on the way before (`api/session/<id>/prompt`) and anything else
   the box sends keep them where there's more to them than the text. The box's own notes keep none
   (`kuvo.note`), nor does a plain message, which a client asks about once.
 - **Messages from before** keep no parts: `POST kuvo/messages/parts {texts}` (at most 500) answers
-  `{parts}`, one for each, read from the text as the apps read it before (every block, an older
-  keyword's `<sent-with>` among them, a /goal
-  sent as `[Goal] …`, a file listed with ` (on the user's Mac: …)`, the named block's earlier
+  `{parts}`, one for each, read from the text as the apps read it before (a file listed with ` (on the user's Mac: …)`, the named block's earlier
   heading). A client asks once for each message (KuvoClient's `MessageParts.read`), before it shows
   the page, and shows one its box couldn't read as written.
-- **An older command shows as typed** (`messages.commands`): Kuvo no longer runs the engine's
-  commands, but messages that ran one before keep the parts `{words, keyword: "/<name>", command:
-  true}`, so a client draws "/review this branch", never the prompt the command made: a coding
-  agent's with the message, the engine's kept by the box by message id in `run/commands.json`.
-  `kuvo/messages/parts` takes `{texts, ids}` (an id for each text; `session`, which older clients
-  send, is no longer needed) and answers those by id; the queue's items and `removed` say them too.
 - Both directions: `vectors/message-parts.json` (written from the apps' Swift before this), which
   the box (`test/message-parts.test.ts`) and KuvoClient (`MessagePartsTests`) are held to.
-- One waiting on the box (`waiting` in a queue) says the keyword it was sent with (`keyword`: a
-  bot's /goal, or an older message's), for its row to show in front of its words.
 - A group chat's message still carries the widget it answers as its own block (`WidgetAnswer`).
 
 - **Quotes and picture names in `words`**, written the same by every client (KuvoClient's
@@ -8719,7 +8707,6 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open; a box in a home of its own answers all of it itself, "Machines") |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
-| `messages.commands` | An older command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("An older command shows as typed", #668) |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
 | `messages.tool-failures` | `failure` (`{line, reason, error}`) on every failed tool step, in every message page ("Tool steps") |
@@ -8753,7 +8740,6 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `queue` | `kuvo/sessions/<id>/queue…`, `…/stop` and `kuvo/sessions/queues/events`: the box carries the queue (bridge 0.9.100) |
 | `queue.items` | `items` in `kuvo/sessions/<id>/queue`, `…/queue/events`, and `DELETE …/queue/<item>` taking back one the engine holds ("The queue") |
 | `queue.once` | `…/queue/add` sent again under its `id` adds it once ("Sending again"): a phone sends it with `idempotency-key` only to a box that says this (#144) |
-| `queue.removed.keyword` | `DELETE …/queue/<item>`'s `removed` says its `keyword` and its `draft`, what Edit puts in the composer ("The queue", #668) |
 | `queue.stop.arriving` | `POST kuvo/sessions/<id>/stop` takes what's on its way with it: the box's own sends first, and `items` held as they come ("The queue", #668) |
 | `queue.waits` | A Stop holds the conversation: what arrives waits on the box (`waiting`), `…/queue/add` and `DELETE …/queue/<item>` (bridge 0.9.128) |
 | `reviews` | `kuvo/agents/api/kuvo/reviews…`: reviews with fresh eyes |
