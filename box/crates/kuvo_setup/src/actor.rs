@@ -69,6 +69,10 @@ impl SetupHandle {
         self.rosters.clone()
     }
 
+    pub fn ownership_state(&self) -> kuvo_peers::ownership::SetupState {
+        self.views.borrow().ownership.clone()
+    }
+
     pub async fn phone_activity(&self) {
         activity::record(&self.activity, activity::Activity::Seen).await;
     }
@@ -113,6 +117,7 @@ pub(crate) struct View {
     pub personalities: Result<Value, String>,
     pub clock: Value,
     access: PairedAccess,
+    ownership: kuvo_peers::ownership::SetupState,
 }
 
 pub(crate) struct Request {
@@ -751,9 +756,42 @@ fn make_view(
             grants: HashMap::new(),
         },
     };
+    let ownership = if let Some(setup) = setup {
+        let roster = link.member_list()?;
+        let mut replacements = std::collections::BTreeMap::new();
+        for removed in &roster.left {
+            let name = format!("replacement:{removed}");
+            let replacement = link
+                .value(SharedKind::OwnershipRecovery)
+                .and_then(|entries| entries.get(&name))
+                .or_else(|| {
+                    link.value(SharedKind::OwnershipAssignments)
+                        .and_then(|entries| entries.get(&name))
+                });
+            if let (Some(old), Some(next)) = (
+                decode_exact(removed),
+                replacement
+                    .and_then(|row| row["computer"].as_str())
+                    .and_then(decode_exact),
+            ) {
+                replacements.insert(old, next);
+            }
+        }
+        kuvo_peers::ownership::SetupState {
+            id: Some(setup.position.id.clone()),
+            replacements,
+            grants_disabled: access.disabled,
+            // After restart, a member waits for this process to observe the
+            // current setup holder instead of authorizing from a stale lease.
+            grants_current: setup.role == Role::Primary || (welcomed && lease.holds(link)),
+        }
+    } else {
+        kuvo_peers::ownership::SetupState::default()
+    };
     Ok(View {
         setup: view,
         access,
+        ownership,
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),

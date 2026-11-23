@@ -11,6 +11,7 @@ pub mod lists;
 pub mod moves;
 pub mod notices;
 pub mod outbox;
+pub mod ownership;
 mod parts;
 pub mod reach;
 pub mod relay;
