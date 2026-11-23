@@ -559,6 +559,12 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "floating-composer-end", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // The same in a long group chat and a long side chat: the last message clear of the composer at
+    // the end; read up, what's above goes on under it.
+    Screen { slug: "floating-composer-group-end", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_chat) },
+    Screen { slug: "floating-composer-group-scrolled", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_chat) },
+    Screen { slug: "floating-composer-side-end", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(side_chat_long) },
+    Screen { slug: "floating-composer-side-scrolled", width: 1340., height: 840., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(side_chat_long) },
     Screen { slug: "floating-composer-scrolled", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "floating-composer-grown", width: 1280., height: 820., session: Some("ses_lighthouse"), typed: Some("Here are the two screens: the header still wraps on the narrow one, and the footer’s links run into each other."), empty: false, opens: &[], search: None, walks: 0, attach: &["shots/theme-dark.png", "kuvo_ui/src/theme.rs"], panel: None },
     Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1472,6 +1478,28 @@ fn panel_side_chat(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<W
         view.pick(kuvo_box::typed::ModelRef { provider_id: "anthropic".into(), id: "claude-sonnet-5-5".into(), variant: Some("medium".into()) }, cx);
     });
 }
+
+/// A long side chat: eight questions, each answered at some length.
+fn side_chat_long(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::SideChat(None), cx);
+    let Some(view) = workspace.panel().read(cx).side_chat() else { return };
+    for (ix, question) in SIDE_QUESTIONS.iter().enumerate() {
+        let field = view.read(cx).field().clone();
+        field.update(cx, |field, cx| field.set_text(&format!("{question} ({})", ix + 1), cx));
+        view.update(cx, |view, cx| view.ask(cx));
+    }
+}
+
+const SIDE_QUESTIONS: [&str; 8] = [
+    "Why check 23505 instead of querying first?",
+    "Should 409 share the rate-limit bucket?",
+    "Is the email lowercased before the insert?",
+    "What does the form show while it waits?",
+    "Does the test cover a taken email?",
+    "Where is the error message worded?",
+    "Would a retry send the email twice?",
+    "What’s left before this can merge?",
+];
 
 /// A bot's conversation with the side panel opened from the title bar: the New tab page beside it.
 fn panel_bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -3225,6 +3253,33 @@ fn main() -> anyhow::Result<()> {
                 let watches = ["ci", "inbox", "deploys", "errors"].iter().enumerate().map(|(ix, letters)| serde_json::json!({ "letters": letters, "next": NOW / 1000. + 180. * (ix as f64 + 1.), "every": "5m", "summary": format!("Watch {letters}") })).collect();
                 stand_in.set_bot_wakes("bot_mira", wakes, watches);
             }
+            if screen.slug.starts_with("floating-composer-group") {
+                let lines = [
+                    ("bot_release", "I’ve moved the pricing copy to Thursday morning so legal has a full day with it."),
+                    ("bot_docs", "Release notes are drafted. I left a gap for the sign-up fix until it merges, and linked the two issues it closes."),
+                    ("bot_mira", "The taken-email message is in: “That email already has an account. Sign in instead?” with the link going to sign in, the email filled in."),
+                    ("bot_release", "Good. Staging is on the release branch now. I’ll tag the candidate once the notes are in."),
+                    ("bot_docs", "Notes are in. Two screenshots still show the old header; I’ll take new ones after the candidate is up."),
+                    ("bot_mira", "Ran the full suite against the candidate: 412 pass, 0 fail. The slowest is still the import test at 41 seconds."),
+                    ("bot_release", "Tagged 2.4.0-rc.1. If nothing turns up by Thursday noon, it ships Friday at ten."),
+                    ("bot_docs", "New screenshots are in the notes. That’s everything from me for 2.4."),
+                ];
+                for (bot, text) in lines {
+                    stand_in.group_says("grp_launch", bot, text);
+                }
+            }
+            if screen.slug.starts_with("floating-composer-side") {
+                stand_in.answer_side_questions(&[
+                    "Querying first leaves a gap: two sign-ups with the same email can both pass the check and then race to the insert. The unique index is the one place that settles it, so the code inserts and treats 23505 as “taken”.",
+                    "No. A 409 is a normal answer to a normal request, and counting it would lock someone out for retyping their email. The limiter counts attempts that reach the password check.",
+                    "Yes, in validate.ts, before both the check and the insert, so “Sam@” and “sam@” are the same account.",
+                    "The button turns into a spinner and the fields are read-only until the answer comes, so a double click doesn’t send twice.",
+                    "It does now: signup.test.ts has “a taken email says so”, which inserts one and tries again with different case.",
+                    "In messages.ts, beside the other sign-up errors, so the copy review sees all of them in one place.",
+                    "No: the insert is the only write, and a retry after a 409 gets the same 409. The welcome email goes out only after the insert succeeds.",
+                    "Only the review. The tests pass on staging, and the release notes mention it.",
+                ]);
+            }
             if screen.slug == "floating-composer-grown" {
                 stand_in.set_queue("ses_lighthouse", ["Check the form on mobile", "Add a changelog entry"].iter().enumerate().map(|(index, text)| {
                     serde_json::json!({ "id": format!("msg_shot{index}"), "words": text, "delivery": "queue", "on": "engine", "held": false })
@@ -3456,6 +3511,28 @@ fn main() -> anyhow::Result<()> {
                 cx.run_until_parked();
             }
             // Read up a little: the way back to the end shows over the composer.
+            if screen.slug == "floating-composer-group-scrolled" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.read(cx).area_view(Area::Bots).and_then(|view| view.read(cx).groups().cloned()).expect("Bots").read(cx).chat("grp_launch").expect("the chat").read(cx).list().scroll_by(px(-360.));
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            if screen.slug == "floating-composer-side-scrolled" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let scroll = workspace.read(cx).panel().read(cx).side_chat().expect("the side chat").read(cx).scroll().clone();
+                    let offset = scroll.offset();
+                    scroll.set_offset(gpui::point(offset.x, offset.y + px(360.)));
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             if screen.slug == "floating-composer-scrolled" {
                 cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");

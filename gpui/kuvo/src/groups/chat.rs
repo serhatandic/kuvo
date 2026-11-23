@@ -207,6 +207,11 @@ impl GroupChatView {
         &self.rows
     }
 
+    /// Its messages' list, scrolled as it's drawn.
+    pub fn list(&self) -> &ChatListState {
+        &self.list
+    }
+
     pub fn chat(&self) -> &Chat {
         &self.chat
     }
