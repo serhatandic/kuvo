@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 353d09336b38
+// Kuvo folder layout 23 cfd351ca067d
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "353d09336b38";
+var BRIDGE_VERSION = "cfd351ca067d";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -133293,7 +133293,7 @@ async function changedSince2(folder, since, keep = () => true, descend = () => t
       if (path && found.length < fileLimit3)
         found.push(path);
   };
-  const paths = top && await fromGit(top, folder);
+  const paths = top && await fromGit(top, folder, since - clockSlack);
   if (paths) {
     const candidates = paths.filter((path) => allowed(path) && keep(path.slice(folder.length + 1)));
     for (let i = 0;i < candidates.length && found.length < fileLimit3; i += 32)
@@ -133334,16 +133334,22 @@ async function changedSince2(folder, since, keep = () => true, descend = () => t
     console.error(`artifacts: stopped looking through ${folder} after ${walkLimit} entries`);
   return found;
 }
-async function fromGit(top, folder) {
-  const args = await ownArgsLater(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
-  if (!args)
+async function git5(folder, args) {
+  const own = await ownArgsLater(["-C", folder, ...args]);
+  if (!own)
     return;
-  const out = await new Promise((done) => execFile18("git", args, {
+  return new Promise((done) => execFile18("git", own, {
     timeout: 15000,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }
   }, (error, stdout) => done(error ? undefined : stdout)));
+}
+async function fromGit(top, folder, since) {
+  const [out, committed] = await Promise.all([
+    git5(folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]),
+    git5(folder, ["log", `--since=@${Math.floor(since / 1000)}`, `-n${commitLimit}`, "--no-merges", "--diff-filter=ACMR", "--name-only", "-z", "--format=", "HEAD", "--", "."])
+  ]);
   if (out === undefined)
     return;
   const paths = [];
@@ -133360,9 +133366,15 @@ async function fromGit(top, folder) {
     if (path.startsWith(folder + sep5))
       paths.push(path);
   }
+  const listed = new Set(paths);
+  for (const name of (committed ?? "").split("\x00").map((name) => name.replace(/^\n+/, "")).filter(Boolean)) {
+    const path = join32(top, name);
+    if (path.startsWith(folder + sep5) && !listed.has(path))
+      listed.add(path), paths.push(path);
+  }
   return paths;
 }
-var skipped, scratch, clockSlack = 2000, walkLimit = 20000, fileLimit3 = 200;
+var skipped, scratch, clockSlack = 2000, walkLimit = 20000, fileLimit3 = 200, commitLimit = 100;
 var init_turnfiles = __esm(() => {
   init_git();
   skipped = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".next", ".turbo", ".gradle", "target", "DerivedData"]);

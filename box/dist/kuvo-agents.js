@@ -9441,7 +9441,7 @@ ${others.map((path) => `- ${path}`).join(`
     active.turn.startStep();
   }
   settleReads(active, all) {
-    if (!this.files)
+    if (!this.flavor.readsUnsaid)
       return;
     for (const [id, call] of active.tools) {
       if (!this.openRead(call) || call.settled)
@@ -9480,6 +9480,8 @@ ${others.map((path) => `- ${path}`).join(`
       return;
     const kuvo = kuvoTool(merged);
     if (!turn.hasTool(id)) {
+      if (merged.kind !== "read")
+        this.settleReads(active, false);
       active.toolsSinceText = true;
       turn.toolStart(id, kuvo.name, kuvo.input);
     } else {
@@ -11982,6 +11984,7 @@ ${rpc.stderr.trim()}`);
       },
       held: { kind: "antigravity", provider: agent.providerID, version: agent.runtime() === "agy" ? "agy" : version },
       fileSystem: true,
+      readsUnsaid: true,
       whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
       authenticatesFirst: true,
       resumes: true,
@@ -34090,4 +34093,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 57bf0d239a091fcbfcc3bf0bb71bcba3cae10b7e89a5d2f597f102a9e476787b
+// Built from Packages/Box/src/agents 7779165654e37d5cf86d3232dd5f10868db754abe3dcee92cdeffe939bd3119b
