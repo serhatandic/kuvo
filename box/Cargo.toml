@@ -5,6 +5,7 @@ members = [
     "crates/kuvo_wire",
     "crates/kuvo_os",
     "crates/kuvo_store",
+    "crates/kuvo_move",
     "crates/kuvo_server",
     "crates/kuvo_setup",
     "crates/kuvo_peers",
