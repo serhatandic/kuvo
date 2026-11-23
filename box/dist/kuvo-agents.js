@@ -1037,6 +1037,14 @@ var init_git = __esm(() => {
 import { execFile as execFile2, execFileSync, spawn } from "child_process";
 import fs3 from "fs";
 import path3 from "path";
+import os2 from "os";
+function platformFacts(platform = process.platform, release = platform === "linux" ? os2.release() : "", distro = process.env.WSL_DISTRO_NAME) {
+  return { platform, wsl: platform === "linux" && (Boolean(distro) || /microsoft|wsl/i.test(release)) };
+}
+function isWindowsHost() {
+  const { platform, wsl } = platformFacts();
+  return platform === "win32" || wsl;
+}
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -5337,11 +5345,11 @@ function fenceOff() {
 }
 function fenceOn() {
   const where = folder();
-  return Boolean(where) && process.env.KUVO_SANDBOX !== "off" && existsSync5(join12(where, "on"));
+  return !isWindowsHost() && Boolean(where) && process.env.KUVO_SANDBOX !== "off" && existsSync5(join12(where, "on"));
 }
 async function untilSandboxDecided(bound = 30000) {
   const where = folder();
-  if (!where || process.env.KUVO_SANDBOX === "off")
+  if (!where || isWindowsHost() || process.env.KUVO_SANDBOX === "off")
     return;
   const run = dirname4(where);
   if (!process.env.KUVO_FENCE && !existsSync5(join12(run, "link.needed")) && !boxRuns(join12(run, "link.pid")))
@@ -5382,7 +5390,7 @@ function noteAgentsInside(inside) {
 }
 function fenceRules() {
   const where = folder();
-  if (!where || process.env.KUVO_SANDBOX === "off" || !existsSync5(join12(where, "on")))
+  if (!where || isWindowsHost() || process.env.KUVO_SANDBOX === "off" || !existsSync5(join12(where, "on")))
     return;
   try {
     const read = JSON.parse(readFileSync10(join12(where, "policy.json"), "utf8"));
@@ -32991,7 +32999,7 @@ var init_updating = __esm(() => {
 // box/src/shared/folder-version.ts
 import { spawnSync as spawnSync2 } from "child_process";
 import fs16 from "fs";
-import os2 from "os";
+import os3 from "os";
 import path13 from "path";
 function migrateDeviceGrants(folder) {
   const file = path13.join(folder, "run", "link.json");
@@ -33169,7 +33177,7 @@ function checkTrialRecovery(folder, start, importing) {
   };
   if (!fs16.existsSync(saved))
     return refuse();
-  const scratch = fs16.mkdtempSync(path13.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  const scratch = fs16.mkdtempSync(path13.join(os3.tmpdir(), "kuvo-layout-probe-"));
   try {
     const probe = path13.join(scratch, ".kuvo-code");
     fs16.mkdirSync(probe, { mode: 448 });
@@ -34267,4 +34275,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 89b69637fa66f5794bdcfc794e32a66406b4cf32a89d0c1284a93134313f698b
+// Built from Packages/Box/src/agents 119a58c5e68fcc69e1fcce8d29aeb9de7c34ea394193a6b9c49036c4bd02d0ab

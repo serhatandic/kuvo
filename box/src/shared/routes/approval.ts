@@ -4,7 +4,7 @@ import { bool, type Infer, list, number, object, type RouteShape, string, words 
 
 const APPROVAL = words("askFirst", "acceptEdits", "auto", "fullAccess");
 
-const REASON = words("sandbox", "fullAccessOff");
+const REASON = words("sandbox", "fullAccessOff", "windows");
 
 /** Why one can't be had here now: the sandbox isn't running (Auto), or Full Access isn't
  * confirmed on this computer yet (`fullAccessOff`: ask, then `PATCH kuvo/approval {fullAccess:
@@ -14,7 +14,7 @@ export const UNAVAILABLE = object({ reason: REASON, why: string });
 /** A conversation's approval: the one picked (`approval`; as its rules say, for one from before:
  * `stored` false, and nothing `held`), what it comes to here now (`effective`, and `held`, why
  * that's less), whether it plans (Plan mode, beside this), and each one it can be set to: one that
- * can't be picked says why (`unavailable`: Full Access), one that would ask first for now says why
+ * can't be picked says why (`unavailable`: unconfirmed Full Access or Auto on Windows), one that would ask first for now says why
  * (`held`: Auto without the sandbox). `parent`: a coding agent's subagent runs with the approval of
  * the conversation that started it, by its id: that one's, which is changed there, not here. */
 const OPTION = object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE });

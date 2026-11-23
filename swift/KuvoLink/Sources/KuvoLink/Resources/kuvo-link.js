@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 a03011946be9
+// Kuvo folder layout 23 b73936cf49ae
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -204,6 +204,14 @@ var init_machine_job = __esm(() => {
 import { execFile, execFileSync, spawn } from "node:child_process";
 import fs3 from "node:fs";
 import path2 from "node:path";
+import os from "node:os";
+function platformFacts(platform = process.platform, release = platform === "linux" ? os.release() : "", distro = process.env.WSL_DISTRO_NAME) {
+  return { platform, wsl: platform === "linux" && (Boolean(distro) || /microsoft|wsl/i.test(release)) };
+}
+function isWindowsHost() {
+  const { platform, wsl } = platformFacts();
+  return platform === "win32" || wsl;
+}
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -658,10 +666,10 @@ var init_updating = __esm(() => {
 // box/src/shared/account.ts
 import { spawnSync } from "node:child_process";
 import fs6 from "node:fs";
-import os from "node:os";
+import os2 from "node:os";
 import path5 from "node:path";
 function homeFolder() {
-  return process.env.HOME || os.homedir();
+  return process.env.HOME || os2.homedir();
 }
 function accountEntry() {
   if (account)
@@ -683,7 +691,7 @@ function accountEntry() {
   let home = fields[process.platform === "darwin" ? 8 : 5] || "";
   if (!path5.isAbsolute(home))
     try {
-      home = os.userInfo().homedir;
+      home = os2.userInfo().homedir;
     } catch {
       home = homeFolder();
     }
@@ -1032,7 +1040,7 @@ var init_files = __esm(() => {
 // box/src/shared/folder-version.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import fs8 from "node:fs";
-import os2 from "node:os";
+import os3 from "node:os";
 import path7 from "node:path";
 function migrateDeviceGrants(folder) {
   const file = path7.join(folder, "run", "link.json");
@@ -1278,7 +1286,7 @@ function checkTrialRecovery(folder, start, importing) {
   };
   if (!fs8.existsSync(saved))
     return refuse();
-  const scratch = fs8.mkdtempSync(path7.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  const scratch = fs8.mkdtempSync(path7.join(os3.tmpdir(), "kuvo-layout-probe-"));
   try {
     const probe = path7.join(scratch, ".kuvo-code");
     fs8.mkdirSync(probe, { mode: 448 });
@@ -1661,7 +1669,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a03011946be9";
+var BRIDGE_VERSION = "b73936cf49ae";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -4721,7 +4729,7 @@ var init_sessions = __esm(() => {
 
 // box/src/link/fence/policy.ts
 import fs26 from "node:fs";
-import os3 from "node:os";
+import os4 from "node:os";
 import path22 from "node:path";
 function xdgPersonal(home) {
   const named = {};
@@ -4752,8 +4760,8 @@ function sshSockets(home, system = "/etc/ssh/ssh_config") {
     "/private/tmp",
     "/var/tmp",
     "/private/var/tmp",
-    os3.tmpdir(),
-    `/run/user/${os3.userInfo().uid}`
+    os4.tmpdir(),
+    `/run/user/${os4.userInfo().uid}`
   ].map((each) => path22.resolve(each)));
   const holdsMore = (folder) => shared.has(folder) || folder === "/" || home.startsWith(folder + "/");
   const expand = (value) => {
@@ -4864,7 +4872,7 @@ function ghHosts(home) {
 function appTemporary() {
   if (!APP_FOLDER)
     return null;
-  const tmp = path22.dirname(path22.resolve(os3.tmpdir()));
+  const tmp = path22.dirname(path22.resolve(os4.tmpdir()));
   return path22.basename(tmp) === path22.basename(APP_FOLDER) ? tmp : null;
 }
 function sandboxCaches() {
@@ -4882,7 +4890,7 @@ function macFolders(home, app) {
     path22.join(home, "Library", "WebKit", bundle),
     path22.join(home, "Library", "HTTPStorages", bundle),
     path22.join(home, "Library", "Preferences", `${bundle}.plist`),
-    `/private/tmp/kuvo-ssh-${os3.userInfo().uid}`,
+    `/private/tmp/kuvo-ssh-${os4.userInfo().uid}`,
     path22.join(home, ".kuvo-code")
   ];
   if (tmp)
@@ -4897,7 +4905,7 @@ function fencePolicy(ports = []) {
   const homes = named === home ? [home] : [home, named];
   const inHomes = (names) => homes.flatMap((each) => names.map((name) => throughLinks(path22.join(each, name))));
   const opencodes = homes.map((each) => throughLinks(opencodeAuthFile(each))).filter((each) => !inHomes([".local/share/opencode/auth.json"]).includes(each));
-  const own = APP_FOLDER ? macFolders(home, APP_FOLDER) : { kuvo: [K, path22.join(home, ".kuvo-code"), ...process.platform === "darwin" ? [`/private/tmp/kuvo-ssh-${os3.userInfo().uid}`, path22.join(home, "Library", "Logs", "Kuvo Code")] : []], readable: [path22.join(K, "bin")] };
+  const own = APP_FOLDER ? macFolders(home, APP_FOLDER) : { kuvo: [K, path22.join(home, ".kuvo-code"), ...process.platform === "darwin" ? [`/private/tmp/kuvo-ssh-${os4.userInfo().uid}`, path22.join(home, "Library", "Logs", "Kuvo Code")] : []], readable: [path22.join(K, "bin")] };
   const kuvoSsh = inHomes([".kuvo-ssh", ".kuvo-ssh-ctl"]);
   const kuvo = [...new Set([...own.kuvo.map(throughLinks), ...kuvoSsh])];
   const kuvoReadable = own.readable.map(throughLinks);
@@ -4986,13 +4994,13 @@ function fencePolicy(ports = []) {
         "^/private/tmp/ssh-[^/]+/agent\\.",
         "^/private/var/folders/[^/]+/[^/]+/T/ssh-[^/]+/agent\\.",
         `^${escapeRegex(home)}/\\.gnupg/S\\.(gpg-agent|scdaemon)`,
-        `^/private/tmp/tmux-${os3.userInfo().uid}/`,
+        `^/private/tmp/tmux-${os4.userInfo().uid}/`,
         "^/private/var/folders/[^/]+/[^/]+/T/podman/",
         "^/private/var/folders/[^/]+/[^/]+/T/(zellij-|emacs[0-9]+/|nvim\\.)",
         ...sshGlobs.map(globPattern)
       ],
       socketFolders: [
-        `^/private/tmp/tmux-${os3.userInfo().uid}$`,
+        `^/private/tmp/tmux-${os4.userInfo().uid}$`,
         "^/private/tmp/com\\.apple\\.launchd\\.[^/]+$",
         "^/private/tmp/ssh-[^/]+$",
         "^/private/var/folders/[^/]+/[^/]+/T/(ssh-[^/]+|zellij-[^/]+|emacs[0-9]+|nvim\\.[^/]+|podman)$"
@@ -5027,7 +5035,7 @@ function fencePolicy(ports = []) {
         ".gnupg/S.scdaemon",
         ".local/share/wezterm"
       ]),
-      `/tmp/zellij-${os3.userInfo().uid}`,
+      `/tmp/zellij-${os4.userInfo().uid}`,
       ...[...new Set(["/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock"].map(throughLinks))],
       ...process.env.SSH_AUTH_SOCK && path22.isAbsolute(process.env.SSH_AUTH_SOCK) ? [process.env.SSH_AUTH_SOCK] : [],
       ...[...new Set([
@@ -5049,7 +5057,7 @@ function fencePolicy(ports = []) {
   };
 }
 function userTemporary() {
-  let t = os3.tmpdir();
+  let t = os4.tmpdir();
   try {
     t = fs26.realpathSync(t);
   } catch {}
@@ -5678,7 +5686,7 @@ var INSTALLER_RECOVERY_ROUTE = "kuvo/setup/installer-recovery";
 
 // box/src/link/setup/lease.ts
 import fs27 from "node:fs";
-import os4 from "node:os";
+import os5 from "node:os";
 import path23 from "node:path";
 function json(file) {
   try {
@@ -5698,7 +5706,7 @@ function alwaysOnSettings() {
 function leaseClock() {
   const test = REAL_BOX ? null : json(path23.join(RUN, "test-setup-clock.json"));
   const offset = isObject(test) && typeof test.offset === "number" ? test.offset : 0;
-  return { wall: Date.now() + offset, uptime: os4.uptime() * 1000 + offset };
+  return { wall: Date.now() + offset, uptime: os5.uptime() * 1000 + offset };
 }
 function testSetupClock() {
   return !REAL_BOX && fs27.existsSync(path23.join(RUN, "test-setup-clock.json"));
@@ -20669,15 +20677,19 @@ __export(exports_state, {
   restartSettled: () => restartSettled,
   setUpFence: () => setUpFence,
   sweepWakeFolders: () => sweepWakeFolders,
-  tellAgents: () => tellAgents
+  tellAgents: () => tellAgents,
+  windowsFenceReason: () => windowsFenceReason
 });
 import { execFile as execFile2 } from "node:child_process";
 import crypto20 from "node:crypto";
 import fs41 from "node:fs";
-import os5 from "node:os";
+import os6 from "node:os";
 import path37 from "node:path";
 function fenceWanted() {
-  return process.env.KUVO_SANDBOX !== "off";
+  return !isWindowsHost() && process.env.KUVO_SANDBOX !== "off";
+}
+function windowsFenceReason() {
+  return isWindowsHost() ? { reason: "windows", why: WHY.windows } : undefined;
 }
 function actionLabel(action, reason) {
   switch (action) {
@@ -20723,6 +20735,9 @@ function worded(state) {
   };
 }
 function fenceNow() {
+  const windows = windowsFenceReason();
+  if (windows)
+    return { on: false, able: false, agents: false, ...windows };
   const said = bridgeSays();
   const base = { able: checked.able, agents: said === "none" || said === "inside", ...said === "outside" ? { outside: true } : {}, ...asksToRestart() ? { restart: true } : {} };
   if (!fenceWanted())
@@ -20906,12 +20921,15 @@ function writeExecutable(file, text) {
   fs41.chmodSync(file, 448);
 }
 async function able(found) {
+  const windows = windowsFenceReason();
+  if (windows)
+    return { able: false, passed: false, ...windows };
   if (platform === "darwin")
     return fs41.existsSync("/usr/bin/sandbox-exec") ? { able: true, passed: false } : { able: false, passed: false, why: "macOS's sandbox isn't on this Mac.", reason: "macos" };
   if (!runtime())
     return { able: false, passed: false, why: "The engine isn't installed here yet.", reason: "engineMissing" };
   if (!fs41.existsSync("/sys/kernel/security/landlock") && !/landlock/.test(textOf("/sys/kernel/security/lsm") ?? "landlock")) {
-    return { able: false, passed: false, why: `Linux ${os5.release().split("-")[0]} can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).`, reason: "kernel", needs: "Linux 5.13" };
+    return { able: false, passed: false, why: `Linux ${os6.release().split("-")[0]} can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).`, reason: "kernel", needs: "Linux 5.13" };
   }
   const tried = found === undefined ? await namespaceHere() : found;
   const next = tried === UNFINISHED ? namespaceKnown ? namespace : UNSHARE.find((each) => fs41.existsSync(each)) ?? null : tried;
@@ -21301,6 +21319,7 @@ var init_state2 = __esm(() => {
   VERSION2 = crypto20.createHash("sha256").update(launcherScript(places)).update(LANDLOCK_RUNNER).update(pluginScript(places, "")).digest("hex").slice(0, 16);
   checked = { able: false, passed: false, why: "It hasn't been checked yet.", reason: "checking" };
   WHY = {
+    windows: "Coming soon on Windows.",
     kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
     namespaces: "This machine doesn't let commands have a namespace of their own.",
     macos: "macOS's sandbox isn't on this Mac.",
@@ -21367,9 +21386,12 @@ function allowOtherComputers(on, file = APPROVAL_FILE) {
 }
 function defaultApproval(file = APPROVAL_FILE) {
   const kept = keptHere(file);
-  return isApproval(kept.last) && (kept.last !== "fullAccess" || kept.fullAccess === true) ? kept.last : "auto";
+  const wanted = isApproval(kept.last) && (kept.last !== "fullAccess" || kept.fullAccess === true) ? kept.last : "auto";
+  return wanted === "auto" && windowsFenceReason() ? "askFirst" : wanted;
 }
 function rememberApproval(approval, file = APPROVAL_FILE) {
+  if (approval === "auto" && windowsFenceReason())
+    return;
   if (keptHere(file).last !== approval)
     keepHere({ last: approval }, file);
 }
@@ -21385,6 +21407,9 @@ function unavailable(approval, { agents = false } = {}) {
   if (approval === "fullAccess" && !fullAccessAllowed())
     return { reason: "fullAccessOff", why: "Full Access isn't confirmed on this computer yet: confirm it first." };
   if (approval === "auto") {
+    const windows = windowsFenceReason();
+    if (windows)
+      return windows;
     const gap = sandboxGap(agents);
     if (gap)
       return { reason: "sandbox", why: SANDBOX_WHY[gap] };
@@ -21467,6 +21492,7 @@ var init_approval = __esm(() => {
   init_home();
   init_tell();
   init_former_asks();
+  init_state2();
   init_sandbox();
   APPROVALS = ["askFirst", "acceptEdits", "auto", "fullAccess"];
   RANK = { askFirst: 0, acceptEdits: 1, auto: 2, fullAccess: 3 };
@@ -21991,7 +22017,7 @@ var init_setting = __esm(() => {
 
 // box/src/link/bots/kit.ts
 import fs44 from "node:fs";
-import os6 from "node:os";
+import os7 from "node:os";
 import path44 from "node:path";
 function readWords(file = WORDS_FILE) {
   try {
@@ -22007,7 +22033,7 @@ function readKit(system = process.platform) {
     return null;
   carryMacKit();
   const timeZone = zoneHere().zone;
-  const machine = readLink()?.id || os6.hostname();
+  const machine = readLink()?.id || os7.hostname();
   const here = !IS_MAC ? words.here.machine : zoneFilesFor().timezone ? { ...words.here.mac, clock: words.here.machine.clock } : words.here.mac;
   const told = (each) => words.personalityWords.replaceAll("⟦name⟧", () => each.name).replaceAll("⟦description⟧", () => each.description);
   return {
@@ -32000,7 +32026,7 @@ var init_machines = __esm(() => {
 // box/src/link/mac/link.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
 import fs76 from "node:fs";
-import os7 from "node:os";
+import os8 from "node:os";
 import path78 from "node:path";
 function macNeeded(link, now = Date.now()) {
   const config = macLink.config;
@@ -32071,7 +32097,7 @@ function computerName() {
     if (said)
       return said;
   }
-  return plainName(os7.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
+  return plainName(os8.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
 }
 function ownMacConfig() {
   if (!OWN_HOME_MAC)
@@ -36078,7 +36104,7 @@ var init_who = __esm(() => {
 });
 
 // box/src/link/vault/use.ts
-import os8 from "node:os";
+import os9 from "node:os";
 function allowOnce(caller, item) {
   once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
 }
@@ -36155,7 +36181,7 @@ function tripwire(item, caller, site) {
 }
 var AUTOPILOT_HOW = "autopilot", tell = () => false, setVaultTell = (to) => {
   tell = to;
-}, machineName = () => IS_MAC ? undefined : os8.hostname(), whoOf3 = (caller) => ({
+}, machineName = () => IS_MAC ? undefined : os9.hostname(), whoOf3 = (caller) => ({
   ...caller.bot ? { bot: caller.bot } : {},
   ...caller.botName ? { botName: caller.botName } : {},
   ...caller.root ? { session: caller.root } : {},
@@ -37565,7 +37591,7 @@ var init_tool_command = __esm(() => {
 // box/src/link/vault/tools.ts
 import crypto31 from "node:crypto";
 import fs93 from "node:fs";
-import os9 from "node:os";
+import os10 from "node:os";
 import path97 from "node:path";
 async function listItems(caller) {
   const items = readItems();
@@ -37619,7 +37645,7 @@ async function askForItem(caller, args, signal) {
     always: alwaysFor(caller) !== null,
     ...site ? { site } : {},
     ...asker,
-    ...IS_MAC ? {} : { machine: os9.hostname() }
+    ...IS_MAC ? {} : { machine: os10.hostname() }
   }, stops));
   if (onAutopilot)
     return leftUndone();
@@ -45149,7 +45175,7 @@ var init_assignees = __esm(() => {
 import { execFile as execFile11, spawn as spawn11 } from "node:child_process";
 import crypto39 from "node:crypto";
 import fs114 from "node:fs";
-import os10 from "node:os";
+import os11 from "node:os";
 import path119 from "node:path";
 function heldOf2(data, errors) {
   const held = new Set;
@@ -45180,7 +45206,7 @@ function heldOf2(data, errors) {
 function askGitHub(host, query, timeout = 30000) {
   return new Promise((resolve) => {
     execFile11("gh", ["api", "graphql", "--hostname", host, "-f", `query=${query}`], {
-      cwd: os10.tmpdir(),
+      cwd: os11.tmpdir(),
       timeout,
       maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" }
@@ -45785,7 +45811,7 @@ var init_view3 = __esm(() => {
 
 // box/src/link/work-queue/ops.ts
 import fs116 from "node:fs";
-import os11 from "node:os";
+import os12 from "node:os";
 import path121 from "node:path";
 import crypto40 from "node:crypto";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -45829,7 +45855,7 @@ async function stageFile(given, places, staging) {
     refuse(`Give ${given} as a full path.`);
   const file = await real3(given) ?? refuse(`There's no file at ${given}.`);
   const own = places.own ? await real3(places.own) : null;
-  const roots = (await Promise.all([own, ...places.others.map(real3), real3(os11.tmpdir()), real3("/tmp")])).filter((each) => Boolean(each));
+  const roots = (await Promise.all([own, ...places.others.map(real3), real3(os12.tmpdir()), real3("/tmp")])).filter((each) => Boolean(each));
   const root = roots.find((each) => within4(file, each));
   const boxes = (await Promise.all([real3(K), real3(BOTS), APP_FOLDER ? real3(APP_FOLDER) : null])).filter((each) => Boolean(each));
   const ownOK = own !== null && root === own && boxes.some((box) => within4(own, box));
@@ -52209,7 +52235,7 @@ __export(exports_engine, {
 });
 import crypto47 from "node:crypto";
 import fs135 from "node:fs";
-import os12 from "node:os";
+import os13 from "node:os";
 import path142 from "node:path";
 function config() {
   try {
@@ -52243,7 +52269,7 @@ function selectedProjects(given) {
       throw new Error("Choose project folders by their absolute paths.");
     const real = fs135.realpathSync(folder);
     const dataRoots = [...Object.values(roots), APP_FOLDER].filter((root) => Boolean(root)).map(located);
-    if (!fs135.statSync(real).isDirectory() || [...dataRoots, located(homeFolder()), located(os12.tmpdir())].some((root) => inside3(real, root)) || dataRoots.some((root) => inside3(root, real)))
+    if (!fs135.statSync(real).isDirectory() || [...dataRoots, located(homeFolder()), located(os13.tmpdir())].some((root) => inside3(real, root)) || dataRoots.some((root) => inside3(root, real)))
       throw new Error("Choose individual project folders outside Kuvo’s data.");
     return real;
   }))];
@@ -57327,7 +57353,7 @@ __export(exports_removal_generation, {
 });
 import crypto53 from "node:crypto";
 import fs145 from "node:fs";
-import os13 from "node:os";
+import os14 from "node:os";
 import path153 from "node:path";
 function contents(file, checkRevision = false) {
   const hash = crypto53.createHash("sha256");
@@ -57352,7 +57378,7 @@ function contents(file, checkRevision = false) {
   return hash.digest("base64url");
 }
 function sqliteContents(file) {
-  const folder = fs145.mkdtempSync(path153.join(os13.tmpdir(), "kuvo-generation-"));
+  const folder = fs145.mkdtempSync(path153.join(os14.tmpdir(), "kuvo-generation-"));
   try {
     const copy = path153.join(folder, "snapshot");
     snapshotDatabase(file, copy);
@@ -61036,7 +61062,7 @@ var init_accounts2 = __esm(() => {
 import { spawn as spawn15 } from "node:child_process";
 import crypto58 from "node:crypto";
 import fs155 from "node:fs";
-import os14 from "node:os";
+import os15 from "node:os";
 import path165 from "node:path";
 function answerSandboxAsk(id, answer, admit) {
   if (admit)
@@ -61190,7 +61216,7 @@ async function askToRun(caller, args, signal, operation) {
     ...stopped.length ? { stopped } : {},
     ...error ? { error } : {},
     ...always ? { always } : {},
-    ...IS_MAC ? {} : { machine: os14.hostname() },
+    ...IS_MAC ? {} : { machine: os15.hostname() },
     owner: ownerOf2(project)
   }, signal, undefined, (id) => {
     asking = id;
@@ -61270,7 +61296,7 @@ async function stoppedInAuto(caller, input, printed, calling, signal) {
   if (caller.seat || !command.trim() || command.length > 8000 || !project)
     return null;
   const given = typeof input.workdir === "string" ? input.workdir : typeof input.cwd === "string" ? input.cwd : "";
-  const folder = given ? path165.resolve(project, given.replace(/^~(?=\/|$)/, os14.homedir())) : project;
+  const folder = given ? path165.resolve(project, given.replace(/^~(?=\/|$)/, os15.homedir())) : project;
   await askedAbout([folder]);
   if (!fs155.existsSync(folder))
     return null;
@@ -61405,7 +61431,7 @@ var init_outside = __esm(() => {
 // box/src/link/areas/asks.ts
 import fs156 from "node:fs";
 import net6 from "node:net";
-import os15 from "node:os";
+import os16 from "node:os";
 import path166 from "node:path";
 function readAsks(browserRuns = () => processRuns(Number(fs156.readFileSync(BROWSER_PID, "utf8")), "kuvo-browser")) {
   try {
@@ -61552,7 +61578,7 @@ async function* asksRoute(context) {
   const read = async () => ({
     asks: await Promise.all(readAsks().map(async (ask) => {
       const { ask: shown, asker } = await inConversation(ask, readEngine);
-      return listedAsk(shown, info.name ?? os15.hostname(), asker);
+      return listedAsk(shown, info.name ?? os16.hostname(), asker);
     }))
   });
   if (route === "kuvo/asks")
@@ -62065,7 +62091,7 @@ var init_file = __esm(() => {
 import { execFile as execFile13, spawn as spawn16 } from "node:child_process";
 import crypto59 from "node:crypto";
 import fs159 from "node:fs";
-import os16 from "node:os";
+import os17 from "node:os";
 import path170 from "node:path";
 async function git(folder, given, changing = false, more = {}, program = "git", timeout = 600000) {
   const args = program !== "git" ? given : changing ? await askedArgsLater(given, folder) : await ownArgsLater(given, folder);
@@ -62472,7 +62498,7 @@ async function trash(file) {
       });
       return;
     }
-    const bin = path170.join(os16.homedir(), ".Trash");
+    const bin = path170.join(os17.homedir(), ".Trash");
     into = path170.join(bin, name);
     for (let n = 2;fs159.existsSync(into); n++)
       into = path170.join(bin, `${name} ${n}`);
@@ -66703,7 +66729,7 @@ var init_hold = __esm(() => {
 // box/src/link/peers/seats.ts
 import crypto64 from "node:crypto";
 import fs174 from "node:fs";
-import os17 from "node:os";
+import os18 from "node:os";
 import path185 from "node:path";
 function askForMail(ask, kind) {
   return ask === bridgeAsk && usageMail(kind) && readServices(RUN) ? usagePeerAsk : ask;
@@ -66786,7 +66812,7 @@ async function takeSeat(sender, payload, send, ask = bridgeAsk) {
 function seatPeers(link = readLink(), told = readPeerAgents()) {
   const peers = peersOf(link);
   const key = link ? ownKey(link) : null;
-  const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os17.hostname();
+  const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os18.hostname();
   const setup = followedSetup(link);
   const insightOrigins = historicalInsightOrigins(link);
   return {
@@ -67326,7 +67352,7 @@ var init_notify = __esm(() => {
 // box/src/link/letters/own-tools.ts
 import { execFile as execFile14 } from "node:child_process";
 import fs177 from "node:fs";
-import os18 from "node:os";
+import os19 from "node:os";
 import path188 from "node:path";
 function botOf4(session) {
   for (const id of listOf(BOTS).sort()) {
@@ -67393,7 +67419,7 @@ async function wakeTool(name, args, calling, bridge, operation) {
   if (exists && isMoving(folder))
     return refused4(MOVING);
   const directory = root?.place.data.location?.directory ?? root?.place.data.directory;
-  const cwd = directory && fs177.existsSync(directory) ? directory : os18.homedir();
+  const cwd = directory && fs177.existsSync(directory) ? directory : os19.homedir();
   const env = { ...process.env, PWD: cwd, KUVO_BOTS: BOTS, KUVO_WAKES: SESSION_WAKES, KUVO_WAKE_TOOL: "1" };
   if (viaBridge)
     env.KUVO_WAKE_VIA = "bridge";
@@ -67478,7 +67504,7 @@ function showTool(name, args, calling, inView) {
       const trimmed = (given) => given.replace(/\/+$/, "") || "/";
       const expanded = trimmed(home2(raw));
       const place = calling.own ?? calling.root?.place;
-      const base = place?.data.location?.directory ?? place?.data.directory ?? os18.homedir();
+      const base = place?.data.location?.directory ?? place?.data.directory ?? os19.homedir();
       const full = isFullPath(expanded) ? expanded : path188.resolve(base, expanded);
       if (full !== trimmed(raw))
         return refused4(`Give the full path: ${full}`);
@@ -67510,7 +67536,7 @@ function showTool(name, args, calling, inView) {
 var said3 = (text) => ({ text, isError: false }), refused4 = (text) => ({ text, isError: true }), isSeat = (place) => {
   const seat = place?.data.metadata?.kuvo?.seat;
   return seat !== undefined && seat !== null;
-}, onBridge2 = (place, bridge) => Boolean(place && bridge && place.target.port === bridge.port), WATCH_AS_COMMAND = 'This conversation asks before running commands, and a watch runs its check by itself, so the user approves it first: start it with the shell command kuvo-wake watch <every> "<check>" "<what to do when it changes>" instead, which asks them.', isFullPath = (given) => given.startsWith("/") && !given.split("/").some((part) => part === "." || part === ".."), home2 = (given) => given.replace(/^~(?=$|\/)/, os18.homedir());
+}, onBridge2 = (place, bridge) => Boolean(place && bridge && place.target.port === bridge.port), WATCH_AS_COMMAND = 'This conversation asks before running commands, and a watch runs its check by itself, so the user approves it first: start it with the shell command kuvo-wake watch <every> "<check>" "<what to do when it changes>" instead, which asks them.', isFullPath = (given) => given.startsWith("/") && !given.split("/").some((part) => part === "." || part === ".."), home2 = (given) => given.replace(/^~(?=$|\/)/, os19.homedir());
 var init_own_tools = __esm(() => {
   init_tool_command();
   init_edit();
@@ -82715,7 +82741,7 @@ var init_engine_pin = __esm(() => {
 import { spawnSync as spawnSync12 } from "node:child_process";
 import crypto71 from "node:crypto";
 import fs205 from "node:fs";
-import os19 from "node:os";
+import os20 from "node:os";
 import path217 from "node:path";
 function ownFiles(home = K) {
   const files = [];
@@ -82749,7 +82775,7 @@ function machineHelperPack() {
   const release = runningKept();
   if (!release)
     return null;
-  const folder = fs205.mkdtempSync(path217.join(os19.tmpdir(), "kuvo-helper-"));
+  const folder = fs205.mkdtempSync(path217.join(os20.tmpdir(), "kuvo-helper-"));
   try {
     const bundle = `./bin/${name}`;
     const unpacked = spawnSync12("tar", ["-xzf", release.pack, "-C", folder, bundle], { timeout: 30000 });
@@ -82787,7 +82813,7 @@ function tarOf(files) {
 }
 function ownKind() {
   const system = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : null;
-  const machine = { x64: "x86_64", arm64: "aarch64" }[os19.arch()];
+  const machine = { x64: "x86_64", arm64: "aarch64" }[os20.arch()];
   return system && machine ? { system, machine } : null;
 }
 async function engineFor(kind, fetching = () => {}, home = K) {
@@ -82860,7 +82886,7 @@ var init_files4 = __esm(() => {
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync13 } from "node:child_process";
 import fs206 from "node:fs";
-import os20 from "node:os";
+import os21 from "node:os";
 import path218 from "node:path";
 function gitIn2(folder, depth, found) {
   const git = path218.join(folder, ".git");
@@ -83102,7 +83128,7 @@ function clearGrokIndex(home) {
     fs206.rmSync(path218.join(home, "sessions", name + ASIDE), { force: true });
 }
 function ownAgentHomes() {
-  const home = os20.homedir();
+  const home = os21.homedir();
   const grok = process.env.GROK_HOME?.trim();
   return {
     claude: process.env.CLAUDE_CONFIG_DIR?.trim() || path218.join(home, ".claude"),
@@ -89570,7 +89596,7 @@ var init_app = __esm(() => {
 
 // box/src/link/areas/computers.ts
 import fs222 from "node:fs";
-import os21 from "node:os";
+import os22 from "node:os";
 function systemName(platform = process.platform, read = (file) => fs222.readFileSync(file, "utf8")) {
   try {
     if (platform === "darwin") {
@@ -89627,7 +89653,7 @@ function ownComputer(target = fleetTarget(), now = Date.now()) {
     agents: agentsFact()
   };
 }
-function ownAddresses(interfaces = os21.networkInterfaces(), name = os21.hostname()) {
+function ownAddresses(interfaces = os22.networkInterfaces(), name = os22.hostname()) {
   const virtual = /^(docker|br-|cni|veth|virbr|vmnet|vboxnet|flannel|lxc|lxd|podman|kube|cali|weave|tun|utun|bridge)/;
   const found = Object.entries(interfaces).filter(([name]) => !virtual.test(name)).flatMap(([, each]) => each ?? []).filter((each) => each.family === "IPv4" && !each.internal && !each.address.startsWith("169.254.")).map((each) => each.address);
   const tailnet = (address) => {
@@ -98995,7 +99021,7 @@ var init_bots3 = __esm(() => {
 
 // box/src/link/areas/marketplace.ts
 import fs227 from "node:fs";
-import os22 from "node:os";
+import os23 from "node:os";
 import path237 from "node:path";
 function offerSkill(item) {
   return { name: item.id, origin: "catalog", version: item.version, files: item.files };
@@ -99522,7 +99548,7 @@ async function* marketplaceRoute(context) {
     }
     if (action === "/skills/preview" && verb === "POST") {
       const from = typeof body.from === "string" ? body.from.trim() : undefined;
-      const folder = from !== undefined && /^[~/]/.test(from) ? from.replace(/^~(?=\/|$)/, os22.homedir()) : body.folder;
+      const folder = from !== undefined && /^[~/]/.test(from) ? from.replace(/^~(?=\/|$)/, os23.homedir()) : body.folder;
       if (typeof folder === "string" && !fs227.existsSync(folder))
         return yield* json(400, { message: "Choose a folder on this computer that contains SKILL.md." });
       const given = from !== undefined && folder === undefined ? { link: from } : body;
@@ -105413,7 +105439,7 @@ var init_autopilot = __esm(() => {
 });
 
 // box/src/link/notices/news.ts
-import os23 from "node:os";
+import os24 from "node:os";
 import path248 from "node:path";
 function describePermission(request, home) {
   const what = { edit: "edit files", write: "edit files", patch: "edit files", shell: "run a command", bash: "run a command", read: "read a file", external_directory: "work outside the project", webfetch: "open a web page" }[request.action] ?? request.action;
@@ -105557,7 +105583,7 @@ async function noticeFor(event, get) {
       if (isHiddenRun(where))
         return null;
       const { line: body, whole } = permissionLine(data);
-      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os23.homedir())) }, { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
+      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os24.homedir())) }, { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
     }
     case "form.created": {
       const form = data.form ?? data;
@@ -108566,7 +108592,7 @@ var init_sessions3 = __esm(() => {
 // box/src/link/ownership/resolve.ts
 import { createHash as createHash14 } from "node:crypto";
 import fs240 from "node:fs";
-import os24 from "node:os";
+import os25 from "node:os";
 import path254 from "node:path";
 function replacementOwner(link, key) {
   const roster = acceptedMembership(link);
@@ -108745,7 +108771,7 @@ function announcedBy(link, scope, id) {
 }
 function ownerOf4(ref, {
   link = readLink(),
-  name = os24.hostname()
+  name = os25.hostname()
 } = {}) {
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope)
@@ -111298,7 +111324,7 @@ __export(exports_update, {
 import { spawn as spawn20, spawnSync as spawnSync18 } from "node:child_process";
 import crypto84 from "node:crypto";
 import fs249 from "node:fs";
-import os25 from "node:os";
+import os26 from "node:os";
 import path263 from "node:path";
 function checkRollbackRecords() {
   updateState();
@@ -111742,7 +111768,7 @@ async function update({
     const engineFolder = path263.join(K, "engine", manifest.engine);
     let staged = null;
     if (!fs249.existsSync(path263.join(engineFolder, "opencode"))) {
-      const kind = { x64: "x86_64", arm64: "aarch64" }[os25.arch()];
+      const kind = { x64: "x86_64", arm64: "aarch64" }[os26.arch()];
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
         throw new Error("The release has no engine for this machine.");
@@ -112190,7 +112216,7 @@ var init_update = __esm(() => {
   BACKUP_DAYS = 30 * 86400000;
   OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
   RELEASE_CHECK = 6 * 3600000;
-  ROUND_OFFSET = parseInt(crypto84.createHash("sha256").update(`${os25.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
+  ROUND_OFFSET = parseInt(crypto84.createHash("sha256").update(`${os26.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
 });
 
 // box/src/link/engine/lifetime.ts
@@ -115079,7 +115105,7 @@ var init_zip = __esm(() => {
 import { execFileSync as execFileSync2, spawn as spawn23 } from "node:child_process";
 import crypto87 from "node:crypto";
 import fs256 from "node:fs";
-import os26 from "node:os";
+import os27 from "node:os";
 import path271 from "node:path";
 function allowedSource(url) {
   let parsedURL;
@@ -115111,7 +115137,7 @@ function pinned(system) {
   }
   return PINNED[system];
 }
-function runtimeHere(platform = testSystem() ?? process.platform, arch = os26.arch()) {
+function runtimeHere(platform = testSystem() ?? process.platform, arch = os27.arch()) {
   const system = platform === "linux" ? "linux" : platform === "darwin" ? "darwin" : null;
   if (!system)
     return { unsupported: `The browser runs on Linux and macOS; this machine is ${platform}.` };
@@ -118461,7 +118487,7 @@ var init_bundle2 = __esm(() => {
 
 // box/src/link/areas/info.ts
 import fs270 from "node:fs";
-import os27 from "node:os";
+import os28 from "node:os";
 import path284 from "node:path";
 async function* infoRoute(context) {
   const { readEngine, bridge, info } = context;
@@ -118490,7 +118516,7 @@ function macInfo(engine, started, chats, agents) {
   const moving = movingNow();
   return {
     kind: "mac",
-    name: config?.name || os27.hostname(),
+    name: config?.name || os28.hostname(),
     app: config?.app || MAC_APP_VERSION || "",
     engine: engine.version ?? MAC_ENGINE_VERSION ?? "",
     features: editFeatures(macFeatures()),
@@ -120327,7 +120353,7 @@ var init_computer_backups = __esm(() => {
 });
 
 // box/src/link/server/router.ts
-import os28 from "node:os";
+import os29 from "node:os";
 async function* backupRoutes(context) {
   yield* (await Promise.resolve().then(() => (init_computer_backups(), exports_computer_backups))).computerBackupsRoute(context);
 }
@@ -120342,7 +120368,7 @@ function matchBoxRoute(route, request, phone) {
 function createBoxDispatcher({
   readEngine = readEngineFile,
   readBridge = readBridgeFile,
-  info = { name: os28.hostname() },
+  info = { name: os29.hostname() },
   phonesChanged = () => {},
   hold = null
 } = {}) {
@@ -137109,7 +137135,7 @@ import { once as once3 } from "node:events";
 import { spawn as spawn29 } from "node:child_process";
 import crypto95 from "node:crypto";
 import fs283 from "node:fs";
-import os29 from "node:os";
+import os30 from "node:os";
 import path295 from "node:path";
 import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { parseArgs } from "node:util";
@@ -140970,7 +140996,7 @@ async function run9(owner) {
   });
   const dispatcher = createBoxDispatcher();
   let served;
-  const local = dispatcher.entry({ hold, info: { name: os29.hostname(), ...owner?.info() } });
+  const local = dispatcher.entry({ hold, info: { name: os30.hostname(), ...owner?.info() } });
   if (resident) {
     const password = crypto95.randomBytes(24).toString("hex");
     const server = await listenBox(password, owner.entry(local));
@@ -141162,7 +141188,7 @@ async function run9(owner) {
     const route = (request, actor, signal) => handler(request, actor, signal);
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
-      hello: { v: 1, kind: "machine", name: link.name || os29.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
+      hello: { v: 1, kind: "machine", name: link.name || os30.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
@@ -141171,7 +141197,7 @@ async function run9(owner) {
       send: () => {}
     });
     const handler = dispatcher.entry({
-      info: { name: link.name || os29.hostname() },
+      info: { name: link.name || os30.hostname() },
       phonesChanged: (changed) => host.keepOnly(currentPhonePairings(changed)),
       hold
     });
@@ -141735,7 +141761,7 @@ async function serve(owner) {
   if (IS_MAC)
     macLink.hold = macNoticeHold();
   const dispatcher = createBoxDispatcher();
-  const local = dispatcher.entry({ hold: macLink.hold, info: { name: os29.hostname(), ...owner?.info() } });
+  const local = dispatcher.entry({ hold: macLink.hold, info: { name: os30.hostname(), ...owner?.info() } });
   const server = await listenBox(password, owner ? owner.entry(local) : local);
   const port = server.address().port;
   try {
@@ -142020,7 +142046,7 @@ async function setup() {
     if (!next.phones.length && !peersOf(next).length)
       return current ? next : null;
     next.relay = String(input.relay);
-    next.name = String(input.name || next.name || os29.hostname()).slice(0, 100);
+    next.name = String(input.name || next.name || os30.hostname()).slice(0, 100);
     link = next;
     return next;
   });
@@ -142101,7 +142127,7 @@ function leave(mac) {
 async function pair(relay) {
   if (relay && !IS_MAC && !readLink()?.relay)
     updateLink((current) => {
-      const link = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+      const link = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os30.hostname(), phones: [] };
       link.sign ??= newSigningSeed();
       link.relay = relay;
       settleOwnSetup(link);
@@ -142115,7 +142141,7 @@ async function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+    const next = current ?? { secret: crypto95.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os30.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

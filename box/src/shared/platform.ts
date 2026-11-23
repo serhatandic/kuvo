@@ -9,6 +9,17 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+
+/** WSL keeps Linux's paths, processes and IPC, with separate Windows-hosted capabilities. */
+export function platformFacts(platform: NodeJS.Platform = process.platform, release = platform === "linux" ? os.release() : "", distro = process.env.WSL_DISTRO_NAME) {
+  return { platform, wsl: platform === "linux" && (Boolean(distro) || /microsoft|wsl/i.test(release)) };
+}
+
+export function isWindowsHost(): boolean {
+  const { platform, wsl } = platformFacts();
+  return platform === "win32" || wsl;
+}
 
 /** Whether process `pid` is alive (and ours to signal). */
 export function alive(pid: number): boolean {

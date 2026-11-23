@@ -11455,6 +11455,11 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   client asks you the first time you pick it), for a bot's conversation and its work as for any
   other (before bridge 0.9.188 bots had Auto at most). A bot's conversation from before there were
   approvals starts with this computer's default, as a new one (before bridge 0.9.189, Auto).
+- On native Windows and WSL, Auto is unavailable. Both option lists return `unavailable:
+  {reason: "windows", why: "Coming soon on Windows."}` for Auto, and setting Auto on an existing
+  conversation returns 409 with that reason. Ask First replaces Auto as the default and is
+  effective for a conversation that already names Auto. Ask First, Accept Edits and confirmed
+  Full Access are available as usual.
 - Where one can't be had now, it fails closed: a conversation set to Auto asks first while the
   sandbox isn't running, and one set to Full Access comes down to Auto while it isn't confirmed on
   this computer. It stays set to what you picked, and comes back to it once it can.
@@ -11502,7 +11507,7 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   you picked, what it comes to here now (`held` `{reason, why}`, the last step down, when that's
   less), whether it's in Plan mode, and each one (`options`: `{approval, held?, unavailable?}`):
   `held` where it can be picked and asks first for now (Auto without the sandbox), `unavailable`
-  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `fullAccessOff`
+  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `windows` (Auto unavailable on Windows), `fullAccessOff`
   (and `bot` from a box before 0.9.188). Only a read: its rules come to what it shows within the box's round. 404 `{message}` for a
   conversation that isn't here, 503 with no engine or bridge. A coding agent's subagent (#950) asks
   in the conversation that started it, so it runs with that one's approval: it answers that one's,
@@ -11771,6 +11776,8 @@ what may be decided without asking. Every conversation is Interactive until it's
 
 Each box runs its agents' commands in a sandbox (`sandbox` in `features` and its asks, `sandbox.asks`, bridge 0.9.118) wherever
 it can, with no switch: the way out is per command (the card that asks you about one it refused).
+Native Windows and WSL return `able: false, on: false, agents: false, reason: "windows"`, with
+`why: "Coming soon on Windows."` and no retry action.
 On, each command the engine runs (an agent's shell tool, and yours with `!`) reads everything but
 what's below, and in your home folder adds and changes files (`homeWrites`) but never deletes or
 moves one there (on macOS, Seatbelt's `file-write-unlink`, which a move takes too, is left out; on

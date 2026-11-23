@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
+
 - The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
