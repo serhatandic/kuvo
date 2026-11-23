@@ -278,12 +278,14 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   const selectedKey = "selected-test-key".repeat(2600);
   write(path.join(main.home, "box", "keys", keyName), selectedKey);
   write(path.join(main.home, "box", "keys", unselected), "unselected-test-key");
-  main.engine.integrations.push({ id: "anthropic" }, { id: "notion", metadata: { source: "mcp" } });
+  main.engine.integrations.push({ id: "anthropic" }, { id: "github-copilot" }, { id: "notion", metadata: { source: "mcp" } });
+  const copilot = { type: "oauth", refresh: "reusable-test-token", access: "reusable-test-token" };
   main.engine.credentials.push(
     { id: "selected", integrationID: "anthropic", label: "Work", value: { type: "api", key: "selected-test-credential" }, active: true },
     { id: "inactive", integrationID: "anthropic", label: "Old", value: { type: "api", key: "inactive-test-token" }, active: false },
     { id: "notion", integrationID: "notion", label: "Integration", value: { type: "api", key: "unsent-test-token" }, active: true },
     { id: "refreshing", integrationID: "anthropic", label: "Refreshes", value: { refresh: "unsent-refresh-token" }, active: true },
+    { id: "copilot", integrationID: "github-copilot", label: "Copilot", value: copilot, active: true },
   );
   const ask = main.connect(await main.start().ready());
   const setup = (await ask("GET", "kuvo/setup")).json.setup;
@@ -293,10 +295,10 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   assert.equal(checklist.status, 200, checklist.text);
   assert.deepEqual(checklist.json.unavailable, []);
   assert.equal(checklist.json.renewing, 1);
-  assert.ok(!checklist.json.items.some(item => item.label === "Refreshes"));
-  const chosen = checklist.json.items.filter(item => item.label === keyName || item.label === "Work").map(item => item.id);
-  assert.equal(chosen.length, 2);
-  assert.doesNotMatch(checklist.text, /selected-test-key|selected-test-credential/);
+  assert.deepEqual(checklist.json.items.filter(item => item.kind === "sign-in").map(item => item.label), ["Work", "Copilot"]);
+  const chosen = checklist.json.items.filter(item => [keyName, "Work", "Copilot"].includes(item.label)).map(item => item.id);
+  assert.equal(chosen.length, 3);
+  assert.doesNotMatch(checklist.text, /selected-test-key|selected-test-credential|reusable-test-token/);
   const issued = await ask("POST", "kuvo/computers/add/code", { credentials: chosen }, headers);
   assert.equal(issued.status, 201, issued.text);
   const mainLink = () => readJSON(path.join(main.home, "run", "link.json"));
@@ -318,11 +320,12 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   assert.equal(digest(fs.readFileSync(path.join(keys, keyName))), digest(selectedKey));
   assert.deepEqual(remote.engine.credentials, [
     { integrationID: "anthropic", label: "Work", value: { type: "api", key: "selected-test-credential" }, activate: true },
+    { integrationID: "github-copilot", label: "Copilot", value: copilot, activate: true },
   ]);
   await until(() => invite().credentialsCompleted && invite().credentialSeed === undefined,
     "The main computer did not acknowledge credential completion.");
   assert.equal((await remote.join(issued.json.code)).code, 0);
-  assert.equal(remote.engine.credentials.length, 1);
+  assert.equal(remote.engine.credentials.length, 2);
 });
 
 test("a member lists the main computer’s keys and issues an installer code through it", { timeout: 120000 }, async t => {
@@ -468,6 +471,7 @@ for (const confirmed of [false, true]) {
     const rejected = await applicant.join(invite.json.code);
     assert.equal(rejected.code, 1, rejected.log);
     assert.match(rejected.log, /The enrollment was cancelled\. This computer kept its own setup\./);
+    if (confirmed) assert.match(rejected.log, /This computer could not join\./);
     assert.equal(applicantLink().installerClaim, undefined);
     assert.equal(applicantLink().setup.id, independentSetup);
     assert.equal(applicantLink().setup.role, "primary");
@@ -484,3 +488,172 @@ for (const confirmed of [false, true]) {
     assert.equal(mainLink().shared.membershipAndAccess.sequence, before + Number(confirmed));
   });
 }
+
+test("a new main can retire a provisional installer computer from its replicated claim", { timeout: 120000 }, async t => {
+  const { computer, leases, relay } = await bench(t);
+  const issuer = await computer("Studio");
+  const successor = await computer("Lab");
+  const observer = await computer("Observer");
+  const applicant = await computer("Workshop");
+  const replacement = await computer("Replacement");
+  const stateFile = box => path.join(box.home, "run", "link.json");
+  const state = box => readJSON(stateFile(box));
+  const clock = (box, offset) => write(path.join(box.home, "run", "test-setup-clock.json"), JSON.stringify({ offset }));
+  for (const box of [issuer, successor, observer]) clock(box, 0);
+  write(path.join(successor.home, "setup-takeover.json"), '{"alwaysOn":true}');
+  const runningIssuer = issuer.start();
+  const ask = issuer.connect(await runningIssuer.ready());
+  const view = (await ask("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(view.setup), "The issuer did not acquire the initial lease.");
+  const headers = { "x-kuvo-from": "mac" };
+  const desktop = Buffer.alloc(32, 74).toString("base64url");
+  const paired = await ask("POST", "kuvo/devices/pair", { key: desktop, kind: "desktop", name: "Retired desktop" },
+    { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const denial = { key: desktop, pairing: paired.json.pairing };
+  const revoked = await ask("POST", "kuvo/phones/remove", { phones: [denial] }, headers);
+  assert.equal(revoked.status, 200, revoked.text);
+  const issue = async (at = ask) => {
+    const reply = await at("POST", "kuvo/computers/add/code", {}, headers);
+    assert.equal(reply.status, 201, reply.text);
+    return reply.json.code;
+  };
+  const joined = await successor.join(await issue());
+  assert.equal(joined.code, 0, joined.log);
+  const runningSuccessor = successor.start();
+  const receive = successor.connect(await runningSuccessor.ready());
+  const lab = (await receive("GET", "kuvo/setup")).json.you.key;
+  const received = await observer.join(await issue());
+  assert.equal(received.code, 0, received.log);
+  const observe = observer.connect(await observer.start().ready());
+  const observed = (await observe("GET", "kuvo/setup")).json.you.key;
+  await until(() => {
+    const roster = leases.leaseFor(view.setup)?.roster;
+    return roster?.[lab] && roster[observed];
+  }, "The relay lease did not include both members.", 30000);
+
+  const code = await issue();
+  const ticket = JSON.parse(Buffer.from(code.split(".")[1], "base64url"));
+  const issuerAddress = Buffer.from(ticket.address, "base64url");
+  const prefix = Buffer.from("kuvo installer v1\0");
+  const recoveries = box => {
+    const current = state(box);
+    return current.shared.ownershipRecovery?.value?.["installer recovery"]
+      ?? current.shared.ownershipAssignments?.value?.["installer recovery"]
+      ?? current.shared.membershipAndAccess.value.installerRecoveries;
+  };
+  const roster = box => state(box).shared.membershipAndAccess.value;
+  const claimed = () => state(applicant).installerClaim;
+  let releaseReply, pending, delayed;
+  const releaseRequest = relay.intercept(null, issuerAddress, packet => {
+    if (packet.payload.includes(prefix)) {
+      if (claimed()?.recovery?.key) delayed = packet;
+      releaseReply ??= relay.intercept(issuerAddress, packet.from, ({ payload }) =>
+        payload.includes(prefix) && !!recoveries(issuer)?.[claimed()?.recovery?.key]);
+    }
+    return false;
+  });
+  try {
+    const interrupted = await applicant.join(code, { afterStart: async child => {
+      await until(() => {
+        const entry = recoveries(issuer)?.[claimed()?.recovery?.key];
+        return entry?.commitment && recoveries(successor)?.[claimed()?.recovery?.key]?.commitment === entry.commitment;
+      }, "Lab did not receive the provisional recovery commitment.", 25000);
+      pending = claimed();
+      await child.stop();
+    } });
+    assert.notEqual(interrupted.code, 0, interrupted.log);
+  } finally {
+    releaseRequest();
+    releaseReply?.();
+  }
+  const applicantKey = pending.recovery.key;
+  const original = recoveries(issuer)[applicantKey];
+  const unchanged = await applicant.command(["installer-recovery", "issue"]);
+  assert.equal(unchanged.code, 1, unchanged.log);
+  const expired = state(applicant);
+  expired.installerClaim.until = Date.now() - 1;
+  write(stateFile(applicant), JSON.stringify(expired));
+  const issued = await applicant.command(["installer-recovery", "issue"]);
+  assert.equal(issued.code, 0, issued.log);
+  assert.match(issued.text, /^kuvo-cancel-1\./);
+  write(stateFile(replacement), JSON.stringify(state(applicant)));
+  const localWork = path.join(applicant.home, "agents", "sessions", "local.json");
+  const savedWork = '{"title":"Saved after the claim"}';
+  write(localWork, savedWork);
+  await runningIssuer.stop();
+  const allowIssuer = leases.disconnect(view.you.key);
+  const allowObserver = leases.disconnect(observed);
+  try {
+    leases.advance(125000);
+    clock(successor, 125000);
+    clock(observer, 125000);
+    await until(() => state(successor).setup.role === "primary",
+      () => "Lab did not take over while Studio was off.\n" + runningSuccessor.log(), 30000);
+    allowObserver();
+    assert.equal(leases.leaseFor(view.setup).holder, lab);
+    assert.deepEqual(recoveries(successor)[applicantKey], original);
+    assert.equal(Object.hasOwn(state(successor).installerInvites ?? {}, pending.invite), false);
+    const before = roster(successor);
+    assert.ok(before.boxes.some(peer => peer.key === applicantKey));
+    const forged = JSON.parse(Buffer.from(issued.text.trim().split(".")[1], "base64url"));
+    const badReceipt = "kuvo-cancel-1." + Buffer.from(JSON.stringify({ ...forged, key: observed })).toString("base64url") + "\n";
+    const denied = await successor.command(["installer-recovery", "apply"], badReceipt);
+    assert.equal(denied.code, 1, denied.log);
+    assert.match(denied.log, /no matching installer recovery entry/);
+    const result = await successor.command(["installer-recovery", "apply"], issued.text);
+    assert.equal(result.code, 0, result.log);
+    assert.match(result.text, /provisional installer entry was retired/);
+    const after = roster(successor);
+    assert.deepEqual(after.boxes.map(peer => peer.key).sort(), before.boxes.map(peer => peer.key).filter(key => key !== applicantKey).sort());
+    assert.deepEqual(after.left, [applicantKey]);
+    assert.ok(after.computerHistory.retiredSigns.includes(original.sign));
+    assert.equal(recoveries(successor)?.[applicantKey], undefined);
+    assert.ok(after.devices.removed.some(entry => entry.key === denial.key && entry.pairing === denial.pairing));
+    const savedSlots = new Set(before.computerHistory.slots.map(slot => slot.key));
+    assert.deepEqual(after.computerHistory.slots.filter(slot => savedSlots.has(slot.key)), before.computerHistory.slots);
+    assert.ok(after.computerHistory.slots.some(slot => slot.key === applicantKey));
+    await until(() => state(observer).setup.primary === lab && roster(observer).left?.includes(applicantKey),
+      "The observer did not apply the new main's signed retirement.", 30000);
+    const replay = await successor.command(["installer-recovery", "apply"], issued.text);
+    assert.equal(replay.code, 0, replay.log);
+    assert.match(replay.text, /provisional installer entry was already retired/);
+
+    const freshCode = await issue(receive);
+    const refused = await applicant.join(freshCode);
+    assert.equal(refused.code, 1, refused.log);
+    assert.match(refused.log, /Use a setup merge/);
+    assert.equal(fs.readFileSync(localWork, "utf8"), savedWork);
+    const enrolled = await replacement.join(freshCode);
+    assert.equal(enrolled.code, 0, enrolled.log);
+    const returned = state(replacement);
+    assert.equal(returned.setup.id, view.setup);
+    for (const field of ["key", "sign", "secret"]) assert.notEqual(returned[field], expired[field], field);
+    const archived = await replacement.command(["installer-recovery", "issue"]);
+    assert.equal(archived.code, 0, archived.log);
+    assert.equal(archived.text, issued.text);
+
+    allowIssuer();
+    clock(issuer, 125000);
+    await issuer.start().ready();
+    await until(() => state(issuer).setup.primary === lab && roster(issuer).left?.includes(applicantKey),
+      "The former issuer did not follow the retirement.", 30000);
+    assert.ok(delayed, "The original confirmation was captured.");
+    let answered = false;
+    const watch = relay.intercept(issuerAddress, delayed.from, ({ payload }) => {
+      answered ||= payload.includes(prefix);
+      return false;
+    });
+    try {
+      relay.replay(delayed);
+      await until(() => answered, "The former issuer did not answer the old confirmation.");
+    } finally {
+      watch();
+    }
+    assert.equal(roster(issuer).boxes.some(peer => peer.key === applicantKey), false);
+    assert.deepEqual(roster(issuer).devices.removed, after.devices.removed);
+  } finally {
+    allowIssuer();
+    allowObserver();
+  }
+});

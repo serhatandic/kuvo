@@ -74,35 +74,53 @@ test("local discovery chooses the existing member and leaves the app home untouc
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = isolatedEnv(root);
   const app = path.join(root, "app");
-  fs.mkdirSync(app);
   const machine = path.join(env.HOME, ".kuvo-code");
   const found = {
     formatVersion: 1, setup: "set_" + Buffer.alloc(16, 31).toString("base64url"), role: "member",
     self: { key: Buffer.alloc(32, 12).toString("base64url"), name: "Machine", kind: "machine" },
-    primary: { key: Buffer.alloc(32, 13).toString("base64url"), name: "Main" },
+    primary: { key: Buffer.alloc(32, 13).toString("base64url"), name: "Main", heard: 1 },
     computers: 2, items: 1, macs: [],
   };
   write(path.join(machine, "run", "setup-card.json"), JSON.stringify(found));
   write(path.join(machine, "bin", "kuvo-start"), "");
   const discover = async () => {
-    const child = boxCommand(boxBinary(), app, env, { url: "ws://127.0.0.1:1" }, ["here", ".kuvo-code"], {}, "pipe");
+    const child = boxCommand(boxBinary(), root, env, { url: "ws://127.0.0.1:1" },
+      ["here", ".kuvo-code"], { KUVO_HOME: app }, "pipe");
     t.after(() => child.stop());
     let stdout = "";
     child.child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
     child.child.stdin.end();
     assert.equal((await child.exited).code, 0, child.log());
-    assert.deepEqual(fs.readdirSync(app), []);
     return JSON.parse(stdout);
   };
   const attached = await discover();
   assert.deepEqual([attached.verdict, attached.use, attached.opens, attached.runs], ["elsewhere", "attach", "window", "stopped"]);
   assert.equal(attached.box.folder, ".kuvo-code");
   assert.equal(attached.box.primary.name, "Main");
+  assert.equal(attached.box.primary.heard, 1);
   assert.equal(attached.own, null);
+  assert.equal(fs.existsSync(app), false);
+
+  write(path.join(app, "machines.json"), "[]");
+  write(path.join(app, "bin", "integrations.json"), "{}");
+  assert.deepEqual(await discover(), attached);
+  const link = path.join(machine, "run", "link.json");
+  const card = path.join(machine, "run", "setup-card.json");
+  fs.unlinkSync(card);
+  write(link, JSON.stringify({ mac: found.primary.key, macNames: { [found.primary.key]: "Main" } }));
+  const legacy = await discover();
+  assert.deepEqual([legacy.verdict, legacy.use, legacy.opens, legacy.runs, legacy.box.primary.name],
+    ["older", "attach", "window", "stopped", "Main"]);
+  fs.unlinkSync(link);
+  write(card, JSON.stringify({ formatVersion: 1, self: found.self, macs: [] }));
+  const lone = await discover();
+  assert.deepEqual([lone.verdict, lone.use, lone.opens], ["free", "attach", "main"]);
+  write(card, JSON.stringify(found));
   write(path.join(machine, "run", "off"), "");
   assert.deepEqual(await discover(), { verdict: "free", use: "own", opens: "main", runs: "gone", box: null, own: null });
   write(path.join(machine, "updates", "rehome", "journal.json"), '{"v":1,"step":"staging"}');
   assert.deepEqual(await discover(), { verdict: "moving", use: "wait", opens: "main", runs: null, box: null, own: null });
+  assert.deepEqual(fs.readdirSync(app).sort(), ["bin", "machines.json"]);
 });
 
 test("local discovery keeps the app's own installation across older and current layouts", async t => {
@@ -181,6 +199,64 @@ test("local discovery recognizes a live keeper and ignores it when startup is re
   fs.unlinkSync(start);
   assert.deepEqual(await read(), { verdict: "free", use: "own", opens: "main", runs: "gone", box: null, own: null });
   assert.equal(keeper.child.exitCode, null);
+});
+
+test("installer status distinguishes a fresh account, a machine, and an interrupted installation", async t => {
+  const binary = boxBinary();
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const args = ["install", "--status", "--root", ".kuvo-code"];
+  const mac = process.platform === "darwin";
+  const legacy = path.join(env.HOME, "Library", "Application Support", "run.kuvo.code.trial713");
+  if (mac) {
+    const app = path.join(root, "Fixture.app");
+    write(path.join(app, "Contents", "Info.plist"),
+      '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>run.kuvo.code.trial713</string></dict></plist>');
+    args.push("--app", app);
+  }
+  const check = async (verdict, verb) => {
+    const reply = boxCommand(binary, root, env, { url: "ws://127.0.0.1:1" }, args, { KUVO_HOME: home }, "pipe");
+    let stdout = "";
+    reply.child.stdout.setEncoding("utf8").on("data", part => { stdout += part; });
+    reply.child.stdin.end();
+    assert.equal((await reply.exited).code, 0, stdout + reply.log());
+    const seen = JSON.parse(stdout);
+    assert.deepEqual([seen.verdict, seen.verb], [verdict, verb]);
+  };
+  await check("fresh", "new");
+  assert.equal(fs.existsSync(home), false);
+  if (mac) {
+    for (const file of ["engine/2.2.6/opencode", "desktop/window.json", "opencode/cache/models.json", ".DS_Store"]) {
+      write(path.join(legacy, file), "");
+    }
+  }
+  write(path.join(home, "updates", "install", "release", "box.json"), "{}");
+  await check("fresh", "new");
+  const launcher = process.platform === "win32" && !binary.typescript ? "kuvo-box.exe" : "kuvo-start";
+  write(path.join(home, "bin", launcher), "");
+  await check(mac ? "fresh" : "machine", mac ? "new" : null);
+  const making = path.join(home, "updates", "install", "making");
+  write(making, "1\n");
+  await check("fresh", "new");
+  const link = path.join(home, "run", "link.json");
+  const saved = JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] });
+  write(link, saved);
+  write(path.join(home, "box", "keys", "fixture"), "test key");
+  await check(mac ? "machine" : "fresh", mac ? null : "new");
+  fs.unlinkSync(making);
+  await check("machine", null);
+  if (mac) {
+    const notes = path.join(legacy, "Chats", "c1", "notes.md");
+    write(notes, "keep the old work");
+    await check("two", null);
+    assert.equal(fs.readFileSync(notes, "utf8"), "keep the old work");
+    fs.rmSync(path.join(legacy, "Chats"), { recursive: true });
+  }
+  write(path.join(home, "run", "off"), "");
+  await check("fresh", "new");
+  assert.equal(fs.readFileSync(link, "utf8"), saved);
 });
 
 function discovery(t) {
