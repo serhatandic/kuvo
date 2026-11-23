@@ -162,10 +162,10 @@ column. The loop declarations cover each cut or outcome described by that loop.
 
 ## Verification
 
-The TypeScript reference passes all four tagged compat cases, the holder
+The TypeScript reference passes all five compat cases, the holder
 transcript, and all four stored-format cases on macOS. The current-beta
-compat fixture on both executables misses the stored-format family
-`Retained work after unlink` added by 2.3. The Rust workspace checked with
+fixture includes the retained-work stamps made by the 2.3 unlink writer.
+The Rust workspace checked with
 tests after `scripts/build-built.sh` generated the wire vectors. In the
 machine-move session all six machine scenarios passed on macOS, native Windows,
 WSL2 Ubuntu 24.04, and lokum, including all eight process cuts. The seventh
@@ -190,8 +190,8 @@ The Rust stored-format area passes 4/4. The holder area fails because the
 Rust executable does not yet implement the holder mode (4.1). Rust compat
 passes both tagged Mac app cases and the 0.7.2 machine case (3/5). The beta.1 machine fails on the next live,
 unsigned peer update (7.3). Its original saved peers are already projected
-at startup. Before the fixture inventory changed, the current-beta case
-reached the resident and first failed on `kuvo/projects` (3.2). A direct
+at startup. The current-beta case reaches the resident and first fails on
+`kuvo/projects` (6.3). A direct
 check preserved all 18 durable files listed by that fixture byte for byte
 and got the expected setup and personalities.
 
