@@ -93,7 +93,7 @@ pub enum ComposerEvent {
     /// A new conversation was started on the box (in `folder`, filed under `project`), and what
     /// was written (`written`) and its attached `files` sent to it: what the box said of it, or
     /// why it couldn't go, is for the conversation's own composer.
-    Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Result<Sent, String>, computer: Option<String> },
+    Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Option<Result<Sent, String>>, first: Draft, computer: Option<String> },
     /// Another computer was picked in Runs on (none: this one): where a new one starts is that
     /// computer's to offer.
     RunsOn(Option<String>),
@@ -143,6 +143,7 @@ struct Going {
     files: Vec<PathBuf>,
     quotes: Vec<Quote>,
     shows: bool,
+    carried: std::sync::Arc<std::sync::OnceLock<Vec<File>>>,
 }
 
 /// Why a send didn't go this time: its box said no (it won't take it, however often it's asked),
@@ -234,6 +235,8 @@ pub struct Offer {
 
 pub struct Composer {
     client: BoxClient,
+    delivery_box: Option<kuvo_box::queue::DeliveryBox>,
+    delivery_line: Option<String>,
     /// The window's box, where another computer's is reached from: a new conversation's composer
     /// turns to the box of the computer picked in Runs on (`client`), and back.
     home: BoxClient,
@@ -404,7 +407,7 @@ impl Composer {
                     this.list_at = 0;
                     this.read_mentions(cx);
                     // (Its computer not answering is said until it does, whatever's written.)
-                    if this.note.is_some() && !this.unanswered && this.text(cx) != this.noted {
+                    if this.note.is_some() && !this.unanswered && this.delivery_line.is_none() && this.text(cx) != this.noted {
                         this.note = None;
                     }
                     cx.notify();
@@ -419,6 +422,8 @@ impl Composer {
             item_key: 0,
             home: client.clone(),
             client,
+            delivery_box: None,
+            delivery_line: None,
             runs_on: Vec::new(),
             runs_on_now: 0.0,
             on: None,
@@ -1192,7 +1197,7 @@ impl Composer {
             return;
         }
         self.sending = !session;
-        if !self.unanswered {
+        if !self.unanswered && self.delivery_line.is_none() {
             self.note = None;
         }
         self.list_dismissed = None;
@@ -1223,19 +1228,7 @@ impl Composer {
                 self.sync_answers(cx);
                 let quotes = std::mem::take(&mut self.quotes);
                 self.answers.clear();
-                // It shows in the conversation at once, as you wrote it (one kept for a model that
-                // can't run goes back to the composer, saying why).
-                let shows = typed::plain_answer(&text, draft.refusal.as_deref()).is_none();
-                if !quotes.is_empty() {
-                    draft.capture_quote(&|words| quoting::message(&quotes, words));
-                }
-                if shows {
-                    let words = if quotes.is_empty() { text.clone() } else { quoting::message(&quotes, &text) };
-                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, for_queue: draft.delivery == Delivery::Queue && self.can_queue(), draft: draft.clone(), held: false });
-                    cx.emit(ComposerEvent::Outgoing);
-                }
-                self.to_go.push_back(Going { session: id, draft, text, files, quotes, shows });
-                self.next_to_go(cx);
+                self.queue_draft(id, draft, text, files, quotes, cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
@@ -1253,8 +1246,9 @@ impl Composer {
                         // (Its files read first: one that can't go starts nothing.)
                         draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
                         let started = client.start_session(&place, model.as_ref(), &how).map_err(|error| error.to_string())?;
-                        let sent = client.send_draft(&started.session, &draft, None).map_err(|error| error.to_string());
-                        Ok::<_, String>((started, sent))
+                        let sent = (!client.advertises(kuvo_box::queue::DELIVERY_FEATURE))
+                            .then(|| client.send_draft(&started.session, &draft, None).map_err(|error| error.to_string()));
+                        Ok::<_, String>((started, sent, draft))
                     },
                     move |this, result, cx| {
                         this.sending = false;
@@ -1262,18 +1256,19 @@ impl Composer {
                             // Started: what was written, its attached files, and what the box said
                             // of it go with the conversation; this composer is left empty for the
                             // next one.
-                            Ok((started, sent)) => {
+                            Ok((started, sent, first)) => {
                                 // (The box keeps the mode picked as the next one's to start in.)
                                 this.picked_approval = None;
                                 cx.emit(ComposerEvent::Started {
-                                session: started.session,
-                                folder: started.folder,
-                                project: started.project,
-                                written: text.clone(),
-                                files,
-                                sent,
-                                computer: on,
-                            })
+                                    session: started.session,
+                                    folder: started.folder,
+                                    project: started.project,
+                                    written: text.clone(),
+                                    files,
+                                    sent,
+                                    first,
+                                    computer: on,
+                                })
                             }
                             Err(error) => {
                                 this.attach(files, cx);
@@ -1284,6 +1279,49 @@ impl Composer {
                     },
                 );
             }
+        }
+    }
+
+    pub(crate) fn queue_first(&mut self, session: &str, draft: Draft, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let text = draft.text.clone();
+        self.queue_draft(session.to_owned(), draft, text, files, Vec::new(), cx);
+    }
+
+    fn queue_draft(&mut self, session: String, mut draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, cx: &mut Context<Self>) {
+        // It shows in the conversation at once, as you wrote it (one kept for a model that
+        // can't run goes back to the composer, saying why).
+        let shows = self.delivery_box.is_some() || typed::plain_answer(&text, draft.refusal.as_deref()).is_none();
+        if !quotes.is_empty() {
+            draft.capture_quote(&|words| quoting::message(&quotes, words));
+        }
+        if shows {
+            let words = if quotes.is_empty() { text.clone() } else { quoting::message(&quotes, &text) };
+            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, at_box: AtBox::Unseen, for_queue: draft.delivery == Delivery::Queue && self.can_queue(), draft: draft.clone(), held: false });
+            cx.emit(ComposerEvent::Outgoing);
+        }
+        let carried = std::sync::Arc::new(std::sync::OnceLock::new());
+        if !draft.files.is_empty() {
+            let _ = carried.set(draft.files.clone());
+        }
+        self.to_go.push_back(Going { session, draft, text, files, quotes, shows, carried });
+        self.next_to_go(cx);
+    }
+
+    pub(crate) fn set_delivery_box(&mut self, delivery: Option<kuvo_box::queue::DeliveryBox>) {
+        self.delivery_box = delivery;
+    }
+
+    pub(crate) fn delivery_box(&self) -> Option<&kuvo_box::queue::DeliveryBox> {
+        self.delivery_box.as_ref()
+    }
+
+    pub(crate) fn take_delivery_line(&mut self, line: Option<String>, cx: &mut Context<Self>) {
+        if self.delivery_line != line {
+            self.delivery_line = line;
+            if !self.unanswered && self.note.as_ref().is_none_or(|note| !note.warning) {
+                self.note = self.delivery_line.as_ref().map(|text| Note { text: text.clone().into(), warning: false });
+            }
+            cx.notify();
         }
     }
 
@@ -1306,8 +1344,9 @@ impl Composer {
     /// with Edit; the way to its box not answering, it's asked again under its id, a little later
     /// each time, for as long as it takes (or until it's removed), and the ones after it wait.
     fn go(&mut self, going: Going, cx: &mut Context<Self>) {
-        let Going { session, draft, text, files, quotes, shows } = going.clone();
+        let Going { session, draft, text, files, quotes, shows, carried } = going.clone();
         let client = self.client.clone();
+        let delivery = self.delivery_box.clone();
         let id = draft.id.clone();
         self.on_its_way = Some(id.clone());
         // Its files as its box takes them: where they are, for this computer's; with their bytes,
@@ -1317,10 +1356,18 @@ impl Composer {
         let kept_draft = draft.clone();
         let work = move || {
             let mut draft = draft;
-            draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted)).map_err(NotNow::Refused)?;
+            if carried.get().is_none() {
+                let files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted)).map_err(NotNow::Refused)?;
+                let _ = carried.set(files);
+            }
+            draft.files = carried.get().cloned().unwrap_or_default();
             let quote = |words: &str| quoting::message(&quotes, words);
             let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
-            client.send_draft(&session, &draft, quote).map_err(|error| match &error {
+            let sent = match &delivery {
+                Some(boxed) => boxed.send(&session, &draft, quote),
+                None => client.send_draft(&session, &draft, quote),
+            };
+            sent.map_err(|error| match &error {
                 // (Its box said no, in its words: asking again gives the same answer.)
                 kuvo_box::Error::Refused(refusal) if (400..500).contains(&refusal.status) && !matches!(refusal.status, 408 | 425 | 429) && !refusal.older_box => NotNow::Refused(error.to_string()),
                 kuvo_box::Error::NotFound => NotNow::Refused(error.to_string()),
@@ -1394,7 +1441,7 @@ impl Composer {
 
     /// The one quiet line while its computer isn't answering.
     fn unanswered_words(&self) -> String {
-        let name = self.client.describe();
+        let name = self.delivery_box.as_ref().map_or(&self.client, |delivery| &delivery.client).describe();
         let name = if name == "this Mac" { "This Mac".to_owned() } else { name };
         format!("{name} isn’t answering · your messages will go when it’s back")
     }
@@ -1430,7 +1477,7 @@ impl Composer {
     fn answered(&mut self, cx: &mut Context<Self>) {
         self.again_in = RETRY_FIRST;
         if std::mem::take(&mut self.unanswered) {
-            self.note = None;
+            self.note = self.delivery_line.as_ref().map(|text| Note { text: text.clone().into(), warning: false });
         }
         let mut changed = false;
         for outgoing in &mut self.outgoing {
@@ -1458,7 +1505,21 @@ impl Composer {
 
     /// Follow the durable receipt while the composer is showing this outgoing draft.
     fn watch_draft_receipt(&mut self, id: String, operation: String, cx: &mut Context<Self>) {
-        let client = self.client.clone();
+        if self.live && let Some(delivery) = self.delivery_box.as_ref() {
+            let follow = delivery.follow_receipt(&operation);
+            let updates = follow.updates().clone();
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                let _follow = follow;
+                while let Ok(told) = updates.recv().await {
+                    let kuvo_box::follow::Followed::Now(receipt) = told else { continue };
+                    if receipt.status == DraftReceiptStatus::Pending { continue; }
+                    this.update(cx, |this, cx| this.take_delivery_receipt(&id, receipt, cx)).ok();
+                    break;
+                }
+            }));
+            return;
+        }
+        let client = self.delivery_box.as_ref().map_or(&self.client, |delivery| &delivery.client).clone();
         self.tasks.push(cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
             let mut wait = RETRY_FIRST;
@@ -1490,6 +1551,17 @@ impl Composer {
                 break;
             }
         }));
+    }
+
+    fn take_delivery_receipt(&mut self, id: &str, receipt: kuvo_box::client::DraftReceipt, cx: &mut Context<Self>) {
+        self.mark(id, |outgoing| {
+            outgoing.taken = receipt.status == DraftReceiptStatus::Committed;
+            outgoing.owner_receipt = None;
+            if receipt.status == DraftReceiptStatus::Interrupted {
+                outgoing.failed = receipt.message;
+            }
+        }, cx);
+        cx.notify();
     }
 
     /// Whether a message is on its way now (another waits until it's gone).
@@ -1574,7 +1646,7 @@ impl Composer {
         if self.on_its_way.as_deref() == Some(id) && self.outgoing.iter().all(|outgoing| outgoing.id != id) {
             // (Waiting to be asked again: not asked. One that reached its box meanwhile its box
             // takes once, as it would any.)
-            self.client.take_back(&[id.to_owned()]);
+            self.delivery_box.as_ref().map_or(&self.client, |delivery| &delivery.client).take_back(&[id.to_owned()]);
             self.on_its_way = None;
             self.next_to_go(cx);
         }
@@ -1704,7 +1776,7 @@ impl Composer {
         self.item_keys.clear();
         self.item_key = 0;
         self.attached.clear();
-        if !self.unanswered {
+        if !self.unanswered && self.delivery_line.is_none() {
             self.note = None;
         }
         cx.notify();

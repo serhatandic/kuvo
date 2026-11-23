@@ -61,6 +61,8 @@ fn another_computers_sessions_show_under_its_project_and_open_through_that_compu
     let devbox = stand_in.peer_box("key_devbox").unwrap();
     let (workspace, cx) = open(cx, stand_in.clone());
     assert_eq!(under(&workspace, BILLING, cx), ["ses_releases", "ses_invoices"]);
+    assert_eq!(stand_in.seen_at("GET", "kuvo/setup/sessions/list/events").len(), 1);
+    assert!(stand_in.seen_at("GET", "kuvo/sessions/list").is_empty());
     assert!(bounds(cx, "project-Billing").is_some(), "its project is named as on its computer");
 
     let before = stand_in.seen().len();

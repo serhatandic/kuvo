@@ -287,7 +287,7 @@ impl ConversationView {
             let updates = asks.updates().clone();
             view._asks_follow = Some(asks);
             // What waits its turn, now and as it changes.
-            let queue = client.follow_queue(&session);
+            let queue = view.composer.read(cx).delivery_box().map_or_else(|| client.follow_queue(&session), |delivery| delivery.follow_queue(&session));
             let queued = queue.updates().clone();
             view._queue_follow = Some(queue);
             view.tasks.push(cx.spawn(async move |this, cx| {
@@ -700,7 +700,11 @@ impl ConversationView {
         let waiting: HashSet<&str> = self.queued().iter().map(|item| item.id.as_str()).collect();
         // Yours from here it lists are drawn as its rows say; one it listed and no longer does was
         // handed to the agent, and stays drawn until the conversation has it.
-        self.composer.update(cx, |composer, cx| composer.queue_has(|id| waiting.contains(id), cx));
+        let line = self.queue.delivery_line.clone();
+        self.composer.update(cx, |composer, cx| {
+            composer.queue_has(|id| waiting.contains(id), cx);
+            composer.take_delivery_line(line, cx);
+        });
         self.show_outgoing(cx);
     }
 
@@ -817,10 +821,18 @@ impl ConversationView {
         let arriving = self.pending_queued(cx).iter().any(|outgoing| outgoing.id == item);
         let (client, session) = (self.client.clone(), self.session.clone());
         let composer = self.composer.clone();
+        let delivery = composer.read(cx).delivery_box().cloned();
         cx.spawn(async move |this, cx| {
             let result = loop {
                 let (reader, session_id, item_id, receipt) = (client.clone(), session.clone(), item.clone(), pending.receipt().map(str::to_owned));
-                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref(), arriving) }).await;
+                let delivery = delivery.clone();
+                let result = cx.background_executor().spawn(async move {
+                    if let Some(delivery) = delivery {
+                        let outcome = delivery.remove(&session_id, &item_id, receipt.as_deref());
+                        if !outcome.as_ref().is_err_and(|error| error.status() == Some(404)) { return outcome; }
+                    }
+                    reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref(), arriving)
+                }).await;
                 let Err(error) = &result else { break result };
                 if pending.receipt().is_none() || !kuvo_box::queue::removal_retryable(error) { break result }
                 let _ = this.update(cx, |this, cx| {
@@ -840,7 +852,14 @@ impl ConversationView {
                 if let Some(receipt) = removed.as_ref().and_then(|removed| removed.receipt.clone()) {
                     loop {
                         let (ack, session, item_id, token) = (client.clone(), session.clone(), item.clone(), receipt.clone());
-                        let acked = cx.background_executor().spawn(async move { ack.acknowledge_queued_removal(&session, &item_id, &token) }).await;
+                        let delivery = delivery.clone();
+                        let acked = cx.background_executor().spawn(async move {
+                            if let Some(delivery) = delivery {
+                                let outcome = delivery.acknowledge_removal(&session, &item_id, &token);
+                                if !outcome.as_ref().is_err_and(|error| error.status() == Some(404)) { return outcome; }
+                            }
+                            ack.acknowledge_queued_removal(&session, &item_id, &token)
+                        }).await;
                         match acked {
                             Ok(()) => {
                                 pending.finish();
@@ -867,7 +886,7 @@ impl ConversationView {
                 }
                 // (Read again at once where nothing follows it: tests and shots.)
                 if !this.live
-                    && let Ok(queue) = this.client.queue(&this.session)
+                    && let Ok(queue) = this.composer.read(cx).delivery_box().map_or_else(|| this.client.queue(&this.session), |delivery| delivery.queue(&this.session))
                 {
                     this.take_queue(queue, cx);
                 }
@@ -880,13 +899,27 @@ impl ConversationView {
     /// Steer: a queued message to the agent at its next step, its run going on.
     pub fn steer_queued(&mut self, item: String, cx: &mut Context<Self>) {
         let (client, session) = (self.client.clone(), self.session.clone());
-        self.queue_change(move || client.steer_queued(&session, &item), "It couldn’t be steered in", cx);
+        let delivery = self.composer.read(cx).delivery_box().cloned();
+        self.queue_change(move || {
+            if let Some(delivery) = delivery {
+                let outcome = delivery.change(&session, &item, false);
+                if !outcome.as_ref().is_err_and(|error| error.status() == Some(404)) { return outcome; }
+            }
+            client.steer_queued(&session, &item)
+        }, "It couldn’t be steered in", cx);
     }
 
     /// Send Now: a waiting message to the agent right away, the step under way stopped for it.
     pub fn send_queued_now(&mut self, item: String, cx: &mut Context<Self>) {
         let (client, session) = (self.client.clone(), self.session.clone());
-        self.queue_change(move || client.send_queued_now(&session, &item), "It couldn’t be sent now", cx);
+        let delivery = self.composer.read(cx).delivery_box().cloned();
+        self.queue_change(move || {
+            if let Some(delivery) = delivery {
+                let outcome = delivery.change(&session, &item, true);
+                if !outcome.as_ref().is_err_and(|error| error.status() == Some(404)) { return outcome; }
+            }
+            client.send_queued_now(&session, &item)
+        }, "It couldn’t be sent now", cx);
     }
 
     /// Resume: the queue held by a Stop goes on, its next message now.
@@ -973,7 +1006,7 @@ impl ConversationView {
             this.update(cx, |this, cx| {
                 // (Read again at once where nothing follows it: tests and shots.)
                 if !this.live
-                    && let Ok(queue) = this.client.queue(&this.session)
+                    && let Ok(queue) = this.composer.read(cx).delivery_box().map_or_else(|| this.client.queue(&this.session), |delivery| delivery.queue(&this.session))
                 {
                     this.take_queue(queue, cx);
                 }

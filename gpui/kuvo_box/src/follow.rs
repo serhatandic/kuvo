@@ -384,22 +384,13 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
     // The list as last taken, and whether the next good line is handed on even if unchanged.
     let listing = Arc::new(Mutex::new((Listing::new(), true)));
     let start_required = client.advertised(sessions::LIST_START);
-    // Your other computers' sessions, as the setup's list says them (`line.setup-lists`), on the
-    // same line. A box before it has only its own: nothing else is asked of it.
-    let setup = client.advertised(sessions::SETUP_LISTS).then(|| {
-        let (listing, theirs) = (listing.clone(), latest.clone());
-        client.line().watch(sessions::SETUP_SESSIONS_ROUTE.into(), move |said| {
-            let Said::Data(value) = said else { return };
-            let Ok(setup) = serde_json::from_value::<sessions::SetupSessions>(value) else { return };
-            let mut now = listing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            // (Handed on once this computer's own list is in: never a list of only the others.)
-            if now.0.take_setup(setup) && now.0.is_read() {
-                theirs.put(ListUpdate::Listing(now.0.clone()));
-            }
-        })
-    });
+    let route = if client.advertised(sessions::MERGED_SESSIONS) {
+        sessions::MERGED_SESSIONS_ROUTE.into()
+    } else {
+        sessions::events_route(None)
+    };
     let theirs = latest.clone();
-    let watch = client.line().watch(sessions::events_route(None), move |said| {
+    let watch = client.line().watch(route, move |said| {
         let mut now = listing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match said {
             Said::Data(value) => match serde_json::from_value::<Line>(value)
@@ -426,9 +417,6 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
         }
     });
     stop.keep(watch);
-    if let Some(setup) = setup {
-        stop.keep(setup);
-    }
     while !stop.wait(Duration::from_secs(3600)) {}
 }
 

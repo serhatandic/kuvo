@@ -332,10 +332,17 @@ pub struct RunsOn {
     pub computers: Vec<RunsOnComputer>,
 }
 
+/// A computer, by its key and name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NamedComputer {
+    pub id: String,
+    pub name: String,
+}
+
 /// One computer Runs on lists.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RunsOnComputer {
-    pub computer: crate::sessions::RowComputer,
+    pub computer: NamedComputer,
     /// The box that said it: this computer.
     #[serde(default)]
     pub here: bool,

@@ -35,6 +35,43 @@ export function readRecord<T extends object>(family: Family, key: string): T | u
   }
 }
 
+export async function recordsAsync(family: Family): Promise<string[]> {
+  if (!ready(family)) return [];
+  try { return (await fs.promises.readdir(path.join(root, family))).filter(name => /^[A-Za-z0-9_-]{43}\.json$/.test(name)).map(name => name.slice(0, -5)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return [];
+  }
+}
+
+const activeOutbox = new Map<string, { stamp: number; size: number; inode: number; record: object }>();
+export function pruneActiveOutbox(keys: ReadonlySet<string>) {
+  for (const key of activeOutbox.keys()) if (!keys.has(key)) activeOutbox.delete(key);
+}
+
+/** Queue follows, sends and retries share the active records without rereading their attachments. */
+export async function readRecordAsync<T extends object>(family: Family, key: string): Promise<T | undefined> {
+  if (!ready(family)) return undefined;
+  const file = path.join(root, family, key + ".json");
+  try {
+    const cached = family === "outbox" ? activeOutbox.get(key) : undefined;
+    const info = family === "outbox" ? await fs.promises.stat(file) : undefined;
+    if (cached && info && cached.stamp === info.mtimeMs && cached.size === info.size && cached.inode === info.ino)
+      return cached.record as T;
+    const record = ownedRecordFormat.read(JSON.parse(await fs.promises.readFile(file, "utf8"))) as T;
+    if (info) {
+      if (("queuedDelivery" in record) && info.size <= 256 * 1024 && activeOutbox.size < 256)
+        activeOutbox.set(key, { stamp: info.mtimeMs, size: info.size, inode: info.ino, record });
+      else activeOutbox.delete(key);
+    }
+    return record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (family === "outbox") activeOutbox.delete(key);
+    return undefined;
+  }
+}
+
 export function keepRecord(family: Family, key: string, value: object, index = true): void {
   if (!ready(family)) throw new Error("Wait for Kuvo Code to finish updating.");
   const write = () => writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(ownedRecordFormat.write(value)), K);

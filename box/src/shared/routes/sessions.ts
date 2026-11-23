@@ -90,7 +90,7 @@ export const QUEUE_ITEM = object({
 
 /** A session's queue with every message waiting, in the order clients show them (`items`: null
  * while the place it runs can't be read). */
-export const QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
+export const QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "deliveryLine?": string, items: nullable(list(QUEUE_ITEM)) });
 /** A session's queue as `GET …/queue` answers it: `items` only when asked (`?items=1`). */
 export const QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM)) });
 
@@ -273,8 +273,13 @@ export const SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subag
  * subagents' sessions, those at work or waiting on you first, then newest first; `messages`: how a
  * subagent takes your messages (`direct`, through its `parent` that passes them on, or `none`, with
  * `note` saying why). Each flag left out where it isn't. */
+const REMOTE_LIST_COMPUTER = object({
+  ...LIST_COMPUTER.object, away: bool, "lastSeen?": number, "updating?": bool, actions: list(words("open", "manage")),
+});
+
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
+  "computer?": LIST_COMPUTER, "on?": REMOTE_LIST_COMPUTER,
   "project?": string,
   directory: string,
   "title?": string,
@@ -310,7 +315,7 @@ export const SHOW_MORE = object({ cursor: string, count: number });
  * them (`shown`: pinned, then those at work or waiting on you, then the newest), how many it lists
  * in all (`total`), and what "Show more" adds (`more`, none once all show). None of the last three
  * from a box before them. */
-export const LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number, "shown?": list(string), "total?": number, "more?": SHOW_MORE });
+export const LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number, "computer?": LIST_COMPUTER, "on?": REMOTE_LIST_COMPUTER, "shown?": list(string), "total?": number, "more?": SHOW_MORE });
 
 /** A project's list as far as a cursor shows it (`kuvo/sessions/page?project=&cursor=`): its
  * sessions' ids in its order, how many it lists in all, and what "Show more" adds next. */
@@ -437,6 +442,15 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/peer-session/:computer/:session/asks/events", feature: "line.peer-conversation", answers: { 200: SESSION_ASKS, 403: REFUSED, 404: oneOf(REFUSED, SESSION_ASKS), 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/queue", feature: "line.peer-conversation", answers: { 200: QUEUE_READ, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/peer-session/:computer/:session/queue/events", feature: "line.peer-conversation", answers: { 200: QUEUE_SHOWN, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/data/messages/:operation/events", feature: "typed.delivery", answers: { 200: any, 404: REFUSED, 405: REFUSED } },
+  { route: "POST kuvo/sessions/:id/delivery", feature: "typed.delivery", answers: { 200: any, 202: any, 400: REFUSED, 403: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:id/delivery", feature: "typed.delivery", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 403: REFUSED, 404: REFUSED } },
+  { route: "GET kuvo/sessions/:id/delivery/events", feature: "typed.delivery", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 403: REFUSED, 404: REFUSED } },
+  { route: "DELETE kuvo/sessions/:id/delivery/:message", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  { route: "POST kuvo/sessions/:id/delivery/:message/steer", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  { route: "POST kuvo/sessions/:id/delivery/:message/ack", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED } },
+  { route: "POST kuvo/sessions/:id/delivery/:message/now", feature: "typed.delivery", answers: { 200: any, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
+  { route: "GET kuvo/setup/sessions/list/events", feature: "line.merged-sessions", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/setup/sessions/events", feature: "line.setup-lists", answers: { 200: SETUP_SESSIONS, 405: REFUSED } },
   { route: "GET kuvo/setup/waiting/events", feature: "line.setup-lists", answers: { 200: SETUP_WAITING, 405: REFUSED } },
   { route: "GET kuvo/setup/queues/events", feature: "line.setup-lists", answers: { 200: SETUP_QUEUES, 405: REFUSED } },

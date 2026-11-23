@@ -12,17 +12,22 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.setup-lists", "line.peer-conversation", "data.queued-device-authority"];
+const features = ["bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
   sessions: "kuvo/setup/sessions/events",
+  listing: "kuvo/setup/sessions/list/events",
   waiting: "kuvo/setup/waiting/events",
   queues: "kuvo/setup/queues/events",
   runs: "kuvo/setup/runs-on/events",
 };
 
-function pair(codingAgents = false) {
+const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "cursor"] as const;
+const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
+const codingSession = (agent: string) => `ses_fixture${agent}`;
+
+function pair(codingAgents = false, bridgeDelivery = false) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
   const boxes = ["near", "far"].map((name, i) => {
@@ -39,6 +44,7 @@ function pair(codingAgents = false) {
     const permissions: Record<string, unknown>[] = [];
     const opened = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
     const prompt = Promise.withResolvers<{ session: string; body: unknown }>();
+    const prompts: { session: string; body: unknown }[] = [];
     const engine = Bun.serve({
       hostname: "127.0.0.1", port: 0, async fetch(request) {
         const route = new URL(request.url).pathname;
@@ -56,7 +62,9 @@ function pair(codingAgents = false) {
           },
         }), { headers: { "content-type": "text/event-stream" } });
         if (route.endsWith("/prompt") && request.method === "POST") {
-          prompt.resolve({ session: route.split("/")[3]!, body: await request.json() });
+          const sent = { session: route.split("/")[3]!, body: await request.json() };
+          prompts.push(sent);
+          prompt.resolve(sent);
           return data({});
         }
         if (route.endsWith("/message")) return data([]);
@@ -72,17 +80,34 @@ function pair(codingAgents = false) {
         return Response.json({}, { status: 404 });
       },
     });
-    const codingModel = { providerID: "codex-cli", id: "test-codex", name: "Test Codex" };
+    const models = (bridgeDelivery ? agentProviders : ["codex-cli"]).map(providerID => ({
+      providerID, id: `test-${providerID.replace(/-cli$/, "")}`, name: providerID === "codex-cli" ? "Test Codex" : providerID,
+    }));
+    const bridgeCases = Object.fromEntries(bridgeDelivery ? agentNames.map((agent, index) => [
+      codingSession(agent), { id: codingSession(agent), title: `Session on ${agent}`, time, directory: project, model: models[index] },
+    ]) : []);
+    const bridgePrompts: { session: string; body: unknown }[] = [];
     const bridge = i === 1 && codingAgents ? Bun.serve({
-      hostname: "127.0.0.1", port: 0, fetch(request) {
+      hostname: "127.0.0.1", port: 0, async fetch(request) {
         const route = new URL(request.url).pathname;
-        if (route === "/api/model") return Response.json({ data: { models: [codingModel] } });
-        if (route === "/api/integration") return Response.json({ data: [{
-          id: codingModel.providerID, name: "Codex", connections: [{}],
-          metadata: { source: "agent", agent: "codex", accountID: "default", modelsComplete: true },
-        }] });
-        if (route === "/api/kuvo/auto") return Response.json({ data: { lists: [] } });
-        return Response.json({ data: [] });
+        const data = (value: unknown) => Response.json({ data: value });
+        if (route === "/api/model") return data({ models });
+        if (route === "/api/integration") return data(models.map((model, index) => ({
+          id: model.providerID, name: model.providerID === "codex-cli" ? "Codex" : model.providerID, connections: [{}],
+          metadata: { source: "agent", agent: bridgeDelivery ? agentNames[index] : "codex", accountID: "default", modelsComplete: true },
+        })));
+        if (route === "/api/kuvo/auto") return data({ lists: [] });
+        if (route === "/api/session") return data(Object.values(bridgeCases));
+        if (route.endsWith("/prompt") && request.method === "POST") {
+          bridgePrompts.push({ session: route.split("/")[3]!, body: await request.json() });
+          return data({});
+        }
+        if (route === "/api/session/active" || route.endsWith("/inbox") || route.endsWith("/message")) return data([]);
+        if (route.startsWith("/api/session/")) {
+          const session = bridgeCases[route.split("/")[3]!];
+          return session ? data(session) : Response.json({}, { status: 404 });
+        }
+        return data([]);
       },
     }) : null;
     mkdirSync(project, { recursive: true });
@@ -103,10 +128,10 @@ function pair(codingAgents = false) {
     const read = async (path: string) => run({ kind: "route", path });
     const linked = (ipc: (message: any) => void) => Bun.spawn([process.execPath, worker, "kuvo-agents"], {
       env: { ...process.env, KUVO_HOME: home, HOME: root, TMPDIR: root },
-      stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port })),
+      stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port, bridgePort: bridge?.port })),
       stdout: "ignore", stderr: "inherit", ipc,
     });
-    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, bridge, linked, opened, prompt, permissions };
+    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
   });
   const setup = "setup_" + "a".repeat(32);
   for (const box of boxes) {
@@ -170,6 +195,11 @@ test("one line lists both computers' sessions and offers each computer's own mod
     await share(near, far);
 
     const merged = await line(near);
+    const farProject = far.computer.id + ":" + template.directory;
+    expect(Object.keys(merged.listing.sessions).sort()).toEqual([near.session, far.session, ...more].sort());
+    expect(merged.listing.sessions[near.session].computer).toEqual(near.computer);
+    expect(merged.listing.sessions[far.session]).toMatchObject({ computer: far.computer, on: { ...far.computer, actions: ["open", "manage"] }, project: farProject });
+    expect(merged.listing.projects[farProject]).toMatchObject({ name: "project", computer: far.computer });
     const rows = merged.sessions.sessions;
     expect(rows).toHaveLength(2 + more.length);
     expect(rows.filter((row: any) => row.computer.id === far.computer.id).map((row: any) => row.id).sort())
@@ -273,6 +303,28 @@ test("an empty session starts on the computer chosen in Runs on over addressed S
   } finally { setup.close(); }
 }, 30_000);
 
+test("the nearest box serves a remote bot’s own activity on its bots line", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  const bot = "bot_far";
+  const folder = path.join(far.home, "bots", bot);
+  try {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Remote bot" }));
+    writeFileSync(path.join(folder, "session"), far.session);
+    const directory = path.join(near.home, "run", "peer-agents.json");
+    writeFileSync(directory, JSON.stringify({ [far.peer.key]: { features, at: 100, list: [
+      { kind: "bot", id: bot, name: "Remote bot", session: far.session },
+    ] } }));
+    await share(far, near, far.session);
+    const botTopic = Buffer.from(JSON.stringify({ bots: "kuvo/bots/events" })).toString("base64url");
+    const bots = await near.read(`kuvo/line?once=1&watch=${botTopic}`);
+    const state = bots.text.trim().split("\n").map(JSON.parse as (line: string) => any).find(row => row.t === "bots");
+    expect(state.d.elsewhere).toEqual([expect.objectContaining({ id: bot, session: far.session, box: far.computer.id,
+      now: expect.objectContaining({ state: "needsYou", asking: 1 }) })]);
+  } finally { setup.close(); }
+}, 30_000);
+
 test("the nearest box opens another computer’s bot chat, follows its turn and sends to its owner", async () => {
   const setup = pair();
   const { near, far } = setup;
@@ -331,6 +383,143 @@ test("the nearest box opens another computer’s bot chat, follows its turn and 
     expect(accepted.status).toBe(202);
     expect(JSON.parse(accepted.text)).toMatchObject({ status: "pending", owner: far.computer.id });
     expect(await far.prompt.promise).toMatchObject({ session: far.session, body: { id, text: expect.stringContaining("Send to the remote bot") } });
+  } finally {
+    a?.kill();
+    b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 40_000);
+
+test("five drafts wait two minutes for their computer and go once in order when it is back", async () => {
+  const setup = pair(true, true);
+  const { near, far } = setup;
+  const replies = new Map<string, ReturnType<typeof Promise.withResolvers<any>>>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  const readyA = Promise.withResolvers<void>(), readyB = Promise.withResolvers<void>();
+  let away = true;
+  let dropped = 0;
+  let dropReply = false;
+  const lostReceipt = Promise.withResolvers<void>();
+  const failed = Promise.withResolvers<never>();
+  // Each IPC request races the harness’s explicit error, so broken dispatch fails immediately.
+  void failed.promise.catch(() => {});
+  try {
+    await share(far, near);
+    const nearMessages = (ready: ReturnType<typeof Promise.withResolvers<void>>) => (message: any) => {
+      if (message.failure) failed.reject(new Error(message.failure));
+      if (message.ready) ready.resolve();
+      if (message.frame) {
+        if (away) dropped++;
+        else b!.send({ frame: message.frame });
+      }
+      if (message.replyTo) replies.get(message.replyTo)?.resolve(message.routeAnswer);
+    };
+    a = near.linked(nearMessages(readyA));
+    const farMessages = (ready: ReturnType<typeof Promise.withResolvers<void>>) => (message: any) => {
+      if (message.ready) ready.resolve();
+      if (message.failure) failed.reject(new Error(message.failure));
+      if (message.frame && dropReply) {
+        dropReply = false;
+        lostReceipt.resolve();
+      } else if (message.frame) a!.send({ frame: message.frame });
+    };
+    b = far.linked(farMessages(readyB));
+    await Promise.all([readyA.promise, readyB.promise]);
+    let request = 0;
+    const ask = async (command: object) => {
+      const replyTo = String(++request);
+      const reply = Promise.withResolvers<any>();
+      replies.set(replyTo, reply);
+      a!.send({ ...command, replyTo });
+      try { return await Promise.race([reply.promise, failed.promise]); }
+      finally { replies.delete(replyTo); }
+    };
+    const route = `kuvo/sessions/${far.session}/delivery?computer=${far.computer.id}`;
+    const clock = 1_791_000_000_000;
+    const receipts = [];
+    for (let n = 1; n <= 5; n++) {
+      const draft = { id: `msg_wait${n}`, text: `Message ${n}`, message: { delivery: "queue" } };
+      const accepted = await ask({ call: { path: route, body: draft } });
+      expect(accepted.status).toBe(202);
+      receipts.push(JSON.parse(accepted.text).operation);
+      expect(await ask({ call: { path: route, body: draft } })).toEqual(accepted);
+    }
+    const draft = { id: "msg_drop", text: "Remove this draft", message: { delivery: "queue" } };
+    expect((await ask({ call: { path: route, body: draft } })).status).toBe(202);
+    const base = route.split("?")[0];
+    const selected = `${base}/msg_drop?computer=${far.computer.id}&receipt=edit-fixture`;
+    const removal = await ask({ call: { method: "DELETE", path: selected } });
+    expect(removal.status).toBe(200);
+    expect(JSON.parse(removal.text).removed).toEqual({ id: draft.id, draft: draft.text, words: draft.text, files: [], receipt: "edit-fixture" });
+    expect(await ask({ call: { method: "DELETE", path: selected } })).toEqual(removal);
+    expect((await ask({ call: { path: `${base}/msg_drop/ack?computer=${far.computer.id}&receipt=edit-fixture`, body: {} } })).status).toBe(200);
+    expect((await ask({ call: { path: route, body: draft } })).status).toBe(409);
+    expect((await ask({ call: { path: `${base}/msg_wait3/steer?computer=${far.computer.id}`, body: {} } })).status).toBe(200);
+
+    for (let elapsed = 0; elapsed < 60_000; elapsed += 5_000) await ask({ round: clock + elapsed });
+    a.kill();
+    await a.exited;
+    const restarted = Promise.withResolvers<void>();
+    a = near.linked(nearMessages(restarted));
+    await restarted.promise;
+    const waiting = await ask({ call: { path: route } });
+    expect(JSON.parse(waiting.text).items.map((item: any) => item.id)).toEqual(Array.from({ length: 5 }, (_, i) => `msg_wait${i + 1}`));
+    for (let elapsed = 60_000; elapsed < 120_000; elapsed += 5_000) await ask({ round: clock + elapsed });
+    expect(dropped).toBe(24);
+    expect(far.prompts).toEqual([]);
+    const queueTopic = Buffer.from(JSON.stringify({
+      queue: `${base}/events?computer=${far.computer.id}`,
+    })).toString("base64url");
+    const followed = await ask({ call: { path: `kuvo/line?once=1&watch=${queueTopic}` } });
+    const queueState = followed.text.trim().split("\n").map(JSON.parse as (line: string) => any).find((row: any) => row.t === "queue");
+    expect(queueState.d.items.map((item: any) => item.id))
+      .toEqual(Array.from({ length: 5 }, (_, i) => `msg_wait${i + 1}`));
+    away = false;
+    dropReply = true;
+    await ask({ round: clock + 120_000 });
+    await Promise.race([lostReceipt.promise, failed.promise]);
+    expect(far.prompts).toHaveLength(1);
+    // The owner also restarts after accepting the first draft, before it hears the retry.
+    b.kill();
+    await b.exited;
+    const ownerBack = Promise.withResolvers<void>();
+    b = far.linked(farMessages(ownerBack));
+    await ownerBack.promise;
+    for (const [i, operation] of receipts.entries()) {
+      const receipt = await ask({ round: clock + 125_000 + i * 5_000, receipt: operation });
+      expect(receipt).toMatchObject({ operation, status: "committed", owner: far.computer.id });
+    }
+    await ask({ round: clock + 150_000 });
+    expect(far.prompts.map(({ session, body }: any) => [session, body.id, body.text.trim(), body.delivery]))
+      .toEqual(Array.from({ length: 5 }, (_, i) => [far.session, `msg_wait${i + 1}`, `Message ${i + 1}`, i === 2 ? "steer" : "queue"]));
+
+    // The owner picks its native adapter box-side. All five coding agents use the bridge API,
+    // while the five prompts above prove the same path through the engine.
+    for (const [i, agent] of agentNames.entries()) {
+      const session = codingSession(agent);
+      const id = `msg_agent${i}`;
+      const accepted = await ask({ call: {
+        path: `kuvo/sessions/${session}/delivery?computer=${far.computer.id}`, body: { id, text: agent, message: { delivery: "steer" } },
+      } });
+      expect(accepted.status).toBe(202);
+      const { operation } = JSON.parse(accepted.text);
+      expect(await ask({ round: clock + 160_000 + i * 5_000, receipt: operation }))
+        .toMatchObject({ operation, status: "committed", owner: far.computer.id });
+    }
+    expect(far.bridgePrompts.map(({ session, body }: any) => [session, body.id, body.text.trim()]))
+      .toEqual(agentNames.map((agent, i) => [codingSession(agent), `msg_agent${i}`, agent]));
+    expect(far.prompts).toHaveLength(5);
+
+    const local = await ask({ call: {
+      path: `kuvo/sessions/${near.session}/delivery`, body: { id: "msg_local", text: "Keep this here", message: { delivery: "queue" } },
+    } });
+    expect(local.status).toBe(202);
+    await ask({ round: clock + 190_000 });
+    expect(await Promise.race([near.prompt.promise, failed.promise])).toMatchObject({
+      session: near.session, body: { id: "msg_local", text: expect.stringContaining("Keep this here") },
+    });
   } finally {
     a?.kill();
     b?.kill();

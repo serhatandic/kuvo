@@ -798,10 +798,6 @@ impl ComputersView {
                 }
             }
         }
-        // Its settings, kept on it: under Computers › it, not in Settings (your own there).
-        items.push(Item::Group("Settings".into()));
-        let key = if computer.here { String::new() } else { computer.key.clone() };
-        items.push(Item::Settings { place: crate::settings::box_key(&key, "computer") });
         items.push(Item::Group("About".into()));
         // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
         // reached, says little, and a row of "Not said yet" tells you nothing.)
@@ -882,6 +878,10 @@ impl ComputersView {
                 items.push(Item::Note { key: if ix == 0 { "manage-why".into() } else { format!("manage-why-{ix}") }, words: why, busy: false });
             }
         }
+        // Its settings, kept on it: under Computers › it, not in Settings (your own there).
+        items.push(Item::Group("Settings".into()));
+        let key = if computer.here { String::new() } else { computer.key.clone() };
+        items.push(Item::Settings { place: crate::settings::box_key(&key, "computer") });
         items.push(Item::End);
         items
     }

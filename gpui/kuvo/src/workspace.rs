@@ -699,15 +699,15 @@ impl Workspace {
     /// The session list, read once (shots and tests, against a stand-in).
     #[cfg(feature = "stand-in")]
     fn read_list_at_once(&self) -> ListUpdate {
-        match self.client.session_list(None) {
+        let line = if self.client.advertises(kuvo_box::sessions::MERGED_SESSIONS) {
+            self.client.merged_sessions_at_once()
+        } else {
+            self.client.session_list(None)
+        };
+        match line {
             Ok(line) => {
                 let mut listing = Listing::new();
                 listing.take(line);
-                if self.client.advertises(kuvo_box::sessions::SETUP_LISTS)
-                    && let Ok(setup) = self.client.setup_sessions_at_once()
-                {
-                    listing.take_setup(setup);
-                }
                 ListUpdate::Listing(listing)
             }
             Err(kuvo_box::Error::NeedsUpdating { missing }) => ListUpdate::Held { missing },
@@ -766,7 +766,7 @@ impl Workspace {
                 Err(error) => kuvo_box::ConversationUpdate::Failed(error),
             };
             let asks = client.asks(session).unwrap_or_default();
-            let queue = client.queue(session).unwrap_or_default();
+            let queue = view.read(cx).composer().read(cx).delivery_box().map_or_else(|| client.queue(session), |delivery| delivery.queue(session)).unwrap_or_default();
             view.update(cx, |view, cx| {
                 view.take(update, cx);
                 view.take_asks(asks, cx);
@@ -1986,7 +1986,8 @@ impl Workspace {
         self.record(Nav::BotChat { bot: bot.to_owned() }, cx);
         self.in_bot_chat = true;
         let client = self.bot_client(bot, session, cx);
-        let composer = self.composer_on(session, client, window, cx);
+        let computer = self.elsewhere_bot(bot, cx).map(|there| there.computer_key);
+        let composer = self.composer_on(session, client, computer, window, cx);
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
             let (client, live) = (self.bot_client(bot, session, cx), self.live);
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
@@ -2122,11 +2123,13 @@ impl Workspace {
     /// changed meanwhile), or a new one.
     fn composer_for(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
         let client = self.client_for(session).unwrap_or_else(|| self.client.clone());
-        self.composer_on(session, client, window, cx)
+        let computer = self.listing.computer_of(session).map(|on| on.id.clone());
+        self.composer_on(session, client, computer, window, cx)
     }
 
-    /// A session's composer, sending through `client` (the box of the computer it's on).
-    fn composer_on(&mut self, session: &str, client: BoxClient, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
+    /// A session's composer reads its settings from the owner and sends through this box.
+    fn composer_on(&mut self, session: &str, client: BoxClient, computer: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
+        let delivery = kuvo_box::queue::DeliveryBox::new(self.client.clone(), computer);
         // Its folder, where its project's own settings may add models to what's offered.
         let folder = self.listing.facts(session).map(|facts| facts.directory.clone());
         if let Some((composer, _)) = self.composers.get(session) {
@@ -2146,6 +2149,7 @@ impl Workspace {
         // Not on screen until its conversation opens.
         let asked = self.computer_asked();
         composer.update(cx, |composer, cx| {
+            composer.set_delivery_box(delivery);
             composer.set_shown(false, cx);
             composer.set_computer(asked, cx);
         });
@@ -2268,7 +2272,7 @@ impl Workspace {
 
     fn composer_event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            ComposerEvent::Started { session, project, written, files, sent, computer, .. } => {
+            ComposerEvent::Started { session, project, written, files, sent, first, computer, .. } => {
                 // What the box said of what was written (or why it didn't go) goes to the new
                 // conversation's own composer; the landing one is left empty.
                 self.started.insert(session.clone(), project.clone());
@@ -2276,7 +2280,13 @@ impl Workspace {
                     self.started_on.insert(session.clone(), computer.clone());
                 }
                 let composer = self.composer_for(session, window, cx);
-                composer.update(cx, |composer, cx| composer.take_sent(written, files.clone(), sent.clone(), cx));
+                composer.update(cx, |composer, cx| {
+                    if let Some(sent) = sent {
+                        composer.take_sent(written, files.clone(), sent.clone(), cx);
+                    } else {
+                        composer.queue_first(session, first.clone(), files.clone(), cx);
+                    }
+                });
                 // Opened, unless you've gone to another conversation meanwhile, or started
                 // writing the next one.
                 let writing_next = !self.landing.read(cx).field().read(cx).text().trim().is_empty() || !self.landing.read(cx).attached().is_empty();
@@ -2772,13 +2782,6 @@ impl Workspace {
                 self.fleet_card = FleetCard::default();
             }
             cx.notify();
-        }
-        // Connections can become usable after this workspace received its own list of computers.
-        if let (Some(switching), Some(area)) = (&self.switching, self.area_view(Area::Bots).cloned()) {
-            let peers: Vec<_> = switching.rows.iter()
-                .filter(|row| switching.shown.as_deref().map_or(!row.computer.here, |shown| row.key() != shown))
-                .map(|row| Computer { here: false, ..row.computer.clone() }).collect();
-            area.update(cx, |area, cx| area.follow_remote_bots(&peers, cx));
         }
         // (The box that lists them may have changed with them, `set_lister`: handed on each time.)
         self.sync_offers(cx);

@@ -14,6 +14,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - When this computer's Kuvo needs updating, each area shows its title and one line saying so, with Update Now beside it, instead of a page in the middle. A computer that can't be reached keeps showing what it last had.
 - Your sessions and group chats show as soon as Kuvo starts, as they were last, while it reads them again; they're empty only the very first time.
 - Send is never greyed out and never spins: send as many messages as you like, while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
+- Messages waiting for another computer keep going after you quit the desktop app.
+- Send is never greyed out and never spins: keep sending messages while one is still going or while the computer is away. Each goes once, in order. If the computer isn't answering, one quiet line says so and your messages go by themselves once it's back; there's no Retry to press, and each waiting message can still be edited or removed.
 
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
 - While the agent runs a command or thinks, its steps line is the only spinner: "Working…" shows only between steps.

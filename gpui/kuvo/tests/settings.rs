@@ -274,10 +274,10 @@ fn sections_that_couldnt_be_read_say_so_and_are_asked_for_again(cx: &mut TestApp
     // What the desktop app draws itself still opens.
     click(cx, "setting-accounts");
     assert!(shown(cx, "account-claude-code"));
-    // The box answers again: coming back to Settings reads them.
+    // The box answers again: coming back to its settings reads them.
     stand_in.settings_readable(true);
     click(cx, "rail-sessions");
-    click(cx, "rail-settings");
+    click(cx, "rail-computers");
     assert!(shown(cx, "setting-permissions") && !shown(cx, "settings-sections-problem"));
 }
 
@@ -434,13 +434,16 @@ fn a_search_lists_what_it_finds_on_the_other_side_and_goes_there(cx: &mut TestAp
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     // In your settings, something that's the computer's: listed under it, with where.
-    let view = side(&workspace, cx, Side::Yours);
+    side(&workspace, cx, Side::Yours);
     click(cx, "settings-search");
     cx.simulate_input("sandbox");
     cx.run_until_parked();
     assert!(!shown(cx, "setting-appearance"), "nothing of your own matches");
     assert!(shown(cx, "settings-hit-0"));
     click(cx, "settings-hit-0");
+    // (This computer's, under Computers › This Mac.)
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Computers);
+    let view = settings(&workspace, cx);
     assert_eq!(view.read_with(cx, |view, _| view.side()), Side::Computer);
     assert_eq!(title(&workspace, cx).as_deref(), Some("Permissions"));
     assert!(shown(cx, "row-sandbox") && shown(cx, "row-default-mode"), "the whole page: the search was left behind");
@@ -449,7 +452,8 @@ fn a_search_lists_what_it_finds_on_the_other_side_and_goes_there(cx: &mut TestAp
     cx.simulate_input("dark");
     cx.run_until_parked();
     click(cx, "settings-hit-0");
-    assert_eq!(view.read_with(cx, |view, _| view.side()), Side::Yours);
+    // (Your own, in Settings.)
+    assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.side()), Side::Yours);
     assert!(shown(cx, "row-theme"));
 }
 
@@ -2290,7 +2294,7 @@ fn storage_shows_its_parts_a_breakdown_and_opens_the_pages_that_clear_the_rest(c
     assert!(shown(cx, "row-older-budget-picks-menu"));
     // A row that opens a page is pressed whole.
     click(cx, "row-manage-worktrees");
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned())).map(|view| view.read_with(cx, |view, _| view.section().to_owned())).as_deref(), Some("worktrees"));
+    assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.section().to_owned()), "worktrees");
 }
 
 #[gpui::test]
