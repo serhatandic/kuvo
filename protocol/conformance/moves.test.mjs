@@ -54,8 +54,10 @@ test("a third computer sees a move until the other computer announces it is over
   const { computer, relay } = await bench(t);
   const observer = await computer("observer");
   const sender = await computer("sender");
+  const other = await computer("other-party");
   const { main, spare } = seedPeerSetup(sender.home, relay.url, 1, 3);
   seedPeerSetup(observer.home, relay.url, 2, 3);
+  seedPeerSetup(other.home, relay.url, 3, 3);
   const journal = path.join(sender.home, "run/moves/mov_shown.json");
   const movement = {
     id: "mov_shown", kind: "chat", thing: "ses_shown", name: "Shown", from: spare.key, to: main.key,
@@ -83,15 +85,29 @@ test("a third computer sees a move until the other computer announces it is over
   assert.equal(line.status, 200);
   const updates = line.frames();
   assert.deepEqual((await updates.next()).value.elsewhere, seen);
-  fs.unlinkSync(journal);
-  let cleared = false;
-  for await (const state of updates) {
-    if (!state.elsewhere) {
-      cleared = true;
-      break;
+  const otherJournal = path.join(other.home, "run/moves/mov_shown.json");
+  write(otherJournal, JSON.stringify({ ...movement,
+    role: "from", stage: "switching", step: "switch", formatVersion: 1, peer: main.key,
+    started: Date.now(), switchSince: Date.now(),
+  }));
+  await other.start().ready();
+  async function nextWhere(matches) {
+    for (;;) {
+      const { value, done } = await updates.next();
+      assert.equal(done, false, "The move stream ended before announcing the change");
+      if (matches(value.elsewhere ?? [])) return value;
     }
   }
-  assert.equal(cleared, true, "A subscribed client hears that the move ended");
+  const both = await nextWhere(rows => rows.length === 2);
+  assert.deepEqual(both.elsewhere.find(row => row.box === main.key), seen[0]);
+  const departing = both.elsewhere.find(row => row.box === spare.key);
+  assert.equal(departing.moves[0].id, movement.id);
+  assert.equal(departing.moves[0].role, "from");
+  fs.unlinkSync(journal);
+  const remaining = await nextWhere(rows => rows.length === 1 && rows[0].box === spare.key);
+  assert.deepEqual(remaining.elsewhere, [departing]);
+  fs.unlinkSync(otherJournal);
+  await nextWhere(rows => rows.length === 0);
   assert.equal((await listing(resident)).elsewhere, undefined);
 });
 
@@ -668,6 +684,65 @@ test("a one-part move waits for the acknowledgement of part zero", {
   assert.ok(there.engine.sessions.some(record => record.id === session));
 });
 
+test("a destination resumes a partial move after restarting", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("partial-source"), there = await computer("partial-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_partialCopy", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const bytes = Buffer.concat(Array.from({ length: 1300 }, (_, index) =>
+    createHash("sha256").update(String(index)).digest()));
+  const folder = path.join("wakes", session);
+  write(path.join(here.home, folder, "wake.txt"), bytes);
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const [sourceKey, targetKey] = [main, member].map(peer => Buffer.from(peer.key, "base64url"));
+  let remaining, firstAck, restarting = false, announced = false;
+  const release = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), sourceKey).payload).move;
+    if (move?.op !== "part" || move.i === 0) return false;
+    remaining ??= { packet, move };
+    return true;
+  });
+  t.after(release);
+  t.after(relay.intercept(to, from, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { move, agents } = JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), targetKey).payload);
+    if (restarting && agents?.features?.includes("moves.two-computers")) announced = true;
+    if (move?.op === "got" && move.i === 0) firstAck = move;
+    return false;
+  }));
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id } = begun.json.move;
+  await until(() => remaining && firstAck, "The destination did not keep the first part", 15000);
+  assert.equal(firstAck.id, id);
+  assert.equal(remaining.move.of, 2);
+  assert.equal(remaining.move.i, 1);
+  assert.equal(there.engine.sessions.length, 0);
+  await targetProcess.stop();
+  await until(() => !relay.has(to), "The stopped destination did not leave the relay");
+  restarting = true;
+  const restarted = there.start();
+  await restarted.ready();
+  await until(() => announced, () => "The restarted destination did not announce that it could receive moves\n" + restarted.log());
+  release();
+  relay.replay(remaining.packet);
+  await moveRetired(here, id, () => sourceProcess.log() + "\n" + restarted.log());
+  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(receipt.json.state, "done", receipt.text);
+  assert.equal(there.engine.sessions.filter(record => record.id === session).length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(there.home, folder, "wake.txt")), bytes);
+});
+
 test("an older incoming copy without import proof stays held after a drop", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -1059,19 +1134,26 @@ test("a letter that waits hears the authenticated answer after the sender restar
   here.engine.sessions.push(sessionOf({ id: sender, title: "Trip plans", directory: path.join(here.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
   const source = here.start();
-  await Promise.all([source.ready(), there.start().ready()]);
+  const target = there.start();
+  const [src, dst] = await Promise.all([source.ready(), target.ready()]);
   const listed = (computer, peer, session) => {
     try { return readJSON(path.join(computer.home, "run/peer-agents.json"))[peer.key]?.list?.some(row => row.session === session); }
     catch { return false; }
   };
   await until(() => listed(here, member, recipient) && listed(there, main, sender),
     "The computers did not hear about the other conversations", 15000);
+  // Wait until both residents can actually read their engine, as well as
+  // having a saved announcement. An early retry can otherwise take a minute.
+  await Promise.all([[src, sender], [dst, recipient]].map(([resident, session]) =>
+    until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
+      "The conversation's engine did not become ready")));
   const letter = "ltr_waitForReservations";
   const tool = path.join(here.home, "run/replies", letter);
   const file = path.join(here.home, "run/outbox/sending", letter + ".json");
   write(tool + ".alive", "");
   write(file, JSON.stringify({ from: sender, to: recipient, text: "Is the train booked?", peer: member.key, wait: true, at: Date.now() }));
-  const conversation = await until(() => there.engine.messages.get(recipient), "The letter never reached the other computer", 14000);
+  const conversation = await until(() => there.engine.messages.get(recipient),
+    () => "The letter never reached the other computer\n" + source.log() + "\n" + target.log(), 14000);
   assert.equal(conversation.length, 1);
   assert.match(conversation[0].text, /They're waiting for your reply/);
   await until(() => fs.existsSync(tool + ".wait"), "The sender did not save the awaited letter");
