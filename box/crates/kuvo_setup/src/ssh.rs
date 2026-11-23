@@ -65,6 +65,26 @@ struct Failure {
     again: bool,
 }
 
+struct AddError {
+    title: Option<String>,
+    message: String,
+}
+
+impl From<String> for AddError {
+    fn from(message: String) -> Self {
+        Self {
+            title: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for AddError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct Computer {
     key: String,
@@ -129,13 +149,13 @@ impl Attempt {
         }
     }
 
-    fn fail(&mut self, message: String) {
+    fn fail(&mut self, error: AddError) {
         self.state = State::Failed;
         self.question = None;
         self.title = format!("Couldn’t add {}", self.name);
         self.failure = Some(Failure {
-            title: self.title.clone(),
-            message,
+            title: error.title.unwrap_or_else(|| self.title.clone()),
+            message: error.message,
             again: true,
         });
         for step in &mut self.steps {
@@ -228,7 +248,7 @@ enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
     HostKey(Vec<HostKey>, oneshot::Sender<()>),
-    Done(Result<Completed, String>),
+    Done(Result<Completed, AddError>),
 }
 
 enum Message {
@@ -369,7 +389,7 @@ impl Adding {
         }
     }
 
-    async fn allowed(&self, by: Submitter) -> Result<(), Denied> {
+    async fn allowed(&self, by: Submitter) -> Result<Vec<Value>, Denied> {
         let answer = self
             .setup
             .request_command(Command::SshAdmission(by))
@@ -381,16 +401,8 @@ impl Adding {
                 value: answer.value,
             });
         }
-        let home = self.files.root();
-        if !connect::has_release(home) {
-            let view = self.setup.views.borrow();
-            let name = view.setup["computers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|peer| peer["key"] == view.setup["you"]["key"])
-                .and_then(|peer| peer["name"].as_str())
-                .unwrap_or("This computer");
+        let name = local_name(&self.setup);
+        if !connect::has_release(self.files.root()) {
             return Err(Denied::new(
                 503,
                 format!(
@@ -398,23 +410,25 @@ impl Adding {
                 ),
             ));
         }
-        Ok(())
+        saved_machines(&self.files).map_err(|_| {
+            refuse(
+                503,
+                format!("{name}’s list of machines can’t be read right now."),
+            )
+        })
     }
 
     async fn page(&self) -> Value {
         let tries = self.views.borrow().clone();
-        if let Err(reason) = self.allowed(Submitter::Computer).await {
-            return json!({"can": false, "why": reason.value["message"], "hosts": [], "tries": tries});
-        }
+        let saved = match self.allowed(Submitter::Computer).await {
+            Ok(saved) => saved,
+            Err(reason) => {
+                return json!({"can": false, "why": reason.value["message"], "hosts": [], "tries": tries});
+            }
+        };
         let env = std::env::vars_os().collect();
         let account = kuvo_os::platform::Account::current()
             .and_then(|user| user.home_folder(kuvo_os::platform::Platform::current(), &env));
-        let saved = self
-            .files
-            .read::<Vec<Value>>("machines.json")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
         let taken = saved
             .iter()
             .flat_map(|record| {
@@ -642,10 +656,7 @@ impl Owner {
             }
             Progress::HostKey(keys, answer) => {
                 self.asks += 1;
-                let here = self.setup.views.borrow().setup["you"]["name"]
-                    .as_str()
-                    .unwrap_or("This computer")
-                    .to_owned();
+                let here = local_name(&self.setup);
                 let name = &now.seen.name;
                 let mut facts = vec![json!({"label": "Address", "value": now.seen.destination})];
                 facts.extend(
@@ -737,7 +748,7 @@ impl Job {
         self.send(Progress::Step(id, state, detail.into())).await
     }
 
-    async fn add(&self, destination: Address) -> Result<Completed, String> {
+    async fn add(&self, destination: Address) -> Result<Completed, AddError> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
             .await?;
@@ -768,12 +779,12 @@ impl Job {
                     return Err(result.value["message"]
                         .as_str()
                         .unwrap_or("Couldn’t keep the SSH address.")
-                        .to_owned());
+                        .into());
                 }
             }
             return Err(format!(
                 "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-            ));
+            ).into());
         }
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
@@ -820,6 +831,35 @@ impl Job {
         }
         Ok(Completed::New(computer))
     }
+}
+
+fn local_name(setup: &SetupHandle) -> String {
+    let view = setup.views.borrow();
+    view.setup["computers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|peer| peer["key"] == view.setup["you"]["key"])
+        .and_then(|peer| peer["name"].as_str())
+        .unwrap_or("This computer")
+        .to_owned()
+}
+
+pub(crate) fn saved_machines(files: &Files) -> Result<Vec<Value>, crate::Error> {
+    let unreadable = || crate::Error::Invalid("saved list of machines");
+    if let Some(records) = files.read::<Vec<Value>>("machines.json")? {
+        if records.iter().all(|row| row["destination"].is_string()) {
+            return Ok(records);
+        }
+        return Err(unreadable());
+    }
+    if let Some(links) = files.read::<serde_json::Map<String, Value>>("phone-link.json")?
+        && let Some(machines) = links.get("machines").filter(|value| !value.is_null())
+        && !machines.as_object().is_some_and(|items| items.is_empty())
+    {
+        return Err(unreadable());
+    }
+    Ok(Vec::new())
 }
 
 struct Denied {

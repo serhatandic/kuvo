@@ -13,8 +13,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use super::{
-    Computer, Job, Progress, WindowsMode,
+    AddError, Computer, Job, Progress, WindowsMode,
     address::Address,
+    local_name,
     transport::{self, Connection, Ran},
 };
 
@@ -76,19 +77,21 @@ pub(super) fn has_release(home: &Path) -> bool {
 }
 
 impl Destination {
-    pub(super) async fn inspect(job: &Job, address: Address, name: &str) -> Result<Self, String> {
+    pub(super) async fn inspect(job: &Job, address: Address, name: &str) -> Result<Self, AddError> {
         let home = job.files.root().to_owned();
         let connection = tokio::task::spawn_blocking(move || Connection::open(home, address))
             .await
             .map_err(|_| "Couldn’t start OpenSSH.")?
             .map_err(|_| "Couldn’t start OpenSSH.")?;
 
-        let first = run(job, &connection, "true".into(), Vec::new(), 30)
+        let mut first = run(job, &connection, "true".into(), Vec::new(), 30)
             .await
             .map_err(|_| unreachable(name))?;
-        if !first.status.success()
-            && first.stderr.contains("No ")
-            && first.stderr.contains(" host key is known")
+        if first.status.code() == Some(255)
+            && first.stderr.contains("Host key verification failed")
+            && !first
+                .stderr
+                .contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
         {
             let stop = job.stop.clone();
             let ssh = connection.clone();
@@ -97,7 +100,7 @@ impl Destination {
                 .map_err(|_| unreachable(name))?
                 .map_err(|_| unreachable(name))?;
             if keys.is_empty() {
-                return Err(unreachable(name));
+                return Err(format!("Couldn’t read {name}’s host key.").into());
             }
             let (answer, answered) = oneshot::channel();
             job.send(Progress::HostKey(keys.clone(), answer)).await?;
@@ -116,14 +119,20 @@ impl Destination {
                 .await
                 .map_err(|_| unreachable(name))?
                 .map_err(|_| format!("Kuvo couldn’t save the SSH host key for {name}."))?;
-        } else if !first.status.success() && first.stderr.contains("Host key verification failed") {
-            return Err(format!(
-                "{name}’s host key has changed since Kuvo last connected."
-            ));
-        } else if !first.status.success() && first.stderr.contains("Permission denied") {
-            return Err(format!("{name} didn’t accept this computer’s SSH keys."));
+            first = run(job, &connection, "true".into(), Vec::new(), 30)
+                .await
+                .map_err(|_| unreachable(name))?;
         }
+        check_connection(&first, name, &local_name(&job.setup))?;
 
+        Ok(Self::inspect_platform(job, connection, name).await?)
+    }
+
+    async fn inspect_platform(
+        job: &Job,
+        connection: Connection,
+        name: &str,
+    ) -> Result<Self, String> {
         let root = scratch_root(job.files.root())?;
         let mut candidate = Self {
             ssh: connection,
@@ -436,6 +445,43 @@ fn preferences_name(text: &str, fallback: &str) -> String {
 
 fn unreachable(name: &str) -> String {
     format!("Couldn’t reach {name}. Make sure it’s on and connected, then Try Again.")
+}
+
+fn check_connection(ran: &Ran, name: &str, here: &str) -> Result<(), AddError> {
+    if ran.status.code() != Some(255) {
+        return Ok(());
+    }
+    let said = &ran.stderr;
+    if said.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+        let host = said.lines().find_map(|line| {
+            let host = line
+                .trim_end()
+                .strip_prefix("Host key for ")?
+                .strip_suffix(" has changed and you have requested strict checking.")?;
+            (!host.is_empty()
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._:-[]".contains(&b)))
+            .then_some(host)
+        });
+        let host = host.map_or_else(|| "and its address".into(), |host| format!("'{host}'"));
+        return Err(AddError {
+            title: Some(format!("{name}’s host key changed")),
+            message: format!(
+                "{name}’s host key has changed since {here} last connected. If you expect that (it was reinstalled, say), remove the old key in a terminal on {here} with ssh-keygen -R {host}, then try again. If not, someone may be intercepting the connection."
+            ),
+        });
+    }
+    let lower = said.to_ascii_lowercase();
+    if lower.contains("permission denied") || lower.contains("too many authentication failures") {
+        return Err(AddError {
+            title: Some(format!("{name} refused the connection")),
+            message: format!(
+                "{name} didn’t accept {here}’s SSH keys. Kuvo Code connects with the keys and SSH agent of {here}, and the SSH keys in its vault, without a password. If your key is in an app like 1Password or Secretive, or on a security key, unlock it, then try again."
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn enrollment(ran: Ran, name: &str) -> Result<(Computer, String), String> {

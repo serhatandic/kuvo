@@ -86,7 +86,7 @@ impl Owner {
             ));
         }
         peer.extra.insert("id".into(), json!(destination));
-        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let mut addresses = crate::ssh::saved_machines(&self.files)?;
         let record = addresses
             .iter_mut()
             .find(|row| row["destination"] == destination);
@@ -128,7 +128,7 @@ impl Owner {
         if allowed.status != 200 {
             return Ok(allowed);
         }
-        let mut addresses: Vec<Value> = self.files.read("machines.json")?.unwrap_or_default();
+        let mut addresses = crate::ssh::saved_machines(&self.files)?;
         let Some(machine) = addresses.iter_mut().find(|row| {
             row["identity"].as_str() == Some(identity) && row["destination"] != destination
         }) else {

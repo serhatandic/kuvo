@@ -432,7 +432,7 @@ parallel.
 | 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest. Link startup markers and legacy handoff from `bridge.test.js` and `setup-mac.test.js`. | keeper | 1.3 | 5 ×2 | D |
 | 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
 | 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote. Released Mac coexistence, legacy roster mail and leave-running integration from `documents.test.js`, `setup-mac.test.js`, `time-zone.test.ts`, `personalities-box.test.js`, `setup-handover.test.js`, and tagged `compat.test.mjs`.<br>Also covers `peers.test.js`, `mac-peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`. | move | 7.1, 2.4 | 6 | D |
-| 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
+| 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths.<br>native Windows Add: the started resident must outlive the SSH session (logon task or starter) | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
 | 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home (running turns end once), and the update of a computer that was off. Cross-process link writer handoff from `setup-mac.test.js` and `setup-handover.test.js` | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
