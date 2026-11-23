@@ -8,8 +8,9 @@ with one platform seam for `file://` addresses; `opened.rs`: types, kinds and op
 file, with one seam for opening without waiting and execute bits; `folders.rs`: folder lists, a
 new folder and a folder's tree; `git.rs`: git's list of a repository's files, as the box runs git
 by itself; `find.rs`: ranking files and reading web addresses; `order.rs`: Finder's order of names;
-`mod.rs`: the routes). The
-resident registers it in `box/crates/kuvo-box/src/serve.rs`.
+`suggested.rs`: folders worth starting in, from the kept session list (`run/lists/sessions.json`,
+which the engine's session list writes in both boxes); `mod.rs`: the routes). The resident
+registers it in `box/crates/kuvo-box/src/serve.rs`.
 
 ## Proof so far
 
@@ -21,11 +22,14 @@ resident registers it in `box/crates/kuvo-box/src/serve.rs`.
 - Differential, folders: 26 requests over `kuvo/folders` (GET and POST), `kuvo/folders/tree` and
   `kuvo/files/find` answer the same, but for `home`, the account folder the harness gives each
   box its own of (`…/a/account`, `…/b/account`).
+- Differential, suggested folders: before and after making `~/Projects/app` (a repository) and
+  `~/Projects/plain`, the answers match but for that account-folder prefix.
 - A TS bug fixed (with a test that fails on the old code, in `files-find.test.ts`): finding files
   and listing folders cut the query at a second `?`, which the box's server sends as it is, so a
   typed `https://…/a?b=1` lost `?b=1` and a folder named with a `?` wasn't found.
 - Unit tests in `kuvo_services`: address reading, types and kinds, `max` as JavaScript reads it,
-  text decoding, Finder's order, ranking files, web addresses.
+  text decoding, Finder's order, ranking files, web addresses, and the four `suggestedFolders`
+  cases of `folders-suggested.test.ts`, ported as they are.
 
 ## The TypeScript cases
 
@@ -44,22 +48,21 @@ resident registers it in `box/crates/kuvo-box/src/serve.rs`.
 | files-find: outside a repository, a walk skipping .git, node_modules and builds | Conformance (`finding files …`, `every file under a folder …`) |
 | files-find: refused without a folder, as `kuvo/folders` refuses | Conformance (`finding files …`) |
 | files-find: what's typed reads as a web address only where it is one | Conformance, every vector through the route (`what's typed reads as a web address …`) |
-| folders-suggested: recent projects first, then repositories in Projects and Developer | **Left** (`kuvo/folders/suggested` not ported) |
-| folders-suggested: a home reached through a link, each folder once | **Left** |
-| folders-suggested: many folders, a bounded list | **Left** |
-| folders-suggested: nothing to suggest | **Left** |
-| folders-suggested: the route answers this computer's home and folders | **Left** |
+| folders-suggested: recent projects first, then repositories in Projects and Developer | Rust unit test (`worked_in_first_newest_first_then_repositories`, macOS and Linux rules); conformance (`folders worth starting in …`) |
+| folders-suggested: a home reached through a link, each folder once | Rust unit test (`a_home_reached_through_a_link_names_each_folder_once`) |
+| folders-suggested: many folders, a bounded list | Rust unit test (`many_folders_a_bounded_list_nothing_deeper`) |
+| folders-suggested: nothing to suggest | Rust unit test (`nothing_to_suggest`) |
+| folders-suggested: the route answers this computer's home and folders | Conformance (`folders worth starting in …`: the engine's project sessions, a gone and an archived one, repositories found) |
 | files-find (new): a `?` in what's typed or in a folder's name | Conformance (`finding files …`), and the TS test |
 
-Counts: 19 cases; 12 covered, 2 partly, 5 left (all of folders-suggested).
+Counts: 19 cases; 17 covered, 2 partly (the `box route` halves of file-info), none left.
 
 ## What's left
 
-- `GET kuvo/folders/suggested`. It reads this computer's session list (the kept list,
-  `run/lists/sessions.json`), which the Rust box keeps inside `kuvo_peers` (`pub(crate)`): it needs a
-  read-only seam from there (or the engine's sessions) and a conformance case whose stand-in engine
-  has project sessions, so both boxes read the same ones. Its folder half (repositories in
-  ~/Projects and ~/Developer, links, macOS's asked-about folders) is plain file work.
+- Suggested folders read the kept list from disk, as the TS box does when it starts; the TS box
+  answers from its list in memory after that, which it saves as it changes, so they agree once
+  saved. A Mac's app-folder layout (chats in the app's folder, `KUVO_CHATS`) isn't modelled: the
+  Rust box's chats folder is its own `chats`.
 - Finder's order (`order.rs`) follows the root collation for Latin letters, digits, spaces and
   ASCII punctuation; names in other scripts are ordered by code point, where ICU may differ.
 - A folder that can't be read for another reason (500) says the system's words, which Node and
