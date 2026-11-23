@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 a03011946be9
+// Kuvo folder layout 23 e97b7b3cd6c8
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a03011946be9";
+var BRIDGE_VERSION = "e97b7b3cd6c8";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -25478,7 +25478,13 @@ var init_box = __esm(() => {
   });
   COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string, "removal?": object({ choices: list(words("unlink", "wipe")), "last?": literal(true), "handOver?": string }) });
   COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
-  FLEET_LINE = object({ words: string, tone: words("done", "working", "warning", "blocked", "off"), "short?": string });
+  FLEET_LINE = object({
+    words: string,
+    tone: words("done", "working", "warning", "blocked", "off"),
+    "short?": string,
+    "phase?": words("getting-ready", "ready", "switching", "done", "off"),
+    "fill?": number
+  });
   FLEET_PROGRESS = {
     current: nullable(string),
     target: string,
@@ -25487,6 +25493,8 @@ var init_box = __esm(() => {
     "targetSha256?": string,
     "currentSha256?": string,
     "requiresUpdate?": bool,
+    "fill?": number,
+    "seen?": number,
     "line?": FLEET_LINE
   };
   FLEET_UPDATE = oneOf(object({ ...FLEET_PROGRESS, state: literal("up-to-date") }), object({ ...FLEET_PROGRESS, state: words("ready", "getting-ready", "off") }), object({ ...FLEET_PROGRESS, state: literal("cannot"), reason: string, fixable: bool }), object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }), object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }), object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }));
@@ -25503,7 +25511,8 @@ var init_box = __esm(() => {
     "shown?": bool,
     "title?": string,
     "detail?": string,
-    "warning?": bool
+    "warning?": bool,
+    "phase?": words("getting-ready", "ready", "switching", "waiting", "done")
   });
   LISTED_COMPUTER = object({
     key: string,
@@ -59733,6 +59742,7 @@ __export(exports_fleet, {
   isUpdateMain: () => isUpdateMain,
   keepRelease: () => keepRelease,
   newestHeld: () => newestHeld,
+  pullFill: () => pullFill,
   pullUnderWay: () => pullUnderWay,
   repairPackSha: () => repairPackSha,
   retryTransfer: () => retryTransfer,
@@ -59988,6 +59998,20 @@ function activationAllowed(ref, now = Date.now()) {
     return mainCanSwitch(ref, now);
   const main = readPeerAgents()[setup.primary]?.computer;
   return main?.kuvo === ref.version && (!main.installedSha256 || main.installedSha256 === ref.sha256);
+}
+function notePulled(current) {
+  if (current.forRepair || !current.parts)
+    return;
+  const fill = Math.min(1, current.got.size / current.parts);
+  if (pulled?.version !== current.version)
+    pulled = { version: current.version, fill };
+  else
+    pulled.fill = Math.max(pulled.fill, fill);
+}
+function pullFill(version) {
+  if (pull?.version === version)
+    notePulled(pull);
+  return pulled?.version === version ? pulled.fill : undefined;
 }
 function fleetWith(options) {
   ways = REAL_BOX ? { ...options, keys: undefined, blocked: undefined } : options;
@@ -60251,6 +60275,7 @@ function exchangeRelease(sender, given, options) {
       current.manifest = manifest;
       current.boxes = boxes;
       current.parts = Math.ceil(size / PART);
+      notePulled(current);
       current.heard = current.progressed = clock();
       ask2(current, options, current.heard, false);
     };
@@ -60276,6 +60301,7 @@ function exchangeRelease(sender, given, options) {
     fs152.closeSync(handle);
   }
   current.got.add(i);
+  notePulled(current);
   current.asked.delete(i);
   current.heard = current.progressed = now;
   if (current.got.size < current.parts)
@@ -60341,7 +60367,7 @@ function forgetFleet() {
 function clearIncoming() {
   endPull();
 }
-var HELD4, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, packChecking, packVerified, packStamp = (pack, stat) => `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs} ${stat.ctimeMs}`, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`), CHECK_FILE, CHECK_KEPT, shortName2 = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
+var HELD4, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, packChecking, packVerified, packStamp = (pack, stat) => `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs} ${stat.ctimeMs}`, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, pulled = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`), CHECK_FILE, CHECK_KEPT, shortName2 = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
 var init_fleet = __esm(() => {
   init_choice();
   init_facts();
@@ -60376,27 +60402,45 @@ var init_fleet = __esm(() => {
 
 // box/src/link/updates/progress.ts
 import path163 from "node:path";
-function fleetLine(update) {
+function seenWords(seen, now = Date.now()) {
+  const minutes = Math.floor(Math.max(0, now - seen) / 60000);
+  if (minutes < 1)
+    return "seen just now";
+  if (minutes < 60)
+    return `seen ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return `seen ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days < 2 ? "seen yesterday" : `seen ${days} days ago`;
+}
+function fleetLine(update, now = Date.now()) {
   switch (update.state) {
     case "up-to-date":
-      return { words: `${shortName3(update.current ?? update.target)} · Up to date`, tone: "done" };
+      return { words: `${shortName3(update.current ?? update.target)} · Up to date`, tone: "done", phase: "done" };
     case "ready":
-      return { words: `Ready for ${shortName3(update.target)}`, tone: "done" };
-    case "off":
-      return { words: withVersion(update.current, "Can’t be reached: updates when it’s back"), tone: "off" };
+      return { words: `Ready for ${shortName3(update.target)}`, tone: "done", phase: "ready" };
+    case "off": {
+      if (update.seen === undefined)
+        return { words: withVersion(update.current, "Can’t be reached: updates when it’s back"), tone: "off", phase: "off" };
+      const seen = seenWords(update.seen, now);
+      return { words: update.current ? withVersion(update.current, seen) : seen[0].toUpperCase() + seen.slice(1), tone: "off", phase: "off" };
+    }
     case "updating":
       if (update.stage === "switching")
-        return { words: `Switching to ${shortName3(update.target)}…`, tone: "working" };
+        return { words: `Switching to ${shortName3(update.target)}…`, tone: "working", phase: "switching" };
       break;
     case "cannot":
       return update.fixable ? { words: withVersion(update.current, update.reason), tone: "warning", short: "Can’t update" } : { words: `${withVersion(update.current, update.reason)} · Updates with the next release`, tone: "blocked" };
     case "failed":
       return { words: withVersion(update.current, update.reason), tone: "warning", short: "Can’t update" };
   }
-  return { words: `Getting ${shortName3(update.target)} ready…`, tone: "working" };
+  const fill = update.state === "getting-ready" && update.fill !== undefined ? clamped(update.fill) : undefined;
+  return fill !== undefined ? { words: fill < 1 ? `Getting ready · ${Math.floor(fill * 100)}%` : "Getting ready…", tone: "working", phase: "getting-ready", fill } : { words: "Getting ready…", tone: "working", phase: "getting-ready" };
 }
-function peerFleetUpdate(target, facts, away = false, awayFor = Infinity) {
-  return lined(peerProgress(target, facts, away, awayFor));
+function peerFleetUpdate(target, facts, away = false, awayFor = Infinity, heard, now = Date.now()) {
+  const progress = peerProgress(target, facts, away, awayFor);
+  return lined(progress.state === "off" && typeof heard === "number" && Number.isFinite(heard) ? { ...progress, seen: heard } : progress, now);
 }
 function peerProgress(target, facts, away, awayFor) {
   const current = facts?.kuvo ?? null;
@@ -60419,22 +60463,48 @@ function peerProgress(target, facts, away, awayFor) {
     return { ...progress, state: "cannot", reason: cannot.reason, fixable: cannot.fixable, canRetry: cannot.fixable };
   if (sameRelease(facts?.staged, ref))
     return { ...progress, state: "ready" };
-  return { ...progress, state: "getting-ready" };
+  const fill = told?.state === "getting-ready" && told.target === version && typeof told.fill === "number" && Number.isFinite(told.fill) ? clamped(told.fill) : undefined;
+  return { ...progress, state: "getting-ready", ...fill !== undefined ? { fill } : {} };
 }
-function localFleetUpdate(target = fleetTarget(), facts = fleetFacts(), switchingNow = (switchPending() || updateOnTrial()) && boxVersion() === target?.version) {
+function localFleetUpdate(target = fleetTarget(), facts = fleetFacts(), switchingNow = (switchPending() || updateOnTrial()) && boxVersion() === target?.version, fill = target ? pullFill(target.version) : undefined) {
   if (!target)
     return;
-  const result = switchingNow && facts.kuvo !== target.version ? peerFleetUpdate(target, { ...facts, fleetUpdate: { current: facts.kuvo ?? null, target: target.version, canRetry: false, state: "updating", stage: "switching" } }) : peerFleetUpdate(target, facts);
+  let result = switchingNow && facts.kuvo !== target.version ? peerFleetUpdate(target, { ...facts, fleetUpdate: { current: facts.kuvo ?? null, target: target.version, canRetry: false, state: "updating", stage: "switching" } }) : peerFleetUpdate(target, facts);
+  if (result.state === "getting-ready" && fill !== undefined && Number.isFinite(fill))
+    result = lined({ ...result, fill: clamped(fill) });
   return result.canRetry && requestedRetry()?.sha256 === result.targetSha256 ? { ...result, canRetry: false } : result;
 }
-function fleetSummary(rows, target) {
+function settledShows(version, inProgress, settled, now) {
+  const kept = parsed(textOf(FINISHED_FILE));
+  const was = isObject(kept) && typeof kept.target === "string" ? { target: kept.target, finishedAt: typeof kept.finishedAt === "number" ? kept.finishedAt : undefined } : undefined;
+  const keep = (value) => {
+    try {
+      writePrivate(FINISHED_FILE, JSON.stringify(value));
+    } catch {}
+  };
+  if (inProgress) {
+    if (was?.target !== version || was.finishedAt !== undefined)
+      keep({ target: version });
+    return false;
+  }
+  if (!settled || was?.target !== version)
+    return false;
+  const finishedAt = was.finishedAt ?? now;
+  if (was.finishedAt === undefined)
+    keep({ target: version, finishedAt });
+  return now - finishedAt < SETTLED_SHOWN;
+}
+function fleetSummary(rows, target, now = Date.now()) {
   if (!target)
     return;
   let done = 0, updating = 0, ready = 0, behind = 0, failed = 0, switching = 0;
   const fixable = [];
-  const running = new Set;
+  const away = [];
+  const running = new Set, still = new Set;
   for (const row of rows) {
     const progress = row.fleetUpdate;
+    if (progress && progress.state !== "up-to-date")
+      still.add(progress.current ?? "");
     switch (progress?.state) {
       case "up-to-date":
         done++;
@@ -60453,6 +60523,7 @@ function fleetSummary(rows, target) {
         break;
       case "off":
         behind++;
+        away.push(row.name);
         break;
       case "cannot":
         failed++;
@@ -60462,12 +60533,26 @@ function fleetSummary(rows, target) {
     }
   }
   const version = shortVersion(target.version);
-  const total = done + ready + switching + updating + failed;
+  const total = done + ready + switching + updating + behind + failed;
   const warning = fixable.length > 0;
-  const shown = warning || updating > 0 || ready > 0 || switching > 0;
-  const title = !warning ? `Updating to ${version} · ${done + ready + switching} of ${total} ready` : fixable.length === 1 ? `${fixable[0].name} can’t update to ${version}` : `${fixable.length} computers can’t update to ${version}`;
-  const [only] = running;
-  const detail = warning ? `${fixable[0].name}: ${fixable[0].reason}` : !shown ? undefined : running.size === 1 && only ? `Everything works on ${shortVersion(only)} while your computers get ready.` : "Everything keeps working while your computers get ready.";
+  const phase = !done && !switching && updating ? "getting-ready" : !done && !switching && ready ? "ready" : switching || done && (ready || updating) ? "switching" : done && done === total ? "done" : done ? "waiting" : undefined;
+  const inProgress = phase === "getting-ready" || phase === "ready" || phase === "switching";
+  const settled = !warning && (phase === "waiting" || phase === "done");
+  const shown = settledShows(target.version, warning || inProgress, settled, now) || warning || inProgress;
+  const one = (versions) => {
+    const [only] = versions;
+    return versions.size === 1 && only ? shortVersion(only) : undefined;
+  };
+  const [title, detail] = warning ? [fixable.length === 1 ? `${fixable[0].name} can’t update to ${version}` : `${fixable.length} computers can’t update to ${version}`, `${fixable[0].name}: ${fixable[0].reason}`] : phase === "getting-ready" ? [
+    ready ? `Getting ${version} ready · ${ready} of ${total}` : `Getting ${version} ready`,
+    one(running) ? `Your computers stay on ${one(running)} meanwhile.` : "Your computers keep what they run meanwhile."
+  ] : phase === "ready" ? [`${version} is ready · ${ready} of ${total}`, "They switch next."] : phase === "switching" ? [
+    `Switching to ${version} · ${done} of ${total} done`,
+    one(still) ? `${total - done} still on ${one(still)}.` : `${total - done} still to switch.`
+  ] : phase === "done" ? [total === 1 ? `Up to date on ${version}` : `All ${total} on ${version}`, undefined] : [
+    `${version} · ${done} of ${total} up to date`,
+    away.length === 1 ? `${away[0]} updates when it’s back.` : away.length > 1 ? `${away.length} computers update when they’re back.` : undefined
+  ];
   return {
     target: target.version,
     targetSha256: target.sha256,
@@ -60478,10 +60563,11 @@ function fleetSummary(rows, target) {
     stage: warning ? "failed" : switching ? "switching" : updating ? "downloading" : ready ? "waiting" : "finished",
     shown,
     title,
-    detail,
+    detail: shown ? detail : undefined,
     warning,
     dismissed: false,
-    failures: []
+    failures: [],
+    ...phase ? { phase } : {}
   };
 }
 function requestFleetRetry(version, sha256) {
@@ -60518,7 +60604,7 @@ function requestPeerRetry(key, version, sha256, now = Date.now()) {
   if (!target?.sha256 || version !== target.version || sha256 && sha256 !== target.sha256)
     return { status: 409, message: "The setup’s target version changed." };
   const told = readPeerAgents()[key];
-  const update = peerFleetUpdate(target, told?.computer, peerIsAway(key, told?.heard, readReach(), now));
+  const update = peerFleetUpdate(target, told?.computer, peerIsAway(key, told?.heard, readReach(), now), undefined, told?.heard, now);
   const name = peer.name || "That computer";
   if (!update.canRetry)
     return { status: 409, message: `${name} has no update to retry.` };
@@ -60537,8 +60623,9 @@ function* retryFleetRoute({ request, json }) {
   const reply = elsewhere ? requestPeerRetry(given.key, given.target, given.targetSha256) : requestFleetRetry(given.target, given.targetSha256);
   return yield* json(reply.status, reply.status === 202 ? reply.update : { message: reply.message });
 }
-var fleetFiles = () => [CANNOT_FILE, READY_FILE, path163.join(RUN, "previous"), path163.join(RUN, "update-cannot"), path163.join(HELD4, "boxes.json")], shortName3 = (version) => version.includes("-") ? version.slice(version.indexOf("-") + 1) : version, withVersion = (version, words) => version ? `${shortName3(version)} · ${words}` : words, lined = (update) => ({ ...update, line: fleetLine(update) }), QUIET_GRACE, SWITCH_GRACE, shortVersion = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
+var FINISHED_FILE, SETTLED_SHOWN, fleetFiles = () => [CANNOT_FILE, READY_FILE, path163.join(RUN, "previous"), path163.join(RUN, "update-cannot"), path163.join(HELD4, "boxes.json"), FINISHED_FILE], shortName3 = (version) => version.includes("-") ? version.slice(version.indexOf("-") + 1) : version, withVersion = (version, words) => version ? `${shortName3(version)} · ${words}` : words, clamped = (fill) => Math.min(1, Math.max(0, fill)), lined = (update, now = Date.now()) => ({ ...update, line: fleetLine(update, now) }), QUIET_GRACE, SWITCH_GRACE, shortVersion = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
 var init_progress = __esm(() => {
+  init_files();
   init_home();
   init_attempt();
   init_facts();
@@ -60548,6 +60635,8 @@ var init_progress = __esm(() => {
   init_reach();
   init_state();
   init_update();
+  FINISHED_FILE = path163.join(RUN, "fleet-finished.json");
+  SETTLED_SHOWN = 10 * 60000;
   QUIET_GRACE = 2 * 60000;
   SWITCH_GRACE = 10 * 60000;
 });
@@ -69445,7 +69534,7 @@ async function run5(name, args, caller, targets, signal, operation) {
         const where = statusName(item.status);
         if (issue) {
           const ignored = [args.title !== undefined ? "title" : "", args.body !== undefined ? "body" : ""].filter(Boolean);
-          return said5(`Added ${nameOf2(item)} (${seenWords(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
+          return said5(`Added ${nameOf2(item)} (${seenWords2(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
         }
         return said5(item.number !== undefined ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.` : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's main computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
       }));
@@ -69496,7 +69585,7 @@ async function run5(name, args, caller, targets, signal, operation) {
       }, (item) => {
         const where = statusName(item.status);
         if (issue)
-          return said5(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf2(item)} now (${seenWords(issue.read.state)} on GitHub), ${where}: refer to it as ${item.source.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
+          return said5(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf2(item)} now (${seenWords2(issue.read.state)} on GitHub), ${where}: refer to it as ${item.source.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
         return said5(item.status === "done" ? `Marked ${nameOf2(item)} done.` : item.status === "canceled" ? `Marked ${nameOf2(item)} canceled.` : `Changed ${nameOf2(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
       }));
     }
@@ -69670,7 +69759,7 @@ async function handTarget(given, targets) {
 function line(item, facts, caller, owners, names, now) {
   const working = item.sessions.filter((each) => facts.working.has(each.session));
   const shown = shownOf(item);
-  const state = shown.status === "done" ? item.source && shown.seen ? shown.seen.gone ? "gone from GitHub" : `${seenWords(shown.seen.state)} on GitHub` : `done ${agoWords(shown.doneAt ?? item.updated.at, now)}` : shown.status === "canceled" ? `canceled ${agoWords(shown.doneAt ?? item.updated.at, now)}` : `${working.length ? `${working.map((each) => `"${owners.get(each.session)?.title ?? "a session"}" at work`).join(", ")}` : ""}${item.progress?.note ? `${working.length ? ": " : ""}${item.progress.note}` : ""}`;
+  const state = shown.status === "done" ? item.source && shown.seen ? shown.seen.gone ? "gone from GitHub" : `${seenWords2(shown.seen.state)} on GitHub` : `done ${agoWords(shown.doneAt ?? item.updated.at, now)}` : shown.status === "canceled" ? `canceled ${agoWords(shown.doneAt ?? item.updated.at, now)}` : `${working.length ? `${working.map((each) => `"${owners.get(each.session)?.title ?? "a session"}" at work`).join(", ")}` : ""}${item.progress?.note ? `${working.length ? ": " : ""}${item.progress.note}` : ""}`;
   const progress = item.progress?.value !== undefined ? ` ${Math.round(item.progress.value * 100)}%` : "";
   const whose = item.owner === caller.owner ? "" : item.owner.startsWith("grp_") ? " · in the group's queue" : ` · in "${owners.get(item.owner)?.title ?? "another session"}" (${item.owner})`;
   return `- ${nameOf2({ ...item, title: shown.title })}${tagsOf(item, names)}${state ? ` · ${state}` : ""}${progress}${whose} · updated ${agoWords(item.updated.at, now)}`;
@@ -69782,7 +69871,7 @@ async function showWords(item, facts, targets, caller) {
   const related = relationsOf(item, [...here, ...elsewhere]);
   const parts = [
     `${nameOf2({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
-    item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
+    item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords2(read.value.state)} before)` : `${seenWords2(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",
     item.sessions.length ? `Sessions on it: ${item.sessions.map((each) => `${title(each.session)} (${each.session}) ${facts.working.has(each.session) ? "at work" : "not at work"}`).join("; ")}` : "",
@@ -69821,7 +69910,7 @@ var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, seenWords = (state) => ({ open: "open", draft: "a draft", completed: "closed", not_planned: "closed as not planned", merged: "merged", closed: "closed without merging" })[state] ?? state, peerName = (session) => Object.values(readPeerAgents()).flatMap((told) => told.list ?? []).find((agent) => agent.session === session)?.name ?? null, shownOf = (item) => withSeen({ title: item.title, status: item.status, ...item.source ? { source: item.source } : {}, ...item.doneAt !== undefined ? { doneAt: item.doneAt } : {} }), tagsOf = (item, names) => [
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, seenWords2 = (state) => ({ open: "open", draft: "a draft", completed: "closed", not_planned: "closed as not planned", merged: "merged", closed: "closed without merging" })[state] ?? state, peerName = (session) => Object.values(readPeerAgents()).flatMap((told) => told.list ?? []).find((agent) => agent.session === session)?.name ?? null, shownOf = (item) => withSeen({ title: item.title, status: item.status, ...item.source ? { source: item.source } : {}, ...item.doneAt !== undefined ? { doneAt: item.doneAt } : {} }), tagsOf = (item, names) => [
   item.priority && item.priority !== "normal" ? priorityName(item.priority) : "",
   ...item.labels.map((each) => names.get(each) ?? "").filter(Boolean).map((each) => `[${each}]`),
   item.assignee ? `for ${item.assignee.name ?? assigneeNamed(item.assignee).name}` : "",
@@ -89762,7 +89851,7 @@ async function listComputers(name, bridge, signal, now = Date.now(), target = fl
       ...ssh.length ? { ssh } : {},
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !gone ? { agents: mine.agents } : {} } : {},
       ...features ? { features, compatibility: computerCompatibility(features) } : {},
-      ...target ? { fleetUpdate: peerFleetUpdate(target, mine, away, awayFor) } : {},
+      ...target ? { fleetUpdate: peerFleetUpdate(target, mine, away, awayFor, said?.heard, now) } : {},
       ...mine?.working !== undefined ? gone ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? []
     });
@@ -89884,7 +89973,7 @@ async function* computersRoute(context, match) {
     const target = fleetTarget();
     const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), target);
     const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
-    const fleetUpdate = fleetSummary(computers, target);
+    const fleetUpdate = fleetSummary(computers, target, Date.now());
     return { computers, ...fleetUpdate ? { fleetUpdate } : {}, ...pending.length ? { wipePending: pending } : {} };
   };
   if (!match[1])
@@ -121518,6 +121607,7 @@ async function commandSignIn(options) {
   })();
   let url = "";
   let printedAt;
+  let printedInUse = options.printedPage === true;
   const look = (waited) => {
     const printed = firstURL(output);
     if (options.printedPage)
@@ -121527,7 +121617,10 @@ async function commandSignIn(options) {
 `)[0].trim();
     if (printed)
       printedAt ??= waited;
-    return printed && waited - printedAt >= 3000 ? printed : "";
+    if (!printed || waited - printedAt < 3000)
+      return "";
+    printedInUse = true;
+    return printed;
   };
   let waited = 0;
   for (;waited < (options.pageWait ?? 15000) && !url; waited += 200) {
@@ -121555,11 +121648,17 @@ async function commandSignIn(options) {
     await Bun.sleep(200);
   }
   const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
+  const mode = () => codePrompt && printedInUse ? "code" : "auto";
+  const instructions = () => mode() === "code" ? options.codeInstructions ?? options.instructions : options.instructions;
   return {
     url,
     userCode,
-    instructions: options.instructions,
-    mode: "auto",
+    get instructions() {
+      return instructions();
+    },
+    get mode() {
+      return mode();
+    },
     acceptsCode: Boolean(codePrompt),
     complete: codePrompt ? async (code) => {
       if (status.status !== "pending")
@@ -121588,7 +121687,7 @@ async function commandSignIn(options) {
       if (status.status !== "pending")
         return status;
       const code = userCode ?? options.userCode?.exec(output)?.[1];
-      return { ...status, ...late ? { url: late, instructions: options.instructions } : {}, ...code ? { userCode: code } : {} };
+      return { ...status, ...late ? { url: late, instructions: instructions() } : {}, ...code ? { userCode: code } : {} };
     },
     cancel() {
       if (status.status === "pending")
@@ -125970,11 +126069,11 @@ function parseRows(json) {
     const at = numberOf(values[0]);
     if (at === undefined || numberOf(values[1]) !== 0)
       continue;
-    const [input, cacheRead, cacheWrite, output, reasoning] = [values[4], values[5], values[6], values[7], values[8]].map(clamped);
+    const [input, cacheRead, cacheWrite, output, reasoning] = [values[4], values[5], values[6], values[7], values[8]].map(clamped2);
     const tokens = { input, cacheWrite5m: cacheWrite, cacheWrite1h: 0, cacheRead, output: output + reasoning };
     const sum = input + cacheWrite + cacheRead + output + reasoning;
     const id = typeof values[9] === "string" ? values[9].trim() : "";
-    rows.push({ ...id ? { id } : {}, at, model: typeof values[3] === "string" ? values[3].trim() : "", tokens, total: sum > 0 ? sum : clamped(values[2]) });
+    rows.push({ ...id ? { id } : {}, at, model: typeof values[3] === "string" ? values[3].trim() : "", tokens, total: sum > 0 ? sum : clamped2(values[2]) });
   }
   return rows;
 }
@@ -126150,7 +126249,7 @@ self.onmessage = (event) => {
   }
   postMessage({ oauth, read, failed, jsons })
 }
-`, readerURL2, READ_FOR2 = 120000, COMPLETED = "(json_type(data,'$.time.completed') IN ('integer','real') OR json_type(data,'$.finish') = 'text')", clamped = (value) => Math.trunc(Math.min(Math.max(numberOf(value) ?? 0, 0), 1000000000000000000));
+`, readerURL2, READ_FOR2 = 120000, COMPLETED = "(json_type(data,'$.time.completed') IN ('integer','real') OR json_type(data,'$.finish') = 'text')", clamped2 = (value) => Math.trunc(Math.min(Math.max(numberOf(value) ?? 0, 0), 1000000000000000000));
 var init_engine_codex = __esm(() => {
   init_codex_pricing();
   init_history2();

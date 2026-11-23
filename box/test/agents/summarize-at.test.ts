@@ -41,3 +41,20 @@ test("agents that keep their own limits say no threshold", () => {
   expect(withSummarizeAt(session("cursor", 1_000_000)).context?.summarizeAt).toBeUndefined()
   expect(withSummarizeAt(session("antigravity", 1_000_000)).context?.summarizeAt).toBeUndefined()
 })
+
+test("a conversation offers this box's setting where its agent takes it, before anything is measured too", () => {
+  choose("600000")
+  const unmeasured = { id: "ses_b", model: { id: "m", providerID: "claude-code" } } as unknown as Session
+  expect(withSummarizeAt(unmeasured).summarize).toEqual({
+    value: "600000",
+    label: "Summarize at",
+    choices: [{ id: "200000", title: "200k" }, { id: "400000", title: "400k", line: "Default" }, { id: "600000", title: "600k" }, { id: "never", title: "Never" }],
+    line: "All conversations",
+  })
+  // (Nothing chosen: the default.)
+  rmSync(compactionFile(home), { force: true })
+  expect(withSummarizeAt(session("codex-cli", 1_000_000)).summarize?.value).toBe("400000")
+  // Agents that keep their own limits offer nothing.
+  expect(withSummarizeAt(session("cursor", 1_000_000)).summarize).toBeUndefined()
+  expect(withSummarizeAt(session("antigravity", 1_000_000)).summarize).toBeUndefined()
+})

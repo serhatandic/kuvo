@@ -338,6 +338,24 @@ interface Pull {
   forRepair?: boolean;
 }
 let pull: Pull | null = null;
+/** How far this box got pulling a release, by its version, 0..1 (`got / parts`): only ever up, so
+ * a pull started again (from another computer, after Try Again) never steps its row back. In the
+ * process that pulls; a new process starts without it. */
+let pulled: { version: string; fill: number } | null = null;
+
+function notePulled(current: Pull): void {
+  if (current.forRepair || !current.parts) return;
+  const fill = Math.min(1, current.got.size / current.parts);
+  if (pulled?.version !== current.version) pulled = { version: current.version, fill };
+  else pulled.fill = Math.max(pulled.fill, fill);
+}
+
+/** How far this box is in getting `version` ready, 0..1, where it pulls it part by part from
+ * another of your computers; none where it isn't known (a download, or nothing pulled yet). */
+export function pullFill(version: string): number | undefined {
+  if (pull?.version === version) notePulled(pull);
+  return pulled?.version === version ? pulled.fill : undefined;
+}
 // Fail over to another holder of the same release before reporting a transfer failure.
 const tried = new Set<string>();
 const tryKey = (peer: string, version: string, sha256?: string) => `${peer} ${sha256 ?? ""} ${version}`;
@@ -584,6 +602,7 @@ function exchangeRelease(sender: { key: string }, given: Record<string, unknown>
       current.manifest = manifest;
       current.boxes = boxes;
       current.parts = Math.ceil(size / PART);
+      notePulled(current);
       current.heard = current.progressed = clock();
       ask(current, options, current.heard, false);
     };
@@ -601,6 +620,7 @@ function exchangeRelease(sender: { key: string }, given: Record<string, unknown>
   const handle = fs.openSync(path.join(INCOMING, "pack"), "r+");
   try { fs.writeSync(handle, bytes, 0, bytes.length, i * PART); } finally { fs.closeSync(handle); }
   current.got.add(i);
+  notePulled(current);
   current.asked.delete(i);
   current.heard = current.progressed = now;
   if (current.got.size < current.parts!) return ask(current, options, now, false);

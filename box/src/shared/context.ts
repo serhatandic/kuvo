@@ -30,6 +30,28 @@ export interface ContextSize {
 /** The agents that summarize at this box's "Summarize long conversations at" choice. */
 const choosing = new Set(["claude", "codex", "grok"])
 
+/** The box's "Summarize long conversations at" setting, as a conversation offers it (`data.summarize`
+ * of `kuvo/agents/api/session/<id>`, PROTOCOL.md "Session context"): changed with `PATCH
+ * kuvo/settings/conversations {row: "compaction", value}`, for all of this computer's conversations. */
+export interface SummarizeSetting {
+  value: CompactionChoice
+  label: string
+  choices: { id: CompactionChoice; title: string; line?: string }[]
+  line: string
+}
+
+/** The setting for a conversation of agent `kind`, where it decides when that's summarized (as
+ * `summarizeAt`'s agents); none for another agent. */
+export function summarizeSetting(kind: string | undefined, choice: CompactionChoice = compactionChoice()): SummarizeSetting | undefined {
+  if (!kind || !choosing.has(kind)) return
+  return {
+    value: choice,
+    label: "Summarize at",
+    choices: compactionChoices.map(id => ({ id, title: id === "never" ? "Never" : `${Number(id) / 1000}k`, ...(id === DEFAULT_COMPACTION ? { line: "Default" } : {}) })),
+    line: "All conversations",
+  }
+}
+
 /**
  * Where a conversation of agent `kind`, on a model holding `window`, is summarized by itself: the
  * box's choice as each agent takes it (`never`: Claude Code under a 900k window still keeps 400k).

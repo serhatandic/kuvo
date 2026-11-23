@@ -8,9 +8,11 @@ import { keepList } from "../src/link/lists/sessions"
 
 // How one of your computers' update reads while it switches to the setup's release (PROTOCOL.md,
 // "Updates", Request API): a computer restarting into the release reads as switching, never off;
-// a moment's gap in hearing from one never flips its row; and its row only moves forward.
+// a moment's gap in hearing from one never flips its row; its row only moves forward; and the
+// setup's update says where it is, in the box's words, and that it's done for a while after.
+// Real: the box's own update functions and its run folder; what peers told is given as they'd tell it.
 
-const { fleetSummary, localFleetUpdate, peerFleetUpdate, QUIET_GRACE, SWITCH_GRACE } = await import("../src/link/updates/progress")
+const { FINISHED_FILE, fleetSummary, localFleetUpdate, peerFleetUpdate, QUIET_GRACE, SETTLED_SHOWN, SWITCH_GRACE } = await import("../src/link/updates/progress")
 
 const target = { version: "0.8.0-beta.42", sha256: "a".repeat(64) }
 const staged = { version: target.version, sha256: target.sha256 }
@@ -56,7 +58,7 @@ test("a computer's row moves only forward while it switches: ready, switching, u
 
 test("a moment's gap in hearing from a computer keeps what it last told", () => {
   expect(row(switched, true, 5_000)).toBe("up-to-date: beta.42 · Up to date")
-  expect(row({ kuvo: "0.8.0-beta.41" }, true, 5_000)).toBe("getting-ready: Getting beta.42 ready…")
+  expect(row({ kuvo: "0.8.0-beta.41" }, true, 5_000)).toBe("getting-ready: Getting ready…")
   expect(row({ kuvo: "0.8.0-beta.41" }, true, QUIET_GRACE)).toBe("off: beta.41 · Can’t be reached: updates when it’s back")
   // (One that never told anything has nothing to keep.)
   expect(row(undefined, true, 1_000)).toBe("off: Can’t be reached: updates when it’s back")
@@ -70,19 +72,125 @@ test("a box switching into the release says so of itself", () => {
 })
 
 test("the update notifier stays up, counting the switching computer, while it restarts", () => {
+  fs.rmSync(FINISHED_FILE, { force: true })
   const rows = (lokum: any, away: boolean, awayFor: number) => [
     { name: "hetzner", fleetUpdate: peerFleetUpdate(target, switched) },
     { name: "mini-local", fleetUpdate: peerFleetUpdate(target, ready) },
     { name: "lokum", fleetUpdate: peerFleetUpdate(target, lokum, away, awayFor) },
   ]
   const before = fleetSummary(rows(ready, false, Infinity), target)!
-  expect(before).toMatchObject({ shown: true, title: "Updating to beta.42 · 3 of 3 ready" })
+  expect(before).toMatchObject({ shown: true, phase: "switching", title: "Switching to beta.42 · 1 of 3 done", detail: "2 still on beta.41." })
   const restarting = fleetSummary(rows(ready, true, 4_000), target)!
-  expect(restarting).toMatchObject({ shown: true, stage: "switching", title: "Updating to beta.42 · 3 of 3 ready" })
+  expect(restarting).toMatchObject({ shown: true, stage: "switching", phase: "switching", title: "Switching to beta.42 · 1 of 3 done" })
   const trial = fleetSummary(rows(onTrial, false, Infinity), target)!
-  expect(trial).toMatchObject({ shown: true, stage: "switching", title: "Updating to beta.42 · 3 of 3 ready" })
-  const done = fleetSummary(rows(switched, false, Infinity), target)!
-  expect(done).toMatchObject({ shown: true, title: "Updating to beta.42 · 3 of 3 ready" })
+  expect(trial).toMatchObject({ shown: true, stage: "switching", phase: "switching", title: "Switching to beta.42 · 1 of 3 done" })
+  const lokumDone = fleetSummary(rows(switched, false, Infinity), target)!
+  expect(lokumDone).toMatchObject({ shown: true, phase: "switching", title: "Switching to beta.42 · 2 of 3 done", detail: "1 still on beta.41." })
+  const done = fleetSummary(rows(switched, false, Infinity).map(row => ({ ...row, fleetUpdate: peerFleetUpdate(target, switched) })), target)!
+  expect(done).toMatchObject({ shown: true, phase: "done", title: "All 3 on beta.42" })
+  expect(done.detail).toBeUndefined()
+  // Never "Everything works on …" once one has switched.
+  for (const summary of [before, restarting, trial, lokumDone, done]) expect(`${summary.title} ${summary.detail}`).not.toContain("Everything")
+})
+
+test("a computer's row only goes forward, getting ready, ready, switching, up to date; ready never reads as done", () => {
+  const phases = [
+    peerFleetUpdate(target, { kuvo: "0.8.0-beta.41" }),
+    peerFleetUpdate(target, ready),
+    peerFleetUpdate(target, ready, true, 2_000),
+    peerFleetUpdate(target, onTrial),
+    peerFleetUpdate(target, switched),
+  ].map(update => [update.line?.phase, update.line?.words, update.line?.tone])
+  expect(phases).toEqual([
+    ["getting-ready", "Getting ready…", "working"],
+    // (Its tone stays "done" for older clients; its phase says it's only ready.)
+    ["ready", "Ready for beta.42", "done"],
+    ["switching", "Switching to beta.42…", "working"],
+    ["switching", "Switching to beta.42…", "working"],
+    ["done", "beta.42 · Up to date", "done"],
+  ])
+  // Can't update: its tone says, no phase.
+  const cannot = peerFleetUpdate(target, { kuvo: "0.8.0-beta.41", cannot: { ...staged, reason: "There isn’t room on it.", fixable: true } })
+  expect(cannot.line).toEqual({ words: "beta.41 · There isn’t room on it.", tone: "warning", short: "Can’t update" })
+})
+
+test("how far a computer is in getting the release ready shows on its row, here and as it told", () => {
+  const telling = (fill: number, version = target.version) => ({ kuvo: "0.8.0-beta.41", fleetUpdate: { current: "0.8.0-beta.41", target: version, canRetry: false, state: "getting-ready", fill } }) as any
+  expect(peerFleetUpdate(target, telling(0.724))).toMatchObject({ state: "getting-ready", fill: 0.724, line: { words: "Getting ready · 72%", phase: "getting-ready", fill: 0.724, tone: "working" } })
+  // All of it come: preparing it, no number to show.
+  expect(peerFleetUpdate(target, telling(1.4))).toMatchObject({ fill: 1, line: { words: "Getting ready…", fill: 1 } })
+  // How far it got with another release isn't how far it is with this one.
+  const other = peerFleetUpdate(target, telling(0.5, "0.8.0-beta.43"))
+  expect([other.fill, other.line?.words]).toEqual([undefined, "Getting ready…"])
+  // This box, as far as its pull got.
+  expect(localFleetUpdate(target, { kuvo: "0.8.0-beta.41" }, false, 0.5)).toMatchObject({ state: "getting-ready", fill: 0.5, line: { words: "Getting ready · 50%" } })
+  // Ready, a fill says nothing more.
+  const done = localFleetUpdate(target, { kuvo: "0.8.0-beta.41", staged }, false, 1)!
+  expect([done.state, done.fill, done.line?.words]).toEqual(["ready", undefined, "Ready for beta.42"])
+})
+
+test("a computer that's off says when it was last seen", () => {
+  const NOW = 1_800_000_000_000
+  const off = (ago?: number, facts: any = { kuvo: "0.8.0-beta.43" }) => peerFleetUpdate(target, facts, true, Infinity, ago === undefined ? undefined : NOW - ago, NOW)
+  expect(off(2 * 3_600_000 + 5 * 60_000)).toMatchObject({ state: "off", seen: NOW - 2 * 3_600_000 - 5 * 60_000, line: { words: "beta.43 · seen 2h ago", tone: "off", phase: "off" } })
+  expect([30_000, 5 * 60_000 + 10_000, 26 * 3_600_000, 3 * 86_400_000 + 1].map(ago => off(ago).line?.words)).toEqual([
+    "beta.43 · seen just now", "beta.43 · seen 5 min ago", "beta.43 · seen yesterday", "beta.43 · seen 3 days ago",
+  ])
+  // Never heard what it runs: the words alone.
+  expect(off(60 * 60_000, {}).line?.words).toBe("Seen 1h ago")
+  // Never heard from at all: as before.
+  expect(off(undefined).line?.words).toBe("beta.43 · Can’t be reached: updates when it’s back")
+  // Not off: no "seen".
+  expect(peerFleetUpdate(target, ready, false, Infinity, NOW - 60_000, NOW).seen).toBeUndefined()
+})
+
+const named = (name: string, fleetUpdate: any) => ({ name, fleetUpdate })
+const at = (name: string, state: string, current: string | null, more: any = {}) => named(name, { state, current, target: target.version, canRetry: false, ...more })
+
+test("the setup's update says where it is, in words that only go forward", () => {
+  fs.rmSync(FINISHED_FILE, { force: true })
+  const NOW = 1_800_000_000_000
+  const say = (rows: any[]) => {
+    const summary = fleetSummary(rows, target, NOW)!
+    return [summary.phase, summary.title, summary.detail, summary.shown]
+  }
+  expect(say([at("main-linux", "getting-ready", "0.8.0-beta.41"), at("mac-mini", "getting-ready", "0.8.0-beta.41"), at("spare", "off", "0.8.0-beta.38")]))
+    .toEqual(["getting-ready", "Getting beta.42 ready", "Your computers stay on beta.41 meanwhile.", true])
+  expect(say([at("main-linux", "ready", "0.8.0-beta.41"), at("mac-mini", "getting-ready", "0.8.0-beta.40"), at("spare", "off", "0.8.0-beta.38")]))
+    .toEqual(["getting-ready", "Getting beta.42 ready · 1 of 3", "Your computers keep what they run meanwhile.", true])
+  expect(say([at("main-linux", "ready", "0.8.0-beta.41"), at("mac-mini", "ready", "0.8.0-beta.41"), at("spare", "off", "0.8.0-beta.38")]))
+    .toEqual(["ready", "beta.42 is ready · 2 of 3", "They switch next.", true])
+  expect(say([at("main-linux", "up-to-date", target.version), at("mac-mini", "updating", "0.8.0-beta.41", { stage: "switching" }), at("macbook", "ready", "0.8.0-beta.41")]))
+    .toEqual(["switching", "Switching to beta.42 · 1 of 3 done", "2 still on beta.41.", true])
+  expect(say([at("main-linux", "up-to-date", target.version), at("mac-mini", "ready", "0.8.0-beta.41"), at("spare", "off", "0.8.0-beta.38")]))
+    .toEqual(["switching", "Switching to beta.42 · 1 of 3 done", "2 still to switch.", true])
+  expect(say([at("main-linux", "up-to-date", target.version), at("mac-mini", "up-to-date", target.version), at("spare", "off", "0.8.0-beta.41")]))
+    .toEqual(["waiting", "beta.42 · 2 of 3 up to date", "spare updates when it’s back.", true])
+  expect(say([at("main-linux", "up-to-date", target.version), at("spare", "off", "0.8.0-beta.41"), at("old-mini", "off", null)]))
+    .toEqual(["waiting", "beta.42 · 1 of 3 up to date", "2 computers update when they’re back.", true])
+  expect(say([at("main-linux", "up-to-date", target.version), at("mac-mini", "up-to-date", target.version)])).toEqual(["done", "All 2 on beta.42", undefined, true])
+  expect(say([at("main-linux", "up-to-date", target.version)])).toEqual(["done", "Up to date on beta.42", undefined, true])
+  // A fixable one keeps its warning, with where the rest are.
+  const room = "There isn’t room on it to keep its data while it updates."
+  expect(fleetSummary([at("main-linux", "up-to-date", target.version), at("spare", "cannot", "0.8.0-beta.41", { reason: room, fixable: true })], target, NOW))
+    .toMatchObject({ warning: true, shown: true, title: "spare can’t update to beta.42", detail: `spare: ${room}`, phase: "waiting" })
+})
+
+test("a finished update shows for ten minutes on a box that saw it under way, and never on one that didn't", () => {
+  fs.rmSync(FINISHED_FILE, { force: true })
+  const NOW = 1_800_000_000_000
+  const settled = [at("main-linux", "up-to-date", target.version), at("spare", "off", "0.8.0-beta.41")]
+  // Never seen in progress here: nothing to tell.
+  expect(fleetSummary(settled, target, NOW)).toMatchObject({ phase: "waiting", shown: false })
+  expect(fleetSummary(settled, target, NOW + 60_000)!.detail).toBeUndefined()
+  // Seen under way, then finished: shown from then, for ten minutes.
+  expect(fleetSummary([at("main-linux", "ready", "0.8.0-beta.41"), at("spare", "off", "0.8.0-beta.41")], target, NOW + 2 * 60_000)!.shown).toBe(true)
+  const finished = NOW + 3 * 60_000
+  expect(fleetSummary(settled, target, finished)).toMatchObject({ phase: "waiting", shown: true, title: "beta.42 · 1 of 2 up to date", detail: "spare updates when it’s back." })
+  expect(fleetSummary(settled, target, finished + SETTLED_SHOWN - 1)!.shown).toBe(true)
+  expect(fleetSummary(settled, target, finished + SETTLED_SHOWN)).toMatchObject({ phase: "waiting", shown: false })
+  // Another release finished: this box never saw it under way.
+  expect(fleetSummary(settled.map(row => ({ ...row, fleetUpdate: { ...row.fleetUpdate, target: "0.8.0-beta.43" } })), { version: "0.8.0-beta.43" }, finished + 60_000)!.shown).toBe(false)
 })
 
 test("the resident announces a kept release after its pack has been verified", async () => {
