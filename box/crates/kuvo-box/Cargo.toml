@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 hostname = "0.4"
 http = "1"
+kuvo_engine = { path = "../kuvo_engine" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }

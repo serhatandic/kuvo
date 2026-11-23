@@ -12,16 +12,28 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Console::*, JobObjects::*, SystemInformation::GetSystemDirectoryW, Threading::*},
+    System::{
+        Console::*,
+        JobObjects::*,
+        SystemInformation::GetSystemDirectoryW,
+        SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE},
+        Threading::*,
+    },
 };
 
 pub(super) struct Owner {
     process: OwnedHandle,
     job: OwnedHandle,
     status: Option<ExitStatus>,
+    recoverable: bool,
+    leave_running: bool,
 }
 
 impl Owner {
+    pub(super) fn leave_running_on_drop(&mut self) {
+        self.leave_running = true;
+    }
+
     pub(super) fn status(&self) -> Option<ExitStatus> {
         self.status
     }
@@ -88,6 +100,15 @@ impl Owner {
         let status = ExitStatus::from_raw(code);
         self.status = Some(status);
         Ok(status)
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        if self.recoverable && !self.leave_running && self.status.is_none() {
+            // SAFETY: the job contains only the worker created for this owner.
+            unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) };
+        }
     }
 }
 
@@ -196,15 +217,27 @@ impl Drop for Attributes {
     }
 }
 
-pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
+pub(super) fn spawn(spec: &Spawn, recovery_name: Option<&str>) -> io::Result<ChildGroup> {
     let (program, mut line) = command_line(spec)?;
     let cwd = spec.cwd.as_deref().map(|path| wide(path.as_os_str()));
     let env = environment_block(&spec.env);
 
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    // SAFETY: null arguments make an unnamed job with a non-inheritable handle.
-    let job = owned(unsafe { CreateJobObjectW(null(), null()) })?;
+    if recovery_name.is_none() {
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    }
+    let name = recovery_name.map(|name| wide(OsStr::new(name)));
+    // SAFETY: the name, if present, is NUL-terminated. The handle is non-inheritable.
+    let job = owned(unsafe {
+        CreateJobObjectW(null(), name.as_ref().map_or(null(), |name| name.as_ptr()))
+    })?;
+    // SAFETY: GetLastError reads the thread-local result from CreateJobObjectW.
+    if name.is_some() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "worker job already exists",
+        ));
+    }
     // SAFETY: the information class matches the initialized structure and its length.
     ok(unsafe {
         SetInformationJobObject(
@@ -215,15 +248,15 @@ pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
         )
     })?;
 
-    let (stdin, input) = match spec.stdin {
+    let (stdin, input) = match &spec.stdin {
         Stdio::Pipe => {
             let (read, write) = io::pipe()?;
             (Some(write), duplicate(read.as_raw_handle())?)
         }
         mode => (None, inherit_or_null(mode, STD_INPUT_HANDLE, true)?),
     };
-    let (stdout, stdout_handle) = output(spec.stdout, STD_OUTPUT_HANDLE)?;
-    let (stderr, error) = output(spec.stderr, STD_ERROR_HANDLE)?;
+    let (stdout, stdout_handle) = output(&spec.stdout, STD_OUTPUT_HANDLE)?;
+    let (stderr, error) = output(&spec.stderr, STD_ERROR_HANDLE)?;
     let job_list = [job.as_raw_handle()];
     let handles = [
         input.as_raw_handle(),
@@ -290,6 +323,8 @@ pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
             process,
             job,
             status: None,
+            recoverable: recovery_name.is_some(),
+            leave_running: false,
         },
         identity,
         stdin,
@@ -316,7 +351,10 @@ fn duplicate(source: HANDLE) -> io::Result<OwnedHandle> {
     owned(child)
 }
 
-fn inherit_or_null(mode: Stdio, which: STD_HANDLE, read: bool) -> io::Result<OwnedHandle> {
+fn inherit_or_null(mode: &Stdio, which: STD_HANDLE, read: bool) -> io::Result<OwnedHandle> {
+    if let Stdio::File(file) = mode {
+        return duplicate(file.as_raw_handle());
+    }
     if matches!(mode, Stdio::Inherit) {
         // SAFETY: the selector is one of the standard handle constants.
         let handle = unsafe { GetStdHandle(which) };
@@ -328,7 +366,7 @@ fn inherit_or_null(mode: Stdio, which: STD_HANDLE, read: bool) -> io::Result<Own
     duplicate(file.as_raw_handle())
 }
 
-fn output(mode: Stdio, which: STD_HANDLE) -> io::Result<(Option<PipeReader>, OwnedHandle)> {
+fn output(mode: &Stdio, which: STD_HANDLE) -> io::Result<(Option<PipeReader>, OwnedHandle)> {
     Ok(match mode {
         Stdio::Pipe => {
             let (read, write) = io::pipe()?;
@@ -421,4 +459,99 @@ fn append_arg(line: &mut Vec<u16>, arg: &OsStr) {
     }
     line.extend(std::iter::repeat_n(SLASH, slashes * 2));
     line.push(QUOTE);
+}
+
+pub(super) fn executable(pid: u32) -> io::Result<PathBuf> {
+    // SAFETY: OpenProcess validates the PID.
+    let process = owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
+    let mut path = vec![0; 32_768];
+    let mut length = path.len() as u32;
+    // SAFETY: the process handle and the writable UTF-16 buffer are valid.
+    ok(unsafe {
+        QueryFullProcessImageNameW(process.as_raw_handle(), 0, path.as_mut_ptr(), &mut length)
+    })?;
+    Ok(OsString::from_wide(&path[..length as usize]).into())
+}
+
+pub(super) struct Adopted {
+    identity: ProcessIdentity,
+    process: OwnedHandle,
+    job: Option<OwnedHandle>,
+}
+
+impl Adopted {
+    pub(super) fn open(
+        identity: ProcessIdentity,
+        recovery_name: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        // SAFETY: the system validates the PID and returns a stable process handle.
+        let process = owned(unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+                0,
+                identity.pid,
+            )
+        })?;
+        if start_time(process.as_raw_handle())? != identity.start_identity {
+            return Ok(None);
+        }
+        let job = if let Some(name) = recovery_name {
+            let name = wide(OsStr::new(name));
+            // SAFETY: name is NUL-terminated and the returned handle is non-inheritable.
+            let job = owned(unsafe {
+                OpenJobObjectW(JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, 0, name.as_ptr())
+            });
+            match job {
+                Ok(job) => {
+                    let mut member = 0;
+                    // SAFETY: both handles are open and member is writable.
+                    ok(unsafe {
+                        IsProcessInJob(process.as_raw_handle(), job.as_raw_handle(), &mut member)
+                    })?;
+                    if member == 0 {
+                        return Err(io::Error::other(
+                            "worker does not belong to the recorded job",
+                        ));
+                    }
+                    Some(job)
+                }
+                Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => None,
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        Ok(Some(Self {
+            identity,
+            process,
+            job,
+        }))
+    }
+
+    pub(super) fn identity(&self) -> &ProcessIdentity {
+        &self.identity
+    }
+
+    pub(super) fn stop(&mut self, _grace: Duration) -> io::Result<()> {
+        let process = self.process.as_raw_handle();
+        // SAFETY: the handle pins the adopted process and has synchronization access.
+        match unsafe { WaitForSingleObject(process, 0) } {
+            WAIT_OBJECT_0 => return Ok(()),
+            WAIT_TIMEOUT => {}
+            _ => return Err(io::Error::last_os_error()),
+        }
+        if let Some(job) = &self.job {
+            // SAFETY: membership of the adopted process was verified at open.
+            ok(unsafe { TerminateJobObject(job.as_raw_handle(), 1) })?;
+        } else {
+            // SAFETY: the pinned handle has termination rights and names the verified process.
+            ok(unsafe { TerminateProcess(process, 1) })?;
+        }
+        // SAFETY: the process remains pinned and the wait is bounded.
+        match unsafe { WaitForSingleObject(process, 5000) } {
+            WAIT_OBJECT_0 => Ok(()),
+            WAIT_TIMEOUT => Err(io::Error::other("the adopted worker did not exit")),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
 }
