@@ -8,6 +8,7 @@ mod folders;
 mod git;
 mod opened;
 mod order;
+mod suggested;
 
 pub use folders::Places;
 
@@ -20,7 +21,7 @@ use http::header::{CONTENT_LENGTH, HeaderValue};
 use kuvo_protocol::JsonStatus;
 use kuvo_protocol::routes::{
     get_kuvo_file, get_kuvo_file_info, get_kuvo_file_text, get_kuvo_files_find, get_kuvo_folders,
-    get_kuvo_folders_tree, post_kuvo_folders,
+    get_kuvo_folders_suggested, get_kuvo_folders_tree, post_kuvo_folders,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde::Serialize;
@@ -88,6 +89,11 @@ fn register_folders(registry: &mut Registry, places: &Places) {
                 folders::tree(&places, &query, folders::TREE_LIMIT, &call.cancel).await?,
             )
         }
+    });
+    let here = places.clone();
+    registry.register::<get_kuvo_folders_suggested::Spec, _, _>(Access::Any, move |_| {
+        let places = here.clone();
+        async move { blocking(move || typed::<_, 200>(suggested::answer(&places))).await }
     });
     let here = places.clone();
     registry.register::<get_kuvo_files_find::Spec, _, _>(Access::Any, move |call| {

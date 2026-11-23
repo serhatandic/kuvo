@@ -108,6 +108,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &mut routes,
         kuvo_services::files::Places {
             home: account.clone(),
+            box_home: home.to_owned(),
             platform: kuvo_os::platform::Platform::current(),
         },
     );

@@ -24,3 +24,6 @@ url = "2"
 kuvo_os = { path = "../kuvo_os" }
 tokio-util = { version = "0.7", features = ["rt"] }
 unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
