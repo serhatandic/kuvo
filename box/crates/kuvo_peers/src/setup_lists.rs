@@ -3,7 +3,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -65,6 +65,7 @@ pub struct View {
     pub relay_connected: bool,
     work_calls: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
+    pub(crate) system: Option<Arc<str>>,
 }
 
 impl View {
@@ -112,32 +113,41 @@ impl View {
     }
 
     pub(crate) fn at_work(&self) -> Vec<GetKuvoComputersStatus200ComputersItemAtWorkItem> {
-        let Some(lists) = self.local_lists.as_ref() else {
+        let Some(list) = self.local.list.as_ref() else {
             return vec![];
         };
-        let mut running: Vec<_> = lists
+        let mut running: Vec<_> = list
             .sessions
             .iter()
-            .filter(|row| {
-                row.facts.parent.is_none()
-                    && row.facts.archived != Some(true)
-                    && row.facts.running == Some(true)
-                    && !row.actions.is_empty()
+            .filter(|(_, row)| {
+                let facts = &row.facts;
+                facts.running == Some(true)
+                    && facts.asked.is_none()
+                    && facts.archived != Some(true)
+                    && facts.away != Some(true)
+                    && !matches!(facts.kind, lists::Kind::Subagent | lists::Kind::Hidden)
             })
             .collect();
-        running.sort_by(|a, b| {
+        running.sort_by(|(a_id, a), (b_id, b)| {
             b.facts
                 .updated
                 .as_f64()
                 .unwrap_or_default()
                 .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
+                .then(a_id.cmp(b_id))
         });
         running
             .into_iter()
-            .map(|row| GetKuvoComputersStatus200ComputersItemAtWorkItem {
-                id: row.id.clone(),
-                title: row.facts.title.clone(),
-            })
+            .map(
+                |(id, row)| GetKuvoComputersStatus200ComputersItemAtWorkItem {
+                    id: id.clone(),
+                    title: row
+                        .facts
+                        .title
+                        .as_deref()
+                        .and_then(crate::directory::work_title),
+                },
+            )
             .collect()
     }
 
@@ -164,12 +174,42 @@ impl View {
     }
 }
 
-pub(crate) fn system_name() -> &'static str {
+fn system_name() -> Option<Arc<str>> {
     match std::env::consts::OS {
-        "macos" => "macOS",
-        "linux" => "Linux",
-        "windows" => "Windows",
-        other => other,
+        "macos" => {
+            let plist = fs::read_to_string("/System/Library/CoreServices/SystemVersion.plist").ok();
+            let version = plist.as_deref().and_then(|text| {
+                text.split_once("<key>ProductVersion</key>")?
+                    .1
+                    .trim_start()
+                    .strip_prefix("<string>")?
+                    .split_once("</string>")
+                    .map(|(version, _)| version)
+                    .filter(|version| {
+                        !version.is_empty() && version.len() <= 40 && !version.contains('<')
+                    })
+            });
+            Some(version.map_or_else(
+                || "macOS".into(),
+                |version| format!("macOS {version}").into(),
+            ))
+        }
+        "linux" => {
+            let release = fs::read_to_string("/etc/os-release").ok();
+            let name = release.as_deref().and_then(|text| {
+                let value = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("PRETTY_NAME="))?;
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or(value);
+                (!value.is_empty() && value.encode_utf16().count() <= 80 && !value.contains('"'))
+                    .then_some(value)
+            });
+            Some(name.unwrap_or("Linux").into())
+        }
+        _ => None,
     }
 }
 
@@ -348,6 +388,7 @@ impl Resident {
             relay_connected: false,
             work_calls: false,
             endpoint,
+            system: system_name(),
         };
         Self {
             run,
@@ -793,8 +834,11 @@ async fn publish_round(
     let working = active.len();
     active.truncate(20);
     let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
-        "working":working, "atWork":active, "system":system_name(),
+        "working":working, "atWork":active,
     }});
+    if let Some(system) = view.system.as_deref() {
+        state["computer"]["system"] = json!(system);
+    }
     if let Some(engine) = view
         .endpoint
         .as_ref()

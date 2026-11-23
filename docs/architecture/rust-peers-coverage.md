@@ -28,6 +28,9 @@ their remaining integration. The owner column assigns every partial and gap from
 - **History** is `kept_activity_and_notices_keep_their_origin_and_dock_deduplicates_a_bot`.
 - **Device** is `a_local_app_pairs_once_and_removal_survives_a_resident_restart`.
 - **Updating** is `a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for_a_start`.
+- **Computer facts** is `computers_show_only_valid_facts_from_the_latest_announcement`.
+- **Claims** is `a_session_has_a_remote_owner_only_while_one_computer_claims_it`.
+- **Forwarding** is `a_member_forwards_device_pairing_and_revocation_to_the_main`.
 - **Announcements** is `peers_announce_changes_answer_refreshes_and_repeat_after_ten_minutes`.
 - **Managed** is `a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_main_is_away`. The setup authority is also tested in [R4 and R5](rust-setup-coverage.md).
 - **Paging** is `an_away_worktree_pages_under_its_own_computers_project`.
@@ -40,22 +43,21 @@ their remaining integration. The owner column assigns every partial and gap from
 
 | Source | Covered | Partial | Gaps | Owner phase |
 | --- | --- | --- | --- | --- |
-| `box/test/setup-lists.test.ts` (31) | 2–3, 6, 8, 18–19 → First state. 21 and 31 → History. 4 and 11 → Updating. 7 → Paging. | 9 → Updating proves saved catalogs; 5 and 28 → First state proves waiting and pending membership; 10 → First state proves the session and computer return; 15 → Updating proves the kept page; 22 → History proves the activity projection. | 1, 12–14, 16–17, 20, 23–27, 29–30. | 2.2 — 7, 10, 28 (session and computer projection); 2.4 — 16, 28 (moves); 3.2 — 1, 5, 9, 12, 14–15, 24–27, 29–30; 5.1 — 10, 13, 22, 28 (bots); 5.2 — 20, 28 (Work Queue); 5.5 — 17, 23, 28 (library). |
+| `box/test/setup-lists.test.ts` (31) | 2–3, 6, 8, 18–19 → First state. 21 and 31 → History. 4 and 11 → Updating. 7 → Paging, including the archived project and both pages. | 9 → Updating proves saved catalogs. 5 → First state proves waiting and pending membership. 10 → First state proves live rows, actions and reach on return. 28 → First state proves pending and away session, waiting and notice views. 15 → Updating proves the kept page. 22 → History proves the activity projection. | 1, 12–14, 16–17, 20, 23–27, 29–30. | 2.4 — 16, 28 (moves); 3.2 — 1, 5, 9, 12, 14–15, 24–27, 29–30 (live session routes, including archived sessions); 5.1 — 10, 13, 22, 28 (bot views); 5.2 — 20, 28 (Work Queue); 5.5 — 17, 23, 28 (library). |
 | `box/test/notices-rule.test.ts` (16) | — | 11 → History reads kept notices through the setup route. | 1–10, 12–16. Notice creation, phone delivery and agent rules. | 5.1 — 1–16. |
 | `box/test/notices-plain.test.ts` (7) and `notices-usage.test.ts` (13) | — | — | All 20. Text and usage notice producers. | 5.1 — all 7 in notices-plain; 5.4 — all 13 in notices-usage. |
-| `box/bridge-tests/peers.test.js` (34) | 30 → Wire and outbox. | 5 and 17 → First state checks authenticated announcements, address, reach and working count. 16 → Announcements checks refreshes, list changes and the ten-minute repeat. The legacy agent projection remains. 7, 9, 11, 13, 22, 24, 26–27, 29 and 34 → Wire and outbox. | 1–4, 6, 8, 10, 12, 14–15, 18–21, 23, 25, 28, 31–33. Setup, legacy roster support and letters' consuming paths. | 2.1 — current equivalents in B2, B5, B17, B20–B21 and D2; 2.2 — 5, 16–17; 2.3 — 21; 2.4 — 6–14, 26–29, 31–34; 2.6 — 1, 5, 15–17 (legacy projection); 3.2 — 20; 7.3 — 2–4, 18–19, 22–25 (legacy mail, roster, and libraries). |
+| `box/bridge-tests/peers.test.js` (34) | 30 → Wire and outbox. | 5 → Claims proves validation, newer-only retention and ambiguous ownership. 16 → Announcements proves refreshes, list changes and ten-minute repeat. 17 → First state and Computer facts prove address, enrollment, reach, working count, compatibility and sanitization. 7, 9, 11, 13, 22, 24, 26–27, 29 and 34 → Wire and outbox. | 1–4, 6, 8, 10, 12, 14–15, 18–21, 23, 25, 28, 31–33. Setup, legacy roster support and letters’ consuming paths. | 2.1 — current equivalents in B2, B5, B17, B20–B21 and D2; 2.3 — 21; 2.4 — 6–14, 26–29, 31–34; 2.6 — 1, 5, 15–17 (legacy roster and `run/agents.json` export); 3.2 — 17, 20 (live local engine facts and list production); 4.1 — 17 (actual status of this computer’s agents); 7.3 — 2–4, 18–19, 22–25 (legacy mail, roster and libraries). |
 | `box/bridge-tests/owner-mutations.test.js` (18) | 7–8 → Updating locates a remote session reported only in its owner’s announcement and prefers the local session when that peer also claims it. | — | 1–6, 9–18. Local and move authority, mutation admission, receipts and forwarded operations. | 2.1 — 4–6 covered by B1, B6 and B10; 2.4 — 1–3, 9–18. |
-| `box/bridge-tests/devices.test.js` (7) | 1–2 → Device. | 4 → Managed and R5 prove member forwarding and exact grant generations, with legacy forwarding replies remaining. 6 → Managed proves the signed grant projection and desktop admission. 7 → Device proves dispatch over a grant. | 3, 5. Former issuer guidance and a computer set aside. | 2.2 — 4, 6; 2.3 — 5; 3.2 — 7; 5.1 — 6 (phone notification filtering); 7.3 — 3, 4 (legacy issuer and forwarding). |
-| `box/bridge-tests/devices-two-boxes.test.js` (7) | 4 → Managed verifies both signed exports after a sync request. | 1 → Managed proves pairing through the member, addressed relay admission on the setup, and revocation by a second device. 2 → Device proves mixed-case route-version admission in Noise. 5 → Managed proves three-resident catch-up while the main is away. The previous TypeScript build in the TS scenario remains a migration fixture. | 3, 6–7. Removal with incoming devices off and uninstall. | 2.2 — 1, 4–5; 2.3 — 3, 6–7; 3.2 — 1–2 (prompt dispatch); 7.3 — 1, 5 (legacy phone invites and previous-build catch-up). |
-| `box/bridge-tests/reach-elsewhere.test.js` (3) | — | 1 → Work exercises calls across two computers. 2 → Work return exercises kept rows, queued stop and return. 3 → Work return uses the same wire protocol across machine and Mac roles. | — | 2.2 — 1–3 (relay, queue and permission); 3.2 — 1–3 (real engine effects, ask context and conversation reads); 2.4 — 1, 3 (real move fixtures). |
-| `box/bridge-tests/reach-elsewhere-rules.test.js` (17) | 1 → Work replay and Work return; 2 → Work, Work replay and authenticated relay admission; 5 → Work and Work replay; 6, 11 → Work replay; 7, 14 → Work snapshots; 8 → Work return; 9 → Work retry and Work return; 12, 15–17 → Work. | — | 3–4, 10, 13. Switched moves, ordinary letters and ancestry, and reporting to a moved lead. | 2.2 — 1–2, 5–9, 11–12, 14–17; 2.4 — 3–4, 10, 13; 3.2 — 2, 7–8, 14 (real engine and local session/ancestor feed). |
+| `box/bridge-tests/devices.test.js` (7) | 1–2 → Device. | 4 → Forwarding and Managed prove the signed main’s pairing reply, receipt replay, removal refusal and wait response while the main is gone. 6 → Managed proves the signed grant projection and authenticated desktop admission. 7 → Device proves dispatch over a grant. | 3, 5. Former issuer guidance and a computer set aside. | 2.3 — 5; 3.2 — 7 (prompt dispatch); 5.1 — 6 (phone notification filtering); 7.3 — 3, 4 (legacy issuer and forwarding). |
+| `box/bridge-tests/devices-two-boxes.test.js` (7) | 4 → Managed verifies both signed exports after a sync request. | 1 → Managed proves pairing through the member, the same desktop grant and device routes at both computers, and revocation by a second device that stays connected. 2 → Device proves mixed-case route-version admission in Noise. 5 → Managed proves three-resident catch-up while the main is away. | 3, 6–7. Removal with incoming devices off and uninstall. | 2.3 — 1, 3, 6–7 (incoming-device switch and removal); 3.2 — 1–2 (prompt dispatch); 7.3 — 1, 5 (legacy phone invites and previous-build catch-up). |
+| `box/bridge-tests/reach-elsewhere.test.js` (3) | — | 1 → Work exercises authenticated calls, arguments, permission and replies across two computers. 2 → Work return proves a live call gets the relay’s refusal promptly, kept rows retain their last-seen time and a queued stop settles on return. 3 → Work exercises calls in both directions between Mac and machine roles. | — | 3.2 — 1–3 (real engine effects, ask context and conversation reads); 2.4 — 1, 3 (real move fixtures). |
+| `box/bridge-tests/reach-elsewhere-rules.test.js` (17) | 1 → Work replay and Work return. 5 → Work and Work replay. 6, 11 → Work replay. 9 → Work retry and Work return. 12, 15–17 → Work. | 2 → Work, Work replay and authenticated relay admission. 7, 14 → Work snapshots, including spacing, acknowledgments and reconnect. 8 → Work return, including retained owner, empty snapshot, stale replay and malformed rows. | 3–4, 10, 13. Switched moves, ordinary letters and ancestry, and reporting to a moved lead. | 2.4 — 3–4, 10, 13 (moves and letters); 3.2 — 2, 7–8, 14 (real engine and local session/ancestor feed). |
 | `box/bridge-tests/start-elsewhere.test.js` (3) and `start-elsewhere-rules.test.js` (45) | — | — | All 48. Addressed starts, admission, engine recovery and receipts. | 3.2 — all 3 in start-elsewhere and all 45 in start-elsewhere-rules. |
 | `box/bridge-tests/mac-peers.test.js` (14) | — | 2–3, 6 and 8 → Wire and outbox. | 1, 4–5, 7, 9–14. Mac migration, peer policy, letters, notices and seats. | 2.4 — 2–3, 6, 8, 10–12; 2.6 — 5; 5.1 — 7, 13–14; 5.3 — 4, 9; 7.3 — 1 (legacy Mac roster and agent projection). |
 
-Total across these files is 215 cases, with 30 covered, 33 partial and 152 gaps. The shared
-attention route scenarios cover lease renewal, the one-minute cap and malformed requests.
-The latest kept-file reader preserves the original notification ID and computer. Sending and
-holding phone notifications remains with the notice producers.
+Phase 2.2’s relay and route assertions are exercised by the named scenarios above. Other owners
+are listed where the TypeScript scenario also depends on their components. The shared attention
+routes cover lease renewal, the one-minute cap and malformed requests.
 
 ## Integration still needed
 
@@ -86,12 +88,47 @@ holding phone notifications remains with the notice producers.
 
 ## Shared checks
 
-The conformance suite's three attention scenarios pass on both binaries. Its two-computer
-scenario passes on TypeScript. Rust reads the setup and claims its lease, then stops at the
-installer-code route from phase 2.3. The differential runner agrees on all four replies from
-a signed seed (kept conversation location, dock count, device roster, and unauthorized pairing).
-Its complete home inventory still reports startup-file differences in unfinished areas. The legacy phone-pairing route scenario passes on TypeScript. Rust passes its device-list and removal steps and stops at the legacy phone pairing route.
+Both binaries pass the peers cases for a kept session while its computer is away and for two
+enrolled residents hearing each other over the relay. Both pass the three attention cases.
+The mixed TypeScript–Rust check exchanges a paired request and an outbox receipt through the
+production relay on loopback. The 17 TypeScript reach rules and seven device cases also pass. TypeScript peers case 17
+expects a zero working count immediately when the relay marks a peer away. The implementation
+preserves the count during its two-minute quiet grace. The Rust test checks zero after that grace.
 
-The TypeScript reference passes all 17 reach-elsewhere rules and seven device scenarios. In
-the three live reach-elsewhere scenarios, one passes, one lists the negative-control session,
-and one times out while the machine link is down.
+All 15 Rust peer scenarios pass on macOS, native Windows and the static Linux musl build
+running under WSL. The macOS workspace compile check also passes. Lokum's SSH connection
+became unavailable before the container check completed.
+
+The TypeScript enrollment scenario passes. Rust’s conformance fixture starts with an unmarked
+home, which the layout gate rejects. With a current marker it claims the lease and returns 404 at
+`POST kuvo/computers/add/code`, owned by 2.3. The enrollment scenario still gates the Done marker.
+
+### Side-by-side home inventory
+
+The same signed, offline layout-23 seed gives equal replies for the kept session’s location,
+waiting counts, device roster and unauthorized pairing. The kept announcement, list and both
+reach files compare equal. A live probe writes each process’s own timestamp to the same reach
+paths. An interrupted atomic replace can leave a `run/.kuvo-write-*` scratch file.
+
+- `run/outbox/` and `run/outbox/sending/` are empty in the TypeScript run. Rust creates the storage
+  when a writer needs it. The TypeScript scanner in `box/src/link/letters/outbox.ts` treats a
+  missing directory as an empty list. Searches for these paths and `.kuvo-write-` under
+  `gpui/`, `box/src/keeper/`, `box/src/link/{add,updates}/` and `scripts/` found no runtime readers.
+- The TypeScript run writes the legacy `run/agents.json` export. It has real readers in
+  `box/src/link/peers/known.ts` and `box/src/agents/main.ts`. Its remaining export and older-roster
+  behaviour are listed under 2.6 in the map.
+- Setup startup owns the differences in `run/link.json`, `run/setup-card.json` and its startup
+  markers. The keeper and browser check `run/link.needed`. The legacy Mac reads `run/link.seen`
+  and the link version marker serves the previous launcher. The browser reads the independently
+  generated `run/socket.key`. The local engine list, IPC and vault endpoints, and service
+  startup for notices, usage, Library and Work Queue also differ.
+- The wider comparison of
+  `GET kuvo/computers` still shows differences in full feature lists, local engine and agents facts,
+  and setup and SSH actions. The peer conformance checks assert the same reach and owner fields
+  through the live route on both builds.
+
+The Rust resident validates computer facts once when it reads or accepts an announcement, then
+projects typed values from its watch view. It shares the same working-session calculation between
+the route and announcements. The persisted empty work snapshot deliberately keeps its timestamp
+so a delayed older snapshot cannot restore rows after a clear. TypeScript deletes the cleared file
+in `box/src/link/work/elsewhere.ts` and can accept that older snapshot afterward.
