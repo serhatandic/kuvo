@@ -1,9 +1,17 @@
 //! Bounded multipart snapshots, in the existing peer mail format.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
-use kuvo_wire::keys::{decode, encode};
+use kuvo_wire::{
+    json::ordinary,
+    keys::{decode, encode},
+    mail::{Envelope, MAX_PLAINTEXT},
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const PART_BYTES: usize = 40_000;
@@ -93,4 +101,73 @@ pub fn split(bytes: &[u8]) -> Option<Arc<[Part]>> {
             })
             .collect(),
     )
+}
+
+/// Work Queue mail uses the same part spelling and digest as documents. The
+/// whole is the compact JSON before the enclosing mail's version and clock.
+pub(crate) fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
+    let mail = |work_queue| {
+        Envelope(
+            [("workQueue".into(), work_queue), ("at".into(), at.into())]
+                .into_iter()
+                .collect(),
+        )
+    };
+    let one = mail(payload);
+    if one.encode().len() <= MAX_PLAINTEXT {
+        return Some(vec![one]);
+    }
+    let payload = ordinary(&one.0["workQueue"]);
+    let parts = split(payload.as_bytes())?;
+    Some(
+        parts
+            .iter()
+            .map(|part| mail(json!({"part": part})))
+            .collect(),
+    )
+}
+
+#[derive(Default)]
+pub(crate) struct WorkQueueParts(HashMap<([u8; 32], bool), Parts>);
+
+impl WorkQueueParts {
+    /// Assemble inside the relay task, before publishing to lossy subscribers.
+    /// Memory-only reads and tracked mail have independent part sets.
+    pub(crate) fn receive(&mut self, sender: [u8; 32], mail: &mut Envelope) -> bool {
+        let Some(queue) = mail.0.get_mut("workQueue") else {
+            return true;
+        };
+        let Some(part) = queue.get("part").filter(|part| part.is_object()) else {
+            return true;
+        };
+        let memory = queue.get("memory").and_then(Value::as_bool) == Some(true);
+        let mut first = true;
+        let complete = serde_json::from_value::<Part>(part.clone())
+            .ok()
+            .and_then(|part| {
+                let parts = self.0.entry((sender, memory)).or_default();
+                first = !parts.0.iter().any(|pending| pending.digest == part.whole);
+                parts.add(part)
+            });
+        let Some(Value::Object(mut whole)) = complete
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .filter(|whole: &Value| !whole.get("part").is_some_and(Value::is_object))
+        else {
+            if memory {
+                return false;
+            }
+            mail.0.shift_remove("workQueue");
+            // A partial delivery still answers reach, as one ordinary mail does.
+            return first || mail.0.keys().any(|field| field != "at");
+        };
+        if memory {
+            whole.insert("memory".into(), true.into());
+        }
+        *queue = Value::Object(whole);
+        true
+    }
+
+    pub(crate) fn retain(&mut self, mut member: impl FnMut(&[u8; 32]) -> bool) {
+        self.0.retain(|(sender, _), _| member(sender));
+    }
 }

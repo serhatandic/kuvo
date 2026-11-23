@@ -65,6 +65,8 @@ pub struct View {
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
+    submission_recovery: bool,
+    backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
 }
@@ -73,6 +75,36 @@ impl View {
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
+    }
+
+    pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
+        self.announced
+            .get(&encode(key))
+            .and_then(|announcement| announcement.features.as_ref())
+            .is_some_and(|features| features.iter().any(|name| name == feature))
+    }
+
+    pub fn announcing(&self, scope: RecordScope, id: &str) -> Vec<ComputerKey> {
+        self.roster
+            .members
+            .iter()
+            .filter(|member| {
+                self.announced
+                    .get(&encode(&member.key))
+                    .is_some_and(|copy| copy.announces(scope, id))
+            })
+            .map(|member| member.key)
+            .collect()
+    }
+
+    pub fn announced_sessions(&self) -> Vec<String> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|member| self.announced.get(&encode(&member.key)))
+            .flat_map(|copy| copy.list.iter().map(|agent| agent.session.clone()))
+            .filter(|session| session.starts_with("ses_"))
+            .collect()
     }
 
     pub fn standing(&self, key: ComputerKey, now: Millis) -> Standing {
@@ -100,8 +132,14 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        if self.backup_receiver {
+            features.push("box.backups.relay");
+        }
         if self.work_calls {
             features.push(crate::calls::FEATURE);
+        }
+        if self.submission_recovery {
+            features.push("typed.submission-recovery");
         }
         if self
             .local_lists
@@ -248,6 +286,8 @@ enum Change {
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
+    SubmissionRecovery,
+    BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
 
@@ -331,12 +371,24 @@ impl ResidentPeers {
         Ok(handle)
     }
 
+    pub async fn advertise_backup_receiver(&self) {
+        let _ = self.changes.send(Change::BackupReceiver).await;
+    }
+
     pub fn reader(&self) -> Reader {
         self.reader.clone()
     }
 
     pub async fn dispatch_with(&self, dispatcher: kuvo_server::Dispatcher) {
         let _ = self.changes.send(Change::Dispatch(dispatcher)).await;
+    }
+
+    /// Advertise submission recovery once the engine has connected its owner handler.
+    pub async fn advertise_engine_submissions(&self) -> io::Result<()> {
+        self.changes
+            .send(Change::SubmissionRecovery)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
     }
 
     /// Track the roster handed down by setup authority after a durable membership or epoch change.
@@ -389,6 +441,8 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
+            submission_recovery: false,
+            backup_receiver: false,
             endpoint,
             system: system_name(),
         };
@@ -434,6 +488,16 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     },
+                    Some(Change::SubmissionRecovery) => {
+                        self.view.submission_recovery = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
+                    Some(Change::BackupReceiver) => {
+                        self.view.backup_receiver = true;
+                        publish.send_replace(Arc::new(self.view.clone()));
+                    }
                     Some(Change::SetupRosters(mut rosters)) => {
                         if let Some(roster) = rosters.borrow_and_update().clone() {
                             self.view.roster = roster;

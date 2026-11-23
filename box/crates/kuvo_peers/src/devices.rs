@@ -313,6 +313,34 @@ impl Devices {
         )
     }
 
+    pub(crate) fn forwarded_pairing(
+        &self,
+        key: &ComputerKey,
+        pairing: &str,
+        grants_current: bool,
+    ) -> crate::ownership::PairingState {
+        use crate::ownership::PairingState;
+        if !self.enabled && self.managed.is_none() {
+            return PairingState::Revoked;
+        }
+        let state = self.state();
+        let key = encode(key);
+        if state
+            .removed
+            .iter()
+            .any(|grant| grant.key == key && grant.pairing == pairing)
+        {
+            return PairingState::Revoked;
+        }
+        if self.managed.is_some() && !grants_current {
+            return PairingState::Checking;
+        }
+        match state.device(&key) {
+            Some(current) if current.pairing == pairing => PairingState::Allowed,
+            _ => PairingState::Revoked,
+        }
+    }
+
     pub fn grants(&self) -> HashMap<ComputerKey, String> {
         let state = self.state();
         state

@@ -30,7 +30,7 @@ export interface AccountRecord {
   id: string
   /** What you called it ("Work"); an added account without one goes by its sign-in. */
   label?: string
-  /** COMPAT(0.8 Claude on a Mac): its folder, within the bridge's, where an earlier version kept it
+  /** Its folder, within the bridge's, where an earlier version kept it
    * (claude-compat.ts); else `<agent>/accounts/<id>`. */
   folder?: string
 }
@@ -126,7 +126,7 @@ export class Accounts {
   }
 }
 
-// COMPAT(0.8 machine homes): before 22 November 2026 a Linux box kept its agents' first sign-ins in
+// Before 22 November 2026 a Linux box kept its agents' first sign-ins in
 // the bridge's folder (`<agent>/home`). Goes 3 months after the release that carries this.
 /** The agent's own folder, as the agent finds it (its variable, else its usual place). */
 function ownFolder(kind: "claude" | "codex" | "grok"): string {

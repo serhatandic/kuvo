@@ -310,7 +310,7 @@ impl Announcement {
             .is_some_and(|features| features.iter().any(|f| f == feature))
     }
 
-    fn announces(&self, scope: RecordScope, id: &str) -> bool {
+    pub(crate) fn announces(&self, scope: RecordScope, id: &str) -> bool {
         if let Some(owns) = &self.owns {
             let digest = owned_digest(id);
             return owns

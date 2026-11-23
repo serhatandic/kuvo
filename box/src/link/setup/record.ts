@@ -34,7 +34,9 @@ export interface SetupRecord extends SetupWord {
   checkpointed?: true;
   /** The certificate an SSH roster pins, for a member enrolled over SSH to fetch. */
   leadershipHash?: string;
-  /** COMPAT(standby): the old standby's number ceiling, a floor for the relay's high mark. */
+  /**
+   * COMPAT(layout.4 setup): the old standby's number ceiling is the relay's starting floor. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
+   */
   numberCeiling?: number;
   conflict?: { primary: string; epoch: number };
 }
