@@ -40,6 +40,20 @@ struct Config {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct HealthConfig {
+    enabled: bool,
+    dest: Destination,
+    disk: Option<u64>,
+    last: Option<VerifiedAt>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct VerifiedAt {
+    at: i64,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Request {
@@ -59,6 +73,7 @@ struct Service {
     setup: SetupHandle,
     account: PathBuf,
     relay: Option<super::relay::mail::PeerMail>,
+    vault: Option<Arc<dyn super::vault::VaultBackend>>,
 }
 
 impl Service {
@@ -66,7 +81,7 @@ impl Service {
         self.backups.root().join("backup/configuration.json")
     }
 
-    fn config(&self) -> Result<Option<Config>> {
+    fn read_config<T: serde::de::DeserializeOwned>(&self) -> Result<Option<T>> {
         files::read(&self.config_path())?
             .map(|bytes| {
                 let value: Value = serde_json::from_slice(&bytes)?;
@@ -76,6 +91,10 @@ impl Service {
                 Ok(serde_json::from_value(value)?)
             })
             .transpose()
+    }
+
+    fn config(&self) -> Result<Option<Config>> {
+        self.read_config()
     }
 
     fn save(&self, config: &Config) -> Result<()> {
@@ -102,8 +121,8 @@ impl Service {
         }
     }
 
-    fn health(&self, config: Option<&Config>) -> Value {
-        let available = config.map(|config| self.available(config));
+    fn health(&self, config: Option<&HealthConfig>) -> Value {
+        let available = config.map(|config| self.available(&config.dest, config.disk));
         json!({
             "enabled": config.is_some_and(|config| config.enabled),
             "destinationKind": config.map(|config| match config.dest {
@@ -152,7 +171,7 @@ impl Service {
             "destination": config.map(|config| &config.dest),
             "source": config.map(|config| &config.source),
             "projects": config.map(|config| config.projects.as_slice()).unwrap_or_default(),
-            "destinationAvailable": config.map(|config| self.available(config)),
+            "destinationAvailable": config.map(|config| self.available(&config.dest, config.disk)),
             "lastVerifiedRestorePoint": config.and_then(|config| config.last.as_ref()),
         });
         if let Some(error) = config
@@ -167,11 +186,9 @@ impl Service {
         Ok(status)
     }
 
-    fn available(&self, config: &Config) -> bool {
-        match &config.dest {
-            Destination::Disk { path } => self
-                .separate_disk(path)
-                .is_ok_and(|id| Some(id) == config.disk),
+    fn available(&self, dest: &Destination, disk: Option<u64>) -> bool {
+        match dest {
+            Destination::Disk { path } => self.separate_disk(path).is_ok_and(|id| Some(id) == disk),
             Destination::Computer {
                 computer,
                 ssh: Some(_),
@@ -291,8 +308,12 @@ impl Service {
                 &id,
                 now,
                 &authority,
-                &kept.projects,
+                super::CaptureSelection {
+                    projects: &kept.projects,
+                    attachments: None,
+                },
                 scratch,
+                || Ok(()),
             )?;
             kept.last = Some(point.clone());
             kept.last_daily = Some(point.clone());
@@ -435,6 +456,70 @@ impl Service {
                 config = self.config()?;
                 json!({ "point": config.as_mut().map(|config| self.before(config, scratch.path())).transpose()?.flatten() })
             }
+            Action::VaultExport | Action::VaultImport => {
+                let dest = destination(
+                    request
+                        .destination
+                        .or_else(|| config.as_ref().map(|kept| json!(kept.dest))),
+                )?;
+                if request.confirm != Some(true) {
+                    return Ok((
+                        400,
+                        json!({ "message": "Confirm this backup operation first." }),
+                    ));
+                }
+                let Some(vault) = self.vault.as_deref().filter(|vault| vault.holds_vault()) else {
+                    return Ok((
+                        503,
+                        json!({ "message": "Open the vault on this computer first." }),
+                    ));
+                };
+                let source = request
+                    .source
+                    .or_else(|| config.as_ref().map(|kept| kept.source.to_string()));
+                if matches!(action, Action::VaultExport) {
+                    let Some(kept) = config.filter(|kept| {
+                        kept.enabled
+                            && kept.dest == dest
+                            && source.as_deref() == Some(kept.source.0.as_str())
+                    }) else {
+                        return Err(Error::Message(
+                            "Choose a separate backup destination before exporting the vault.",
+                        ));
+                    };
+                    let store = self.store(&dest, &kept.source)?;
+                    json!(self.backups.export_vault(
+                        &*store,
+                        &kept.source,
+                        vault,
+                        jiff::Timestamp::now().as_millisecond(),
+                    )?)
+                } else {
+                    let Some(key) = request.recovery_key else {
+                        return Ok((
+                            400,
+                            json!({ "message": "Choose a restore point and enter its recovery key." }),
+                        ));
+                    };
+                    let id: PointId = request
+                        .id
+                        .unwrap_or_default()
+                        .try_into()
+                        .map_err(|_| Error::Message("Choose a vault export."))?;
+                    if id.reason() != Reason::Vault {
+                        return Err(Error::Message("Choose a vault export."));
+                    }
+                    let source: Source = source.unwrap_or_default().try_into()?;
+                    let store = self.store(&dest, &source)?;
+                    json!(self.backups.import_vault(
+                        &*store,
+                        &source,
+                        &id,
+                        &RecoveryKey::parse(&key)?,
+                        vault
+                    )?)
+                }
+            }
             Action::Points | Action::Restore | Action::Erase => {
                 let dest = request
                     .destination
@@ -531,6 +616,8 @@ enum Action {
     Points,
     Restore,
     Erase,
+    VaultExport,
+    VaultImport,
 }
 
 fn local_app(caller: &Caller) -> bool {
@@ -561,7 +648,13 @@ macro_rules! legacy {
                 method: $method,
                 path: concat!("kuvo/box/backups", $path),
                 feature: "box.backups",
-                answers: &[(200, &ANY), (400, &ANY), (403, &ANY), (409, &ANY)],
+                answers: &[
+                    (200, &ANY),
+                    (400, &ANY),
+                    (403, &ANY),
+                    (409, &ANY),
+                    (503, &ANY),
+                ],
                 body: $body,
             };
         }
@@ -577,6 +670,9 @@ macro_rules! legacy {
         impl JsonStatus<409> for $name {
             type Body = Value;
         }
+        impl JsonStatus<503> for $name {
+            type Body = Value;
+        }
     };
 }
 static ANY: Shape = Shape::Primitive(Primitive::Any);
@@ -588,6 +684,8 @@ legacy!(Match, "POST", "/match", Some(&ANY));
 legacy!(Points, "POST", "/points", Some(&ANY));
 legacy!(Restore, "POST", "/restore", Some(&ANY));
 legacy!(Erase, "POST", "/erase", Some(&ANY));
+legacy!(VaultExport, "POST", "/vault", Some(&ANY));
+legacy!(VaultImport, "POST", "/vault/import", Some(&ANY));
 
 fn register_local<R>(routes: &mut Registry, service: &Arc<Service>, action: Action)
 where
@@ -595,7 +693,8 @@ where
         + JsonStatus<200, Body = Value>
         + JsonStatus<400, Body = Value>
         + JsonStatus<403, Body = Value>
-        + JsonStatus<409, Body = Value>,
+        + JsonStatus<409, Body = Value>
+        + JsonStatus<503, Body = Value>,
 {
     let service = service.clone();
     routes.register_decoded::<R, _, _, _>(
@@ -618,6 +717,7 @@ where
                     Ok(Ok((200, value))) => RouteReply::json::<200>(value),
                     Ok(Ok((400, value))) => RouteReply::json::<400>(value),
                     Ok(Ok((409, value))) => RouteReply::json::<409>(value),
+                    Ok(Ok((503, value))) => RouteReply::json::<503>(value),
                     Ok(Err(error)) => {
                         RouteReply::json::<409>(json!({ "message": error.to_string() }))
                     }
@@ -639,12 +739,14 @@ pub fn register(
     account: PathBuf,
     setup: SetupHandle,
     relay: Option<super::relay::mail::PeerMail>,
-) -> Daily {
+    vault: Option<Arc<dyn super::vault::VaultBackend>>,
+) -> Resident {
     let service = Arc::new(Service {
         backups: Backups::with_environment(home, &std::env::vars_os().collect()),
         setup,
         account,
         relay,
+        vault,
     });
     let health = service.clone();
     routes.register::<health::Spec, _, _>(Access::Any, move |call| {
@@ -656,7 +758,7 @@ pub fn register(
                 })));
             }
             let status = tokio::task::spawn_blocking(move || {
-                let config = service.config()?;
+                let config = service.read_config()?;
                 Ok::<_, Error>(service.health(config.as_ref()))
             })
             .await;
@@ -680,6 +782,9 @@ pub fn register(
     register_local::<Points>(routes, &service, Action::Points);
     register_local::<Restore>(routes, &service, Action::Restore);
     register_local::<Erase>(routes, &service, Action::Erase);
+    register_local::<VaultExport>(routes, &service, Action::VaultExport);
+    register_local::<VaultImport>(routes, &service, Action::VaultImport);
+    let daily = service.clone();
     let task = tokio::spawn(async move {
         let mut check = tokio::time::interval_at(
             tokio::time::Instant::now() + std::time::Duration::from_secs(60),
@@ -688,7 +793,7 @@ pub fn register(
         check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             check.tick().await;
-            let service = service.clone();
+            let service = daily.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 if service.config()?.is_some_and(|config| config.enabled) {
                     service.handle(Action::Now, Request::default())?;
@@ -698,14 +803,50 @@ pub fn register(
             .await;
         }
     });
-    Daily(task)
+    Resident { service, task }
 }
 
-/// Stops scheduling checks when the resident exits.
-pub struct Daily(tokio::task::JoinHandle<()>);
+/// Keeps the backup service and its scheduler alive for this resident.
+pub struct Resident {
+    service: Arc<Service>,
+    task: tokio::task::JoinHandle<()>,
+}
 
-impl Drop for Daily {
+impl Resident {
+    /// Verify the current configured point before the removal owner commits its
+    /// receipt. Call on a blocking worker, as readback may use SSH or Relay.
+    pub fn verify_configured_wipe<T>(
+        &self,
+        source: &Source,
+        id: &PointId,
+        commit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let service = &self.service;
+        let backups = &service.backups;
+        let (_guard, scratch) = backups.scratch()?;
+        let kept = service
+            .config()?
+            .filter(|kept| &kept.source == source)
+            .ok_or(Error::Message("The pre-wipe backup configuration changed."))?;
+        if let Destination::Disk { path } = &kept.dest
+            && files::file_stamp(path)?.map(|stamp| stamp.device) != kept.disk
+        {
+            return Err(Error::Message("Reconnect the selected backup disk."));
+        }
+        let store = service.store(&kept.dest, source)?;
+        backups.verify_locked(
+            &*store,
+            source,
+            &RecoveryKey::parse(&kept.key)?,
+            id,
+            scratch.path(),
+        )?;
+        commit()
+    }
+}
+
+impl Drop for Resident {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }

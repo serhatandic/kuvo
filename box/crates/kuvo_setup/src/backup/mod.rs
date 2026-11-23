@@ -7,13 +7,17 @@ mod destination;
 mod inventory;
 mod pending;
 mod projects;
+mod receipts;
 mod recovery;
 pub mod relay;
 pub mod routes;
 mod sqlite;
+mod switch_copy;
 pub mod vault;
+mod wipe;
 
 use std::{
+    collections::BTreeMap,
     fmt, fs, io,
     path::{Path, PathBuf},
     time::Duration,
@@ -24,7 +28,9 @@ use kuvo_store::{files, home::Home, locks::OwnedLock};
 use serde::{Deserialize, Serialize};
 
 pub use destination::{Destination, DestinationStore, DiskStore, SshStore};
+pub use receipts::ReceiptOwner;
 pub use recovery::{Authority, RecoveryResult, Standalone};
+pub use wipe::WipeExport;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -276,6 +282,12 @@ pub struct Backups {
     roots: inventory::Roots,
 }
 
+#[derive(Default)]
+struct CaptureSelection<'a> {
+    projects: &'a [PathBuf],
+    attachments: Option<&'a BTreeMap<String, String>>,
+}
+
 impl Backups {
     pub fn new(home: Home) -> Self {
         Self::with_environment(home, &Default::default())
@@ -329,7 +341,17 @@ impl Backups {
         identity: &impl Authority,
     ) -> Result<RestorePoint> {
         let (_guard, scratch) = self.scratch()?;
-        self.export_locked(store, source, key, id, at, identity, &[], scratch.path())
+        self.export_locked(
+            store,
+            source,
+            key,
+            id,
+            at,
+            identity,
+            CaptureSelection::default(),
+            scratch.path(),
+            || Ok(()),
+        )
     }
 
     fn export_locked(
@@ -340,8 +362,9 @@ impl Backups {
         id: &PointId,
         at: i64,
         identity: &impl Authority,
-        projects: &[PathBuf],
+        selection: CaptureSelection<'_>,
         scratch: &Path,
+        before_capture: impl FnOnce() -> Result<()>,
     ) -> Result<RestorePoint> {
         let aad = context(source, id);
         if store.list()?.contains(id) {
@@ -349,6 +372,7 @@ impl Backups {
             let entries = archive::open(&received, key, &aad, scratch)?;
             return Ok(recovery::manifest(&entries, source, id)?.point);
         }
+        before_capture()?;
         let version = inventory::layout(&self.home)?;
         let point = RestorePoint {
             id: id.clone(),
@@ -356,14 +380,18 @@ impl Backups {
             version,
         };
         let mut manifest = identity.capture(source.clone(), point.clone())?;
-        manifest.projects = projects
+        manifest.projects = selection
+            .projects
             .iter()
             .filter_map(|project| project.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .collect();
         let mut entries =
             inventory::capture(&self.home, &self.roots, &manifest, identity, scratch)?;
-        projects::capture(projects, &mut entries)?;
+        if let Some(attachments) = selection.attachments {
+            inventory::bind_attachments(&self.roots, identity, attachments, &mut entries)?;
+        }
+        projects::capture(selection.projects, &mut entries)?;
         let mut draft = tempfile::NamedTempFile::new_in(scratch)?;
         archive::seal(draft.as_file_mut(), key, &aad, entries.into_iter().map(Ok))?;
         if inventory::layout(&self.home)? != version {
@@ -394,10 +422,22 @@ impl Backups {
         commit: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         let (_guard, scratch) = self.scratch()?;
-        store.get(id, scratch.path())
-            .and_then(|file| archive::authenticate(&file, key, &context(source, id), None))
-            .map_err(|_| Error::Message("The backup could not be read back and verified. Check its destination and retry."))?;
+        self.verify_locked(store, source, key, id, scratch.path())?;
         commit()
+    }
+
+    fn verify_locked(
+        &self,
+        store: &(impl DestinationStore + ?Sized),
+        source: &Source,
+        key: &RecoveryKey,
+        id: &PointId,
+        scratch: &Path,
+    ) -> Result<()> {
+        store.get(id, scratch)
+            .and_then(|file| archive::authenticate(&file, key, &context(source, id), None))
+            .map(|_| ())
+            .map_err(|_| Error::Message("The backup could not be read back and verified. Check its destination and retry."))
     }
 
     pub fn restore(
