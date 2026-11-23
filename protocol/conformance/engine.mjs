@@ -8,7 +8,7 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
-  const engine = { sessions: [], models: [], messages: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
@@ -120,6 +120,9 @@ export async function standInEngine(root, env) {
         return send({});
       }
       if (route === "GET /api/model") return send({ data: engine.models });
+      if (route === "GET /api/model/default") return send({ data: engine.defaultModel });
+      if (route === "GET /api/provider") return send({ data: engine.providers });
+      if (route === "GET /api/integration") return send({ data: engine.integrations });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });

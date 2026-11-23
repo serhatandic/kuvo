@@ -7,6 +7,7 @@ mod conversation;
 mod disk;
 mod launch;
 mod lifetime;
+mod models;
 mod naming;
 mod parts;
 mod proxy;
@@ -15,6 +16,7 @@ mod send;
 mod session_list;
 mod sessions;
 mod start_session;
+mod typed;
 
 use http::StatusCode;
 use kuvo_protocol::routes::{post_kuvo_engine_restart as restart, post_kuvo_engine_start as start};
@@ -29,10 +31,12 @@ impl Engine {
         let list = LocalSessions::start(self.clone());
         session_list::register(list.clone(), routes);
         parts::register(routes);
+        models::register(self, routes);
         queue::register(self, routes);
         send::register(self, list.clone(), routes);
         sessions::register(self, routes);
         start_session::register(self, list.clone(), routes);
+        typed::register(self, list.clone(), routes);
         let engine = self.clone();
         routes.engine(move |request, cancel| proxy::http(engine.clone(), request, cancel));
         let engine = self.clone();
