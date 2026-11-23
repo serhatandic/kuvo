@@ -12,6 +12,11 @@ stream does not hold the resident's receiver. Generated protocol types describe 
 while reach and record ownership have Rust types of their own. Phase 1.5's Noise and mail framing
 remain the transport.
 
+`kuvo_peers::relay::RelayHandle` supplies the same relay sender and a typed, bounded event
+subscription to other crates. `ResidentPeers` owns the connection and continues to consume
+session events directly. Setup can subscribe through the handle and refresh peer documents
+after a lagged event stream.
+
 ## TypeScript scenario map
 
 Numbers are one-based top-level test declarations at `85255a916`. Covered rows exercise the

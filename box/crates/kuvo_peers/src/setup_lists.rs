@@ -154,6 +154,7 @@ enum Change {
 pub struct ResidentPeers {
     reader: Reader,
     changes: mpsc::Sender<Change>,
+    relay: Option<relay::RelayHandle>,
     task: JoinHandle<()>,
 }
 
@@ -179,6 +180,7 @@ impl ResidentPeers {
             tokio::task::spawn_blocking(move || Resident::load(run, roster, telling)).await?;
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
         let (changes, change_rx) = mpsc::channel(16);
+        let handle = relay.as_ref().map(Relay::handle);
         let task = tokio::spawn(resident.run(relay, devices, publish, change_rx, clock.clone()));
         Ok(Self {
             reader: Reader {
@@ -187,8 +189,13 @@ impl ResidentPeers {
                 run: files,
             },
             changes,
+            relay: handle,
             task,
         })
+    }
+
+    pub fn relay_handle(&self) -> Option<relay::RelayHandle> {
+        self.relay.clone()
     }
 
     pub fn reader(&self) -> Reader {
