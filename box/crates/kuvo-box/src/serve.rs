@@ -122,6 +122,13 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         kuvo_os::platform::Platform::current(),
         &std::env::vars_os().collect(),
     )?;
+    kuvo_services::files::register(
+        &mut routes,
+        kuvo_services::files::Places {
+            home: account.clone(),
+            platform: kuvo_os::platform::Platform::current(),
+        },
+    );
     let (backup_mail, _backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -143,7 +150,6 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         backup_mail,
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
-    kuvo_services::files::register(&mut routes);
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();

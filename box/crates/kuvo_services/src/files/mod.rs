@@ -3,7 +3,13 @@
 //! name, size and kind (`kuvo/file/info`).
 
 mod address;
+mod find;
+mod folders;
+mod git;
 mod opened;
+mod order;
+
+pub use folders::Places;
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -12,7 +18,10 @@ use bytes::Bytes;
 use http::StatusCode;
 use http::header::{CONTENT_LENGTH, HeaderValue};
 use kuvo_protocol::JsonStatus;
-use kuvo_protocol::routes::{get_kuvo_file, get_kuvo_file_info, get_kuvo_file_text};
+use kuvo_protocol::routes::{
+    get_kuvo_file, get_kuvo_file_info, get_kuvo_file_text, get_kuvo_files_find, get_kuvo_folders,
+    get_kuvo_folders_tree, post_kuvo_folders,
+};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,7 +31,14 @@ use address::{Query, named_file};
 use opened::{FileKind, Opened, Unopened, mime_of, open_regular};
 
 /// The features these routes answer.
-pub const FEATURES: &[&str] = &["file", "file.info", "file.text"];
+pub const FEATURES: &[&str] = &[
+    "file",
+    "file.info",
+    "file.text",
+    "folders",
+    "folders.tree",
+    "files.find",
+];
 
 /// The biggest file `kuvo/file` sends.
 pub const FILE_LIMIT: u64 = 25 * 1024 * 1024;
@@ -31,7 +47,8 @@ pub const TEXT_LIMIT: u64 = 4 * 1024 * 1024;
 
 const CHANGED: &str = "The file changed while it was being read.";
 
-pub fn register(registry: &mut Registry) {
+pub fn register(registry: &mut Registry, places: Places) {
+    register_folders(registry, &places);
     registry.register::<get_kuvo_file_info::Spec, _, _>(Access::Any, |call| {
         let query = Query::of(&call.request.path);
         async move { blocking(move || info(&query)).await }
@@ -44,6 +61,75 @@ pub fn register(registry: &mut Registry) {
         let query = Query::of(&call.request.path);
         async move { blocking(move || bytes(&query)).await.map(Download::reply) }
     });
+}
+
+fn register_folders(registry: &mut Registry, places: &Places) {
+    let here = places.clone();
+    registry.register::<get_kuvo_folders::Spec, _, _>(Access::Any, move |call| {
+        let (places, query) = (here.clone(), Query::of(&call.request.path));
+        async move { blocking(move || folders::list(&places, &query).and_then(typed::<_, 200>)).await }
+    });
+    let here = places.clone();
+    registry.register::<post_kuvo_folders::Spec, _, _>(Access::Any, move |call| {
+        let (places, body) = (here.clone(), call.request.body.clone());
+        async move {
+            blocking(move || {
+                folders::make(&places, &body)
+                    .and_then(|path| typed::<_, 200>(serde_json::json!({ "path": path })))
+            })
+            .await
+        }
+    });
+    let here = places.clone();
+    registry.register::<get_kuvo_folders_tree::Spec, _, _>(Access::Any, move |call| {
+        let (places, query) = (here.clone(), Query::of(&call.request.path));
+        async move {
+            typed::<_, 200>(
+                folders::tree(&places, &query, folders::TREE_LIMIT, &call.cancel).await?,
+            )
+        }
+    });
+    let here = places.clone();
+    registry.register::<get_kuvo_files_find::Spec, _, _>(Access::Any, move |call| {
+        let (places, query) = (here.clone(), Query::of(&call.request.path));
+        async move { typed::<_, 200>(files_find(&places, &query, &call.cancel).await?) }
+    });
+}
+
+/// `kuvo/files/find?directory=<folder>&q=<text>&limit=<n>`: the files under `directory` that the
+/// text matches, best first, and the web address it reads as.
+async fn files_find(
+    places: &Places,
+    query: &Query,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<serde_json::Value, Refusal> {
+    let directory = query.get("directory").unwrap_or("").trim();
+    if directory.is_empty() {
+        return Err(Refusal::new(
+            StatusCode::BAD_REQUEST,
+            "Name the folder to look in: directory=<its full path>.",
+        ));
+    }
+    let typed = query.get("q").unwrap_or("");
+    let limit = find::limit(js_number(query.get("limit").unwrap_or("")));
+    let url = find::web_address(typed);
+    // (Nothing typed finds nothing: the folder isn't read for it.)
+    if typed
+        .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .is_empty()
+    {
+        return Ok(serde_json::json!({ "url": url, "files": [] }));
+    }
+    let tree = Query::of(&format!(
+        "kuvo/folders/tree?path={}",
+        form_urlencoded::byte_serialize(directory.as_bytes()).collect::<String>()
+    ));
+    let tree = folders::tree(places, &tree, folders::TREE_LIMIT, cancel).await?;
+    let files: Vec<find::Found> = find::rank_files(&tree.files, typed, limit)
+        .iter()
+        .map(|at| find::Found::at(&tree.path, at))
+        .collect();
+    Ok(serde_json::json!({ "url": url, "files": files }))
 }
 
 async fn blocking<T: Send + 'static>(
@@ -157,7 +243,7 @@ fn asked_most(query: &Query, most: u64) -> f64 {
 }
 
 /// A string as JavaScript's `Number` reads it (NaN for what it doesn't).
-fn js_number(text: &str) -> f64 {
+pub(crate) fn js_number(text: &str) -> f64 {
     let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
     if text.is_empty() {
         return 0.0;
