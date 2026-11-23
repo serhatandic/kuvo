@@ -188,15 +188,22 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                 Ok(session) => {
                     session.check_independent()?;
                     check_was(&given, &session, true)?;
-                    engine
+                    match engine
                         .call::<Value>(&lease, Method::DELETE, &path, None)
                         .await
-                        .map_err(|error| {
-                            Refusal::new(
+                    {
+                        Ok(_) => {}
+                        Err(error) if error.missing() && given.contains_key("was") => {
+                            return Err(stale());
+                        }
+                        Err(error) if error.missing() => {}
+                        Err(error) => {
+                            return Err(Refusal::new(
                                 StatusCode::BAD_GATEWAY,
                                 format!("It couldn't be deleted: {error}"),
-                            )
-                        })?;
+                            ));
+                        }
+                    }
                     if let Some(folder) = wakes(&engine, &id) {
                         let _ = tokio::fs::remove_dir_all(folder).await;
                     }

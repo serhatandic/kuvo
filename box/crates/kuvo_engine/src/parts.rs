@@ -140,6 +140,12 @@ fn is_js_space(c: char) -> bool {
     c == '\u{feff}' || (c.is_whitespace() && c != '\u{85}')
 }
 
+fn attachment_path(line: &str) -> bool {
+    line.starts_with('/')
+        || line.starts_with(r"\\")
+        || matches!(line.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+}
+
 pub(crate) fn read_parts(text: &str) -> Parts<'_> {
     if let Some((words, mail)) = mail(text) {
         return Parts {
@@ -159,7 +165,7 @@ pub(crate) fn read_parts(text: &str) -> Parts<'_> {
             for line in lines {
                 if ATTACHED.headings.contains(&line) {
                     heading = line;
-                } else if line.starts_with('/') && heading != ATTACHED.headings[0] {
+                } else if attachment_path(line) && heading != ATTACHED.headings[0] {
                     paths.push(line.strip_suffix(UNSENT).unwrap_or(line));
                 }
             }

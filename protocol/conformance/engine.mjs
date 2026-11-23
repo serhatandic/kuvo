@@ -96,7 +96,12 @@ export async function standInEngine(root, env) {
       }
       if (one && request.method === "GET") {
         if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
-        const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
+        const index = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        const found = engine.sessions[index];
+        if (found && engine.delistOnRead === found.id) {
+          engine.delistOnRead = null;
+          engine.sessions.splice(index, 1);
+        }
         if (found && engine.holdSessionRead?.when(found.id)) {
           const held = engine.holdSessionRead;
           engine.holdSessionRead = null;

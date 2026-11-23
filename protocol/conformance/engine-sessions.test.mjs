@@ -20,6 +20,13 @@ test("messages saved before parts were kept still show their parts", { timeout: 
   for (const [index, row] of vectors.read.entries()) {
     assert.deepEqual(response.json.parts[index], row.parts, row.about);
   }
+  const windowsPaths = ["C:\\work\\draft.txt", "\\\\share\\folder\\paper.pdf"];
+  const windowsNote = ["Keep the attachments.", "", "<attached-files>",
+    "Open these attached files with your tools if you need them:", ...windowsPaths,
+    "C:relative.txt", "</attached-files>"].join("\n");
+  const windows = await request(resident, "POST", "kuvo/messages/parts", { texts: [windowsNote] });
+  assert.equal(windows.status, 200, windows.text);
+  assert.deepEqual(windows.json.parts, [{ words: "Keep the attachments.", paths: windowsPaths }]);
   for (const texts of [[1], Array(501).fill("a")]) {
     const invalid = await request(resident, "POST", "kuvo/messages/parts", { texts });
     assert.equal(invalid.status, 400, invalid.text);
@@ -199,6 +206,32 @@ test("rename and archive keep session notes, and a subagent goes with its conver
   assert.equal((await request(resident, "DELETE", route, { was: { archived: false, updated: 1 } })).status, 409);
   assert.equal((await request(resident, "GET", "api/session/ses_project")).status, 404);
   await until(() => !fs.existsSync(waiting), "The deleted session's waiting payload was retained.");
+});
+
+test("Delete with an earlier revision refuses a session that vanishes during the request", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-delete-revision");
+  const session = sessionOf({ id: "ses_delete", directory: here.home, title: "A saved conversation" });
+  session.metadata = { "kuvo.archived": true };
+  here.engine.sessions.push(session);
+  const record = await here.start().ready();
+  const route = "kuvo/sessions/" + session.id;
+  const actions = await request(record, "GET", route + "/actions");
+  assert.equal(actions.status, 200, actions.text);
+  const was = { updated: session.time.updated, archived: true,
+    confirm: actions.json.actions.find(row => row.id === "delete").confirm };
+  const remove = (id, was) => request(record, "DELETE", "kuvo/sessions/" + id, was === undefined ? undefined : { was });
+  here.engine.delistOnRead = session.id;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const stale = await remove(session.id, was);
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(stale.json.message, "It changed since you read it.");
+  }
+  assert.equal((await remove(session.id)).status, 200);
+  const restoring = { ...session, id: "ses_current" };
+  here.engine.sessions.push(restoring);
+  assert.equal((await remove(restoring.id, was)).status, 200);
+  assert.equal(here.engine.sessions.length, 0);
 });
 
 test("a raw session patch waits for the conversation's resident writer", { timeout: 45000 }, async t => {
