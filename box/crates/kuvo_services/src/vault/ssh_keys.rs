@@ -1,5 +1,6 @@
 //! Parse and sign with private keys in memory. The agent receives only a public
 //! blob and a signature in the SSH agent's length-prefixed encoding.
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer, SigningKey};
 use p256::pkcs8::DecodePrivateKey as _;
 use rsa::{
@@ -10,6 +11,7 @@ use rsa::{
     traits::PublicKeyParts,
 };
 use ssh_key::{Algorithm, PrivateKey, Signature};
+use zeroize::Zeroizing;
 
 use super::{Error, Result, Secret};
 
@@ -31,7 +33,10 @@ impl Key {
     pub fn read(secret: &Secret) -> Result<Self> {
         let text = secret.expose().trim();
         if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
-            let key = PrivateKey::from_openssh(text).map_err(|_| invalid())?;
+            let key = PrivateKey::from_openssh(text)
+                .ok()
+                .or_else(|| read_short_openssh_ecdsa(text))
+                .ok_or_else(invalid)?;
             if key.is_encrypted() {
                 return Err(passphrase());
             }
@@ -166,6 +171,72 @@ impl Key {
     }
 }
 
+// OpenSSH writes each ECDSA scalar as a minimal positive mpint. ssh-key 0.6
+// expects the full scalar width, with an optional sign byte. Pad a short
+// scalar before giving the envelope back to ssh-key for normal validation.
+fn read_short_openssh_ecdsa(text: &str) -> Option<PrivateKey> {
+    let mut lines = text.lines();
+    if lines.next()? != "-----BEGIN OPENSSH PRIVATE KEY-----"
+        || lines.next_back()? != "-----END OPENSSH PRIVATE KEY-----"
+    {
+        return None;
+    }
+    let encoded = Zeroizing::new(lines.collect::<String>());
+    let mut bytes = Zeroizing::new(Vec::new());
+    STANDARD.decode_vec(encoded.as_bytes(), &mut bytes).ok()?;
+    let mut header = bytes.strip_prefix(b"openssh-key-v1\0")?;
+    if read_string(&mut header)? != b"none"
+        || read_string(&mut header)? != b"none"
+        || !read_string(&mut header)?.is_empty()
+        || read_number(&mut header)? != 1
+    {
+        return None;
+    }
+    read_string(&mut header)?;
+    let body_offset = bytes.len() - header.len();
+    let body = read_string(&mut header)?;
+    if !header.is_empty() || !body.len().is_multiple_of(8) {
+        return None;
+    }
+
+    let mut fields = body.get(8..)?;
+    let width = match read_string(&mut fields)? {
+        b"ecdsa-sha2-nistp256" => 32,
+        b"ecdsa-sha2-nistp384" => 48,
+        b"ecdsa-sha2-nistp521" => 66,
+        _ => return None,
+    };
+    read_string(&mut fields)?; // curve
+    read_string(&mut fields)?; // public point
+    let scalar_offset = body.len() - fields.len();
+    let scalar = read_string(&mut fields)?;
+    let first = *scalar.first()?;
+    if scalar.len() >= width
+        || first >= 0x80
+        || (first == 0 && scalar.get(1).is_none_or(|second| *second < 0x80))
+    {
+        return None;
+    }
+    let comment = read_string(&mut fields)?;
+    let padding = [1, 2, 3, 4, 5, 6, 7];
+    if !padding.starts_with(fields) {
+        return None;
+    }
+    let mut normalized = Zeroizing::new(Vec::with_capacity(bytes.len() + width + 8));
+    normalized.extend_from_slice(&bytes[..body_offset]);
+    let unpadded = scalar_offset + 4 + width + 4 + comment.len();
+    let padded = unpadded.next_multiple_of(8);
+    normalized.extend_from_slice(&(padded as u32).to_be_bytes());
+    normalized.extend_from_slice(&body[..scalar_offset]);
+    normalized.extend_from_slice(&(width as u32).to_be_bytes());
+    let scalar_start = normalized.len();
+    normalized.resize(scalar_start + width - scalar.len(), 0);
+    normalized.extend_from_slice(scalar);
+    put(&mut normalized, comment);
+    normalized.extend_from_slice(&padding[..padded - unpadded]);
+    PrivateKey::from_bytes(&normalized).ok()
+}
+
 fn ec_signature(algorithm: &str, bytes: &[u8]) -> (String, Vec<u8>) {
     let (r, s) = bytes.split_at(bytes.len() / 2);
     let mut signature = Vec::new();
@@ -208,4 +279,17 @@ fn mpint(out: &mut Vec<u8>, bytes: &[u8]) {
 pub(super) fn put(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
+}
+
+pub(super) fn read_number(input: &mut &[u8]) -> Option<u32> {
+    let (bytes, rest) = input.split_first_chunk::<4>()?;
+    *input = rest;
+    Some(u32::from_be_bytes(*bytes))
+}
+
+pub(super) fn read_string<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let length = read_number(input)? as usize;
+    let (bytes, rest) = input.split_at_checked(length)?;
+    *input = rest;
+    Some(bytes)
 }

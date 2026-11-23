@@ -33,7 +33,7 @@ use super::{
     crypto,
     helper::millis,
     identity::Identity,
-    ssh_keys::{Key, put},
+    ssh_keys::{Key, put, read_number, read_string},
 };
 
 const MAX_PACKET: usize = 256 * 1024;
@@ -380,20 +380,13 @@ async fn respond(source: &Arc<Source>, packet: &[u8], cancel: &CancellationToken
 }
 
 fn sign_request<'a>(body: &mut &'a [u8]) -> Option<(&'a [u8], &'a [u8], u32)> {
-    fn number(body: &mut &[u8]) -> Option<u32> {
-        let (bytes, rest) = body.split_first_chunk::<4>()?;
-        *body = rest;
-        Some(u32::from_be_bytes(*bytes))
-    }
-    fn string<'a>(body: &mut &'a [u8]) -> Option<&'a [u8]> {
-        let length = number(body)? as usize;
-        let (bytes, rest) = body.split_at_checked(length)?;
-        *body = rest;
-        Some(bytes)
-    }
-    let blob = string(body)?;
-    let data = string(body)?;
-    let flags = if body.is_empty() { 0 } else { number(body)? };
+    let blob = read_string(body)?;
+    let data = read_string(body)?;
+    let flags = if body.is_empty() {
+        0
+    } else {
+        read_number(body)?
+    };
     Some((blob, data, flags))
 }
 

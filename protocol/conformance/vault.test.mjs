@@ -3,7 +3,7 @@
 // captured answer needs to hold the fixture's plaintext.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createECDH, createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -401,6 +401,31 @@ exec ${executable} "$@"
   assert.ok(!guard.log().includes(secret), "Helper log hides the value");
 });
 
+function shortP521(file) {
+  const sshString = value => {
+    const bytes = Buffer.from(value);
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(bytes.length);
+    return Buffer.concat([size, bytes]);
+  };
+  // A 64-byte positive mpint for a curve with a 66-byte scalar width.
+  const scalar = randomBytes(64);
+  scalar[0] = 0x40;
+  const pair = createECDH("secp521r1");
+  pair.setPrivateKey(scalar);
+  const algorithm = "ecdsa-sha2-nistp521";
+  const pub = Buffer.concat([algorithm, "nistp521", pair.getPublicKey()].map(sshString));
+  write(file + ".pub", algorithm + " " + pub.toString("base64") + "\n");
+  const parts = Buffer.concat([Buffer.alloc(8), pub, sshString(scalar), sshString("fixture")]);
+  const padding = Buffer.from(Array.from({ length: (8 - parts.length % 8) % 8 }, (_, i) => i + 1));
+  const raw = Buffer.concat([
+    Buffer.from("openssh-key-v1\0"), ...["none", "none", ""].map(sshString),
+    Buffer.from([0, 0, 0, 1]), sshString(pub), sshString(Buffer.concat([parts, padding])),
+  ]);
+  return "-----BEGIN OPENSSH PRIVATE KEY-----\n" + raw.toString("base64").match(/.{1,70}/g).join("\n") +
+    "\n-----END OPENSSH PRIVATE KEY-----\n";
+}
+
 test("the conversation's SSH agent offers the vault keys and signs without releasing them", {
   skip: process.platform === "win32",
   timeout: 30000,
@@ -434,10 +459,15 @@ test("the conversation's SSH agent offers the vault keys and signs without relea
     ["ecdsa", "384", null], ["ecdsa", "521", null], ["rsa", "2048", "PEM"],
   ]) {
     const file = path.join(root, [kind, bits, format].filter(Boolean).join("-"));
-    execFileSync("ssh-keygen", ["-q", "-t", kind, ...(bits ? ["-b", bits] : []),
-      ...(format ? ["-m", format] : []), "-N", "", "-f", file], { env, stdio: "ignore" });
-    const secret = fs.readFileSync(file, "utf8");
-    fs.rmSync(file);
+    let secret;
+    if (bits === "521") {
+      secret = shortP521(file);
+    } else {
+      execFileSync("ssh-keygen", ["-q", "-t", kind, ...(bits ? ["-b", bits] : []),
+        ...(format ? ["-m", format] : []), "-N", "", "-f", file], { env, stdio: "ignore" });
+      secret = fs.readFileSync(file, "utf8");
+      fs.rmSync(file);
+    }
     secrets.push(secret.trim());
     const name = path.basename(file);
     const made = await ask("POST", vault + "/items", { kind: "key", name, values: { private_key: secret } }, header);

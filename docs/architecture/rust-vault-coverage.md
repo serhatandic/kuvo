@@ -156,7 +156,8 @@ this row. Installed Helper cases still need the released supervision path.
 
 - On macOS both binaries passed the nine `vault` scenarios, including
   wrapped-store edits in both directions, an ad hoc debug Helper with a
-  disposable Keychain, and an OpenSSH signing and project-scope check.
+  disposable Keychain, and OpenSSH signing and project scope. The SSH check
+  includes an ECDSA P-521 key with a short private scalar, as OpenSSH encodes it.
   Four filtered Mac move tests passed, including the real disposable
   credential move and injected rollback and resume cases.
 - Native Windows passed all four applicable Rust scenarios. The Unix socket,
