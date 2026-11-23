@@ -27753,6 +27753,7 @@
           }
          },
          "here?": "bool",
+         "pending?": "bool",
          "away?": "bool",
          "lastSeen?": "number",
          "updating?": "bool",
