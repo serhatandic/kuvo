@@ -576,7 +576,11 @@ async fn command_target(engine: &Engine, session: &str) -> Result<Lease, Refusal
     Ok(lease)
 }
 
-async fn snapshot(engine: &Engine, session: &str, items: bool) -> Result<Value, Refusal> {
+pub(crate) async fn snapshot(
+    engine: &Engine,
+    session: &str,
+    items: bool,
+) -> Result<Value, Refusal> {
     let queue = engine.queues.get(session).await.map_err(save_failed)?;
     if !items {
         return Ok(queue.shown());
@@ -658,7 +662,7 @@ async fn set_delivery(
     Ok(())
 }
 
-async fn interrupt(
+pub(crate) async fn interrupt(
     engine: &Engine,
     lease: &Lease,
     session: &str,
@@ -683,6 +687,16 @@ async fn holding(
 ) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
     let lease = command_target(engine, session).await?;
+    hold_on(engine, &lease, session, given, stopping).await
+}
+
+pub(crate) async fn hold_on(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    given: Vec<String>,
+    stopping: bool,
+) -> Result<Value, Refusal> {
     if stopping || !given.is_empty() {
         engine
             .queues
@@ -700,7 +714,7 @@ async fn holding(
             .await
             .map_err(save_failed)?;
     }
-    let inbox = inbox(engine, &lease, session).await.map_err(queue_failed)?;
+    let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
     let mut held = Vec::new();
     for id in given.iter().chain(
         inbox
@@ -713,7 +727,7 @@ async fn holding(
         }
         if let Some(item) = inbox.iter().find(|row| &row.id == id && row.is_message())
             && (item.delivery == Delivery::Queue
-                || set_delivery(engine, &lease, session, id, Delivery::Queue)
+                || set_delivery(engine, lease, session, id, Delivery::Queue)
                     .await
                     .is_ok())
         {
@@ -727,7 +741,7 @@ async fn holding(
             api::segment(&summary.id)
         );
         let _ = engine
-            .call::<Value>(&lease, Method::DELETE, &path, None)
+            .call::<Value>(lease, Method::DELETE, &path, None)
             .await;
     }
     let queue = engine
@@ -748,7 +762,7 @@ async fn holding(
         .await
         .map_err(save_failed)?;
     if stopping {
-        interrupt(engine, &lease, session, false)
+        interrupt(engine, lease, session, false)
             .await
             .map_err(queue_failed)?;
     }

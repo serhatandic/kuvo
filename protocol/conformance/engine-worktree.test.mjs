@@ -67,3 +67,33 @@ test("a new worktree is recorded under its project before the conversation is re
   const stored = JSON.parse(fs.readFileSync(path.join(home, "box/worktrees.json"), "utf8"));
   assert.deepEqual(stored.worktrees.map(({ root, project }) => ({ root, project })), [{ root: worktree.root, project }]);
 });
+
+test("an interrupted start removes an unused worktree and keeps the one an OpenCode session took", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const { home, engine, start } = await computer("failed-session-worktree");
+  const project = path.join(home, "project");
+  const env = isolatedEnv(path.dirname(home));
+  write(path.join(project, "file"), "Fixture\n");
+  git(env, project, "init", "-q");
+  git(env, project, "add", "file");
+  git(env, project, "commit", "-qm", "Fixture");
+  write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: project, name: "Fixture" }] }));
+  const record = await start().ready();
+  const given = { project: "Fixture", worktree: true, title: "Interrupted start" };
+
+  engine.failStart = "before";
+  const refused = await request(record, "POST", "kuvo/sessions", given);
+  assert.equal(refused.status, 502, refused.text);
+  assert.equal(git(env, project, "branch", "--list", "kuvo/*"), "");
+  const stored = () => JSON.parse(fs.readFileSync(path.join(home, "box/worktrees.json"), "utf8"));
+  assert.deepEqual(stored().worktrees, []);
+  assert.deepEqual(stored().restorable, []);
+
+  engine.failStart = "after";
+  const lost = await request(record, "POST", "kuvo/sessions", given);
+  assert.equal(lost.status, 502, lost.text);
+  assert.equal(engine.sessions.length, 1);
+  const folder = engine.sessions[0].location.directory;
+  assert.equal(fs.readFileSync(path.join(folder, "file"), "utf8"), "Fixture\n");
+  assert.equal(stored().worktrees[0].folder, folder);
+});

@@ -18,11 +18,16 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Removing Kuvo reports when other computers have yet to receive the desktop’s revocation.
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
+- The Mac migration command now carries sessions, attachments, settings, and keys from older Kuvo Code installations.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
+- The Rust server reads saved move results and shows moves reported by your other computers.
+
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
+- The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.
+- Retrying a desktop message after a server restart confirms a message already received, without sending another copy.
 - The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
 
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.

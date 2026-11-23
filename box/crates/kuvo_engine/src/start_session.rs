@@ -83,8 +83,13 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         async move {
             let given = sessions::body(&call)
                 .map_err(|_| bad("Send {task}, and title, folder, startedBy, wait."))?;
-            let mut started = create(&engine, &given).await?;
-            list.refresh();
+            let mut started = tokio::spawn(async move {
+                let started = create(&engine, &given).await?;
+                list.refresh();
+                Ok::<_, Refusal>(started)
+            })
+            .await
+            .map_err(|error| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))??;
             // The reference includes the complete worktree record. The route
             // shape names only the fields desktop clients read.
             let worktree = started
@@ -465,7 +470,8 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         Ok(info) if info["id"].as_str().is_some_and(sessions::valid_id) => info,
         result => {
             if let Some(tree) = &created_tree
-                && matches!(&result, Err(api::Error::Status(status, _)) if status.is_client_error())
+                && !matches!(&result, Err(api::Error::Transport(_)))
+                && tree_unused(engine, &lease, tree).await
             {
                 undo_tree(engine, &lease, tree).await;
             }
@@ -888,8 +894,22 @@ async fn store_tree(engine: &Engine, tree: &Tree, keep: bool) -> std::io::Result
     disk::durable(path, record).await
 }
 
+async fn tree_unused(engine: &Engine, lease: &Lease, tree: &Tree) -> bool {
+    api::Scan::Sessions
+        .read(engine, lease, "api/session")
+        .await
+        .is_ok_and(|rows| {
+            rows.into_iter().all(|row| {
+                serde_json::from_value::<Session>(row).is_ok_and(|session| {
+                    let directory = Path::new(session.directory());
+                    !directory.starts_with(&tree.root)
+                })
+            })
+        })
+}
+
 async fn undo_tree(engine: &Engine, lease: &Lease, tree: &Tree) {
-    let _ = engine
+    let removed = engine
         .upstream
         .request(&lease.record, Method::DELETE, "api/worktree")
         .header(
@@ -900,7 +920,10 @@ async fn undo_tree(engine: &Engine, lease: &Lease, tree: &Tree) {
         .json(&json!({ "projectID": tree.project_id, "directory": tree.root, "force": true }))
         .send()
         .await;
-    if !tree.record.is_null() {
+    if removed.is_ok_and(|response| response.status().is_success()) && !tree.record.is_null() {
+        if let Some(branch) = tree.record["made"].as_str() {
+            let _ = git(&tree.project, &["branch", "-D", "--", branch]).await;
+        }
         let _ = store_tree(engine, tree, false).await;
     }
 }

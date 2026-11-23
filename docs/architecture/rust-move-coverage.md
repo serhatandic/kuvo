@@ -6,8 +6,9 @@ by its saved files, takes the store's layout lock, checks again under the lock,
 and commits layout 23 after the last step. A current layout opens without
 rerunning the imports. The machine path refuses an active old writer and an
 unfinished TypeScript Mac move. Mac app discovery recognizes the released
-app's folder and holds startup until cutover. The private Mac staging entry
-prepares and validates cloned data without touching the published layout.
+app's folder and holds startup until cutover. `rehome --run` validates an
+installer-staged release, prepares the old app's data, and publishes it under
+the layout lock and the lock the signed key tools recognize.
 
 The TypeScript machine reference takes data in through several entry points.
 The Rust machine move runs those on-disk imports before starting the resident.
@@ -18,17 +19,22 @@ preserving the identity and other saved fields. Outbox mail moves by rename,
 address-only browser pages acquire their session field, and obsolete agent
 programs, copied sign-ins and Mac presence records are retired. The phases
 replay from disk after a process exits. No intermediate layout version is
-published. Mac staging also replays from a fresh copy after an interruption. The
-publication phase still needs its journal for placement, worktree repairs
-outside the home and Helper handover. Rust groups the imports into typed steps
-under the store's RAII lock. A private SQLite transaction owns each path
-rewrite, and a scoped child owns the engine used for validation.
+published. Mac staging rebuilds a private copy after an interruption. The
+publication journal names the prepared files and reciprocal Git edits. Rust
+checks file identities to recognize completed renames and compares the old
+and new Git values when it replays. Both the layout and completed journal
+must be durable before startup. Helper reads back the copied keys. On the
+account's real home, originals remain until the new resident authenticates to
+Helper. Rust uses typed steps, the store's RAII locks and atomic writes, a
+private SQLite transaction for rewrites, and a scoped engine for validation.
 
 ## Rust scenarios
 
 [Machine scenarios](../../box/crates/kuvo_move/tests/machine.rs) exercise the
 real filesystem and the store handoff. [Mac scenarios](../../box/crates/kuvo_move/tests/mac_stage.rs)
-exercise the private stage and the tagged engine fixtures.
+exercise private staging and publication using the tagged engine and Keychain
+fixtures. [Setup scenarios](../../box/crates/kuvo_setup/tests/live.test.mjs)
+use authenticated Helper and relay stand-ins.
 
 | ID | Scenario |
 |---|---|
@@ -39,10 +45,13 @@ exercise the private stage and the tagged engine fixtures.
 | M5 | A machine that never had a bridge opens through the store's interrupted 0→1 handoff and keeps its instructions. |
 | M6 | A live predecessor bridge keeps the move from retiring its files. |
 | A1 | An older Mac's attachments, chats, links, and saved run records are cloned into private staging. Process records stay with the old app. Absolute links into the old app are rewritten. Relative links and external targets are preserved. |
-| A2 | A binary plist projects projects, worktrees, Git and approval settings, and starred models. The project and worktree records name the final home. Integration key references in engine and bot config name the destination key directory. |
+| A2 | A binary plist projects projects, worktrees, Git and approval settings, and starred models. The project and worktree records name the final home. Integration key references in engine and bot config name the destination key directory. The relay and device preference, and personality additions and removals, also carry over. |
 | A3 | A write in the source after cloning stops staging. A retry opens the changed input. |
 | A4 | The staged database for each tagged Mac passes migration and session list checks against the fixture's pinned-engine stand-in. A child killed at each staging boundary rebuilds the same private tree. The source and published layout remain intact. |
 | A5 | Staged artifact logs remap paths and path-derived IDs. A future-format line keeps the source and staged file byte for byte and refuses the move. |
+| A6 | A future legacy Mac record refuses the import before any clone. |
+| A7 | Each tagged app move survives 16 PID cuts. The final inventory, source, Git backlink, and Keychain stand-in match the uninterrupted run. A locked Keychain and failed read-back preserve the originals and prevent publication. A source write after the first placement rolls the move back and is carried on retry. |
+| S2 | The authenticated older Mac main converts its checkpoint after receiving the relay lease. A PID kill at lease claim and a restart advance the same setup by one epoch. |
 | S1 | The stored-format conformance scenarios refuse newer, malformed and invalid layout records and reopen a fresh home at 23. |
 
 ## TypeScript scenario map
@@ -50,19 +59,20 @@ exercise the private stage and the tagged engine fixtures.
 The primary inventory contains 135 test declarations. Each loop is counted at
 its declaration. The two forward-move loops expand to eleven cuts, the rollback
 loop to three, and the saved-sign-in unit loop to four outcomes. At the primary
-declaration level, two are covered by S1, one by A5, and nine are out of scope
-under section 4. The other 123 are partial, open, or owned by another phase.
+declaration level, two are covered by S1, one by A5, one by A6, and nine are
+out of scope under section 4. The other 122 are partial, open, or owned by
+another phase.
 The associated compatibility checks below are tracked separately.
 
 | Reference | Declarations | Rust coverage and remaining owner |
 |---|---:|---|
-| [rehome](../../box/test/rehome.test.ts) | 36 | M2 covers a recognizable unfinished journal's startup fence and M4 covers the machine crash boundaries. A1–A4 cover private clones, a source write during cloning, and database and path rewrites within the staged engine and selected records. Final placement, kept copies, move progress, broader writer detection, rollback and forward recovery are open in 2.6. App-facing readiness, new install and keeper scheduling also need 7.2. |
-| [rehome-run](../../box/test/rehome-run.test.ts) | 35 | M2, M3 and M6 exercise the destination, detection and writer fences for the machine entry point. A4 checks the tagged database migration and engine validation in staging. Process quiescence, handoff and cleanup, copied sign-ins, and the standalone run command remain 2.6. |
+| [rehome](../../box/test/rehome.test.ts) | 36 | M2 covers a recognizable unfinished journal's startup fence and M4 covers the machine crash boundaries. A1–A4 cover private clones, a source write during cloning, and database and path rewrites within the staged engine and selected records. A7 covers publication, Git and recovery for the standalone command. The older move, kept copies, detailed progress and broader writer behavior are open in 2.6. App-facing readiness, new install and keeper scheduling also need 7.2. |
+| [rehome-run](../../box/test/rehome-run.test.ts) | 35 | M2, M3 and M6 exercise the destination, detection and writer fences for the machine entry point. A4 checks the tagged database migration and engine validation in staging. A7 covers the standalone run, publication, and Keychain fixtures. Process quiescence, external agent history, and detailed failures remain 2.6. Helper launch belongs to 7.2. |
 | [rehome-upgrades](../../box/test/rehome-upgrades.test.ts) | 9 | M1 covers the separate machine kit projections. A2 checks app plist decoding, projects, worktrees and Git. A4 checks the beta.1 pending letter. A5 covers artifact log paths and their version gate. The remaining settings and peer projection, bots, group chats, broader letter cases and future app data remain 2.6. |
 | [rehome-passwords](../../box/test/rehome-passwords.test.ts) and [bridge scenario](../../box/bridge-tests/rehome-passwords.test.js) | 2 | Mac handoff records and settling are open in 2.6. The actual saved sign-in transfer also needs the vault and Helper adapter in 6.2. |
 | [install-verdict](../../box/test/install-verdict.test.ts) | 12 | M2 and M3 cover blocking an unfinished journal and recognizing data beside the app's own cache and program folders. M5 covers in-place startup without a bridge. The full verdict matrix, new-install collision handling, explicit move and restart need 2.6 and 7.2. |
 | [install](../../box/bridge-tests/install.test.js) | 24 | The older app, move progress, failed launch settlement and two-install cases need the 2.6 staged move and 7.2 installer. Fresh install, release checks, staging races and keeper launch are 7.2. Wipe and reinstall admission are 2.3 and 7.2. |
-| [folder-version](../../box/bridge-tests/folder-version.test.js) | 16 | S1 covers future and unreadable marker refusals. M2 and M5 cover the move's reader and valid 0→1 retry. Mac import sealing remains 2.6. Steps 11 and 17 and the layout transitions only used by unpublished TypeScript betas are excluded by section 4. Bridge and keeper entry points and trial rollback need 4.1 and 7.1–7.2. |
+| [folder-version](../../box/bridge-tests/folder-version.test.js) | 16 | S1 covers future and unreadable marker refusals. M2 and M5 cover the move's reader and valid 0→1 retry. A7 covers layout sealing for the tagged apps. Group-file sealing still needs its fixture. Steps 11 and 17 and the layout transitions only used by unpublished TypeScript betas are excluded by section 4. Bridge and keeper entry points and trial rollback need 4.1 and 7.1–7.2. |
 | [update-from-before](../../box/bridge-tests/update-from-before.test.js) | 1 | An updater handing over to the new keeper and updating its engine and bridge belongs to 7.2 and 9.3. M5 only covers opening data once the new executable runs. |
 
 The declaration lines below identify each scenario in the linked files above.
@@ -71,26 +81,27 @@ column. The loop declarations cover each cut or outcome described by that loop.
 
 | Reference | Declaration lines | Evidence and remaining owner |
 |---|---|---|
-| `rehome.test.ts` | 305, 422, 446, 463, 674, 698, 715, 742, 884, 910, 921, 972 | M4 and A4 cover interruption before publication. The published transaction, lost-process locks against another mover, kept copies, rollback and forward recovery remain 2.6. |
+| `rehome.test.ts` | 305, 422, 446, 463, 674, 698, 715, 742, 884, 910, 921, 972 | M4 and A7 cover interruption through publication. The older in-place move, concurrent movers, kept copies, and Move Back still need their 2.6 verdicts. |
 | `rehome.test.ts` | 512, 543, 566, 582, 601, 625, 644, 659, 705, 835, 953 | M2 and M3 cover the store's startup gate. Keeper readiness, fresh making and retry scheduling remain 7.2. Move status, collisions and recovery also need 2.6. |
 | `rehome.test.ts` | 800, 867, 942, 983, 999 | M2 and M6 fence a recognizable unfinished move and a running machine writer. CLI replies, Mac admission, account isolation, disk space and malformed journals remain 2.6. |
 | `rehome.test.ts` | 1007, 1032, 1045, 1060, 1098, 1112, 1124 | A3 and A4 cover concurrent changes and real database migration and validation. Retry rounds, unsupported schemas through the command, failure replies, rollback and large page sets remain 2.6. |
 | `rehome.test.ts` | 1144 | Existing sign-in handover and rollback remain 2.6 and 6.2. |
-| `rehome-run.test.ts` | 20, 87, 110, 384, 461, 537, 573, 595, 608 | A1 and A4 cover cloned data, path changes, the pinned migration and private interruption recovery. Publication, reports, Helper, old keeper settlement and older waiting messages remain 2.6, with 6.2 providing the Helper and vault bridge. |
+| `rehome-run.test.ts` | 20, 87, 110, 384, 461, 537, 573, 595, 608 | A1, A4 and A7 cover tagged migration, publication, path changes and interruption recovery. The differential also passes with the real pinned engine. Old keeper handling and precise dropped-message notices remain open. Helper startup belongs to 7.2. |
 | `rehome-run.test.ts` | 128, 250, 262, 274, 282, 290, 325, 351 | A3 and M6 cover a changed source file and known live writer. Mac process discovery, read-only SQLite activity and retry rounds remain 2.6. |
-| `rehome-run.test.ts` | 159, 174, 198, 209, 395, 420, 435, 506 | Keychain, old launch agent, agent history and deferred sign-ins remain 2.6 and 6.2. |
+| `rehome-run.test.ts` | 159, 174, 198, 209, 395, 420, 435, 506 | A7 covers Keychain copy, verification, rollback, and settlement through stand-ins. Real signing, old launch agent cleanup, agent history, and deferred sign-ins still need 2.6, 6.2 and 7.2. |
 | `rehome-run.test.ts` | 216, 224, 237, 371, 494, 553, 583, 623, 632, 643 | A2–A4 and M2–M3 cover selected input readers, the engine gate and startup fences. CLI error and progress replies, damaged input scenarios, path validation and eligibility for browser-only and other empty homes remain 2.6. |
-| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | M1 and A1–A4 cover a subset of settings, preferences, the machine list and selected letters. Bot and group formats, local link preferences, personality deletion and seen-letter history remain 2.6. |
-| `rehome-upgrades.test.ts` | 214, 251 | M2 covers the marker fence. App file indexes and the complete future-data gate remain 2.6. |
+| `rehome-upgrades.test.ts` | 77, 165, 177, 184, 193, 209 | M1 and A1–A4 cover a subset of settings, preferences, the machine list and selected letters. A2 covers local link preferences and personality deletion. Bot and group formats and broader seen-letter history remain 2.6. |
+| `rehome-upgrades.test.ts` | 214 | M2 covers the marker fence. App file indexes remain 2.6. |
+| `rehome-upgrades.test.ts` | 251 | Covered by A6. |
 | `rehome-upgrades.test.ts` | 235 | Covered by A5. |
 | `rehome-passwords.test.ts`, `rehome-passwords.test.js` | 9 and 54, respectively | 2.6 move obligations and 6.2 vault and Keychain. |
 | `install-verdict.test.ts` | 32, 74, 81, 89, 96, 111, 147, 154, 169 | M2, M3 and M5 cover the store's handoff and part of old-app detection. Full verdict, ownership and retry remain 2.6 and 7.2. |
 | `install-verdict.test.ts` | 45, 57, 128 | Move settlement and its lock remain 2.6. Helper, startup and updates remain 7.2. |
 | `install.test.js` | 124, 361, 379, 387, 418, 442, 451, 468, 505, 766, 774, 793, 810, 875, 901 | Installer and keeper admission, release checks, retries and starting remain 7.2. M3 and M6 exercise the underlying fresh-home and writer checks. |
 | `install.test.js` | 148, 204, 267 | 2.3 and 7.2 own wipe, its completion receipt and reinstall admission. |
-| `install.test.js` | 564, 594, 645, 700, 725, 750 | A1–A4 cover private staging and M3 covers the detection fence. 2.6 owns Mac publication and settlement. 7.2 owns installer progress and Helper launch. |
+| `install.test.js` | 564, 594, 645, 700, 725, 750 | A1–A4 and A7 cover staging, publication and stand-in settlement. M3 covers the detection fence. 7.2 owns installer progress and Helper launch. |
 | `folder-version.test.js` | 33, 52, 76, 98, 123, 142, 161, 184, 203 | Section 4 excludes replaying the intermediate TypeScript-only layout steps. The Rust store's format rules are 1.2. |
-| `folder-version.test.js` | 226, 381 | M5 covers the interrupted 0→1 handoff. A4 covers durable private staging. App import publication and sealing remain 2.6. |
+| `folder-version.test.js` | 226, 381 | M5 covers the interrupted 0→1 handoff. A7 covers app publication and layout sealing. The group-file fixture remains 2.6. |
 | `folder-version.test.js` | 252, 273 | Covered by S1. |
 | `folder-version.test.js` | 287, 301, 326 | 4.1 owns the bridge gate, 7.1 and 7.2 own keeper/startup gate and release trial rollback. |
 | `update-from-before.test.js` | 54 | M5 covers opening the home after starting the new executable. 7.2 and 9.3 own switching to it and keeper judgment. |
@@ -103,25 +114,23 @@ column. The loop declarations cover each cut or outcome described by that loop.
 | [Worktree handoff](../../box/bridge-tests/worktrees.test.js#L392) and [saved prefix](../../box/bridge-tests/worktrees.test.js#L548) | M1 covers the prefix on disk. Keeping the legacy worktree offered by another computer needs the 2.6 handoff and worktree consumer. |
 | [Carried time zone](../../box/test/time-zone.test.ts#L76), [following a changing kit](../../box/test/time-zone.test.ts#L124) and [time-zone bridge scenarios](../../box/bridge-tests/time-zone.test.js) | M1 covers initial zone selection from the kit. Propagation, an explicit setup choice superseding the carried setting, and the wake-up consumers need 2.1 and their area scenarios. Repeated old-Mac input needs 7.3. |
 | [Unversioned peers](../../box/bridge-tests/peers.test.js#L44), [later mail](../../box/bridge-tests/peers.test.js#L57) and [old outbox](../../box/bridge-tests/peers.test.js#L586) | M1 covers fixed on-disk peer projection and relocation of unclaimed mail. Receiving newer legacy peers mail needs 7.3. Delivery after relocation also needs the 2.4 letter consumer. |
-| [Mac's home and Helper](../../box/bridge-tests/own-home-mac.test.js) | Migration settlement is open in 2.6, Helper and setup startup in 2.1 and 7.2, and awake/engine behaviour with their respective runtime phases. |
-| [Predecessor setup](../../box/test/setup-one-model.test.ts), [Mac main](../../box/bridge-tests/setup-mac.test.js#L137) and [following a newer Mac](../../box/bridge-tests/documents.test.js#L317) | The standalone Mac's conversion into a setup and the inherited membership and local-number state need 2.6 through `kuvo_setup`. 2.1 owns the current owner and membership protocol. 5.2 owns number allocation. Layout.4's TypeScript-specific migration is excluded by section 4. |
-| [Legacy personality library](../../box/bridge-tests/personalities-box.test.js#L88) | M1 carries custom records from the machine kit. Taking a Mac app's local personality library and removals into the staged home remains 2.6. 2.1 owns setup-wide replication. |
-| [Tagged compat cases](../../protocol/conformance/compat.test.mjs) and [hold/1](../../protocol/conformance/holder.test.mjs) | The old Mac app cases need the staged transaction, database validation, and Helper steps in 2.6. Historical verbs and arriving beta.1 mail need 7.3. Holder controller exchange is covered in conformance. Full resident adoption belongs to 4.1. |
+| [Mac's home and Helper](../../box/bridge-tests/own-home-mac.test.js) | A7 covers migration settlement with a Keychain stand-in. Real Helper startup needs 7.2. Awake and engine behaviour remain with their runtime phases. |
+| [Predecessor setup](../../box/test/setup-one-model.test.ts), [Mac main](../../box/bridge-tests/setup-mac.test.js#L137) and [following a newer Mac](../../box/bridge-tests/documents.test.js#L317) | S2 covers conversion of a checkpointed Mac primary through `kuvo_setup`. Layout.4 conversion is excluded. Membership interoperability, old numbering, and the remote legacy Mac follow path depend on 2.1, 5.2, and 7.3. |
+| [Legacy personality library](../../box/bridge-tests/personalities-box.test.js#L88) | M1 carries custom records from the machine kit. A2 imports the Mac's local library and removals. 2.1 owns setup-wide replication. |
+| [Tagged compat cases](../../protocol/conformance/compat.test.mjs) and [hold/1](../../protocol/conformance/holder.test.mjs) | Both Mac app cases and the 0.7.2 machine pass on Rust. Historical verbs and arriving beta.1 mail need 7.3. Holder mode belongs to 4.1. |
 
 ## Boundaries and gaps
 
-- **2.6** still owns both Mac app imports, including the remainder of staged layout-1 work,
-  source writer handling, placement, remaining path and history repairs, app
-  preferences and records, group chats, Keychain handover and setup conversion
-  through `kuvo_setup`. It also owns
-  full parity of the machine imports, including the legacy worktree and Git
-  handoff, exact handling of malformed legacy files, and verification against
-  the golden homes. The existing home differential CLI starts the resident
-  from a home seed. It needs a staged-app mode to compare the old app directory,
-  its destination and the post-move answers together.
+- **2.6** still owns the broader source process stop and retry behavior,
+  legacy placement collisions and older journal recovery, group-chat and bot
+  projections, remaining paths and external agent history, and complete
+  failure/progress receipts. The actual signed Keychain programs and live
+  Helper launch still need a dedicated integration check. Both tagged
+  published destinations match with the pinned OpenCode executable and the
+  fixture's Keychain stand-ins.
 - **7.2 and 9.3** own installer and keeper integration and the fleet rehearsal,
   including the pre-Rust backup and rollback drill. The move code currently
-  starts from the box executable’s home gate or its library entry.
+  starts from the executable’s home gate or `rehome --run`. The installer and keeper own launching the new Helper.
 - **7.3** owns `stays` and `next` from the compatibility inventory, including
   the live response to unsigned beta.1 peers mail, old SSH settings verbs and
   repair after an old Mac has overwritten installation files.
@@ -135,17 +144,17 @@ column. The loop declarations cover each cut or outcome described by that loop.
 The TypeScript reference passes all five tagged/current compat cases, the
 holder transcript, and all four stored-format cases on macOS. The Rust
 workspace checked with tests after `scripts/build-built.sh` generated the
-wire vectors. All six machine scenarios passed on macOS, native Windows and
-WSL2 Ubuntu 24.04, including the eight process cuts. The seventh harness entry
-is the child used by the crash scenario. LLVM MinGW built the native tests and
-resident. The Windows resident answered `kuvo/info` from a fresh home at layout
-23. A static x86-64 musl build supplied the WSL test executable. The capped
-Linux run on lokum stopped returning output and both SSH addresses timed out,
-so it has no recorded test result.
+wire vectors. All six machine scenarios passed on macOS, native Windows,
+WSL2 Ubuntu 24.04, and lokum, including all eight process cuts. The seventh
+harness entry is the child used by the crash scenario. LLVM MinGW built the
+native Windows tests and resident. A Mac-built static x86-64 musl executable
+passed on WSL2 and on lokum in a disposable container capped at one CPU and
+1 GB. The one-thread libtest progress prefix originally masked the crash
+checkpoint. The final run passed with the checkpoint on its own line.
 
 The Rust stored-format area passes 4/4. The holder area fails because the
 Rust executable does not yet implement the holder mode (4.1). Rust compat
-passes the 0.7.2 machine case. The beta.1 machine fails on the next live,
+passes both tagged Mac app cases and the 0.7.2 machine case (3/5). The beta.1 machine fails on the next live,
 unsigned peer update (7.3). Its original saved peers are already projected
 at startup. The current-beta case reaches the resident and first fails on
 `kuvo/projects` (3.2). A direct check preserves all 18 durable files listed
@@ -153,11 +162,11 @@ by that fixture byte for byte and gets the expected setup and personalities.
 
 | Fixture | Post-startup differential and separate assertions |
 |---|---|
-| 0.7.2 machine | Opens at 23 with the original key and relay secret. The post-2.1b run differs on 60 paths. `kuvo/info` differs and `kuvo/setup` differs only on the generated setup ID. |
-| 0.8.0-beta.1 machine | Opens at 23 with original identity and the saved `peersFrom` projected under `legacy`. The post-2.1b run differs on 56 paths, `kuvo/info` and the stable `you.key` in `kuvo/setup`. |
-| 0.7.2 Mac app folder | The TypeScript move publishes its destination. Rust matches 66 entries in private staging and the logical SQLite inventory. The Rust command and publication remain open. |
-| 0.8.0-beta.1 Mac app folder | The TypeScript move publishes its destination. Rust matches 69 entries in private staging, including the pending letter, and the logical SQLite inventory. The Rust command and publication remain open. |
-| Current TypeScript beta | Already at 23. The setup answer matches. `kuvo/info` and 50 paths differ after 2.1b. |
+| 0.7.2 machine | Opens at 23 with the original key and relay secret. The latest run differs on 57 paths. `kuvo/info` differs and `kuvo/setup` differs only on the generated setup ID. |
+| 0.8.0-beta.1 machine | Opens at 23 with original identity and the saved `peersFrom` projected under `legacy`. The latest run differs on 51 paths, `kuvo/info` and the stable `you.key` in `kuvo/setup`. |
+| 0.7.2 Mac app folder | All 76 published paths with the engine stand-in and all 81 with OpenCode 2.2.6 match. The move reply, Git backlink, and Keychain stand-in match. After startup, the setup answer matches and 40 runtime paths differ in the recorded run. |
+| 0.8.0-beta.1 Mac app folder | All 79 published paths with the engine stand-in and all 84 with OpenCode 2.2.6 match, including the pending letter. The move reply, Git backlink, and Keychain stand-in match. After startup, the setup answer matches and 44 runtime paths differ in the recorded run. |
+| Current TypeScript beta | Already at 23. The setup answer matches. `kuvo/info` and 42 paths differ in the latest run. |
 
 The differential counts include directory entries. The sequence asked for
 `GET kuvo/info` and `GET kuvo/setup` on each stopped machine seed. The entire
@@ -168,7 +177,8 @@ the companion files still visible in the comparison.
 
 The original machine runs reported 62, 54 and 48 differing paths. Main through
 `b417a12e8` reported 62, 57 and 51. The rerun after merging 2.1b at
-`ac1c56076` reported 60, 56 and 50. The groups cover the union. Each prefix
+`ac1c56076` reported 60, 56 and 50. The next run on the publication branch
+reported 57, 51 and 42. The groups cover the union. Each prefix
 includes the directory entry and the children listed with it. The same
 startup and request sequence ran in each binary.
 
@@ -180,10 +190,11 @@ startup and request sequence ran in each binary.
 | `run/link.needed` | **Owned by 7.1.** The keeper's `kuvo-start` reads it to decide when to start the link. The agents' fence and browser also read it. |
 | `run/link.json` startup fields, `run/docs.changed`, `run/setup-checkpoints/*.json` | **Owned by 2.1.** The current-beta link now matches. Older cases still differ in the startup roster's phone projection, empty membership fields and beta.1 signing and ownership fields. `setup/lead.ts`, `setup/membership.ts`, `state.ts` and `documents/changed.ts` write these fields and the document notification. Checkpoint file names embed a signature-derived hash. New setups create different IDs and keys. The stable roster fields still differ, so the older checkpoints do too. Link adoption with an attached legacy Mac also needs 7.3. |
 | `run/setup-card.json` | **Owned by 2.3 and 5.2.** Installation discovery reads the startup card. The release cases differ in first-write timing or the stable `used` field. The new setup ID and card clock may vary. See the [2.1 startup file audit](rust-setup-coverage.md#startup-file-audit) for the queue and usage inputs. |
-| `run/peer-reach.json`, `run/peer-reach-checked.json`, `run/agents.json` | **Owned by 2.2.** These are the answered peer reach and directory projections from `peers/reach.ts` and `peers/agents.ts`. Clock values are observations at startup. The existence and contents of the directory and reach files still need to match. |
+| `run/peer-reach.json`, `run/peer-reach-checked.json` | **Owned by 2.4.** These are the peer reach projections from `peers/reach.ts`. Clock values are observations at startup. The stable records and file presence still need to match. |
+| `run/agents.json` | **Owned by 4.1.** The legacy roster export is read by `agents/main.ts` and `peers/known.ts`. |
 | `run/moves`, `run/outbox`, `run/outbox/sending`, `run/outbox/sending/ltr_golden.json` and generated `ltr_*.json` under that directory | **Owned by 2.4.** The resident's first send and retry round in `letters/outbox.ts` creates or retires entries and initializes move bookkeeping. A generated letter ID may differ between runs. Stable recipient, payload, disposition and file presence still count. The separate 2.6 import from a flat beta.1 outbox passes M1. |
 | `config`, `config/opencode`, `config/opencode/plugins`, `config/opencode/plugins/kuvo-defaults.js` | **Owned by 3.1.** Engine launch materializes defaults and its plugin in `engine/defaults.ts`. These are the new engine configuration layer, separate from the imported user's settings. |
-| `run/lists` | **Made identical.** After the 2.1b merge with 3.2a, both sides create the directory. |
+| `run/lists` | **Owned by 3.2.** Both sides created the directory in the 2.1b run. The latest TypeScript current-beta run stopped before it appeared. |
 | `run/queues-scanned.json`, `run/lists/sessions.json` | **Owned by 3.2.** Startup scans queues and saves the local session projection in `engine/queue.ts` and the lists writers. The scan keys can embed the engine port. The list epoch embeds process and clock data. The differential already normalizes documented volatile fields. Stable fields such as the owner and bot work projection remain open. |
 | `agents`, `agents/sessions/ses_golden/messages-v1.sqlite-shm` | **Owned by 4.1.** The bridge initializes its home and opens the transcript; the extra shared-memory index is SQLite runtime state. `agents/main.ts` and the transcript store define the startup behavior. The seeded transcript itself is preserved. |
 | `agents/limits.json`, `agents/usage`, `agents/usage/{claude-files,codex-files,grok-files,settings.json,usage.json,insights.sqlite,insights.sqlite-shm,insights.sqlite-wal,insights-logs,insights-logs/codex-files}`, `run/usage-attribution.json` | **Owned by 5.4.** Usage background work creates scans, the SQLite index and its journals, and marks attribution in `usage/service.ts`. Scan times, the allocated ports and SQLite's journal bytes can vary. The backing data families and their stable results still need to agree. |
@@ -200,37 +211,48 @@ startup and request sequence ran in each binary.
 | `GET kuvo/info` fields `features`, `compatibility` | **Owned by 1.1 and the advertised route owners.** Rust and TypeScript advertise their implemented surfaces. Missing route features remain visible. |
 | `GET kuvo/setup` field `setup` on 0.7.2 | **Made identical after accounting for the generated ID.** Both answers have the same structure and all other fields match. The current-beta answer also matches. |
 | `GET kuvo/setup` field `you.key` on beta.1 | **Owned by 2.1 and 7.3.** The resident's stable self projection with a legacy Mac attachment still differs after the 2.1b merge. The original identity is preserved in the move. |
-| Both Mac app destinations and `rehome --run` reply | **Open in 2.6.** Rust has an unpublished staging entry. Remaining app projections, external path repair, Helper key handover, placement and forward recovery still have to work before there is a Rust destination inventory to classify. |
+| Both Mac app destinations and `rehome --run` reply | **Made identical** for the tagged cases. The published comparison and startup verdicts follow. |
 
 No differing path has an unread verdict. Existing consumers and ownership gaps
 are tracked by the phase that owns the corresponding startup work. The table
 does not count runtime paths as identical merely because their contents vary.
 
-### Verdicts for the two Mac staging inventories
+### Verdicts for the two published Mac destinations
 
-The Mac comparison ran the TypeScript `rehome --run` on the same scratch
-source after taking the Rust staging inventory. It compared every relative
-entry in private Rust staging and the published TypeScript home, excluding
-the installer's input at `updates/install` and the Rust staging directory
-itself. This is a stage-to-destination comparison. A published Rust app
-destination and its post-move route answers are still open in 2.6.
+[The Mac differential runner](../../protocol/conformance/differential/mac-app.mjs)
+generates the two tagged fixtures, runs each command at the same paths with
+the same input, and checks the stopped destinations before starting either
+resident. The published comparison passes with both the fixture engine and
+the real OpenCode 2.2.6 binary verified against the SHA-512 pin. Both use the
+fixture's Keychain stand-ins.
 
 | Paths in both tagged cases | Verdict and reason |
 |---|---|
-| All other compared entries, including `attachments/**`, `chats/**`, `config/opencode/opencode.json`, `config/opencode/plugins/kuvo-code.js`, rekeyed `data/opencode/snapshot/**`, and beta.1's `run/outbox/sending/ltr_fixture.json` | **Made identical in staging.** The 0.7.2 comparison matches bytes and modes on 66 paths. The beta.1 comparison matches bytes and modes on 69 paths. Relative symlink targets also match. |
-| `data/opencode/opencode.db` | **Made identical at the SQLite boundary.** Both cases have identical schema and committed rows in every table, including remapped projects, session paths and attachment URLs. Page bytes differ. The Rust stage also starts the fixture's pinned-engine stand-in on a private copy and validates its active and archived session lists and sampled directories. |
-| `box`, `box/kind`, `folder-version.json`, `updates`, `updates/rehome` | **Open in 2.6.** These publication entries are created by the TypeScript move after staging. Rust leaves the live destination untouched until cutover. |
-| `updates/rehome/journal.acts`, `updates/rehome/journal.json`, `updates/rehome/state.json` | **Open in 2.6.** The TypeScript journal records placement, outside writes and what the move owes. Some fields embed clock values. The stable actions, results and state still require a Rust publication journal. |
-| `updates/rehome/keychain.json` | **Open in 2.6.** The Keychain tools journal their copies and settlement when invoked by the mover. The 6.2 Helper supplies the signed tool and broker. Rust staging leaves the source Keychain alone. |
-| Worktree backlinks outside the destination | **Open in 2.6.** The TypeScript cutover repairs the fixture's external Git records. Rust staging rekeys the engine's snapshots. The update to the external repository needs its journal and recovery. |
+| `box`, `box/kind`, `folder-version.json`, `updates`, `updates/rehome` and the other published files | **Made identical.** Modes, bytes and symlink targets match, including the attached files, conversations and beta.1's pending letter. |
+| `data/opencode/opencode.db` | **Made identical at the SQLite boundary.** Mode, schema, version and committed typed rows match. For the real engine, nine newly applied migrations have independent `time_completed` values. The earlier migration times and all other stable fields match. Physical pages differ. |
+| `data/opencode/log/opencode.log` | **Made identical** in the real-engine run after accounting for each line's timestamp, run ID, and migration duration. Every stable message and field matches. |
+| `updates/rehome/journal.acts`, `updates/rehome/keychain.json` | **Made identical.** Action log and Keychain receipt match byte for byte. |
+| `updates/rehome/journal.json` | **Made identical** after accounting for wall-clock values in `began`, `clonedAt`, and the final component of `kept`. Every stable field, the placement list, the set of names at each database path, and the mode match. |
+| `updates/rehome/state.json` and the command's JSON reply | **Made identical** after accounting for `movedAt`. Inventory counts, audit notes, setup obligations and other stable fields match. |
+| Git backlinks and original worktree link outside the home | **Made identical.** The Git metadata points to the published worktree and the original link is preserved. |
+| Keychain stand-in outside the home | **Made identical.** Copies verify and originals are retired after publication. The signed tool and actual Helper launch still need a real integration fixture. |
+| `GET kuvo/setup` after starting each resident | **Made identical.** Both return the same values for each of the moved app copies. |
+| `GET kuvo/info` after starting each resident | **Owned by 1.1, 2.1 and 3.1.** The remaining fields are advertised features and compatibility, the startup computer name, and engine readiness. The executable build can vary. |
+| Other runtime files after starting each resident | The owner groups in the machine table apply to the shared services. The two Mac runs also differ on `box/defaults-added` and `config/opencode/opencode.json` after engine startup (**3.1**), on `run/work-awake.json` (**5.1**), and on the Mac activity marker `run/link.seen` (**2.1/7.3**). The stopped destinations already match. |
 
-The staged sequence consists of clone, import, database migration, path
-rewrite and engine validation. The tagged scenario kills the Rust process
-by PID after each of those five boundaries, then verifies that every staged
-byte and link target matches the uninterrupted result. Both source trees
-stay identical in the Rust runs. The eight machine-move cuts still pass.
+The tagged interruption scenario kills the process by PID at five private
+staging boundaries and eleven publication or settlement boundaries per app
+fixture. The full published inventory after restart matches the uninterrupted
+move after projecting the same clock fields. Both source trees stay identical.
+The setup conversion scenario also kills the resident after the relay accepts
+the claim and checks that a restart advances the same setup only once.
 
-The macOS workspace compile check and five regular Mac staging scenarios
-pass. The tagged scenario passes against both generated app folders.
-Six machine scenarios pass again on macOS, native Windows and WSL2.
-Linux testing on lokum is deferred at the lead's request.
+To reproduce the published comparison, use both built executables.
+
+```sh
+KUVO_BOX_BIN_A=box/dist/kuvo-link.js KUVO_BOX_BIN_B=box/target/debug/kuvo-box \
+  node protocol/conformance/differential/mac-app.mjs
+```
+
+Set `KUVO_TEST_ENGINE` to the pinned executable to use the real engine.
+Pass a requests file to compare answers and runtime files after startup as well.

@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, io, path::Path};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Number, Value};
 
 use crate::kept;
 
@@ -51,8 +52,8 @@ pub enum ReleaseState {
 
 #[derive(Clone, Debug, Default)]
 pub struct Reach {
-    away: BTreeMap<String, Millis>,
-    checked: BTreeMap<String, Millis>,
+    away: BTreeMap<String, Number>,
+    checked: BTreeMap<String, Number>,
 }
 
 impl Reach {
@@ -64,15 +65,20 @@ impl Reach {
     }
 
     pub fn unreachable(&mut self, run: &Path, key: &str, now: Millis) -> io::Result<()> {
-        if now.saturating_sub(self.checked.get(key).copied().unwrap_or_default()) > CHECKED_EVERY {
+        let checked = self
+            .checked
+            .get(key)
+            .and_then(Number::as_f64)
+            .unwrap_or_default();
+        if now as f64 - checked > CHECKED_EVERY as f64 {
             let mut next = self.checked.clone();
-            next.insert(key.into(), now);
+            next.insert(key.into(), now.into());
             kept::write(&run.join("peer-reach-checked.json"), &next)?;
             self.checked = next;
         }
         if !self.away.contains_key(key) {
             let mut next = self.away.clone();
-            next.insert(key.into(), now);
+            next.insert(key.into(), now.into());
             kept::write(&run.join("peer-reach.json"), &next)?;
             self.away = next;
         }
@@ -97,11 +103,11 @@ impl Reach {
     }
 
     pub fn away_since(&self, key: &str) -> Option<Millis> {
-        self.away.get(key).copied()
+        observed_at(self.away.get(key)?)
     }
 
     pub fn last_found_away(&self, key: &str) -> Option<Millis> {
-        self.checked.get(key).copied()
+        observed_at(self.checked.get(key)?)
     }
 
     pub fn peer_is_away(&self, key: &str, heard: Option<Millis>, now: Millis) -> bool {
@@ -151,10 +157,20 @@ impl Reach {
     }
 }
 
-fn read_times(path: &Path) -> BTreeMap<String, Millis> {
-    kept::read::<BTreeMap<String, serde_json::Value>>(path)
+fn observed_at(time: &Number) -> Option<Millis> {
+    time.as_i64()
+        .or_else(|| time.as_f64().map(|time| time as Millis))
+}
+
+fn read_times(path: &Path) -> BTreeMap<String, Number> {
+    // Observations made here are integer milliseconds. Keep every numeric
+    // entry a sibling wrote, even when this event changes a different peer.
+    kept::read::<BTreeMap<String, Value>>(path)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(key, at)| Some((key, at.as_i64()?)))
+        .filter_map(|(key, at)| match at {
+            Value::Number(at) => Some((key, at)),
+            _ => None,
+        })
         .collect()
 }

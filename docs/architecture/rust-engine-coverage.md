@@ -72,28 +72,84 @@ resident binary, a scratch home, and the same loopback engine stand-in.
 subsequent sends in its real inbox.
 `kuvo_engine/tests/resident.rs` additionally interrupts an inbox transfer
 after the first message, restarts the resident, and checks delivery order.
-The reference inventory below covers 294 named test cases and the 38
-message-parts vectors. A row with partial coverage records the gaps.
+### TypeScript scenario map
 
-| TypeScript source | Cases | Rust scenario and gaps |
-| --- | ---: | --- |
-| `box/test/message-parts.test.ts` and `protocol/vectors/message-parts.json` | 18 cases, 38 vectors | The legacy parts route checks all 13 read vectors. The send scenario checks text and metadata in 23 compose vectors for fields, quotes, widgets, comments, file notes and phone decoration. Same-ID replay and Undo are covered separately. The full attachment-copy path, model-specific file handling, setup-wide naming, forwarding to the agents runtime, and the validation and refusal variants still need checks. |
-| `box/test/engine-context.test.ts` | 1 | Latest step occupancy, cached model window and completed-summary invalidation are covered together. |
-| `box/test/engine-swap-inboxes.test.ts` | 2 | The Rust resident test covers strict inventory pagination, refusal of incomplete reads, and ordered recovery across restart with a new send arriving during an interrupted transfer. |
-| `box/test/queue-stop.test.ts` | 6 | Arriving removal is covered with both a stopped queue and a running step. Timing of concurrent Stop and engine submission, named arrivals across restart or Resume, and the unlisted arrival cases still need their own scenarios. |
-| `box/test/queue-items.test.ts` | 25 | Busy steering, edit/removal, relative order, paused queue persistence, old removal after Undo and arriving removal run through HTTP. Reordering and Send Now are checked through the queue topic and the engine inbox. Fault injection, attachment references, interrupted Undo, pending handoff races, wake summaries, limit release and queue-topic reconnect coverage are incomplete. |
-| `box/test/resident-delivery.test.ts` | 2 | Local OpenCode delivery has a restart scenario. Other coding agents and the Work Queue attachment check remain in their owning phases. |
-| `box/test/session-actions.test.ts` | 26 | Rename, stale revision, legacy unarchive preserving other notes, delete and subagent refusal run together. Pin, archived menus and project deletion warnings, stopped asks, wake-ups, move authority, bulk delete, Settings and concurrent revisions need further parity checks. |
-| `box/test/session-pages.test.ts` | 3 | The local-list topic publishes new chats. Project paging and nested subagent ordering and delivery facts need dedicated cases. |
-| `box/test/session-lists.test.ts` | 47 | A new local row reaches both the local list and the peer publisher's setup topic. Other list changes, change races, recovery from an old snapshot, filesystem changes, worktree filing and activity from the engine database are gaps. Asks, bots, background watches and Work Queue counts follow in their owning phases. |
-| `box/test/session-notes.test.ts` and `box/test/session-notes-writers.test.ts` | 15 | Archive after rename preserves existing notes. Simultaneous writers, cancellation, and compatibility with the old cross-process locks remain uncovered. |
-| `box/bridge-tests/queue.test.js` and `queue-live.test.js` | 57 | Covers busy steering without interruption, stop and queued replay, removal, Undo, and transfer recovery. The pinned-engine smoke includes start, rename, stop, queued-send replay, removal and delete. Full multi-turn resume, remaining Send Now variants, failure and limit handling, liveness, carry, file references, and the bridge-specific paths remain incomplete. |
-| `box/bridge-tests/start-session.test.js` | 5 | The worktree conformance cases use Git. They cover ancestry from a subagent, refusal of an unrelated folder, filing under the linked worktree's project from creation, and a new worktree's Git branch and saved record. Marking failure, wake promises and sibling-folder filing still need their original scenarios. |
-| `box/test/typed.test.ts` and `box/test/draft-orphan.test.ts` | 14 | The local send restart scenario exercises the same acceptance boundary. The typed decision, draft, and addressed submission routes need their own parity cases, including contested claims and restore behavior. Model refusal uses the 3.2b model seam. |
-| `box/test/conversation.test.ts` and `box/test/conversation-activity.test.ts` | 5 | Full transcript excerpts, activity from related sessions and group or bot activity remain open. |
-| `box/test/message-words.test.ts` and `box/test/session-news-kinds.test.ts` | 16 | Message pages and the event topic agree on summary titles. Tool wording, failed-step display, news and caller-specific titles still need the original cases. |
-| `box/test/projects-worktrees.test.ts` and `box/test/start-cancelled-worktree.test.ts` | 8 | Start-session tests cover a registered worktree. Unregistered worktree discovery, cancellation cleanup and refusal of newer project records remain open. |
-| `box/bridge-tests/worktrees.test.js` and `worktrees-where.test.js` | 44 | The start-session cases cover creation through Git or the engine. Worktree location and Settings routes, branch naming, preservation, removal and the remaining creation cases need separate coverage. |
+Numbers are one-based test declarations in each file at `a21b64fc5`.
+The original 294 cases include 11 covered, 87 partial and 196 gaps.
+Covered cases have direct Rust evidence. Partial cases exercise only part of
+the original result or use the local OpenCode boundary where the original
+also uses a bridge, peer, settings route, or failure injection. Multiple
+owners on the same case each own the part described by their phase.
+
+- Message parts covers all 13 read and all 25 compose vectors. The original
+  conformance case filtered out the two `kept` compose vectors because the
+  Rust sender did not retain the inline attachment bytes. Both vectors now
+  use real inline payloads and check the recovered bytes, the prompt files,
+  and both kinds of attachment notes. Validation and error recovery are separate.
+- Context and inbox transfer use the resident scenarios above. Send recovery covers
+  both sides of engine acceptance, including the live inbox and completed transcript.
+- Queue coverage is through the five session queue scenarios and the pinned engine
+  smoke. Partial cases still need their missing refusal, restart, lifecycle, or
+  concurrency assertion.
+- Session actions and notes share the rename, archive, and deletion conformance case.
+  The new-session case checks the local and published list. Worktree cases use Git
+  for the linked folder and a newly created worktree.
+- The local typed and durable delivery tests exercise the complete draft envelope,
+  an accepted handoff with its reply lost, and the receipt and queue routes on
+  retry. The scoped and addressed variants have separate ownership and recovery cases.
+- The worktree failure scenario checks both sides of the engine's create response.
+  Its transport-close counterpart and independently managed worktree routes remain open.
+
+| Source | Covered | Partial | Gap | Owners for partial and gap cases |
+| --- | --- | --- | --- | --- |
+| `box/test/message-parts.test.ts` (18) | 2, 5, 11, 17 | 1, 3–4, 8–10, 12–16, 18 | 6–7 | 3.2 · 1, 3–4, 6, 8–10, 12–16, 18<br>4.1 · 7 |
+| `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
+| `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
+| `box/test/queue-stop.test.ts` (6) | — | 1, 4 | 2–3, 5–6 | 3.2 · 1–6 |
+| `box/test/queue-items.test.ts` (25) | 7 | 1–6, 9–10, 13, 21–23 | 8, 11–12, 14–20, 24–25 | 3.2 · 1–6, 8–24<br>4.1 · 25<br>5.1 · 21 |
+| `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
+| `box/test/session-actions.test.ts` (26) | — | 1, 3–5, 14, 20 | 2, 6–13, 15–19, 21–26 | 3.2 · 1, 3–10, 14–16, 20, 23–26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
+| `box/test/session-pages.test.ts` (3) | — | 1–2 | 3 | 3.2 · 1–3 |
+| `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
+| `box/test/session-notes.test.ts` (8) | — | 6 | 1–5, 7–8 | 3.2 · 1–8 |
+| `box/test/session-notes-writers.test.ts` (7) | — | 1 | 2–7 | 3.2 · 1–7<br>7.3 · 6 |
+| `box/bridge-tests/queue.test.js` (56) | — | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 15–21, 23–26, 28, 34–42, 44–53, 55–56 | 3.2 · 1–39, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25<br>5.4 · 17–21 |
+| `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
+| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
+| `box/test/typed.test.ts` (9) | 1, 3 | 2, 4, 6–9 | 5 | 3.2 · 2, 4, 6–9<br>4.1 · 5 |
+| `box/test/draft-orphan.test.ts` (5) | 2 | 1, 3–4 | 5 | 3.2 · 1, 3–5 |
+| `box/test/conversation.test.ts` (3) | — | 3 | 1–2 | 3.2 · 1–3 |
+| `box/test/conversation-activity.test.ts` (2) | — | — | 1–2 | 3.2 · 1<br>4.1 · 2<br>5.1 · 2 |
+| `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
+| `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
+| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 1–4<br>6.3 · 1–6 |
+| `box/test/start-cancelled-worktree.test.ts` (2) | — | 1–2 | — | 3.2 · 1–2<br>6.3 · 1–2 |
+| `box/bridge-tests/worktrees.test.js` (32) | — | 1, 8–9, 14 | 2–7, 10–13, 15–32 | 3.2 · 1, 8–9, 13–14, 17–18, 24–30<br>4.1 · 12, 30<br>6.3 · 1–32<br>7.3 · 15–16 |
+| `box/bridge-tests/worktrees-where.test.js` (12) | — | — | 1–12 | 6.3 · 1–11<br>5.5 · 12 |
+
+### Additional 3.2b reference cases
+
+The following 117 declarations extend the original 294-case inventory.
+They include 4 covered, 15 partial and 98 gaps.
+Each row uses the same one-based numbering and ownership rule.
+
+| Source | Covered | Partial | Gap | Owners for partial and gap cases |
+| --- | --- | --- | --- | --- |
+| `box/test/session-asks.test.ts` (19) | — | 1, 3–4, 18 | 2, 5–17, 19 | 3.2 · 1–5, 13–19<br>6.1 · 6–7, 12–13, 19<br>6.2 · 8–13, 19<br>2.4 · 19 |
+| `box/test/model-readiness.test.ts` (1) | — | 1 | — | 3.2 · 1 |
+| `box/test/models-offered.test.ts` (15) | — | — | 1–15 | 3.2 · 1–7, 9–13<br>4.1 · 1–2, 5, 8–9, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
+| `box/test/models-starred.test.ts` (7) | — | — | 1–7 | 3.2 · 1–7<br>2.1 · 4–7<br>7.3 · 3 |
+| `box/test/models-speed.test.ts` (3) | — | — | 1–3 | 3.2 · 1–3<br>4.2 · 1 |
+| `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
+| `box/test/model-names.test.ts` (3) | — | — | 1–3 | 3.2 · 1–3 |
+| `box/test/search-snippet.test.ts` (4) | — | 3 | 1–2, 4 | 3.2 · 1–4 |
+| `box/test/attachment-paths.test.ts` (2) | — | — | 1–2 | 3.2 · 1–2 |
+| `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.4 · 1–3<br>3.2 · 1–3 |
+| `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
+| `box/bridge-tests/attachments-go.test.js` (6) | — | — | 1–6 | 3.2 · 1–6<br>4.1 · 2–4<br>2.4 · 5<br>7.3 · 1, 3 |
+| `box/bridge-tests/search.test.js` (11) | — | 3, 5–7, 10 | 1–2, 4, 8–9, 11 | 3.2 · 1–11<br>4.1 · 3 |
+| `box/bridge-tests/session-models.test.js` (33) | 1, 3, 20 | 5, 18–19, 32 | 2, 4, 6–17, 21–31, 33 | 3.2 · 2, 4–5, 9–10, 12–14, 16–19, 22–30, 32–33<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
+| `box/bridge-tests/models-refresh.test.js` (4) | — | — | 1–4 | 3.2 · 1–4 |
 
 ### Implementation and remaining parity work
 
@@ -107,25 +163,99 @@ box queue, the OpenCode inbox and then the exact transcript ID. The journal has
 its own `run/prompt-receipts` family. Fresh session facts publish to the peer
 publisher through an in-memory watch and retain a compatible list on disk.
 
-The differential runner can stop the resident at engine acceptance and resume
-with a new resident on the same copied home. In the ten-step desktop sequence,
-the transcript and inbox matched, and nine route replies matched. On retry
-after the forced restart, TypeScript answered 409 for its interrupted owner
-claim and Rust settled the recorded prompt as 200 from the transcript. The
-direct-send run without desktop headers also matched the final reply. The
-complete home inventory differs. TypeScript starts agents, vault, Insights, Work Queue,
-settings and setup runtimes that are ported in other phases. Rust writes the
-prompt journal. List cursor sequences, queue scanning and some approval and
-removal bookkeeping differed in the comparison. The current-beta fixture's
-saved queue and two OpenCode session and inbox reads matched once the pinned
-model catalog was ready. The first inventory page matched with a limit of one,
-and the second page and multi-session inventory returned HTTP 500 on both
-copies. Full list parity remains open.
+The ten-step desktop differential stops the resident just after engine
+acceptance, then resends the same ID on the restarted resident. The protocol
+requires confirmation of a proven acceptance. A direct-send HTTP 409 is a
+refusal in GPUI. The old TypeScript owner claim returned 409 even when the
+engine already had the message. The TypeScript owner now settles that claim
+using the local queue, engine inbox or exact transcript ID. The two residents
+agree on all ten replies and the final engine state. Tests also cut the
+original send before engine acceptance and while the prompt is still in the
+engine inbox. [Send-once contract](../../protocol/PROTOCOL.md),
+[GPUI send client](../../gpui/kuvo_box/src/client.rs).
 
-Typed draft admission and the peer outbox's addressed sends still need their
-entry points and receipt topics. The legacy direct routes await engine confirmation.
-Keep and release of inboxes are implemented as engine operations. The keeper
-still has to coordinate the hold across the release switch. Setup-wide naming,
-attachment retention, tool-step display fields, full project and worktree
-admission, and approval and archive integration need the remaining matching
-behavior described above. Asks, waiting, models and search remain 3.2b.
+OpenCode's diagnostic for the current-beta second inventory page was
+"Path is not absolute". The shared fixture had replaced only "@HOME@",
+leaving literal "@S@" paths in several saved session rows.
+The generator now resolves the stored locations, URLs, repository IDs,
+and path-derived project IDs before opening either box. Both residents
+read all five recorded pages using the pinned OpenCode API and preserve the
+beta home’s paused queue and message ID. Direct reads of the copied
+homes also match for the queue and sampled session and inbox responses.
+
+The local composer uses one persisted decision before send and settles it
+through the message journal. Its no-wait route writes a compatible standalone
+outbox record and returns the pending receipt before OpenCode replies. A
+resident task delivers saved drafts in order and reports its durable answers
+through the receipt topic. The scope is local desktop delivery in a standalone
+setup. Scoped submissions, paired and addressed delivery, editing a saved
+outbox draft, move fences, and mixed-version receipt indexing remain open.
+Phase 2.4 owns the shared owner journal and peer forwarding. Phase 3.2 owns
+the engine's submission and recovery routes and the rest of the local delivery contract.
+
+The engine's event reader owns the local ask cache. Its session list and
+waiting count use the same snapshot. Normal questions and permissions are
+answered in their original session, and archiving holds the inbox and stops
+a run waiting on a question or permission. Global MCP forms, vault and
+sandbox asks, revocable consent, and the full bot and Work Queue counters
+still need their own adapters. The wake pause route and project removal
+remain in 5.1 and 6.3. A worktree whose session creation gets a failure
+response is removed only after a complete inventory shows no conversation
+using it. Ambiguous transport failures leave the worktree kept.
+
+Model readiness reads the conversation folder's OpenCode catalog and
+remembers its names. The picker, stars, speed, provider refresh, and
+coding-agent catalogs remain. Search caches local engine transcripts by
+session revision. Projection of a coding-agent transcript waits for 4.1.
+Attachment ingest covers the kept bytes and notes. Retention across branch,
+move and removal and the raw-prompt attachment path remain open.
+Engine-swap inbox transfer is independent of the release keeper in 7.2.
+
+### Platform verification
+
+The test builds include `main` through `d967478b2`. Clippy with warnings
+denied passed for the engine, OS and resident crates on macOS, native
+Windows's cross target, WSL GNU and the x86-64 musl build.
+
+| Platform | Binary scenarios | Additional checks |
+| --- | --- | --- |
+| macOS | 27 TypeScript and 27 Rust | Rust resident and session move tests, beta inventory and queue, ten-step differential |
+| WSL GNU | 26 Rust | Rust resident test |
+| Native Windows | 26 Rust | Rust resident test |
+| Linux on Lokum | 26 Rust | Mac-built static musl binary in a foreground container with one CPU, 1 GB and automatic removal |
+
+The live queue test used OpenCode 2.2.6 in scratch homes on all four
+platforms. Lokum's first capped attempt reached the worktree scenarios
+and stopped because the staged Git executable had the wrong basename.
+The passing attempt reused the same prebuilt Rust binary with that
+fixture corrected. The container and both Lokum scratch homes were gone
+afterward. The 16 targeted TypeScript reference tests also passed on macOS.
+
+### Differential file verdicts
+
+The table assigns all 76 paths reported by the final ten-step desktop comparison.
+It also records the legacy presence marker seen in the earlier run.
+A position such as "run/link.json/value/key" is a field difference inside
+"run/link.json". Wildcards cover only the generated filenames at the stated
+depth. The row remains responsible for its files and for proving compatibility
+where another version reads them. Directory entries are listed beside the
+records or runtime endpoint they hold.
+
+| Differing home paths | Owner | What differs |
+| --- | --- | --- |
+| `agents`, `run/agents.json` | 4.1 | Agent runtime and roster |
+| `agents/limits.json`, `agents/usage`, `agents/usage/claude-files`, `agents/usage/codex-files`, `agents/usage/grok-files`, `agents/usage/insights.sqlite`, `agents/usage/insights.sqlite-shm`, `agents/usage/insights.sqlite-wal`, `agents/usage/settings.json`, `agents/usage/usage.json`, `run/usage-attribution.json` | 5.4 | Usage, limits and the Insights database sidecars |
+| `artifacts`, `artifacts/citations-v1.json`, `artifacts/copies`, `artifacts/index-v1.sqlite`, `artifacts/key`, `artifacts/log`, `box/marketplace`, `box/marketplace/mcp-relay-v1.json`, `library`, `library/backfill.json`, `run/docs.changed` | 5.5 | Artifact storage, Library, and Marketplace relay and document invalidation |
+| `bots`, `run/bots-seen`, `run/notes`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json`, `wakes` | 5.1 | Bots, wakes, work activity, notes and notices |
+| `box/approval.json`, `chats` | 3.2 | Session approval timestamp at creation and the Chats folder lifecycle |
+| `box/found-folders.json` | 6.3 | First-seen project folders |
+| `config`, `config/opencode`, `config/opencode/plugins`, `config/opencode/plugins/kuvo-defaults.js`, `run/fence`, `run/fence/agents.md` | 6.1 | Engine configuration and the sandbox instructions |
+| `run/.queue-handoffs`, `run/glance`, `run/glance/asks.json`, `run/lists/sessions.json`, `run/queues-scanned.json` | 3.2 | Queue recovery markers, local list sequence and asks cache |
+| `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward`, `run/work-queue/numbers.json` | 5.2 | Work Queue numbering, forwarding and GitHub credential exchange |
+| `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signing documents, and local checkpoint projection |
+| `run/link.seen`, `run/link.version` | 7.3 | Legacy Mac activity and link version markers |
+| `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
+| `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
+| `run/prompt-receipts`, `run/prompt-receipts/*.json` | 3.2 | Rust prompt claim and answer journal, including its mixed-version recovery seam |
+| `run/route/ssh`, `run/socket.key` | 1.4 | Resident IPC endpoint and its random local credential |
+| `run/vault.sock`, `run/ssh-for` | 6.2 | Vault IPC and session SSH-agent registration |

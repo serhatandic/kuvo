@@ -46,12 +46,12 @@ pub(crate) struct Overlay {
 }
 
 impl Overlay {
-    pub fn apply(self, link: &mut Link) {
-        link.key = Some(self.keys.key);
-        link.sign = Some(self.keys.sign);
-        link.secret = Some(self.keys.secret);
-        link.relay = self.relay;
-        link.name = Some(self.name);
+    pub fn apply(&self, link: &mut Link) {
+        link.key = Some(self.keys.key.clone());
+        link.sign = Some(self.keys.sign.clone());
+        link.secret = Some(self.keys.secret.clone());
+        link.relay.clone_from(&self.relay);
+        link.name = Some(self.name.clone());
         link.devices_disabled = self.devices_disabled;
     }
 }

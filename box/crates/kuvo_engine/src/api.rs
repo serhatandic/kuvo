@@ -68,17 +68,33 @@ impl Engine {
         path: &str,
         body: Option<&Value>,
     ) -> Result<T, Error> {
+        let mut value = self.call_raw(lease, method, path, body, WAIT).await?;
+        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
+            value = data.take();
+        }
+        serde_json::from_value(value).map_err(Error::Invalid)
+    }
+
+    /// Some engine routes put cursor metadata next to `data`.
+    pub(crate) async fn call_raw(
+        &self,
+        lease: &Lease,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        wait: Duration,
+    ) -> Result<Value, Error> {
         let mut request = self
             .upstream
             .request(&lease.record, method, path)
-            .timeout(WAIT);
+            .timeout(wait);
         if let Some(body) = body {
             request = request.json(body);
         }
         let response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(Error::Transport)?;
-        let mut value: Value = if bytes.is_empty() {
+        let value: Value = if bytes.is_empty() {
             Value::Null
         } else if status.is_success() {
             serde_json::from_slice(&bytes).map_err(Error::Invalid)?
@@ -95,9 +111,71 @@ impl Engine {
                 );
             return Err(Error::Status(status, message));
         }
-        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
-            value = data.take();
+        Ok(value)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Page {
+    data: Vec<Value>,
+    cursor: Option<PageCursor>,
+}
+
+#[derive(serde::Deserialize)]
+struct PageCursor {
+    next: Option<String>,
+    previous: Option<String>,
+}
+
+pub(crate) enum Scan {
+    Sessions,
+    Messages,
+}
+
+impl Scan {
+    pub async fn read(
+        self,
+        engine: &Engine,
+        lease: &Lease,
+        route: &str,
+    ) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = match self {
+            Self::Sessions => 100,
+            Self::Messages => 200,
+        };
+        let mut path = format!("{route}?limit={limit}&order=desc");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut rows = Vec::new();
+        for _ in 0..1000 {
+            let page = engine
+                .upstream
+                .request(&lease.record, Method::GET, &path)
+                .timeout(WAIT)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Page>()
+                .await?;
+            let count = page.data.len();
+            rows.extend(page.data);
+            if count == 0
+                || matches!(self, Self::Messages) && (count < limit || rows.len() >= 20_000)
+            {
+                break;
+            }
+            let next = page.cursor.and_then(|cursor| match self {
+                Self::Sessions => cursor.next,
+                Self::Messages => cursor.next.or(cursor.previous),
+            });
+            let Some(next) = next else { break };
+            if !seen.insert(next.clone()) {
+                return Err(std::io::Error::other("The engine's page cursor repeated.").into());
+            }
+            path = format!("{route}?limit={limit}&cursor={}", segment(&next));
         }
-        serde_json::from_value(value).map_err(Error::Invalid)
+        if seen.len() == 1000 {
+            return Err(std::io::Error::other("The engine's inventory did not finish.").into());
+        }
+        Ok(rows)
     }
 }

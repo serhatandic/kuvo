@@ -89,6 +89,60 @@ pub(super) fn rewrite(path: &Path, map: &PathMap) -> Result<Rekey, Error> {
     })
 }
 
+pub(super) fn leftovers(path: &Path, map: &PathMap) -> Result<Vec<String>, Error> {
+    let db = sqlite::open_index(path, Duration::from_secs(3))?;
+    let mut notes = Vec::new();
+    let mut tables =
+        db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?;
+    for table in tables.query_map([], |row| row.get::<_, String>(0))? {
+        let table = table?;
+        let quoted = table.replace('"', "\"\"");
+        let mut columns = db.prepare(&format!("PRAGMA table_info(\"{quoted}\")"))?;
+        for column in columns.query_map([], |row| row.get::<_, String>(1))? {
+            let column = column?;
+            let name = column.replace('"', "\"\"");
+            let mut query = db.prepare(&format!(
+                "SELECT \"{name}\" FROM \"{quoted}\" WHERE typeof(\"{name}\") = 'text'"
+            ))?;
+            let mut rows = query.query([])?;
+            let mut mentioned = 0;
+            while let Some(row) = rows.next()? {
+                let text: String = row.get(0)?;
+                if !map.names_old(&text) {
+                    continue;
+                }
+                let field = (table.as_str(), column.as_str());
+                let missed = if PATHS.contains(&field) {
+                    map.absolute(&text).is_some()
+                } else if STRUCTURED.contains(&field) || ATTACHMENTS.contains(&field) {
+                    serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .is_some_and(|mut value| {
+                            if ATTACHMENTS.contains(&field) {
+                                map_attachments(&mut value, map)
+                            } else {
+                                map.json(&mut value)
+                            }
+                        })
+                } else {
+                    false
+                };
+                if missed {
+                    return Err(invalid(&format!(
+                        "The staged database still names its old folder in {table}.{column}."
+                    )));
+                }
+                mentioned += 1;
+            }
+            if mentioned > 0 {
+                let file = path.file_name().unwrap_or_default().to_string_lossy();
+                notes.push(format!("{file}: {table}.{column} ({mentioned})"));
+            }
+        }
+    }
+    Ok(notes)
+}
+
 type BrokenLink = (String, Option<i64>, String, i64);
 
 fn broken_links(db: &Connection) -> rusqlite::Result<HashSet<BrokenLink>> {

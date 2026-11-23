@@ -7,7 +7,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, write } from "../adapter.mjs";
+import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "../adapter.mjs";
 import { standInEngine } from "../engine.mjs";
 
 // These are individual fields, scoped to a route or home file. A missing field,
@@ -34,12 +34,21 @@ const volatile = new Map([
   ["run/work/told.json", { since: "notice scan start time", "sinces/bridge": "bridge notice scan start time" }],
   ["run/notices/teller", { "": "notice publisher PID" }],
   ["agents/usage/insights.sqlite/state/local", { scanned: "local index scan timestamp" }],
+  ["updates/rehome/journal.json", { began: "move start time", clonedAt: "clone start time" }],
+  ["updates/rehome/state.json", { movedAt: "move publication time" }],
 ]);
 
+const reachFiles = ["run/peer-reach.json", "run/peer-reach-checked.json"];
+
 function normalise(value, name, home, enginePort, field = "") {
+  if (reachFiles.includes(name) && /^[A-Za-z0-9_-]{43}$/.test(field) && typeof value === "number")
+    return "<number: relay observation timestamp>";
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
   const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
+  if (name === "updates/rehome/journal.json" && field === "kept" && typeof value === "string") {
+    value = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/, "<move start time>");
+  }
   if (typeof value === "string") return value.replaceAll(home, "<home>");
   if (Array.isArray(value)) return value.map((item, index) => normalise(item, name, home, enginePort, field + "/" + index));
   if (value && typeof value === "object") {
@@ -54,7 +63,8 @@ function normalise(value, name, home, enginePort, field = "") {
 // Compare schema and typed rows from a private read copy. The inventory still
 // checks that the journal and its rebuildable shared-memory index paths exist.
 const insights = "agents/usage/insights.sqlite";
-function sqliteContents(file, home) {
+const databases = new Set([insights, "data/opencode/opencode.db"]);
+export function sqliteContents(file, home, { migrationClockAfter } = {}) {
   const tmp = scratch();
   const target = path.join(tmp, "copy.sqlite");
   try {
@@ -68,6 +78,11 @@ function sqliteContents(file, home) {
         const read = db.prepare('SELECT * FROM "' + name.replaceAll('"', '""') + '"');
         read.setReadBigInts(true);
         const rows = read.all().map(row => {
+          if (migrationClockAfter && name === "migration" && typeof row.id === "string"
+              && row.id > migrationClockAfter && typeof row.time_completed === "bigint"
+              && row.time_completed > 0n) {
+            row.time_completed = "<engine migration time>";
+          }
           if (name === "state" && row.key === "local" && typeof row.body === "string") {
             let body;
             try { body = JSON.parse(row.body); } catch {}
@@ -108,7 +123,7 @@ function inventory(home, { seed = false, enginePort } = {}) {
         }
         entries.set(key, { type: "symlink", target: normalise(target, key, home, enginePort) });
       } else if (stat.isFile()) {
-        if (!seed && key === insights) {
+        if (!seed && databases.has(key)) {
           try {
             entries.set(key, { type: "sqlite", value: normalise(sqliteContents(file, home), key, home, enginePort) });
             continue;
@@ -117,7 +132,7 @@ function inventory(home, { seed = false, enginePort } = {}) {
             // A damaged database and its sidecars still show their raw differences.
           }
         }
-        if (!seed && [insights + "-wal", insights + "-shm"].includes(key) && entries.get(insights)?.type === "sqlite") {
+        if (!seed && /-(wal|shm)$/.test(key) && entries.get(key.slice(0, -4))?.type === "sqlite") {
           entries.set(key, { type: key.endsWith("-wal") ? "sqlite journal" : "sqlite journal index" });
           continue;
         }
@@ -182,11 +197,20 @@ function substitute(value, home) {
   return value;
 }
 
-async function run(binary, home, sequence, relay) {
+function seenReach(home, { key, state }) {
+  const locations = reachFiles.map(file => path.join(home, file));
+  if (state === "absent") return locations.every(file => !fs.existsSync(file)) && [null, null];
+  if (locations.some(file => !fs.existsSync(file))) return false;
+  const maps = locations.map(readJSON);
+  return maps.every(map => map && typeof map === "object" && !Array.isArray(map)
+    && (state === "away" ? typeof map[key] === "number" : !Object.hasOwn(map, key))) && maps;
+}
+
+async function run(binary, home, sequence, relay, peerSeed) {
   const env = isolatedEnv(path.dirname(home));
   const engine = await standInEngine(path.dirname(home), env);
   const engineFile = path.join(home, "run", "engine.json");
-  let box;
+  let box, peer, peerEngine;
   const answers = [];
   try {
     wireRelay(home, relay);
@@ -194,7 +218,7 @@ async function run(binary, home, sequence, relay) {
     const mac = fs.existsSync(path.join(home, "box", "kind")) && fs.readFileSync(path.join(home, "box", "kind"), "utf8").trim() === "mac";
     box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
     let record = await box.ready();
-    for (const { method, path: route, body, headers, engineRunning, restartAfterAcceptance } of sequence) {
+    for (const { method, path: route, body, headers, engineRunning, restartAfterAcceptance, peerReach } of sequence) {
       if (engineRunning) engine.running = new Set(engineRunning);
       const dispatch = () => request(record, method, route.replaceAll("{{home}}", encodeURIComponent(home)), substitute(body, home), headers);
       if (restartAfterAcceptance) {
@@ -209,9 +233,26 @@ async function run(binary, home, sequence, relay) {
         record = await box.ready();
         continue;
       }
+      let reach;
+      if (peerReach) {
+        if (peerReach.state === "answered" && !peer) {
+          assert.ok(peerSeed, "Provide the answering peer's seed home.");
+          const peerRoot = path.join(path.dirname(home), "returning");
+          const peerHome = path.join(peerRoot, "box");
+          fs.cpSync(peerSeed, peerHome, { recursive: true, verbatimSymlinks: true });
+          const peerEnv = isolatedEnv(peerRoot);
+          wireRelay(peerHome, relay);
+          peerEngine = await standInEngine(peerRoot, peerEnv);
+          write(path.join(peerHome, "run/engine.json"), JSON.stringify(peerEngine.record));
+          peer = startBox({ binary, home: peerHome, env: { ...peerEnv, KUVO_SANDBOX: "off" }, relay });
+          await peer.ready();
+        }
+        const maps = await until(() => seenReach(home, peerReach), "The peer reach files did not reach " + peerReach.state, 18000);
+        reach = maps.map((map, index) => normalise(map, reachFiles[index], home));
+      }
       const answer = await dispatch();
       const name = `${method.toUpperCase()} ${route.split("?")[0]}`;
-      const output = { status: answer.status };
+      const output = { status: answer.status, ...(reach === undefined ? {} : { reach }) };
       if (answer.json !== undefined) output.json = normalise(answer.json, name, home);
       else if (Buffer.from(answer.text).equals(answer.bytes)) output.text = normalise(answer.text, name, home);
       else output.sha256 = createHash("sha256").update(answer.bytes).digest("hex");
@@ -220,8 +261,9 @@ async function run(binary, home, sequence, relay) {
   } finally {
     try {
       if (box) await box.stop();
+      if (peer) await peer.stop();
     } finally {
-      await engine.close();
+      await Promise.all([engine.close(), peerEngine?.close()]);
     }
   }
   const transcript = normalise({
@@ -232,7 +274,7 @@ async function run(binary, home, sequence, relay) {
   return { answers, files: inventory(home, { enginePort: engine.record.port }), transcript };
 }
 
-function difference(label, a, b, out) {
+export function difference(label, a, b, out) {
   if (isDeepStrictEqual(a, b)) return;
   if (a && b && typeof a === "object" && typeof b === "object" && Array.isArray(a) === Array.isArray(b)) {
     for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
@@ -244,14 +286,21 @@ function difference(label, a, b, out) {
   out.push(`${label}\n  A  ${show(a)}\n  B  ${show(b)}`);
 }
 
-export async function compare(seed, sequence, a, b) {
+export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = seed } = {}) {
   seed = checkSeed(seed);
+  secondSeed = checkSeed(secondSeed);
+  if (peerSeed) peerSeed = checkSeed(peerSeed);
   assert.ok(Array.isArray(sequence) && sequence.length, "The sequence must be a nonempty JSON list.");
   for (const step of sequence) {
     assert.ok(typeof step.method === "string" && /^[A-Za-z]+$/.test(step.method) && typeof step.path === "string"
       && step.path && !step.path.startsWith("/"), 'Each request needs a method and a box-relative path.');
     if (step.engineRunning !== undefined) {
       assert.ok(Array.isArray(step.engineRunning) && step.engineRunning.every(id => typeof id === "string"));
+    }
+    if (step.peerReach) {
+      const { key, state } = step.peerReach;
+      assert.ok(typeof key === "string" && /^[A-Za-z0-9_-]{43}$/.test(key)
+        && ["absent", "away", "answered"].includes(state), "Name a peer key and its expected reach state.");
     }
     if (step.restartAfterAcceptance) {
       assert.ok(step.method.toUpperCase() === "POST" && typeof step.body?.id === "string",
@@ -265,9 +314,9 @@ export async function compare(seed, sequence, a, b) {
     const two = path.join(root, "b", "box");
     const options = { recursive: true, verbatimSymlinks: true, preserveTimestamps: true };
     fs.cpSync(seed, one, options);
-    fs.cpSync(one, two, options);
-    const first = await run(a, one, sequence, relay);
-    const second = await run(b, two, sequence, relay);
+    fs.cpSync(secondSeed, two, options);
+    const first = await run(a, one, sequence, relay, peerSeed);
+    const second = await run(b, two, sequence, relay, peerSeed);
     const out = [];
     for (const [index, step] of sequence.entries()) {
       difference(`request ${index + 1} ${step.method} ${step.path}`, first.answers[index], second.answers[index], out);
@@ -284,10 +333,11 @@ export async function compare(seed, sequence, a, b) {
 }
 
 export async function cli(args) {
-  assert.equal(args.length, 2, "Usage: node protocol/conformance/differential SEED_HOME REQUESTS.json");
+  assert.ok(args.length === 2 || args.length === 3,
+    "Usage: node protocol/conformance/differential SEED_HOME REQUESTS.json [PEER_SEED_HOME]");
   const a = boxBinary(process.env.KUVO_BOX_BIN_A || "");
   const b = boxBinary(process.env.KUVO_BOX_BIN_B || "");
-  const out = await compare(args[0], readJSON(args[1]), a, b);
+  const out = await compare(args[0], readJSON(args[1]), a, b, { peerSeed: args[2] });
   if (out.length) {
     console.error(out.join("\n"));
     process.exitCode = 1;

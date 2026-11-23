@@ -32,6 +32,7 @@ use crate::{
 pub struct LocalSessions {
     snapshot: watch::Receiver<Option<Arc<Snapshot>>>,
     refresh: mpsc::Sender<()>,
+    ask_changes: watch::Receiver<Arc<crate::asks::Book>>,
     _tasks: Arc<ListTasks>,
 }
 
@@ -109,6 +110,10 @@ impl LocalSessions {
         serde_json::to_value(self.snapshot.borrow().as_deref().as_ref()?).ok()
     }
 
+    pub(crate) fn snapshot_now(&self) -> Option<Arc<Snapshot>> {
+        self.snapshot.borrow().clone()
+    }
+
     pub async fn changed(&mut self) -> bool {
         self.snapshot.changed().await.is_ok()
     }
@@ -117,7 +122,14 @@ impl LocalSessions {
         let (refresh, mut requests) = mpsc::channel(1);
         let (updates, snapshot) = watch::channel(None);
         let stop = CancellationToken::new();
-        let feed = crate::conversation::watch(engine.clone(), refresh.downgrade(), stop.clone());
+        let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
+        let feed = crate::conversation::watch(
+            engine.clone(),
+            refresh.downgrade(),
+            ask_updates,
+            stop.clone(),
+        );
+        let known_asks = ask_changes.clone();
         let list = tokio::spawn(async move {
             let mut last = load(&engine.home).await.unwrap_or_else(Snapshot::new);
             if !last.sessions.is_empty() {
@@ -133,17 +145,22 @@ impl LocalSessions {
                 tokio::select! {
                     biased;
                     next = requests.recv() => if next.is_none() { break; },
+                    changed = ask_changes.changed() => if changed.is_err() { break; },
                     changed = state.changed() => if changed.is_err() { break; },
                     _ = check.tick() => {},
                 }
                 let Some(lease) = engine.acquire(Demand::Passive).await else {
                     continue;
                 };
-                let Some((sessions, projects, archived)) = measure(&engine, &lease).await.ok()
+                let book = ask_changes.borrow().clone();
+                let Some((sessions, projects, archived, needs_you)) =
+                    measure(&engine, &lease, &book).await.ok()
                 else {
                     continue;
                 };
-                if last.commit(sessions, projects, archived) || updates.borrow().is_none() {
+                if last.commit(sessions, projects, archived, needs_you)
+                    || updates.borrow().is_none()
+                {
                     updates.send_replace(Some(Arc::new(last.clone())));
                     let path = engine.home.join("run/lists/sessions.json");
                     let saved = last.clone();
@@ -155,15 +172,25 @@ impl LocalSessions {
         Self {
             snapshot,
             refresh,
+            ask_changes: known_asks,
             _tasks: Arc::new(ListTasks { list, feed, stop }),
         }
+    }
+
+    pub(crate) fn ask_changes(&self) -> watch::Receiver<Arc<crate::asks::Book>> {
+        let mut changes = self.ask_changes.clone();
+        changes.mark_unchanged();
+        changes
     }
 
     pub(crate) fn refresh(&self) {
         let _ = self.refresh.try_send(());
     }
 
-    async fn current(&mut self, cancel: &CancellationToken) -> Result<Arc<Snapshot>, Refusal> {
+    pub(crate) async fn current(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Arc<Snapshot>, Refusal> {
         self.refresh();
         let current = self.snapshot.borrow_and_update().clone();
         if let Some(current) = current {
@@ -188,7 +215,7 @@ type Sessions = BTreeMap<String, Facts>;
 type Projects = BTreeMap<String, Value>;
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     epoch: String,
     seq: u64,
     floor: u64,
@@ -244,12 +271,34 @@ impl Facts {
         self.extra.get(field) == Some(&Value::Bool(true))
     }
 
+    fn waiting(&self) -> bool {
+        matches!(self.kind, Kind::Project | Kind::Chat | Kind::Bot)
+            && self.extra.contains_key("asked")
+            && !self.flag("archived")
+            && !self.flag("away")
+    }
+
     fn project(&self) -> Option<&str> {
         self.extra.get("project").and_then(Value::as_str)
     }
 }
 
 impl Snapshot {
+    pub(crate) fn waiting_sessions(&self) -> usize {
+        self.sessions
+            .values()
+            .filter(|row| row.facts.waiting())
+            .count()
+    }
+
+    pub(crate) fn asking(&self, id: &str) -> bool {
+        self.sessions.get(id).is_some_and(|row| {
+            row.facts.extra.contains_key("asked")
+                && !row.facts.flag("archived")
+                && !row.facts.flag("away")
+        })
+    }
+
     fn new() -> Self {
         Self {
             epoch: format!("{:x}-{:x}", crate::disk::now(), std::process::id()),
@@ -264,10 +313,19 @@ impl Snapshot {
         }
     }
 
-    fn commit(&mut self, fresh: Sessions, projects: Projects, archived: Vec<Value>) -> bool {
-        let mut changed =
-            !self.pending.is_empty() || self.projects != projects || self.archived != archived;
+    fn commit(
+        &mut self,
+        fresh: Sessions,
+        projects: Projects,
+        archived: Vec<Value>,
+        needs_you: Vec<Value>,
+    ) -> bool {
+        let mut changed = self.needs_you != needs_you
+            || !self.pending.is_empty()
+            || self.projects != projects
+            || self.archived != archived;
         self.pending.clear();
+        self.needs_you = needs_you;
         let removed = self
             .sessions
             .keys()
@@ -407,21 +465,12 @@ struct Project {
     removed: bool,
 }
 
-#[derive(Deserialize)]
-struct EnginePage {
-    data: Vec<Value>,
-    cursor: Option<Cursor>,
-}
-
-#[derive(Deserialize)]
-struct Cursor {
-    next: Option<String>,
-}
-
 async fn measure(
     engine: &Engine,
     lease: &Lease,
-) -> Result<(Sessions, Projects, Vec<Value>), Box<dyn std::error::Error + Send + Sync>> {
+    asks: &crate::asks::Book,
+) -> Result<(Sessions, Projects, Vec<Value>, Vec<Value>), Box<dyn std::error::Error + Send + Sync>>
+{
     let (rows, active, projects) = tokio::join!(
         all_sessions(engine, lease),
         engine.call::<Value>(lease, Method::GET, "api/session/active", None),
@@ -483,6 +532,52 @@ async fn measure(
         }
     }
 
+    let mut asked = BTreeMap::<String, &crate::asks::Pending>::new();
+    let direct = asks
+        .values()
+        .map(|ask| ask.session.as_str())
+        .collect::<BTreeSet<_>>();
+    for ask in asks.values() {
+        let mut root = ask.session.as_str();
+        for _ in 0..10 {
+            let Some(parent) = sessions
+                .get(root)
+                .and_then(|row| row.extra.get("parent"))
+                .and_then(Value::as_str)
+            else {
+                break;
+            };
+            root = parent;
+        }
+        let entry = asked.entry(root.to_owned()).or_insert(ask);
+        if ask.at < entry.at {
+            *entry = ask;
+        }
+    }
+    let mut needs = Vec::new();
+    for (session, facts) in &mut sessions {
+        match asked.get(session) {
+            Some(ask) => {
+                facts.extra.insert("asked".into(), json!(ask.at));
+                if !direct.contains(session.as_str()) {
+                    facts.extra.insert("childAsk".into(), json!(true));
+                }
+                if facts.waiting() && matches!(facts.kind, Kind::Project | Kind::Chat) {
+                    needs.push((session, ask));
+                }
+            }
+            None if direct.contains(session.as_str()) => {
+                facts.extra.insert("ownAsk".into(), json!(true));
+            }
+            None => {}
+        }
+    }
+    needs.sort_by(|(a, one), (b, other)| other.at.cmp(&one.at).then(a.cmp(b)));
+    let needs_you = needs
+        .into_iter()
+        .map(|(session, ask)| json!({"session":session,"asks":ask.asks}))
+        .collect();
+
     let mut listed = Projects::new();
     let directories = projects
         .iter()
@@ -498,7 +593,7 @@ async fn measure(
     for directory in directories {
         let rows = project_rows(&sessions, directory);
         let (shown, more) = project_page(&rows, 6, 0);
-        let mut project = json!({ "asking": 0, "working": rows.iter().filter(|(_, facts)| facts.flag("running")).count(),
+        let mut project = json!({ "asking": rows.iter().filter(|(_, facts)| facts.waiting()).count(), "working": rows.iter().filter(|(_, facts)| facts.flag("running")).count(),
             "shown": shown, "total": rows.len() });
         if let Some(updated) = rows.iter().map(|(_, facts)| facts.updated).max() {
             project["updated"] = json!(updated);
@@ -516,43 +611,19 @@ async fn measure(
         listed.insert(directory.to_owned(), project);
     }
     let archived = archived_groups(&sessions, &listed);
-    Ok((sessions, listed, archived))
+    Ok((sessions, listed, archived, needs_you))
 }
 
 async fn all_sessions(
     engine: &Engine,
     lease: &Lease,
 ) -> Result<Vec<Session>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut path = "api/session?limit=200&order=desc".to_owned();
-    let mut seen = BTreeSet::new();
-    let mut sessions = Vec::new();
-    for _ in 0..500 {
-        let response = engine
-            .upstream
-            .request(&lease.record, Method::GET, &path)
-            .timeout(api::WAIT)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<EnginePage>()
-            .await?;
-        let count = response.data.len();
-        for value in response.data {
-            sessions.push(serde_json::from_value(value)?);
-        }
-        let Some(next) = response
-            .cursor
-            .and_then(|cursor| cursor.next)
-            .filter(|_| count > 0)
-        else {
-            return Ok(sessions);
-        };
-        if !seen.insert(next.clone()) {
-            return Err(io::Error::other("The session page cursor repeated.").into());
-        }
-        path = format!("api/session?limit=200&cursor={}", api::segment(&next));
-    }
-    Err(io::Error::other("Could not read the full session list.").into())
+    api::Scan::Sessions
+        .read(engine, lease, "api/session")
+        .await?
+        .into_iter()
+        .map(|row| serde_json::from_value(row).map_err(Into::into))
+        .collect()
 }
 
 fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) -> Facts {

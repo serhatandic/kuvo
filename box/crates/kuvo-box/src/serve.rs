@@ -46,6 +46,8 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let prepared =
         kuvo_setup::SetupRuntime::prepare(home, name.clone(), kind == ComputerKind::Mac, relay)
             .await?;
+    #[cfg(target_os = "macos")]
+    let authenticated_helper = prepared.has_mac_identity();
     let bootstrap = Devices::load(home, name, kind).await?;
     let accepted_roster = prepared.peer_roster();
     let managed = accepted_roster.is_some();
@@ -118,6 +120,21 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
+    #[cfg(target_os = "macos")]
+    if authenticated_helper {
+        let home = home.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let settlement = || -> Result<(), Box<dyn std::error::Error>> {
+                let account = kuvo_os::platform::Account::current()?.home;
+                let home = kuvo_store::home::Home::new(home)?;
+                kuvo_move::mac::settle_started(&home, &account)?;
+                Ok(())
+            };
+            if let Err(error) = settlement() {
+                eprintln!("kuvo-box: settling the Mac app move: {error}");
+            }
+        });
+    }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
     let result = resident
         .serve(dispatcher, Arc::new(devices), super::shutdown())
@@ -163,6 +180,7 @@ fn info(
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
+    features.extend_from_slice(kuvo_engine::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }

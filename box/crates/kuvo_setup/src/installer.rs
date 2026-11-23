@@ -75,7 +75,7 @@ impl Code {
         }
         let code: Self = serde_json::from_slice(&decode(text.strip_prefix(PREFIX)?)?).ok()?;
         let host = Host::from_text(&code.primary, &code.address)?;
-        (code.expires <= (1u64 << 53) - 1
+        (code.expires < (1u64 << 53)
             && code
                 .setup
                 .strip_prefix("set_")

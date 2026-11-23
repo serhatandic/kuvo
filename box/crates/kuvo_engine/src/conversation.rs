@@ -70,6 +70,7 @@ struct Event {
 pub(crate) fn watch(
     engine: crate::Engine,
     refresh: tokio::sync::mpsc::WeakSender<()>,
+    ask_updates: tokio::sync::watch::Sender<std::sync::Arc<crate::asks::Book>>,
     stop: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
@@ -78,6 +79,8 @@ pub(crate) fn watch(
 
     tokio::spawn(async move {
         let mut states = engine.states();
+        let mut asks = crate::asks::Book::new();
+        let mut generation = None;
         loop {
             let Some(keep) = refresh.upgrade() else {
                 break;
@@ -94,6 +97,19 @@ pub(crate) fn watch(
                 }
                 continue;
             };
+            states.borrow_and_update();
+            let pin = (lease.record.pid, lease.record.port);
+            if generation.is_none() {
+                asks = crate::asks::restore(&engine, pin).await;
+                if !asks.is_empty() {
+                    ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
+                }
+            } else if generation != Some(pin) && !asks.is_empty() {
+                asks.clear();
+                ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
+                crate::asks::checkpoint(&engine, pin, &asks).await;
+            }
+            generation = Some(pin);
             let request = engine
                 .upstream
                 .request(&lease.record, Method::GET, "api/event");
@@ -127,6 +143,10 @@ pub(crate) fn watch(
                             .strip_prefix(b"data:")
                             .and_then(|data| serde_json::from_slice::<Event>(data).ok())
                         {
+                            if crate::asks::note(&mut asks, &event.kind, &event.data) {
+                                ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
+                                crate::asks::checkpoint(&engine, pin, &asks).await;
+                            }
                             if event.kind.starts_with("session.")
                                 && !event.kind.starts_with("session.inbox.")
                             {

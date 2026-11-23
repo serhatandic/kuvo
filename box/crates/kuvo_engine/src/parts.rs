@@ -310,9 +310,19 @@ pub(crate) struct Message {
     pub words: Option<String>,
 }
 
+fn add_attachment_lines<'a>(lines: &mut Vec<&'a str>, included: &'a [String], paths: &'a [String]) {
+    for (heading, files) in ATTACHED.headings.iter().zip([included, paths]) {
+        if !files.is_empty() {
+            lines.push(*heading);
+            lines.extend(files.iter().map(String::as_str));
+        }
+    }
+}
+
 pub(crate) fn compose(
     given: &Map<String, Value>,
     has_files: bool,
+    attachments: &crate::attachments::Attachments,
     phone: bool,
     legacy_queue: bool,
     naming: &crate::naming::Naming,
@@ -329,6 +339,17 @@ pub(crate) fn compose(
         let kept = given.get("kept") == Some(&Value::Bool(true)) && legacy_queue;
         let again = !legacy_queue || given.get("again") == Some(&Value::Bool(true));
         let mut text = text.to_owned();
+        if !attachments.included.is_empty() || !attachments.paths.is_empty() {
+            let (before, existing) = ATTACHED.take(&text).unwrap_or((text.as_str(), Vec::new()));
+            let mut after = before.to_owned();
+            if existing.is_empty() {
+                ATTACHED.escape(&mut after);
+            }
+            let mut lines = existing;
+            add_attachment_lines(&mut lines, &attachments.included, &attachments.paths);
+            ATTACHED.append(&mut after, &lines);
+            text = after;
+        }
         if !kept && !again && phone && !text.trim_end().ends_with(PHONE.closing) {
             PHONE.append(&mut text, &[PHONE.headings[0], PHONE_NOTE]);
         }
@@ -461,6 +482,7 @@ pub(crate) fn compose(
             notes.extend(contents);
         }
     }
+    add_attachment_lines(&mut notes, &attachments.included, &attachments.paths);
     if !notes.is_empty() {
         shown.get_or_insert_with(|| trim(&text).to_owned());
         ATTACHED.append(&mut text, &notes);
@@ -483,7 +505,11 @@ pub(crate) fn compose(
                 comment
             })
             .collect(),
-        paths: paths.into_iter().chain(unsent).collect(),
+        paths: paths
+            .into_iter()
+            .chain(unsent)
+            .chain(attachments.paths.iter().map(String::as_str))
+            .collect(),
         agents: naming.parts(&named),
         phone: phone.then_some(true),
         ..Parts::default()
