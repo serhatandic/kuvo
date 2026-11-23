@@ -5,6 +5,7 @@ if (!area || area === "peers") await import("./peers.test.mjs");
 if (!area || area === "removal") await import("./removal.test.mjs");
 if (!area || area === "adding") await import("./adding.test.mjs");
 if (!area || area === "two-boxes") await import("./two-boxes.test.mjs");
+if (!area || area === "moves") await import("./moves.test.mjs");
 if (!area || area === "holder") await import("./holder.test.mjs");
 if (!area || area === "compat") await import("./compat.test.mjs");
 if (!area || area === "clock") await import("./clock.test.mjs");
@@ -19,7 +20,7 @@ if (area === "engine-golden") await import("./engine-golden.test.mjs");
 if (!area || area === "engine-worktree") await import("./engine-worktree.test.mjs");
 if (!area || area === "stored-formats") await import("./stored-formats.test.mjs");
 if (![
-  "removal", "adding", "resident", "peers", "two-boxes", "holder", "compat", "clock", "stored-formats",
+  "removal", "adding", "resident", "peers", "two-boxes", "moves", "holder", "compat", "clock", "stored-formats",
   "engine-sessions", "engine-typed", "engine-delivery", "engine-asks", "engine-search",
   "engine-models", "engine-live", "engine-golden", "engine-worktree",
 ].includes(area)) await import("./routes.test.mjs");

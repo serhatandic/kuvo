@@ -32,7 +32,7 @@ test("a saved draft replies before OpenCode and settles its original receipt aft
 
   const next = await here.start().ready();
   const watch = Buffer.from(JSON.stringify({ delivery: receiptRoute + "/events" })).toString("base64url");
-  const line = await openLine(next, "?watch=" + watch, headers);
+  const line = await openLine(next, "?watch=" + watch, undefined, headers);
   t.after(() => line.close());
   let receipt;
   for await (const frame of line.frames()) {

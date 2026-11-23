@@ -8,6 +8,7 @@ pub mod devices;
 pub mod directory;
 mod kept;
 pub mod lists;
+pub mod moves;
 pub mod notices;
 pub mod outbox;
 mod parts;
