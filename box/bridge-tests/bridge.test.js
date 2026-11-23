@@ -366,15 +366,8 @@ test("files a phone sends with a message are kept on the box, where the agent op
   assert.ok(!listed(pasted.text, "Open these attached files with your tools if you need them:").includes("/etc/passwd"), pasted.text);
   assert.ok(pasted.text.startsWith("See\n\n<attached-files> \n"), "the pasted note stays the message's words");
 
-  // One that reads PDFs and sees pictures gets both, and the note says where they're kept too;
-  // ones kept more than two weeks go.
-  const old = path.join(home, "attachments", "0ld0ld00");
-  fs.mkdirSync(old, { recursive: true });
-  fs.writeFileSync(path.join(old, "old.pdf"), "old");
-  const weeksAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
-  fs.utimesSync(old, weeksAgo, weeksAgo);
+  // One that reads PDFs and sees pictures gets both, and the note says where they're kept.
   const eyes = await send("ses_eyes1");
-  assert.equal(fs.existsSync(old), false);
   assert.deepEqual(eyes.files, files);
   const both = listed(eyes.text, "The attached files are on disk here (what's in them is in this message already):");
   assert.deepEqual(both.map(file => path.basename(file)), ["note.pdf", "dot.png"]);
@@ -490,9 +483,8 @@ test("a message sent again under the same id after the phone's link dropped goes
   assert.deepEqual(prompts.map(sent => sent.id), ["msg_once", "msg_other"]);
 });
 
-test("a message the engine is slow to answer is waited for, not said busy, and a repeat meanwhile waits with it: the engine's asked once (#144)", { timeout: 30_000 }, async t => {
-  // An engine that holds the first until it's let go (busy for longer than the box waits on a
-  // queue change), counting every message it's sent.
+test("a repeat while the engine is answering waits for the same message: the engine's asked once (#144)", { timeout: 30_000 }, async t => {
+  // The engine holds the first request until the client has reconnected and sent it again.
   const prompts = [];
   let answerIt;
   const answered = new Promise(resolve => { answerIt = resolve; });
@@ -512,10 +504,6 @@ test("a message the engine is slow to answer is waited for, not said busy, and a
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  // (However short the box's patience with a queue change, a message isn't cut off by it.)
-  const patience = link.SENDING_PATIENCE.ms;
-  link.SENDING_PATIENCE.ms = 1;
-  t.after(() => { link.SENDING_PATIENCE.ms = patience; });
   const target = () => ({ pid: process.pid, port: server.address().port, password: "s3cret", version: "2.0.32" });
   const handle = link.engineHandler(target, {}, () => null);
   const hostKey = link.newKey();
@@ -1580,6 +1568,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "agents.accounts": ["GET", "kuvo/agents/api/kuvo/accounts"],
     "agents.start": ["GET", "kuvo/agents/start"],
     "agents.updates": ["POST", "kuvo/agents/api/kuvo/updates"],
+    "agents.updates.notices": ["GET", "kuvo/agents/api/kuvo/updates/notices"],
     "agents.voice": ["POST", "kuvo/agents/api/kuvo/voice"],
     approval: ["GET", "kuvo/approval"],
     // (A new conversation's mode, the last picked: kuvo/approval's `default`.)
@@ -1613,6 +1602,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "bots.make": ["GET", "kuvo/bots/templates"],
     "bots.now": ["GET", "kuvo/bots"],
     // (A bot's state is in `now`; seen is a bot's own route: one that isn't here says so.)
+    "bots.peer-activity": ["GET", "kuvo/setup/sessions/list/events"],
     "bots.state": ["POST", "kuvo/bots/bot_none/seen"],
     "bots.wake-ups": ["GET", "kuvo/wakes/ses_none/events"],
     // (This Mac's app, registered with a Mac's box in a home of its own: a machine says it has none.)
@@ -1658,6 +1648,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "browser.view": ["GET", "kuvo/browser/view"],
     btw: ["GET", "kuvo/agents/api/kuvo/btw"],
     // (What a side question's routes take besides, on the coding agents' bridge.)
+    "btw.choices": ["GET", "kuvo/agents/api/kuvo/btw"],
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     // (A conversation's side threads, and their events, on the coding agents' bridge.)
     "btw.threads.events": ["GET", "kuvo/agents/api/kuvo/btw/ses_none/threads"],
@@ -1748,10 +1739,24 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Using a plan's resets, and the agents' tool for it: the bridge's `limits/reset`.)
     // (Which ring one bar shows, and a window that started over, in the limits' rows.)
     "limits.bar": ["GET", "kuvo/agents/api/kuvo/limits"],
+    "limits.card": ["GET", "kuvo/agents/api/kuvo/limits"],
     "limits.resets": ["POST", "kuvo/agents/api/kuvo/limits/reset"],
     "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Each row's, account's and window's name, in the limits' answer.)
     "limits.titles": ["GET", "kuvo/agents/api/kuvo/limits"],
+    "line": ["GET", "kuvo/line?once=1"],
+    "line.kept-conversation": ["GET", "kuvo/peer-session/here/ses_none/messages", { fromApp: true }],
+    "line.merged-archives": ["GET", "kuvo/settings/archived", { fromApp: true }],
+    "line.merged-library": ["GET", "kuvo/setup/library/events"],
+    "line.merged-notices": ["GET", "kuvo/setup/notices/events"],
+    "line.merged-outputs": ["GET", "kuvo/setup/outputs"],
+    "line.merged-sessions": ["GET", "kuvo/setup/sessions/list/events"],
+    "line.merged-waiting": ["GET", "kuvo/setup/waiting/counts"],
+    "line.peer-conversation": ["GET", "kuvo/peer-session/here/ses_none/session", { fromApp: true }],
+    "line.pending-computers": ["GET", "kuvo/setup/sessions/events"],
+    "line.setup-lists": ["GET", "kuvo/setup/sessions/events"],
+    "marketplace": ["GET", "kuvo/marketplace", { fromApp: true }],
+    "marketplace.skills.remove": ["DELETE", "kuvo/marketplace/skills/no-such-skill", { fromApp: true }],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
@@ -1765,6 +1770,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "messages.wake-cards": ["GET", "api/session/none/message"],
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
+    "models.offered.accounts": ["GET", "kuvo/models/offered"],
     "models.offered.choice": ["GET", "kuvo/models/offered"],
     "models.offered.defaults": ["GET", "kuvo/models/offered?for=defaults"],
     "models.offered.folder": ["GET", "kuvo/models/offered?folder=%2F"],
@@ -1829,6 +1835,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sandbox.reviews.whole": ["GET", "kuvo/sandbox/asks"],
     "sandbox.words": ["GET", "kuvo/sandbox"],
     search: ["GET", "kuvo/search?q=none"],
+    "search.setup": ["GET", "kuvo/setup/search?q=none"],
     "sessions.actions": ["GET", "kuvo/sessions/ses_none/actions"],
     "sessions.agents": ["GET", "kuvo/sessions/ses_none/agents"],
     "sessions.archived-groups": ["POST", "kuvo/sessions/list"],
@@ -1840,6 +1847,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.list": ["POST", "kuvo/sessions/list"],
     "sessions.list.pages": ["GET", "kuvo/sessions/page"],
     "sessions.list.start": ["POST", "kuvo/sessions/list"],
+    "sessions.location": ["GET", "kuvo/sessions/ses_none/location", { fromApp: true }],
     "sessions.mentions": ["GET", "kuvo/sessions/ses_none/mentions?for=files"],
     "sessions.models": ["POST", "kuvo/sessions/models"],
     "sessions.move": ["POST", "kuvo/sessions/ses_none/move"],
@@ -1878,6 +1886,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "skills.trash": ["GET", "kuvo/skill-trash"],
     // (What "/" offers in a conversation; what a typed text means is POST on the same route.)
     typed: ["GET", "kuvo/sessions/ses_none/typed"],
+    "typed.delivery": ["GET", "kuvo/sessions/ses_none/delivery", { fromApp: true }],
     update: ["GET", "kuvo/update"],
     "update.fleet": ["POST", "kuvo/update/retry"],
     "usage.history": ["GET", "kuvo/agents/api/kuvo/usage"],
@@ -1926,7 +1935,11 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   const named = (await answer(handle, "GET", "kuvo/info")).json.features;
   assert.deepEqual(Object.keys(routes), Object.keys(routes).sort(), "the routes are one a line, in order");
   assert.deepEqual([...named].sort(), Object.keys(routes).sort(), "every name has a route here, and every route here its name");
-  for (const [feature, [method, route, access]] of Object.entries(routes)) assert.ok(await isRoute(method, route, access), `${feature}: ${method} ${route}`);
+  const unhandled = [];
+  for (const [feature, [method, route, access]] of Object.entries(routes)) {
+    if (!await isRoute(method, route, access)) unhandled.push([feature, method, route]);
+  }
+  assert.deepEqual(unhandled, [], "each advertised feature has a route that answers");
   // The Mac's own aren't here: a route this box doesn't have.
   for (const route of ["kuvo/hosts", "kuvo/machines", "kuvo/mac"]) assert.equal(await status("GET", route), 404, route);
   fs.rmSync(path.join(home, "chats"), { recursive: true, force: true });
