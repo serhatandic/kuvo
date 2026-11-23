@@ -1,6 +1,6 @@
 //! Register the resident's peer reads and desktop grant routes with the common dispatcher.
 
-use std::io;
+use std::{io, path::Path};
 
 use futures_util::stream;
 use http::StatusCode;
@@ -106,7 +106,8 @@ pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
         let id = call.param("session").unwrap_or_default();
         let with_tools = query(&call.request.path, "tools").as_deref() == Some("1");
         std::future::ready(
-            location(&state.view(), id, with_tools, state.now()).map(RouteReply::json::<200>),
+            location(&state.view(), &state.run, id, with_tools, state.now())
+                .map(RouteReply::json::<200>),
         )
     });
     let state = peers.clone();
@@ -277,6 +278,7 @@ pub(crate) fn follow<R>(
 
 fn location(
     view: &View,
+    run: &Path,
     id: &str,
     with_tools: bool,
     now: Millis,
@@ -285,15 +287,31 @@ fn location(
     if !conversation::valid_session(id) {
         return Err(Refusal::new(StatusCode::NOT_FOUND, CONVERSATION_GONE));
     }
-    let journal = view.moved(id, now);
-    let owner = view.owner_of(RecordScope::Session, id, now);
+    // A confirmed switch retires the source even while the old engine
+    // still lists it, or before the session list has refreshed.
+    let mut ownership = view.local.ownership.clone();
+    ownership.frozen.clear();
+    ownership.journal.clear();
+    crate::moves::locate(run, &mut ownership);
+    if view.local.holds(id) {
+        ownership.held.insert((RecordScope::Session, id.into()));
+    }
+    let journal = view.moved_with(id, now, &ownership);
+    let owner = ownership.owner_of(
+        RecordScope::Session,
+        id,
+        &view.roster,
+        &view.announced,
+        &view.reach,
+        now,
+    );
     let local = view.local.list.as_ref();
     let entry = local.and_then(|list| list.sessions.get(id));
     let allowed_here = owner.as_ref().is_none_or(|owner| owner.local)
         && journal
             .as_ref()
             .is_none_or(|key| key == &view.roster.local().id);
-    if allowed_here && !view.local.ownership.frozen.contains(id) {
+    if allowed_here && !ownership.frozen.contains(id) {
         let here = match entry {
             Some(row) if row.facts.away != Some(true) => row.place.map(|place| {
                 (

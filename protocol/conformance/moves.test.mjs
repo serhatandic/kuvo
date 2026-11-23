@@ -343,6 +343,58 @@ test("a restarted source drives a request saved before its first check", { timeo
   await until(() => !here.engine.sessions.some(record => record.id === session), "The retired source was not removed");
 });
 
+test("a switched move keeps the original until its backup can be written", {
+  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("cleanup-source"), there = await computer("cleanup-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_cleanupBackup", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const key = Buffer.from(member.key, "base64url"), secret = Buffer.alloc(32, 1);
+  const stop = relay.intercept(to, from, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), secret, key);
+    if (JSON.parse(payload).move?.op === "switched") here.engine.refuseExport = session;
+    return false;
+  });
+  t.after(stop);
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const id = begun.json.move.id;
+  await until(() => fs.existsSync(path.join(here.home, "run/moves", id + ".outcome.json")),
+    "The source did not record its cleanup outcome", 15000);
+  const outcome = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(outcome.status, 200, outcome.text);
+  assert.equal(outcome.json.state, "done", outcome.text);
+  assert.equal(outcome.json.note, "The original is retired. Kuvo will try again to clean up its files on the source computer.");
+  assert.ok(here.engine.sessions.some(record => record.id === session));
+  assert.ok(!here.engine.asked.some(call => call.method === "DELETE" && call.path.endsWith("/" + session)));
+  assert.ok(there.engine.sessions.some(record => record.id === session));
+  const location = await request(source, "GET", `kuvo/sessions/${session}/location`);
+  assert.equal(location.status, 200, location.text);
+  assert.equal(location.json.on?.id, member.key, location.text);
+  await sourceProcess.stop();
+  here.engine.refuseExport = undefined;
+  const restarted = here.start();
+  const resident = await restarted.ready();
+  await moveRetired(here, id, () => restarted.log() + "\n" + targetProcess.log());
+  assert.equal(here.engine.sessions.some(record => record.id === session), false);
+  const backup = readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id);
+  assert.equal(readJSON(path.join(backup.trash, "conversation.json"))[0].info.id, session);
+  const final = await request(resident, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(final.status, 200, final.text);
+  assert.equal(final.json.state, "done", final.text);
+  assert.equal(final.json.note, undefined, final.text);
+});
+
 async function moveMail(t, relay, main) {
   const from = Buffer.alloc(32, 2), to = Buffer.from(main.key, "base64url");
   const address = Buffer.from(main.address, "base64url");

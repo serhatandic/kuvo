@@ -27,7 +27,7 @@ use crate::{
     devices::Devices,
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, RecordScope,
-        Roster, owned_digest,
+        Ownership, Roster, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
@@ -202,7 +202,10 @@ impl View {
     }
 
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
-        let ownership = &self.local.ownership;
+        self.moved_with(id, now, &self.local.ownership)
+    }
+
+    pub(crate) fn moved_with(&self, id: &str, now: Millis, ownership: &Ownership) -> Option<String> {
         if let Some(key) = ownership.journal.get(&(RecordScope::Session, id.into())) {
             return Some(encode(ownership.replacements.get(key).unwrap_or(key)));
         }

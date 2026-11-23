@@ -60,6 +60,7 @@ export async function standInEngine(root, env) {
       const moveExport = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/export$/);
       if (moveExport && request.method === "GET") {
         const id = decodeURIComponent(moveExport[1]);
+        if (engine.refuseExport === id) return send({ message: "The backup export is unavailable." }, 503);
         const info = engine.sessions.find(each => each.id === id);
         return info ? send({ data: { info, messages: engine.messages.get(id) ?? [] } }) : send({}, 404);
       }
