@@ -2,6 +2,9 @@
 
 mod machine;
 
+#[cfg(target_os = "macos")]
+pub mod mac;
+
 use kuvo_os::{platform::Platform, process::ProcessIdentity};
 use kuvo_store::{files, format, home::Home, layout};
 use std::{
@@ -13,6 +16,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[cfg(target_os = "macos")]
+    #[error(transparent)]
+    Database(#[from] kuvo_store::sqlite::Error),
+    #[cfg(target_os = "macos")]
+    #[error("reading the staged engine database: {0}")]
+    Sql(#[from] rusqlite::Error),
     #[error(transparent)]
     Layout(#[from] layout::Error),
     #[error(transparent)]

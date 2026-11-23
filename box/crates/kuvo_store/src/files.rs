@@ -84,6 +84,16 @@ fn publish(
     through: Option<&Path>,
     operation: fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    publish_prepared(path, bytes, through, operation, platform::private_file)
+}
+
+fn publish_prepared(
+    path: &Path,
+    bytes: &[u8],
+    through: Option<&Path>,
+    operation: fn(&Path, &Path) -> io::Result<()>,
+    prepare: impl FnOnce(&fs::File) -> io::Result<()>,
+) -> io::Result<()> {
     let folder = parent(path)?;
     let through = match through {
         Some(through) => {
@@ -96,7 +106,7 @@ fn publish(
     let mut temp = tempfile::Builder::new()
         .prefix(DRAFT_PREFIX)
         .tempfile_in(folder)?;
-    platform::private_file(temp.as_file())?;
+    prepare(temp.as_file())?;
     temp.write_all(bytes)?;
     temp.flush()?;
     temp.as_file().sync_all()?;
@@ -251,4 +261,54 @@ pub fn file_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(at("reading the file stamp of", path, error)),
     }
+}
+
+/// Copy a legacy Mac entry into private staging, preserving modes and links.
+/// The source is left in place. The caller owns the unpublished staging tree.
+#[cfg(target_os = "macos")]
+pub fn clone_mac_entry(from: &Path, to: &Path, allow_copy: bool) -> io::Result<()> {
+    use std::process::{Command, Stdio};
+
+    create_private_dirs(parent(to)?)?;
+    let copy = |options| {
+        Command::new("/bin/cp")
+            .env_clear()
+            .arg(options)
+            .arg(from)
+            .arg(to)
+            .stdin(Stdio::null())
+            .output()
+    };
+    let mut output = copy("-cRPp")?;
+    if !output.status.success() && allow_copy {
+        remove_tree_synced(to)?;
+        output = copy("-RPp")?;
+    }
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "staging {}: {}",
+            from.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Rewrite a regular file in a private Mac staging tree with its existing mode.
+#[cfg(target_os = "macos")]
+pub fn rewrite_mac_entry(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let entry = fs::symlink_metadata(path)?;
+    if !entry.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular staged file",
+        ));
+    }
+    let mode = entry.permissions().mode() & 0o777;
+    publish_prepared(path, bytes, None, platform::replace, |file| {
+        file.set_permissions(fs::Permissions::from_mode(mode))
+    })
+    .map_err(|error| at("rewriting", path, error))
 }
