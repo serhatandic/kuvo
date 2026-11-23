@@ -16,6 +16,7 @@ use crate::{
 };
 
 type Export = (Kind, Envelope);
+const RECOVERABLE_COUNT: u64 = 1 << 52;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct DigestEntry(pub String, pub Kind, pub u64, pub String);
@@ -144,32 +145,45 @@ pub(crate) fn header(link: &Link, exports: &[Export]) -> Vec<DigestEntry> {
         .cloned();
     leader
         .chain(exports.iter().map(|(_, export)| export.clone()))
-        .chain(
-            link.extra
-                .get("docs")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flat_map(Map::values)
-                .filter_map(|value| serde_json::from_value::<Envelope>(value.clone()).ok()),
-        )
         .filter_map(|value| {
             let doc = documents::verify(value).ok()?;
-            Some(DigestEntry(
-                encode(&doc.origin),
-                doc.kind,
-                doc.n,
-                doc.digest(),
-            ))
+            Some(digest_entry(&doc))
         })
+        .chain(stored(link).map(|doc| digest_entry(&doc)))
         .collect()
 }
 
-pub(crate) fn take(link: &Link, doc: &Document) -> Result<Option<Link>, Error> {
-    let setup = link.setup()?;
+fn digest_entry(doc: &Document) -> DigestEntry {
+    DigestEntry(encode(&doc.origin), doc.kind, doc.n, doc.digest())
+}
+
+pub(crate) fn stored(link: &Link) -> impl Iterator<Item = Document> + '_ {
+    link.extra
+        .get("docs")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(Map::values)
+        .filter_map(|value| documents::verify(serde_json::from_value(value.clone()).ok()?).ok())
+        .filter(|doc| eligible(link, doc))
+}
+
+pub(crate) fn missing(given: &[DigestEntry], doc: &Document) -> bool {
+    let DigestEntry(origin, kind, count, hash) = digest_entry(doc);
+    given
+        .iter()
+        .rev()
+        .find(|row| row.0 == origin && row.1 == kind)
+        .is_none_or(|row| row.2 < count || (row.2 == count && row.3 > hash))
+}
+
+fn eligible(link: &Link, doc: &Document) -> bool {
+    let Ok(setup) = link.setup() else {
+        return false;
+    };
     let kind = doc.kind;
     let sign = encode(&doc.origin);
     if !matches!(kind, Kind::Peers | Kind::Phones) || setup.sign != sign {
-        return Ok(None);
+        return false;
     }
     match kind {
         Kind::Peers => {
@@ -181,7 +195,7 @@ pub(crate) fn take(link: &Link, doc: &Document) -> Result<Option<Link>, Error> {
                 || Membership::parse(&Value::Object(doc.body.clone()), &setup.position, &sign)
                     .is_err()
             {
-                return Ok(None);
+                return false;
             }
         }
         Kind::Phones => {
@@ -199,15 +213,28 @@ pub(crate) fn take(link: &Link, doc: &Document) -> Result<Option<Link>, Error> {
                             .any(|id| id.as_str() != Some(&setup.position.id))
                     }))
             {
-                return Ok(None);
+                return false;
             }
         }
         _ => unreachable!("checked the export kind"),
     }
+    true
+}
+
+pub(crate) fn take(link: &Link, doc: &Document) -> Result<Option<Link>, Error> {
+    if !eligible(link, doc) {
+        return Ok(None);
+    }
+    let setup = link.setup()?;
+    let kind = doc.kind;
+    let sign = encode(&doc.origin);
     let mut next = link.clone();
     let bucket = bucket(kind).expect("a roster or access document");
     if setup.role == Role::Primary {
-        if doc.n > (1 << 52) || previous(link, kind).is_some_and(|old| old.n >= doc.n) {
+        if doc.n > RECOVERABLE_COUNT
+            || previous(link, kind)
+                .is_some_and(|old| old.n > doc.n || (old.n == doc.n && old.h == doc.digest()))
+        {
             return Ok(None);
         }
         let counters = next
@@ -221,7 +248,7 @@ pub(crate) fn take(link: &Link, doc: &Document) -> Result<Option<Link>, Error> {
             json!(Counter {
                 n: doc.n,
                 h: doc.digest(),
-                b: String::new()
+                b: body_hash(&Value::Object(doc.body.clone()))
             }),
         );
         return Ok(Some(next));
@@ -259,7 +286,7 @@ pub(crate) fn recover_count(
     for DigestEntry(origin, kind, sequence, hash) in entries {
         if origin != &identity.sign
             || !matches!(kind, Kind::Peers | Kind::Phones)
-            || !(1..=(1 << 52)).contains(sequence)
+            || !(1..=RECOVERABLE_COUNT).contains(sequence)
             || !safe_token(hash, 11, 11)
             || previous(link, *kind).is_some_and(|old| old.n >= *sequence)
         {
@@ -282,4 +309,63 @@ pub(crate) fn recover_count(
         changed = true;
     }
     Ok(changed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SetupRuntime, storage::Files};
+
+    async fn setup() -> (tempfile::TempDir, Link, Identity) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("box");
+        SetupRuntime::prepare(&home, "Main".into(), false, None)
+            .await
+            .unwrap();
+        let link = Files::new(home).read("run/link.json").unwrap().unwrap();
+        let own = Identity::read(&link).unwrap();
+        (root, link, own)
+    }
+
+    #[tokio::test]
+    async fn a_lost_count_recovers_without_accepting_a_digest_above_the_cap() {
+        let (_root, mut link, own) = setup().await;
+        let count = |sequence| DigestEntry(own.sign.clone(), Kind::Peers, sequence, "a".repeat(11));
+        assert!(!recover_count(&mut link, &own, &[count(RECOVERABLE_COUNT + 1)]).unwrap());
+        assert!(previous(&link, Kind::Peers).is_none());
+        assert!(recover_count(&mut link, &own, &[count(RECOVERABLE_COUNT)]).unwrap());
+        let (exports, _) = published(&mut link, &own).unwrap();
+        let current = documents::verify(exports[0].1.clone()).unwrap();
+        assert_eq!(current.kind, Kind::Peers);
+        assert_eq!(current.n, RECOVERABLE_COUNT + 1);
+        assert!(!recover_count(&mut link, &own, &[count(RECOVERABLE_COUNT)]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_member_keeps_the_lower_digest_at_equal_count_and_ignores_alternate_leadership() {
+        let (_root, mut link, own) = setup().await;
+        let setup = link.setup.as_mut().unwrap();
+        setup.role = Role::Member;
+        let position = setup.position.clone();
+        let member = own.self_peer(crate::model::ComputerKind::Machine, "Main");
+        let sign = |seed, primary: &str, marker| {
+            let body = json!({
+                "setup": { "id": position.id, "epoch": position.epoch, "primary": primary },
+                "boxes": [member], "left": [], "moved": [], "marker": marker,
+            });
+            documents::verify(documents::sign(seed, Kind::Peers, 20, object(body)).unwrap())
+                .unwrap()
+        };
+        // The marker plays no role in versioning, even when it resembles a skewed clock.
+        let first = sign(&own.seed, &position.primary, u64::MAX);
+        let second = sign(&own.seed, &position.primary, 1);
+        let winner = first.digest().min(second.digest());
+        for (one, two) in [(&first, &second), (&second, &first)] {
+            let initial = take(&link, one).unwrap().unwrap();
+            let after = take(&initial, two).unwrap().unwrap_or(initial);
+            assert_eq!(stored(&after).next().unwrap().digest(), winner);
+        }
+        let alternate = sign(&[42; 32], &encode(&[42; 32]), 21);
+        assert!(take(&link, &alternate).unwrap().is_none());
+    }
 }

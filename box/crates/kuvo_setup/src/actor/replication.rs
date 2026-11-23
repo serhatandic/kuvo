@@ -366,7 +366,11 @@ impl Owner {
         } else if setup.role == Role::Primary {
             self.publish_to(peer.clone(), false).await?;
         }
-        if !reply && behind {
+        for doc in document::stored(&self.link).filter(|doc| document::missing(given, doc)) {
+            self.send_doc(&peer, doc.envelope).await;
+        }
+        let has_later_tip = remote.is_some_and(|entry| entry.2 > setup.position.epoch);
+        if !reply && (behind || has_later_tip) {
             self.send(&peer, json!({
                 "docs": {"have": document::header(&self.link, &self.exports), "reply": true}, "at": lease::wall(),
             })).await;
@@ -429,7 +433,21 @@ impl Owner {
             }
             Kind::Peers | Kind::Phones => {
                 if let Some(next) = document::take(&self.link, &doc)? {
+                    let from_other = next.setup()?.role == Role::Member;
                     self.commit(next).await?;
+                    if from_other {
+                        let own = &self.own()?.public;
+                        let signer = encode(&doc.origin);
+                        for peer in self.roster()?.boxes.into_iter().filter(|peer| {
+                            peer.key != *own
+                                && peer.key != from
+                                && peer.sign.as_ref().is_some_and(|sign| *sign != signer)
+                        }) {
+                            if let Some(host) = Host::from_text(&peer.key, &peer.address) {
+                                self.send_doc(&host, doc.envelope.clone()).await;
+                            }
+                        }
+                    }
                 }
                 Ok(())
             }

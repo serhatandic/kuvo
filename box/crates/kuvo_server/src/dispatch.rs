@@ -370,6 +370,7 @@ type Handler = Box<
         + Sync,
 >;
 type Fallback = Box<dyn Fn(DispatchRequest, CancellationToken) -> FutureReply + Send + Sync>;
+type Activity = Box<dyn Fn(&Caller) + Send + Sync>;
 
 type SocketResult = Result<Socket, Refusal>;
 type SocketHandler = Box<
@@ -389,11 +390,17 @@ pub struct Registry {
     entries: Vec<Entry>,
     engine: Option<Fallback>,
     socket: Option<SocketHandler>,
+    activity: Option<Activity>,
 }
 
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Observe the authenticated callers of admitted requests.
+    pub fn observe_activity(&mut self, activity: impl Fn(&Caller) + Send + Sync + 'static) {
+        self.activity = Some(Box::new(activity));
     }
 
     pub fn register<R, H, F>(&mut self, access: Access, handler: H)
@@ -531,6 +538,9 @@ impl Dispatcher {
     async fn route(&self, mut request: DispatchRequest, cancel: CancellationToken) -> Reply {
         if let Err(refusal) = admissible(&request) {
             return refusal.reply();
+        }
+        if let Some(activity) = self.0.activity.as_ref() {
+            activity(&request.caller);
         }
         let Some(canonical) = path::canonical(&request.path) else {
             return unavailable_path().reply();

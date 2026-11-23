@@ -12,7 +12,9 @@ use kuvo_protocol::{
     json::{Null, Nullable},
     routes::{get_kuvo_info as info, types::GetKuvoInfoStatus200MacEngineState3 as EngineState},
 };
-use kuvo_server::{Access, LineTiming, Refusal, Registry, Resident, RouteReply};
+use kuvo_server::{
+    Access, LineTiming, LocalOrigin, Refusal, Registry, Resident, RouteReply, Transport,
+};
 use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -57,6 +59,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .relay_config()?
         .or(bootstrap.relay)
         .map(Relay::start);
+    prepared.record_build(VERSION)?;
     let setup = prepared.start(relay.as_ref().map(Relay::handle))?;
     let peers = ResidentPeers::start(
         home,
@@ -69,6 +72,20 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     peers.follow_setup_roster(setup.handle().rosters()).await;
     let mut routes = Registry::new();
+    if kind == ComputerKind::Machine {
+        let setup = setup.handle();
+        routes.observe_activity(move |caller| {
+            if !matches!(
+                caller.transport(),
+                Transport::Http {
+                    origin: LocalOrigin::App,
+                    ..
+                }
+            ) {
+                setup.phone_activity();
+            }
+        });
+    }
     engine.register(&mut routes);
     setup.handle().register(&mut routes);
     kuvo_peers::routes::register(&mut routes, peers.reader(), bootstrap.devices.clone());
