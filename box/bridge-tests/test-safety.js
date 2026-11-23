@@ -26,16 +26,62 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { watchTestProcesses } from "./test-home-processes.js";
 
+const windows = process.platform === "win32";
+if (windows) {
+  // Resolve the directory itself, including junctions, before doing anything with the home.
+  const directory = given => {
+    if (!given || !path.isAbsolute(given) || (path.sep === "\\" && !/^[a-z]:[\\/]/i.test(given))) return;
+    try {
+      const resolved = fs.realpathSync.native(given);
+      if (fs.statSync(resolved).isDirectory()) return resolved.toLowerCase();
+    } catch {}
+  };
+  const home = directory(process.env.WINDOWS_TEST_HOME);
+  if (!home || home === path.parse(home).root) {
+    throw new Error("test-safety.js: WINDOWS_TEST_HOME must name a private local directory.");
+  }
+  for (const name of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP"]) {
+    const folder = directory(process.env[name]);
+    const relative = folder && path.relative(home, folder);
+    if (relative === undefined || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+      throw new Error(`test-safety.js: ${name} must be inside WINDOWS_TEST_HOME.`);
+    }
+  }
+  // The local OS identity is independent of USERNAME and the redirected test profile.
+  let username;
+  try { username = os.userInfo().username; } catch {}
+  const disposable = process.env.KUVO_TEST_DISPOSABLE_ACCOUNT;
+  if (!disposable || username?.toLowerCase() !== disposable.toLowerCase()) {
+    throw new Error("test-safety.js: KUVO_TEST_DISPOSABLE_ACCOUNT must match the current Windows logon.");
+  }
+  const system = process.env.SystemRoot;
+  if (!system || !path.isAbsolute(system)) {
+    throw new Error("test-safety.js: Cannot locate Windows PowerShell to check Credential Manager.");
+  }
+  const check = spawnSync(path.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+    fileURLToPath(new URL("./windows-test-credentials.ps1", import.meta.url)), "-Action", "check",
+  ], { encoding: "utf8", timeout: 15000, windowsHide: true });
+  if (check.status === 42) {
+    throw new Error("test-safety.js: Windows Credential Manager already holds credentials. Native tests require an empty disposable account.");
+  }
+  if (check.status !== 0) {
+    const reason = check.error?.message || check.stderr?.trim() || `exit ${check.status}`;
+    throw new Error(`test-safety.js: Cannot verify Windows Credential Manager (${reason}).`);
+  }
+}
+
 const runnerParents = [
   ...(process.env.NODE_TEST_CONTEXT && process.argv[1] ? [process.ppid] : []),
   ...(process.env.KUVO_TEST_WRAPPER_PID ? [Number(process.env.KUVO_TEST_WRAPPER_PID)] : []),
 ];
-const realHome = process.env.KUVO_TEST_REAL_HOME || process.env.HOME || os.homedir();
+const realHome = (!windows && process.env.KUVO_TEST_REAL_HOME) || process.env.HOME || os.homedir();
 
 // The account's own home folder as the system has it, whatever HOME says (Bun's `os.userInfo()`
 // follows HOME, so it's asked of the system's own: `id -P` on macOS, `getent` and then the password
 // file on Linux).
 export const accountHome = (() => {
+  if (windows) return realHome;
   try {
     let line;
     if (process.platform === "darwin") line = spawnSync("/usr/bin/id", ["-P"], { encoding: "utf8", timeout: 5000 }).stdout;
@@ -87,6 +133,8 @@ function trackRoot(folder, remove = false) {
 }
 
 function processLifetime() {
+  // The Windows runner owns a Job Object for the whole run, including detached descendants.
+  if (windows) return undefined;
   if (!lifetime) {
     lifetime = watchTestProcesses(runnerParents);
     for (const [root, remove] of processRoots) {
@@ -96,7 +144,10 @@ function processLifetime() {
   return lifetime;
 }
 
-const processEnv = env => processLifetime().env(env ?? process.env);
+const processEnv = env => {
+  const given = env ?? process.env;
+  return processLifetime()?.env(given) ?? given;
+};
 
 // A fixture with detached workers can keep its home around until all its processes have stopped.
 export function removeTestHomeAtExit(folder) {
@@ -191,7 +242,13 @@ function refuseOutside(given, verb) {
   throw new Error(message);
 }
 
-const isIn = (where, folder) => where === folder || where.startsWith(folder.endsWith(path.sep) ? folder : folder + path.sep);
+const isIn = (where, folder) => {
+  if (windows) {
+    where = where.toLowerCase();
+    folder = folder.toLowerCase();
+  }
+  return where === folder || where.startsWith(folder.endsWith(path.sep) ? folder : folder + path.sep);
+};
 
 // What the system makes of these however they're spelled: the identity of what exists at `given` and
 // at each folder above it (a path in another case, or through /System/Volumes/Data, is the same one).
@@ -206,7 +263,7 @@ function identities(given) {
   }
 }
 const identity = given => { try { const stat = fs.statSync(given); return `${stat.dev}:${stat.ino}`; } catch {} };
-const fold = text => (process.platform === "darwin" ? text.toLowerCase() : text);
+const fold = text => (windows || process.platform === "darwin" ? text.toLowerCase() : text);
 const kuvoPlaces = new RegExp(kuvoCodes.source, "i");
 
 /**
@@ -268,6 +325,7 @@ export const AGENT_FOLDERS = [".grok", ".codex", ".claude", ".claude.json", ".cu
   path.join(".local", "share", "claude"), path.join(".local", "share", "cursor-agent")];
 /** The coding agents' programs, by the names they're found by on the PATH. */
 const AGENT_PROGRAMS = new Set(["grok", "claude", "codex", "cursor-agent", "agent", "gemini", "antigravity"]);
+const programName = name => windows ? name.toLowerCase().replace(/\.(exe|com|cmd|bat)$/, "") : name;
 const realHomes = [...new Set([realHome, accountHome].filter(Boolean).flatMap(home => [path.resolve(home), resolved(home)]))];
 const agentFolders = [...new Set(realHomes.flatMap(home => AGENT_FOLDERS.map(folder => fold(path.join(home, folder)))))];
 let realAgentsAllowed = false;
@@ -360,13 +418,16 @@ for (const holder of new Set([fs, fs.promises, fsPromises])) {
 /** Where `program` is found, as `PATH` (the child's) has it: undefined when it isn't. */
 function programAt(program, env) {
   const name = String(program);
-  if (name.includes("/")) return path.resolve(name);
+  if (name.includes("/") || (windows && name.includes("\\"))) return path.resolve(name);
+  const names = windows && !path.extname(name) ? [name, `${name}.exe`, `${name}.com`, `${name}.cmd`, `${name}.bat`] : [name];
   for (const folder of String(env?.PATH ?? process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(folder, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {}
+    for (const file of names) {
+      const candidate = path.join(folder, file);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {}
+    }
   }
   return undefined;
 }
@@ -384,7 +445,7 @@ function refuseStart(program, env) {
     const folder = allowed ? undefined : agentFolderOf(at) ?? agentFolderOf(real);
     if (folder) refuseAgents(`Refusing to start ${at}: it's a coding agent's real program, in ${folder} (test-safety.js). A test uses a stand-in of its own on the PATH.`);
     const ownCopy = [...own].some(each => isIn(resolved(at), each));
-    if (AGENT_PROGRAMS.has(path.basename(at)) && !ownCopy && !allowed) refuseAgents(`Refusing to start ${at}: it's a coding agent's real program (test-safety.js). A test uses a stand-in of its own on the PATH.`);
+    if (AGENT_PROGRAMS.has(programName(path.basename(at))) && !ownCopy && !allowed) refuseAgents(`Refusing to start ${at}: it's a coding agent's real program (test-safety.js). A test uses a stand-in of its own on the PATH.`);
   }
   // (The bridge or a box, run by Bun or node, reads the agents' sign-ins in the home it's given; so
   // does a real program a test may start, in its own homes.)
@@ -407,7 +468,7 @@ const isRunner = at => {
     return false;
   }
 };
-const runtimeOf = (program, at, env) => /^(bun|node)(-[a-z]+)?$/.test(path.basename(String(at ?? program))) || String(at ?? program) === process.execPath || isRunner(at) || (Boolean(env?.BUN_BE_BUN) && !runsOnEngine);
+const runtimeOf = (program, at, env) => /^(bun|node)(-[a-z]+)?$/.test(programName(path.basename(String(at ?? program)))) || String(at ?? program) === process.execPath || isRunner(at) || (Boolean(env?.BUN_BE_BUN) && !runsOnEngine);
 
 // What a test starts (the bridge, a box) finds programs on the PATH it's handed, outside this guard:
 // a folder there with an agent's real program (`~/.local/bin/grok`) is swapped for a copy in the run's
@@ -417,7 +478,7 @@ const runtimeOf = (program, at, env) => /^(bun|node)(-[a-z]+)?$/.test(path.basen
 export const REAL_PATH = process.env.PATH ?? "";
 // (By its name, or a link into an agent's folder.)
 const agentProgram = (folder, name) => {
-  if (AGENT_PROGRAMS.has(name)) return true;
+  if (AGENT_PROGRAMS.has(programName(name))) return true;
   try {
     const at = path.join(folder, name);
     return fs.lstatSync(at).isSymbolicLink() && Boolean(agentFolderOf(fs.realpathSync(at)));

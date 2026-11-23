@@ -95,10 +95,16 @@ function route(method, pathname, body, { sandbox = false } = {}) {
     child.stdin.end(JSON.stringify({ method, path: pathname, body }));
   });
 }
+// These scenarios need working Auto or the legacy fallback on a box without a fence.
+const requiresAuto = {
+  skip: (process.platform === "win32" || (process.platform === "linux" && (process.env.WSL_DISTRO_NAME || /microsoft|wsl/i.test(os.release()))))
+    && "Auto sandbox: Coming soon on Windows.",
+};
+
 const rules = id => sessions.get(id).permissions;
 const asks = (id, action) => rules(id).some(rule => rule.action === action && rule.resource === "*" && rule.effect === "ask");
 
-test("a conversation from before reads as its rules say, and can be set to any of them it can have", async () => {
+test("a conversation from before reads as its rules say, and can be set to any of them it can have", requiresAuto, async () => {
   const careful = await route("GET", "kuvo/sessions/ses_careful/approval");
   assert.equal(careful.status, 200);
   assert.equal(careful.body.approval, "askFirst");
@@ -140,7 +146,7 @@ test("Accept Edits lets edits go ahead and still asks before commands; what Sett
   assert.equal((await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "yolo" })).status, 400);
 });
 
-test("Auto runs without asking only where the sandbox runs: set where it doesn't, it's kept and asks first until it does", async () => {
+test("Auto runs without asking only where the sandbox runs: set where it doesn't, it's kept and asks first until it does", requiresAuto, async () => {
   const held = await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "auto" });
   assert.equal(held.status, 200);
   assert.deepEqual({ approval: held.body.approval, effective: held.body.effective, stored: held.body.stored, reason: held.body.held?.reason }, { approval: "auto", effective: "askFirst", stored: true, reason: "sandbox" });
@@ -162,7 +168,7 @@ test("Auto runs without asking only where the sandbox runs: set where it doesn't
   assert.equal(asks("ses_careful", "edit"), true);
 });
 
-test("Auto's file tools still ask outside its folders where Settings says so (the sandbox holds only commands); Full Access doesn't", async () => {
+test("Auto's file tools still ask outside its folders where Settings says so (the sandbox holds only commands); Full Access doesn't", requiresAuto, async () => {
   write(settingsFile, JSON.stringify({ permissions: [{ action: "external_directory", resource: "*", effect: "ask" }, NEVER_RM] }));
   const outside = id => rules(id).findLast(rule => rule.action === "external_directory" && rule.resource === "*")?.effect;
   await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "auto" }, { sandbox: true });
@@ -175,7 +181,7 @@ test("Auto's file tools still ask outside its folders where Settings says so (th
   assert.ok(rules("ses_careful").some(rule => rule.resource === NEVER_RM.resource && rule.effect === "deny"), "what Settings never allows still holds");
 });
 
-test("a bot's conversation from before is kept with Auto, asks first where the sandbox doesn't run, and loses the asks a box before put in a bot's", async () => {
+test("a bot's conversation from before is kept with Auto, asks first where the sandbox doesn't run, and loses the asks a box before put in a bot's", requiresAuto, async () => {
   assert.equal(asks("ses_scout", "shell"), false, "as it was made");
   // What a box before 0.9.189 asked of a bot whatever its mode.
   const former = [{ action: "shell", resource: "stripe *", effect: "ask" }, { action: "shell", resource: "gh pr create*", effect: "ask" }, { action: "shell", resource: "vercel*", effect: "ask" }];
@@ -202,7 +208,7 @@ test("Accept Edits lets edits go ahead even where Settings asks for them, and re
   assert.deepEqual({ approval: read.approval, stored: read.stored }, { approval: "askFirst", stored: false });
 });
 
-test("a bot's work changed to any approval asks as any conversation in that approval does, nothing more", async () => {
+test("a bot's work changed to any approval asks as any conversation in that approval does, nothing more", requiresAuto, async () => {
   for (const approval of ["acceptEdits", "auto"]) {
     assert.equal((await route("PUT", "kuvo/sessions/ses_work/approval", { approval }, { sandbox: true })).status, 200);
     for (const resource of ["stripe *", "gh pr create*", "git push *--force*", "sendmail *", "rm *", "sudo *", "chmod *", "ssh-add *"]) {
@@ -217,7 +223,7 @@ test("a bot's work changed to any approval asks as any conversation in that appr
   assert.equal(asks("ses_work", "shell"), false, "its commands go ahead");
 });
 
-test("a change to Settings › Permissions reaches every conversation kept with an approval at once, whichever client made it", async () => {
+test("a change to Settings › Permissions reaches every conversation kept with an approval at once, whichever client made it", requiresAuto, async () => {
   write(settingsFile, JSON.stringify({ permissions: [NEVER_RM] }));
   await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "acceptEdits" });
   await route("PUT", "kuvo/sessions/ses_free/approval", { approval: "auto" }, { sandbox: true });
@@ -238,7 +244,7 @@ test("a change to Settings › Permissions reaches every conversation kept with 
   assert.equal(denies("ses_free"), false);
 });
 
-test("a folder Settings › Permissions asks about, then doesn't allow, stays out of a conversation in Auto, however often its rules are made", async () => {
+test("a folder Settings › Permissions asks about, then doesn't allow, stays out of a conversation in Auto, however often its rules are made", requiresAuto, async () => {
   const SHARED = "/srv/shared/*";
   write(settingsFile, JSON.stringify({ permissions: [NEVER_RM] }));
   await route("PUT", "kuvo/sessions/ses_free/approval", { approval: "auto" }, { sandbox: true });
@@ -255,7 +261,7 @@ test("a folder Settings › Permissions asks about, then doesn't allow, stays ou
   assert.deepEqual(shared(), [], "taken out of Settings, it's gone from the conversation too");
 });
 
-test("rules a client changed on its own are never made again behind its back", async () => {
+test("rules a client changed on its own are never made again behind its back", requiresAuto, async () => {
   await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "auto" }, { sandbox: true });
   // A client from before sets Ask First by its rules alone.
   sessions.set("ses_careful", { ...sessions.get("ses_careful"), permissions: [...ASK_FIRST, NEVER_RM] });
@@ -264,7 +270,7 @@ test("rules a client changed on its own are never made again behind its back", a
   assert.equal(asks("ses_careful", "shell"), true, "still asks first, as the client set it");
 });
 
-test("Full Access only once it's switched on for this computer, for a bot's conversation too", async () => {
+test("Full Access only once it's switched on for this computer, for a bot's conversation too", requiresAuto, async () => {
   assert.equal((await route("GET", "kuvo/approval")).body.fullAccess, false);
   // A new conversation's mode menu offers what the box says can be had here, as a conversation's does.
   const unconfirmed = (body, side) => body.options[side].find(each => each.approval === "fullAccess").unavailable?.reason;
@@ -303,7 +309,7 @@ test("Full Access only once it's switched on for this computer, for a bot's conv
   assert.equal((await route("PATCH", "kuvo/approval", { fullAccess: "yes" })).status, 400);
 });
 
-test("a new conversation a client made without saying gets this computer's default: Auto the first time, then the last one picked here; Approve All from a client from before never becomes Full Access", async () => {
+test("a new conversation a client made without saying gets this computer's default: Auto the first time, then the last one picked here; Approve All from a client from before never becomes Full Access", requiresAuto, async () => {
   assert.equal((await route("GET", "kuvo/approval")).body.default, "auto");
   // Made since, with nothing asking (an older client's Approve All): Auto, never Full Access.
   sessions.set("ses_new", session("ses_new", [NEVER_RM], { time: { created: Date.now() + 60_000, updated: Date.now() + 60_000 } }));
@@ -331,7 +337,7 @@ test("a new conversation a client made without saying gets this computer's defau
   assert.equal((await route("GET", "kuvo/approval")).body.default, "auto");
 });
 
-test("what the box makes itself, a conversation that runs nothing, and a Full Access switched off since are never a new conversation's Full Access", async () => {
+test("what the box makes itself, a conversation that runs nothing, and a Full Access switched off since are never a new conversation's Full Access", requiresAuto, async () => {
   await route("PATCH", "kuvo/approval", { fullAccess: true });
   await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "fullAccess" });
   assert.equal((await route("GET", "kuvo/approval")).body.default, "fullAccess");
@@ -375,7 +381,7 @@ test("a new conversation with your Don't Allows on whole tools still gets your d
   assert.ok(!asks("ses_careful", "shell"));
 });
 
-test("Auto and Full Access read .env files without asking, a Don't Allow in Settings still winning; one kept from before gets that too", async () => {
+test("Auto and Full Access read .env files without asking, a Don't Allow in Settings still winning; one kept from before gets that too", requiresAuto, async () => {
   const envReads = id => rules(id).filter(rule => rule.action === "read" && /\.env/.test(rule.resource));
   await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "auto" }, { sandbox: true });
   assert.deepEqual(envReads("ses_careful").map(rule => [rule.resource, rule.effect]), [["*.env", "allow"], ["*.env.*", "allow"]]);
@@ -392,7 +398,7 @@ test("Auto and Full Access read .env files without asking, a Don't Allow in Sett
   assert.deepEqual(envReads("ses_kept").map(rule => rule.effect), ["allow", "allow"]);
 });
 
-test("in Full Access and Auto, an agent making the same call again and again carries on, as in Claude Code and Codex, and isn't held for you; Ask First still asks; one kept from before gets that too", async () => {
+test("in Full Access and Auto, an agent making the same call again and again carries on, as in Claude Code and Codex, and isn't held for you; Ask First still asks; one kept from before gets that too", requiresAuto, async () => {
   const loops = id => rules(id).filter(rule => rule.action === "doom_loop").map(rule => rule.effect);
   write(settingsFile, JSON.stringify({ permissions: [] }));
   await route("PATCH", "kuvo/approval", { fullAccess: true });
