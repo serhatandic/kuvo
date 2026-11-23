@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { placeWhole } from "../../shared/files";
 import { isObject } from "../../shared/json";
+import { speedsIn, type Speed } from "../../shared/model-speeds";
 import { isEngineModel } from "../../shared/subagents";
 import type { Target } from "../../shared/records";
 import type { SessionModel } from "../../shared/routes/sessions";
@@ -28,10 +29,10 @@ export type ModelState = Omit<SessionModel, "model">;
 /** A model as a place lists it; `provisional`, one of its agent's usual ones, listed until it says
  * which your account has (Claude Code's, as it starts); `hidden`, one its agent keeps out of its
  * picker but still runs (Codex's); `retiring`, one its provider deprecated; `efforts`, its
- * variants' ids. */
+ * variants' ids; `speeds`, those it runs at besides its standard one (Codex's Fast). */
 export interface Listed {
   providerID: string; id: string; name: string; aliases: string[]; efforts: string[]; free: boolean; provisional: boolean;
-  hidden: boolean; retiring: boolean; released: number;
+  hidden: boolean; retiring: boolean; released: number; speeds?: Speed[];
 }
 
 /** An account as a place lists it (`api/integration`): its ways to sign in, whether it's signed
@@ -268,9 +269,11 @@ function modelsListed(listed: unknown[]): Listed[] {
     const aliases = Array.isArray(each.aliases) ? each.aliases.filter((alias): alias is string => typeof alias === "string") : [];
     const released = isObject(each.time) && typeof each.time.released === "number" ? each.time.released : 0;
     const efforts = Array.isArray(each.variants) ? each.variants.flatMap(variant => (isObject(variant) && typeof variant.id === "string" ? [variant.id] : [])) : [];
+    const speeds = speedsIn(each.speeds);
     return [{
       providerID: each.providerID, id: each.id, name: typeof each.name === "string" && each.name ? each.name : each.id, aliases, efforts, free: isFree(each),
       provisional: each.provisional === true, hidden: each.hidden === true, retiring: each.status === "deprecated", released,
+      ...(speeds.length ? { speeds } : {}),
     }];
   });
 }
@@ -440,8 +443,8 @@ export function listedOf(ref: Ref, lists: Lists): Listed | undefined {
 
 /** A model that runs here, as a picker offers it (with the other ids it's known by, its efforts,
  * and whether it's one of its agent's usual ones, for an agent naming it: list_models and
- * start_session). */
-export interface Offered { providerID: string; id: string; name: string; aliases: string[]; efforts: string[]; provisional: boolean; retiring: boolean; hidden: boolean; agents: boolean; free: boolean }
+ * start_session), and the speeds it runs at besides its standard one (`speeds`, Codex's Fast). */
+export interface Offered { providerID: string; id: string; name: string; aliases: string[]; efforts: string[]; provisional: boolean; retiring: boolean; hidden: boolean; agents: boolean; free: boolean; speeds?: Speed[] }
 
 /** Every model that runs here now, as a picker offers it: the engine's, newest first in its
  * featured providers' order and the others' by id; then the coding agents', as the bridge lists
@@ -460,7 +463,7 @@ export function offeredHere(lists: Lists): Offered[] {
   const agents = (lists.bridge?.models ?? []).filter(model => withAgents(model, lists.bridge)?.runs === true);
   const auto = (lists.bridge?.auto ?? []).filter(list => list.entries > 0);
   return [
-    ...[...engine, ...agents].map(model => ({ providerID: model.providerID, id: model.id, name: model.name, aliases: model.aliases, efforts: model.efforts, provisional: model.provisional, retiring: model.retiring, hidden: model.hidden, agents: onAgents(model), free: model.free })),
+    ...[...engine, ...agents].map(model => ({ providerID: model.providerID, id: model.id, name: model.name, aliases: model.aliases, efforts: model.efforts, provisional: model.provisional, retiring: model.retiring, hidden: model.hidden, agents: onAgents(model), free: model.free, ...(model.speeds?.length ? { speeds: model.speeds } : {}) })),
     ...auto.map(list => ({ providerID: "auto", id: list.id, name: list.name, aliases: [], efforts: [], provisional: false, retiring: false, hidden: false, agents: true, free: false })),
   ];
 }

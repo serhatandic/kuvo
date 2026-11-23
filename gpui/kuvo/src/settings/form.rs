@@ -99,7 +99,7 @@ fn choice_catalog(choices: &[Choice], chosen: &str) -> crate::model_picker::Cata
     let offered = kuvo_box::models::Offered {
         models: choices.iter().filter_map(|choice| {
             let model = choice.model.as_ref()?;
-            Some(kuvo_box::models::OfferedModel { provider_id: model.provider_id.clone(), id: model.id.clone(), name: choice.title.clone(), side: kuvo_box::models::Side::Engine, efforts: Vec::new(), aliases: Vec::new(), retiring: false, hidden: false, free: false })
+            Some(kuvo_box::models::OfferedModel { provider_id: model.provider_id.clone(), id: model.id.clone(), name: choice.title.clone(), side: kuvo_box::models::Side::Engine, efforts: Vec::new(), aliases: Vec::new(), retiring: false, hidden: false, free: false, speeds: Vec::new() })
         }).collect(),
         ..Default::default()
     };

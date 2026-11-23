@@ -15,6 +15,7 @@ import { targetsOf } from "../letters/tools";
 import { listsHere, needsNoAccount, offeredHere, startingModel, stillListing, type Lists, type Ref } from "../work/model-rule";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { starredModels, type Starred } from "./models-starred";
+import { modelSpeeds } from "./models-speed";
 import { heldRead } from "../vault/holder";
 import { CHOOSE_MODEL } from "../work/model-words";
 import { askServices, readServices } from "../../shared/box-services";
@@ -82,7 +83,7 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
       listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
       plansHere(signal),
     ]);
-    const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
+    const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans, modelSpeeds());
     if (query.get("for") === "defaults") {
       const models = answer.models.filter(model => model.side === "engine" && !model.hidden && !model.retiring);
       return yield* json(200, { ...answer, models, scoped: true });
@@ -155,8 +156,9 @@ export async function plansHere(signal?: AbortSignal): Promise<Map<string, strin
 
 /** The route's answer from what the engine and the bridge list, for the model `wanted`, with your
  * starred models (`starred`, in the order starred: those that don't run here now too, a client
- * shows only those offered). */
-export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred[] = [], plans: Map<string, string> = new Map()) {
+ * shows only those offered), and the speed you picked for each provider (`speeds`, by provider:
+ * null for Standard). */
+export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred[] = [], plans: Map<string, string> = new Map(), speeds: Record<string, string | null> = {}) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
   const offered = offeredHere(lists);
@@ -164,12 +166,14 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     // `side`: where a conversation on it runs (the engine, or the coding agents' bridge, Custom
     // Auto's lists too), so a client offers in place only its own side's; `efforts`, its variants;
     // `aliases`, other ids a conversation may name it by (Claude Code's `default`); `free`, it
-    // needs no account (OpenCode Zen's free models).
-    models: offered.map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" as const : "engine" as const, efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
+    // needs no account (OpenCode Zen's free models); `speeds`, those it runs at besides its
+    // standard one (Codex's Fast: `models.speed`).
+    models: offered.map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" as const : "engine" as const, efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}), ...(model.speeds?.length ? { speeds: model.speeds } : {}) })),
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
     // Each provider's name, as its side names it (`models.offered.providers`), so a picker names
-    // where each model is from; and your starred models (`models.starred`).
-    providers: providersOf(offered, lists, plans),
+    // where each model is from, with the speed you picked for it (`speed`, `models.speed`: left
+    // out for Standard, or none picked); and your starred models (`models.starred`).
+    providers: providersOf(offered, lists, plans).map(provider => (speeds[provider.id] ? { ...provider, speed: speeds[provider.id]! } : provider)),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...(lists.bridge?.generations ? { generations: lists.bridge.generations } : {}),

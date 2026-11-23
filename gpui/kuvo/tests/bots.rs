@@ -651,13 +651,13 @@ fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppConte
     let variant = |cx: &mut VisualTestContext| page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.model.as_ref().and_then(|model| model.variant.clone())));
     assert_eq!(variant(cx), Some("high".into()));
     click(cx, "bot-model-menu");
-    assert!(shown(cx, "bot-effort-max") && !shown(cx, "bot-effort-extra"), "its model's own efforts, as the box lists them");
-    click(cx, "bot-effort-low");
+    assert!(shown(cx, "model-effort-max") && !shown(cx, "model-effort-extra"), "its model's own efforts, as the box lists them");
+    click(cx, "model-effort-low");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "effort": "low" })]);
     assert_eq!(variant(cx), Some("low".into()), "the box's answer");
     // None: the model's own, sent as null.
     click(cx, "bot-model-menu");
-    click(cx, "bot-effort-default");
+    click(cx, "model-effort-default");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": null })));
     assert_eq!(variant(cx), None);
     assert!(shown(cx, "bot-model-value-Claude Opus 5.5 · Default"));
@@ -666,7 +666,7 @@ fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppConte
     click(cx, "model-rail-google");
     click(cx, "model-row-google/gemini-3-pro");
     click(cx, "bot-model-menu");
-    assert!(shown(cx, "model-picker") && !shown(cx, "bot-effort-default"));
+    assert!(shown(cx, "model-picker") && !shown(cx, "model-effort-default"));
 }
 
 #[gpui::test]
@@ -827,7 +827,7 @@ mod live {
         cx.run_until_parked();
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "name": "Mira Two" })]);
         click(cx, "bot-model-menu");
-        click(cx, "bot-effort-low");
+        click(cx, "model-effort-low");
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": "low" })));
     }
 

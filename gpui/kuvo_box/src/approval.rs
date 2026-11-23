@@ -49,7 +49,8 @@ impl Approval {
         }
     }
 
-    /// Its name in the menu, as every client words it (KuvoClient's `ApprovalWords`).
+    /// Its name in the menu where its box doesn't word it (COMPAT: boxes before #975; the box's
+    /// `options[].title` otherwise).
     pub fn title(&self) -> &str {
         match self {
             Approval::AskFirst => "Ask First",
@@ -88,6 +89,24 @@ pub struct Choice {
     pub held: Option<Why>,
     #[serde(default)]
     pub unavailable: Option<Why>,
+    /// Its name and one line on what it does, as the box words them (a box before #975 says
+    /// neither: `Approval::title` and `Approval::detail` then).
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl Choice {
+    /// Its name, as the box words it.
+    pub fn title(&self) -> &str {
+        self.title.as_deref().unwrap_or_else(|| self.approval.title())
+    }
+
+    /// What it does, in one line, as the box words it.
+    pub fn detail(&self) -> &str {
+        self.detail.as_deref().unwrap_or_else(|| self.approval.detail())
+    }
 }
 
 /// A conversation's mode as its box shows it (`GET kuvo/sessions/<id>/approval`): the one picked,
@@ -113,6 +132,16 @@ impl Shown {
 
     pub fn choice(&self, approval: &Approval) -> Option<&Choice> {
         self.options.iter().find(|choice| &choice.approval == approval)
+    }
+
+    /// `approval`'s name, as the box words it.
+    pub fn title_of<'a>(&'a self, approval: &'a Approval) -> &'a str {
+        self.choice(approval).map_or_else(|| approval.title(), Choice::title)
+    }
+
+    /// What `approval` does, in one line, as the box words it.
+    pub fn detail_of<'a>(&'a self, approval: &'a Approval) -> &'a str {
+        self.choice(approval).map_or_else(|| approval.detail(), Choice::detail)
     }
 }
 

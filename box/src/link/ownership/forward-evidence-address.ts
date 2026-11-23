@@ -66,7 +66,7 @@ export function readForwardEvidence(value: unknown, key: string): ForwardEvidenc
     const ref = evidence.ref;
     if (!isObject(ref) || typeof ref.kind !== "string" ||
         !["queueItems", "queueLabels", "groupSettings", "sessionQueue", "sessionSchedules", "setupNames", "setupTimeZone",
-          "setupPersonalities", "membershipAndAccess", "clientIdentity", "setupLeadership"].includes(ref.kind)
+          "setupStarredModels", "setupPersonalities", "membershipAndAccess", "clientIdentity", "setupLeadership"].includes(ref.kind)
         || (ref.id !== undefined && (typeof ref.id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(ref.id)))
         || (ref.queue !== undefined && (typeof ref.queue !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(ref.queue))))
       throw new Error("Invalid forwarded operation record address.");

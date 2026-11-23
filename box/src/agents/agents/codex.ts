@@ -24,6 +24,7 @@ import { addShell, endShell } from "../shells"
 import { onMachine, ownFoldersConfig } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { agentsUpdateThemselves } from "../../shared/agent-updates"
+import { pickedSpeed, speedsIn } from "../../shared/model-speeds"
 import { codexProgram } from "../../shared/agent-programs"
 import { run } from "../proc"
 import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } from "../../usage/limits"
@@ -923,6 +924,9 @@ export class CodexAgent implements Agent {
             // Listed in Codex's order: its default first.
             released: info.isDefault ? 2000 : order--,
             hidden: Boolean(info.hidden),
+            // The speeds it runs at besides its standard one (`priority`, its "Fast"): its
+            // service tiers, which list only those (one called `default` would be standard).
+            speeds: speedsIn(info.serviceTiers).filter((speed) => speed.id !== "default"),
           }),
         )
       }
@@ -931,6 +935,21 @@ export class CodexAgent implements Agent {
     // Not kept from the old Codex's app-server: asked again of the new one.
     if (generation === this.catalogGeneration && rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated) this.modelList = { models }
     return models
+  }
+
+  /**
+   * The service tier a turn on `modelID` asks for, from the speed you picked for this account on
+   * the box (`kuvo/models/speed`): that speed where the model lists it, null for Standard (picked
+   * yourself, or one the model doesn't run at), undefined where you never picked one, or Codex
+   * can't say what the model runs at just now, so your own Codex settings decide.
+   */
+  async serviceTier(modelID: string): Promise<string | null | undefined> {
+    const picked = pickedSpeed(this.providerID)
+    if (picked === undefined || picked === null) return picked
+    const models = await this.models({ hidden: true }).catch(() => undefined)
+    const listed = models?.find((each) => each.id === modelID) ?? models?.find((each) => each.aliases?.includes(modelID))
+    if (!listed) return undefined
+    return listed.speeds?.some((speed) => speed.id === picked) ? picked : null
   }
 
   forgetModels() {
@@ -1925,6 +1944,10 @@ class CodexThread implements Thread {
     if (others.length) items[0].text += `\n\nAttached files:\n${others.map((path) => `- ${path}`).join("\n")}`
     const effort = input.model.variant
     const held = rpc.holder
+    // The speed you picked for this account (Fast, or Standard), as each turn starts: Codex keeps
+    // it for the thread's later turns too, so one picked since goes with the next.
+    const serviceTier = input.compact ? undefined : await this.agent.serviceTier(input.model.id)
+    if (hooks.signal.aborted) return { outcome: "interrupted" }
     const params: Record<string, unknown> = {
       threadId: this.nativeID,
       clientUserMessageId: input.messageID,
@@ -1935,6 +1958,7 @@ class CodexThread implements Thread {
       approvalsReviewer: "user",
       ...this.policy(hooks, input.plan, rpc),
       ...(effort ? { effort } : {}),
+      ...(serviceTier !== undefined ? { serviceTier } : {}),
       collaborationMode: { mode: input.plan ? "plan" : "default", settings: { model: input.model.id, reasoning_effort: effort ?? null, developer_instructions: null } },
     }
     return new Promise<RunResult>((resolve) => {
