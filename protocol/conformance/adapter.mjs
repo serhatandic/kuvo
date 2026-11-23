@@ -86,12 +86,12 @@ export function typescriptRuntime() {
   return process.env.KUVO_CONFORMANCE_BUN || process.env.BUN || (fs.existsSync(installed) ? installed : "bun");
 }
 
-export function boxCommand(binary, home, env, relay, args, extra = {}) {
+export function boxCommand(binary, home, env, relay, args, extra = {}, stdout = "ignore") {
   const ts = binary.typescript;
   return launch(ts ? typescriptRuntime() : binary.file,
     ts ? [`--config=${os.devNull}`, "--no-env-file", binary.file, ...args] : args,
     { ...env, ...(ts ? { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } : {}),
-      KUVO_HOME: home, KUVO_TEST_RELAY: relay.url, KUVO_RELAY_URL: relay.url, ...extra }, home);
+      KUVO_HOME: home, KUVO_TEST_RELAY: relay.url, KUVO_RELAY_URL: relay.url, ...extra }, home, stdout);
 }
 
 export function startBox({ binary, home, env, relay, mac = false, args = [] }) {

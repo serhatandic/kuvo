@@ -27,6 +27,10 @@ impl Files {
         self.0.join(relative)
     }
 
+    pub fn root(&self) -> &Path {
+        &self.0
+    }
+
     pub fn read<T: DeserializeOwned>(&self, relative: &str) -> Result<Option<T>, Error> {
         let path = self.path(relative);
         match fs::read(&path) {
