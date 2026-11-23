@@ -23,6 +23,7 @@ use crate::transport::{check_route_version, Closer, Request, Response, Stream, T
 /// One machine, by what `ssh` connects to (`me@devbox`, a `Host` in `~/.ssh/config`).
 #[derive(Debug, Clone)]
 pub struct SshBox {
+    wsl_distro: Option<String>,
     destination: String,
     /// The `ssh` to run: `ssh` on the PATH unless a test names a stand-in.
     program: PathBuf,
@@ -39,12 +40,17 @@ pub struct SshBox {
 impl SshBox {
     /// Connections to it are shared, as the Mac app shares them ([`app_sharing_folder`]).
     pub fn new(destination: impl Into<String>) -> SshBox {
-        SshBox { destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), computer: None, app: option_env!("KUVO_APP_VERSION").unwrap_or("").into(), known_hosts: None, sharing: app_sharing_folder() }
+        SshBox { wsl_distro: None, destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), computer: None, app: option_env!("KUVO_APP_VERSION").unwrap_or("").into(), known_hosts: None, sharing: app_sharing_folder() }
     }
 
     /// Ask only the enrolled computer with this public key, even if its SSH address has changed.
     pub fn for_computer(mut self, key: impl Into<String>, device: Identity) -> SshBox {
         self.computer = Some((key.into(), device));
+        self
+    }
+
+    pub(crate) fn wsl_distro(mut self, distro: Option<String>) -> SshBox {
+        self.wsl_distro = distro;
         self
     }
 
@@ -133,10 +139,21 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
         format!("exec sh -c 'kuvo_script=$(printf %s {encoded} | base64 -d) || exit 127; eval \"$kuvo_script\"'")
     }
 
+    fn entry(&self) -> Result<String> {
+        let Some(distro) = &self.wsl_distro else { return Ok(Self::command_line(&self.script())) };
+        if distro.len() > 80 || !distro.starts_with(|c: char| c.is_ascii_alphanumeric())
+            || !distro.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        {
+            return Err(Error::BadAnswer("Invalid SSH entry.".into()));
+        }
+        let verb = if self.computer.is_some() { "route-to" } else { "route" };
+        Ok(format!("wsl.exe -d {distro} --cd ~ --exec /bin/sh .kuvo-code/bin/kuvo-start {verb}"))
+    }
+
     fn start(&self, input: &[u8], keep_input: bool, hold: &dyn Fn(Closer) -> bool) -> Result<(Running, BufReader<ChildStdout>, Closer)> {
         let mut command = Command::new(&self.program);
         // (`--`: a machine's name is never read as an option.)
-        command.args(self.options()).arg("--").arg(&self.destination).arg(Self::command_line(&self.script()));
+        command.args(self.options()).arg("--").arg(&self.destination).arg(self.entry()?);
         // Nothing of a Kuvo Code process's own goes along (ssh sends a machine only `LANG` and
         // `LC_*`, but a stand-in runs here).
         for (name, _) in std::env::vars_os() {

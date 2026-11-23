@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
+
 - Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
 - Editing or deleting a bot that’s gone tells you the bot is no longer there.
 

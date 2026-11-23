@@ -507,9 +507,21 @@ box)
   if [ -z "${KUVO_MACHINE_RESTORING-}" ] && recover_machine_job; then exit 0; fi
   if machine_helper; then start_helper; exit $?; fi
   is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
+  [ -f "$R/wsl-task" ] && exit 0
   cd "$K" || exit 0
   # This script (kuvo-start, or the copy below), as the keeper. It outlives any SSH account lock.
   env -i HOME="$HOME" PATH="$PATH" "$S" sh "$0" keep </dev/null >/dev/null 2>&1 9>&- &
+  ;;
+wsl-keep)
+  # A registered Windows task owns this invocation. If a previous Linux-style
+  # keeper is already running, take over after it exits. Wait for a fresh SSH
+  # enrollment before starting services that write into the new installation.
+  while [ -f "$R/wsl-task" ] && [ ! -f "$R/off" ]; do
+    if [ ! -L "$HOME/.kuvo-code-adding" ] && ! is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start; then break; fi
+    sleep 2
+  done
+  [ -f "$R/wsl-task" ] && [ ! -f "$R/off" ] || exit 0
+  exec sh "$K/bin/kuvo-start" keep
   ;;
 keep)
   if machine_helper && [ -z "${KUVO_MACHINE_HELPER_PID-}" ]; then start_helper; exit $?; fi

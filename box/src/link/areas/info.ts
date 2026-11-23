@@ -1,3 +1,4 @@
+import { wslFacts } from "../../shared/wsl";
 import { engineState } from "../engine/lifetime";
 // `kuvo/info`: what this box is, its bridge's and engine's versions, whether they run, and what
 // it answers (its features). A Mac's box says it for its Mac, with the app open or closed.
@@ -82,7 +83,8 @@ function machineInfo(engine: Partial<EngineRecord>, started: number | null, chat
   try { link = readLink(); } catch {}
   const macs = macsOf(link).map(key => ({ key, ...(link?.macNames?.[key] ? { name: link.macNames[key] } : {}), seen: link?.macSeen?.[key] ?? 0 }));
   const phones = new Set((link?.phones ?? []).map(phone => phone.key)).size;
-  return { kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, running, stopped, agents, chats, features: editFeatures(FEATURES), ...(home ? { home } : {}), macs, phones, pieces: pieces(engine, running), ...info };
+  const wsl = wslFacts();
+  return { kind: "machine", ...(wsl ? { wsl } : {}), bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, running, stopped, agents, chats, features: editFeatures(FEATURES), ...(home ? { home } : {}), macs, phones, pieces: pieces(engine, running), ...info, ...(wsl?.host ? { name: link?.name || wsl.host } : {}) };
 }
 
 type Pieces = NonNullable<MachineInfo["pieces"]>;
