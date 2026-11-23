@@ -333,7 +333,7 @@ impl BotsView {
         let icon = match key {
             "bot-model" => IconName::Bot,
             "bot-personality" => IconName::Sparkle,
-            "bot-lives" => IconName::Computer,
+            "bot-lives" | "new-runs-on" => IconName::Computer,
             "bot-works" => IconName::Folder,
             "bot-delete" => IconName::Trash,
             _ => IconName::Settings,
@@ -536,16 +536,21 @@ impl BotsView {
                     .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
                     .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon))).into_any_element() };
                 // (The menu is made only as it opens.)
+                // (An away computer in Runs on is listed, and can't be picked.)
+                let choices: Vec<_> = choices.into_iter().map(|(label, detail, act, checked)| {
+                    let disabled = self.unpickable(&act);
+                    (label, detail, act, checked, disabled)
+                }).collect();
                 let menu = PopoverMenu::new(SharedString::from(format!("{key}-popover")), trigger, move |_, cx| {
                     let (choices, this) = (choices.clone(), this.clone());
                     cx.new(|cx| {
                         let mut menu = Menu::new(cx).width(px(if personality { 440. } else { 300. }));
-                        for (label, detail, act, checked) in choices {
+                        for (label, detail, act, checked, disabled) in choices {
                             if matches!(act, Act::EditPersonality) {
                                 menu = menu.separator();
                             }
                             let this = this.clone();
-                            let mut entry = MenuEntry::new(label).checked(checked).on_select(move |_, cx| {
+                            let mut entry = MenuEntry::new(label).checked(checked).disabled(disabled).on_select(move |_, cx| {
                                 if !personality || !checked {
                                     this.update(cx, |this, cx| this.act(act.clone(), cx)).ok();
                                 }

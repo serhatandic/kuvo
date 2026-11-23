@@ -153,6 +153,8 @@ export async function* followedLive(
         sent = Date.now();
         yield { body: Buffer.from("\n") };
       }
+      // A notification can arrive while reading or yielding, before a waiter is installed.
+      if (due || signal?.aborted) continue;
       await new Promise<void>(done => {
         const timer = setTimeout(done, 1000);
         wake = () => { clearTimeout(timer); done(); };

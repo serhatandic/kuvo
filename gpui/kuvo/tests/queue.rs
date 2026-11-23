@@ -211,9 +211,9 @@ fn a_narrowed_list_follows_the_queue_as_it_changes(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = queue(cx, &stand_in);
     click(cx, "queue-filter");
-    click(cx, "menu-item-devbox");
+    click(cx, "menu-item-Wren");
     assert!(shown(cx, "item-wqi_236") && shown(cx, "tab-all-open-1"));
-    let asks = |stand_in: &StandIn| stand_in.seen_at("GET", "kuvo/work-queue").iter().filter(|seen| seen.path.contains("computers=key_devbox")).count();
+    let asks = |stand_in: &StandIn| stand_in.seen_at("GET", "kuvo/work-queue").iter().filter(|seen| seen.path.contains("owners=ses_wren")).count();
     let before = asks(&stand_in);
     // An agent closes it meanwhile, and the queue is read again (as the area reads it): the list
     // under the filter is the box's answer to another ask, so it's asked again, not left as it was.
@@ -236,20 +236,20 @@ fn the_filters_are_the_boxs_and_its_counts_are_of_what_it_lists(cx: &mut TestApp
     // A filter the box's view offers is sent to the box, on as a chip to take off; what's listed
     // and every count over it are the box's answer. The sidebar keeps the whole queue's.
     click(cx, "queue-filter");
-    click(cx, "menu-item-devbox");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox");
+    click(cx, "menu-item-Wren");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&owners=ses_wren");
     assert!(shown(cx, "filter-0") && shown(cx, "item-wqi_236") && !shown(cx, "item-wqi_231") && !shown(cx, "group-backlog"));
     for count in ["group-todo-count-1", "tab-todo-count-1", "tab-backlog-count-0", "tab-all-open-1", "status-todo-count-6", "queue-open-19"] {
         assert!(shown(cx, count), "{count}");
     }
     // Another of the same kind widens it; one of another kind narrows it.
     click(cx, "queue-filter");
-    click(cx, "menu-item-studio-mini");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox,key_studio");
-    assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242") && shown(cx, "tab-all-open-2"));
+    click(cx, "menu-item-Launch crew");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&owners=ses_wren,grp_launch");
+    assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_235") && shown(cx, "tab-all-open-2"));
     click(cx, "queue-filter");
     click(cx, "menu-item-GitHub issues");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox,key_studio&sources=github");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&sources=github&owners=ses_wren,grp_launch");
     assert!(shown(cx, "queue-empty") && shown(cx, "tab-all-open-0"));
     assert_eq!(page.read_with(cx, |page, _| page.filters().len()), 3);
     click(cx, "filters-clear");
@@ -263,19 +263,17 @@ fn the_filters_are_the_boxs_and_its_counts_are_of_what_it_lists(cx: &mut TestApp
     click(cx, "menu-item-GitHub issues");
     assert!(shown(cx, "item-wqi_247") && shown(cx, "item-wqi_233") && shown(cx, "item-wqi_250") && !shown(cx, "item-wqi_234"));
     click(cx, "filters-clear");
-    // The box asked is the computer with no key; an owner is one the box names.
+    // An owner is one the box names. (Every computer's items are in the one list: no filter
+    // narrows to a computer.)
     click(cx, "queue-filter");
-    click(cx, "menu-item-This Mac");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=");
-    assert!(shown(cx, "item-wqi_231") && !shown(cx, "item-wqi_236") && !shown(cx, "item-wqi_242") && shown(cx, "tab-all-open-15"));
-    click(cx, "queue-filter");
+    assert!(!shown(cx, "menu-item-This Mac") && !shown(cx, "menu-item-devbox"));
     click(cx, "menu-item-Launch crew");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=&owners=grp_launch");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&owners=grp_launch");
     assert!(shown(cx, "item-wqi_235") && !shown(cx, "item-wqi_231") && shown(cx, "group-in-review-count-1"));
     // With a search, both go to the box together.
     click(cx, "queue-search");
     cx.simulate_input("post");
-    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&q=post&computers=&owners=grp_launch");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&q=post&owners=grp_launch");
     assert!(shown(cx, "item-wqi_235"));
 }
 
@@ -1118,6 +1116,32 @@ mod live {
         Box::new(ItemChange { status: Some("done".into()), ..ItemChange::default() })
     }
 
+    /// Before the box's first answer: one quiet line, and nothing that acts on a list not there yet
+    /// (no tabs, search, filters or menus); they come with the list.
+    #[gpui::test]
+    fn the_first_load_shows_one_quiet_line_and_its_controls_come_with_the_list(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            Theme::init(Appearance::Light, cx);
+            kuvo::bind_keys(cx);
+        });
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let client = BoxClient::new(stand_in.clone());
+        let said = client.work_queue_view().expect("the stand-in's queue");
+        let (host, cx) = cx.add_window_view(|_, cx| Host { page: cx.new(|cx| QueueView::new(client, true, cx)) });
+        let page = host.read_with(cx, |host, _| host.page.clone());
+        cx.simulate_resize(size(px(1280.), px(900.)));
+        page.update(cx, |page, _| page.set_now(NOW));
+        cx.run_until_parked();
+        assert!(shown(cx, "queue-loading"));
+        for control in ["queue-head", "queue-search", "queue-more", "queue-filter", "queue-new"] {
+            assert!(!shown(cx, control), "{control} before there's a list");
+        }
+        page.update(cx, |page, cx| page.set_said(Reading::Ready(said), cx));
+        cx.run_until_parked();
+        assert!(!shown(cx, "queue-loading"));
+        assert!(shown(cx, "queue-head") && shown(cx, "queue-search") && shown(cx, "queue-new"));
+    }
+
     #[gpui::test]
     fn an_older_search_never_lands_on_a_newer_query(cx: &mut TestAppContext) {
         let stand_in = StandIn::at(Replies::Never, NOW);
@@ -1228,14 +1252,14 @@ mod live {
         // newer filters.
         field.update(cx, |field, cx| field.set_text("", cx));
         page.update(cx, |page, cx| {
-            page.act(Act::AddFilter(kuvo::queue::Filter::Computer { key: "key_devbox".into(), name: "devbox".into() }), cx);
-            page.act(Act::AddFilter(kuvo::queue::Filter::Computer { key: "key_studio".into(), name: "studio-mini".into() }), cx);
+            page.act(Act::AddFilter(kuvo::queue::Filter::Owner { owner: "ses_wren".into(), name: "Wren".into() }), cx);
+            page.act(Act::AddFilter(kuvo::queue::Filter::Owner { owner: "grp_launch".into(), name: "Launch crew".into() }), cx);
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(shown(cx, "search-loading") && !shown(cx, "item-wqi_239"));
         cx.run_until_parked();
-        assert_eq!(asked(&stand_in).last().map(String::as_str), Some("&computers=key_devbox,key_studio"));
-        assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242") && !shown(cx, "item-wqi_231") && shown(cx, "tab-all-open-2"));
+        assert_eq!(asked(&stand_in).last().map(String::as_str), Some("&owners=ses_wren,grp_launch"));
+        assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_235") && !shown(cx, "item-wqi_231") && shown(cx, "tab-all-open-2"));
     }
 
     #[gpui::test]

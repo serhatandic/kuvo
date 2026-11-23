@@ -76,12 +76,11 @@ pub enum Shown {
     Item(String),
 }
 
-/// A filter over the list, shown as a chip to take off. The box applies it (`computers`, `sources`,
-/// `owners` on the view's route): the app only says which are on.
+/// A filter over the list, shown as a chip to take off. The box applies it (`sources`, `owners` on
+/// the view's route): the app only says which are on. (Every computer's items are in the one list:
+/// a row names its computer where that helps, and no filter narrows to one.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Filter {
-    /// Items on one computer (by its key; this box's own is empty).
-    Computer { key: String, name: String },
     /// Items from an outside source, by its kind.
     Source(String),
     /// One owner's items.
@@ -91,7 +90,6 @@ pub enum Filter {
 impl Filter {
     pub fn words(&self) -> String {
         match self {
-            Filter::Computer { name, .. } => format!("On {name}"),
             Filter::Source(kind) => source_name(kind),
             Filter::Owner { name, .. } => format!("Owner: {name}"),
         }
@@ -100,7 +98,6 @@ impl Filter {
     /// Whether it's the same filter as `other`, whatever its computer or owner is called now.
     pub fn same(&self, other: &Filter) -> bool {
         match (self, other) {
-            (Filter::Computer { key, .. }, Filter::Computer { key: other, .. }) => key == other,
             (Filter::Source(kind), Filter::Source(other)) => kind == other,
             (Filter::Owner { owner, .. }, Filter::Owner { owner: other, .. }) => owner == other,
             _ => false,
@@ -509,7 +506,6 @@ impl QueueView {
         let mut by = Narrow { q: self.query.clone(), ..Narrow::default() };
         for filter in &self.filters {
             match filter {
-                Filter::Computer { key, .. } => by.computers.push(key.clone()),
                 Filter::Source(kind) => by.sources.push(kind.clone()),
                 Filter::Owner { owner, .. } => by.owners.push(owner.clone()),
             }
@@ -965,11 +961,6 @@ impl QueueView {
     fn offered_filters(&self) -> Vec<(String, Vec<Filter>)> {
         let Some(said) = self.queue() else { return Vec::new() };
         let mut groups = Vec::new();
-        if !said.computers.is_empty() {
-            let mut computers = vec![Filter::Computer { key: String::new(), name: self.this_box.clone() }];
-            computers.extend(said.computers.iter().map(|computer| Filter::Computer { key: computer.key.clone(), name: crate::bots::computer_name(&computer.name).to_owned() }));
-            groups.push(("Computer".to_owned(), computers));
-        }
         let mut sources: Vec<&String> = said.counts.sources.keys().collect();
         sources.sort();
         if !sources.is_empty() {

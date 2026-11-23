@@ -1,11 +1,11 @@
-//! The window's root: your boxes ([`kuvo_box::boxes::Boxes`]) and a workspace for each computer
-//! you've opened, one shown at a time. No box is the app's own: the one on this computer is only
-//! the nearest, shown first; the title bar's switcher shows another's sessions, bots, queue and
-//! settings instead, asked of that computer's own box. A workspace you leave stays as it was (its
-//! open conversation, its drafts), so coming back is at once.
+//! The window's root: your boxes ([`kuvo_box::boxes::Boxes`]) and the one workspace that shows
+//! all your computers, on the nearest box (this computer's). Its lists are the setup's, as that
+//! box says them; a session, bot or file on another computer opens in it through that computer's
+//! box. There's no computer to pick. Only on a computer with no box of its own is the window
+//! another computer's, picked as it first opens.
 //!
 //! It decides nothing: which computers are yours, how each stands and whether this app is paired
-//! are `Boxes`' facts, drawn in the switcher.
+//! are `Boxes`' facts.
 
 use std::collections::HashMap;
 
@@ -113,7 +113,8 @@ impl Home {
         let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, app_checked: None, _menu_bar: None, quit_note: None, focused_before: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
         home.make(&shown, first, window, cx);
         // The computer shown last time, where it isn't this one: once the list says it's reached.
-        home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
+        // (Only with no box on this computer: otherwise the window is all of them.)
+        home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown && boxes.nearest().is_none());
         if live && home.restoring.is_some() {
             home._restoring = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(RESTORE_WAITS_AT_MOST).await;
@@ -268,11 +269,10 @@ impl Home {
         self.restoring = None;
         cx.activate(true);
         window.activate_window();
-        let shown = if open.computer == NEAREST {
+        // (Every computer's sessions are in the one window: it opens there, whichever it's on.)
+        let shown = if open.computer == NEAREST || self.boxes.nearest().is_some() {
             self.leave_first_run(cx);
-            self.shown = NEAREST.to_owned();
-            self.sync_shown(cx);
-            self.workspaces.contains_key(NEAREST)
+            self.workspaces.contains_key(&self.shown)
         } else {
             self.switch_to(&open.computer, window, cx)
         };
@@ -344,30 +344,24 @@ impl Home {
             workspace.update(cx, |workspace, cx| workspace.set_now(now, cx));
         }
         let subscription = cx.subscribe_in(&workspace, window, |this: &mut Home, _, event: &Switch, window, cx| match event {
+            // The window shows all your computers: one asked for is already in it. (Only with no
+            // box on this computer is the window another's, picked as it first opens.)
             Switch::To(key) => {
                 this.restoring = None;
-                if this.switch_to(key, window, cx) {
+                if this.boxes.nearest().is_none() && this.switch_to(key, window, cx) {
                     this.keep_shown(cx);
                 }
             }
-            Switch::OpenMoved { computer, target } => {
+            // Another computer's session or move opens in this window, through that computer's box.
+            Switch::OpenMoved { target, .. } => {
                 this.restoring = None;
-                if this.switch_to(computer, window, cx) {
-                    this.keep_shown(cx);
-                    this.workspace().clone().update(cx, |view, cx| view.open_moved(target, window, cx));
-                }
+                this.workspace().clone().update(cx, |view, cx| view.open_moved(target, window, cx));
             }
-            Switch::Session { computer, session } => {
-                if this.switch_to(computer, window, cx) {
-                    this.keep_shown(cx);
-                    this.workspace().clone().update(cx, |workspace, cx| workspace.open_session(session, window, cx));
-                }
+            Switch::Session { session, .. } => {
+                this.workspace().clone().update(cx, |workspace, cx| workspace.open_session(session, window, cx));
             }
-            Switch::SessionAt { computer, session, message } => {
-                if this.switch_to(computer, window, cx) {
-                    this.keep_shown(cx);
-                    this.workspace().clone().update(cx, |workspace, cx| workspace.open_session_at(session, message.as_deref(), window, cx));
-                }
+            Switch::SessionAt { session, message, .. } => {
+                this.workspace().clone().update(cx, |workspace, cx| workspace.open_session_at(session, message.as_deref(), window, cx));
             }
             Switch::PairAgain => this.pair_again(cx),
             // (Followed live, the list says it by itself.)
@@ -473,13 +467,6 @@ impl Home {
     /// has one): Add a Machine with `add_at` typed in, else its page.
     fn show_computer(&mut self, key: &str, add_at: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.restoring = None;
-        if self.boxes.nearest().is_some() && self.shown != NEAREST {
-            self.leave_first_run(cx);
-            self.shown = NEAREST.to_owned();
-            self.sync_shown(cx);
-            self.rows_changed(cx);
-            self.keep_shown(cx);
-        }
         let workspace = self.workspace().clone();
         workspace.update(cx, |workspace, cx| workspace.show_computer(key, add_at, window, cx));
         cx.notify();

@@ -1,28 +1,28 @@
 //! The landing view, for a new conversation: the composer in the middle, on a sky that follows the time of day,
-//! with where it starts above it: the project (or no project, a chat) and the box it's on.
+//! with where it starts above it: the project (or no project, a chat). The computer it runs on is
+//! the composer's Runs on, beside its model: one choice of computer, there.
 
 use gpui::{AnyElement, AppContext as _, Context, IntoElement, ParentElement, Styled, Window, div, px};
 use kuvo_box::models::StartIn;
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
+    Button, ButtonSize, IconName,
     menu::{Menu, MenuEntry, PopoverMenu},
     sky::sky,
-    small::status_dot,
     theme::space,
 };
 
 use crate::entries::COLUMN;
-use crate::workspace::{BoxState, Workspace};
+use crate::workspace::Workspace;
 
 pub fn render(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Workspace>) -> AnyElement {
-    let c = cx.theme().colors.clone();
     let place = workspace.landing_place();
     let label = match &place {
         StartIn::Project(directory) => workspace.project_name(directory),
         StartIn::Chat => "No project".to_owned(),
     };
-    // Every project the box lists, newest first, then none (a chat).
-    let projects: Vec<(String, String)> = workspace.listing().sidebar().projects.iter().map(|group| (group.directory.clone(), group.name.clone())).collect();
+    // Every project the computer picked in Runs on has, newest first, then none (a chat).
+    let on = workspace.landing().read(cx).runs_on().map(str::to_owned);
+    let projects = workspace.landing_projects(on.as_deref());
     let this = cx.entity().downgrade();
     let picked = place.clone();
     let project_chip = PopoverMenu::new(
@@ -50,23 +50,6 @@ pub fn render(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Work
             })
         },
     );
-    let dot = match workspace.box_state() {
-        BoxState::Connected => c.success,
-        BoxState::Connecting => c.text_faint,
-        BoxState::Held => c.warning,
-        BoxState::Unreachable(_) => c.danger,
-    };
-    let computer = div()
-        .flex()
-        .items_center()
-        .gap(space::S1_5)
-        .h(px(24.))
-        .px(space::S2)
-        .text_ui(TypeSize::Caption)
-        .text_color(c.text_muted)
-        .child(kuvo_ui::Icon::new(IconName::Computer).size(kuvo_ui::IconSize::Nav).color(c.text_muted))
-        .child(workspace.box_name())
-        .child(status_dot(dot));
     div()
         .relative()
         .size_full()
@@ -91,7 +74,7 @@ pub fn render(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Work
                         .flex()
                         .flex_col()
                         .gap(space::S2)
-                        .child(div().flex().items_center().gap(space::S1).ml(-space::S1).child(project_chip).child(computer))
+                        .child(div().flex().items_center().gap(space::S1).ml(-space::S1).child(project_chip))
                         .child(workspace.landing().clone()),
                 ),
         )

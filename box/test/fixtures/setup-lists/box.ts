@@ -1,6 +1,8 @@
 // One real dispatcher, peer mailbox and box home per process. The parent supplies the engine's
 // HTTP endpoint and carries encrypted frames in place of the relay.
 
+import { writeFileSync } from "node:fs";
+import { BRIDGE_FILE } from "../../../src/link/home";
 import { sendOwnerMessages } from "../../../src/link/ownership/messages";
 import { machineLink, readLink } from "../../../src/link/state";
 import type { LinkHost } from "../../../src/link/relay/host";
@@ -11,9 +13,11 @@ import { shareSetupLists } from "../../../src/link/lists/setup";
 import { peerMail, receiveMail } from "../../../src/link/peers/mail";
 import { noteUnreachable } from "../../../src/link/peers/reach";
 import { readFrame, readRelay } from "../../../src/link/relay/frames";
+import { takeWorkQueueMail } from "../../../src/link/work-queue/across";
+import { isObject } from "../../../src/shared/json";
 import { engineHandler } from "../../../src/link/server/router";
 import { answerSshRoute, sshLine } from "../../../src/link/server/ssh-route";
-import type { EngineRecord } from "../../../src/shared/records";
+import { bridgeRecordFormat, type EngineRecord } from "../../../src/shared/records";
 
 const { port, bridgePort, command } = await Bun.stdin.json();
 const readers = {
@@ -26,10 +30,10 @@ const dispatch = engineHandler(readers.readEngine, { name: "Test box" }, () => {
   return bridge;
 });
 
-async function route(path: string, body?: object) {
+async function route(path: string, body?: object, method = body ? "POST" : "GET") {
   const chunks: Buffer[] = [];
   let status = 0;
-  for await (const piece of dispatch({ method: body ? "POST" : "GET", path, headers: {}, fromApp: true, served: true,
+  for await (const piece of dispatch({ method, path, headers: {}, fromApp: true, served: true,
     ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) {
     if ("head" in piece) status = piece.head.status;
     if ("body" in piece) chunks.push(piece.body);
@@ -87,18 +91,40 @@ async function run() {
 }
 
 if (command.kind === "conversation") {
+  if (bridgePort) writeFileSync(BRIDGE_FILE, JSON.stringify(bridgeRecordFormat.write({
+    port: Number(bridgePort), password: "test", pid: process.pid,
+  })));
   const host = {
     welcomed: true,
     send(frame: Buffer) { process.send!({ frame: frame.toString("base64url") }); },
   } as LinkHost;
   machineLink.host = host;
   let stop: AbortController | undefined;
+  const waiting = new Map<string, string>();
   process.on("message", async (given: any) => {
     try {
+      if (given.call) process.send!({ replyTo: given.replyTo, routeAnswer: await route(given.call.path, given.call.body, given.call.method) });
+      if (typeof given.round === "number") {
+        if (given.receipt) waiting.set(given.receipt, given.replyTo);
+        await sendOwnerMessages(host, readLink(), given.round);
+        if (!given.receipt) process.send!({ replyTo: given.replyTo, routeAnswer: null });
+      }
       if (given.frame) {
         const delivered = readRelay(Buffer.from(given.frame, "base64url"));
         const frame = delivered?.kind === "deliver" && readFrame(delivered.payload);
-        if (frame) receiveMail(frame.body, host, (sender, payload) => peerMail(sender, payload, host));
+        if (frame) receiveMail(frame.body, host, (sender, payload) => {
+          const result = isObject(payload.workQueue)
+            ? takeWorkQueueMail(sender, payload.workQueue, host, () => ({ targets: [], bridge: true }))
+            : peerMail(sender, payload, host);
+          const work = payload.workQueue;
+          const receipt = isObject(work) ? (work.ownerDraftReceipt ?? work.ownerMessageReceipt) as { operation: string } | undefined : undefined;
+          const replyTo = receipt && waiting.get(receipt.operation);
+          if (replyTo) void Promise.resolve(result).then(async () => {
+            const answer = await route(`kuvo/data/messages/${receipt.operation}`);
+            waiting.delete(receipt.operation);
+            process.send!({ replyTo, routeAnswer: JSON.parse(answer.text) });
+          }).catch(error => process.send!({ failure: String(error) }));
+        });
       }
       if (given.watch) {
         stop = new AbortController();

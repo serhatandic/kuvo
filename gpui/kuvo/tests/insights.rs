@@ -138,6 +138,23 @@ fn the_lists_switch_and_a_period_reads_again(cx: &mut TestAppContext) {
     assert!(shown(cx, "insights-on-Tokens"));
 }
 
+/// Before the box has any figures: the title and one quiet line, with no periods or refresh to
+/// act on figures not there yet; they come with them.
+#[gpui::test]
+fn the_first_read_shows_the_title_and_one_quiet_line_and_its_controls_come_with_the_figures(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_insights(Sample::Reading);
+    let (_, cx) = insights(cx, stand_in.clone());
+    assert!(shown(cx, "insights-said"), "Reading usage…");
+    for control in ["insights-period-30d", "insights-period-7d", "insights-refresh"] {
+        assert!(!shown(cx, control), "{control} before there are figures");
+    }
+    stand_in.set_insights(Sample::Full);
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(shown(cx, "insights-total-cost") && shown(cx, "insights-period-30d") && shown(cx, "insights-refresh"));
+}
+
 #[gpui::test]
 fn another_period_never_shows_the_last_ones_figures_as_its_own(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

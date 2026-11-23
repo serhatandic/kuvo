@@ -1,7 +1,10 @@
 // Group chats that live here
 
+import fs from "node:fs";
+import path from "node:path";
 import { mayActivate } from "../ownership/resolve";
-import { IS_MAC } from "../home";
+import { IS_MAC, RUN } from "../home";
+import { writePrivate } from "../files";
 import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { listedAgents, nameMissing, refreshOwnShared } from "../server/naming";
 import type { Target } from "../../shared/records";
@@ -71,6 +74,56 @@ export async function* forwardGroups(target: Target, route: string, request: Lin
   } catch {}
 }
 
+// MARK: The list as last read
+
+/** The chats' list as the bridge last answered it, kept so a client draws them at once after the
+ * box or its bridge starts again (only none the very first time). */
+export const GROUPS_FILE = path.join(RUN, "lists", "groups.json");
+
+function savedGroups(): string | null {
+  try {
+    const text = fs.readFileSync(GROUPS_FILE, "utf8");
+    return Array.isArray((JSON.parse(text) as Partial<Groups>)?.groups) ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveGroups(text: string): void {
+  try {
+    if (!Array.isArray((JSON.parse(text) as Partial<Groups>)?.groups)) return;
+    if (savedGroups() !== text) writePrivate(GROUPS_FILE, text);
+  } catch {}
+}
+
+/** The list's answer passed on as it comes, each whole state in it kept. */
+async function* keepingGroups(pieces: AsyncGenerator<AnswerPiece>, events: boolean, skipHead = false): AsyncGenerator<AnswerPiece> {
+  let ok = false;
+  let text = "";
+  for await (const piece of pieces) {
+    if ("head" in piece) {
+      ok = piece.head.status === 200;
+      if (skipHead) {
+        // (Its head went with the saved list: a refusal now ends the stream.)
+        if (!ok) return;
+        continue;
+      }
+    }
+    else if (ok && "body" in piece) {
+      text += Buffer.from(piece.body).toString();
+      if (events) {
+        for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n")) {
+          const line = text.slice(0, at).trim();
+          text = text.slice(at + 1);
+          if (line) saveGroups(line);
+        }
+      }
+    }
+    yield piece;
+  }
+  if (ok && !events && text) saveGroups(text.trim());
+}
+
 /** Why there are no group chats to ask now: the bridge that runs them isn't running (its state). */
 export const groupsAbsent = (): AgentsAway => agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" };
 export const groupsNotAnswering = () => (IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.");
@@ -88,6 +141,20 @@ export async function* groupsRoute(context: RouteContext): AsyncGenerator<Answer
     if (!fromLocalApp(request)) return yield* groupJSON(403, { message: "Review recovered group work on this computer." });
     if (!mayActivate({ kind: "groupSettings", id: route.split("/")[2] }))
       return yield* groupJSON(409, { message: "This group belongs to another computer or is moving." });
+  }
+  // The list, while the bridge that runs them is starting: as last read, at once; then, followed,
+  // as the bridge says it once it's back.
+  const method = request.method.toUpperCase();
+  const listing = method === "GET" && (route === "kuvo/groups" || route === "kuvo/groups/events");
+  const events = route === "kuvo/groups/events";
+  const saved = listing && !bridge() ? savedGroups() : null;
+  if (saved) {
+    if (!events) return yield* groupJSON(200, JSON.parse(saved));
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    yield { body: Buffer.from(saved + "\n") };
+    const back = await bridgeBack(bridge, signal);
+    if (!back) return;
+    return yield* keepingGroups(forwardGroups(back, route, request, signal), true, true);
   }
   const target = await bridgeBack(bridge, signal);
   if (!target) return yield* groupJSON(503, groupsAbsent());
@@ -108,5 +175,6 @@ export async function* groupsRoute(context: RouteContext): AsyncGenerator<Answer
     for (const piece of pieces) yield "head" in piece && veto.notAdmitted ? { head: { ...piece.head, notAdmitted: true } } : piece;
     return;
   }
+  if (listing) return yield* keepingGroups(forwardGroups(target, route, request, signal), events);
   return yield* forwardGroups(target, route, request, signal);
 }

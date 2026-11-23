@@ -5,7 +5,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writePrivateLater } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
-import { fitsShape, list, number, object, type Infer } from "../../shared/shape";
+import { fitsShape, list, map, number, object, type Infer } from "../../shared/shape";
+import { BOT_ACTIVITY } from "../../shared/routes/bots";
 import { SETUP_PROJECT, SETUP_QUEUE, SETUP_SESSION, SETUP_WAIT, START_CATALOG } from "../../shared/routes/sessions";
 import { DOC_PART } from "../documents/format";
 import { assemble, splitParts, type PendingParts } from "../documents/parts";
@@ -13,15 +14,17 @@ import { RUN } from "../home";
 import { readLink } from "../state";
 import { readPeerAgents } from "./directory";
 import { KEY, mailFor, peersOf, removedBoxes, type MailSender } from "./known";
-import { readReach } from "./reach";
+import { awaySince, readReach } from "./reach";
+import { SWITCH_GRACE } from "../updates/progress";
 import type { LinkHost } from "../relay/host";
 
 export const SETUP_LIST_FEATURE = "line.setup-lists";
+export const PEER_BOT_ACTIVITY = "bots.peer-activity";
 export const PEER_LIST_FOLDER = path.join(RUN, "peers");
 
 const CONTENT = {
   sessions: list(SETUP_SESSION), projects: list(SETUP_PROJECT),
-  waiting: list(SETUP_WAIT), queues: list(SETUP_QUEUE), catalog: START_CATALOG,
+  waiting: list(SETUP_WAIT), queues: list(SETUP_QUEUE), catalog: START_CATALOG, "bots?": map(BOT_ACTIVITY),
 };
 const LISTS = object(CONTENT);
 const TOLD = object({ at: number, ...CONTENT });
@@ -81,14 +84,26 @@ export async function takeSetupLists(sender: MailSender, mail: Record<string, un
   finally { if (writing.get(key) === save) writing.delete(key); }
 }
 
+/** Whether a computer that's away is only switching to a new release: it last said it was ready
+ * for one, or switching to it, and went quiet within the time a slow computer takes to restart
+ * into it. A client shows its rows as updating then, and as last seen after. */
+function switchingRelease(key: string, saved: Kept, reach: Record<string, number>, told: ReturnType<typeof readPeerAgents>, now: number): boolean {
+  const state = told[key]?.computer?.fleetUpdate?.state;
+  if (state !== "updating" && state !== "ready") return false;
+  const since = awaySince(key, reach) ?? saved.seen;
+  return now - since < SWITCH_GRACE;
+}
+
 export async function peerSetupLists(link = readLink(), now = Date.now()) {
   const reach = readReach();
+  const told = readPeerAgents();
   return (await Promise.all(peersOf(link).map(async peer => {
     const saved = await readSaved(peer.key);
     if (!saved) return [];
     // A relay refusal is immediate. Silence also ages out reach if this box missed a refusal.
     const away = reach[peer.key] !== undefined || now - saved.seen > 3 * AGAIN;
-    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}) } }];
+    const updating = away && switchingRelease(peer.key, saved, reach, told, now);
+    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}), ...(updating ? { updating } : {}) } }];
   }))).flat();
 }
 
@@ -129,21 +144,30 @@ export async function pushSetupLists(host: Pick<LinkHost, "send">, read: () => P
   const current = readLink();
   if (!current || current.key !== link.key || current.setup?.id !== link.setup?.id) return;
   const currentPeers = new Set(peersOf(current).map(peer => peer.key));
-  const digest = createHash("sha256").update(JSON.stringify(lists)).digest("base64url");
-  const snapshot: Told = { at: now, ...lists };
-  let parts: ReturnType<typeof splitParts> | undefined;
+  const { bots: _, ...withoutBots } = lists;
+  const variants = new Map<boolean, { digest: string; snapshot: Told; parts?: ReturnType<typeof splitParts> }>();
   for (const peer of ready) {
     if (!currentPeers.has(peer.key)) continue;
+    const knowsBots = told[peer.key]?.features?.includes(PEER_BOT_ACTIVITY) ?? false;
+    let variant = variants.get(knowsBots);
+    if (!variant) {
+      const content = knowsBots ? lists : withoutBots;
+      variant = { digest: createHash("sha256").update(JSON.stringify(content)).digest("base64url"), snapshot: { at: now, ...content } };
+      variants.set(knowsBots, variant);
+    }
     const before = sent.get(peer.key);
     const requested = refresh.delete(peer.key);
-    if (!requested && before?.digest === digest && now - before.sent < AGAIN) continue;
-    const single = mailFor(peer, { setupLists: snapshot, at: now }, link);
-    const encoded = single || parts ? null : Buffer.from(JSON.stringify(snapshot)).toString("base64url");
-    if (encoded && Math.ceil(encoded.length / DOC_PART) > MOST_PARTS) {
-      console.error("Setup lists are too large to share with peers.");
-      return;
+    if (!requested && before?.digest === variant.digest && now - before.sent < AGAIN) continue;
+    const single = mailFor(peer, { setupLists: variant.snapshot, at: now }, link);
+    if (!single && !variant.parts) {
+      const encoded = Buffer.from(JSON.stringify(variant.snapshot)).toString("base64url");
+      if (Math.ceil(encoded.length / DOC_PART) > MOST_PARTS) {
+        console.error("Setup lists are too large to share with peers.");
+        continue;
+      }
+      variant.parts = splitParts(encoded);
     }
-    const mails = single ? [single] : (parts ??= splitParts(encoded!)).map(part => mailFor(peer, { setupLists: { part }, at: now }, link));
-    if (mails.every(bytes => bytes && host.send(bytes) !== false)) sent.set(peer.key, { digest, sent: now });
+    const mails = single ? [single] : variant.parts!.map(part => mailFor(peer, { setupLists: { part }, at: now }, link));
+    if (mails.every(bytes => bytes && host.send(bytes) !== false)) sent.set(peer.key, { digest: variant.digest, sent: now });
   }
 }

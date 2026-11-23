@@ -316,6 +316,61 @@ pub enum StartIn {
 pub struct StartHow {
     pub worktree: bool,
     pub approval: Option<crate::approval::Approval>,
+    /// The computer picked in Runs on, by its key, where it isn't this box's own: the start goes to
+    /// that computer's box, and says so, so a start sent to the wrong one is turned down there.
+    pub computer: Option<String>,
+}
+
+/// Where a new session or bot can run, as the nearest box says it (`kuvo/setup/runs-on/events`,
+/// PROTOCOL.md "Setup-wide list topics"): this computer first, then your others, each away one
+/// still listed with when it was last seen.
+pub const RUNS_ON_ROUTE: &str = "kuvo/setup/runs-on/events";
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct RunsOn {
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub computers: Vec<RunsOnComputer>,
+}
+
+/// A computer, by its key and name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NamedComputer {
+    pub id: String,
+    pub name: String,
+}
+
+/// One computer Runs on lists.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RunsOnComputer {
+    pub computer: NamedComputer,
+    /// The box that said it: this computer.
+    #[serde(default)]
+    pub here: bool,
+    /// It isn't answering now: shown, and not picked.
+    #[serde(default)]
+    pub away: bool,
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    #[serde(default)]
+    pub updating: bool,
+}
+
+impl BoxClient {
+    /// Follows Runs on, as the box says it and again as it changes (on the line).
+    pub fn follow_runs_on(&self) -> crate::follow::Follow<crate::follow::Followed<RunsOn>> {
+        crate::follow::follow_lines(self, RUNS_ON_ROUTE.into())
+    }
+
+    /// Runs on, read once (a stand-in's: its events route answers its state and ends).
+    #[cfg(feature = "stand-in")]
+    pub fn runs_on_at_once(&self) -> Result<RunsOn> {
+        let response = self.send(&Request::get(RUNS_ON_ROUTE))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        let text = String::from_utf8_lossy(&response.body);
+        serde_json::from_str(text.lines().next().unwrap_or("{}")).map_err(|error| Error::BadAnswer(error.to_string()))
+    }
 }
 
 /// What a new conversation is, as the box made it.
@@ -453,6 +508,9 @@ impl BoxClient {
         }
         if let Some(approval) = &how.approval {
             body["approval"] = json!(approval.name());
+        }
+        if let Some(computer) = &how.computer {
+            body["computer"] = json!(computer);
         }
         decode(&self.send(&Request::post("kuvo/sessions", body))?)
     }

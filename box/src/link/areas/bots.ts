@@ -12,7 +12,7 @@ import { botTemplates, NO_KIT, readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
 import { freshenBots, settleBot } from "../bots/tell";
-import { followed, followersOf, watchFolders } from "../follow";
+import { followedLive, followersOf, watchFolders } from "../follow";
 import { judgedTurns, listNow, noteViewed } from "../lists/sessions";
 import { afterListSettles, keepOnly, nextTurn, nowOf, statesNow } from "../bots/now";
 import { noteSeen, SEEN_FOLDER, seenFollowers } from "../bots/seen";
@@ -22,6 +22,7 @@ import { wakeFollowers } from "./wakes";
 import { moveFollowers, readMoves } from "../moves/records";
 import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { PEER_AGENTS_FILE } from "../peers/directory";
+import { PEER_REACH } from "../peers/reach";
 import fs from "node:fs";
 import { BOTS, RUN } from "../home";
 import type { Target } from "../../shared/records";
@@ -29,6 +30,7 @@ import type { BotChange } from "../bots/edit";
 import type { GivenBot } from "../bots/make";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { submitterOf } from "../ownership/authority";
+import { peerListFollowers, peerSetupLists } from "../peers/lists";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 
@@ -106,7 +108,7 @@ export async function* retellRoute(context: RouteContext): AsyncGenerator<Answer
 
 /** Its bots, each with what it's doing now (`now`), as the session list has its sessions: its
  * conversation and those working for it, at work and waiting on you, and the one state it's in. */
-function botsWithNow(machine?: string) {
+export function botsWithNow(machine?: string) {
   const counts = botsNowHere();
   const at = Date.now();
   // A bundle can have its bot folder in place before the source tells this computer to start it.
@@ -118,8 +120,14 @@ function botsWithNow(machine?: string) {
 
 /** What `kuvo/bots` and its events say: this box's bots, what it holds for your other computers and
  * what they refused, and the bots that live on them, as each last told this box. */
-function botsSaid(machine?: string) {
-  const listed = botsElsewhere();
+async function botsSaid(machine?: string) {
+  const peers = await peerSetupLists();
+  const listed = botsElsewhere().map(bot => {
+    const activity = peers.find(peer => peer.origin.computer.id === bot.box)?.saved.bots?.[bot.id];
+    if (!activity || activity.session !== bot.session) return bot;
+    const { session: _, ...now } = activity;
+    return { ...bot, ...now };
+  });
   const lists = heldLists(undefined, undefined, knownOf(listed));
   // (None of the three while it can't check what it holds: a client keeps what it last heard.)
   return { bots: botsWithNow(machine), ...lists, ...(lists.held && lists.refused ? { elsewhere: elsewhereSaid(listed, lists.held, lists.refused) } : {}) };
@@ -147,8 +155,8 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   // A bot whose next wake-up comes within 12 hours with nothing else changing is no longer asleep:
   // told then (at the latest a day on, as each line is worked out again).
   let turning: ReturnType<typeof setTimeout> | undefined;
-  const said = () => {
-    const bots = botsSaid(info.name);
+  const said = async () => {
+    const bots = await botsSaid(info.name);
     clearTimeout(turning);
     const at = Date.now();
     const next = nextTurn(bots.bots, at);
@@ -158,7 +166,8 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
     }
     return bots;
   };
-  const peerStamp = () => { try { return fs.statSync(PEER_AGENTS_FILE).mtimeMs; } catch { return 0; } };
+  // (What peers told, and which of them are away.)
+  const peerStamp = () => [PEER_AGENTS_FILE, PEER_REACH].map(file => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } }).join(" ");
   const watch: typeof watchFolders = (folders, changed, options) => {
     const bots = watchFolders(folders, changed, options);
     const activity = watchFolders([ACTIVITY_FOLDER], changed, { recursive: false });
@@ -171,7 +180,12 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   };
   try {
     // (And as a bot is seen, here or in another process: its done or blocked may be over.)
-    return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers), signal, { folders: [BOTS, HELD, SEEN_FOLDER], watch });
+    return yield* followedLive(said, tell => {
+      const followers = followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers, peerListFollowers);
+      followers.add(tell);
+      const watching = watch([BOTS, HELD, SEEN_FOLDER], tell, { recursive: true });
+      return () => { followers.delete(tell); watching.close(); };
+    }, signal, { settle: 0, every: 3000 });
   } catch (error) {
     console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "bot events failed", error: error instanceof Error ? error.name : undefined }));
     throw error;
@@ -229,6 +243,6 @@ export async function* botsRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const { request, info, text } = context;
   if (!["GET", "HEAD"].includes(request.method.toUpperCase())) return yield* text(405, "Read them with GET.");
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify(botsSaid(info.name))) };
+  yield { body: Buffer.from(JSON.stringify(await botsSaid(info.name))) };
   return;
 }

@@ -630,3 +630,32 @@ fn no_standby_is_shown_or_chosen(cx: &mut TestAppContext) {
     assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("handover"));
     assert!(stand_in.seen_at("POST", "kuvo/setup/standby").is_empty());
 }
+
+/// Each computer's settings live with it, under Computers › that computer (docs/architecture/
+/// message-delivery.md, "Removing the computer picker"): its page opens them, read from its own
+/// box; Settings itself lists your own alone, its foot row coming here for the computer's.
+#[gpui::test]
+fn a_computers_settings_open_from_its_page_and_are_read_from_its_own_box(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    let (workspace, _, cx) = open(cx, stand_in.clone());
+    cx.simulate_resize(size(px(1200.), px(1800.)));
+    click(cx, "computer-key_devbox");
+    click(cx, "computer-settings");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Computers);
+    // Its sections, as its own box says them, in the area's sidebar; its page read there too.
+    assert!(shown(cx, "settings-computer") && shown(cx, "setting-permissions"));
+    assert_eq!(devbox.seen_at("GET", "kuvo/settings/computer").len(), 1, "read on devbox");
+    assert!(stand_in.seen_at("GET", "kuvo/settings/computer").is_empty(), "never through this Mac");
+    click(cx, "setting-permissions");
+    assert!(shown(cx, "row-allowed-alw_srv"), "devbox's own");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Permissions"));
+    // Its foot row goes back to its page.
+    click(cx, "settings-foot");
+    assert!(shown(cx, "computer-settings") && !shown(cx, "setting-permissions"));
+    assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
+    // Settings is your own alone: none of a computer's sections, nothing duplicated.
+    click(cx, "rail-settings");
+    assert!(shown(cx, "settings-yours-title"));
+    assert!(!shown(cx, "setting-permissions") && !shown(cx, "settings-computer"));
+}

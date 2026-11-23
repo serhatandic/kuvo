@@ -36,6 +36,9 @@ struct State {
     slow: Duration,
     /// Off: nothing answers.
     down: bool,
+    /// Still on the release before the line: `kuvo/line` isn't its route, so its engine answers it,
+    /// `404` with nothing said.
+    before_the_line: bool,
     restarts: usize,
 }
 
@@ -130,6 +133,9 @@ impl Transport for StandIn {
         state.opened.push(request.path.clone());
         if state.down || request.route() != "kuvo/line" {
             return Err(Error::Unreachable("It may be asleep or offline.".into()));
+        }
+        if state.before_the_line {
+            return Ok(Stream { status: 404, content_type: Some("application/json".into()), reader: Box::new(std::io::Cursor::new(b"{}".to_vec())), closer: Closer::nothing() });
         }
         let watch: Value = query(&request.path, "watch").and_then(|given| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(given).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         state.names = watch.as_object().into_iter().flatten().filter_map(|(name, route)| Some((route.as_str()?.to_owned(), name.clone()))).collect();
@@ -304,4 +310,28 @@ fn only_the_lines_silence_says_the_box_is_gone() {
         std::thread::yield_now();
     }
     assert!(!line.heard_within(Duration::from_millis(100)));
+}
+
+#[test]
+fn a_computer_still_on_the_release_before_the_line_is_waited_for_never_said_to_need_a_newer_kuvo() {
+    // (The update to beta.44: the app was new, its computer's Kuvo still the one before, mid-switch.)
+    let box_ = StandIn::default();
+    box_.state().before_the_line = true;
+    let client = BoxClient::new(box_.clone());
+    client.line().set_timing(LineTiming { retry_after: Duration::from_millis(5), most: Duration::from_millis(5), ..LineTiming::default() });
+    let follow = client.follow_computers();
+    // It's asked, and turned down, more than once while it switches.
+    while box_.opened().iter().filter(|path| path.starts_with("kuvo/line")).count() < 3 {
+        std::thread::yield_now();
+    }
+    // It's on the new release now: the list comes, and it's the first thing the view hears.
+    box_.state().before_the_line = false;
+    while !box_.state().names.contains_key("kuvo/computers/events") || box_.state().live.is_none() {
+        std::thread::yield_now();
+    }
+    box_.push("kuvo/computers/events", json!({ "computers": [{ "key": "mini", "name": "Mac mini", "reach": "connected" }] }));
+    match follow.next_blocking().expect("the list comes") {
+        kuvo_box::follow::Followed::Now(list) => assert_eq!(list.computers.iter().map(|computer| computer.name.as_str()).collect::<Vec<_>>(), ["Mac mini"]),
+        kuvo_box::follow::Followed::Failed(error) => panic!("a computer that's updating is never an error: {error}"),
+    }
 }

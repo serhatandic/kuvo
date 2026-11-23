@@ -103,7 +103,40 @@ pub struct Facts {
     pub retrying: Option<bool>,
     /// It ended a turn you haven't read: when (ms, its `time.idle`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unread: Option<f64>,
+    pub unread: Option<f64>,    /// Another of your computers' session, as the setup's list says (none: this computer's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<OnComputer>,
+}
+
+/// Where a session or project from the setup's list runs, when it isn't this computer, and how
+/// that computer stands, as the nearest box says (PROTOCOL.md, "Setup-wide list topics").
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OnComputer {
+    /// Its public key, to address its routes.
+    pub id: String,
+    pub name: String,
+    /// Not answering now: its rows are its last copy.
+    pub away: bool,
+    /// When its last copy came (ms), while it's away.
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    /// Away only to switch to a new release.
+    #[serde(default)]
+    pub updating: bool,
+    /// What can be done with the row now (`open`, `manage`): none while it's away.
+    pub actions: Vec<String>,
+}
+
+impl OnComputer {
+    /// Whether the row can be opened now.
+    pub fn opens(&self) -> bool {
+        self.actions.iter().any(|action| action == "open")
+    }
+
+    /// Whether its menu's actions can be used now.
+    pub fn manages(&self) -> bool {
+        self.actions.iter().any(|action| action == "manage")
+    }
 }
 
 /// How a subagent takes your messages: `direct`, through its `parent` (which passes them on), or
@@ -159,7 +192,9 @@ pub struct Project {
     pub total: Option<u64>,
     /// What "Show more" adds next; none once all show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub more: Option<ShowMore>,
+    pub more: Option<ShowMore>,    /// Another of your computers' project, as the setup's list says (none: this computer's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<OnComputer>,
 }
 
 /// What "Show more" under a project's list adds next: `count` more, asked for with `cursor`.
@@ -254,6 +289,13 @@ pub struct Line {
 
 pub const LIST_START: &str = "sessions.list.start";
 
+/// Whether a box serves the setup-wide lists on its line.
+pub const SETUP_LISTS: &str = "line.setup-lists";
+
+/// The setup's sessions and projects, across your computers.
+pub const MERGED_SESSIONS: &str = "line.merged-sessions";
+pub const MERGED_SESSIONS_ROUTE: &str = "kuvo/setup/sessions/list/events";
+
 fn start_project<'de, D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(decoder).map(Some)
 }
@@ -281,6 +323,12 @@ pub struct Listing {
     /// client still holds as it goes.
     former: HashMap<String, Facts>,
     pending: Vec<String>,
+}
+
+/// The computer and native folder from a remote project key in the merged list.
+pub fn project_elsewhere(key: &str) -> Option<(&str, &str)> {
+    let (computer, directory) = key.split_once(':')?;
+    (directory.starts_with('/') && !computer.is_empty() && !computer.contains('/')).then_some((computer, directory))
 }
 
 impl Listing {
@@ -328,6 +376,16 @@ impl Listing {
     /// What its box says of session `id`: as it's listed, else as it was before it was let go.
     pub fn facts(&self, id: &str) -> Option<&Facts> {
         self.sessions.get(id).or_else(|| self.former.get(id))
+    }
+
+    /// Project `key` as the box lists it.
+    pub fn project(&self, key: &str) -> Option<&Project> {
+        self.projects.get(key)
+    }
+
+    /// The computer session `id` is on, where it's another of yours.
+    pub fn computer_of(&self, id: &str) -> Option<&OnComputer> {
+        self.facts(id)?.on.as_ref()
     }
 
     /// `line` taken in: a whole one in place of what was, else what changed. Whether anything did.
@@ -414,6 +472,10 @@ pub struct ProjectGroup {
     pub directory: String,
     pub name: String,
     pub sessions: Vec<String>,
+    /// The computer it's on, where that tells it from another group of the same name.
+    pub computer: Option<String>,
+    /// Another computer's project (`directory` is the list's key for it, not a folder here).
+    pub elsewhere: bool,
 }
 
 /// The sidebar for `sessions` and `projects` as a box lists them.
@@ -444,18 +506,31 @@ fn sidebar_with_order(sessions: &HashMap<String, Facts>, projects: &HashMap<Stri
         .map(|(directory, rows)| {
             let top = rows.iter().map(|(_, facts)| facts.updated).fold(None, |most: Option<f64>, updated| Some(most.map_or(updated, |most| most.max(updated))));
             let name = project_name(&directory, projects);
-            (top.unwrap_or(0.0), ProjectGroup { name, sessions: newest(rows), directory })
+            let on = projects.get(&directory).and_then(|project| project.on.as_ref()).or_else(|| rows.first().and_then(|(_, facts)| facts.on.as_ref())).cloned();
+            (top.unwrap_or(0.0), ProjectGroup { name, sessions: newest(rows), elsewhere: on.is_some(), computer: on.map(|on| on.name), directory })
         })
         .collect();
     if let Some(order) = order {
+        // (Another computer's projects aren't in this one's order: after it, newest first.)
         let ranks: HashMap<&str, usize> = order.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
-        groups.sort_by_key(|(_, group)| ranks.get(group.directory.as_str()).copied().unwrap_or(usize::MAX));
+        groups.sort_by(|(left, a), (right, b)| {
+            let rank = |group: &ProjectGroup| ranks.get(group.directory.as_str()).copied().unwrap_or(usize::MAX);
+            rank(a).cmp(&rank(b)).then_with(|| right.partial_cmp(left).unwrap_or(Ordering::Equal)).then_with(|| finder_order(&a.name, &b.name))
+        });
     } else {
         groups.sort_by(|(left, a), (right, b)| {
             right.partial_cmp(left).unwrap_or(Ordering::Equal).then_with(|| finder_order(&a.name, &b.name)).then_with(|| a.directory.cmp(&b.directory))
         });
     }
-    Sidebar { pinned, chats, projects: groups.into_iter().map(|(_, group)| group).collect() }
+    let mut projects: Vec<ProjectGroup> = groups.into_iter().map(|(_, group)| group).collect();
+    // A group names its computer only where another group has the same name.
+    let names: Vec<String> = projects.iter().map(|group| group.name.clone()).collect();
+    for group in &mut projects {
+        if names.iter().filter(|name| **name == group.name).count() < 2 {
+            group.computer = None;
+        }
+    }
+    Sidebar { pinned, chats, projects }
 }
 
 /// A project's name: as its box's list names it, else its folder's.
