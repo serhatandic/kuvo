@@ -606,13 +606,15 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                     )
                     .await;
                     while let Some(Ok(message)) = socket.next().await {
-                        if let Message::Close(Some(close)) = message {
-                            fs::write(
-                                "close",
-                                format!("{} {}", u16::from(close.code), close.reason),
-                            )
-                            .unwrap();
-                            socket.flush().await.unwrap();
+                        if let Message::Close(close) = message {
+                            if let Some(close) = close {
+                                use std::io::Write;
+                                let mut record = tempfile::NamedTempFile::new_in(".").unwrap();
+                                write!(record, "{} {}", u16::from(close.code), close.reason)
+                                    .unwrap();
+                                record.persist("close").unwrap();
+                            }
+                            let _ = socket.flush().await;
                             break;
                         }
                         socket.send(message).await.unwrap();

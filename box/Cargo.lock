@@ -899,6 +899,7 @@ dependencies = [
  "hyper-util",
  "kuvo_os",
  "kuvo_protocol",
+ "kuvo_wire",
  "percent-encoding",
  "serde",
  "serde_json",
