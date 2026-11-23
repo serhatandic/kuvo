@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A long command an agent runs and waits on now shows in a conversation's Processes (formerly Background processes) while it runs, not only inline: click it to see what it's printing, and Stop it there. For Codex, Claude Code, Cursor, Grok and Antigravity, Stop on such a command stops the agent's turn, as it does in their own apps.
 - The desktop app shows all your computers in one window, and the computer picker is gone. Another computer's sessions are listed under their project and open on that computer; a project is named for its computer only where two share a name.
 - While a computer is away its rows stay, saying when it was last seen, or "Updating…" while it switches to a new release. Once it's back they're live again within seconds, its bots included, instead of saying "Can't be reached".
 - The Work Queue lists every computer's items together, and its filter no longer offers a computer. Before its first answer, the Work Queue and Insights show one quiet loading line, with their tabs, search, filters, periods and refresh coming in with the data.

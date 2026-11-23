@@ -188,6 +188,29 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     assert!(!shown(cx, "conversation-activity-popover") && shown(cx, "subagent-ses_sub"));
 }
 
+/// A coding agent's command its turn waits on (a long script run in the foreground), as the box
+/// lists it while it runs: under Processes, with what it printed on click, and Stop there.
+#[gpui::test]
+fn a_command_running_in_the_foreground_is_listed_under_processes_and_stops_there(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_background(
+        "ses_signup",
+        json!({ "commands": [{ "id": "shl_triage", "command": "bash scripts/triage.sh --all", "started": NOW - 200_000.0, "agents": true }], "subagents": [] }),
+        &[("shl_triage", "checked 12 of 40 reports")],
+    );
+    let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    // Not "Background processes": it runs in the foreground.
+    assert!(shown(cx, "activity-processes-title-Processes"), "the section is Processes");
+    assert!(shown(cx, "activity-process-shl_triage"));
+    click(cx, "activity-process-shl_triage");
+    let showing = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).active().map(|tab| tab.kind.clone()));
+    assert_eq!(showing, Some(kuvo::panel::Kind::Process { session: "ses_signup".into(), command: "shl_triage".into() }));
+    assert_eq!(stand_in.seen_at("GET", "kuvo/work/background/ses_signup/commands/shl_triage/output").len(), 1);
+    click(cx, "process-stop");
+    assert_eq!(stand_in.stopped_commands(), vec!["shl_triage".to_owned()]);
+}
+
 #[gpui::test]
 fn empty_activity_opens_with_keyboard_and_escape_restores_focus(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

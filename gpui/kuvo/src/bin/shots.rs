@@ -549,6 +549,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "session-menu-held", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // The conversation header, its activity popover, and the composer’s message queue.
     Screen { slug: "conversation-activity-popover", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    // A long command its agent waits on in the foreground, listed under Processes while it runs.
+    Screen { slug: "activity-foreground-command", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-activity-empty", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     // Activity with the conversation's context (#963): open, pinned beside the chat, busy, quiet.
     Screen { slug: "activity-context-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
@@ -2730,6 +2732,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             if screen.slug == "compaction-running" { stand_in.running_compaction(); }
+            if screen.slug == "activity-foreground-command" {
+                stand_in.set_background("ses_signup", serde_json::json!({
+                    "commands": [{ "id": "shl_triage", "command": "bash scripts/triage.sh --since beta.33 --all", "started": NOW - 754_000.0, "agents": true }],
+                    "subagents": [],
+                }), &[("shl_triage", "checked 12 of 40 reports")]);
+            }
             if screen.slug.starts_with("send-while-working") {
                 stand_in.set_queue("ses_signup", vec![
                     serde_json::json!({ "id": "msg_w0", "words": "Check the error copy against the tone guide too", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }),

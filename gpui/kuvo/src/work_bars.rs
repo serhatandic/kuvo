@@ -1796,7 +1796,7 @@ impl ActivityCard {
             let trailing = div().flex().items_center().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_faint)
                 .child(format!("{commands} running")).child(status_dot(c.success));
             card = card.child(summary_row("activity-pinned-processes", IconName::TerminalWindow, "Processes", trailing.into_any_element(), cx)
-                .tooltip(|_, cx| Tooltip::new("Show background processes").build(cx))
+                .tooltip(|_, cx| Tooltip::new("Show running processes").build(cx))
                 .on_click(cx.listener(|this, _, window, cx| this.set_pinned(false, true, window, cx))));
         }
         if sessions.is_empty() && outputs == 0 && commands == 0 && bars.context.is_none() {
@@ -2096,7 +2096,7 @@ impl ActivityCard {
             .hover(move |d| d.bg(hover))
             .focus_visible(|d| d.bg(hover).border_1().border_color(c.accent))
             .tooltip(move |_, cx| Tooltip::new(if collapsed { format!("Show {title}") } else { format!("Hide {title}") }).build(cx))
-            .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(title))
+            .child(div().debug_selector(move || format!("activity-{key}-title-{title}")).flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(title))
             .child(
                 Icon::new(if collapsed { IconName::ChevronRight } else { IconName::ChevronDown })
                     .size(IconSize::XSmall)
@@ -2759,7 +2759,8 @@ impl ActivityCard {
                         this.open_in_panel(arrival, window, cx);
                     })).into_any_element()
                 }).collect();
-        Some(self.section(bars, "processes", "Background processes", Some(meta), None, rows, cx))
+        // (What its agent runs now, in the foreground or left running: the box lists both.)
+        Some(self.section(bars, "processes", "Processes", Some(meta), None, rows, cx))
     }
 
     fn preview(&self, name: &str, preview: &Preview, cx: &Context<Self>) -> AnyElement {
