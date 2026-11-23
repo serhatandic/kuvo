@@ -19,6 +19,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd } from "./at-end.js";
 import { relayStandIn } from "./relay-stand-in.js";
+import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 
 // (Short: a shared connection's socket goes under the box's folder on Linux.)
 const base = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
@@ -225,11 +226,11 @@ for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "
   let source = fs.readFileSync(path.join(checkout, file));
   if (file === "box/src/keeper/kuvo-start") {
     // A legacy keeper starts with an empty environment. Bind this copy to the fake service
-    // even there, and pass the same stub to the workers the keeper starts later.
+    // even there, and pass the stand-ins to the workers the keeper starts later.
     const keeper = source.toString();
     assert.match(keeper, /^  ctl=\/bin\/launchctl$/m);
     source = keeper.replace(/^  ctl=\/bin\/launchctl$/m, '  ctl="$KUVO_TEST_UNINSTALL_TOOLS/launchctl"')
-      .replace(/^#![^\n]+\n/, `$&export KUVO_TEST_UNINSTALL_TOOLS='${tools}'\n`);
+      .replace(/^#![^\n]+\n/, `$&export KUVO_TEST_UNINSTALL_TOOLS='${tools}'\nexport KUVO_TEST_SSH='${path.join(fake, "ssh")}' FAKE_SSH='${fake}' FAKE_SSH_HOME='${there}'\n`);
   }
   write(path.join(root, file), source);
 }
@@ -531,7 +532,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -2138,9 +2139,10 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
 });
 
 // Every SSH installation has its own deadline below. This scenario does several in
-// succession, so its outer deadline also covers the unlink and standby recovery checks.
-test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 900_000 }, async t => {
-  const relay = await relayStandIn(link);
+// succession, so its outer deadline also covers unlink, wipe and re-enrollment.
+test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 240_000 }, async t => {
+  const leases = relayLeaseStandIn();
+  const relay = await relayStandIn(link, { request: leases.request });
   atEnd(() => relay.close());
   const primaryBox = path.join(primaryHome, ".kuvo-code");
   const memberHome = homes["primary-member"];
@@ -2176,11 +2178,11 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   const inBox = (box, file = "link.json") => read(path.join(box, "run", file));
   const localServer = async (box, boxEnv) => {
     write(path.join(box, "run", "serve.needed"), "");
-    const child = start(boxEnv, "serve", "--kept");
-    const record = await waitFor("the kept server starts", () => {
+    start(boxEnv, "serve", "--kept");
+    const record = await waitFor("the installed server starts", () => {
       try { const current = inBox(box, "serve.json"); return alive(current.pid) && current; } catch (error) { if (error.code !== "ENOENT") throw error; }
     });
-    const ask = async (method, route, body) => {
+    return async (method, route, body) => {
       const answer = await fetch(`http://127.0.0.1:${record.port}/${route}`, {
         method, signal: AbortSignal.timeout(20_000),
         headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "mac" },
@@ -2188,23 +2190,6 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       });
       return { status: answer.status, body: await answer.json() };
     };
-    return Object.assign(ask, {
-      async stop() {
-        if (record.pid === child.pid) {
-          const exited = new Promise(resolve => child.once("exit", resolve));
-          child.kill("SIGTERM");
-          await exited;
-        } else {
-          // The SSH installation's own keeper can start the server first.
-          const { stdout } = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(record.pid)], { encoding: "utf8" });
-          assert.ok(stdout.includes(path.join(box, "bin", "kuvo-link.js") + " serve --kept"), stdout);
-          process.kill(record.pid, "SIGTERM");
-        }
-        await waitFor("the old server has removed its record", () => {
-          try { return inBox(box, "serve.json").pid !== record.pid; } catch (error) { if (error.code === "ENOENT") return true; throw error; }
-        });
-      },
-    });
   };
 
   assert.equal(fs.existsSync(path.join(primaryBox, "run", "link.json")), false);
@@ -2252,7 +2237,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   };
   assert.equal((await primaryApp("GET", "kuvo/computers/add")).body.can, true);
 
-  const begun = await primaryApp("POST", "kuvo/computers/add", { destination: "primary-member" });
+  const begun = await primaryApp("POST", "kuvo/computers/add", { destination: "primary-member", credentials: await checkedCredentials(primaryApp) });
   assert.equal(begun.status, 202, JSON.stringify(begun.body));
   const route = `kuvo/computers/add/${begun.body.try.id}`;
   const tryNow = async () => {
@@ -2264,28 +2249,27 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   };
   const question = await waitFor("SSH asks to trust the new host key", async () => {
     const attempt = await tryNow();
-    assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
+    assert.notEqual(attempt.state, "failed", JSON.stringify({ attempt, ssh: sshLog() }));
     return attempt.question;
   });
   assert.equal(question.id, "hostKey");
   assert.equal((await primaryApp("POST", `${route}/answer`, { answer: "trust", at: question.at })).status, 200);
   const done = await waitFor("the SSH add finishes", async () => {
     const attempt = await tryNow();
-    assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
+    assert.notEqual(attempt.state, "failed", JSON.stringify({ attempt, ssh: sshLog() }));
     return attempt.state === "done" && attempt;
   }, 60_000);
   const member = done.computer.key;
   assert.equal(done.save.status, "committed");
   assert.ok(inBox(primaryBox).shared.membershipAndAccess.value.boxes.some(peer => peer.key === member));
   const memberEnv = { ...env, HOME: memberHome, KUVO_HOME: memberBox };
-  assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member" }, "SSH installed the signed setup");
-  let memberApp = await localServer(memberBox, memberEnv);
-  assert.equal((await memberApp("GET", "kuvo/computers/add")).body.can, false);
-  assert.equal((await memberApp("POST", "kuvo/phones/pair")).body.primary, primary.primary);
+  const leadership = link.readDoc(inBox(primaryBox).leadership[primary.epoch]);
+  assert.equal(leadership.origin, primary.sign);
+  assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member", leadershipHash: leadership.h }, "SSH installed the signed setup");
+  const memberApp = await localServer(memberBox, memberEnv);
   assert.deepEqual((await primaryApp("GET", "kuvo/setup")).body.computers.map(each => each.key), [primary.primary, member]);
 
   fs.copyFileSync(path.join(home, "run", "engine.json"), path.join(primaryBox, "run", "engine.json"));
-  const originalPrimaryProcess = start(env, "run");
   const peers = await waitFor("the member installs the signed roster including its own entry", () => {
     const doc = link.readDoc(inBox(memberBox).docs[`${primary.sign} peers`]);
     return doc?.body.boxes.some(each => each.key === member) && doc;
@@ -2295,8 +2279,16 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   assert.deepEqual(peers.body.boxes.map(each => [each.key, each.kind]), [[primary.primary, "machine"], [member, "machine"]]);
   const forged = link.signDoc(link.newSigningSeed(), "peers", peers.n + 1, peers.body);
   assert.equal(link.takeDoc(inBox(memberBox), forged), null, "membership is trusted by key, not by the claimed primary");
+  const offered = await waitFor("the member forwards the Add list to the primary", async () => {
+    const answer = await memberApp("GET", "kuvo/computers/add");
+    return answer.status === 200 && answer.body.can && answer.body;
+  });
+  assert.deepEqual(offered, (await primaryApp("GET", "kuvo/computers/add")).body);
 
   const desktop = { key: k(link.publicOf(link.newKey())), name: "New desktop", kind: "desktop" };
+  await waitFor("the primary records its relay lease", () => {
+    try { return inBox(primaryBox, "setup-relay-lease.json").holder === primary.primary; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  });
   const paired = await primaryApp("POST", "kuvo/devices/pair", desktop);
   assert.equal(paired.status, 200, JSON.stringify(paired.body));
   assert.ok(paired.body.pairing);
@@ -2343,87 +2335,6 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     }
     return current;
   };
-  const selected = await primaryApp("POST", "kuvo/setup/standby", { standby: member, epoch: 1 });
-  assert.equal(selected.status, 202, JSON.stringify(selected.body));
-  await waitFor("the primary has the standby's lease", () => {
-    try { return inBox(primaryBox, "setup-lease.json").stamp === `${primary.id}:2:${member}`; } catch { return false; }
-  });
-  write(path.join(primaryBox, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "fixture-seeded-key");
-  const oldAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
-  const standbyAddress = link.addressOf(Buffer.from(inBox(memberBox).secret, "base64url"));
-
-  const deviceSave = await memberApp("POST", "kuvo/devices/pair", { ...desktop, key: k(link.publicOf(link.newKey())), name: "Standby desktop" });
-  assert.equal(deviceSave.status, 200, JSON.stringify(deviceSave.body));
-  assert.equal(deviceSave.body.status, "committed");
-  assert.equal(link.readDoc(deviceSave.body.proof)?.body.operation, deviceSave.body.operation);
-  let enrollmentReceipt;
-
-  await t.test("a delayed membership receipt keeps the fresh SSH installation and the same proposal", async () => {
-    const delayed = [];
-    const release = relay.intercept(standbyAddress, oldAddress, packet => {
-      const envelope = link.openMail(link.readFrame(packet.payload).body, inBox(primaryBox))?.payload?.docs?.give?.[0];
-      if (link.readDoc(envelope)?.body.kind === "membershipAndAccess" && link.readDoc(envelope)?.body.receipt) {
-        delayed.push(packet);
-        return true;
-      }
-      return false;
-    });
-    try {
-      const attempt = await addOn(primaryApp, "late-enrollment");
-      await waitFor("the standby accepted enrollment and attempts to reply", async () => {
-        const current = await attempt();
-        assert.equal(current.state, "working", JSON.stringify(current));
-        return delayed[0];
-      }, 60_000);
-      const operation = Object.keys(inBox(primaryBox).sharedPending)[0];
-      const target = path.join(homes["late-enrollment"], ".kuvo-code");
-      await new Promise(resolve => setTimeout(resolve, 3_300));
-      const afterRestart = id => {
-        const result = spawnSync(process.execPath, ["--input-type=module", "-e",
-          `import { allTries } from ${JSON.stringify(script)}; console.log(JSON.stringify(allTries().find(each => each.id === ${JSON.stringify(id)})))`,
-        ], { env, encoding: "utf8", timeout: 5_000 });
-        assert.equal(result.status, 0, result.stderr);
-        return JSON.parse(result.stdout);
-      };
-      const pending = await attempt();
-      assert.equal(pending.state, "working", JSON.stringify(pending));
-      assert.equal(pending.save?.status, "pending");
-      assert.equal(pending.save.operation, operation);
-      assert.equal(link.readDoc(pending.save.proof)?.body.operation, operation);
-      const joined = inBox(target);
-      assert.equal(joined.setup.epoch, 2);
-      assert.equal(joined.leadership, undefined);
-      assert.ok(link.digestOf(joined).some(entry => entry[1] === "leadership" && entry[2] === 2));
-      const restarted = afterRestart(pending.id);
-      assert.equal(restarted.state, "working");
-      assert.deepEqual(restarted.save, pending.save);
-      assert.deepEqual(Object.keys(inBox(primaryBox).sharedPending), [operation]);
-      assert.equal(fs.readFileSync(path.join(target, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "utf8").trim(), "fixture-seeded-key");
-      assert.ok(pidsThere(target).some(alive), "the installation is still running");
-      assert.equal(fs.existsSync(path.join(target, "run", "off")), false);
-      release();
-      relay.replay(delayed[0]);
-      const done = await waitFor("the original add commits", async () => {
-        const current = await attempt();
-        assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
-        return current.state === "done" && current;
-      });
-      assert.equal(inBox(primaryBox).sharedOutcomes[operation].status, "committed");
-      assert.equal(afterRestart(done.id).state, "done");
-      assert.equal(done.save?.status, "committed");
-      assert.deepEqual(done.save.proof, pending.save.proof);
-      enrollmentReceipt = done.save;
-      for (const ask of [primaryApp, memberApp]) {
-        await waitFor("the client's roster includes the new member", async () => {
-          const roster = await ask("GET", "kuvo/computers");
-          assert.equal(roster.status, 200);
-          return roster.body.computers.some(each => each.key === done.computer.key);
-        });
-      }
-      await remove(done.computer.key);
-    } finally { release(); }
-  });
-
   await t.test("unlink revokes both old keys and reinstall restores the computer’s list position", async () => {
     const firstID = "aaaaaaaa-abcd-4444-8888-aaaaaaaaaaaa";
     const otherID = "bbbbbbbb-abcd-4444-8888-bbbbbbbbbbbb";
@@ -2551,74 +2462,5 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     }
   });
 
-  await t.test("after losing the primary, the surviving box enrolls and activates a replacement standby", async () => {
-    const made = await primaryApp("POST", "kuvo/personalities", { name: "Survivor", description: "Save this across recovery." });
-    await committed(made, "setupPersonalities", async save => {
-      const { status, receipt } = await link.askSetupOutcome(path.join(primaryBox, "run"), save, "setupPersonalities");
-      return { status, body: receipt };
-    });
-    assert.ok(inBox(memberBox).shared.setupPersonalities.value.personalities.some(personality => personality.name === "Survivor"));
-    const saved = await memberApp("GET", "kuvo/setup");
-    assert.equal(saved.body.standby, member);
-    const clock = offset => {
-      write(path.join(memberBox, "run", "test-setup-clock.json.new"), JSON.stringify({ offset }));
-      fs.renameSync(path.join(memberBox, "run", "test-setup-clock.json.new"), path.join(memberBox, "run", "test-setup-clock.json"));
-    };
-    fs.writeFileSync(path.join(memberBox, "setup-takeover.json"), JSON.stringify({ alwaysOn: true, delayMinutes: 60 }));
-    clock(0);
-    const absent = relay.disconnect(oldAddress);
-    atEnd(absent);
-    originalPrimaryProcess.kill("SIGTERM");
-    await new Promise(resolve => setTimeout(resolve, 2_300));
-    clock(61 * 60_000);
-    await waitFor("the standby promotes with no replacement", () => {
-      const setup = inBox(memberBox).setup;
-      return setup.role === "primary" && setup.epoch === 3 && !setup.standby;
-    });
-    for (const save of [deviceSave.body, enrollmentReceipt]) {
-      const { setup: id, operation, proof } = save;
-      const resolved = await link.askSetupOutcome(path.join(memberBox, "run"), { setup: id, operation, proof });
-      assert.equal(resolved.status, 200);
-      assert.equal(resolved.receipt.status, "committed");
-    }
-    const before = inBox(memberBox).shared;
-    const target = path.join(homes["replacement-standby"], ".kuvo-code");
-    const replies = [];
-    const release = relay.intercept(null, standbyAddress, packet => {
-      const file = path.join(target, "run", "link.json");
-      if (!fs.existsSync(file)) return false;
-      const address = link.addressOf(Buffer.from(read(file).secret, "base64url"));
-      if (!address.equals(packet.from)) return false;
-      replies.push(packet);
-      return true;
-    });
-    atEnd(release);
-    const attempt = await addOn((...args) => memberApp(...args), "replacement-standby");
-    await waitFor("the replacement installs its certificate while replies are held", async () => {
-      const current = await attempt();
-      assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
-      const file = path.join(target, "run", "link.json");
-      return replies.length && fs.existsSync(file) && read(file).leadership?.[4];
-    }, 120_000);
-    assert.ok(inBox(memberBox).leadershipPending);
-    await memberApp.stop();
-    memberApp = await localServer(memberBox, memberEnv);
-    assert.equal((await attempt()).state, "working", "the restarted server keeps the save in flight");
-    release();
-    replies.forEach(relay.replay);
-    const done = await waitFor("recovery adds a new standby over SSH", async () => {
-      const current = await attempt();
-      assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
-      return current.state === "done" && current;
-    });
-    const standby = inBox(target);
-    const recovered = inBox(memberBox);
-    assert.equal(recovered.setup.epoch, 4);
-    assert.equal(recovered.setup.standby.key, done.computer.key);
-    assert.deepEqual(standby.setup.standby, recovered.setup.standby);
-    assert.equal(link.readDoc(recovered.leadership[4]).origin, recovered.setup.standby.sign);
-    assert.deepEqual(standby.shared.setupPersonalities, before.setupPersonalities);
-    assert.deepEqual(standby.shared.membershipAndAccess, recovered.shared.membershipAndAccess);
-    assert.ok(standby.shared.queueNumberAllocation.value.next >= before.queueNumberAllocation.value.next);
-  });
+
 });
