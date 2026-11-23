@@ -1,6 +1,6 @@
 // Files and folders (rust-box.md row 6.3a): a file's info, text and bytes, the same from both boxes.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -102,6 +102,19 @@ test("a file's info, text and bytes", async t => {
     writeFileSync(empty, "");
     const none = await ask("GET", at(empty, ""));
     assert.deepEqual([none.status, none.type, none.bytes.length], [200, "application/octet-stream", 0]);
+  });
+
+  await t.test("each name a client encodes comes back as the file it names", async () => {
+    const vectors = JSON.parse(readFileSync(new URL("../../box/test/fixtures/file-addresses/addresses.json", import.meta.url), "utf8"));
+    assert.ok(vectors.addresses.length > 0);
+    const folder = path.join(realpathSync(root), "addresses");
+    mkdirSync(folder);
+    assert.match(folder, /^[A-Za-z0-9/._-]+$/);
+    for (const { name, encoded } of vectors.addresses) {
+      writeFileSync(path.join(folder, name), `the file ${name}`);
+      const reply = await ask("GET", `kuvo/file?uri=file://${folder}/${encoded}`);
+      assert.deepEqual({ name, status: reply.status, body: reply.text }, { name, status: 200, body: `the file ${name}` });
+    }
   });
 
   await t.test("unreadable files are refused", { skip: process.getuid?.() === 0 }, async () => {
