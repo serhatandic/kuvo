@@ -109,19 +109,81 @@ The Win32 probes ran over OpenSSH in a scratch folder:
 
 ## 2. Agents without a JavaScript runtime
 
-| Agent | Today (`box/src/agents/agents/`) | Rust box | Status |
-|---|---|---|---|
-| Codex | `codex app-server`, JSON-RPC on stdio | Same, in Rust | Proven: no JavaScript involved |
-| Grok | ACP on stdio, plus `_x.ai/*` extensions | `agent-client-protocol`, with the extensions as ext methods | Proven protocol |
-| Antigravity | ACP through `agy acp`. Older sign-ins use `agy_acp_server.par`. Follows the agent's transcript file. | Same, in Rust | Proven. Spike: whether the older launch can go. |
-| Claude Code | `@anthropic-ai/claude-agent-sdk` in-process. It already runs the user's `claude` CLI over stream-json; the bridge only drives it. | The CLI's stream-json and control protocol, spoken directly: `initialize` (system prompt append, agents, plugins, settings, the PreToolUse hook), `can_use_tool`, `interrupt`, `set_model`, `set_permission_mode`, MCP server changes, effort, stop task, context usage | **Spike first** (session 0.3). Kuvo uses no in-process SDK MCP servers, which removes the hard part. |
-| Cursor | `@cursor/sdk`. The agent runs inside the JavaScript process, and its own worker script already exists (`cursor-worker.ts`). | The sidecar below | Needs JavaScript. Trial the `cursor-agent` CLI's stream output later. |
+| Agent | Today (`box/src/agents/agents/`) | Rust box decision |
+|---|---|---|
+| Codex | `codex app-server`, JSON-RPC on stdio | Same protocol in Rust. |
+| Grok | ACP on stdio, plus `_x.ai/*` extensions | `agent-client-protocol`, with the extensions as ext methods. |
+| Antigravity | ACP through `agy acp` or `agy_acp_server.par` for older sign-ins. Follows the agent's transcript file. | ACP in Rust. Keep both launches until a valid legacy profile can use `agy acp` without signing in again. |
+| Claude Code | `@anthropic-ai/claude-agent-sdk` drives the user's Claude CLI. | Speak stream-json and the CLI's control protocol directly. No tested feature needs the SDK sidecar. |
+| Cursor | `@cursor/sdk`, with `cursor-worker.ts` already running it under a holder. | Run the pinned SDK in the engine's Bun sidecar. The headless CLI's event stream lacks parity. |
 
-**One fallback mechanism:** the **sidecar**. It's a small bundled script that the engine's own Bun
-runs (`BUN_BE_BUN=1`, as every box runs today) under a holder. It speaks line JSON-RPC on stdio,
-generalising the Cursor worker's `create`/`send`/`cancel`/`close` with `delta`/`ended`. The SDK is
-installed on first use, as `deps.ts` does now. Cursor uses the sidecar. Claude Code uses it only
-if the spike fails, and then only for what fails. No other JavaScript runtime ships.
+Session 0.3 ran the Mini's Claude Code 2.1.330 and Antigravity 1.5.14, plus a scratch
+installation of Cursor CLI 2026.11.22-e9042b2. All ran with private homes, Keychain access
+blocked and vendor networking disabled. Claude's real CLI ran once from Rust and once
+through SDK 0.3.303 with the same scripted loopback model and MCP endpoints. The
+[spike crate and reproduction steps](../../spikes/agent-protocols/README.md) record both
+the SDK's outbound wire and what its public iterator returns.
+
+### Claude Code
+
+| What Kuvo uses | Result |
+|---|---|
+| Initialize and model catalog | **Works.** `initialize` returns models and agents without a turn. `get_context_usage` with `detail: "summary"` returns `maxTokens`. |
+| System prompt, custom agents, skills and settings | **Works with two configuration paths.** The preset uses the CLI's default prompt plus `appendSystemPrompt` in `initialize`, alongside `agents`, hook registration and `forwardSubagentText`. The loopback model received the append. `--plugin-dir-no-mcp` loaded the local plugin and skipped its MCP server. `--settings` supplied the memory directory, skill overrides and sandbox override. |
+| PreToolUse, permission prompts, questions and Plan exit | **Works.** The CLI sent `hook_callback` and `can_use_tool`. A block prevented a write, an approval allowed a read, updated input answered `AskUserQuestion`, and a denied `ExitPlanMode` kept Plan mode. Rust replies with the request ID and keeps tool-use IDs distinct from callback IDs. Keep the SDK's callback cancellation and permission deduplication semantics. SDK field mappings such as `permission_suggestions` to `suggestions` belong at this boundary. |
+| Model, effort and permission mode between turns | **Works.** `set_model`, `apply_flag_settings` (`effortLevel`), and `set_permission_mode` changed the live process. The next model request used Opus at high effort in Plan mode. A null `effortLevel` cleared the override. From Sonnet, omitting `model` returned to the account catalog’s resolved default (Opus on the fixture). |
+| MCP | **Works.** `mcp_set_servers` connected and removed both an HTTP server with headers and a stdio server with command, args and environment. Server status showed both fixture tool lists. Keep connection details on the pipe. Kuvo uses no in-process SDK MCP servers. |
+| Streaming, messages, steering and interruption | **Works.** Partial text, assistant frames, tool results, base64 image blocks and `priority: "next"` messages passed. Turn results can acknowledge several user UUIDs. `interrupt` during a streamed reply produced `aborted_streaming`. Raw stdio also exposes control traffic that the SDK consumes internally. |
+| Transcript resume, live reconnection and clear | **Works at the CLI.** `--session-id` then `--resume` reused the transcript. A second `initialize` on an open permission ask returned the same request in `response.pending_permission_requests` (beside the inner payload). Rust answered the redelivery and both queued UUIDs completed. The SDK handled that repeat with one permission callback. Reinitializing with an unanswered hook sent `control_cancel_request` for the old callback. `/clear` emitted `conversation_reset` and the next turn used the new session ID. The actual holder handoff still needs mixed-box coverage. |
+| Usage, limits and compaction | **Works for tested events.** Assistant and result usage, cumulative cost, context window, `api_retry` on a scripted HTTP 429, and `/compact` status and `compact_boundary` came over the same wire. Automatic compaction's environment and threshold policy stay in the box port. Subscription `rate_limit_event`, OAuth renewal and account-specific limits still need a signed-in test account. |
+| Subagents and background work | **Works.** The custom agent used its selected model and forwarded parent-linked assistant text. The CLI emitted task lifecycle and background-list events. A background shell returned `get_task_output` and reported `stopped` after `stop_task`. |
+| One-shot generation, auth and process lifecycle | **Works for local paths.** The tool-free, one-turn Haiku request returned a result with session persistence and hooks disabled. A fresh unsigned CLI initialized and returned a sign-in error on its first prompt. Match the SDK's `CLAUDE_CODE_SDK_READS_SESSION_STATE=1` to receive session-state frames and handle process exit and stderr alongside result frames. Signed-in auth events, credential refresh and provider-specific failures need a private account. |
+
+The adapter also handles local-command output, notices, hook and plugin failures, model refusals,
+memory recall, and session-scoped permission updates. Keep those frame and reply fields from the
+SDK reference. The fixture did not force every diagnostic or permission suggestion variant.
+
+### Cursor
+
+The signed-out headless invocation exited 1 with an authentication error on stderr and
+empty stdout. It supports resume, model overrides and partial text, but its documented
+print stream suppresses thinking. Its public stream also lacks the SDK's local agent
+store and run contract, nested task updates and per-turn usage shape that Kuvo consumes.
+A successful CLI stream, SDK turn and model/account responses need a signed-in test
+account. [Cursor CLI output format](https://prod.cursor.com/docs/cli/reference/output-format)
+
+OpenCode 2.2.6's embedded Bun 1.4.4 (`BUN_BE_BUN=1`) ran the existing worker with
+`@cursor/sdk` 1.0.35, created an agent, reopened its JSONL store by ID, and returned
+structured errors for missing agents and offline sends. Use this line protocol under a
+holder. Install the pinned SDK on first use as in `deps.ts`.
+
+| Direction | Frame |
+|---|---|
+| Request | `{id, method, params}` on one line. `create {options, resume?}` returns `{agentId}` or a null ID for a missing resume. Store options carry `local.store.root`. |
+| Request | `send {agent, run, message, options}`, `cancel {run}`, and `close {agent}` acknowledge with `{}`. `message` can include text and images. |
+| Notification | `delta {run, update}` forwards the SDK update. `ended {run, result}` or `ended {run, error}` settles the run. Subscribe by run ID before sending or replaying holder lines. |
+| Reply and error | `{id, result}` or `{id, error: {code, message, data}}`. Preserve the SDK's error name, code and status for sign-in and limit handling. |
+
+The worker covers turns. Phase 4.5 also needs sidecar calls for the SDK-backed browser login
+and cancellation, credential-store access, account lookup and model catalog. Preserve separate
+account and held-worker state. Signed-in testing must cover those SDK calls, successful streams,
+active cancellation, and holder replay. Cursor remains the only SDK sidecar in this design.
+
+### Antigravity
+
+`agy acp --gemini-dir … --app-data-dir antigravity-acp` answered ACP protocol 1. It
+advertised load/resume, image prompts, system-prompt append and four auth methods
+(`oauth-personal`, `oauth-business`, `gemini-api-key`, and `agent-platform`).
+An unsigned `session/new` returned `-32000 Authentication required`. Under the adapter's
+SSH-style environment, ACP `authenticate` directed the caller to `agy acp --login`.
+That command printed a Google URL and asked for a code. Kuvo currently offers personal OAuth.
+
+A profile with a synthetic legacy `acp_token.json` still returned authentication required.
+This cannot establish whether `agy` accepts a valid 1.3.0 token. Keep the legacy launch
+for existing sign-ins and held sessions. Verify personal OAuth completion, authenticated
+ACP sessions and models, and a valid legacy-only profile before deleting the fallback.
+The other advertised methods still need their own isolated accounts or credentials. Neither launch
+needs a JavaScript sidecar.
 
 ## 3. The contract both boxes meet
 
@@ -260,9 +322,9 @@ parallel.
 | 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting the TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 6 ×2 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
-| 4.3 | Grok and Antigravity over ACP, with extensions | agents | 4.1 | 6 | C |
-| 4.4 | Claude Code, by protocol or sidecar per 0.3 | agents | 4.1, 0.3 | 6 | B |
-| 4.5 | Cursor through the sidecar | agents | 4.1 | 3 | C |
+| 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
+| 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
+| 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
 | 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals | work | 3.2 | 5 ×2 | C |
 | 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub | work | 2.2 | 5 ×2 | C |
