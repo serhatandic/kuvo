@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::address::resolved;
 use super::folders::Places;
-use super::order::by_name;
+use super::order::FinderOrder;
 
 /// How many folders are suggested at most, and how many of them from the sessions.
 const MOST_SUGGESTED: usize = 20;
@@ -276,7 +276,8 @@ pub(crate) fn suggested_folders(
         }
     }
     // The repositories found, the one changed latest first.
-    found.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| by_name(&a.0, &b.0)));
+    let order = FinderOrder::plain();
+    found.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| order.compare(&a.0, &b.0)));
     for (at, _) in found {
         if suggested.len() >= MOST_SUGGESTED {
             break;

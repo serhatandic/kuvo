@@ -7,7 +7,8 @@ The Rust side is `box/crates/kuvo_services/src/files/` (`address.rs`: which file
 with one platform seam for `file://` addresses; `opened.rs`: types, kinds and opening a regular
 file, with one seam for opening without waiting and execute bits; `folders.rs`: folder lists, a
 new folder and a folder's tree; `git.rs`: git's list of a repository's files, as the box runs git
-by itself; `find.rs`: ranking files and reading web addresses; `order.rs`: Finder's order of names;
+by itself; `find.rs`: ranking files and reading web addresses; `order.rs`: Finder's order of names, ICU's root collation (`icu_collator`), as bun collates
+whatever the computer's language;
 `suggested.rs`: folders worth starting in, from the kept session list (`run/lists/sessions.json`,
 which the engine's session list writes in both boxes); `mod.rs`: the routes). The resident
 registers it in `box/crates/kuvo-box/src/serve.rs`.
@@ -38,9 +39,9 @@ registers it in `box/crates/kuvo-box/src/serve.rs`.
 | file-info: each kind by extension, bytes measured, 413 over the limit | Conformance (`info by kind and size`) |
 | file-info: missing and non-file paths, 400 for another scheme, 405 for POST | Conformance (`missing files, folders and other addresses`) |
 | file-info: folder and text routes with literal URI characters | Conformance (text by `path64` and `uri`; `kuvo/folders` with `files=1`, `hidden=1` in `a folder's folders …`) |
-| file-info: byte downloads keep the announced size when a file grows or shrinks | Ported (`Download::reply` streams the announced length, errors if short); **left**: a deterministic Rust test (the TS one interleaves writes with the generator, which HTTP can't) |
-| file-info: served by the other computer's `box route` command | **Left**: depends on the Rust `box route` command (not in this slice) |
-| file-info: remote downloads opt into execute bits | Conformance over HTTP (`bytes with their type, length and, asked, mode`); through `box route`: **left** |
+| file-info: byte downloads keep the announced size when a file grows or shrinks | Rust unit test (`bytes_keep_the_announced_length_when_a_file_changes`: the file changed between the announced length and the reading) |
+| file-info: served by the other computer's `box route` command | Conformance (`a file through the computer's own route command …`: info through `route`; Rust's `route` asks the running resident, TS's answers in its own process) |
+| file-info: remote downloads opt into execute bits | Conformance over HTTP and through `route` (`… its mode with its bytes where asked`) |
 | file-info: metadata and bytes require the box password | Covered by `kuvo_server`'s own auth for every route; no files-specific case |
 | file-info: read permission checked | Conformance (`unreadable files are refused`), info, bytes and text |
 | file-addresses: each name comes back as the file it names | Conformance (`each name a client encodes …`) |
@@ -55,23 +56,25 @@ registers it in `box/crates/kuvo-box/src/serve.rs`.
 | folders-suggested: the route answers this computer's home and folders | Conformance (`folders worth starting in …`: the engine's project sessions, a gone and an archived one, repositories found) |
 | files-find (new): a `?` in what's typed or in a folder's name | Conformance (`finding files …`), and the TS test |
 
-Counts: 19 cases; 17 covered, 2 partly (the `box route` halves of file-info), none left.
+Counts: 19 cases, all covered. Added since: names in other scripts and folder errors in Node's words (conformance, both boxes).
 
 ## What's left
 
 - Suggested folders read the kept list from disk, as the TS box does when it starts; the TS box
   answers from its list in memory after that, which it saves as it changes, so they agree once
-  saved. A Mac's app-folder layout (chats in the app's folder, `KUVO_CHATS`) isn't modelled: the
-  Rust box's chats folder is its own `chats`.
-- Finder's order (`order.rs`) follows the root collation for Latin letters, digits, spaces and
-  ASCII punctuation; names in other scripts are ordered by code point, where ICU may differ.
-- A folder that can't be read for another reason (500) says the system's words, which Node and
-  Rust phrase differently.
-- `kuvo/file` bytes through the Rust `box route` command, and a Rust test of a file that changes
-  while it's sent.
-- OSes: the conformance area and the differential run on macOS. On native Windows,
+  saved.
+- A Mac's app-folder layout (chats in the app's folder, `KUVO_CHATS`) isn't modelled: the Rust
+  box's chats folder is its own `chats`. That layout belongs to the move out of the app's folder
+  (2.6) and the Mac app's switch (7.3).
+- Folder errors in Node's words: Unix error numbers map to libuv's words exactly; on Windows the
+  map goes by error kind (a loop of links, a name too long, busy, memory, time, an invalid
+  argument), and anything else says the system's own words.
+- OSes: the conformance area and the differential runs on macOS. On native Windows,
   `kuvo_services` cross-builds (llvm-mingw, `x86_64-pc-windows-gnullvm`) and its unit tests pass
-  there, the `file://` seam's drive letters, network hosts and refusals included; the files
-  conformance area on Windows (both boxes) and anything on Linux are left. A run of the four TS
-  test files there (`scripts/windows-box-check.sh`) stopped in the runner's own setup: PowerShell
-  refused `windows-test-credentials.ps1` (scripts are disabled on that machine).
+  there. The Windows runner (`scripts/windows-box-check.sh`) now runs the Credential Manager check
+  and cleanup as their own `-ExecutionPolicy Bypass -File` processes (clearing the supervisor's
+  environment had dropped its own Bypass). It then stops at the check itself: Credential Manager
+  answers 1312 ("A specified logon session does not exist") to a key-based SSH logon, which has no
+  credential vault, and the check refuses to run tests it can't prove are on an empty store. The
+  files area on Windows (both boxes) and anything on Linux are left until that logon has a vault
+  (a password logon, or the runner as a scheduled task).
