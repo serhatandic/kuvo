@@ -6,11 +6,11 @@
 //! Held to `protocol/vectors` (`noise.json`, `link.json`), as KuvoLink and the box are.
 
 pub mod client;
-pub mod frames;
+pub use kuvo_wire::frames;
 pub mod keys;
 pub mod linked;
 pub mod log;
-pub mod noise;
+pub use kuvo_wire::noise;
 pub mod relay;
 #[cfg(feature = "stand-in")]
 pub mod stand_in;

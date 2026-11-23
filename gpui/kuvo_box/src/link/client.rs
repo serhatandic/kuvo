@@ -513,7 +513,7 @@ impl LinkClient {
                     state.tokens += 1;
                     let token = state.tokens;
                     let mut session = Session { token, number: random_number(), key: host.key, pair: pair.clone(), phase: Phase::Shaking(None), next: 1, answers: HashMap::new(), heard: Instant::now(), checking: None, arrived: state.handed, unanswered: HashMap::new(), pings: VecDeque::new() };
-                    let message = self.handshake(&mut session);
+                    let message = self.handshake(&mut session)?;
                     let number = session.number;
                     state.sessions.insert(host.address, session);
                     mine = Some((token, Instant::now()));
@@ -526,16 +526,17 @@ impl LinkClient {
     }
 
     /// The handshake's first message for `session`, which keeps what reads the answer.
-    fn handshake(&self, session: &mut Session) -> Vec<u8> {
+    fn handshake(&self, session: &mut Session) -> crate::Result<Vec<u8>> {
         let inner = &self.inner;
-        let mut initiator = Initiator::new(inner.identity.private(), session.key, noise::PROLOGUE);
+        let mut initiator = inner.identity.initiate(session.key, noise::PROLOGUE);
         let mut hello = json!({ "v": 1, "name": inner.name, "app": inner.app, "client": "desktop" });
         if let Some(token) = &session.pair {
             hello["pair"] = Value::String(token.clone());
         }
-        let message = initiator.write_message_1(hello.to_string().as_bytes());
+        let message = initiator.write_message_1(hello.to_string().as_bytes())
+            .map_err(|_| Error::BadAnswer("Invalid computer key.".into()))?;
         session.phase = Phase::Shaking(Some(initiator));
-        message
+        Ok(message)
     }
 
     /// Ends the session with the box at `address`: what waits on it hears `error`.
@@ -591,8 +592,12 @@ impl LinkClient {
                         session.number = random_number();
                         (session.number, self.handshake(session))
                     });
-                    if let Some((number, message)) = again {
-                        self.relay_send(&mut state, &address, &frames::frame(Kind::Handshake1, number, &message));
+                    match again {
+                        Some((number, Ok(message))) => {
+                            self.relay_send(&mut state, &address, &frames::frame(Kind::Handshake1, number, &message));
+                        }
+                        Some((_, Err(error))) => self.end(&mut state, &address, error, false),
+                        None => {}
                     }
                 } else {
                     if state.sessions.contains_key(&address) {

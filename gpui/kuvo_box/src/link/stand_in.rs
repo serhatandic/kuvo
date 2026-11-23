@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::frames::{self, FromRelay, Kind};
 use super::keys::{self, Address, Identity};
-use super::noise::{self, Responder};
+use super::noise;
 use super::relay::{Dial, Incoming, Outgoing, memory_connection};
 use crate::transport::{Closer, Request, SocketMessage, SocketOut, Transport};
 
@@ -358,7 +358,7 @@ impl Host {
                 let Some((kind, number, body)) = frames::read_frame(&payload) else { return };
                 match kind {
                     Kind::Handshake1 => {
-                        let mut responder = Responder::new(self.inner.identity.private(), noise::PROLOGUE);
+                        let mut responder = self.inner.identity.respond(noise::PROLOGUE);
                         let hello: Option<Value> = responder.read_message_1(body).ok().and_then(|hello| serde_json::from_slice(&hello).ok());
                         let Some(hello) = hello else { return Self::send(&mut state, &from, &frames::frame(Kind::Close, number, &[])) };
                         let shown = hello.get("pair").and_then(Value::as_str).is_some_and(|token| state.tokens.remove(token));
@@ -371,7 +371,9 @@ impl Host {
                         state.hellos.push(hello);
                         let mut answer = json!({ "v": 1, "kind": "machine", "name": self.inner.name, "app": "0.8.0", "engine": null });
                         if let Some(waiting) = &state.waiting { answer["waiting"] = json!(waiting); }
-                        let (message, transport) = responder.write_message_2(answer.to_string().as_bytes());
+                        let Ok((message, transport)) = responder.write_message_2(answer.to_string().as_bytes()) else {
+                            return Self::send(&mut state, &from, &frames::frame(Kind::Close, number, &[]));
+                        };
                         if state.waiting.is_none() {
                             state.sessions.insert(from, HostSession { number, transport, incoming: HashMap::new(), running: HashMap::new(), sockets: HashMap::new() });
                         }
