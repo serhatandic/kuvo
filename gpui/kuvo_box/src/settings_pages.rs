@@ -667,6 +667,10 @@ fn page_route(section: &str) -> String {
 }
 
 impl BoxClient {
+    fn settings_reader(&self, section: &str) -> BoxClient {
+        if section == "archived" { self.setup_reader() } else { self.clone() }
+    }
+
     /// This box's settings sections, in its order.
     pub fn settings_sections(&self) -> Result<Vec<Section>> {
         Ok(self.get::<Sections>("kuvo/settings")?.sections)
@@ -674,7 +678,7 @@ impl BoxClient {
 
     /// A section's page.
     pub fn settings_page(&self, section: &str) -> Result<Page> {
-        self.get(&page_route(section))
+        self.settings_reader(section).get(&page_route(section))
     }
 
     pub fn refresh_setting_model_choices(&self, section: &str, row: &str, action: &str, field: &str) -> Result<Option<Vec<Choice>>> {
@@ -689,7 +693,7 @@ impl BoxClient {
     /// Follows a section's page: as it is now, and again as it changes.
     pub fn follow_settings_page(&self, section: &str) -> Follow<Followed<Page>> {
         let route = page_route(section);
-        follow_lines(self, format!("{route}/events"))
+        follow_lines(&self.settings_reader(section), format!("{route}/events"))
     }
 
     /// Changes `row` to `value`, from the revision it was read at.
@@ -718,7 +722,7 @@ impl BoxClient {
     /// Does what the row `row` offers (`action`), from the revision (`was`) it was read at.
     pub fn setting_action_at(&self, section: &str, row: &str, was: &str, action: &str) -> Result<Changed> {
         let path = format!("{}/{}/{}", page_route(section), segment(row), segment(action));
-        changed(self, &Request::post(path, json!({ "was": was })))
+        changed(&self.settings_reader(section), &Request::post(path, json!({ "was": was })))
     }
 }
 

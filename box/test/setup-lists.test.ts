@@ -1008,3 +1008,43 @@ test("deleting an archived session from the setup page only changes its owner", 
     setup.close();
   }
 }, 45_000);
+
+test("a remote bot's tools are resolved on its owner before the first session copy", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    const directory = path.join(far.home, "project");
+    writeFileSync(path.join(near.home, "run", "peer-agents.json"), JSON.stringify({
+      [far.computer.id]: { at: Date.now(), features, list: [
+        { kind: "bot", id: "bot_far", name: "Remote bot", session: far.session },
+      ] },
+    }));
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "tools") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: { path: `kuvo/sessions/${far.session}/location?tools=1` }, replyTo: "tools" });
+    const found = await answer.promise;
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({ on: far.computer, tools: {
+      directory, ready: { files: true, browser: true, changes: true, terminal: true },
+    } });
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
