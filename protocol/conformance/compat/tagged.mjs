@@ -16,8 +16,8 @@ export const relay = "ws://127.0.0.1:1";
 const git = (env, ...args) => execFileSync("git", ["-C", repo, "-c", "core.hooksPath=/dev/null", ...args],
   { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-export function runSync(command, args, env, cwd, input = "") {
-  const result = spawnSync(command, args, { env, cwd, input, timeout: 30000, encoding: "utf8" });
+export function runSync(command, args, env, cwd, input = "", timeout = 30000) {
+  const result = spawnSync(command, args, { env, cwd, input, timeout, encoding: "utf8" });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}${result.stderr}`);
   return result.stdout;

@@ -2,7 +2,7 @@
 // whose bytes depend on filesystem metadata or SQLite's WAL salt.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, readlinkSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { readJSON, scratch } from "../adapter.mjs";
@@ -21,8 +21,12 @@ function sqlite(file, normalize) {
       const tables = schema.filter(row => row.type === "table").map(({ name }) => {
         const table = db.prepare('SELECT * FROM "' + name.replaceAll('"', '""') + '"');
         table.setReadBigInts(true);
-        return table.all().map(row => normalize(JSON.stringify(row, (_, value) => typeof value === "bigint"
-          ? { integer: value.toString() } : value))).sort();
+        return table.all().map(row => {
+          if (file.endsWith("/artifacts/index-v1.sqlite") && name === "state") {
+            row.stamp = JSON.parse(row.stamp).map(([name, , size]) => [name, "<inode>", size, "<mtime>"]);
+          }
+          return normalize(JSON.stringify(row, (_, value) => typeof value === "bigint" ? { integer: value.toString() } : value));
+        }).sort();
       });
       return JSON.stringify({ schema, tables, version: db.prepare("PRAGMA user_version").get() });
     } finally {
@@ -45,6 +49,19 @@ function manifest(root) {
       for (const prefix of ["", "directory:"]) {
         replacements.set(createHash("sha1").update(prefix + file).digest("hex"), `<${tag}:${prefix}${name}>`);
       }
+    }
+  }
+  const project = path.join(root, "current", "project");
+  if (existsSync(project)) {
+    const real = realpathSync(project);
+    const pathHash = value => createHash("sha256").update(value).digest("hex");
+    replacements.set(pathHash(real).slice(0, 32), "<project-rule>");
+    for (const folder of [project, real]) {
+      replacements.set("art_" + pathHash(path.join(folder, "README.md")).slice(0, 24), "<project-artifact>");
+    }
+    for (const name of readdirSync(path.join(root, "current/machine/wakes/ses_golden/summaries"))) {
+      assert.match(name, /^[a-f0-9]{16}$/);
+      replacements.set(name, "<wake-id>");
     }
   }
   function normalize(value) {
@@ -78,6 +95,25 @@ function manifest(root) {
           link.macSeen[link.mac] = "<last heard>";
           content = JSON.stringify(link);
         }
+        if (relative === "current/machine/run/phone-trust.json") {
+          const trust = JSON.parse(content);
+          assert.ok(Number.isSafeInteger(trust.pid));
+          trust.pid = "<writer PID>";
+          content = JSON.stringify(trust);
+        }
+        if (relative === "current/machine/agents/accounts.json") {
+          const records = JSON.parse(content);
+          const account = records.find(record => record.folder === "codex/accounts/golden");
+          assert.match(account.id, /^[a-f0-9]{8}$/);
+          account.id = "<account ID>";
+          content = JSON.stringify(records);
+        }
+        if (/^current\/machine\/bots\/bot_[a-z0-9]+\/told.json$/.test(relative)) {
+          const told = JSON.parse(content);
+          assert.match(told.instructions, /^[a-f0-9]{64}$/);
+          told.instructions = "<instructions containing the fixture path>";
+          content = JSON.stringify(told);
+        }
         const digest = variable || createHash("sha256").update(content).digest("hex");
         items[relative] = { mode: stat.mode, digest };
       }
@@ -90,9 +126,11 @@ function manifest(root) {
 const roots = [scratch(), scratch()];
 try {
   for (const root of roots) {
-    for (const tag of tags) await generateRelease(tag, path.join(root, tag));
+    if (!process.argv.includes("--current")) {
+      for (const tag of tags) await generateRelease(tag, path.join(root, tag));
+      generateHoldTranscript(root);
+    }
     generateCurrent(path.join(root, "current"));
-    generateHoldTranscript(root);
   }
   const first = manifest(roots[0]);
   const second = manifest(roots[1]);

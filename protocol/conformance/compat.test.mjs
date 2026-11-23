@@ -1,11 +1,12 @@
 // Tagged SSH transcripts and golden homes opened by the selected box binary.
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, relayAddress, typescriptRuntime, until, write } from "./adapter.mjs";
+import { currentChecks } from "./compat/current-checks.mjs";
 import { generateCurrent, generateRelease } from "./compat/generate.mjs";
 import { fixed, runSync, tags } from "./compat/tagged.mjs";
 
@@ -89,7 +90,7 @@ for (const tag of tags) {
   });
 
   test(`the ${tag} app folder moves its conversations and attachments`,
-    { timeout: 60000, skip: process.platform !== "darwin" && "The released Mac move requires APFS and plutil." }, async () => {
+    { timeout: 120000, skip: process.platform !== "darwin" && "The released Mac move requires APFS and plutil." }, async () => {
       const root = scratch();
       try {
         const destination = path.join(root, "release");
@@ -136,6 +137,7 @@ test("the current TypeScript beta's durable records survive opening at layout 23
   try {
     const binary = boxBinary();
     const { home, directory, env } = generateCurrent(root, binary.typescript ? binary : undefined);
+    const families = currentChecks(root);
     const durable = [
       "folder-version.json", "box/projects.json", "box/opencode.json", "box/time-zone.json",
       "bots/personalities.json", "run/work-queue/labels.json", "run/work-queue/queues/usr_you.json",
@@ -145,7 +147,7 @@ test("the current TypeScript beta's durable records survive opening at layout 23
       "groups/grp_golden/group.json", "groups/grp_golden/messages.json", "run/queues.json",
     ];
     const bytes = durable.map(file => readFileSync(path.join(home, file)));
-    const key = readJSON(path.join(home, "run/link.json")).key;
+    const original = readJSON(path.join(home, "run/link.json"));
     assert.equal(layout(home), 23);
     proc = startBox({ binary, home, env, relay });
     const server = await proc.ready();
@@ -163,8 +165,21 @@ test("the current TypeScript beta's durable records survive opening at layout 23
     const { item } = await get("kuvo/work-queue/items/wqi_golden12345678901234");
     assert.equal(item.title, "Keep this item");
     assert.equal(item.number, 1);
+    assert.deepEqual((await get("kuvo/bots")).bots.map(bot => bot.name), ["Golden Bot"]);
+    assert.notEqual(server.pid, 2147483647);
+    const agents = readJSON(path.join(home, "run/agents.json"));
+    assert.ok(Array.isArray(agents.agents), "the resident publishes the agents directory");
+    await until(() => !existsSync(path.join(home, "run/outbox/sending/ltr_golden.json")),
+      "the expired letter remained in the outbox");
     await proc.stop();
-    assert.equal(readJSON(path.join(home, "run/link.json")).key, key);
+    const link = readJSON(path.join(home, "run/link.json"));
+    assert.equal(link.key, original.key);
+    assert.deepEqual(link.computerHistory, original.computerHistory);
+    assert.deepEqual(link.memberRemovals, original.memberRemovals);
+    for (const { family, result, entries } of families) {
+      if (!result.startsWith("Preserved")) continue;
+      for (const { file, bytes } of entries) assert.deepEqual(readFileSync(path.join(root, file)), bytes, family + " · " + file);
+    }
     durable.forEach((file, i) => assert.deepEqual(readFileSync(path.join(home, file)), bytes[i], file));
     const transcript = new DatabaseSync(path.join(home, "agents/sessions/ses_golden/messages-v1.sqlite"), { readOnly: true });
     const insights = new DatabaseSync(path.join(home, "agents/usage/insights.sqlite"), { readOnly: true });
@@ -172,6 +187,7 @@ test("the current TypeScript beta's durable records survive opening at layout 23
       const messages = transcript.prepare("SELECT body FROM message ORDER BY position").all().map(row => JSON.parse(row.body));
       assert.deepEqual(messages.map(({ id, text }) => [id, text]), [["msg_golden", "Keep this conversation."]]);
       assert.equal(insights.prepare("PRAGMA user_version").get().user_version, 1);
+      assert.equal(JSON.parse(insights.prepare("SELECT body FROM state WHERE key = 'fixture'").get().body).fixture, "golden");
     } finally {
       transcript.close();
       insights.close();

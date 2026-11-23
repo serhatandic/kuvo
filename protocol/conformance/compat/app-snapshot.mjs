@@ -72,5 +72,5 @@ try encoder.encode([letter])
 `);
   const env = isolatedEnv(root);
   runSync("/usr/bin/swift", ["-module-cache-path", path.join(root, "swift-cache"), program,
-    input.phones[0].key, machine.address, machine.key, output, vectors], env, root);
+    input.phones[0].key, machine.address, machine.key, output, vectors], env, root, "", 90_000);
 }

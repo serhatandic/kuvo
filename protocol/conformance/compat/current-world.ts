@@ -4,9 +4,15 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { publicOf } from "../../../box/src/link/crypto/keys";
-import { writeLink } from "../../../box/src/link/state";
+import { writeExtra } from "./current-extra";
+import { addressOf, publicOf } from "../../../box/src/link/crypto/keys";
+import { writeLink, type LinkState } from "../../../box/src/link/state";
 import { writeCard } from "../../../box/src/link/setup/card";
+import { signingKeyOf } from "../../../box/src/link/documents/format";
+import { acceptedMembership, membershipOf, projectMembership } from "../../../box/src/link/setup/membership";
+import { rememberEnrollment } from "../../../box/src/link/setup/computer-history";
+import { installShared, type SharedValues } from "../../../box/src/link/setup/shared";
+import { checkpointedTransition } from "../../../box/src/link/setup/checkpoint";
 import { startSetup } from "../../../box/src/link/setup/lead";
 import { changeProjects } from "../../../box/src/link/areas/projects";
 import { adoptBox } from "../../../box/src/link/compat/adopt-settings";
@@ -31,12 +37,33 @@ const [home, directory] = process.argv.slice(2);
 assert.equal(process.env.KUVO_HOME, home);
 const now = 1760000000000;
 const seed = (n: number) => Buffer.alloc(32, n).toString("base64url");
-const link = { key: seed(31), secret: seed(32), sign: seed(33), phones: [], name: "Golden Computer", relay: "ws://127.0.0.1:1" };
+const link: LinkState = { key: seed(31), secret: seed(32), sign: seed(33), phones: [], name: "Golden Computer", relay: "ws://127.0.0.1:1" };
 const setup = "set_8gOLfHXdUhmcVfSh9NOsAQ";
-const own = publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
+const own = publicOf(Buffer.from(link.key!, "base64url")).toString("base64url");
 
-Date.now = () => now;
+globalThis.Date = new Proxy(Date, {
+  construct: (date, args) => Reflect.construct(date, args.length ? args : [now]),
+  get: (date, name) => name === "now" ? () => now : Reflect.get(date, name),
+});
 startSetup(link, setup);
+const retired = {
+  key: publicOf(Buffer.alloc(32, 40)).toString("base64url"),
+  address: addressOf(Buffer.alloc(32, 41)).toString("base64url"),
+  sign: signingKeyOf(seed(42)), name: "Retired fixture", kind: "machine" as const,
+};
+const computerHistory = { setup, slots: [{ key: retired.key }], retiredSigns: [retired.sign] };
+rememberEnrollment(computerHistory, own, "a".repeat(64), retired.key, "platform-uuid");
+const membership = membershipOf({
+  ...acceptedMembership(link), left: [retired.key], computerHistory,
+  removals: { [retired.key]: { peer: retired, operation: "golden_removal_receipt", wipe: false, delivered: true } },
+});
+assert.ok(membership?.removals?.[retired.key]);
+const shared: SharedValues = { membershipAndAccess: { sequence: 1, value: membership } };
+const certificate = checkpointedTransition(link, { setup: { id: setup, epoch: 1, primary: own }, relayTerm: 1 }, shared);
+assert.ok(certificate);
+link.leadership = { 1: certificate.envelope };
+installShared(link, shared);
+projectMembership(link, membership);
 writeLink(link, true);
 writeCard();
 mkdirSync(directory, { recursive: true });
@@ -60,7 +87,7 @@ const usageSettings = new UsageSettings(path.join(usage, "settings.json"), () =>
 usageSettings.inSetup(setup);
 usageSettings.take({ codexFallback: "golden-model" });
 const insights = new InsightsStore(path.join(usage, "insights.sqlite"));
-insights.write("local", { fixture: "golden" });
+insights.write("fixture", { fixture: "golden" });
 insights.close();
 
 const store = new Store(path.join(home, "agents/sessions"));
@@ -82,7 +109,7 @@ groups.saveGroup(kept);
 groups.saveMessages(kept);
 
 const peer = publicOf(Buffer.alloc(32, 34)).toString("base64url");
-leaveLetter({ from: "ses_golden", to: "ses_remote", text: "Keep this letter.", peer, wait: false }, now, "ltr_golden");
+leaveLetter({ from: "ses_golden", to: "ses_remote", text: "Keep this letter.", peer, wait: false }, 0, "ltr_golden");
 noteMovedAway(["ses_moved"], peer, now);
 noteEnded("mov_golden", "switched", now, ["ses_moved"], undefined, peer);
 noteStopped("ses_golden", undefined, now);
@@ -90,7 +117,7 @@ noteStopped("ses_golden", undefined, now);
 const original = crypto.randomBytes;
 let counter = 0;
 crypto.randomBytes = ((size: number) => {
-  assert.ok(size <= 32, "fixture entropy only supplies the vault and backup writers");
+  assert.ok(size <= 32, "fixture entropy request too large");
   return crypto.createHash("sha256").update("public golden home " + ++counter).digest().subarray(0, size);
 }) as typeof original;
 try {
@@ -103,6 +130,7 @@ try {
   seal(path.join(backups, "point.kuvo"), seed(35), [
     { name: "box/opencode.json", file: path.join(home, "box/opencode.json") },
   ], archiveContext(own, "point"));
+  await writeExtra(home, directory, own, setup, now);
 } finally {
   crypto.randomBytes = original;
 }

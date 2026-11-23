@@ -25,18 +25,20 @@ the release's Swift codecs. It uses the existing OpenCode 2.0.32 database and th
 Keychain stand-ins for the staged move. Linux runs both machine scenarios. The two app
 moves require APFS and `plutil` and run on macOS.
 
-The current-beta home covers layout 23, link identity and signed setup checkpoints, projects
-and Git settings, engine settings and a synthetic integration key, personalities, time zone,
-Work Queue items and numbering, a paused conversation queue, agent and group transcripts,
-letters and move records, usage settings and Insights, a wrapped vault and a sealed backup
-archive. Remaining families from the [stored-format inventory](../../../docs/architecture/stored-formats.md)
-need fixtures before this covers the full current-beta home.
+The current-beta home has a representative for every row in the stored-format inventory.
+The [family list](current-families.md) names its writer, path and reopening assertion.
+The test checks that the list and inventory agree. It exercises the TypeScript writers
+with synthetic input and uses loopback stand-ins for OpenCode and Cursor. Provider,
+Chromium, desktop and retired app input is checked for preservation.
 
-The byte comparison substitutes cache roots and the OpenCode snapshot IDs derived from
-those paths. It compares SQLite schema and committed rows through the WAL. Git stat
-indexes, SQLite WAL and shared-memory file bytes, the beta.1 last-heard clock and holder
-and agent PIDs vary. The tagged commits, payload bytes, SSH requests and responses and
-other file contents must match.
+The reproduction check substitutes cache roots and the OpenCode snapshot, fence policy
+and artifact IDs derived from those paths. It compares SQLite schema and committed rows
+through the WAL. The artifact index's journal inode and mtime, Git stat indexes, SQLite
+WAL and shared-memory bytes, bot instruction hashes that include scratch paths, account
+and wake IDs, beta.1's last-heard clock, and recorded process IDs can vary. The tagged
+commits, payload bytes, SSH requests and responses and other file contents must match.
+Use `node protocol/conformance/compat/reproduce.mjs --current` to check the current home
+alone.
 
 The holder transcript records both directions through the real holder process. It includes
 a fenced controller, replay of a pending request, a reply to the same running agent, stderr,
