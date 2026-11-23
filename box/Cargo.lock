@@ -1119,6 +1119,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "unicode-normalization",

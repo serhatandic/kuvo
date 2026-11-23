@@ -39,6 +39,8 @@ const STOPPED: &str = "Stopped: no one asks any longer.";
 #[derive(Clone, Debug)]
 pub struct Places {
     pub home: PathBuf,
+    /// This box's own folder (`~/.kuvo-code`).
+    pub box_home: PathBuf,
     pub platform: Platform,
 }
 

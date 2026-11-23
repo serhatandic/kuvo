@@ -5,7 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { scratch } from "./adapter.mjs";
+import { scratch, until } from "./adapter.mjs";
+import { sessionOf } from "./engine.mjs";
 import { bench } from "./bench.mjs";
 
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -261,4 +262,46 @@ test("a file's info, text and bytes", async t => {
       assert.equal((await find(top, typed)).json.url, url, typed);
     }
   });
+});
+
+test("folders worth starting in: those worked in, newest first, then repositories", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("Suggested");
+  const outside = realpathSync(scratch());
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const folder = (at, repository = false) => {
+    mkdirSync(path.join(at, repository ? ".git" : ""), { recursive: true });
+    return at;
+  };
+  const api = folder(path.join(outside, "work", "api"), true);
+  const scratchFolder = folder(path.join(outside, "scratch"));
+  const gone = path.join(outside, "gone");
+  box.engine.sessions.push(
+    sessionOf({ id: "ses_api", directory: api, updated: 450 }),
+    sessionOf({ id: "ses_scratch", directory: scratchFolder, updated: 500 }),
+    sessionOf({ id: "ses_api_old", directory: api + "/", updated: 100 }),
+    sessionOf({ id: "ses_gone", directory: gone, updated: 600 }),
+    sessionOf({ id: "ses_archived", directory: folder(path.join(outside, "old"), true), updated: 900, archived: 900 }),
+  );
+  const ask = box.connect(await box.start().ready());
+  const first = await ask("GET", "kuvo/folders/suggested");
+  assert.equal(first.status, 200, first.text);
+  const home = first.json.home;
+  const projects = folder(path.join(home, "Projects", "website"), true);
+  folder(path.join(home, "Projects", "plain"));
+  folder(path.join(home, "Projects", ".hidden"), true);
+  folder(path.join(home, "Projects", "deep", "inner"), true);
+  const dotfiles = folder(path.join(home, "Developer", "dotfiles"), true);
+  writeFileSync(path.join(home, "Projects", "README.md"), "not a folder");
+  let reply;
+  await until(async () => {
+    reply = await ask("GET", "kuvo/folders/suggested");
+    return reply.json?.folders?.some(each => each.seen !== null);
+  }, "the sessions' folders suggested", 20000, 100);
+  assert.deepEqual(reply.json.folders.slice(0, 2), [
+    { path: scratchFolder, name: "scratch", seen: 500 },
+    { path: api, name: "api", repository: true, seen: 450 },
+  ]);
+  assert.deepEqual(reply.json.folders.slice(2).map(each => [each.path, each.name, each.repository, each.seen]).sort(),
+    [[dotfiles, "dotfiles", true, null], [projects, "website", true, null]]);
 });
