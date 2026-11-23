@@ -2314,6 +2314,8 @@ impl Workspace {
                         composer.read_models(cx);
                         composer.read_approval(cx);
                     } else {
+                        // (Tests and shots: read at once, as the app's reads would hand it.)
+                        #[cfg(feature = "stand-in")]
                         composer.read_at_once(cx);
                     }
                 });
