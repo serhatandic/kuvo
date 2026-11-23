@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
+- The Rust box can verify encrypted backups on disk, over SSH, or on another computer through the relay. Restore keeps recovered pending work paused for review.
 
 - A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.

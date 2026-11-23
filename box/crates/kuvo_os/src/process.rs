@@ -68,6 +68,43 @@ impl ProcessIdentity {
     }
 }
 
+/// Recognize legacy PID-only records kept by the TypeScript box. Never signal
+/// the process and never infer a match from a PID alone where it can be reused.
+pub fn legacy_process_runs(pid: u32, name: &str) -> bool {
+    if pid <= 1 || matches!(ProcessIdentity::read(pid), Ok(None)) {
+        return false;
+    }
+    legacy_command_contains(pid, name)
+}
+
+#[cfg(target_os = "linux")]
+fn legacy_command_contains(pid: u32, name: &str) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .is_ok_and(|line| String::from_utf8_lossy(&line).contains(name))
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_command_contains(pid: u32, name: &str) -> bool {
+    if std::env::var("KUVO_BOX").as_deref() == Ok("mac")
+        || (std::env::var_os("KUVO_AGENTS_HOME").is_some()
+            && std::env::var_os("KUVO_AGENTS_REMOTE").is_none())
+    {
+        return true;
+    }
+    std::process::Command::new("/bin/ps")
+        .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .map_or(true, |output| {
+            !output.status.success() || String::from_utf8_lossy(&output.stdout).contains(name)
+        })
+}
+
+#[cfg(windows)]
+fn legacy_command_contains(_pid: u32, _name: &str) -> bool {
+    // The TypeScript box never matched old PID-only records on Windows.
+    false
+}
+
 #[derive(Default, Debug)]
 pub enum Stdio {
     #[default]

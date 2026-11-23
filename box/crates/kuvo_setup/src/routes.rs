@@ -205,7 +205,7 @@ impl SetupHandle {
         });
     }
 
-    async fn request(&self, command: Command) -> Result<Response, Refusal> {
+    pub(crate) async fn request(&self, command: Command) -> Result<Response, Refusal> {
         let (reply, result) = oneshot::channel();
         self.inbox
             .send(Request { command, reply })

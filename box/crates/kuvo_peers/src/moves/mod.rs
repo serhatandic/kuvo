@@ -274,3 +274,45 @@ fn move_id(id: &str) -> Option<&str> {
     id.strip_prefix("mov_")
         .filter(|tail| !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
+
+/// Backup needs the complete local ownership fences, including older departures
+/// that no longer appear in the list shown to other computers.
+#[derive(PartialEq, Eq)]
+pub struct BackupFences {
+    frozen: BTreeSet<String>,
+    owners: std::collections::BTreeMap<String, String>,
+}
+
+impl BackupFences {
+    pub fn read(run: &Path) -> Result<Self, kuvo_store::format::Error> {
+        let mut frozen = BTreeSet::new();
+        for movement in journals(run)?.into_iter().filter(Journal::live) {
+            if movement.step.as_deref() != Some("check") {
+                frozen.insert(movement.thing);
+                frozen.extend(movement.sessions);
+            }
+        }
+        let mut owners = std::collections::BTreeMap::new();
+        for record in departures(run)? {
+            if record.queue.is_none() {
+                owners.entry(record.session).or_insert(record.key);
+            }
+        }
+        Ok(Self { frozen, owners })
+    }
+
+    pub fn permits(&self, id: &str, local: impl FnOnce(&str) -> bool) -> bool {
+        !self.frozen.contains(id) && self.owners.get(id).is_none_or(|owner| local(owner))
+    }
+
+    pub fn owner(&self, id: &str) -> Option<&str> {
+        self.owners.get(id).map(String::as_str)
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.frozen
+            .iter()
+            .chain(self.owners.keys())
+            .map(String::as_str)
+    }
+}
