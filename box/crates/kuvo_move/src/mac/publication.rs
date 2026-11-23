@@ -24,8 +24,10 @@ mod git;
 mod keychain;
 mod legacy;
 mod release;
+mod security;
 
 pub use credentials::{GenericPassword, KeychainItems};
+pub use security::ClaudeKeychain;
 
 const PENDING: &str = "updates/rehome/publication.json";
 const JOURNAL: &str = "updates/rehome/journal.json";
@@ -233,7 +235,13 @@ pub fn unfinished(home: &Home) -> Result<Option<PathBuf>, Error> {
 /// Resume a Rust publication using the installer's original inputs. The
 /// mover validates the saved paths again after it has taken the lock.
 pub fn resume(home: &Home, account: &Path, system_account: &Path) -> Result<Outcome, Error> {
-    resume_using(home, account, system_account, None)
+    let items = ClaudeKeychain::for_move(home, system_account)?;
+    resume_using(
+        home,
+        account,
+        system_account,
+        items.as_ref().map(|items| items as _),
+    )
 }
 
 pub fn resume_with_keychain(
@@ -460,7 +468,15 @@ impl Run<'_> {
     /// The layout lock excludes startup until the marker commits. Hold the
     /// rehome lock as well for the signed key tool and any legacy caller.
     pub fn execute(&self, complete: impl FnMut(CutoverStep)) -> Outcome {
-        self.execute_using(None, complete)
+        match ClaudeKeychain::for_move(self.home, self.system_account) {
+            Ok(items) => self.execute_using(items.as_ref().map(|items| items as _), complete),
+            Err(error) => Outcome {
+                result: "refused",
+                status: crate::rehome_status(self.home),
+                started: None,
+                message: Some(error.to_string()),
+            },
+        }
     }
 
     pub fn execute_with_keychain(
