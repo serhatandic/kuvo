@@ -378,3 +378,109 @@ test("a member lists the main computer’s keys and issues an installer code thr
   assert.equal(adopted.code, 0, adopted.log);
   assert.equal(fs.readFileSync(path.join(applicant.home, "box", "keys", key), "utf8"), "studio-test-key");
 });
+
+for (const confirmed of [false, true]) {
+  test(confirmed
+    ? "a saved installer claim cancels its provisional member after local work appears"
+    : "a saved installer claim fences a delayed confirmation after local work appears",
+  { timeout: 90000 }, async t => {
+    const { computer, leases, relay } = await bench(t);
+    const main = await computer("Studio");
+    const applicant = await computer("Workshop");
+    const stranger = await computer("Spare");
+    if (!boxBinary().typescript) {
+      const independent = applicant.start();
+      const ready = applicant.connect(await independent.ready());
+      const own = await ready("GET", "kuvo/setup");
+      assert.equal(own.json.you.role, "primary", own.text);
+      await independent.stop();
+    }
+    const ask = main.connect(await main.start().ready());
+    const original = (await ask("GET", "kuvo/setup")).json;
+    await until(() => leases.leaseFor(original.setup), "The main computer did not claim its lease.");
+    const invite = await ask("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+    assert.equal(invite.status, 201, invite.text);
+    const ticket = JSON.parse(Buffer.from(invite.json.code.split(".")[1], "base64url"));
+    const id = createHash("sha256").update(ticket.token).digest("base64url");
+    const issuer = Buffer.from(ticket.address, "base64url");
+    const prefix = Buffer.from("kuvo installer v1\0");
+    const mainLink = () => readJSON(path.join(main.home, "run", "link.json"));
+    const applicantLink = () => readJSON(path.join(applicant.home, "run", "link.json"));
+    const roster = () => mainLink().shared.membershipAndAccess.value;
+    let delayed, releaseReply;
+    const releaseRequest = relay.intercept(null, issuer, packet => {
+      if (!packet.payload.includes(prefix)) return false;
+      if (confirmed) {
+        releaseReply ??= relay.intercept(issuer, packet.from,
+          reply => reply.payload.includes(prefix) && roster().boxes.length === 2);
+      } else if (applicantLink().installerClaim?.invite === id) {
+        delayed ??= packet;
+        return true;
+      }
+      return false;
+    });
+    let held, independentSetup, signingKey;
+    try {
+      const interrupted = await applicant.join(invite.json.code, { afterStart: async child => {
+        await until(() => confirmed ? roster().boxes.length === 2 : delayed,
+          () => `The enrollment did not reach its saved claim.\n${child.log()}`);
+        const current = applicantLink();
+        held = current.installerClaim;
+        independentSetup = current.setup.id;
+        assert.equal(current.setup.role, "primary");
+        if (confirmed) signingKey = mainLink().installerInvites[id].claim.sign;
+        assert.equal(held.invite, id);
+        assert.notEqual(held.adopted, true);
+        await child.stop();
+      } });
+      assert.notEqual(interrupted.code, 0, interrupted.log);
+    } finally {
+      releaseRequest();
+      releaseReply?.();
+    }
+
+    const project = path.join(applicant.home, "bots", "bot_independent", "bot.json");
+    const work = '{"id":"bot_independent","name":"Kept"}';
+    write(project, work);
+    const before = mainLink().shared.membershipAndAccess.sequence;
+    if (confirmed) {
+      // Drop the cancellation acknowledgement once retirement is durable.
+      let releaseAck;
+      const releaseCancellation = relay.intercept(null, issuer, packet => {
+        if (packet.payload.includes(prefix) && !releaseAck) {
+          releaseAck = relay.intercept(issuer, packet.from,
+            reply => reply.payload.includes(prefix) && roster().left?.includes(held.recovery.key));
+        }
+        return false;
+      });
+      try {
+        await applicant.join(invite.json.code, { afterStart: async child => {
+          await until(() => roster().left?.includes(held.recovery.key),
+            "The main computer did not retire the provisional computer.");
+          assert.equal(applicantLink().installerClaim.cancelPending, true);
+          await child.stop();
+        } });
+      } finally {
+        releaseCancellation();
+        releaseAck?.();
+      }
+    }
+    const rejected = await applicant.join(invite.json.code);
+    assert.equal(rejected.code, 1, rejected.log);
+    assert.match(rejected.log, /The enrollment was cancelled\. This computer kept its own setup\./);
+    assert.equal(applicantLink().installerClaim, undefined);
+    assert.equal(applicantLink().setup.id, independentSetup);
+    assert.equal(applicantLink().setup.role, "primary");
+    assert.equal(fs.readFileSync(project, "utf8"), work);
+    assert.equal(mainLink().installerInvites[id].cancelled, true);
+    if (delayed) relay.replay(delayed);
+
+    const reused = await stranger.join(invite.json.code);
+    assert.equal(reused.code, 1, reused.log);
+    assert.match(reused.log, /This enrollment was cancelled/);
+    assert.deepEqual(roster().boxes.map(peer => peer.key), [original.you.key]);
+    assert.deepEqual(roster().left ?? [], confirmed ? [held.recovery.key] : []);
+    if (confirmed) assert.ok(roster().computerHistory.retiredSigns.includes(signingKey));
+    assert.equal(mainLink().shared.membershipAndAccess.sequence, before + Number(confirmed));
+  });
+}

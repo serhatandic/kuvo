@@ -12,7 +12,7 @@ use crate::{
         self, Applicant, CLAIM_LIFETIME, Cancellation, Claim, Device, INVITE_LIFETIME, Invitation,
         hash, relay_url,
     },
-    model::{Peer, Role, SharedKind, Status, safe_token},
+    model::{Membership, Peer, Role, SharedKind, Status, safe_token},
     random,
     seed::source::Consent,
 };
@@ -432,9 +432,9 @@ impl Owner {
             || decode_exact::<32>(&given.sign).is_none()
             || decode_exact::<16>(&given.address).is_none()
             || given.name.encode_utf16().count() > 100
-            || given.cancel
             || given.merging
             || (given.credential_ack && given.activation_ack)
+            || (given.cancel && (given.credential_ack || given.activation_ack))
         {
             return Ok(());
         }
@@ -460,6 +460,11 @@ impl Owner {
         };
         let to = Host { address: from, key };
         let roster = self.roster()?;
+        if given.cancel {
+            return self
+                .cancel_applicant(&id, invite, &peer, roster, &to, &given)
+                .await;
+        }
         let enrolled = roster.boxes.iter().any(|each| {
             each.key == peer.key && each.sign == peer.sign && each.address == peer.address
         });
@@ -564,6 +569,122 @@ impl Owner {
             return Ok(());
         }
         self.installer_membership(&to, &id, &given).await
+    }
+
+    async fn cancel_applicant(
+        &mut self,
+        id: &str,
+        invite: Invitation,
+        peer: &Peer,
+        mut roster: Membership,
+        to: &Host,
+        given: &Applicant,
+    ) -> Result<(), Error> {
+        let completed = |flag| invite.extra.get(flag) == Some(&Value::Bool(true));
+        if !given.activation_ack_capable
+            || !self
+                .link
+                .setup()
+                .is_ok_and(|setup| setup.role == Role::Primary && setup.position.id == invite.setup)
+            || self.can_write().is_err()
+            || ["localUnlink", "localWipe", "removalSource"]
+                .iter()
+                .any(|key| {
+                    self.link
+                        .extra
+                        .get(*key)
+                        .is_some_and(|value| !value.is_null())
+                })
+            || completed("activated")
+            || completed("credentialsCompleted")
+            || (!completed("cancelled") && !invite.live(lease::wall()))
+            || invite.claim.as_ref().map_or_else(
+                || {
+                    invite
+                        .actor
+                        .as_ref()
+                        .is_some_and(|device| !self.installer_device(device))
+                },
+                |claim| !claim.matches(peer),
+            )
+        {
+            return Ok(());
+        }
+        let listed = roster
+            .boxes
+            .iter()
+            .position(|listed| listed.key == peer.key);
+        let mut recoveries = installer::recoveries(&self.link, &roster);
+        if let Some(at) = listed {
+            let previous = &roster.boxes[at];
+            if previous.sign != peer.sign
+                || previous.address != peer.address
+                || roster
+                    .extra
+                    .get("wipePreparations")
+                    .is_some_and(|rows| rows.get(&peer.key).is_some())
+            {
+                return Ok(());
+            }
+            let Some(claim) = invite.claim.as_ref() else {
+                return Ok(());
+            };
+            if claim.extra.get("provisional") != Some(&Value::Bool(true)) {
+                self.installer_reply(to, &given.nonce, json!({
+                    "message": "The main computer could not verify that this invitation created the roster entry. Review that entry on the main computer."
+                })).await;
+                return Ok(());
+            }
+            if !self.link.shared_outcomes.get(id).is_some_and(|entry| {
+                entry.kind == SharedKind::MembershipAndAccess && entry.status == Status::Committed
+            }) || (claim.extra.get("recoveryBound") == Some(&Value::Bool(true))
+                && !recoveries
+                    .get(&peer.key)
+                    .is_some_and(|entry| entry["invite"] == id))
+            {
+                return Ok(());
+            }
+        } else if completed("cancelled") {
+            self.installer_reply(to, &given.nonce, json!({"cancelled": true}))
+                .await;
+            return Ok(());
+        }
+
+        let mut next = self.link.clone();
+        let entry = next.installer_invites.get_mut(id).ok_or(Error::Conflict)?;
+        entry.claim.get_or_insert_with(|| Claim {
+            key: peer.key.clone(),
+            sign: given.sign.clone(),
+            address: peer.address.clone(),
+            until: lease::wall() + CLAIM_LIFETIME,
+            extra: Default::default(),
+        });
+        entry.extra.insert("cancelled".into(), json!(true));
+        entry.extra.shift_remove("credentialSeed");
+        entry.extra.shift_remove("credentialSelectionDigest");
+        if let Some(at) = listed {
+            let peer = roster.boxes.remove(at);
+            recoveries.shift_remove(&peer.key);
+            installer::keep_recoveries(&mut next, &mut roster, recoveries)?;
+            let own = self.own()?;
+            super::removal::retire_computer(&mut roster, &invite.setup, &peer, &own.public)?;
+            next.put(
+                own,
+                SharedKind::MembershipAndAccess,
+                serde_json::to_value(roster).expect("membership serializes"),
+                None,
+                None,
+            )?;
+        }
+        self.commit(next).await?;
+        if listed.is_some()
+            && let Err(error) = self.publish(false).await
+        {
+            eprintln!("publishing installer cancellation: {error}");
+        }
+        self.installer_reply(to, &given.nonce, json!({"cancelled": true}))
+            .await;
+        Ok(())
     }
 
     async fn enroll_installer(

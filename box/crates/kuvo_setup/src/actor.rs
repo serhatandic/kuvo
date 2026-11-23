@@ -514,7 +514,7 @@ fn open(
     Ok((link, Some(own)))
 }
 
-fn bootstrap(
+pub(crate) fn bootstrap(
     files: &Files,
     link: &mut Link,
     own: &Identity,

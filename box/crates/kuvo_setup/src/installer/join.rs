@@ -15,7 +15,10 @@ use serde_json::{Value, json};
 use super::{Applicant, CLAIM_LIFETIME, Cancellation, Code, credentials, hash};
 use crate::{
     Error,
-    actor::{LINK, new_setup, project_membership, remember_link_key, validate_disk, write_link},
+    actor::{
+        LINK, bootstrap, new_setup, project_membership, remember_link_key, validate_disk,
+        write_link,
+    },
     document, lease,
     model::{
         ComputerKind, Entry, Identity, Link, Membership, Position, Role, SharedKind, safe_token,
@@ -155,6 +158,8 @@ struct Reply {
     copy_credentials: bool,
     #[serde(default)]
     credential_complete: bool,
+    #[serde(default)]
+    cancelled: bool,
     credential_until: Option<u64>,
     credential_problem: Option<String>,
     seed: Option<Value>,
@@ -172,6 +177,7 @@ struct Docs {
 
 enum Exchange {
     Enroll,
+    Cancel,
     Activate { portable: bool },
     AcknowledgeCredentials,
 }
@@ -277,16 +283,32 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     if blocked {
         return Err(refused(IN_USE));
     }
+    let mut cancellation = None;
     if !already_joined {
-        check_join(&files, &link, &code, &id, claim.as_ref())?;
-        if link.extra.get("codeIdentity").and_then(Value::as_str) != Some(&id)
+        link.name
+            .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
+        if let Err(problem) = check_join(&files, &link, &code, &id, claim.as_ref()) {
+            if !claim
+                .as_ref()
+                .is_some_and(|claim| claim.invite == id && !claim.adopted)
+                || link
+                    .setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.role == Role::Member)
+            {
+                return Err(problem);
+            }
+            cancellation = Some(problem);
+        }
+        if cancellation.is_none()
+            && link.extra.get("codeIdentity").and_then(Value::as_str) != Some(&id)
             && !claim.as_ref().is_some_and(|claim| claim.invite == id)
         {
+            let standalone = link.setup.take();
             link.key = Some(encode(&random::<32>()?));
             link.sign = Some(encode(&random::<32>()?));
             link.secret = Some(encode(&random::<32>()?));
             // The old bootstrap certificate belongs to the old signer.
-            link.setup = None;
             link.leadership.clear();
             link.shared_setup = None;
             link.shared.clear();
@@ -304,9 +326,18 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             }
             claim = None;
             link.extra.insert("codeIdentity".into(), json!(id));
+            if let Some(standalone) = standalone {
+                let released = link.extra.get("releasedSetup").and_then(Value::as_str)
+                    == Some(&standalone.position.id);
+                let own = Identity::read(&link)?;
+                bootstrap(&files, &mut link, &own, KIND)?;
+                if released {
+                    let setup = link.setup()?;
+                    link.extra
+                        .insert("releasedSetup".into(), json!(setup.position.id));
+                }
+            }
         }
-        link.name
-            .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
         link.extra.entry("phones").or_insert_with(|| json!([]));
     }
     if already_joined
@@ -322,7 +353,7 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         });
     }
     let identity = Identity::read(&link)?;
-    if !already_joined {
+    if !already_joined && cancellation.is_none() {
         remember_link_key(&mut link, &identity, KIND);
         saved_link.write(&link)?;
     }
@@ -358,6 +389,19 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         merging: false,
         credential_ack: false,
     };
+    if let Some(problem) = cancellation {
+        let claim = claim.as_mut().ok_or(Error::Conflict)?;
+        return cancel_join(
+            &mut saved_link,
+            &mut link,
+            claim,
+            &mut relay,
+            &primary,
+            &mut given,
+            problem,
+        )
+        .await;
+    }
     let mut copy = None;
     if !already_joined {
         let accepted = exchange(
@@ -398,9 +442,22 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                     .map(|recovery| hash(&recovery.secret)))
             },
         )
-        .await?
-        .ok_or(Error::Invalid("installer membership"))?;
-        check_join(&files, &link, &code, &id, claim.as_ref())?;
+        .await;
+        if let Some(held) = claim.as_mut()
+            && let Err(problem) = check_join(&files, &link, &code, &id, Some(held))
+        {
+            return cancel_join(
+                &mut saved_link,
+                &mut link,
+                held,
+                &mut relay,
+                &primary,
+                &mut given,
+                problem,
+            )
+            .await;
+        }
+        let accepted = accepted?.ok_or(Error::Invalid("installer membership"))?;
         adopt(&mut link, &identity, &code, accepted.doc)?;
         let saved = claim.as_mut().ok_or(Error::Conflict)?;
         saved.adopted = true;
@@ -497,6 +554,44 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         setup: code.setup,
         primary: code.primary,
     })
+}
+
+async fn cancel_join(
+    saved: &mut SavedLink<'_>,
+    link: &mut Link,
+    claim: &mut LocalClaim,
+    relay: &mut relay::Relay,
+    primary: &Host,
+    given: &mut Applicant,
+    problem: Error,
+) -> Result<Joined, Error> {
+    const RECOVERY: &str = "Run installer-recovery issue on this computer and installer-recovery apply on the setup’s current main computer.";
+    if !claim.cancel_pending {
+        claim.cancel_pending = true;
+        saved.keep_claim(link, claim)?;
+    }
+    if claim.recovery.is_some() && claim.until <= lease::wall() {
+        return Err(Error::Installer(format!(
+            "{problem} The installer claim expired. {RECOVERY}"
+        )));
+    }
+    if let Err(error) = exchange(relay, primary, given, Exchange::Cancel, |_| Ok(None)).await {
+        let detail = if claim.recovery.is_some() {
+            RECOVERY.to_owned()
+        } else {
+            format!(
+                "{error} Run the installer again with the original code to finish cancelling the enrollment."
+            )
+        };
+        return Err(Error::Installer(format!("{problem} {detail}")));
+    }
+    let key = Identity::read(link)?.public;
+    link.extra.insert("departedKey".into(), json!(key));
+    link.extra.shift_remove("installerClaim");
+    saved.write(link)?;
+    Err(Error::Installer(format!(
+        "{problem} The enrollment was cancelled. This computer kept its own setup."
+    )))
 }
 
 fn open_staged_ssh_home(home: &Home) -> Result<(), Error> {
@@ -628,14 +723,17 @@ fn check_join(
     }
     let now = lease::wall();
     if let Some(claim) = claim {
-        if !claim.adopted && !claim.cancel_pending && claim.until > now && claim.invite != id {
+        if !claim.adopted && claim.until > now && claim.invite != id {
             return Err(refused(
                 "An installer enrollment is already in progress. Retry with its original code.",
             ));
         }
-        if claim.invite == id && (claim.cancel_pending || claim.until <= now) {
+        if claim.invite == id && claim.cancel_pending {
+            return Err(refused("This computer could not join."));
+        }
+        if claim.invite == id && claim.until <= now && claim.recovery.is_some() {
             return Err(refused(
-                "The installer claim expired or was cancelled. Finish recovering it before enrolling again.",
+                "The installer did not finish before the claim expired.",
             ));
         }
     }
@@ -771,7 +869,9 @@ async fn exchange(
     given.nonce = encode(&random::<24>()?);
     given.activation_ack = matches!(mode, Exchange::Activate { .. });
     given.credential_ack = matches!(mode, Exchange::AcknowledgeCredentials);
+    given.cancel = matches!(mode, Exchange::Cancel);
     given.confirmed = false;
+    given.recovery_commitment = None;
     // Only one socket exists for this temporary relay address, including the activation round.
     // Subscribing after connect is safe: the timer retries sends until the socket is ready.
     let mut observations = relay.handle().subscribe().ok_or_else(|| refused(OFFLINE))?;
@@ -809,6 +909,11 @@ async fn exchange(
                 }
                 let Ok(reply) = serde_json::from_slice::<Reply>(payload) else { continue };
                 if reply.nonce != given.nonce {
+                    continue;
+                }
+                if matches!(mode, Exchange::Cancel) {
+                    if reply.cancelled { return Ok(None); }
+                    if let Some(message) = reply.message { return Err(Error::Installer(message)); }
                     continue;
                 }
                 if let Exchange::Activate { portable } = mode {
