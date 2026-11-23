@@ -488,6 +488,24 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.fail("the new chat did not reach both lists on the line");
 });
 
+test("a project query accepts a Windows key while route paths keep their separator guard", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("project-page-query");
+  const record = await here.start().ready();
+  const route = "kuvo/sessions/page?project=";
+  const key = "C:\\Kuvo\\projects\\Example";
+  const page = await request(record, "GET", route + encodeURIComponent(key));
+  assert.equal(page.status, 200, page.text);
+  assert.deepEqual(page.json, { project: key, sessions: [], total: 0, more: null });
+  for (const badKey of ["C:\\Kuvo\\..\\Example", "/Kuvo/../Example"]) {
+    assert.equal((await request(record, "GET", route + encodeURIComponent(badKey))).status, 400);
+  }
+  for (const segment of ["%2E%2E", "sessions%2Fpage", "sessions%5Cpage"]) {
+    assert.equal((await request(record, "GET", "kuvo/" + segment + "/page")).status, 403);
+  }
+  assert.equal((await request(record, "GET", "api/fs/list?path=Kuvo%2F..")).status, 403);
+});
+
 test("a project page grows in steps and keeps its running conversations first", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("project-page");

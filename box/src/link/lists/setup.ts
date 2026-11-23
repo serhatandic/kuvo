@@ -341,6 +341,11 @@ export async function* pageRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const query = new URLSearchParams(request.path.split("?")[1] ?? "");
   const project = query.get("project");
   if (!project) return yield* json(400, { message: "Name the project: project=<its key>." });
+  // A project key selects existing inventory rows. It never resolves a path.
+  const name = project.replace(/^[\w-]{43}:/, "");
+  if (name.split(/[/\\]/).some(part => part.replace(/[^\x00-\x7f]/g, "") === "..")) {
+    return yield* json(400, { message: "Name the project: project=<its key>." });
+  }
   const cursor = query.get("cursor");
   const at = cursor ? shownOfCursor(cursor) : undefined;
   if (at === null) return yield* json(400, { message: "That cursor isn't one this box gave. Read the list again." });

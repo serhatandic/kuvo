@@ -22,12 +22,21 @@ export const canonicalPath = (path: string): string | null => {
       if (part === null || part.includes("/") || [".", ".."].includes(ascii(part))) return null;
       parts.push(encodeURIComponent(part).replace(/%(24|26|2B|2C|3B|3D|3A|40)/g, plainly));
     }
+    const sessionsPage = parts.join("/") === "kuvo/sessions/page";
     const fields: string[] = [];
     for (const raw of at < 0 ? [] : path.slice(at + 1).split("&").filter(Boolean)) {
       // Its name and value, a "+" in them a space, as a query is read.
       const spaced = raw.replaceAll("+", " "), equals = spaced.indexOf("=");
-      const halves = (equals < 0 ? [spaced] : [spaced.slice(0, equals), spaced.slice(equals + 1)]).map(decodedPart);
-      if (halves.some(half => half === null || half.split("/").some(piece => ascii(piece) === ".."))) return null;
+      const name = decodedPart(equals < 0 ? spaced : spaced.slice(0, equals));
+      if (name === null || name.split("/").some(piece => ascii(piece) === "..")) return null;
+      const halves = [name];
+      if (equals >= 0) {
+        // The session page validates its key as it looks up the inventory.
+        const projectKey = sessionsPage && name === "project";
+        const value = decodedPart(spaced.slice(equals + 1), projectKey);
+        if (value === null || (!projectKey && value.split("/").some(piece => ascii(piece) === ".."))) return null;
+        halves.push(value);
+      }
       fields.push(halves.map(half => encodeURIComponent(half!).replace(/%(24|2C|3B|3A|40|2F|3F)/g, plainly).replaceAll("'", "%27")).join("="));
     }
     return parts.join("/") + (fields.length ? `?${fields.join("&")}` : "");
@@ -36,15 +45,15 @@ export const canonicalPath = (path: string): string | null => {
     return null;
   }
 };
-// Percent-decoded once, or null when it doesn't decode or holds a backslash or a control character.
-const decodedPart = (raw: string): string | null => {
+// Percent-decoded once. Only a project key allows backslashes.
+const decodedPart = (raw: string, projectKey = false): string | null => {
   let text: string;
   try {
     text = decodeURIComponent(raw);
   } catch {
     return null;
   }
-  return /[\u0000-\u001f\u007f\\]/.test(text) ? null : text;
+  return /[\u0000-\u001f\u007f]/.test(text) || (!projectKey && text.includes("\\")) ? null : text;
 };
 const ascii = (text: string) => text.replace(/[^\u0000-\u007f]/g, "");
 // What's written as it is beyond what encodeURIComponent leaves (letters, digits, `-_.!~*'()`):

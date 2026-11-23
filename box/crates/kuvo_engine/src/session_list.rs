@@ -1045,10 +1045,22 @@ pub(crate) fn register(
                 .ok_or_else(|| {
                     Refusal::new(StatusCode::BAD_REQUEST, "That cursor isn't one this box gave. Read the list again.")
                 })?;
-            if project.split_once(':').is_some_and(|(key, _)| {
+            let peer_project = project.split_once(':').filter(|(key, _)| {
                 key.len() == 43
                     && key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
-            }) {
+            });
+            let name = peer_project.map_or(project.as_str(), |(_, name)| name);
+            if name
+                .split(['/', '\\'])
+                .any(|part| part.chars().filter(char::is_ascii).eq("..".chars()))
+            {
+                return Err(Refusal::new(
+                    StatusCode::BAD_REQUEST,
+                    "Name the project: project=<its key>.",
+                ));
+            }
+            // Page keys only select facts from the local or merged inventory.
+            if peer_project.is_some() {
                 return merged_page(&project, shown, step)
                     .map(RouteReply::json::<200>)
                     .ok_or_else(|| {

@@ -1,6 +1,6 @@
 use percent_encoding::percent_decode_str;
 
-fn decode(raw: &str) -> Option<String> {
+fn decode(raw: &str, allow_backslashes: bool) -> Option<String> {
     for (index, byte) in raw.bytes().enumerate() {
         if byte == b'%'
             && !raw
@@ -12,7 +12,7 @@ fn decode(raw: &str) -> Option<String> {
         }
     }
     let part = percent_decode_str(raw).decode_utf8().ok()?;
-    if part.bytes().any(|b| b.is_ascii_control() || b == b'\\') {
+    if part.bytes().any(|b| b.is_ascii_control() || (!allow_backslashes && b == b'\\')) {
         return None;
     }
     Some(part.into_owned())
@@ -45,22 +45,28 @@ pub(crate) fn canonical(path: &str) -> Option<String> {
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let mut result = Vec::new();
     for raw in path.split('/').filter(|raw| !raw.is_empty()) {
-        let part = decode(raw)?;
+        let part = decode(raw, false)?;
         if part.contains('/') || matches!(ascii(&part).as_str(), "." | "..") {
             return None;
         }
         result.push(encode(&part, b"'$&+,;=:@"));
     }
     let mut path = result.join("/");
+    let sessions_page = path == "kuvo/sessions/page";
     for (index, raw) in query.split('&').filter(|raw| !raw.is_empty()).enumerate() {
         path.push(if index == 0 { '?' } else { '&' });
+        let mut project_key = false;
         for (index, raw) in raw.splitn(2, '=').enumerate() {
-            let part = decode(&raw.replace('+', " "))?;
-            if part.split('/').any(|piece| ascii(piece) == "..") {
+            let project_value = index == 1 && project_key;
+            let part = decode(&raw.replace('+', " "), project_value)?;
+            if !project_value && part.split('/').any(|piece| ascii(piece) == "..") {
                 return None;
             }
             if index == 1 {
                 path.push('=');
+            } else {
+                // The project page validates this inventory key itself.
+                project_key = sessions_page && part == "project";
             }
             path.push_str(&encode(&part, b"$,;:@/?"));
         }
