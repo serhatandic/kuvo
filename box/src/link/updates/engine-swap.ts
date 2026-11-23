@@ -279,6 +279,7 @@ export async function keepInboxes(engine: Target): Promise<boolean> {
 }
 
 const restartWorkers = path.join(RUN, ".machine-handover.pid");
+const requestEngine = () => writePrivate(path.join(RUN, "engine.now"), "");
 const backOffMachine = () => writePrivate(machineRetryFile, String(Date.now() + SWAP_TIMING.patience));
 
 function workerHelper(role: "engine" | "agents", pid: number) {
@@ -326,11 +327,15 @@ export async function startMachineInstall({ clock = Date.now, wait = sleep }: Sw
   const adopted = fs.existsSync(machineHandoverDone) && machineHelperInstalled();
   if (!adopted) fs.rmSync(machineHandoverDone, { force: true });
   if (!adopted && previousMachineInstall()) {
+    if (!runningEngine()) requestEngine();
     // The existing launch job may be stopped. Its plist still makes this a legacy start.
     return startLegacyMachine() && !!await serviceReady(undefined, null, {}, clock, wait);
   }
   if (!takeUpdateLock()) return false;
   try {
+    // Installation verifies the engine and seeds credentials through it. The
+    // resident keeper otherwise starts it only when it has work to do.
+    if (!runningEngine()) requestEngine();
     const started = machineKeeperRuns() || startMachineHelper();
     const helper = started ? machineKeeperIdentity()?.helper : undefined;
     // Once adopted, detached workers can still serve across a restart of the same signed Helper.
@@ -361,6 +366,7 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
     const helper = job.helper ?? machineKeeperIdentity()?.helper;
     if (!owner && !job.legacy && job.phase === "waiting" && helper) {
       saveMachineJob({ ...job, owner: process.pid });
+      if (!runningEngine()) requestEngine();
       const target = await serviceReady(undefined, helper, {}, clock, wait);
       if (target) {
         completeMachineJob();
@@ -382,6 +388,7 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
         if ((!job.legacy || !answering) && processRuns(pid, "kuvo-agents")) process.kill(pid, "SIGTERM");
       }
     }
+    if (job.legacy && !runningEngine()) requestEngine();
     fs.rmSync(restartWorkers, { force: true });
     const target = job.legacy ? await serviceReady(job.version, null, {}, clock, wait) : null;
     if (job.legacy && !target) return null;
@@ -470,6 +477,7 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     for (let i = 0; i < 45 && processRuns(bridge, "kuvo-agents"); i++) await wait(1000);
     if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineKeeperIdentity()?.helper === helper &&
         !await engineBusy(engine) && machineKeeperIdentity()?.helper === helper && hasHelperGrant(helper) && keeper("engine-halt")) {
+      requestEngine();
       fs.rmSync(restartWorkers, { force: true });
       ready = await serviceReady(engine.version, helper, { engine: engine.pid, bridge }, clock, wait);
       if (ready) completeMachineJob();

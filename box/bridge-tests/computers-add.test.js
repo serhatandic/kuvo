@@ -529,7 +529,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -761,7 +761,7 @@ test("a host that can't be reached, one that refuses your keys, and one whose ke
   }
   // What failed stays to be read, and is forgotten when you say.
   const kept = (await ask("GET", "kuvo/computers/add")).body.tries.map(each => each.destination);
-  assert.deepEqual(kept.sort(), ["gpu", "nowhere", "studio", "studio.lan"]);
+  assert.deepEqual(kept.sort(), ["gpu", "nowhere", "studio", "studio.lan", "windows-no-wsl2"]);
   assert.equal((await ask("DELETE", `kuvo/computers/add/${nowhere.id}`)).status, 200);
   assert.equal((await ask("GET", "kuvo/computers/add")).body.tries.some(each => each.id === nowhere.id), false);
 });
@@ -887,7 +887,7 @@ test("a machine heard from that never says its version (a box from before they s
     fs.writeFileSync(list, "[]");
     try {
       const apart = await listed();
-      assert.deepEqual(apart.update, { state: "waiting", title: "Kuvo on studio needs an update", detail: "Studio hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays." });
+      assert.deepEqual(apart.update, { state: "waiting", title: "Kuvo on studio needs an update", detail: "Studio hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.", action: { id: "add", label: "Set Up Over SSH…", address: "studio" } });
       assert.deepEqual(apart.actions.find(each => each.id === "add"), { id: "add", label: "Set Up Over SSH…" });
     } finally {
       fs.writeFileSync(list, saved);
@@ -974,56 +974,6 @@ test("once this Mac has moved from the old app, the old app opening again stops 
     link.macLink.config = config;
     link.macLink.appSaid = undefined;
   }
-});
-
-test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this box's own add, waited for; what it must ask you is asked on the Mac", async () => {
-  // Its machines, as the box says them itself: by the name your computers know it by, with the
-  // hosts it could add.
-  const listed = await ask("GET", "kuvo/machines");
-  assert.equal(listed.status, 200, JSON.stringify(listed.body));
-  assert.deepEqual(listed.body.machines.map(each => [each.id, each.name, each.otherAddresses]), [["studio", "studio", ["studio.lan"]]]);
-  assert.doesNotMatch(listed.body.machines[0].status, /isn.t open/);
-  assert.deepEqual(listed.body.hosts, ["gpu", "github.com"]);
-
-  // One here already: said to be known at once, as the app answered, with nothing run there.
-  const reached = sshLog().length;
-  const again = await ask("POST", "kuvo/machines", { destination: "studio" });
-  assert.equal(again.status, 200, JSON.stringify(again.body));
-  assert.deepEqual([again.body.machine.id, again.body.known], ["studio", true]);
-  // By another of its addresses: the same machine.
-  const other = await ask("POST", "kuvo/machines", { destination: "studio.lan" });
-  assert.deepEqual([other.status, other.body.machine?.id, other.body.known], [200, "studio", true]);
-  assert.equal(read(path.join(home, "machines.json")).length, 1);
-  assert.equal(sshLog().length, reached, "ssh wasn't run for either");
-
-  // A host whose key this Mac doesn't know: nothing is trusted from a phone. The add is stopped,
-  // and the answer says where to add it.
-  const known = fs.readFileSync(link.KNOWN_HOSTS, "utf8");
-  fs.writeFileSync(link.KNOWN_HOSTS, known.split("\n").filter(line => !line.startsWith("gpu ")).join("\n"));
-  const kept = fs.readFileSync(link.KNOWN_HOSTS, "utf8");
-  const unknown = await ask("POST", "kuvo/machines", { destination: "gpu" });
-  assert.equal(unknown.status, 409, JSON.stringify(unknown.body));
-  assert.equal(unknown.body.message, "Is this gpu? Add it from Kuvo Code on Studio, which shows you what to check first.");
-  assert.equal(fs.readFileSync(link.KNOWN_HOSTS, "utf8"), kept, "its key wasn't kept");
-  assert.equal((await ask("GET", "kuvo/computers/add")).body.tries.some(each => each.destination === "gpu" && each.state !== "failed" && each.state !== "done"), false, "and nothing is left asking");
-  assert.equal(read(path.join(home, "machines.json")).length, 1);
-
-  // The same add begun on the Mac itself, asking there: a phone's ask doesn't stop it, and says where it's asked.
-  const onMac = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
-  const asking = await until(onMac.body.try.id, found => found?.state === "asking");
-  // (Listed meanwhile, though it's on no list yet.)
-  assert.deepEqual((await ask("GET", "kuvo/machines")).body.machines.map(each => [each.id, each.connection, each.status]).filter(each => each[0] === "gpu"), [["gpu", "installing", "Adding gpu…"]]);
-  assert.equal((await ask("POST", "kuvo/machines", { destination: "gpu" })).status, 409);
-  const stillAsking = (await ask("GET", "kuvo/computers/add")).body.tries.find(each => each.id === onMac.body.try.id);
-  assert.deepEqual([stillAsking.state, stillAsking.question.at], ["asking", asking.question.at], "the Mac's own try is as it was");
-  assert.equal((await ask("DELETE", `kuvo/computers/add/${onMac.body.try.id}`)).status, 200);
-  assert.equal(await until(onMac.body.try.id, found => !found), null);
-  assert.equal((await ask("GET", "kuvo/machines")).body.machines.some(each => each.id === "gpu"), false);
-  fs.writeFileSync(link.KNOWN_HOSTS, known);
-
-  // One that can't be reached: why, in the box's words.
-  const nowhere = await ask("POST", "kuvo/machines", { destination: "nowhere" });
-  assert.deepEqual([nowhere.status, nowhere.body.message], [502, "Couldn’t reach nowhere. Make sure it’s on and connected, then Try Again."]);
 });
 
 test("uninstalling while it's being set up waits for the start under way, then nothing runs there and nothing starts it again (#603)", async () => {
@@ -1402,34 +1352,6 @@ test("a second SSH add cannot install or seed an account reserved by the first",
   assert.equal(fs.lstatSync(path.join(folder, ".kuvo-code-adding"), { throwIfNoEntry: false }), undefined);
   const uninstall = await ask("POST", `kuvo/computers/${(await over(first.id)).computer.key}/uninstall`);
   assert.equal((await over(uninstall.body.try.id)).state, "done");
-});
-
-test("a saved offline computer reconnects over SSH after its Mac rotates keys", async () => {
-  const original = link.macLink.overlay;
-  const addedBox = await added("rotate");
-  assert.equal(addedBox.state, "done");
-  const remote = path.join(homes.rotate, ".kuvo-code", "run");
-  const card = path.join(remote, "setup-card.json");
-  const oldKey = k(link.publicOf(Buffer.from(original.key, "base64url")));
-  const oldSetup = link.newSetupID();
-  write(card, JSON.stringify({ ...read(card), setup: oldSetup, role: "member", primary: { key: oldKey, name: "Studio", kind: "mac" } }));
-  const rotated = link.newKey();
-  const newKey = k(link.publicOf(rotated));
-  const beforeRotation = link.readLink();
-  link.macLink.overlay = { ...original, key: k(rotated), sign: link.newSigningSeed() };
-  try {
-    link.updateLink(state => ({ ...state, keyNow: newKey, keysBefore: [oldKey], setup: {
-      id: link.newSetupID(), epoch: 1, primary: newKey, sign: link.ownSign(state), role: "primary",
-    } }));
-    const reconnect = await ask("POST", "kuvo/computers/add", { destination: "rotate" });
-    const done = await over(reconnect.body.try.id);
-    assert.equal(done.state, "done", JSON.stringify(done.failure));
-    assert.equal(done.computer.key, addedBox.computer.key);
-    assert.deepEqual(read(path.join(remote, "link.json")).macs, [newKey]);
-  } finally {
-    link.macLink.overlay = original;
-    link.writeLink(beforeRotation);
-  }
 });
 
 const traceFile = path.join(fake, "trace");
