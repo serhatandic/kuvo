@@ -16,6 +16,7 @@ import { asked, call, engineGet } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
 import { keepWaitingLater, writtenByYou } from "../engine/queue";
 import { messageID } from "../engine/sessions";
+import { noteSessionCreated } from "../lists/sessions";
 import { BOTS, CHATS, HERE, homeFolder, IS_MAC } from "../home";
 import { macLink, readLink } from "../state";
 import { plainName } from "../../shared/text";
@@ -681,8 +682,10 @@ async function startSessionHere(given: StartGiven, by: Starter | null, place: St
       return no(502, `Couldn't start the session in ${folder} on Autopilot: its agent couldn't be told how to work on it.`);
     }
     const info = await call(target, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, place.signal).catch(() => null);
+    noteSessionCreated(session, agents ? "agents" : "engine");
     return { started: { session, ...making.started, ...(isObject(info) ? { info } : {}), ...(treeMade ? { worktree: treeMade } : {}) } };
   }
+  noteSessionCreated(session, agents ? "agents" : "engine");
   const id = making.prompt.id;
   try {
     if (starter && by) await linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);

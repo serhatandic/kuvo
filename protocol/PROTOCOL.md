@@ -281,8 +281,8 @@ box returns `409` before creating anything. A local start can omit `computer` or
 #### Opening a conversation through another box
 
 Feature `sessions.location`. Ask the nearest box for `GET kuvo/sessions/<session>/location`
-when opening a session by ID. The box uses its kept session list, recorded moves and peer
-lists. It does not contact a runtime or another box for this lookup. A local conversation
+when opening a session by ID. The box uses its kept session list, newly confirmed starts,
+recorded moves and peer lists. It does not contact a runtime or another box for this lookup. A local conversation
 returns `{place, running}`, with `place` either `engine` or `agents`. A peer conversation
 returns `{on: {id, name, away, actions, lastSeen?, updating?}}`, using the merged-list
 computer and actions. A known away conversation still returns `200`. A lookup returns `404`

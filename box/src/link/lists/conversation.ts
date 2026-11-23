@@ -7,8 +7,8 @@ import { acquireSessionEngine } from "../engine/lifetime";
 import { targetsOf } from "../letters/tools";
 import { awaySessions } from "../moves/records";
 import { ownerOf, mayActivate } from "../ownership/resolve";
-import { keptList } from "./sessions";
-import { movedOf, peersOf } from "../peers/known";
+import { createdRuntime, keptList } from "./sessions";
+import { movedOf, ownKey, peersOf } from "../peers/known";
 import { peerSetupLists } from "../peers/lists";
 import { readLink } from "../state";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -25,7 +25,8 @@ const notReady = { message: "The conversation’s engine isn’t answering." };
 
 function localLocation(list: ReturnType<typeof keptList>, id: string) {
   const entry = list?.sessions[id];
-  if (!entry || entry.facts.away) return;
+  if (!entry) return list?.gone[id] ? undefined : createdRuntime(id);
+  if (entry.facts.away) return;
   if (entry.place !== "engine" && entry.place !== "bridge") return;
   return { place: entry.place === "bridge" ? "agents" : "engine", running: entry.facts.running === true };
 }
@@ -40,7 +41,8 @@ export async function* conversationLocation(context: RouteContext, match: RegExp
   const owner = ownerOf({ kind: "conversations", id }, { link, name: context.info.name });
   const list = keptList();
   const here = localLocation(list, id);
-  if (here && owner?.local && (!journal || journal === owner.key)) return yield* json(200, here);
+  if (here && owner?.local !== false && (!journal || (link && journal === ownKey(link))) && mayActivate({ kind: "conversations", id }, { link }))
+    return yield* json(200, here);
 
   const peers = await peerSetupLists(link);
   const destination = journal ?? owner?.key;

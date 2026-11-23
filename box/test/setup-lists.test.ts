@@ -167,20 +167,19 @@ async function share(from: Box, to: Box, waiting?: string) {
   expect(await to.run({ kind: "receive", frames })).toBe(true);
 }
 
-test("a conversation only known from another computer’s list resolves to that computer", async () => {
-  const setup = pair(true, true);
-  const { near, far } = setup;
+test("a new conversation opens before it appears in the list", async () => {
+  const setup = pair();
   try {
-    await share(far, near);
-    for (const id of [far.session, ...agentNames.map(codingSession)]) {
-      const found = await near.read(`kuvo/sessions/${id}/location`);
-      expect(found.status).toBe(200);
-      expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: false, actions: ["open", "manage"] } });
-    }
+    // The engine has created the conversation, but has sent no list or event since it did.
+    await share(setup.near, setup.far);
+    const { started, location } = await setup.near.run({ kind: "start-and-locate" });
+    expect(started).toBe(200);
+    expect(location.status).toBe(200);
+    expect(JSON.parse(location.text)).toEqual({ place: "engine", running: false });
   } finally { setup.close(); }
-});
+}, 30_000);
 
-test("another computer serves the runtime of each of its conversations over peer mail", async () => {
+test("a conversation only known from a peer list opens on its computer", async () => {
   const setup = pair(true, true);
   const { near, far } = setup;
   let a: ReturnType<Box["linked"]> | undefined;
@@ -202,12 +201,19 @@ test("another computer serves the runtime of each of its conversations over peer
     });
     await Promise.all([nearReady.promise, farReady.promise]);
     for (const id of [far.session, ...agentNames.map(codingSession)]) {
-      const reply = Promise.withResolvers<{ status: number; text: string }>();
-      replies.set(id, reply);
-      a.send({ call: { path: `kuvo/peer-session/${far.computer.id}/${id}/location` }, replyTo: id });
-      const found = await reply.promise;
+      const read = (path: string) => {
+        const reply = Promise.withResolvers<{ status: number; text: string }>();
+        replies.set(path, reply);
+        a!.send({ call: { path }, replyTo: path });
+        return reply.promise;
+      };
+      const found = await read(`kuvo/sessions/${id}/location`);
       expect(found.status).toBe(200);
-      expect(JSON.parse(found.text)).toEqual({ place: id === far.session ? "engine" : "agents", running: false });
+      const { on } = JSON.parse(found.text);
+      expect(on).toEqual({ ...far.computer, away: false, actions: ["open", "manage"] });
+      const runtime = await read(`kuvo/peer-session/${on.id}/${id}/location`);
+      expect(runtime.status).toBe(200);
+      expect(JSON.parse(runtime.text)).toEqual({ place: id === far.session ? "engine" : "agents", running: false });
     }
   } finally {
     a?.kill();

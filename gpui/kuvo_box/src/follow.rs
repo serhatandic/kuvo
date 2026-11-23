@@ -72,7 +72,7 @@ pub enum ConversationUpdate {
     Conversation(Conversation),
     /// Reading it has failed for a while (or the box turned it down); it's tried again.
     Failed(Error),
-    /// It isn't on the box (any more): the follow ends.
+    /// The setup no longer knows it: the follow ends.
     Gone(Refusal),
     /// The messages before those shown couldn't be read; the conversation goes on, and they can be
     /// asked for again.
@@ -497,7 +497,7 @@ fn reconnect_page(client: &BoxClient, location: &messages::Location, place: Wher
 /// What a read made of the conversation.
 enum Read {
     Shown,
-    /// It isn't on the box (any more): the follow ends.
+    /// The setup no longer knows it: the follow ends.
     Gone,
     Failed(Error),
 }
