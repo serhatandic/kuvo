@@ -9,8 +9,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_LOCK_VIOLATION,
-        ERROR_SHARING_VIOLATION,
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_INVALID_NAME,
+        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
     },
     Storage::FileSystem::{
         DELETE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -69,15 +69,18 @@ fn wide(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
-fn retry(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+fn retry(extra: Option<u32>, mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_millis(500);
     loop {
         match operation() {
             Err(error)
-                if matches!(
-                    error.raw_os_error().map(|code| code as u32),
-                    Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_ACCESS_DENIED)
-                ) && Instant::now() < deadline =>
+                if error.raw_os_error().is_some_and(|code| {
+                    let code = code as u32;
+                    matches!(
+                        code,
+                        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_ACCESS_DENIED
+                    ) || extra == Some(code)
+                }) && Instant::now() < deadline =>
             {
                 thread::sleep(Duration::from_millis(10))
             }
@@ -89,8 +92,10 @@ fn retry(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
 pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
     let source = wide(from)?;
     let target = wide(to)?;
-    retry(
-        || match move_file(&source, &target, MOVEFILE_REPLACE_EXISTING) {
+    // A live move saw INVALID_NAME while replacing a valid journal. Retry
+    // within the same window as sharing errors once both paths are resolved.
+    retry(Some(ERROR_INVALID_NAME), || {
+        match move_file(&source, &target, MOVEFILE_REPLACE_EXISTING) {
             Err(error)
                 if matches!(
                     error.raw_os_error().map(|code| code as u32),
@@ -102,8 +107,8 @@ pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
                 rename_open(from, to, &target)
             }
             result => result,
-        },
-    )
+        }
+    })
 }
 
 fn rename_open(from: &Path, to: &Path, target: &[u16]) -> io::Result<()> {
@@ -160,7 +165,7 @@ fn move_file(from: &[u16], to: &[u16], options: u32) -> io::Result<()> {
 pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide(from)?;
     let to = wide(to)?;
-    retry(|| move_file(&from, &to, 0))
+    retry(None, || move_file(&from, &to, 0))
 }
 
 pub fn launcher_runs(pid: u32) -> io::Result<bool> {
