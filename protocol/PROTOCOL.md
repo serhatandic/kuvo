@@ -298,6 +298,8 @@ box returns `409` before creating anything. A local start can omit `computer` or
 
 #A conversation location read with `?tools=1` also returns `tools:{directory,ready:{files,changes,browser,terminal}}`. The absolute directory belongs to the conversation owner. Its capabilities determine readiness. An away owner can still supply its last known directory and all four tools are unavailable until it returns.
 
+With `line.merged-archives`, Settings Archived Sessions includes each computer's kept groups through `archiveCopy` mail. Rows name the `computer`; away copies add `away` and `lastSeen` and have no actions. Each computer supplies its own Delete All confirmation. The route sends the selected row and revision to its owner, which checks the revision and confirmation again.
+
 ### Activity Outputs
 
 With `line.merged-outputs`, `GET kuvo/setup/outputs?session=<id>` and its `/events` topic list what the conversation and its delegated sessions made, with the first state drawn from kept copies. Each row has `computer:{id,name,here?}`, `away` and, when away, `lastSeen` (milliseconds since 1970). A page's opaque `next` goes in `before`. Bytes and previews are read from the row's owner through that owner's artifact route. Peers share metadata only, through `outputCopy` mail.

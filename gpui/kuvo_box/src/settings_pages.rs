@@ -535,6 +535,11 @@ impl Unit {
 pub struct Row {
     pub id: String,
     pub title: String,
+    pub computer: Option<crate::areas::SetupComputer>,
+    #[serde(default)]
+    pub away: bool,
+    #[serde(rename = "lastSeen")]
+    pub last_seen: Option<u64>,
     #[serde(default)]
     pub line: Option<String>,
     #[serde(default)]

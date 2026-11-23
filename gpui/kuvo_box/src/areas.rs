@@ -13,6 +13,13 @@ use crate::paths::segment;
 use crate::transport::Request;
 use crate::follow::{Follow, Followed, follow_lines, follow_lines_filter_map};
 
+/// A member of this setup, as a merged list identifies it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupComputer {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NameSaveStatus {

@@ -108,6 +108,7 @@ import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
+import { shareArchived } from "./areas/settings-pages";
 import { shareOutputs } from "./areas/setup-outputs";
 import { shareNotices } from "./areas/notices";
 import { shareLibrary } from "./areas/library";
@@ -660,6 +661,7 @@ async function run(owner?: ClientOwner): Promise<void> {
     if (current?.welcomed) {
       void shareNotices(current).catch(() => {});
       void shareOutputs(current).catch(() => {});
+      void shareArchived(current).catch(() => {});
       void shareLibrary(current).catch(() => {});
       void shareSetupLists(current).catch(() => {});
       pushRows(current, readLink(), peerTargets()).catch(() => {});

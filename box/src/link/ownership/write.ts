@@ -6,7 +6,7 @@ import { LABEL_RESTORE_FEATURE, LABEL_RESTORE_ROUTE } from "../../shared/routes/
 import { groupsRoute, listedGroups } from "../areas/groups";
 import { personalityRoute } from "../areas/personalities";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
-import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
+import { ARCHIVE_PEER_ACTION, SETTINGS_PAGE_ROUTE, archivedPeerAction, settingsPageRoute } from "../areas/settings-pages";
 import { answerWakes, type WakeAction } from "../areas/wakes";
 import { LABEL_RESTORE_REFUSAL, labelRestoreClient, WORK_QUEUE_ROUTE, workQueueClient, workQueueRoute } from "../areas/work-queue";
 import { bridgeTarget, readBridgeFile, readEngineFile, type PeerPlaces } from "../engine/client";
@@ -34,6 +34,8 @@ interface Write {
 /** This is the peer write surface. Permissions, commands and watch checks use their direct routes
  * so the owner can still identify the client and validate the current request. */
 export function ownerWrite(method: string, path: string, body: unknown): Write | null {
+  const archive = method === "POST" && path.match(ARCHIVE_PEER_ACTION);
+  if (archive) return { ref: { kind: "conversations", id: archive[1] }, method: "POST", path, answer: context => archivedPeerAction(context, archive[1]!, archive[2]!) };
   const settings = method === "PATCH" && path === "kuvo/settings/clock" ? path.match(SETTINGS_PAGE_ROUTE) : null;
   if (settings) return { ref: { kind: "setupTimeZone" }, method: "PATCH", path, answer: context => settingsPageRoute(context, settings) };
   const personality = /^(?:kuvo\/personalities)(?:\/([A-Za-z0-9_-]{1,100}))?$/.exec(path);

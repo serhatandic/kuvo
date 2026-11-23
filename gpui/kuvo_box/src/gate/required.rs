@@ -48,6 +48,7 @@ pub const REQUIRED: &[&str] = &[
     "limits.rings",
     "limits.titles",
     "line",
+    "line.merged-archives",
     "line.merged-library",
     "line.merged-notices",
     "line.merged-outputs",

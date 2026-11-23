@@ -12,7 +12,7 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -855,3 +855,29 @@ test("opening a remote bot's New tab gets the bot's folder and tools from its ow
     });
   } finally { setup.close(); }
 });
+
+test("Settings Archived Sessions shows the kept owner rows with that computer's confirmation", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    far.cases[far.session]!.time.archived = 300;
+    await share(far, near);
+    const owner = JSON.parse((await far.read("kuvo/settings/archived")).text);
+    const confirm = owner.groups[0].rows[0].actions[0].confirm;
+    expect(confirm).toEqual({ title: "Delete “Session on far”?", body: "This can’t be undone.", button: "Delete" });
+    const watch = Buffer.from(JSON.stringify({ archive: "kuvo/settings/archived/events" })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    const rows = first.d.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])]));
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: `session-${far.computer.id}:${far.session}`,
+      title: "Session on far", computer: far.computer,
+      actions: expect.arrayContaining([expect.objectContaining({ id: "delete", confirm: expect.objectContaining({ button: "Delete" }) })]),
+    }));
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: `delete-all-${far.computer.id}`, computer: far.computer,
+      actions: expect.arrayContaining([expect.objectContaining({ id: "delete-all", confirm })]),
+    }));
+  } finally { setup.close(); }
+}, 30_000);

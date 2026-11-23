@@ -136,6 +136,9 @@ const ROW_FIELDS = {
   /** A `custom` row's: what only an installed app draws, by name. */
   "name?": string,
   /** How a thing stands, beside its title (a server's "Connected"); never part of its revision. */
+  "computer?": object({ id: string, name: string }),
+  "away?": bool,
+  "lastSeen?": number,
   "badge?": SETTING_BADGE,
   /** One more line under it, set apart (the error a server failed with). */
   "notice?": object({ words: string, tone: words("quiet", "warning") }),
