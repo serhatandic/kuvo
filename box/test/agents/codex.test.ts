@@ -2,6 +2,7 @@
 
 import "../safety"
 import { compactionFile } from "../../src/shared/context"
+import { modelsFile } from "../../src/shared/model-speeds"
 import { writePrivate } from "../../src/shared/files"
 import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test"
 import { chmodSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -333,7 +334,9 @@ process.stdin.on("data", (chunk) => {
     } else if (message.method === "model/list") {
       // (Those it hides from its picker only when asked for, as the real one lists them.)
       const hidden = message.params?.includeHidden === true ? [{ id: "gpt-mini", model: "gpt-mini", displayName: "GPT Mini", hidden: true }] : []
-      send({ id: message.id, result: { data: [{ id: "gpt-test", model: "gpt-test", displayName: "GPT Test", isDefault: true }, ...hidden] } })
+      // (Its Fast as Codex 0.171 lists it: a service tier besides the standard one.)
+      const serviceTiers = [{ id: "priority", name: "Fast", description: "1.5x speed" }]
+      send({ id: message.id, result: { data: [{ id: "gpt-test", model: "gpt-test", displayName: "GPT Test", isDefault: true, serviceTiers, defaultServiceTier: null }, ...hidden] } })
     }
     else if (message.id !== undefined) send({ id: message.id, result: {} })
   }
@@ -2397,6 +2400,39 @@ describe("Codex's context", () => {
     const all = await codex!.models({ hidden: true })
     expect(all.map((model) => [model.id, model.hidden ?? false])).toEqual([["gpt-test", false], ["gpt-mini", true]])
     expect(codex!.listsEveryModel()).toBe(true)
+  })
+
+  // The speed you pick in the picker (`kuvo/models/speed`), kept on the box for each account: Codex's
+  // turns run at it with no client there, as Codex's own `/fast` keeps it for every later turn.
+  test("the speed picked for its account goes with each turn: Fast where its model runs at it, Standard as null, nothing where none was picked", async () => {
+    const file = modelsFile(process.env.KUVO_HOME!)
+    const starts = () => sent().filter(call => call.method === "turn/start").map(call => call.params)
+    const next = async (id: string, turn: number) => {
+      sessions.prompt(id, { id: `msg_codex_speed_${turn}`, text: "go on", files: [], delivery: "steer" })
+      await until(() => sessions.messages(id).filter(message => message.type === "idle").length === turn)
+    }
+    try {
+      // Never picked: nothing sent, so your own Codex settings decide.
+      const id = await run([])
+      expect("serviceTier" in starts()[0]).toBe(false)
+      // Its model lists its Fast; one without lists none.
+      const listed = await codex!.models({ hidden: true })
+      expect(listed.map(model => [model.id, model.speeds ?? []])).toEqual([["gpt-test", [{ id: "priority", name: "Fast", description: "1.5x speed" }]], ["gpt-mini", []]])
+      // Fast picked for this account (and Standard for another, which isn't this one's).
+      writePrivate(file, JSON.stringify({ starred: [], speeds: { "codex-cli": "priority", "codex-cli@work": null } }))
+      await next(id, 2)
+      expect(starts()[1].serviceTier).toBe("priority")
+      // Standard picked: sent as null, which takes Codex back to its standard speed.
+      writePrivate(file, JSON.stringify({ speeds: { "codex-cli": null } }))
+      await next(id, 3)
+      expect(starts()[2]).toHaveProperty("serviceTier", null)
+      // A speed its model doesn't run at: Standard for it.
+      writePrivate(file, JSON.stringify({ speeds: { "codex-cli": "flex" } }))
+      await next(id, 4)
+      expect(starts()[3]).toHaveProperty("serviceTier", null)
+    } finally {
+      rmSync(file, { force: true })
+    }
   })
 
   test("what a turn used: each of its model calls counted once, those that only ran commands too", async () => {

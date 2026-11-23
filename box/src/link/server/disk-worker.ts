@@ -5,6 +5,7 @@ import type { checkMoveQueueFiles, clearQueuePlacement, forgetWorkQueues, packQu
 // Each domain has its own worker so an archive never holds up permission reads.
 import { isMainThread, parentPort, Worker, workerData, type WorkerOptions } from "node:worker_threads";
 import type { setStarred } from "../areas/models-starred";
+import type { setSpeed } from "../areas/models-speed";
 import type { applySettings } from "../areas/apply";
 import type { applyResult, confirmConfig, previewConfig, readConfigPlan, saveChangeSet } from "../areas/apply-from";
 import type { installConfigCatalog, patchConfig } from "../areas/settings";
@@ -34,6 +35,7 @@ type Operations = {
   installConfigCatalog: typeof installConfigCatalog;
   patchConfig: typeof patchConfig;
   setStarred: typeof setStarred;
+  setSpeed: typeof setSpeed;
   listFolders: typeof listFolders;
   makeFolder: typeof makeFolder;
   captureBackup: typeof captureBackup;
@@ -93,6 +95,7 @@ if (isDiskWorker) {
         case "saveChangeSet": value = (await import("../areas/apply-from")).saveChangeSet(...args); break;
         case "installConfigCatalog": value = (await import("../areas/settings")).installConfigCatalog(...args); break;
         case "setStarred": value = (await import("../areas/models-starred")).setStarred(...args); break;
+        case "setSpeed": value = (await import("../areas/models-speed")).setSpeed(...args); break;
         case "patchConfig": value = (await import("../areas/settings")).patchConfig(...args); break;
         case "listFolders": value = (await import("../areas/folders")).listFolders(...args); break;
         case "makeFolder": value = (await import("../areas/folders")).makeFolder(...args); break;

@@ -11,6 +11,18 @@ use serde_json::{Value, json};
 
 const MODES: [&str; 4] = ["askFirst", "acceptEdits", "auto", "fullAccess"];
 
+/// A mode as the box offers it, with its name and its line (box/src/link/work/approval.ts,
+/// `APPROVAL_WORDS`).
+fn worded(mode: &str) -> Value {
+    let (title, detail) = match mode {
+        "askFirst" => ("Ask First", "Asks before it edits files or runs commands."),
+        "acceptEdits" => ("Accept Edits", "Edits files in the project on its own; asks before commands."),
+        "auto" => ("Auto", "Works on its own inside the sandbox; asks before anything beyond it."),
+        _ => ("Full Access", "Runs everything outside the sandbox and never asks."),
+    };
+    json!({ "approval": mode, "title": title, "detail": detail })
+}
+
 #[derive(Default)]
 pub struct WorkBars {
     /// Each conversation's mode, as picked.
@@ -42,7 +54,7 @@ impl WorkBars {
         let options: Vec<Value> = MODES
             .iter()
             .map(|mode| {
-                let mut option = json!({ "approval": mode });
+                let mut option = worded(mode);
                 if *mode == "auto" && !held.is_null() {
                     option["held"] = held.clone();
                 }
@@ -172,7 +184,7 @@ pub fn with_options(here: &Value) -> Value {
     let options: Vec<Value> = MODES
         .iter()
         .map(|mode| {
-            let mut option = json!({ "approval": mode });
+            let mut option = worded(mode);
             if *mode == "auto" && !held.is_null() {
                 option["held"] = held.clone();
             }

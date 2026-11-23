@@ -302,7 +302,7 @@ on its own makes epoch 1. See [membership](../docs/architecture/membership-lifec
   epoch, the member keeps its main and records `conflict`. A discovery card is a hint and grants no
   trust.
 - **Saving setup-wide changes.** The main that holds the lease commits membership, device grants,
-  settings, personalities and labels, then signs and publishes the accepted snapshot. Members verify
+  settings, personalities, labels and your starred models, then signs and publishes the accepted snapshot. Members verify
   it, keep it for the next main, and forward setup-wide changes to the main. When authority is stale
   or can't be reached, the operation waits or is refused. An unverified change is never applied.
   `shared/data-declarations.ts` declares the data kinds and their owners.
@@ -465,7 +465,7 @@ counts.
 
 Every word a client shows comes from the box, drawn unchanged: a step's `title` and `doing` and its
 failure `line`; a computer's `title`, `detail` and `notice`; account and service titles; a model's
-`refusal` and `action`; update lines; a summary's `title` and `workingTitle`. A client acts on the
+`refusal` and `action`; approval options' `title` and `detail`; update lines; a summary's `title` and `workingTitle`. A client acts on the
 values (`reach`, `working`, `state`), never on the words. Every client groups tool steps the same
 way: the steps between two blocks of agent words form one group, a group of two or more folds to a
 counted line, and a failed step still shows. A write that sends `was` gets `409` if the session
@@ -515,6 +515,11 @@ that waits on you is never counted as at work.
   first that runs. `known` says whether each side could answer. `listing` names accounts still
   listing their models, whose models a client doesn't refuse. The same rule decides `list_models`
   and starts from other computers.
+- Starred models (`models.starred`) are setup-wide: the main keeps them, and a member passes a change
+  on to it (`503`, or `409`, with a message while the main can't save it).
+- A model's `speeds` and its provider's picked `speed` (`models.speed`; Codex's Fast today) are each
+  computer's own. A picker shows Standard | Fast only for a model with `speeds`. With none picked,
+  the box asks for nothing, and the agent's own settings decide.
 
 ### What a typed message means
 

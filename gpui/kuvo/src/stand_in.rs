@@ -147,6 +147,12 @@ struct State {
     claude_accounts: Vec<(String, Option<String>)>,
     /// It keeps no stars (a box before `models.starred`).
     no_stars: bool,
+    /// Codex is signed in: its models, with their speeds, are offered too.
+    codex: bool,
+    /// A model with a long name is offered too (a tight composer's chip).
+    long_name: bool,
+    /// The speed picked for each provider (`kuvo/models/speed`; null: Standard).
+    speeds: BTreeMap<String, Value>,
     /// Its sessions' models can't be read now (`503`).
     models_fail: bool,
     /// What each conversation waits on you for, as the box words it (`kuvo/sessions/<id>/asks`).
@@ -1429,6 +1435,23 @@ impl StandIn {
         self.state().claude_accounts = accounts.iter().map(|(name, plan)| ((*name).to_owned(), plan.map(str::to_owned))).collect();
     }
 
+    /// Codex's models are offered from now on (`codex-cli`), each with its efforts, and Fast where
+    /// it has it.
+    pub fn offers_codex(&self) {
+        self.state().codex = true;
+    }
+
+    /// A model with a long name and efforts is offered from now on (`openrouter/long-preview`).
+    pub fn offers_a_long_name(&self) {
+        self.state().long_name = true;
+    }
+
+    /// The speed picked for `provider`, as `kuvo/models/speed` keeps it (`None`: Standard, or
+    /// never picked).
+    pub fn speed_of(&self, provider: &str) -> Option<String> {
+        self.state().speeds.get(provider).and_then(|speed| speed.as_str().map(str::to_owned))
+    }
+
     /// It keeps no stars, as a box before `models.starred`.
     pub fn keeps_no_stars(&self) {
         self.state().no_stars = true;
@@ -2246,6 +2269,22 @@ fn claude_accounts(accounts: &[(String, Option<String>)]) -> Vec<(String, Value)
         .collect()
 }
 
+/// Codex's models, as its app-server lists them (made up), the first six with Fast.
+fn codex_models() -> Vec<(Value, Vec<&'static str>)> {
+    let names = [("gpt-6.2-sol", "GPT-6.2-Sol"), ("gpt-6.2-astra", "GPT-6.2-Astra"), ("gpt-6.1-terra", "GPT-6.1 Terra"), ("gpt-6.1-sol", "GPT-6.1-Sol"), ("gpt-6-astra", "GPT-6-Astra"), ("gpt-6-luna", "GPT-6-Luna"), ("gpt-6-mini", "GPT-6-Mini"), ("gpt-5.5-codex", "GPT-5.5 Codex"), ("gpt-5.5", "GPT-5.5")];
+    names
+        .iter()
+        .enumerate()
+        .map(|(ix, (id, name))| {
+            let mut model = json!({ "providerID": "codex-cli", "id": id, "name": name });
+            if ix < 6 {
+                model["speeds"] = json!([{ "id": "priority", "name": "Fast", "description": "1.5x speed" }]);
+            }
+            (model, vec!["low", "medium", "high", "xhigh", "max"])
+        })
+        .collect()
+}
+
 /// The coding agents' models, as their bridge lists them.
 fn agents_models() -> Vec<(Value, Vec<&'static str>)> {
     vec![(json!({ "providerID": "claude-code", "id": "opus", "name": "Claude Code · Opus", "aliases": ["default"] }), vec!["low", "medium", "high"])]
@@ -2636,8 +2675,14 @@ impl StandIn {
                     listed.extend(first_run::free_models().into_iter().map(|model| with("engine", model)));
                 }
                 listed.extend(more_models(state.more_models).into_iter().map(|model| with("engine", model)));
+                if state.long_name {
+                    listed.push(with("engine", (json!({ "providerID": "openrouter", "id": "long-preview", "name": "DeepSeek R2 Distill Qwen 72B Instruct Preview" }), vec!["low", "medium", "high", "xhigh"])));
+                }
                 if !state.agents_unknown && state.claude_accounts.is_empty() {
                     listed.extend(agents_models().into_iter().map(|model| with("agents", model)));
+                }
+                if state.codex && !state.agents_unknown {
+                    listed.extend(codex_models().into_iter().map(|model| with("agents", model)));
                 }
                 let accounts = claude_accounts(&state.claude_accounts);
                 if !state.agents_unknown {
@@ -2657,9 +2702,24 @@ impl StandIn {
                     said["starred"] = json!(state.starred);
                     let mut providers: Vec<Value> = PROVIDERS.iter().filter(|(id, _)| accounts.is_empty() || *id != "claude-code").map(|(id, name)| json!({ "id": id, "name": name })).collect();
                     providers.extend(accounts.into_iter().map(|(_, provider)| provider));
+                    if state.codex {
+                        let mut codex = json!({ "id": "codex-cli", "name": "Codex" });
+                        if let Some(speed) = state.speeds.get("codex-cli").filter(|speed| !speed.is_null()) {
+                            codex["speed"] = speed.clone();
+                        }
+                        providers.push(codex);
+                    }
                     said["providers"] = json!(providers);
                 }
                 answer(200, said)
+            }
+            ("POST", ["kuvo", "models", "speed"]) => {
+                let body = request.body.clone().unwrap_or(Value::Null);
+                let (Some(provider), Some(speed)) = (body["providerID"].as_str(), body.get("speed")) else {
+                    return answer(400, json!({ "message": "Say which provider (providerID) and its speed (speed: a speed's id, or null for Standard)." }));
+                };
+                state.speeds.insert(provider.to_owned(), speed.clone());
+                answer(200, json!({ "providerID": provider, "speed": speed }))
             }
             ("POST", ["kuvo", "models", "starred"]) if !state.no_stars => {
                 let body = request.body.clone().unwrap_or_default();
