@@ -1341,7 +1341,7 @@ describe.skipIf(!canFence)("The computer's MCP servers, for an ACP agent in the 
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
     const said = words(id)
     expect(said).toContain(`files=key:${KEYS.shared} notes=auth:none,key:${KEYS.notes},at:/notes`)
-    expect(said).toMatch(/tracker=The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Settings › Integrations/)
+    expect(said).toMatch(/tracker=The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Marketplace › Apps/)
     // The engine connected it again, so Settings › Integrations says it needs signing in.
     expect(servers.connects).toBeGreaterThan(0)
     // Signed in again: the next message reaches it, the agent given it afresh.

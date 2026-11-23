@@ -194,7 +194,9 @@ impl Market {
                     actions.push(json!({ "id": "disconnect", "title": "Disconnect on This Computer" }));
                 }
             }
-            actions.push(json!({ "id": "remove", "title": "Remove from All Computers" }));
+            actions.push(json!({ "id": "remove", "title": "Remove from All Computers", "style": "destructive", "confirm": {
+                "title": format!("Remove {}?", app["title"].as_str().unwrap_or_default()),
+                "body": "It's removed from all your computers, with each computer's sign-in. Agents can't use it until you add it again.", "button": "Remove" } }));
             json!(actions)
         } else {
             json!([{ "id": "add", "title": if open { "Add" } else { "Connect" } }])
@@ -294,6 +296,14 @@ impl Market {
                     None => categories.push((category, 1)),
                 }
             }
+            // In the order shown, as the box puts them: your own skills first, your own apps last.
+            let mine = match id { "skills" => Some("Your skills"), "apps" => Some("Yours"), _ => None };
+            if let Some(mine) = mine
+                && let Some(at) = categories.iter().position(|(title, _)| title == mine)
+            {
+                let yours = categories.remove(at);
+                if id == "skills" { categories.insert(0, yours) } else { categories.push(yours) }
+            }
             let words = query("q").unwrap_or_default().trim().to_lowercase();
             let category = query("category");
             let origin = query("origin");
@@ -345,7 +355,8 @@ impl Market {
         shown["actions"] = match &mine {
             None => json!([{ "id": "add", "title": "Install Skill" }]),
             Some(skill) => {
-                let mut actions = vec![json!({ "id": "remove", "title": "Remove" })];
+                let mut actions = vec![json!({ "id": "remove", "title": "Remove", "style": "destructive", "confirm": {
+                    "title": format!("Remove {}?", skill["title"].as_str().unwrap_or(id)), "body": "It's removed from all your computers. You can install it again later.", "button": "Remove" } })];
                 if skill.get("source").is_some_and(Value::is_object) {
                     actions.push(json!({ "id": "update-preview", "title": "Check for Update" }));
                 } else if skill["origin"] != json!("catalog") {
@@ -355,6 +366,7 @@ impl Market {
                 }
                 if skill["origin"] == json!("local") {
                     actions[0]["title"] = json!("Delete");
+                    actions[0]["confirm"] = json!({ "title": format!("Delete {id}?"), "body": "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", "button": "Delete" });
                 }
                 json!(actions)
             }

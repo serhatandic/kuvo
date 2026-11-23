@@ -274,7 +274,7 @@ describe("Cursor and the computer's MCP servers", () => {
       const input = { text: "hi", files: [], model: { id: "grok-4.7", providerID: "cursor" }, plan: false }
       await thread.prepare?.(input, hooks(state))
       const before = (sdk.made.at(-1)?.mcpServers as Record<string, any>).tracker
-      expect(await callServer(before)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Settings › Integrations/)
+      expect(await callServer(before)).toMatch(/^The tracker server turned down its sign-in.*sign in to it again in Kuvo Code \(Marketplace › Apps/)
       servers.signedInAgain = true
       forgetServers()
       await thread.prepare?.(input, hooks(state))

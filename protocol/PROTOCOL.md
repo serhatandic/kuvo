@@ -13094,7 +13094,10 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.
   An added app's card carries `status: {words, tone}` (`good` or `warning`: "Connected", "Added",
   "Vault locked") for a client to show in place of its first action's button. An agent's card
-  carries `detail`, the words under it (its apps, skills and bots added). Agents and skills not yet
+  carries `detail`, the words under it (its apps, skills and bots added). `categories` come in the
+  order a client shows them: Your skills first in Skills, your own apps last in Apps. An action that
+  removes something carries `style: "destructive"` and `confirm: {title, body, button}`, asked first
+  in those words. Agents and skills not yet
   installed carry `actions` with the words of their button ("Add", "Install").
 - **Apps.** `POST apps/<id>/add` or `POST apps/custom` with `{title,url,id?,summary?,auth?}` under
   `kuvo/marketplace/` enables a Streamable HTTP server across the setup. Custom endpoints use HTTPS

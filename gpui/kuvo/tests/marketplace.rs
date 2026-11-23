@@ -97,6 +97,26 @@ fn connecting_an_app_sends_its_token_and_the_app_shows_connected(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn removing_an_app_from_every_computer_asks_first_in_the_boxs_words(cx: &mut TestAppContext) {
+    let (stand_in, _, cx) = open(cx, Sample::InUse);
+    click(cx, "rail-marketplace");
+    click(cx, "market-item-notion");
+    click(cx, "market-app-remove");
+    // Asked first: nothing is removed until it's answered.
+    assert!(shown(cx, "market-confirm"));
+    assert!(stand_in.seen_at("DELETE", "kuvo/marketplace/apps/notion").is_empty());
+    click(cx, "market-confirm-cancel");
+    assert!(!shown(cx, "market-confirm") && shown(cx, "market-app-sheet"));
+    assert!(stand_in.seen_at("DELETE", "kuvo/marketplace/apps/notion").is_empty());
+    click(cx, "market-app-remove");
+    click(cx, "market-confirm-go");
+    assert_eq!(stand_in.seen_at("DELETE", "kuvo/marketplace/apps/notion").len(), 1);
+    // Back in the catalog, to add again.
+    assert!(!shown(cx, "market-app-sheet"));
+    assert!(shown(cx, "market-button-notion") && !shown(cx, "market-status-notion"));
+}
+
+#[gpui::test]
 fn adding_an_agent_makes_its_bot_with_the_routines_off(cx: &mut TestAppContext) {
     let (stand_in, workspace, cx) = open(cx, Sample::Fresh);
     click(cx, "rail-marketplace");

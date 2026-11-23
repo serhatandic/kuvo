@@ -276,6 +276,7 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   expect((await ask(handler, "PUT", "kuvo/skills/release", { text: skillFile.replace("private-skill", "release"), new: true })).status).toBe(200);
   let area = await skills();
   expect(area.here.switchTitle).toBe("Use on Test box");
+  expect(area.categories[0].title).toBe("Your skills");
   expect(area.items.find((skill: any) => skill.id === "release")).toMatchObject({ category: "Your skills", installed: true, enabled: true });
   expect(area.items.find((skill: any) => skill.id === "review-changes").enabled).toBeUndefined();
 
@@ -304,6 +305,14 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   expect(deleted.title).toBe("release");
   expect((await route("POST", "/skills/restore", { id: deleted.id })).status).toBe(200);
   expect((await skills()).items.some((skill: any) => skill.id === "release")).toBe(true);
+});
+
+test("your own apps list after the catalog's, and removing one asks first in the box's words", async () => {
+  expect((await route("POST", "/apps/custom", { title: "Internal Deploy", url: "https://deploy.example.com/mcp", auth: "open" })).status).toBe(200);
+  const apps = (await route("GET")).json.areas[0];
+  expect(apps.categories.at(-1).title).toBe("Yours");
+  const remove = (await route("GET", "/apps/internal-deploy")).json.actions.find((action: any) => action.id === "remove");
+  expect(remove).toMatchObject({ style: "destructive", confirm: { title: "Remove Internal Deploy?", button: "Remove" } });
 });
 
 test("another computer receives the installed skill through the signed setup document", async () => {

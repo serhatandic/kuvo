@@ -163,6 +163,26 @@ pub struct MarketAction {
     pub form: Option<MarketForm>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// `destructive` for what removes something.
+    #[serde(default)]
+    pub style: Option<String>,
+    /// Asked first, in these words.
+    #[serde(default)]
+    pub confirm: Option<Confirm>,
+}
+
+impl MarketAction {
+    pub fn destructive(&self) -> bool {
+        self.style.as_deref() == Some("destructive")
+    }
+}
+
+/// A confirm in the box's words: its question, what it comes to, and the button that goes ahead.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Confirm {
+    pub title: String,
+    pub body: String,
+    pub button: String,
 }
 
 fn yes() -> bool {

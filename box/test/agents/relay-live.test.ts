@@ -117,7 +117,7 @@ describe.skipIf(!binary)("an integration that turns down its sign-in, through th
     const [first] = relayedServers(session, thread, work, found).filter((server) => server.name === "notion")
     const refused = await connect(first!)
     expect(refused.status).toBe(200)
-    expect(refused.start.result.instructions).toMatch(/turned down its sign-in.*sign in to it again in Kuvo Code \(Settings › Integrations/)
+    expect(refused.start.result.instructions).toMatch(/turned down its sign-in.*sign in to it again in Kuvo Code \(Marketplace › Apps/)
     expect(refused.tools).toEqual([])
     // The engine was told: it has Notion as needing a sign-in, as Settings › Integrations shows.
     await waitFor(async () => (await notionNow())?.status?.status === "needs_auth", "the engine to have Notion needing a sign-in")

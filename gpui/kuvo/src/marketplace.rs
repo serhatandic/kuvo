@@ -174,6 +174,9 @@ pub struct MarketplaceView {
     width: Rc<Cell<f32>>,
     /// A sign-in being followed until it finishes.
     following: Option<Task<()>>,
+    /// A sheet's action asked first, in the box's words, over its sheet.
+    confirming: Option<MarketAction>,
+    confirm_focus: FocusHandle,
 }
 
 impl MarketplaceView {
@@ -212,6 +215,8 @@ impl MarketplaceView {
             problem: None,
             width: Rc::new(Cell::new(MAX_W)),
             following: None,
+            confirming: None,
+            confirm_focus: cx.focus_handle(),
         }
     }
 
@@ -403,6 +408,7 @@ impl MarketplaceView {
         self.sheet = None;
         self.sheet_problem = None;
         self.following = None;
+        self.confirming = None;
         self.working = false;
         cx.notify();
     }
@@ -927,7 +933,7 @@ impl MarketplaceView {
                     .into_any_element()
             })
             .collect();
-        let categories: Vec<(String, usize)> = self.area().map(|area| ordered(self.section, area).into_iter().map(|category| (category.title.clone(), category.count)).collect()).unwrap_or_default();
+        let categories: Vec<(String, usize)> = self.area().map(|area| area.categories.iter().map(|category| (category.title.clone(), category.count)).collect()).unwrap_or_default();
         let total = self.area().map(|area| area.count);
         let mut picks: Vec<AnyElement> = Vec::new();
         if let Some(total) = total.filter(|_| !categories.is_empty()) {
@@ -1270,7 +1276,8 @@ impl MarketplaceView {
             out.push(self.group(category, None, false, body, cx));
         } else {
             let searching = !self.words.trim().is_empty();
-            for category in ordered(section, &area) {
+            // (In the box's order.)
+            for category in &area.categories {
                 let items: Vec<MarketItem> = area.items.iter().filter(|item| item.category == category.title).cloned().collect();
                 if items.is_empty() {
                     continue;
@@ -1662,10 +1669,16 @@ impl MarketplaceView {
                         let primary = Some(ix) == primary;
                         if primary {
                             button = button.primary().loading(self.working);
-                        } else if id == "remove" {
+                        } else if action.destructive() {
                             button = button.destructive();
                         }
-                        let button = button.on_click(cx.listener(move |this, _, window, cx| this.app_action(&id, window, cx))).into_any_element();
+                        let button = button.on_click(cx.listener(move |this, _, window, cx| {
+                            if action.confirm.is_some() {
+                                this.ask_first(action.clone(), window, cx);
+                            } else {
+                                this.app_action(&id, window, cx);
+                            }
+                        })).into_any_element();
                         if primary { buttons.push(button) } else { left.push(button) }
                     }
                 }
@@ -1975,10 +1988,16 @@ impl MarketplaceView {
                     let mut button = Button::new(SharedString::from(format!("market-skill-{id}")), action.title.clone()).disabled(self.working);
                     button = match id.as_str() {
                         "add" => button.primary().loading(self.working),
-                        "remove" => button.destructive(),
+                        _ if action.destructive() => button.destructive(),
                         _ => button,
                     };
-                    buttons.push(button.on_click(cx.listener(move |this, _, window, cx| this.skill_action(&action, window, cx))).into_any_element());
+                    buttons.push(button.on_click(cx.listener(move |this, _, window, cx| {
+                        if action.confirm.is_some() {
+                            this.ask_first(action.clone(), window, cx);
+                        } else {
+                            this.skill_action(&action, window, cx);
+                        }
+                    })).into_any_element());
                 }
                 details.item.title.clone()
             }
@@ -1994,7 +2013,45 @@ impl MarketplaceView {
         Some(self.frame("market-skill-sheet", 600., title, body, buttons, None, cx))
     }
 
+    /// Asks first, over the sheet, in the box's words.
+    fn ask_first(&mut self, action: MarketAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirming = Some(action);
+        window.focus(&self.confirm_focus, cx);
+        cx.notify();
+    }
+
+    /// Asked and answered: what the action does, on its sheet.
+    fn confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(action) = self.confirming.take() else { return };
+        match &self.sheet {
+            Some(Sheet::App(_)) => self.app_action(&action.id, window, cx),
+            Some(Sheet::Skill(_)) => self.skill_action(&action, window, cx),
+            _ => {}
+        }
+        cx.notify();
+    }
+
     fn sheet_view(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(confirm) = self.confirming.as_ref().and_then(|action| action.confirm.clone()) {
+            let card = crate::settings::page::confirm_card(
+                crate::settings::page::ConfirmIds { card: "market-confirm", cancel: "market-confirm-cancel", go: "market-confirm-go" },
+                &self.confirm_focus,
+                (confirm.title, confirm.body, confirm.button),
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.confirming = None;
+                    cx.notify();
+                }),
+                cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.confirming = None;
+                        cx.notify();
+                    }
+                }),
+                cx.listener(|this, _: &ClickEvent, window, cx| this.confirmed(window, cx)),
+                cx,
+            );
+            return Some(crate::settings::page::sheet(card, cx));
+        }
         let card = match &self.sheet {
             Some(Sheet::App(_)) => self.app_sheet(cx),
             Some(Sheet::Form(_)) => self.form_sheet(cx),
@@ -2121,25 +2178,6 @@ impl Render for MarketplaceView {
             )
             .children(sheet)
     }
-}
-
-/// The area's categories in the order shown: Your skills first, then as the box lists them.
-fn ordered(section: Section, area: &MarketArea) -> Vec<kuvo_box::marketplace::Category> {
-    let mut categories = area.categories.clone();
-    // (Your own apps after the catalog's.)
-    if section == Section::Apps
-        && let Some(at) = categories.iter().position(|category| category.title == "Yours")
-    {
-        let yours = categories.remove(at);
-        categories.push(yours);
-    }
-    if section == Section::Skills
-        && let Some(at) = categories.iter().position(|category| category.title == "Your skills")
-    {
-        let yours = categories.remove(at);
-        categories.insert(0, yours);
-    }
-    categories
 }
 
 /// Whether search words are a link to a skill on GitHub (previewed, not searched for).

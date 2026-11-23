@@ -63,7 +63,8 @@ function appCard(app: InstalledApp, installed: boolean, details = false) {
     actions: installed ? [
       ...(app.auth === "open" ? [] : [{ id: "connect", title: connection === "ready" ? "Reconnect" : "Connect", enabled: connection !== "locked" },
         ...(connection === "ready" ? [{ id: "disconnect", title: "Disconnect on This Computer" }] : [])]),
-      { id: "remove", title: "Remove from All Computers" },
+      { id: "remove", title: "Remove from All Computers", style: "destructive", confirm: { title: `Remove ${app.title}?`,
+        body: "It's removed from all your computers, with each computer's sign-in. Agents can't use it until you add it again.", button: "Remove" } },
     ] : [{ id: "add", title: app.auth === "open" ? "Add" : "Connect" }] };
 }
 
@@ -180,7 +181,11 @@ const SKILL_DELETION = "Deleted skills are kept for 30 days, then removed for go
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 function area<T extends { title: string; summary: string; category: string }>(id: string, title: string, items: T[], query: URLSearchParams, actions: unknown[] = []) {
-  const categories = [...new Set(items.map(item => item.category))].map(title => ({ title, count: items.filter(item => item.category === title).length }));
+  // In the order shown: your own skills first, your own apps after the catalog's.
+  const titles = [...new Set(items.map(item => item.category))];
+  const mine = id === "skills" ? YOUR_SKILLS : id === "apps" ? "Yours" : undefined;
+  const ordered = mine && titles.includes(mine) ? (id === "skills" ? [mine, ...titles.filter(title => title !== mine)] : [...titles.filter(title => title !== mine), mine]) : titles;
+  const categories = ordered.map(title => ({ title, count: items.filter(item => item.category === title).length }));
   const search = (query.get("q") ?? "").trim().toLowerCase();
   const category = query.get("category");
   const origin = query.get("origin");
@@ -393,7 +398,8 @@ async function skillAction(context: RouteContext, id: string, action: string | u
     return success({ ...cardSkill(info), title: listed?.title ?? cardSkill(info).name ?? id,
       summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? YOUR_SKILLS, files: info.files, installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
-      actions: skill ? [{ id: "remove", title: "Remove" }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
+      actions: skill ? [{ id: "remove", title: "Remove", style: "destructive", confirm: { title: `Remove ${listed?.title ?? cardSkill(info).name ?? id}?`,
+        body: "It's removed from all your computers. You can install it again later.", button: "Remove" } }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
         ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : [])] : [{ id: "add", title: "Install Skill" }] });
   }
   if (skill && verb === "DELETE") return save("remove-skill", { id, was: body.was }, context);
@@ -415,7 +421,9 @@ async function skillAction(context: RouteContext, id: string, action: string | u
       const about = skillAbout(text);
       return success({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local", installed: true,
         revision: text, files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha256(Buffer.from(text)) }],
-        actions: [{ id: "remove", title: "Delete" }, { id: "edit", title: "Edit", form: editForm(about.name ?? id, text) }] });
+        actions: [{ id: "remove", title: "Delete", style: "destructive", confirm: { title: `Delete ${about.name ?? id}?`,
+          body: "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", button: "Delete" } },
+          { id: "edit", title: "Edit", form: editForm(about.name ?? id, text) }] });
     }
     if (verb === "DELETE") return answerSkills(verb, legacy, body, null);
     if (verb === "PATCH") {

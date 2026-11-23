@@ -498,7 +498,7 @@ const failing = (status: number) => refused(status) || (status >= 300 && status 
 /** Why a server's tools aren't there, or a call to it failed, as the agent is told it (`started`:
  * why its answer to starting wasn't a start). */
 function whyNot(name: string, status: number, started?: string): string {
-  if (status === 401) return `The ${name} server turned down its sign-in, so its tools aren't available for now. If the user asks for something from it, tell them to sign in to it again in Kuvo Code (Settings › Integrations, or its key in Settings › MCP Servers), and carry on with the rest`
+  if (status === 401) return `The ${name} server turned down its sign-in, so its tools aren't available for now. If the user asks for something from it, tell them to sign in to it again in Kuvo Code (Marketplace › Apps, or its key in Settings › MCP Servers), and carry on with the rest`
   if (status === 403) return `The ${name} server turned this down (HTTP 403): its sign-in or key may not be allowed to do it`
   if (started) return `The ${name} server couldn't start (${started}), so its tools aren't available for now`
   const what = status === 502 ? "no answer" : status >= 300 && status < 400 ? `HTTP ${status}: it sent elsewhere, perhaps to sign in` : `HTTP ${status}`
