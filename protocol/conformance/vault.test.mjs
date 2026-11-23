@@ -294,12 +294,13 @@ test("a closed gate still fills a pre-approved sign-in once for its running brow
   assert.ok(!proc.log().includes(secret) && !proc.log().includes(key), "resident log hides secret material");
 });
 
-test("the Mac resident keeps vault values and generations in Helper's disposable Keychain", {
+const helperScenario = {
   skip: process.platform !== "darwin" || !process.env.KUVO_VAULT_HELPER_BIN,
   timeout: 75000,
-}, async t => {
+};
+
+function macBox(t, binary) {
   const root = fs.realpathSync(scratch());
-  const binary = boxBinary();
   const home = path.join(root, binary.typescript ? "box" : ".kuvo-code");
   const keychain = path.join(root, "vault.keychain-db");
   const env = isolatedEnv(root);
@@ -364,6 +365,20 @@ exec ${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(bina
     guard = launch(helper, ["keep", "--home", home, "--test-keychain", keychain, "--test-keychain-password", password], env, home);
     return ready();
   }
+  async function restartResident() {
+    // Confirm the rendezvous PID belongs to our fixture before signalling it.
+    const parent = execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(lastPid)], { env, encoding: "utf8" });
+    assert.equal(Number(parent.trim()), guard.child.pid);
+    process.kill(lastPid, "SIGTERM");
+    return ready();
+  }
+  return { home, start, stop: () => guard.stop(), log: () => guard.log(), restartResident };
+}
+
+test("the Mac resident keeps vault values and generations in Helper's disposable Keychain", helperScenario, async t => {
+  const binary = boxBinary();
+  const mac = macBox(t, binary);
+  const { home, start } = mac;
   let ask = await start();
   const secret = value();
   const made = await ask("POST", vault + "/items", { kind: "key", name: "Fixture credential", values: { token: secret } });
@@ -373,11 +388,7 @@ exec ${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(bina
   assert.deepEqual((await ask("POST", itemPath + "/same", { values: { token: secret } })).json, { same: true });
   assert.equal(fs.existsSync(path.join(home, "box/vault/values")), false);
   if (!binary.typescript) {
-    // Confirm the rendezvous PID belongs to our fixture before signalling it.
-    const parent = execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(lastPid)], { env, encoding: "utf8" });
-    assert.equal(Number(parent.trim()), guard.child.pid);
-    process.kill(lastPid, "SIGTERM");
-    ask = await ready();
+    ask = await mac.restartResident();
     assert.deepEqual((await ask("POST", itemPath + "/same", { values: { token: secret } })).json, { same: true });
     const link = readJSON(path.join(home, "run/link.json"));
     assert.ok(["key", "secret", "sign"].every(field => !Object.hasOwn(link, field)),
@@ -411,7 +422,7 @@ exec ${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(bina
   }
   const old = fs.readFileSync(path.join(home, "box/vault/items.json"));
   assert.equal((await ask("PATCH", itemPath, { name: "Changed credential" })).status, 200);
-  await guard.stop();
+  await mac.stop();
   const changed = fs.readFileSync(path.join(home, "box/vault/items.json"));
   fs.writeFileSync(path.join(home, "box/vault/items.json"), old);
   ask = await start();
@@ -423,7 +434,63 @@ exec ${quote(typescriptRuntime())} --config=/dev/null --no-env-file ${quote(bina
   assert.deepEqual((await ask("POST", itemPath + "/same", { values: { token: secret } })).json, { same: true });
   assert.equal((await ask("DELETE", itemPath)).status, 200);
   checkNoPlaintext(home, [secret]);
-  assert.ok(!guard.log().includes(secret), "Helper log hides the value");
+  assert.ok(!mac.log().includes(secret), "Helper log hides the value");
+});
+
+test("a replacement Mac imports a vault point into its own Helper Keychain", helperScenario, async t => {
+  const binary = boxBinary();
+  const original = macBox(t, binary);
+  const replacement = macBox(t, binary);
+  const disk = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(disk, { recursive: true, force: true }));
+  const secret = value();
+  const ask = await original.start();
+  const name = "Saved site";
+  const made = await ask("POST", vault + "/items", {
+    kind: "login", name, sites: ["example.test"], username: "tester",
+    signInOnly: true, values: { password: secret },
+  });
+  assert.equal(made.status, 200, made.json?.message);
+  const originalItem = made.json.item.id;
+  assert.equal((await ask("POST", vault + "/grants", {
+    item: originalItem, who: { everyone: true }, how: "own",
+  })).status, 200);
+  const source = "b_" + randomBytes(16).toString("base64url");
+  const computerKey = randomBytes(32).toString("base64url");
+  const destination = { kind: "disk", path: disk };
+  write(path.join(original.home, "backup/configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source, key: computerKey, dest: destination, projects: [],
+  }), { mode: 0o600 });
+  const backup = "kuvo/box/backups/vault";
+  const point = await ask("POST", backup, { destination, source, confirm: true });
+  assert.equal(point.status, 200, point.json?.message);
+  const { id, recoveryKey } = point.json;
+  assert.ok(Buffer.from(recoveryKey, "base64url").length === 32 && recoveryKey !== computerKey,
+    "the vault point uses a separate recovery key");
+  await original.stop();
+
+  let receive = await replacement.start();
+  const empty = await receive("GET", vault);
+  assert.equal(empty.json.state.store, "keychain");
+  assert.deepEqual(empty.json.items, []);
+  const restored = await receive("POST", backup + "/import", { destination, source, id, recoveryKey, confirm: true });
+  assert.equal(restored.status, 200, restored.json?.message);
+  assert.deepEqual(restored.json, { imported: 1, skipped: [], grants: "approval required" });
+  await replacement.stop();
+  receive = await replacement.start();
+  const kept = await receive("GET", vault);
+  assert.equal(kept.json.state.store, "keychain");
+  assert.deepEqual(kept.json.grants, []);
+  const [item] = kept.json.items;
+  assert.equal(item.name, name);
+  assert.deepEqual(item.sites, ["example.test"]);
+  assert.equal(item.signInOnly, true);
+  assert.notEqual(item.id, originalItem);
+  const check = await receive("POST", vault + "/items/" + item.id + "/same", { values: { password: secret } });
+  assert.deepEqual(check.json, { same: true });
+  const forbidden = [secret, recoveryKey];
+  for (const folder of [original.home, replacement.home, disk]) checkNoPlaintext(folder, forbidden);
+  for (const mac of [original, replacement]) assert.ok(forbidden.every(value => !mac.log().includes(value)));
 });
 
 function shortP521(file) {
