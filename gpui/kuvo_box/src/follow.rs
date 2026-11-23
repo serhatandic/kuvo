@@ -431,6 +431,9 @@ struct Shown {
     reconnecting: Option<ReconnectAnchor>,
     /// The parts read of its messages from before, kept here (not in each copy handed on).
     parts: ReadParts,
+    /// Whether its computer has answered a read since it was shown: a last copy then only says
+    /// it's away, leaving what was shown as it is.
+    live: bool,
 }
 
 /// The transcript boundary at disconnect, before a new feed can add messages.
@@ -494,9 +497,48 @@ fn reconnect_page(client: &BoxClient, location: &messages::Location, place: Wher
     Ok((newest, earlier))
 }
 
+/// The last copy the nearest box kept of another computer's conversation, while that computer
+/// can't say where it runs: none where it's this box's own, or the box keeps none.
+fn last_copy(client: &BoxClient, session: &str) -> Option<Conversation> {
+    let location = client.where_is(session).ok()?;
+    if !matches!(location, messages::Location::Peer { .. }) {
+        return None;
+    }
+    // (The owner picks the runtime of a page read through another box: the place is a stand-in.)
+    let page = client.conversation_page(session, &location, Where::Engine, READ).ok().filter(|page| page.away.is_some())?;
+    let mut conversation = Conversation::new(session, Where::Engine);
+    conversation.away = page.away.clone();
+    conversation.catch_up(page.data, None, &[], Some(false));
+    Some(conversation)
+}
+
+/// `session` read at once, as a follow first reads it (for shots and tests): another computer's
+/// through its nearest box, which answers its last copy while that computer is away.
+pub fn read_at_once(client: &BoxClient, session: &str) -> crate::Result<Conversation> {
+    let location = client.where_is(session)?;
+    let runtime = match client.conversation_runtime(session, &location) {
+        Ok(runtime) => runtime,
+        Err(error) => return last_copy(client, session).ok_or(error),
+    };
+    let place = runtime.place;
+    let page = client.conversation_page(session, &location, place, READ)?;
+    let mut conversation = Conversation::new(session, place);
+    if page.away.is_some() {
+        conversation.away = page.away.clone();
+        conversation.catch_up(page.data, None, &[], Some(false));
+    } else {
+        let earlier = page.earlier(READ);
+        conversation.catch_up(page.data, earlier, &[], Some(runtime.running));
+    }
+    Ok(conversation)
+}
+
 /// What a read made of the conversation.
 enum Read {
     Shown,
+    /// Its computer isn't answering: the last copy its nearest box kept is shown, and it's read
+    /// again in a while.
+    Away,
     /// The setup no longer knows it: the follow ends.
     Gone,
     Failed(Error),
@@ -511,7 +553,27 @@ fn read(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown>,
         now.during = Some(Vec::new());
         (now.conversation.session.clone(), now.conversation.place, now.reconnecting.take())
     };
-    let read = client.conversation_page(&session, location, place, READ).and_then(|page| reconnect_page(client, location, place, &session, page, known.as_ref()));
+    let page = match client.conversation_page(&session, location, place, READ) {
+        Ok(page) if page.away.is_some() => {
+            let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            now.during = None;
+            if known.is_some() {
+                now.reconnecting = known;
+            }
+            // (What its computer last said stays as it is: only that it's away now is added.)
+            if now.live {
+                now.conversation.away = page.away;
+            } else {
+                let away = page.away.clone();
+                now.conversation.catch_up(page.data, None, &[], Some(false));
+                now.conversation.away = away;
+            }
+            latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
+            return Read::Away;
+        }
+        page => page,
+    };
+    let read = page.and_then(|page| reconnect_page(client, location, place, &session, page, known.as_ref()));
     let (parts, running) = match &read {
         Ok((messages, _)) => {
             let owner = client.conversation_owner(location);
@@ -538,6 +600,8 @@ fn read(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown>,
         Ok((messages, earlier)) => {
             now.parts.take(parts);
             now.conversation.catch_up(messages, earlier, &during, running);
+            now.conversation.away = None;
+            now.live = true;
             let Shown { conversation, parts, .. } = &mut *now;
             conversation.take_parts(parts);
             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
@@ -617,6 +681,13 @@ fn reader(client: &BoxClient, location: &messages::Location, shown: &Mutex<Shown
                 backoff.reset();
                 patience.came();
             }
+            // (Read again in a while, to catch up as soon as it answers.)
+            Read::Away => {
+                if backoff.wait(stop) {
+                    return;
+                }
+                wants.again();
+            }
             Read::Gone => {
                 stop.stop();
                 return;
@@ -653,7 +724,10 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
         match found {
             Ok(found) => break found,
             Err(error) => {
-                if patience.says(&error) {
+                // Its computer not answering: the last copy its nearest box kept, meanwhile.
+                if let Some(conversation) = last_copy(&client, &session) {
+                    latest.put(ConversationUpdate::Conversation(conversation));
+                } else if patience.says(&error) {
                     latest.put(ConversationUpdate::Failed(error));
                 }
                 if backoff.wait(stop) {
@@ -662,7 +736,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
             }
         }
     };
-    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(&session, place), during: None, reconnecting: None, parts: ReadParts::default() }));
+    let shown = Arc::new(Mutex::new(Shown { conversation: Conversation::new(&session, place), during: None, reconnecting: None, parts: ReadParts::default(), live: false }));
 
     if !client.streams() {
         // Read now, then again on the timer, and earlier ones as asked.

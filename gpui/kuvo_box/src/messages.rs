@@ -377,12 +377,34 @@ impl Message {
     }
 }
 
-/// A page of messages as the engine answers it: `{data, cursor}`.
+/// A page of messages as the engine answers it: `{data, cursor}`. Read through the client's own
+/// box while the conversation's computer isn't answering, it's that box's last copy, with `away`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Page {
     pub data: Vec<Message>,
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    #[serde(default)]
+    pub away: Option<Away>,
+}
+
+/// The conversation's computer isn't answering: what's shown is the last copy the client's own box
+/// carried of it (PROTOCOL.md, "Opening a conversation through another box").
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Away {
+    pub computer: AwayComputer,
+    /// When it was last heard from (ms), once it's been away a while.
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+    /// It's only switching to a new release.
+    #[serde(default)]
+    pub updating: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AwayComputer {
+    pub id: String,
+    pub name: String,
 }
 
 /// Where a page leads.
@@ -422,6 +444,8 @@ pub struct Conversation {
     pub running: bool,
     /// The way back to messages before these, while there may be some.
     pub earlier: Option<String>,
+    /// Its computer isn't answering: these are its last copy, as the client's own box kept it.
+    pub away: Option<Away>,
     /// Whether an earlier page has been read (the way back is then its own, not the newest's).
     paged: bool,
     /// How many times the box's accounts, models, settings or Custom Auto's lists (or this
@@ -504,6 +528,7 @@ impl Conversation {
             messages: Vec::new(),
             running: false,
             earlier: None,
+            away: None,
             paged: false,
             models_changed: 0,
             revisions: HashMap::new(),

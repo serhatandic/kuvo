@@ -132,7 +132,7 @@ fn the_menu_bar_has_kuvo_file_edit_view_window_and_help_and_names_its_window_men
     );
     // Services is the system's own menu, filled by macOS.
     assert!(menu(&menus, "Kuvo").items.iter().any(|item| matches!(item, OwnedMenuItem::SystemMenu(system) if system.name.as_ref() == "Services" && system.menu_type == SystemMenuType::Services)));
-    assert_eq!(names(&menus, "File"), ["New Session"]);
+    assert_eq!(names(&menus, "File"), ["New Session", "Open Folder…"]);
     assert_eq!(names(&menus, "Edit"), ["Undo", "Redo", "—", "Cut", "Copy", "Paste", "Select All"]);
     // Edit's items are the system's own, so a save panel or a field the system draws gets them too.
     let os_actions: Vec<(String, bool)> = menu(&menus, "Edit")
@@ -190,6 +190,7 @@ fn each_item_shows_the_mac_apps_key(cx: &mut TestAppContext) {
         ("Kuvo", "Hide Others", "cmd-alt-h"),
         ("Kuvo", "Quit Kuvo", "cmd-q"),
         ("File", "New Session", "cmd-n"),
+        ("File", "Open Folder…", "cmd-o"),
         ("Edit", "Undo", "cmd-z"),
         ("Edit", "Redo", "cmd-shift-z"),
         ("Edit", "Cut", "cmd-x"),

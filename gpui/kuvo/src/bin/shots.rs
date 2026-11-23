@@ -634,6 +634,13 @@ const SCREENS: &[Screen] = &[
     // Activity with the conversation's context (#963): open, pinned beside the chat, busy, quiet.
     Screen { slug: "activity-context-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "activity-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Let's also check how the warning reads in dark mode near 400k."), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    // Small fixes B: Add Project at Projects (the heading hovered), the search without its filter
+    // button, and the pinned Activity card's Summary, Full and after Unpin.
+    Screen { slug: "small-1123-b-1-add-project", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "small-1123-b-2-search", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "small-1123-b-4-pinned-summary", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    Screen { slug: "small-1123-b-4-pinned-full", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned_full) },
+    Screen { slug: "small-1123-b-4-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_unpinned) },
     Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
     Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     // The summarize point picked in Activity (2026-11-23, option B): early, its menu open, near
@@ -672,6 +679,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bots-sessions-unreachable", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     // A bot on studio-mini, off for three hours: when it was last seen.
     Screen { slug: "bots-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    // A bot on another computer: its conversation while that computer is off (its last transcript
+    // with one quiet line, the composer still there), and once it answers again.
+    Screen { slug: "bot-chat-computer-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(remote_bot_chat) },
+    Screen { slug: "bot-chat-computer-back", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(remote_bot_chat) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
@@ -823,6 +834,24 @@ fn activity_pinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
     activity.update(cx, |activity, cx| activity.pin_now(window, cx));
 }
 
+/// Pinned, in Full.
+fn activity_pinned_full(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.pin_now(window, cx);
+        activity.show_full_now(true, cx);
+    });
+}
+
+/// Pinned, then unpinned: the card gone, nothing in its place.
+fn activity_unpinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.pin_now(window, cx);
+        activity.unpin_now(cx);
+    });
+}
+
 fn conversation_activity_picking(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.open_activity_picking_summarize(window, cx));
@@ -894,6 +923,10 @@ fn landing_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Con
         composer.read_at_once(cx);
         composer.set_worktree(true, cx);
     });
+}
+fn remote_bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    workspace.open_bot_chat("bot_release", "ses_releases", None, window, cx);
 }
 fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_area(Area::Bots, window, cx);
@@ -2729,6 +2762,9 @@ fn stand_in_changed(screen: &FirstRunScreen) -> bool {
     screen.slug == "first-run-held"
 }
 
+/// Where the Sessions sidebar's Projects heading is drawn in the stand-in (the add-project shot).
+const PROJECTS_Y: f32 = 237.;
+
 fn main() -> anyhow::Result<()> {
     let only: Vec<String> = std::env::args().skip(1).collect();
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
@@ -3145,7 +3181,7 @@ fn main() -> anyhow::Result<()> {
                 let used = match screen.slug { "activity-summarize-near" => 372_000, "activity-summarize-unmeasured" => 0, _ => 89_000 };
                 stand_in.set_context(session, json!({ "used": used, "window": 1_000_000, "summarizeAt": 400_000 }));
             }
-            if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {
+            if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") || screen.slug.starts_with("small-1123-b-4") {
                 use serde_json::json;
                 let busy = screen.slug == "activity-pinned-busy";
                 let (used, session) = match screen.slug { "activity-pinned-busy" => (382_000, "ses_signup"), "activity-context-quiet" => (12_000, "ses_recipes"), _ => (184_000, "ses_signup") };
@@ -3206,6 +3242,19 @@ fn main() -> anyhow::Result<()> {
             // (The box still reading its first figures.)
             if screen.slug == "insights-loading" {
                 stand_in.set_insights(kuvo::stand_in::insights::Sample::Reading);
+            }
+            if matches!(screen.slug, "bot-chat-computer-away" | "bot-chat-computer-back") {
+                stand_in.share_setup_lists();
+                stand_in.enable_delivery();
+                stand_in.move_bot("bot_release", "devbox");
+                stand_in.set_elsewhere_session("bot_release", "ses_releases");
+                if screen.slug == "bot-chat-computer-away" {
+                    // (Read here while devbox answered, then it went off five minutes ago.)
+                    stand_in.carry("key_devbox", "ses_releases");
+                    stand_in.peer_box("key_devbox").expect("devbox").set_down(true);
+                    stand_in.setup_away("key_devbox", NOW - 5.0 * 60_000.0, false);
+                    stand_in.bot_computer_away("bot_release", Some(NOW - 5.0 * 60_000.0));
+                }
             }
             if screen.slug == "bots-computer-away" {
                 stand_in.move_bot("bot_release", "studio-mini");
@@ -3633,6 +3682,14 @@ fn main() -> anyhow::Result<()> {
                     }
                     window.refresh();
                 })?;
+                cx.run_until_parked();
+            }
+            if screen.slug == "small-1123-b-1-add-project" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                // On the Projects heading, where its + shows.
+                cx.update_window(any, |_, window, cx| mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gpui::point(px(150.), px(PROJECTS_Y)), pressed_button: None, modifiers: Modifiers::default(),
+                })))?;
                 cx.run_until_parked();
             }
             if screen.slug == "bot-wake-badge-hover" {

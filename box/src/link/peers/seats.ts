@@ -22,6 +22,7 @@ import { LETTER_MEMORY } from "../letters/lifetime";
 import { LETTER_ID, SENDING, letterTries } from "../letters/letter";
 import { IS_MAC, RUN } from "../home";
 import { macLink, readLink } from "../state";
+import { standingOf } from "./lists";
 import { readReach } from "./reach";
 import { readPeerAgents } from "./directory";
 import { mailFor, ownKey, peersOf } from "./known";
@@ -214,7 +215,7 @@ export async function takeSeat(sender: MailSender, payload: Record<string, unkno
 
 // Who can be in this box's group chats from your other computers: each peer (taking a chat's turns
 // when its `features` say `groups.seats`), and the bots it told of, by their id.
-export function seatPeers(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): SeatPeers {
+export function seatPeers(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents(), now = Date.now()): SeatPeers {
   const peers = peersOf(link);
   const key = link ? ownKey(link) : null;
   const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os.hostname();
@@ -227,8 +228,15 @@ export function seatPeers(link: LinkState | null = readLink(), told: Record<stri
       const features = told[peer.key]?.features;
       return {
         key: peer.key, name: plainName(peer.name) || "another computer", seats: features?.includes("groups.seats") ?? false,
-        limits: reach[peer.key] === undefined ? "connected" : "away",
-        insights: features && !features.includes("usage.insights") ? "unsupported" : reach[peer.key] === undefined ? "connected" : "away",
+        // (Away as its rows say it, `standingOf`: not under a minute, nor while it only restarts into a
+        // new release.)
+        ...(() => {
+          const away = standingOf(peer.key, reach[peer.key] !== undefined, told[peer.key]?.heard, reach, told, now).away;
+          return {
+            limits: away ? "away" as const : "connected" as const,
+            insights: features && !features.includes("usage.insights") ? "unsupported" as const : away ? "away" as const : "connected" as const,
+          };
+        })(),
       };
     }),
     bots: peers.flatMap(peer => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id)

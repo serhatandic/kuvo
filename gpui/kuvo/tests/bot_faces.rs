@@ -321,6 +321,31 @@ fn a_bot_on_a_computer_that_comes_back_goes_live_as_its_box_says(cx: &mut TestAp
     assert!(bounds(cx, "bot-said-bot_release-seen 3h").is_none(), "live again: no last seen");
 }
 
+/// A bot on a computer only switching to a new release isn't away: its row stays as it is, saying
+/// "Updating…", never greyed or "seen now" (the user, 11-23, beta.45 to 46).
+#[gpui::test]
+fn a_bot_on_a_computer_switching_to_a_new_release_stays_live_saying_updating(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.move_bot("bot_release", "studio-mini");
+    stand_in.bot_computer_updating("bot_release", true);
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.set_now(NOW, cx);
+        workspace.show_area(Area::Bots, window, cx);
+    });
+    until(cx, &workspace, |cx| bounds(cx, "elsewhere-bot_release").is_some() && drawn(cx, "bot_release").is_some());
+    assert_ne!(drawn(cx, "bot_release"), Some(State::Offline), "not greyed as away");
+    assert!(bounds(cx, "bot-said-bot_release-Updating…").is_some(), "says it's updating");
+}
+
 /// Waits, as the live follows hand on what they read, until `done`.
 fn until<T: 'static>(cx: &mut VisualTestContext, view: &Entity<T>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
     use futures::StreamExt as _;

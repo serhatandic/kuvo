@@ -16,6 +16,7 @@ import { readPeerAgents } from "./directory";
 import { KEY, mailFor, peersOf, removedBoxes, type MailSender } from "./known";
 import { awaySince, readReach } from "./reach";
 import { SWITCH_GRACE } from "../updates/progress";
+import { forgetConversations } from "./kept-conversations";
 import type { LinkHost } from "../relay/host";
 
 export const SETUP_LIST_FEATURE = "line.setup-lists";
@@ -111,6 +112,8 @@ export function peerSnapshots<Value extends object>(
       cached.delete(key);
       try {
         await fs.rm(fileOf(key), { force: true });
+        // (With the conversations kept from it: `kept-conversations.ts`.)
+        await forgetConversations(key);
         cleared.add(key);
       } catch {}
     }
@@ -164,11 +167,45 @@ export const { take: takeSetupLists, push: pushSetupLists, followers: peerListFo
 /** Whether a computer that's away is only switching to a new release: it last said it was ready
  * for one, or switching to it, and went quiet within the time a slow computer takes to restart
  * into it. A client shows its rows as updating then, and as last seen after. */
-function switchingRelease(key: string, saved: PeerSnapshot<SetupLists>, reach: Record<string, number>, told: ReturnType<typeof readPeerAgents>, now: number): boolean {
+function switchingRelease(key: string, since: number, told: ReturnType<typeof readPeerAgents>, now: number): boolean {
   const state = told[key]?.computer?.fleetUpdate?.state;
   if (state !== "updating" && state !== "ready") return false;
-  const since = awaySince(key, reach) ?? saved.seen;
   return now - since < SWITCH_GRACE;
+}
+
+/** Under this long since a computer stopped answering, it's just live: a restart or a blip greys
+ * nothing, and no row says "seen now". */
+export const LIVE_FOR = 60_000;
+
+/** How a computer stands for the rows that show it, given whether it's `quiet` (the relay found it
+ * not there, or nothing came from it a while) and when it was last heard from. Switching to a new
+ * release isn't away: `updating`, its rows as they are. Away, with when it was last seen, only once
+ * it has been quiet a minute. */
+export function standingOf(key: string, quiet: boolean, seen: number | undefined, reach: Record<string, number>, told: ReturnType<typeof readPeerAgents>, now: number): { away: boolean; lastSeen?: number; updating?: true } {
+  if (!quiet) return { away: false };
+  // (Since its last sign of life: heard from, or answering until the relay first found it not there.)
+  const since = Math.max(seen ?? 0, awaySince(key, reach) ?? 0) || now;
+  if (switchingRelease(key, since, told, now)) return { away: false, updating: true };
+  if (now - since < LIVE_FOR) return { away: false };
+  return { away: true, ...(seen !== undefined ? { lastSeen: seen } : {}) };
+}
+
+/** How the computer `key` stands for rows drawn from a copy it sent, kept since `seen` (ms): quiet
+ * once the relay found it not there, or the copy is older than `quietAfter`; then `standingOf`. */
+export function copyStanding(key: string, seen: number, reach = readReach(), told = readPeerAgents(), now = Date.now(), quietAfter = 180_000) {
+  return standingOf(key, reach[key] !== undefined || now - seen > quietAfter, seen, reach, told, now);
+}
+
+/** Whether a computer answers, as its setup rows say it: a relay refusal is immediate, and silence
+ * also ages out reach if this box missed a refusal. */
+function standing(key: string, saved: PeerSnapshot<SetupLists> | null, reach: Record<string, number>, told: ReturnType<typeof readPeerAgents>, now: number) {
+  const quiet = reach[key] !== undefined || (saved !== null && now - saved.seen > 3 * AGAIN);
+  return standingOf(key, quiet, saved?.seen, reach, told, now);
+}
+
+/** How the computer `key` stands, as its setup rows say it (`peerSetupLists`). */
+export async function peerStanding(key: string, now = Date.now()) {
+  return standing(key, await setupLists.read(key), readReach(), readPeerAgents(), now);
 }
 
 export async function peerSetupLists(link = readLink(), now = Date.now()) {
@@ -177,9 +214,6 @@ export async function peerSetupLists(link = readLink(), now = Date.now()) {
   return (await Promise.all(peersOf(link).map(async peer => {
     const saved = await setupLists.read(peer.key);
     if (!saved) return [];
-    // A relay refusal is immediate. Silence also ages out reach if this box missed a refusal.
-    const away = reach[peer.key] !== undefined || now - saved.seen > 3 * AGAIN;
-    const updating = away && switchingRelease(peer.key, saved, reach, told, now);
-    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}), ...(updating ? { updating } : {}) } }];
+    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, ...standing(peer.key, saved, reach, told, now) } }];
   }))).flat();
 }

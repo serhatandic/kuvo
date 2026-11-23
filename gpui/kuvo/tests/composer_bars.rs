@@ -420,6 +420,7 @@ fn bot_sessions_show_provider_icons_check_for_finished_and_fit_stop_all(cx: &mut
     }
     assert!(shown(cx, "activity-pinned-avatar-ses_grok-grok"), "a pinned row shows its provider's mark, not a dot");
     click(cx, "activity-unpin");
+    click(cx, "conversation-activity-button");
 
     let popover = bounds(cx, "conversation-activity-popover").expect("activity popover");
     let header = bounds(cx, "activity-sessions-header").expect("sessions header");
@@ -860,7 +861,7 @@ fn picking_a_summarize_point_in_activity_sends_it_to_the_box(cx: &mut TestAppCon
 }
 
 /// Pinned, Activity is a slim card at the conversation's top right that stays as you chat, beside
-/// the column, never over it; Unpin, its one control, brings back the popover.
+/// the column, never over it.
 #[gpui::test]
 fn pinned_activity_stays_open_beside_the_conversation(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -881,13 +882,94 @@ fn pinned_activity_stays_open_beside_the_conversation(cx: &mut TestAppContext) {
     let composer = bounds(cx, "composer-card").unwrap();
     assert!(card.left() >= composer.right(), "beside the conversation, not over it");
 
-    // Unpin is its one control: no Close beside it.
+    // Unpin closes it: no Close beside it.
     assert!(shown(cx, "activity-unpin") && !shown(cx, "activity-pinned-close"), "the pinned card has no Close");
+}
+
+/// Unpin closes the pinned card, and nothing opens in its place: the conversation widens once.
+#[gpui::test]
+fn unpinning_activity_closes_the_card_without_opening_the_popover(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    running(&stand_in);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-pin");
+    let pinned = bounds(cx, "composer-card").unwrap();
     click(cx, "activity-unpin");
-    assert!(!shown(cx, "activity-pinned-card") && shown(cx, "conversation-activity-popover"));
-    cx.simulate_keystrokes("escape");
+    assert!(!shown(cx, "activity-pinned-card"), "the card is gone");
+    assert!(!shown(cx, "conversation-activity-popover"), "no popover opens in its place");
+    let unpinned = bounds(cx, "composer-card").unwrap();
+    assert!(unpinned.center().x > pinned.center().x, "the conversation widens back: {pinned:?} → {unpinned:?}");
+}
+
+/// Four documents it made, as the box lists them (more than its overview shows).
+fn made(stand_in: &StandIn) {
+    for i in 1..=4 {
+        stand_in.add_output("ses_signup", json!({
+            "id": format!("art_doc_{i:024}"), "path": format!("/tmp/report-{i}.md"), "name": format!("report-{i}.md"),
+            "kind": "document", "type": "text/markdown", "latest": { "n": 1 },
+        }), b"# Report");
+    }
+}
+
+/// While pinned, a row opens inside the docked card, never the popover over the conversation,
+/// and the conversation doesn't move.
+#[gpui::test]
+fn pinned_activity_opens_outputs_inside_the_card_without_moving_the_conversation(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    running(&stand_in);
+    made(&stand_in);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-pin");
+    let before = bounds(cx, "composer-card").unwrap();
+    click(cx, "activity-view-Full");
+    assert!(shown(cx, "activity-see-all-outputs"), "Full lists what it made");
+    click(cx, "activity-see-all-outputs");
+    assert!(shown(cx, "activity-pinned-card") && shown(cx, "activity-all-outputs"), "all outputs show in the pinned card");
+    assert!(!shown(cx, "conversation-activity-popover"), "never the popover");
+    let after = bounds(cx, "composer-card").unwrap();
+    assert_eq!(after, before, "the conversation keeps its width: {before:?} → {after:?}");
+}
+
+/// The pinned summary lists only what's live: its context, the sessions and processes running,
+/// and subagents while one runs. What it made is in Full.
+#[gpui::test]
+fn the_pinned_summary_lists_only_whats_live(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    running(&stand_in);
+    made(&stand_in);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-outputs-header"), "the popover lists outputs");
+    click(cx, "activity-pin");
+    assert!(shown(cx, "activity-pinned-processes") && shown(cx, "activity-pinned-subagents"));
+    assert!(!shown(cx, "activity-pinned-outputs") && !shown(cx, "activity-outputs-header"), "no Outputs in the summary");
+}
+
+/// The pin is one setting, kept: another conversation opens with its Activity pinned, in the view
+/// it was left in, and so does the app after a restart.
+#[gpui::test]
+fn the_pinned_activity_is_remembered_across_conversations(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let folder = tempfile::tempdir().unwrap();
+    let kept = folder.path().join("yours.json");
+    let path = kept.clone();
+    cx.update(move |cx| kuvo::yours::init(Some(path), cx));
+    let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-pin");
+    click(cx, "activity-view-Full");
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_session_now("ses_dark", window, cx));
     cx.run_until_parked();
-    assert!(!shown(cx, "activity-pinned-card") && !shown(cx, "conversation-activity-popover"));
+    assert!(shown(cx, "activity-pinned-card"), "still pinned in another conversation");
+    assert!(shown(cx, "insights-on-Full"), "in Full, as it was left");
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_session_now("ses_signup", window, cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "activity-pinned-card"), "and back in the first");
+    // After a restart, the app reads it as it was left.
+    let read = kuvo::yours::Store::read(Some(kept)).now().activity;
+    assert_eq!(read, kuvo::yours::ActivityPin { pinned: true, full: true });
 }
 
 /// The pinned card lists a few sessions at work on a line each; many fold to one line saying how

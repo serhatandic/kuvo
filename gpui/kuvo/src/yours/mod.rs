@@ -218,6 +218,18 @@ pub struct ReadAt {
     pub offset: f32,
 }
 
+/// The conversation's Activity card, pinned beside every conversation or not, and which view the
+/// pinned card shows (the summary of what's live, or everything): the app's own view state, one for
+/// every conversation and computer, kept across restarts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ActivityPin {
+    #[serde(deserialize_with = "or_default")]
+    pub pinned: bool,
+    #[serde(deserialize_with = "or_default")]
+    pub full: bool,
+}
+
 /// All of your settings, a field a page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Yours {
@@ -228,6 +240,8 @@ pub struct Yours {
     pub panel: Panel,
     /// Preferred left sidebar width in logical pixels, shared across computers on this device.
     pub sidebar_width: Option<f32>,
+    /// The Activity card pinned, and its view.
+    pub activity: ActivityPin,
     pub notifications: Notifications,
     pub privacy: Privacy,
     /// The first Quit's note was seen on this device (`quit_note`).
@@ -244,6 +258,7 @@ pub enum Change {
     Editor(Option<String>),
     PanelStart(PanelStart),
     SidebarWidth(f32),
+    Activity(ActivityPin),
     Sessions(bool),
     Sound(bool),
     Dock(bool),
@@ -270,6 +285,7 @@ impl Change {
             Change::Editor(editor) => yours.general.editor = editor,
             Change::PanelStart(start) => yours.panel.starts_with = start,
             Change::SidebarWidth(width) => yours.sidebar_width = Some(width),
+            Change::Activity(pin) => yours.activity = pin,
             Change::Sessions(on) => yours.notifications.sessions = on,
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
@@ -310,7 +326,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { welcomed: value.get("welcomed").and_then(Value::as_bool).unwrap_or(false), queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), sidebar_width: page(&value, "sidebarWidth"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let now = Yours { welcomed: value.get("welcomed").and_then(Value::as_bool).unwrap_or(false), queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), sidebar_width: page(&value, "sidebarWidth"), activity: page(&value, "activity"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         let place: Place = page(&value, "place");
         Store { path, now, place: place.into(), file: file.into(), problem: None.into() }
     }
@@ -355,7 +371,7 @@ impl Store {
 
     fn write(&self) -> Result<(), String> {
         let mut file = self.file.borrow_mut();
-        let pages = [("panel", serde_json::to_value(&self.now.panel)), ("privacy", serde_json::to_value(&self.now.privacy)), ("appearance", serde_json::to_value(&self.now.appearance)), ("general", serde_json::to_value(&self.now.general)), ("notifications", serde_json::to_value(&self.now.notifications))];
+        let pages = [("panel", serde_json::to_value(&self.now.panel)), ("privacy", serde_json::to_value(&self.now.privacy)), ("appearance", serde_json::to_value(&self.now.appearance)), ("general", serde_json::to_value(&self.now.general)), ("notifications", serde_json::to_value(&self.now.notifications)), ("activity", serde_json::to_value(self.now.activity))];
         for (key, page) in pages {
             let Ok(Value::Object(page)) = page else { continue };
             let kept = file.entry(key).or_insert_with(|| Value::Object(Map::new()));
@@ -404,6 +420,11 @@ pub fn init(path: Option<PathBuf>, cx: &mut App) {
 /// Your settings now (the defaults where nothing read them yet).
 pub fn now(cx: &App) -> Yours {
     cx.try_global::<Store>().map(|store| store.now.clone()).unwrap_or_default()
+}
+
+/// The Activity card pinned or not, and its view (nothing kept yet: not pinned).
+pub fn activity_pin(cx: &App) -> ActivityPin {
+    cx.try_global::<Store>().map(|store| store.now.activity).unwrap_or_default()
 }
 
 pub(crate) fn sidebar_width(cx: &App) -> Option<f32> {

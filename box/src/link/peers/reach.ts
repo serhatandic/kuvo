@@ -40,10 +40,15 @@ const change = (edit: (reach: Record<string, number>) => boolean, file = PEER_RE
 export const PEER_CHECKED = path.join(RUN, "peer-reach-checked.json");
 const CHECKED_EVERY = 300_000;
 
+/** Told in this process each time the relay finds a peer not there, by its key (a conversation
+ * waiting on it answers what it kept at once: `session-follow.ts`). */
+export const unreachableFollowers = new Set<(key: string) => void>();
+
 /** The relay found nothing connected at `address`: the peer there (if it's one) isn't answering, from now. */
 export function noteUnreachable(address: Buffer, now = Date.now()): void {
   const peer = peersOf(readLink()).find(each => each.address === address.toString("base64url"));
   if (!peer) return;
+  for (const follower of unreachableFollowers) follower(peer.key);
   if (now - (readReach(PEER_CHECKED)[peer.key] ?? 0) > CHECKED_EVERY) change(checked => {
     checked[peer.key] = now;
     return true;

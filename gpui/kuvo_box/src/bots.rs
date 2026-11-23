@@ -128,6 +128,9 @@ pub struct Elsewhere {
     /// When its computer was last heard from (ms), while it's away.
     #[serde(default, rename = "lastSeen")]
     pub last_seen: Option<f64>,
+    /// Its computer is only switching to a new release: not away, said to be updating.
+    #[serde(default)]
+    pub updating: bool,
     #[serde(default)]
     pub now: Option<crate::areas::BotNow>,
     #[serde(default)]

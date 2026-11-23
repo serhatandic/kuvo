@@ -829,7 +829,7 @@ type Pick = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// A row of choices on a glass track, the chosen one a lifted pill (the period, the trend's measure
 /// and the lists).
-fn segmented(dark: bool, choices: Vec<(SharedString, SharedString, bool, impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static)>, text: TypeSize, cx: &App) -> AnyElement {
+pub(crate) fn segmented(dark: bool, choices: Vec<(SharedString, SharedString, bool, impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static)>, text: TypeSize, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let shadow = cx.theme().card_shadow();
     let tall = if text == TypeSize::Small { 26. } else { 24. };

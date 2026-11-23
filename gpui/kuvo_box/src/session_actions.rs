@@ -62,6 +62,14 @@ impl BoxClient {
         self.change(session, "archive", json!({ "archived": archived }))
     }
 
+    /// Keeps `directory` (an absolute folder on its computer) as one of its box's projects, or
+    /// brings back one removed; one kept already stays as it is (`PUT kuvo/projects`).
+    pub fn add_project(&self, directory: &str) -> Result<()> {
+        let path = format!("kuvo/projects?directory={}", crate::paths::query_value(directory));
+        let _: Value = self.value(&Request::put(path, json!({})))?;
+        Ok(())
+    }
+
     /// Names it as written (the box trims it, and refuses none).
     pub fn rename_session(&self, session: &str, title: &str) -> Result<Value> {
         self.change(session, "rename", json!({ "title": title }))

@@ -154,6 +154,7 @@ export const FEATURES = [
   "limits.rings",
   "limits.titles",
   "line",
+  "line.kept-conversation",
   "line.merged-archives",
   "line.merged-library",
   "line.merged-notices",

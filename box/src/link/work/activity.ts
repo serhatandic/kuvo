@@ -7,6 +7,8 @@ import { movedOf, peersOf } from "../peers/known";
 import { readLink } from "../state";
 import type { ActivityFact } from "../../shared/records";
 import type { Activity } from "../../shared/routes/work";
+import { standingOf } from "../peers/lists";
+import { readPeerAgents } from "../peers/directory";
 
 export function localActivity(list: Kept | null = keptList()): ActivityFact[] {
   const sessions = list?.sessions ?? {};
@@ -40,10 +42,12 @@ export function activityFacts(list: Kept | null = keptList()): ShownActivity[] {
   const moved = movedOf(link);
   const rows = new Map(localActivity(list).map(row => [row.session, row as ShownActivity]));
   const reach = readReach();
+  const told = readPeerAgents();
   const now = Date.now();
   const peers = peersOf(link).flatMap(peer => {
     const snapshot = readActivity(peer.key);
-    return snapshot ? [{ key: peer.key, ...snapshot, away: peerIsAway(peer.key, snapshot.heard, reach, now) }] : [];
+    // (Away by the one rule, `standingOf`.)
+    return snapshot ? [{ key: peer.key, ...snapshot, away: standingOf(peer.key, peerIsAway(peer.key, snapshot.heard, reach, now), snapshot.heard, reach, told, now).away }] : [];
   }).sort((a, b) => Number(a.away) - Number(b.away) || b.heard - a.heard);
   for (const peer of peers) {
     for (const row of peer.rows) {
