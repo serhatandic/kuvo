@@ -116,29 +116,39 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
     [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
-test("repeating the same send after the resident loses its reply leaves one message", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-retry");
-  const session = "ses_recovery";
-  here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
-  const first = here.start();
-  const initial = await first.ready();
-  const path = "kuvo/sessions/" + session + "/send";
-  const message = { id: "msg_lostReply", words: "One copy" };
-  const accepted = new Promise(resolve => { here.engine.holdPrompt = { id: message.id, accepted: resolve }; });
-  const original = request(initial, "POST", path, message).catch(() => null);
-  await accepted;
-  first.child.kill("SIGKILL");
-  await first.exited;
-  await original;
+for (const stage of ["before acceptance", "in the inbox", "in the transcript"]) {
+  test(`the same desktop send recovers a reply lost ${stage} with one message`, { timeout: 45000 }, async t => {
+    const { computer } = await bench(t);
+    const here = await computer("engine-retry");
+    const session = "ses_recovery";
+    here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
+    if (stage === "in the inbox") here.engine.running.add(session);
+    const first = here.start();
+    const initial = await first.ready();
+    const path = "kuvo/sessions/" + session + "/send";
+    const message = { id: "msg_lostReply", words: "One copy", delivery: "queue" };
+    const headers = { "x-kuvo-from": "app", "idempotency-key": message.id };
+    const beforeAcceptance = stage === "before acceptance";
+    const reached = new Promise(resolve => {
+      here.engine.holdPrompt = { id: message.id, beforeAcceptance, accepted: resolve };
+    });
+    const original = request(initial, "POST", path, message, headers).catch(() => null);
+    await reached;
+    first.child.kill("SIGKILL");
+    await first.exited;
+    assert.equal(await original, null);
 
-  const resumed = await here.start().ready();
-  const sent = await request(resumed, "POST", path, message);
-  assert.equal(sent.status, 200);
-  assert.deepEqual(sent.json, {});
-  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [message.id]);
-  assert.deepEqual((await request(resumed, "POST", path, message)).json, sent.json);
-});
+    const resumed = await here.start().ready();
+    const sent = await request(resumed, "POST", path, message, headers);
+    assert.equal(sent.status, 200, sent.text);
+    assert.deepEqual(sent.json, {});
+    assert.deepEqual((await request(resumed, "POST", path, message, headers)).json, sent.json);
+    const delivered = [...here.engine.messages.get(session) ?? [], ...here.engine.inboxes.get(session) ?? []];
+    assert.deepEqual(delivered.map(row => row.id), [message.id]);
+    const offers = here.engine.asked.filter(call => call.method === "POST" && call.path.endsWith("/prompt"));
+    assert.equal(offers.length, beforeAcceptance ? 2 : 1);
+  });
+}
 
 test("a new chat keeps its session marks and appears in the local session list", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);

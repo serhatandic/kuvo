@@ -71,6 +71,12 @@ export async function standInEngine(root, env) {
       if (prompt && request.method === "POST") {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+        const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
+        if (held) engine.holdPrompt = null;
+        if (held?.beforeAcceptance) {
+          held.accepted();
+          return;
+        }
         const messages = engine.messages.get(session) ?? [];
         const inbox = engine.inboxes.get(session) ?? [];
         if (!messages.some(row => row.id === given.id) && !inbox.some(row => row.id === given.id)) {
@@ -84,9 +90,7 @@ export async function standInEngine(root, env) {
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
         }
-        if (engine.holdPrompt && engine.holdPrompt.id === given.id) {
-          const held = engine.holdPrompt;
-          engine.holdPrompt = null;
+        if (held) {
           held.accepted();
           return;
         }

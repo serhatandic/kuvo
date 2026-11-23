@@ -10,6 +10,8 @@ import { takesForwarded } from "../work-queue/forward";
 import { isWaitingID } from "../../shared/queues";
 import { inline } from "../server/attached";
 import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
+import { acquireSessionEngine } from "../engine/lifetime";
+import { messageReached, queueOf } from "../engine/queue";
 import { targetsOf } from "../letters/tools";
 import { placeOfSessionPatiently } from "../letters/letter";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
@@ -493,12 +495,29 @@ interface Accepted {
 async function deliverMessage(context: RouteContext, record: string, setup: string, body: Operation["body"]) {
   const { groupsRoute } = await import("../areas/groups");
   const { sendRoute, SEND_ROUTE } = await import("../areas/messages");
+  const group = groupID.test(record);
+  const recovering = group ? undefined : async () => {
+    if (queueOf(record, true).waiting?.some(item => item.id === body.id))
+      return { status: 200, value: { waits: true } };
+    const release = await acquireSessionEngine(record);
+    try {
+      const place = await placeOfSessionPatiently(record, targetsOf(context));
+      if (!place) return null;
+      return await messageReached(place.target, record, body.id)
+        ? { status: 200, value: {} } : "resume" as const;
+    } finally {
+      release?.();
+    }
+  };
+  const stillChecking = group ? undefined : () => ({
+    status: 503, value: { message: "The engine isn't answering. Try again in a moment." }, notAdmitted: true as const,
+  });
   return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
     const veto = context.admitQueued?.();
     if (veto) return veto;
-    const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
+    const answer = await collected(group ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
-  }, () => context.admitQueued?.() ?? null);
+  }, () => context.admitQueued?.() ?? null, stillChecking, undefined, undefined, undefined, recovering);
 }
 
 /** Direct submission and relayed owner mail use the same acceptance record. */
