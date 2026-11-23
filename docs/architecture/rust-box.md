@@ -36,7 +36,7 @@ box sessions don't queue behind desktop builds.
 | `kuvo_setup` | Lease, leadership and takeover, membership, shared saves, devices and pairing, adding, unlinking and wiping a computer, backups. |
 | `kuvo_peers` | Relay client, mail and outbox, reach, merged lists, `ownerOf`, moves and handoffs, receipts, letters, notices. |
 | `kuvo_engine` | OpenCode on demand, `api/…` passthrough (WebSocket and PTY included), sessions, queues, send-once receipts, asks, search. |
-| `kuvo_agents` | Holders, roster, accounts and sign-in, the tools relay and MCP, one module per agent, subagents, reviews, goals, handover. |
+| `kuvo_agents` | Holders, roster, accounts and sign-in, the tools relay and MCP, one module per agent, subagents, reviews, handover. |
 | `kuvo_work` | Bots, wake-ups and watches, the Work Queue, group chats and seats, autopilot. |
 | `kuvo_services` | Usage, limits and Insights, Library, artifacts, marketplace, integrations, skills, settings pages, vault, files, Git, Changes, worktrees, the browser keeper. |
 | `kuvo_keeper` | Supervision, release selection and rollback, fleet updates, install and uninstall. |
@@ -166,7 +166,7 @@ resident's own version.
 
 ## 5. What not to port
 
-About 13,000 TypeScript lines, plus the bridge's process glue. The skipped compatibility stays in
+About 16,000 TypeScript lines, plus the bridge's process glue. The skipped compatibility stays in
 the TypeScript box for the computers that still need it.
 
 | Skip | ~Lines | Evidence |
@@ -181,6 +181,8 @@ the TypeScript box for the computers that still need it.
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
 | Folder layout steps (20 of 23 empty) | 500 | Frozen layout, per-file versions. |
 | `kuvo/data/owner`, `data/messages`, `data/edits*` adapters | 60 | No desktop caller. Storage stays. |
+| Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | A dropped feature, being removed from the TypeScript box. |
+| Typed keywords and slash commands: `areas/typed.ts`, `routes/typed.ts`, and their leftovers | 310 | Removed on 22 November. |
 | Letters' `peerOf` and `moved` | 100 | Ported onto `ownerOf` instead. |
 | The bridge as its own process: its API, `forward-version`, handover, `BRIDGE_VERSION`, tool forwarder, `kuvo-fence.js` | 2,500 | Folded into the resident and `kuvo-box` modes. |
 
@@ -215,13 +217,13 @@ parallel.
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |
 | 3.1 | Engine on demand, park, adoption; `api/…` passthrough with WebSocket and PTY | engine | 1.4 | 6 | B |
-| 3.2 | Sessions, queues, send-once receipts, typed messages, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
+| 3.2 | Sessions, queues, send-once receipts, asks, waiting, models, search | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopting the TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 6 ×2 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code, by protocol or sidecar per 0.3 | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the sidecar | agents | 4.1 | 3 | C |
-| 4.6 | Subagents, reviews, side questions, goals, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
+| 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
 | 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals | work | 3.2 | 5 ×2 | C |
 | 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot | work | 4.6, 2.2 | 4 ×2 | B |
