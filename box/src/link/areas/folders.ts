@@ -72,7 +72,7 @@ const HEAVY = new Set([".git", "node_modules", "build", "DerivedData", ".build",
  * can't be read), for a list that puts the newest first. Refused as `kuvo/folders` refuses a
  * folder it can't read. */
 export async function listTree(requestPath: string, limit = TREE_LIMIT, signal?: AbortSignal, timeout?: number): Promise<JSONAnswer<FolderTree | FolderRefused | { message: string }>> {
-  const query = new URLSearchParams(requestPath.split("?")[1] ?? "");
+  const query = new URLSearchParams(requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "");
   const home = homeFolder();
   // (Named, never the home folder by default: a walk of all of it is never what's meant.)
   const at = query.get("path")?.trim() ? askedFolder(query, home) : null;
@@ -138,7 +138,7 @@ const VERSION_CONTROL = new Set([".git", ".hg", ".svn"]);
  * (`files`, names in the same order, `.DS_Store` left out), as a Files panel lists a folder, and
  * without version control's own folders (`.git`, `.hg`, `.svn`). */
 export function listFolders(requestPath: string): JSONAnswer<FolderList | FolderRefused | { message: string }> {
-  const query = new URLSearchParams(requestPath.split("?")[1] ?? "");
+  const query = new URLSearchParams(requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "");
   const home = homeFolder();
   const at = askedFolder(query, home);
   if (!at) return { status: 400, value: { message: "Send a folder's full path, or one that starts with ~/." } };

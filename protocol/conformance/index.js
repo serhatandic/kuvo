@@ -8,6 +8,7 @@ const areas = new Map([
   ["adding", "./adding.test.mjs"],
   ["two-boxes", "./two-boxes.test.mjs"],
   ["moves", "./moves.test.mjs"],
+  ["rehome", "./rehome.test.mjs"],
   ["holder", "./holder.test.mjs"],
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],

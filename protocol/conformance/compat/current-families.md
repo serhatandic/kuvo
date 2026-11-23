@@ -19,6 +19,7 @@ the writer is the desktop, a provider, Chromium or the retired Mac app.
 | Work Queue categories/status migration | `changeQueues` | `machine/run/work-queue/model.json` | Preserved status model |
 | Computer enrollment history | `rememberEnrollment`, `projectMembership`, signed checkpoint | `machine/run/link.json` | Enrollment history preserved |
 | Computer removal delivery | `membershipOf`, `projectMembership`, signed checkpoint | `machine/run/link.json` | Removal receipt preserved |
+| Retained work after unlink | `releasedWorkBaseline`, `writeLink` | `machine/run/link.json` | Retained-work stamps preserved |
 | Encrypted backup archives | `seal` | `machine/fixture-deposit/*/point.kuvo` | Preserved ciphertext |
 | Relay backup upload reservations | `relayBackupAct` | `account/.kuvo-backups/relay/*/*/.upload.*` | Preserved journal and partial |
 | Offline edit proposals and recovery | `keepRecord` | `machine/run/owned-data/edit-deletions/*.json` | Preserved deletion fence |

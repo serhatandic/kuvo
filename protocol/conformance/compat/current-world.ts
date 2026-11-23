@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { writeExtra } from "./current-extra";
 import { addressOf, publicOf } from "../../../box/src/link/crypto/keys";
-import { writeLink, type LinkState } from "../../../box/src/link/state";
+import { readLink, writeLink, type LinkState } from "../../../box/src/link/state";
 import { writeCard } from "../../../box/src/link/setup/card";
 import { signingKeyOf } from "../../../box/src/link/documents/format";
 import { acceptedMembership, membershipOf, projectMembership } from "../../../box/src/link/setup/membership";
@@ -14,6 +14,7 @@ import { rememberEnrollment } from "../../../box/src/link/setup/computer-history
 import { installShared, type SharedValues } from "../../../box/src/link/setup/shared";
 import { checkpointedTransition } from "../../../box/src/link/setup/checkpoint";
 import { startSetup } from "../../../box/src/link/setup/lead";
+import { releasedWorkBaseline } from "../../../box/src/link/setup/existing-work";
 import { changeProjects } from "../../../box/src/link/areas/projects";
 import { adoptBox } from "../../../box/src/link/compat/adopt-settings";
 import { keepLabel } from "../../../box/src/link/work-queue/labels";
@@ -134,3 +135,8 @@ try {
 } finally {
   crypto.randomBytes = original;
 }
+
+const baseline = releasedWorkBaseline();
+assert.equal(typeof baseline.releasedWork, "string");
+assert.ok(baseline.releasedScopedWork);
+writeLink({ ...readLink()!, releasedSetup: setup, ...baseline }, true);

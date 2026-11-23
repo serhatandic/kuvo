@@ -126,3 +126,14 @@ test("what's typed reads as a web address only where it is one, never a file's n
   ]
   expect(reads.map(([typed]) => [typed, webAddress(typed)])).toEqual(reads)
 })
+
+test("a question mark in what's typed or in a folder's name is part of it, as the box's server sends it", async () => {
+  // (The server sends a query's `?` as it is, past the first: `canonicalPath`.)
+  const top = repository("asked?here", ["src/signup.ts"])
+  const said = await ask(handler, "GET", `kuvo/files/find?directory=${top}&q=https://example.com/a?b%3D1`)
+  expect(said).toEqual({ status: 200, json: { url: "https://example.com/a?b=1", files: [] } })
+  const listed = await ask(handler, "GET", `kuvo/folders?path=${top}`)
+  expect([listed.status, listed.json.path]).toEqual([200, top])
+  const tree = await ask(handler, "GET", `kuvo/folders/tree?path=${top}`)
+  expect([tree.status, tree.json.path]).toEqual([200, top])
+})

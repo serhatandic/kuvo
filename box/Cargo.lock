@@ -1012,6 +1012,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "unicode-normalization",
  "url",
 ]
 
@@ -1113,12 +1114,15 @@ dependencies = [
  "form_urlencoded",
  "futures-util",
  "http",
+ "kuvo_os",
  "kuvo_protocol",
  "kuvo_server",
  "libc",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "unicode-normalization",
  "url",
 ]
 

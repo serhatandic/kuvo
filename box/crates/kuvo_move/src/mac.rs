@@ -15,14 +15,26 @@ mod check;
 mod counts;
 mod database;
 mod engine;
+mod history;
 mod letters;
+mod merge;
+mod new_install;
+mod notices;
 mod paths;
 mod preferences;
+pub(crate) mod processes;
 mod publication;
 mod snapshots;
 mod source;
+mod usage;
+mod work;
 
-pub use publication::{CutoverStep, Outcome, Run, blocks_open, settle_started};
+pub(crate) use new_install::interrupted as unfinished_install;
+pub use new_install::{new_home, new_readiness};
+pub use publication::{
+    CutoverStep, GenericPassword, KeychainItems, Outcome, Run, back, resume, resume_with_keychain,
+    settle, settle_started, unfinished,
+};
 
 const STAGE: &str = "updates/rehome/rust-stage";
 const BESIDE: &[(&str, &str)] = &[
@@ -52,13 +64,23 @@ pub enum AppStep {
     Check,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ChangePoint {
+    Check,
+    Keys,
+    Place,
+    Fix,
+}
+
 #[derive(Debug)]
 pub struct StagedApp {
     pub path: PathBuf,
-    pub dropped_letters: usize,
     pub dropped_waiting_messages: u64,
     counts: counts::Comparison,
     leftovers: Vec<String>,
+    dropped: Vec<String>,
+    history: history::External,
+    merged: Vec<merge::Merged>,
 }
 
 /// Prepare the source and the pinned engine's database for the Mac import.
@@ -73,6 +95,16 @@ pub fn stage(
     completed: impl FnMut(AppStep),
 ) -> Result<StagedApp, Error> {
     let _guard = layout::lock_for_move(destination, Duration::from_secs(3))?;
+    for entry in entries(destination.root())? {
+        let name = entry.file_name();
+        if name != OsStr::new("updates")
+            && name != OsStr::new("desktop")
+            && name != OsStr::new(layout::FILE)
+            && !name.to_string_lossy().starts_with(".folder-upgrade.lock")
+        {
+            return Err(Error::UnknownHome(destination.root().into()));
+        }
+    }
     prepare(destination, account, bundle, release, engine_dir, completed)
 }
 
@@ -104,16 +136,6 @@ fn prepare(
         layout::Layout::Unmarked | layout::Layout::Older { version: 0 }
     ) {
         return Err(Error::UnknownHome(destination.root().into()));
-    }
-    for entry in entries(&disk.0)? {
-        let name = entry.file_name();
-        if name != OsStr::new("updates")
-            && name != OsStr::new("desktop")
-            && name != OsStr::new(layout::FILE)
-            && !name.to_string_lossy().starts_with(".folder-upgrade.lock")
-        {
-            return Err(Error::UnknownHome(destination.root().into()));
-        }
     }
     let journal = disk.path("updates/rehome/journal.json")?;
     if metadata(&journal)?.is_some() {
@@ -154,10 +176,16 @@ fn prepare(
             clone(&entry.path(), &staging.join(name), false)?;
         }
     }
+    let mut merged = Vec::new();
     for (from, to) in BESIDE {
         let path = source.join(from);
         if metadata(&path)?.is_some() {
-            clone(&path, &staging.join(to), false)?;
+            merge::clone(
+                &path,
+                &staging.join(to),
+                &destination.root().join(to),
+                &mut merged,
+            )?;
         }
     }
     clone(&release.join("bin"), &staging.join("bin"), true)?;
@@ -179,8 +207,7 @@ fn prepare(
         files::remove_file_synced(&path)?;
         clone(&release_plugin, &path, true)?;
     }
-    preferences::take(&source, &staging_disk, account, destination.root())?;
-    let dropped_letters = letters::upgrade(&source, &staging_disk)?;
+    let dropped = preferences::take(&source, &staging_disk, account, destination.root())?;
     let welcome = staging_disk.path("run/welcomed.json")?;
     if metadata(&welcome)?.is_none() {
         files::write_new(&welcome, br#"{"moved":true,"formatVersion":1}"#)?;
@@ -204,20 +231,29 @@ fn prepare(
         .collect();
     placements.push((source_box, destination.root().into()));
     let map = paths::PathMap::new(
-        placements
+        merged
             .iter()
-            .map(|(from, to)| (from.as_path(), to.as_path())),
+            .map(|entry| (entry.source.as_path(), entry.placed.as_path()))
+            .chain(
+                placements
+                    .iter()
+                    .map(|(from, to)| (from.as_path(), to.as_path())),
+            ),
     );
     let databases = engine::databases(&data)?;
     let changes = databases
         .iter()
         .map(|file| database::rewrite(file, &map))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
+    let folders = history::folders(&source, &changes)?;
+    history::rewrite(&staging_disk, &map, &folders)?;
+    let history = history::External::plan(account, &map, &folders)?;
     snapshots::rewrite(&Disk(data.join("opencode")), &map, changes)?;
     for name in [
         "config/opencode/opencode.json",
         "box/projects.json",
         "box/worktrees.json",
+        "bots.json",
     ] {
         let file = staging_disk.path(name)?;
         if metadata(&file)?.is_some_and(|meta| meta.is_file())
@@ -230,6 +266,21 @@ fn prepare(
                 source,
             })?;
             files::rewrite_mac_entry(&file, &next)?;
+        }
+    }
+    for parent in ["bots", "wakes"] {
+        for entry in entries(&staging_disk.path(parent)?)? {
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let directory = entry.path().join("directory");
+            if metadata(&directory)?.is_some_and(|meta| meta.is_file())
+                && let Some(bytes) = files::read(&directory)?
+                && let Ok(before) = std::str::from_utf8(&bytes)
+                && let Some(after) = map.lines(before)
+            {
+                files::rewrite_mac_entry(&directory, after.as_bytes())?;
+            }
         }
     }
     artifacts::rewrite(&staging_disk, &map)?;
@@ -249,19 +300,21 @@ fn prepare(
         .collect();
     source::require_quiet(&source_disk)?;
     if source::stamp(&source)? != input {
-        return Err(invalid("The app's data changed during the staged move."));
+        return Err(Error::SourceChanged(ChangePoint::Check));
     }
     completed(AppStep::Check);
     Ok(StagedApp {
         path: staging,
-        dropped_letters,
         dropped_waiting_messages,
         counts,
         leftovers,
+        dropped,
+        history,
+        merged,
     })
 }
 
-fn bundle_id(bundle: &Path) -> Result<String, Error> {
+pub fn bundle_id(bundle: &Path) -> Result<String, Error> {
     let result = Command::new("/usr/bin/plutil")
         .env_clear()
         .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
@@ -285,15 +338,7 @@ fn checked_engine(release: &Path, engine_dir: &Path) -> Result<PathBuf, Error> {
     let manifest = format::BOX_FILES.read(&release.join("box.json"))?;
     let version = manifest
         .as_ref()
-        .and_then(|record| record.fields.get("engine"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| {
-            !value.is_empty()
-                && value.as_bytes()[0].is_ascii_alphanumeric()
-                && value
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'))
-        })
+        .and_then(engine_version)
         .ok_or_else(|| invalid("The release does not name a valid engine."))?;
     for path in [
         release.join("bin/kuvo-start"),
@@ -305,6 +350,22 @@ fn checked_engine(release: &Path, engine_dir: &Path) -> Result<PathBuf, Error> {
         }
     }
     Ok(Path::new(version).join("opencode"))
+}
+
+fn engine_version(manifest: &format::Object) -> Option<&str> {
+    manifest
+        .fields
+        .get("engine")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| {
+            value
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'))
+        })
 }
 
 fn clone(from: &Path, to: &Path, installed: bool) -> Result<(), Error> {

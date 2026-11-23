@@ -1,7 +1,5 @@
 use super::{BESIDE, preferences, process_record};
-use crate::{
-    Disk, Error, ValueWithPid, check_writers, entries, json_at, metadata, require_stopped,
-};
+use crate::{Disk, Error, entries, metadata};
 use kuvo_store::{files, format};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -10,7 +8,6 @@ use std::{
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::Command,
     time::SystemTime,
 };
 
@@ -59,38 +56,6 @@ fn validate_record(file: &Path) -> Result<(), Error> {
             format::ObjectFormat::additive("Legacy Mac import object").decode(value)?;
         }
         _ => {}
-    }
-    Ok(())
-}
-
-pub(super) fn no_open_database(source: &Path) -> Result<(), Error> {
-    let folder = source.join("opencode/data/opencode");
-    let mut databases = Vec::new();
-    for entry in entries(&folder)? {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if entry.file_type()?.is_file()
-            && name.starts_with("opencode")
-            && (name.ends_with(".db") || name.ends_with(".db-wal") || name.ends_with(".db-shm"))
-        {
-            databases.push(entry.path());
-        }
-    }
-    if databases.is_empty() {
-        return Ok(());
-    }
-    let result = Command::new("/usr/sbin/lsof")
-        .env_clear()
-        .args(["-n", "-P", "-F", "fa", "--"])
-        .args(databases)
-        .output()?;
-    if String::from_utf8_lossy(&result.stdout)
-        .lines()
-        .any(|line| matches!(line, "aw" | "au"))
-    {
-        return Err(super::invalid(
-            "Your sessions are still open in another program on this Mac. Quit Kuvo Code wherever it's open, then try again.",
-        ));
     }
     Ok(())
 }
@@ -171,14 +136,61 @@ fn walk(path: &Path, tree: &mut BTreeMap<PathBuf, Entry>) -> Result<(), Error> {
 }
 
 pub(super) fn require_quiet(disk: &Disk) -> Result<(), Error> {
-    check_writers(disk)?;
-    for record in ["run/engine.json", "run/box-services.json"] {
-        let record = disk.path(record)?;
-        let pid = json_at::<ValueWithPid>(&record)?.and_then(|value| value.pid);
-        require_stopped(record, pid)?;
+    let active = recorded_workers(disk)?;
+    if !active.is_empty() {
+        return Err(super::invalid(&format!(
+            "An earlier Kuvo Code is still running in the background on this Mac ({}) and didn't stop when asked. Restart this Mac, then try again.",
+            active.join(", ")
+        )));
     }
-    let keeper = disk.path("run/box.pid")?;
-    let pid =
-        files::read(&keeper)?.and_then(|bytes| String::from_utf8_lossy(&bytes).trim().parse().ok());
-    require_stopped(keeper, pid)
+    Ok(())
+}
+
+pub(super) fn recorded_workers(disk: &Disk) -> Result<Vec<&'static str>, Error> {
+    use kuvo_os::process::{ProcessIdentity, ProcessState};
+
+    let mut active = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (file, role, label) in [
+        ("engine.json", "opencode", "its engine"),
+        ("bridge.json", "kuvo-agents", "its coding agents' bridge"),
+        ("serve.json", "kuvo-link", "its server"),
+        (
+            "box-services.json",
+            "kuvo-link.js box-services",
+            "its box services",
+        ),
+        ("link.pid", "kuvo-link", "its link"),
+        ("box.pid", "kuvo-start", "its keeper"),
+    ] {
+        let path = disk.path(Path::new("run").join(file))?;
+        let Some(bytes) = files::read(&path)? else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let pid: Option<u32> = if let Ok(pid) = text.trim().parse() {
+            Some(pid)
+        } else if let Ok(value @ serde_json::Value::Object(_)) = serde_json::from_slice(&bytes) {
+            let record =
+                format::ObjectFormat::additive("Local process rendezvous").decode(value)?;
+            record
+                .fields
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+        } else {
+            None
+        };
+        let Some(pid) = pid.filter(|pid| *pid > 1 && !seen.contains(pid)) else {
+            continue;
+        };
+        if let Some(owner) = ProcessIdentity::read(pid)?
+            && super::processes::command_line(pid)?.contains(role)
+            && owner.state() == ProcessState::Live
+        {
+            active.push(label);
+            seen.insert(pid);
+        }
+    }
+    Ok(active)
 }

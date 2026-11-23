@@ -31,6 +31,10 @@ pub trait DestinationStore {
     fn put(&self, id: &PointId, archive: &Path) -> Result<()>;
     fn get(&self, id: &PointId, scratch: &Path) -> Result<PathBuf>;
     fn erase(&self, id: &PointId) -> Result<()>;
+
+    fn check_export_projects(&self, _projects: &[PathBuf]) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn storage(kind: &str) -> (&'static str, &'static str) {
@@ -102,6 +106,23 @@ impl DiskStore {
 }
 
 impl DestinationStore for DiskStore {
+    fn check_export_projects(&self, projects: &[PathBuf]) -> Result<()> {
+        let disk = self.selected.as_path();
+        #[cfg(windows)]
+        let conventional = kuvo_os::platform::windows_conventional_path(disk);
+        #[cfg(windows)]
+        let disk = conventional.as_deref().unwrap_or(disk);
+        if projects
+            .iter()
+            .any(|project| project.starts_with(disk) || disk.starts_with(project))
+        {
+            return Err(Error::Message(
+                "Choose an export folder separate from the selected projects.",
+            ));
+        }
+        Ok(())
+    }
+
     fn list(&self) -> Result<Vec<PointId>> {
         let entries = fs::read_dir(&self.root)?
             .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))

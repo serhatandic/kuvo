@@ -382,3 +382,34 @@ pub(super) fn single_json<T: serde::de::DeserializeOwned>(
     .pop()
     .ok_or(Error::Message("The backup entry is missing."))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a scratch home from the current golden generator"]
+    fn golden_backup_envelope_authenticates_and_retains_the_saved_bytes() {
+        let home =
+            PathBuf::from(std::env::var_os("KUVO_TEST_BACKUP_GOLDEN").unwrap()).join("machine");
+        let owner = "K9OVBGEgLiQvK66DwHcRnVukrjAFg9frt5I7Im2FM0M";
+        let file = home.join("fixture-deposit").join(owner).join("point.kuvo");
+        let scratch = tempfile::tempdir().unwrap();
+        let entries = open(
+            &file,
+            &RecoveryKey([35; 32]),
+            format!("backup\0{owner}\0point").as_bytes(),
+            scratch.path(),
+        )
+        .expect("the current golden envelope authenticates");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "box/opencode.json");
+        // The golden writer adds its MCP fixture after sealing the point.
+        let mut saved: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_reader(File::open(home.join(&entries[0].name)).unwrap()).unwrap();
+        saved.shift_remove("mcp");
+        let mut expected = serde_json::to_vec_pretty(&saved).unwrap();
+        expected.push(b'\n');
+        assert_eq!(fs::read(&entries[0].file).unwrap(), expected);
+    }
+}
