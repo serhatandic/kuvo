@@ -1,7 +1,12 @@
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
-use kuvo_peers::relay::{Relay, SetupLink};
+use kuvo_peers::{
+    devices::Devices,
+    relay::Relay,
+    session::ComputerKind,
+    setup_lists::{ResidentPeers, system_clock},
+};
 use kuvo_protocol::{
     gate::compatibility,
     json::{Null, Nullable},
@@ -23,38 +28,50 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         std::env::vars_os().collect(),
         Timing::default(),
     )?;
+    let kind = match fs::read_to_string(home.join("box/kind")) {
+        Ok(kind) if kind.trim() == "mac" => ComputerKind::Mac,
+        Ok(_) => ComputerKind::Machine,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ComputerKind::Machine,
+        Err(error) => return Err(error.into()),
+    };
     let name = hostname::get()?.to_string_lossy().into_owned();
-    let mac = is_mac(home)?;
     let relay = std::env::var("KUVO_TEST_RELAY").ok().or_else(|| {
         let account = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
         (home == Path::new(&account).join(".kuvo-code"))
             .then(|| "wss://kuvolink.porigam.com.tr".into())
     });
-    let prepared = kuvo_setup::SetupRuntime::prepare(home, name.clone(), mac, relay).await?;
-    let mut relay_feed = None;
-    let network = prepared.relay_config()?.map(|config| {
-        let mut relay = Relay::start(config);
-        let (events, receive) = tokio::sync::mpsc::channel(64);
-        let sender = relay.sender.clone();
-        relay_feed = Some(tokio::spawn(async move {
-            while let Some(event) = relay.events.recv().await {
-                if let Some(event) = event.for_setup()
-                    && events.send(event).await.is_err()
-                {
-                    return;
-                }
-            }
-        }));
-        SetupLink {
-            sender,
-            events: receive,
-        }
-    });
-    let setup = prepared.start(network)?;
-    let info = info(home, &name, mac)?;
+    let prepared =
+        kuvo_setup::SetupRuntime::prepare(home, name.clone(), kind == ComputerKind::Mac, relay)
+            .await?;
+    let bootstrap = Devices::load(home, name, kind).await?;
+    let accepted_roster = prepared.peer_roster();
+    let managed = accepted_roster.is_some();
+    let roster = accepted_roster.unwrap_or(bootstrap.roster);
+    let info = info(
+        home,
+        &roster.name,
+        kind,
+        bootstrap.devices.permits_local_pairing(),
+    )?;
+    let relay = prepared
+        .relay_config()?
+        .or(bootstrap.relay)
+        .map(Relay::start);
+    let setup = prepared.start(relay.as_ref().map(Relay::handle))?;
+    let peers = ResidentPeers::start(
+        home,
+        roster,
+        relay,
+        Some(bootstrap.devices.clone()),
+        kind == ComputerKind::Mac,
+        Arc::new(system_clock),
+    )
+    .await?;
+    peers.follow_setup_roster(setup.handle().rosters()).await;
     let mut routes = Registry::new();
     engine.register(&mut routes);
     setup.handle().register(&mut routes);
+    kuvo_peers::routes::register(&mut routes, peers.reader(), bootstrap.devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();
@@ -72,36 +89,36 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let dispatcher = routes.build(LineTiming::default());
+    peers.dispatch_with(dispatcher.clone()).await;
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
-    let result = resident
-        .serve(dispatcher, Arc::new(setup.handle()), super::shutdown())
-        .await;
-    if let Some(task) = relay_feed {
-        task.abort();
-    }
-    result?;
+    let pairings: Arc<dyn kuvo_server::ssh::Pairings> = if managed {
+        Arc::new(setup.handle())
+    } else {
+        Arc::new(bootstrap.devices)
+    };
+    resident
+        .serve(dispatcher, pairings, super::shutdown())
+        .await?;
     Ok(())
-}
-
-fn is_mac(home: &Path) -> io::Result<bool> {
-    match fs::read_to_string(home.join("box/kind")) {
-        Ok(kind) => Ok(kind.trim() == "mac"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
 }
 
 fn info(
     home: &Path,
     name: &str,
-    is_mac: bool,
+    kind: ComputerKind,
+    permits_pairing: bool,
 ) -> Result<info::Status200, Box<dyn std::error::Error>> {
     let chats = home.join("chats");
     fs::create_dir_all(&chats)?;
+    let is_mac = kind == ComputerKind::Mac;
     // Advertise the implemented routes while the desktop remains behind its update gate.
     let mut features = vec!["info", "line", "engine.restart"];
     if !is_mac {
         features.push("engine.start");
+    }
+    features.extend_from_slice(kuvo_peers::routes::FEATURES);
+    if permits_pairing {
+        features.push("devices.pair");
     }
     let mut answer = json!({
         "kind": if is_mac { "mac" } else { "machine" },

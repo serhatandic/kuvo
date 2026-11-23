@@ -1,10 +1,15 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
+    sync::Arc,
     time::Duration,
 };
 
-use kuvo_peers::{relay, session::BoxHello};
+use kuvo_peers::{
+    directory::{Member, Roster},
+    relay,
+    session::{BoxHello, ComputerKind as PeerKind},
+};
 use kuvo_server::ssh::{Grant, IdentityRefusal, Pairings};
 use kuvo_wire::{
     documents::{self, Document, Kind, Parts},
@@ -12,7 +17,7 @@ use kuvo_wire::{
 };
 use serde_json::{Value, json};
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{self, Instant},
 };
@@ -27,10 +32,12 @@ use crate::{
     storage::Files,
 };
 
+mod device_access;
 mod edit_delivery;
 mod handover;
 mod replication;
 
+pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 use handover::{Handover, HandoverReply};
 
 const LINK: &str = "run/link.json";
@@ -47,6 +54,18 @@ pub struct SetupRuntime {
 pub struct SetupHandle {
     pub(crate) inbox: mpsc::Sender<Request>,
     pub(crate) views: watch::Receiver<View>,
+    rosters: watch::Receiver<Option<Arc<Roster>>>,
+}
+
+impl SetupHandle {
+    pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
+        self.rosters.clone()
+    }
+}
+
+struct SetupLink {
+    sender: relay::Sender,
+    events: broadcast::Receiver<Arc<relay::RelayEvent>>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -90,6 +109,7 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
+    DeviceChange(device_access::Mutation),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
     EditReceipt(String),
@@ -190,7 +210,18 @@ impl PreparedSetup {
             .transpose()
     }
 
-    pub fn start(self, network: Option<relay::SetupLink>) -> Result<SetupRuntime, Error> {
+    pub fn peer_roster(&self) -> Option<Roster> {
+        peer_roster(&self.link, self.identity.as_ref())
+    }
+
+    pub fn start(self, relay: Option<relay::RelayHandle>) -> Result<SetupRuntime, Error> {
+        let network = relay.and_then(|relay| {
+            let events = relay.subscribe()?;
+            Some(SetupLink {
+                sender: relay.sender,
+                events,
+            })
+        });
         let Self {
             files,
             mut link,
@@ -202,6 +233,8 @@ impl PreparedSetup {
         let (tx, rx) = mpsc::channel(32);
         let view = make_view(&files, &link, identity.as_ref(), &lease, kind, welcomed)?;
         let (views, view_rx) = watch::channel(view);
+        let (rosters, roster_rx) =
+            watch::channel(peer_roster(&link, identity.as_ref()).map(Arc::new));
         for field in ["sharedPending", "sharedInterrupted", "sharedReceipts"] {
             link.extra.shift_remove(field);
         }
@@ -215,11 +248,13 @@ impl PreparedSetup {
             network,
             rx,
             views,
+            rosters,
             exports: vec![],
             parts: Parts::default(),
             manifests: VecDeque::new(),
             pending_tips: VecDeque::new(),
             pending_handover: None,
+            pending_devices: HashMap::new(),
             forwarded_handover: None,
             next: Instant::now(),
             next_edits: Instant::now(),
@@ -230,6 +265,7 @@ impl PreparedSetup {
             handle: SetupHandle {
                 inbox: tx,
                 views: view_rx,
+                rosters: roster_rx,
             },
             task,
         })
@@ -408,6 +444,43 @@ fn new_setup(position: Position, sign: String, role: Role) -> Setup {
     }
 }
 
+fn peer_roster(link: &Link, identity: Option<&Identity>) -> Option<Roster> {
+    let own = identity?;
+    let setup = link.setup().ok()?;
+    let roster = link.member_list().ok()?;
+    let named = link.value(SharedKind::SetupNames);
+    let mut name = link.name.clone().unwrap_or_default();
+    let mut members = Vec::new();
+    for peer in roster.boxes {
+        let title = named
+            .and_then(|names| names.get(&peer.key))
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&peer.name)
+            .to_owned();
+        if peer.key == own.public {
+            name = title;
+        } else if let Some(key) = decode_exact(&peer.key) {
+            members.push(Member {
+                key,
+                address: decode_exact(&peer.address),
+                name: title,
+                kind: if peer.kind == ComputerKind::Mac {
+                    PeerKind::Mac
+                } else {
+                    PeerKind::Machine
+                },
+            });
+        }
+    }
+    Some(Roster {
+        here: decode_exact(&own.public),
+        name,
+        main: decode_exact(&setup.position.primary),
+        members,
+    })
+}
+
 fn relay_config(
     link: &Link,
     identity: &Identity,
@@ -571,14 +644,16 @@ struct Owner {
     kind: ComputerKind,
     lease: lease::Client,
     welcomed: bool,
-    network: Option<relay::SetupLink>,
+    network: Option<SetupLink>,
     rx: mpsc::Receiver<Request>,
     views: watch::Sender<View>,
+    rosters: watch::Sender<Option<Arc<Roster>>>,
     exports: Vec<(Kind, documents::Envelope)>,
     parts: Parts,
     manifests: VecDeque<(String, Document)>,
     pending_tips: VecDeque<Document>,
     pending_handover: Option<Handover>,
+    pending_devices: HashMap<String, device_access::Pending>,
     forwarded_handover: Option<Handover>,
     next: Instant,
     next_edits: Instant,
@@ -600,12 +675,16 @@ impl Owner {
                         None => std::future::pending().await,
                     }
                 } => match incoming {
-                    Some(event) => {
-                        if let Err(error) = self.receive(event).await {
+                    Ok(event) => {
+                        if let Err(error) = self.receive(&event).await {
                             eprintln!("setup relay message: {error}");
                         }
                     }
-                    None => self.network = None,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // The lease and the next availability round recover missed state.
+                        self.next = Instant::now();
+                    }
+                    Err(broadcast::error::RecvError::Closed) => self.network = None,
                 },
                 () = time::sleep_until(until) => {
                     if self.next <= Instant::now() {
@@ -622,6 +701,7 @@ impl Owner {
                         }
                     }
                     self.expire_handover().await;
+                    self.expire_device_changes();
                     self.refresh();
                 }
             }
@@ -730,6 +810,15 @@ impl Owner {
         {
             project_membership(&mut next, &roster, own)?;
         }
+        let names_changed = self
+            .link
+            .shared
+            .get(&SharedKind::SetupNames)
+            .map(|entry| entry.sequence)
+            != next
+                .shared
+                .get(&SharedKind::SetupNames)
+                .map(|entry| entry.sequence);
         let files = self.files.clone();
         let zone_changed = self
             .link
@@ -756,6 +845,10 @@ impl Owner {
         .await
         .map_err(|_| Error::Invalid("setup write task"))??;
         self.link = written;
+        if position_changed || membership_changed || names_changed {
+            self.rosters
+                .send_replace(peer_roster(&self.link, self.identity.as_ref()).map(Arc::new));
+        }
         self.refresh();
         if let Err(error) = self.write_card() {
             eprintln!("setup card: {error}");
@@ -789,6 +882,10 @@ impl Owner {
         {
             self.begin_handover(primary, epoch, submitter, HandoverReply::Local(reply))
                 .await;
+            return;
+        }
+        if let Command::DeviceChange(mutation) = command {
+            self.ask_device_change(mutation, reply).await;
             return;
         }
         let result = self.execute(command).await;
@@ -942,7 +1039,9 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } => unreachable!("handover waits on relay mail"),
+            Command::Handover { .. } | Command::DeviceChange(_) => {
+                unreachable!("this request can wait on relay mail")
+            }
         }
     }
 

@@ -5,7 +5,7 @@ use std::{collections::HashMap, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use kuvo_peers::{
-    relay::{Config, Event, Relay},
+    relay::{Config, Event, Relay, RelayEvent},
     session::{self, BoxHello, ClientHello, ComputerKind, Message},
 };
 use kuvo_wire::{
@@ -171,6 +171,8 @@ async fn stale_and_tampered_transport_frames_are_closed() {
 async fn only_authenticated_mail_from_the_roster_is_delivered() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let (mut relay, mut test) = TestRelay::connect().await;
+        let handle = relay.handle();
+        let mut observer = handle.subscribe().expect("active relay subscription");
         let value = json!({"at":42,"agents":{"list":[]}});
         let mail = Envelope(value.as_object().unwrap().clone());
         for (key, marker) in [([51; 32], 0), (PEER_KEY, 1)] {
@@ -186,7 +188,40 @@ async fn only_authenticated_mail_from_the_roster_is_delivered() {
         else {
             panic!("known sender's mail")
         };
-        assert_eq!((from, key, envelope), ([1; 16], public(PEER_KEY), mail));
+        assert_eq!((from, key, &envelope), ([1; 16], public(PEER_KEY), &mail));
+        let observed = observer.recv().await.expect("same authenticated event");
+        let RelayEvent::Mail {
+            from,
+            key,
+            envelope,
+        } = observed.as_ref()
+        else {
+            panic!("observer must receive the authenticated peer's mail first");
+        };
+        assert_eq!((*from, *key, envelope), ([1; 16], public(PEER_KEY), &mail));
+        handle
+            .sender
+            .mail(
+                Host {
+                    key: public(PEER_KEY),
+                    address: PEER_ADDRESS,
+                },
+                mail.clone(),
+            )
+            .await
+            .unwrap();
+        let (kind, number, body) = test.frame().await;
+        assert_eq!((kind, number), (Kind::Mail, 0));
+        assert_eq!(
+            Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap(),
+            mail
+        );
+        drop(relay);
+        assert!(matches!(
+            observer.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Closed)
+        ));
+        assert!(handle.subscribe().is_none());
     })
     .await
     .unwrap();

@@ -45,6 +45,8 @@ impl Owner {
                     self.publish_to(peer, tip).await?;
                 }
             }
+            Some("device-save") => self.receive_device_change(from, value).await?,
+            Some("device-saved") => self.receive_device_result(from, value)?,
             Some("handover-request")
                 if setup.role == Role::Primary && epoch == Some(setup.position.epoch) =>
             {

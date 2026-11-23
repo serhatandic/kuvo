@@ -241,19 +241,28 @@ impl Owner {
         }
     }
 
-    pub(super) async fn receive(&mut self, event: relay::SetupEvent) -> Result<(), Error> {
+    pub(super) async fn receive(&mut self, event: &relay::RelayEvent) -> Result<(), Error> {
         match event {
-            relay::SetupEvent::Connected => {
+            relay::RelayEvent::Connected(_) => {
                 self.next = Instant::now();
                 self.publish(true).await?;
             }
-            relay::SetupEvent::Mail { key, envelope } => {
-                let from = encode(&key);
+            relay::RelayEvent::Mail { key, envelope, .. }
+                if [
+                    "docs",
+                    "setupAuthority",
+                    "scopedOfflineEdit",
+                    "offlineEditReceipt",
+                ]
+                .iter()
+                .any(|field| envelope.0.contains_key(*field)) =>
+            {
+                let from = encode(key);
                 if !self.roster()?.boxes.iter().any(|peer| peer.key == from) {
                     return Ok(());
                 }
                 if let Some(docs) = envelope.0.get("docs") {
-                    self.receive_docs(key, &from, docs).await?;
+                    self.receive_docs(*key, &from, docs).await?;
                 }
                 if let Some(given) = envelope.0.get("setupAuthority") {
                     self.receive_authority(&from, given).await?;
@@ -269,6 +278,7 @@ impl Owner {
                     self.receive_edit_receipt(&from, receipt)?;
                 }
             }
+            _ => {}
         }
         Ok(())
     }

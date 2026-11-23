@@ -23,3 +23,8 @@ tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
+futures-util = { version = "0.3", features = ["sink"] }
+kuvo_wire = { path = "../kuvo_wire" }
+tokio = { version = "1", features = ["macros", "process"] }
+tokio-tungstenite = "0.29"
+sha2 = "0.10"

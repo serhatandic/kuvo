@@ -542,7 +542,7 @@ impl Link {
     }
 }
 
-fn receipt(
+pub(crate) fn receipt(
     identity: &Identity,
     position: &Position,
     operation: String,

@@ -34,10 +34,13 @@ require a deployed relay, a helper sign-in or the install command.
 | R1 | Reopening a machine restores its certified identity, public setup card and addressed SSH identity |
 | R2 | The SSH reservation prevents an independent setup |
 | R3 | Startup refuses a predecessor setup that has not converted to the current lease model |
+| R4 | The main signs exact device grant and revocation generations, fences revoked callers and replays the original receipt |
+| R5 | A member forwards signed device pairing and revocation to the leased main, verifies the bound receipt and applies the accepted replica |
 | W1 | The existing Rust wire vectors verify signed documents, altered parts and canonical digests against TypeScript fixtures |
 
 The B cases run in [live.test.mjs](../../box/crates/kuvo_setup/tests/live.test.mjs).
-The R cases are in [runtime.rs](../../box/crates/kuvo_setup/tests/runtime.rs).
+R1–R4 run in [runtime.rs](../../box/crates/kuvo_setup/tests/runtime.rs). R5 runs
+through two setup runtimes and two peer residents in [peers.rs](../../box/crates/kuvo-box/tests/peers.rs).
 The W cases are in [wire vectors](../../box/crates/kuvo_wire/tests/vectors.rs).
 
 ## TypeScript scenario map
@@ -59,7 +62,7 @@ contains 222 declarations across the listed files, including adjacent work.
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 6 | The lease client carries the saved high mark and reserves renewal headroom. The allocator, grant replays, queue mutations and Markdown import are 5.2. |
 | [setup-two-boxes](../../box/bridge-tests/setup-two-boxes.test.js) | 3 | Common roster → B2. Handover → B3. Cards → R1. SSH enrollment, member device refusals, names saved through the computer management route, and queue numbering span 2.2, 2.3 and 5.2. |
 | [documents](../../box/bridge-tests/documents.test.js) | 20 | Vector validation and part corruption → W1 and B8. Current bootstrap, following the main and stale authority → B1, B2, B6. Lost-mail catch-up → B7. Personality removal → B5. The old Mac-ranked, overlapping-setup, and credential re-enrollment cases require their compatibility or later setup paths. Third-computer forwarding, counter recovery and its cap, phone denials and equal-revision document ordering still need scenarios. |
-| [devices-two-boxes](../../box/bridge-tests/devices-two-boxes.test.js) | 7 | Accepted membership and its replica → B2 and B7. Device admission, device sessions and the reconnect phone/membership exchange are 2.2. Removal with incoming devices switched off and uninstall are 2.3. Catch-up through a third computer while the main is absent remains open. |
+| [devices-two-boxes](../../box/bridge-tests/devices-two-boxes.test.js) | 7 | Accepted membership and its replica → B2 and B7. Signed device pairing and removal → R4 and R5 at the managed adapter. Device admission routes, device sessions and the reconnect phone/membership exchange are 2.2. Removal with incoming devices switched off and uninstall are 2.3. Catch-up through a third computer while the main is absent remains open. |
 | [personalities-box](../../box/bridge-tests/personalities-box.test.js) | 10 | Standalone save and removal-wins merge → B1 and B5. Route conformance covers missing fields and preset IDs. Mac app-folder libraries, oversized merge, 500 tombstones, ID filtering, retelling bots, stream changes from external writers and explicit future-format refusal still need corresponding scenarios. |
 | [time-zone bridge scenarios](../../box/bridge-tests/time-zone.test.js) | 3 | Clock settings and wake-up projection → B4. Legacy kit/launch fallback, no-tzdata peer rules and actual wake scheduling remain open. |
 | [setup-mac](../../box/bridge-tests/setup-mac.test.js) | 7 | Bootstrap and restart with Helper keys → B12. The other cases cover the retired rank rule, key rotation, SSH re-enrollment or following writes from an external process. |
@@ -82,6 +85,15 @@ contains 222 declarations across the listed files, including adjacent work.
 | [Replica catch-up and mixed resident handover](../../box/bridge-tests/setup-handover.test.js#L4264-L4333) | 2 | Replica catch-up → B7. The mixed TypeScript resident case belongs to the historical rehearsal. |
 | [Unlink after handover to an older release](../../box/bridge-tests/setup-handover.test.js#L4334) | 1 | Handover → B3. Unlink and the historical binary combination remain separate. |
 
+## Peer fixture changes
+
+| Peer test | Previous fixture | Current fixture | Reason |
+|---|---|---|---|
+| `another_computers_session_is_in_the_first_state_after_restart_and_stays_visible_away` | Two links with the unsigned `set_test` roster | Two links with a signed checkpoint, leadership and both computers' signing keys | The resident takes its initial roster from accepted setup state. |
+| `kept_activity_and_notices_keep_their_origin_and_dock_deduplicates_a_bot` | One link with an unsigned two-computer roster | One link with a signed two-computer roster and a configured local test relay | The kept activity still carries its accepted origin. |
+| `a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for_a_start` | Unsigned roster and an empty relay setting | Signed roster with the relay setting absent | The test needs accepted origins while keeping the other computer away. |
+| `a_local_app_pairs_once_and_removal_survives_a_resident_restart` | A link in an unmarked temporary home | A link in a reserved standalone home | The reservation keeps the fixture on the standalone pairing path. |
+
 ## Structure and compatibility boundaries
 
 - One Tokio task owns mutable setup state. Subscribers see a watch snapshot.
@@ -96,6 +108,11 @@ contains 222 declarations across the listed files, including adjacent work.
   request state in the resident and setup authority mail. It has no TypeScript
   forward-spool dependency. Old-model conversion stays with the TypeScript box
   and the migration boundary.
+- `ResidentPeers` owns the relay and setup subscribes through its
+  `RelayHandle`. `SetupHandle::change_devices` provides the signed managed
+  device writer. Its primary and forwarded paths use the same durable
+  membership transaction. Device routes and relay session grant integration
+  are the 2.2 follow-up.
 - The accepted edit history handles preference fields. Text passages, session
   notes, work inventory and operational moves remain the owning areas'
   responsibility. The local Mac helper adapter authenticates the host before

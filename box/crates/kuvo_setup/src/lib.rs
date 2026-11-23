@@ -35,6 +35,10 @@ pub enum Error {
     Version(&'static str),
     #[error("invalid {0}")]
     Invalid(&'static str),
+    #[error("This device no longer has access to change setup devices.")]
+    DevicePermission,
+    #[error("This app was removed from your devices.")]
+    DeviceRemoved,
     #[error("setup authority changed")]
     Conflict,
     #[error("Kuvo's relay can't be reached. Setup changes will resume when it reconnects.")]
@@ -60,5 +64,8 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
     Ok(bytes)
 }
 
-pub use actor::{PreparedSetup, SetupHandle, SetupRuntime};
+pub use actor::{
+    ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
+    SetupRuntime,
+};
 pub use model::{Receipt, SharedKind};

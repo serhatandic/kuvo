@@ -98,3 +98,96 @@ async fn an_unconverted_setup_is_refused_before_startup_changes_it() {
     assert_eq!(json_file(&home, "run/link.json"), link);
     assert!(!home.join("run/setup-card.json").exists());
 }
+
+#[tokio::test]
+async fn the_main_saves_exact_device_generations_and_returns_the_original_signed_receipt() {
+    use kuvo_server::{Caller, LocalOrigin, Pairing, Transport};
+    use kuvo_setup::{ManagedDeviceChange, ManagedDeviceGrant};
+
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("box");
+    let prepared = SetupRuntime::prepare(
+        &home,
+        "Studio".into(),
+        false,
+        Some("ws://127.0.0.1:1".into()),
+    )
+    .await
+    .unwrap();
+    let runtime = prepared.start(None).unwrap();
+    let handle = runtime.handle();
+    let key = [13; 32];
+    let text = encode(&key);
+    let app = Caller::Local(Transport::Http {
+        origin: LocalOrigin::App,
+        internal: false,
+    });
+    let direct = Caller::Local(Transport::Http {
+        origin: LocalOrigin::Direct,
+        internal: false,
+    });
+    let pair = ManagedDeviceChange::PairDesktop {
+        key: text.clone(),
+        name: "  Our   desktop ".into(),
+    };
+    let operation = Some("a".repeat(22));
+    assert!(matches!(
+        handle
+            .change_devices(&direct, operation.clone(), pair.clone())
+            .await,
+        Err(Error::DevicePermission)
+    ));
+    let saved = handle
+        .change_devices(&app, operation.clone(), pair.clone())
+        .await
+        .unwrap();
+    let pairing = saved.pairing.as_ref().unwrap();
+    assert_eq!(pairing.len(), 16);
+    assert_eq!(handle.paired(&key).unwrap().name, "Our desktop");
+    let receipt = saved.receipt.unwrap();
+    let proof = documents::verify(receipt.proof.clone()).unwrap();
+    assert_eq!(proof.kind, Kind::SetupShared);
+    assert_eq!(proof.body["kind"], "membershipAndAccess");
+    assert_eq!(proof.body["operation"], operation.as_deref().unwrap());
+    let device = Caller::Paired {
+        transport: Transport::AddressedSsh,
+        pairing: Pairing::verified(key, pairing.clone(), "Our desktop".into(), true, || true),
+    };
+    let remove = ManagedDeviceChange::Revoke {
+        grants: vec![ManagedDeviceGrant {
+            key: text,
+            pairing: pairing.clone(),
+        }],
+    };
+    let removed = handle
+        .change_devices(&device, Some("b".repeat(22)), remove.clone())
+        .await
+        .unwrap();
+    assert!(removed.receipt.is_some());
+    assert!(handle.paired(&key).is_none());
+
+    // The operation receipt identifies the accepted save, even after that device was revoked.
+    let replay = handle
+        .change_devices(&app, operation, pair.clone())
+        .await
+        .unwrap();
+    assert_eq!(replay.pairing.as_deref(), Some(pairing.as_str()));
+    assert_eq!(replay.receipt.unwrap().proof, receipt.proof);
+    assert!(handle.paired(&key).is_none());
+    assert!(matches!(
+        handle.change_devices(&device, None, remove).await,
+        Err(Error::DevicePermission)
+    ));
+    assert!(matches!(
+        handle.change_devices(&app, None, pair).await,
+        Err(Error::DeviceRemoved)
+    ));
+    let link = json_file(&home, "run/link.json");
+    let membership = &link["shared"]["membershipAndAccess"];
+    assert_eq!(membership["sequence"], 3);
+    assert_eq!(membership["value"]["devices"]["phones"], json!([]));
+    assert_eq!(
+        membership["value"]["devices"]["removed"][0]["pairing"],
+        pairing.as_str()
+    );
+}
