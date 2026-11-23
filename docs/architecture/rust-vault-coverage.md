@@ -151,3 +151,21 @@ this row. Installed Helper cases still need the released supervision path.
 - The stock differential runner also compares unrelated resident-owned
   files. Read the vault route and storage path results alongside the
   complete comparison.
+
+## Verification
+
+- On macOS both binaries passed the nine `vault` scenarios, including
+  wrapped-store edits in both directions, an ad hoc debug Helper with a
+  disposable Keychain, and an OpenSSH signing and project-scope check.
+  Four filtered Mac move tests passed, including the real disposable
+  credential move and injected rollback and resume cases.
+- Native Windows passed all four applicable Rust scenarios. The Unix socket,
+  command and SSH checks, the Mac Helper, and the second-binary run were skipped.
+- Six differential vault replies and the saved vault files matched. The full
+  home comparison retains differences for other areas, including generated
+  setup identities and runtime records.
+- The shared tests scanned the fixture homes, backup archives, relevant
+  replies and captured logs for generated vault values. Agent tool output,
+  unauthorized replies, transcripts and files checked had zero matches.
+  Approved browser fills and authenticated key delivery intentionally carry
+  the corresponding values in memory.
