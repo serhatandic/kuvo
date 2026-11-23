@@ -9,6 +9,7 @@ use std::{
 };
 
 use kuvo_wire::{
+    json::ordinary,
     keys::{decode_exact, encode},
     mail::Envelope,
 };
@@ -19,9 +20,13 @@ use tokio::sync::broadcast;
 use crate::{
     devices::Devices,
     directory::{ComputerKey, RecordScope},
+    parts::work_queue_mails,
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, View},
 };
+
+const MAX_SCOPED_BODY: usize = 128 * 1024;
+const MAX_ADDRESSED_BODY: usize = 5 * 1024 * 1024;
 
 /// The accepted setup actor supplies its view separately from peer reach.
 /// A cached grant at a member may need a fresh verification after restart.
@@ -151,6 +156,8 @@ pub enum Error {
     SetupChanged,
     #[error("The owner request is invalid.")]
     Invalid,
+    #[error("The owner message exceeds the relay limit.")]
+    TooLarge,
     #[error("The other computer didn’t answer in time.")]
     Timeout,
     #[error("Checking ownership: {0}")]
@@ -259,6 +266,35 @@ impl Handle {
             .forwarded_pairing(key, pairing, accepted.grants_current)
     }
 
+    /// Known remote members in setup order, including computers that are offline.
+    pub fn members(&self) -> Vec<PeerOwner> {
+        if (self.accepted)().id.is_none() {
+            return Vec::new();
+        }
+        let view = self.reader.view();
+        let now = self.reader.now();
+        view.roster
+            .members
+            .iter()
+            .map(|peer| {
+                let key = encode(&peer.key);
+                let announcement = view.announced.get(&key);
+                let heard = announcement.map(|said| said.heard.unwrap_or(said.at));
+                PeerOwner {
+                    key: Some(peer.key),
+                    name: peer.name.clone(),
+                    local: false,
+                    reachable: view.relay_connected
+                        && peer.address.is_some()
+                        && !view.reach.peer_is_away(&key, heard, now),
+                    features: announcement
+                        .and_then(|said| said.features.clone())
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+
     /// Keep receipt lookup available when the session moved. Only an approved
     /// replacement may stand in for the immutable issuer of that receipt.
     /// The effect itself still requires current ownership and a current grant.
@@ -305,9 +341,7 @@ impl Handle {
         request: Request,
         wait: Duration,
     ) -> Result<Reply, Error> {
-        if !request.valid() {
-            return Err(Error::Invalid);
-        }
+        request.validate()?;
         let relay = self.relay.as_ref().ok_or(Error::Offline)?;
         let mut events = relay.subscribe().ok_or(Error::Offline)?;
         let (here, host) = self.address(peer, &request.setup)?;
@@ -319,11 +353,8 @@ impl Handle {
             to: peer,
             request,
         };
-        relay
-            .sender
-            .mail(host, envelope("ownerRequest", &packet, self.reader.now()))
-            .await?;
         let wait_reply = async {
+            send(relay, host, "ownerRequest", &packet, self.reader.now()).await?;
             loop {
                 let event = next(&mut events).await?;
                 let RelayEvent::Mail { key, envelope, .. } = event.as_ref() else {
@@ -376,10 +407,7 @@ impl Handle {
             operation: incoming.request.operation.clone(),
             reply,
         };
-        Ok(relay
-            .sender
-            .mail(host, envelope("ownerReply", &packet, self.reader.now()))
-            .await?)
+        send(relay, host, "ownerReply", &packet, self.reader.now()).await
     }
 
     fn address(
@@ -411,7 +439,7 @@ impl IncomingRequests {
             let Some(packet) = decode::<RequestPacket>(envelope, "ownerRequest") else {
                 continue;
             };
-            if !packet.request.valid() || decode_exact::<16>(&packet.nonce).is_none() {
+            if packet.request.validate().is_err() || decode_exact::<16>(&packet.nonce).is_none() {
                 continue;
             }
             if self
@@ -454,8 +482,9 @@ fn resolved_replacements(view: &View, setup: &SetupState) -> BTreeMap<ComputerKe
 }
 
 impl Request {
-    fn valid(&self) -> bool {
-        self.setup
+    fn validate(&self) -> Result<(), Error> {
+        let valid = self
+            .setup
             .strip_prefix("set_")
             .is_some_and(|token| decode_exact::<16>(token).is_some())
             && session_id(&self.session)
@@ -463,7 +492,27 @@ impl Request {
             && match &self.submitter {
                 Submitter::Paired { pairing, .. } => pairing.is_empty() || token(pairing, 32),
                 _ => true,
+            };
+        if !valid {
+            return Err(Error::Invalid);
+        }
+        let (body, max) = match &self.action {
+            Action::Submit { draft } => (draft, MAX_SCOPED_BODY),
+            Action::Deliver { message } => {
+                if let Some(draft) = message.get("draft") {
+                    (draft, MAX_ADDRESSED_BODY)
+                } else if let Some(prompt) = message.get("prompt") {
+                    (prompt, MAX_SCOPED_BODY)
+                } else {
+                    (message, MAX_ADDRESSED_BODY)
+                }
             }
+            Action::Outcome { .. } => return Ok(()),
+        };
+        if ordinary(body).len() > max {
+            return Err(Error::TooLarge);
+        }
+        Ok(())
     }
 }
 
@@ -492,14 +541,28 @@ async fn next(events: &mut broadcast::Receiver<Arc<RelayEvent>>) -> Result<Arc<R
     }
 }
 
-fn envelope(field: &str, packet: &impl Serialize, at: i64) -> Envelope {
-    Envelope(serde_json::Map::from_iter([
-        (field.into(), json!(packet)),
-        ("at".into(), at.into()),
-    ]))
+async fn send(
+    relay: &RelayHandle,
+    host: kuvo_wire::keys::Host,
+    field: &str,
+    packet: &impl Serialize,
+    at: i64,
+) -> Result<(), Error> {
+    let mails = work_queue_mails(json!({(field): packet}), at).ok_or(Error::TooLarge)?;
+    for mail in mails {
+        relay.sender.mail(host.clone(), mail).await?;
+    }
+    Ok(())
 }
 
 fn decode<T: serde::de::DeserializeOwned>(envelope: &Envelope, field: &str) -> Option<T> {
+    if let Some(work_queue) = envelope.0.get("workQueue") {
+        if work_queue.get("memory").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        return serde_json::from_value(work_queue.get(field)?.clone()).ok();
+    }
+    // The first Rust ownership interface used one top-level mail field.
     serde_json::from_value(envelope.0.get(field)?.clone()).ok()
 }
 
