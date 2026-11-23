@@ -279,8 +279,7 @@ keeps checking the rest of each reply against the generated shape.
 
 - byte vectors for what 0.5–0.7.2 and 0.8.0-beta.1 Macs send and read (their SSH verbs, mail,
   beta.1's peers list), since those Macs still reach machines;
-- `hold/1` transcripts, with a TypeScript holder adopted by the Rust resident (for the switch,
-  section 4);
+- `hold/1` transcripts (Rust holders keep turns running across Rust-to-Rust updates);
 - canonical-JSON digest vectors for signed documents;
 - **golden homes**: a 0.5–0.7.2 Mac's app folder and a machine it set up, a 0.8.0-beta.1 Mac and
   machine, and a home at the current TypeScript beta's layout with every stored family. The Rust
@@ -339,10 +338,10 @@ resident's own version.
   - It reads the TypeScript beta's home in place, rewriting only what differs from its own layout.
   - All four are prepared, then switched together by the normal fleet update. A computer that's
     off updates when it comes back, before it rejoins.
-  - **Running turns are adopted, one way.** The Rust resident adopts the TypeScript holders
-    (`hold/1` is unchanged) and the running engine through `run/engine.json`, so the switch
-    doesn't wait for turns. That's already in 4.1 and costs about a day of it. The reverse
-    (a TypeScript bridge adopting Rust holders) isn't built.
+  - **Running turns are not carried across this one switch** (user, 11-23: "I can handle 1
+    interruption"). The TypeScript box stops its turns; the Rust box starts fresh. Every later
+    update, Rust to Rust, keeps running turns: the Rust resident adopts its own holders and the
+    running engine. No TypeScript-to-Rust holder adoption is built.
   - **Rollback** of this switch: stop the Rust box, restore the backup, reinstall the last
     TypeScript beta. Turns started after the switch are lost, so a rollback waits for them to end.
     Written down in `docs/releases.md` and tested once in the rehearsal (9.3).
@@ -409,7 +408,7 @@ parallel.
 | 2.6 | In progress: machine adoption via the store handoff, journaled Mac cutover, Git and Keychain handover, and authenticated predecessor setup conversion. Both tagged Mac destinations match. Remaining move scenarios are listed in the coverage map. [Coverage](rust-move-coverage.md)<br>Inherits `setup-one-model.test.ts`, `setup-mac.test.js`, `documents.test.js`, `personalities-box.test.js`, `peers.test.js`, `mac-peers.test.js`. | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
 | 3.2 | **Open.** Local OpenCode sessions, queues, draft receipts, asks, waiting, model readiness and search have landed in 3.2a and 3.2b. See [coverage and remaining parity work](rust-engine-coverage.md#phase-32a-local-opencode-conversations). Session cases in `offline-merge.test.ts`, `owner-mutations.test.js`, `documents.test.js`, and `setup-handover.test.js`.<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
-| 4.1 | Holders (adopting TypeScript ones, one way), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
+| 4.1 | Holders (adopted across Rust-to-Rust updates; not TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
@@ -429,7 +428,7 @@ parallel.
 | 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote. Released Mac coexistence, legacy roster mail and leave-running integration from `documents.test.js`, `setup-mac.test.js`, `time-zone.test.ts`, `personalities-box.test.js`, `setup-handover.test.js`, and tagged `compat.test.mjs`.<br>Also covers `peers.test.js`, `mac-peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
-| 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home, live turns kept, restore-and-reinstall rollback. Cross-process link writer handoff from `setup-mac.test.js` and `setup-handover.test.js` | move, keeper | all | 6 | A |
+| 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home (running turns end once), restore-and-reinstall rollback. Cross-process link writer handoff from `setup-mac.test.js` and `setup-handover.test.js` | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
 | 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust; the rollback drill once. Mixed binaries, rollback, real Helper and released Mac cases from `setup-handover.test.js`, `setup-mac.test.js`, and `setup-two-boxes.test.js`. | — | 9.2 | 7 ×2 | A |
 | 9.4 | Four weeks after the user's computers switched: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
