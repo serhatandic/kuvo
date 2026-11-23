@@ -1,6 +1,7 @@
 // The main and departing computer use real residents. The private relay lets
 // the test hold the removed computer offline while the main commits.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, readJSON, until } from "./adapter.mjs";
@@ -55,7 +56,7 @@ test("the main revokes an offline computer once and keeps the unlink receipt aft
   assert.equal(conflict.status, 409, conflict.text);
 });
 
-test("a TypeScript computer completes the signed unlink handshake", {
+test("a released computer enrolls again after usage settings follow its standalone setup", {
   timeout: 120000,
   skip: !applicant.typescript,
 }, async t => {
@@ -74,6 +75,9 @@ test("a TypeScript computer completes the signed unlink handshake", {
   const readLink = home => readJSON(path.join(home, "run", "link.json"));
   const resident = other.start();
   const local = other.connect(await resident.ready());
+  const usageFile = path.join(other.home, "agents", "usage", "settings.json");
+  const usageScope = () => fs.existsSync(usageFile) && readJSON(usageFile).setup;
+  await until(() => usageScope() === setup, "Usage settings did not follow the initial setup.");
   const old = await local("GET", "kuvo/setup");
   const key = old.json.you.key;
   const operation = Buffer.alloc(16, 21).toString("base64url");
@@ -90,4 +94,45 @@ test("a TypeScript computer completes the signed unlink handshake", {
   assert.equal(kept.status, 200, kept.text);
   assert.notEqual(kept.json.setup, setup);
   assert.deepEqual(kept.json.computers.map(row => [row.key, row.role]), [[key, "primary"]]);
+  await until(() => usageScope() === kept.json.setup, "Usage settings did not follow the standalone setup.");
+  const next = await invite();
+  assert.equal(next.status, 201, next.text);
+  const joinWith = process.env.KUVO_CONFORMANCE_REJOIN_BIN
+    ? boxBinary(process.env.KUVO_CONFORMANCE_REJOIN_BIN) : applicant;
+  const standalone = readLink(other.home);
+  if (!joinWith.typescript) {
+    await resident.stop();
+    // A write after unlink must still be protected by the Rust applicant.
+    const payload = path.join(other.home, "artifacts", "retained-work.json");
+    fs.writeFileSync(payload, '{"title":"Written after unlink"}', { flag: "wx" });
+    try {
+      const blocked = await other.join(next.json.code, { joinWith });
+      assert.equal(blocked.code, 1, blocked.log);
+      assert.match(blocked.log, /This computer has setup data/);
+      assert.equal(readLink(other.home).key, standalone.key);
+      assert.equal(fs.readFileSync(payload, "utf8"), '{"title":"Written after unlink"}');
+    } finally {
+      fs.unlinkSync(payload);
+    }
+  }
+  const rejoined = await other.join(next.json.code, { resident: joinWith.typescript, joinWith });
+  assert.equal(rejoined.code, 0, rejoined.log);
+  const member = readLink(other.home);
+  assert.equal(member.setup.id, setup);
+  assert.equal(member.setup.role, "member");
+  for (const field of ["key", "sign", "secret"]) {
+    assert.notEqual(member[field], standalone[field], field);
+  }
+  const accepted = readLink(main.home).shared.membershipAndAccess.value;
+  assert.deepEqual(accepted.left, [key]);
+  assert.deepEqual(accepted.boxes.map(peer => peer.name), ["Studio", "Lab"]);
+  assert.notEqual(accepted.boxes[1].key, key);
+  if (!joinWith.typescript) {
+    const connect = other.connect(await other.start(joinWith).ready());
+    const view = await connect("GET", "kuvo/setup");
+    assert.equal(view.status, 200, view.text);
+    assert.equal(view.json.setup, setup);
+    assert.equal(view.json.you.role, "member");
+    assert.equal(view.json.you.key, accepted.boxes[1].key);
+  }
 });

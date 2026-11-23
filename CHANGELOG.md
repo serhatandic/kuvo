@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
+
 - A delayed update from another computer no longer brings back work it already cleared.
 - A bot’s work list on another computer updates when you archive one of its sessions.
 - Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.

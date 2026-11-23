@@ -1,6 +1,7 @@
 //! The installer code and the link records shared with the TypeScript box.
 
 mod join;
+mod released;
 
 use kuvo_wire::keys::{Host, decode, encode};
 use serde::{Deserialize, Serialize};

@@ -131,6 +131,8 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
             "Use Merge Setups on the setup this code was made for.",
         ));
     }
+    // Opening for enrollment never starts a move. A fresh applicant can
+    // initialize its layout here, after the code is validated.
     layout::open(home)?;
     let files = Files::new(home.root().to_owned());
     // The applicant's installer is the only Rust writer while it replaces the local identity.
@@ -313,6 +315,7 @@ pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Erro
             "releasedSetup",
             "releasedWork",
             "releasedDatabaseWork",
+            "releasedScopedWork",
             "codeIdentity",
         ] {
             link.extra.shift_remove(field);
@@ -457,7 +460,6 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
             .get("untold")
             .and_then(Value::as_array)
             .is_some_and(|rows| !rows.is_empty())
-        || link.extra.contains_key("releasedWork")
         || link
             .extra
             .get("appPairing")
@@ -468,6 +470,9 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
         })
     {
         return Ok(true);
+    }
+    if link.extra.contains_key("releasedWork") {
+        return super::released::unchanged(files, link).map(|unchanged| !unchanged);
     }
     for directory in [
         "agents/sessions",

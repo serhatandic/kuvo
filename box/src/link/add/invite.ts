@@ -824,6 +824,7 @@ function finishLocalMerge(kept: LinkState, journal: MergeJournal, setup: SetupWo
     delete current.releasedSetup;
     delete current.releasedWork;
     delete current.releasedDatabaseWork;
+    delete current.releasedScopedWork;
     delete current.legacy;
     delete current.macSeen;
     delete current.macNames;
@@ -1170,6 +1171,7 @@ export async function joinWithInstallerCode(code: Code): Promise<InstallerMember
     delete current.releasedSetup;
     delete current.releasedWork;
     delete current.releasedDatabaseWork;
+    delete current.releasedScopedWork;
     delete current.codeIdentity;
     if (copyPending) current.installerClaim.credentialsPending = true;
     if (activationReceipt) current.installerClaim.activationPending = true;

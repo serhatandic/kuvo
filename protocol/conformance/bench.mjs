@@ -30,24 +30,24 @@ export async function bench(t) {
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
-      const start = () => {
-        const child = startBox({ binary: implementation, home, env, relay });
+      const start = (runWith = implementation) => {
+        const child = startBox({ binary: runWith, home, env, relay });
         children.push(child);
         return child;
       };
-      const join = async (code, { afterStart } = {}) => {
+      const join = async (code, { afterStart, resident, joinWith = implementation } = {}) => {
         // The TS installer starts its old link if nothing is running. Own that
         // process explicitly, then stop it before starting the resident.
         let legacy;
-        if (implementation.typescript) {
+        if (joinWith.typescript && !resident) {
           // A link waiting for its first pairing stays alive through enrollment.
           // The incoming setup replaces this pending token.
-          const initialize = boxCommand(implementation, home, env, relay, ["setup-local"]);
+          const initialize = boxCommand(joinWith, home, env, relay, ["setup-local"]);
           children.push(initialize);
           assert.equal((await initialize.exited).code, 0, initialize.log());
           const link = path.join(home, "run", "link.json");
           write(link, JSON.stringify({ ...readJSON(link), pairing: { token: "fixture", expires: Date.now() + 120000 } }));
-          legacy = boxCommand(implementation, home, env, relay, ["run"]);
+          legacy = boxCommand(joinWith, home, env, relay, ["run"]);
           children.push(legacy);
         }
         try {
@@ -56,8 +56,8 @@ export async function bench(t) {
             await until(() => fs.existsSync(pid) && Number(fs.readFileSync(pid, "utf8")) === legacy.child.pid,
               () => `Installer's link did not start\n${legacy.log()}`);
           }
-          const args = implementation.typescript ? ["join"] : ["install", "--join"];
-          const child = boxCommand(implementation, home, env, relay, args);
+          const args = joinWith.typescript ? ["join"] : ["install", "--join"];
+          const child = boxCommand(joinWith, home, env, relay, args);
           children.push(child);
           child.child.stdin.end(code + "\n");
           await afterStart?.(child);
