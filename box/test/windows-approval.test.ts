@@ -22,8 +22,9 @@ async function onPlatform(platform: NodeJS.Platform, release: string, run: () =>
 
 async function get<T>(path: string): Promise<T> {
   const pieces = await Array.fromAsync(request({ path, method: "GET", fromApp: true }, undefined))
-  expect(pieces[0]?.head?.status).toBe(200)
-  return JSON.parse(Buffer.concat(pieces.flatMap(piece => piece.body ? [piece.body] : [])).toString())
+  const head = pieces[0]
+  expect(head && "head" in head ? head.head.status : undefined).toBe(200)
+  return JSON.parse(Buffer.concat(pieces.flatMap(piece => "body" in piece ? [piece.body] : [])).toString())
 }
 
 for (const [name, platform, release] of [

@@ -6,7 +6,7 @@ Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`.
 
 ## The box
 
-Source paths in this table are relative to `box/src/`.
+Source paths in this table are relative to `box/src/`. See the [native primitive contracts and path vectors](../../protocol/PROTOCOL.md#windows-box-primitives-699).
 
 | Piece | Today and what Windows needs |
 | --- | --- |
@@ -44,19 +44,19 @@ WSL reuses the Linux workers, installer and update. Its cost is distro lifecycle
 | 1 | Run the trial below in a disposable Windows account or VM, with smoke probes first. | 6–9 |
 | 2 | Build `scripts/windows-box-check.sh` and `scripts/windows-bridge-check.sh` over SSH, like `scripts/lokum-*-check.sh`. Stage the checkout in a fresh private test home. Extend `box/bridge-tests/test-safety.js:164` to isolate `HOME`, `USERPROFILE`, app data, temp, caches and credentials, including credential-store isolation via the disposable account. Run box tests with pinned Bun and bridge tests with pinned Node. Support filters and WSL, preserve status, report skips and footprint, clean only the run's files and processes. | 6–9 |
 | 3 | Complete the WSL box lifecycle, distro facts and reachability. | 12–17 |
-| 4 | Add native platform, path, process and IPC primitives, with protocol vectors. | 18–26 |
+| 4 | Establish native platform and profile discovery, path vectors, PID start-identity checks and the shared local IPC contract. Validate the Win32 bindings in the trial. | 18–26 |
 | 5 | Add the box-owned keeper, wake firing, installer, logon task and signed update/rollback. Preserve the shell entry and legacy restore for supported Mac/Linux upgrades. | 24–34 |
 | 6 | Bring up native engine, Git, PTY, SSH and browser flows. | 14–20 |
 | 7–11 | One session per native agent, in table order. Prove a turn, reconnect, cancellation and handover. | 3–5 each |
 | 12 | GPUI Windows build, packaging/updater, and local native/WSL attach. Draft the box choice before implementing it. | 14–22 |
 | 13 | Two-option release pilot, mixed-platform updates and moves, docs, uninstall and footprint. | 6–9 |
 
-**Total: 115–171 hours.**
+**115–171 hours total.**
 
 **The 26 trial checks** (record OS, architecture, versions and pass/fail). Use smoke probes for session 1 and run the full target-area tests once session 2 has isolated them.
 
 - **WSL (1–12):** 1 WSL2 detection with interop on and off, 2 Linux box/bridge smoke, 3 interop boundaries with Windows tools/drives, 4 keep alive through terminal close and sleep, 5 cron/systemd on and off, 6 hidden logon task and cleanup, 7 loopback and sign-in callbacks under NAT/mirrored/VPN, 8 SSH wrapper and distro sshd with binary stdio, 9 headless Chrome without WSLg, 10 all five Linux sign-ins and turns with host PATH contamination, 11 `/mnt/c` Git/watch/modes, 12 due wake over suspend.
-- **Native (13–26):** 13 engine/runtime/SQLite/config/PTY, 14 hidden starter and child windows, 15 Job Objects/PID identity/ConPTY/`.cmd`, 16 named pipe ACLs and key across users, 17 Chrome pipes/profile/credentials across logon and SSH, 18 locked files and interrupted selector/rollback with a live holder, 19 task restart and signed-out behavior, 20 SSH probe/binary stdio/forward/disconnect plus relay line replay and send receipts, 21 Git Bash/CRLF/symlinks/credentials, 22 five native sign-ins/turns/stops, 23 long paths, 24 Defender/SmartScreen/firewall, 25 ARM64 engine and Chrome emulation if in scope, 26 roaming profiles and NTFS identity/rename/delete behavior.
+- **Native (13–26):** 13 engine/runtime/SQLite/config/PTY, 14 hidden starter and child windows, 15 process creation identity, PID reuse, Job Objects, ConPTY and `.cmd`, 16 same-SID pipe access across sign-in and SSH, rejection of other SIDs, remote peers and wrong keys, stale-listener recovery and holder handover, 17 Chrome pipes/profile/credentials across logon and SSH, 18 locked files and interrupted selector/rollback with a live holder, 19 task restart and signed-out behavior, 20 SSH probe/binary stdio/forward/disconnect plus relay line replay and send receipts, 21 Git Bash/CRLF/symlinks/credentials, 22 five native sign-ins/turns/stops, 23 drive and UNC paths, case-sensitive NTFS and long paths, 24 Defender/SmartScreen/firewall, 25 ARM64 engine and Chrome emulation if in scope, 26 roaming profiles and NTFS identity/rename/delete behavior.
 
 ## Decisions and access
 

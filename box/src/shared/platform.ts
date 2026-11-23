@@ -10,6 +10,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { joinWindowsPath, windowsEnvValue } from "./windows-paths";
 
 /** WSL keeps Linux's paths, processes and IPC, with separate Windows-hosted capabilities. */
 export function platformFacts(platform: NodeJS.Platform = process.platform, release = platform === "linux" ? os.release() : "", distro = process.env.WSL_DISTRO_NAME) {
@@ -39,6 +40,7 @@ export function alive(pid: number): boolean {
  * name its processes as they stop. `proc`: where /proc is (a test's own).
  */
 export function processRuns(pid: unknown, name: string, proc = "/proc"): boolean {
+  if (process.platform === "win32") return false;
   if (!Number.isInteger(pid) || (pid as number) <= 1 || !alive(pid as number)) return false;
   try {
     return fs.readFileSync(`${proc}/${pid}/cmdline`, "utf8").includes(name);
@@ -83,6 +85,7 @@ export function processRunsKnown(pid: unknown, name: string): boolean {
 
 /** Undefined until the process name is known. Callers that make safety decisions can wait. */
 export function observeProcess(pid: unknown, name: string, assumeOnError = false): boolean | undefined {
+  if (process.platform === "win32") return false;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || !alive(pid)) return false;
   if (process.platform !== "darwin") return processRuns(pid, name);
   if (process.env.KUVO_BOX === "mac" || (process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)) return true;
@@ -114,6 +117,7 @@ function commandLine(pid: number): string | undefined {
 /** `pid`'s command line: Linux's /proc (its words joined by spaces), a Mac's `ps`; undefined when
  * it can't be read (it's gone, a sandbox refuses `ps`). */
 export function commandLineOf(pid: number, proc = "/proc"): string | undefined {
+  if (process.platform === "win32") return undefined;
   try {
     return fs.readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\0").join(" ").trim();
   } catch {
@@ -126,6 +130,7 @@ export function commandLineOf(pid: number, proc = "/proc"): string | undefined {
  * taken on trust where it can't be read: for what's stopped by a recorded number, or a record
  * believed. `role` is matched against its words joined by spaces (`/kuvo-link\.js serve --kept/`). */
 export function runsAs(pid: unknown, role: RegExp, proc = "/proc"): boolean {
+  if (process.platform === "win32") return false;
   if (!Number.isInteger(pid) || (pid as number) <= 1 || !alive(pid as number)) return false;
   const line = commandLineOf(pid as number, proc);
   return line !== undefined && role.test(line);
@@ -222,6 +227,7 @@ const WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; k
 
 /** Folders as one PATH, each once, the first place it's named. */
 export function joinPath(...folders: (string | undefined)[]): string {
+  if (process.platform === "win32") return joinWindowsPath(...folders);
   return [...new Set(folders.flatMap(list => (list ?? "").split(":")).filter(Boolean))].join(":");
 }
 
@@ -238,6 +244,7 @@ export function joinPath(...folders: (string | undefined)[]): string {
  * read it once and keep it (`saveLoginPath`). Nor does it outlive the box's process (`WATCHED`).
  */
 export async function loginPath(env: Record<string, string | undefined> = process.env, wait = { interactive: 6_000, login: 2_000 }): Promise<string | undefined> {
+  if (process.platform === "win32") return joinWindowsPath(windowsEnvValue(env, "PATH")) || undefined;
   const found = await fromLogin(env, wait, `"$PATH"`, text => joinPath(text.trim()) || undefined);
   return found && joinPath(found, env.PATH);
 }
@@ -250,6 +257,13 @@ export async function loginPath(env: Record<string, string | undefined> = proces
  * the folders `env`'s had after its own.
  */
 export async function loginEnvironment(env: Record<string, string | undefined> = process.env, wait = { interactive: 6_000, login: 2_000 }): Promise<Record<string, string> | undefined> {
+  if (process.platform === "win32") {
+    const PATH = joinWindowsPath(windowsEnvValue(env, "PATH"));
+    if (!PATH) return undefined;
+    const login: Record<string, string> = {};
+    for (const [name, value] of Object.entries(env)) if (value !== undefined) login[name.toUpperCase()] = value;
+    return { ...login, PATH };
+  }
   return fromLogin(env, wait, "; env -0; printf ''", text => {
     const found: Record<string, string> = {}
     for (const line of text.split("\0")) {
@@ -328,6 +342,7 @@ const savedPathFile = (home: string) => path.join(home, "run", "login-path");
 export function savedLoginPath(home: string): string | undefined {
   try {
     const saved = fs.readFileSync(savedPathFile(home), "utf8").trim();
+    if (process.platform === "win32") return joinWindowsPath(saved) || undefined;
     return saved.startsWith("/") ? saved : undefined;
   } catch {
     return undefined;
@@ -452,6 +467,7 @@ export function macUse(table: string, pid: number): ProcessUse | null {
  * or this computer has neither /proc nor `ps`). `proc`: where /proc is (a test's own).
  */
 export async function processUse(pid: number, proc = "/proc"): Promise<ProcessUse | null> {
+  if (process.platform === "win32") return null;
   if (fs.existsSync(proc)) {
     try { return linuxUse(pid, proc); } catch { return null; }
   }

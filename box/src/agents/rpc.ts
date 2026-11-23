@@ -198,7 +198,9 @@ export class RPC {
   }
 
   request<T = any>(method: string, params?: unknown, timeout?: number): Promise<T> {
-    if (this.closed) return Promise.reject(new RPCClosed(this.stderr.trim().split("\n").slice(-3).join("\n") || "The agent isn't running."))
+    // The holder can fence this bridge before the exit promise sets closed. Reject new requests
+    // immediately, even while existing requests are being relinquished to the next bridge.
+    if (this.closed || this.held?.relinquished) return Promise.reject(new RPCClosed(this.stderr.trim().split("\n").slice(-3).join("\n") || "The agent isn't running."))
     const id = this.next++
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })

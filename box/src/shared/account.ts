@@ -5,11 +5,27 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { windowsEnvValue, windowsWirePath } from "./windows-paths";
+
+/** Windows gives the box the local profile spelling even when Git Bash supplied a POSIX HOME. */
+export function windowsProfile(env: NodeJS.ProcessEnv, user: Pick<os.UserInfo<string>, "username" | "homedir">) {
+  const profile = windowsEnvValue(env, "USERPROFILE") || user.homedir;
+  const wire = windowsWirePath(profile);
+  if (!wire || !/^[A-Za-z]:\//.test(wire)) throw new Error("Kuvo needs a local Windows user profile.");
+  const home = path.win32.normalize(profile);
+  return { name: user.username, home };
+}
+
+function windowsAccount() {
+  let user;
+  try { user = os.userInfo(); } catch { user = { username: "", homedir: os.homedir() }; }
+  return windowsProfile(process.env, user);
+}
 
 /** The home folder, as its HOME names it (as the shell and the engine have it), read each time: a
  * test's own HOME counts under Bun too, which otherwise keeps the one it started with. */
 export function homeFolder(): string {
-  return process.env.HOME || os.homedir();
+  return process.platform === "win32" ? windowsAccount().home : process.env.HOME || os.homedir();
 }
 
 let account: { name: string; home: string } | undefined;
@@ -17,6 +33,7 @@ let account: { name: string; home: string } | undefined;
  * them, and a machine's keeper starts the engine with neither USER nor LOGNAME): `id -P` on macOS,
  * `getent passwd` on Linux, the password file without it. */
 function accountEntry(): { name: string; home: string } {
+  if (process.platform === "win32") return windowsAccount();
   if (account) return account;
   // (Never `os.userInfo()` alone: it throws for an account with no passwd entry, as a container's.)
   const uid = process.getuid?.() ?? -1;

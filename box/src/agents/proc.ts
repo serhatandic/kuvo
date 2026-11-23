@@ -6,6 +6,7 @@ import { accessSync, constants } from "node:fs"
 import { delimiter, join } from "node:path"
 import { GIT_QUIET, ownArgsLater } from "../shared/git"
 import { joinPath, loginPath, saveLoginPath, savedLoginPath } from "../shared/platform"
+import { windowsPathFolders } from "../shared/windows-paths"
 import { machineHome, onMachine } from "./machine"
 
 /** The program's path on PATH (or the extra places given), if it's there. */
@@ -13,7 +14,8 @@ export function which(name: string, extra: string[] = []): string | undefined {
   // (A test's run says to look in the system's folders only through its PATH, which has none of your
   // agents' programs: never the ones you installed there, beside it.)
   const skipped = process.env.KUVO_TEST_PATH_ONLY === "1" ? new Set(["/opt/homebrew/bin", "/usr/local/bin"]) : new Set<string>()
-  const folders = [...(process.env.PATH ?? "").split(delimiter), ...extra.filter((folder) => !skipped.has(folder))].filter(Boolean)
+  const fromPath = process.platform === "win32" ? windowsPathFolders(process.env.PATH) : (process.env.PATH ?? "").split(delimiter)
+  const folders = [...fromPath, ...extra.filter((folder) => !skipped.has(folder))].filter(Boolean)
   for (const folder of folders) {
     const path = join(folder, name)
     try {
