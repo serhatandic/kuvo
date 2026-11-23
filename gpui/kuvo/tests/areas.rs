@@ -367,16 +367,25 @@ fn back_and_forward_go_where_the_window_has_been(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_rings_show_each_account_and_the_rest_wait_behind_more(cx: &mut TestAppContext) {
+fn the_rings_past_the_rails_room_open_beside_more_and_each_opens_its_card(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     for ring in ["ring-0", "ring-1", "ring-2", "ring-3"] {
         assert!(bounds(cx, ring).is_some(), "{ring}");
     }
     assert!(bounds(cx, "ring-4").is_none(), "four at most");
-    // "+2" opens Insights.
+    // "+2" opens the other two beside it, in a column, and stays where you were.
+    let was = area(&workspace, cx);
     click(cx, "more-rings");
-    assert_eq!(area(&workspace, cx), Area::Insights);
-    assert_eq!(title(&workspace, cx).as_deref(), Some("Insights"));
+    assert_eq!(area(&workspace, cx), was, "no other area opens");
+    let more = bounds(cx, "more-rings").unwrap();
+    let (four, five) = (bounds(cx, "ring-4").expect("the fifth ring"), bounds(cx, "ring-5").expect("the sixth ring"));
+    assert!(four.left() > more.right() && four.top() < five.top() && bounds(cx, "ring-6").is_none());
+    // Each opens its card, as a rail ring does.
+    cx.simulate_mouse_move(four.center(), None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
+    cx.run_until_parked();
+    let card = bounds(cx, "ring-card").expect("the fifth ring's card");
+    assert!(card.left() >= four.right(), "beside it: {card:?} / {four:?}");
 }
 
 /// Two rings an account, as the box picks them (`rows[].rings`): its short window outside, its

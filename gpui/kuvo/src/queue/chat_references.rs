@@ -124,7 +124,7 @@ impl Items {
             .filter_map(|(range, mention)| {
                 let item = self.mentioned(mention)?;
                 let label = markdown::item_label(item.number.unwrap_or(mention.number), &item.title);
-                Some((range, if markdown { escaped(&label) } else { label }))
+                Some((super::references::with_parentheses(text, range), if markdown { escaped(&label) } else { label }))
             }).collect();
         if edits.is_empty() { return Cow::Borrowed(text); }
         let mut out = text.to_owned();

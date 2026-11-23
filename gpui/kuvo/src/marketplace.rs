@@ -961,7 +961,9 @@ impl MarketplaceView {
             .when(!picks.is_empty(), |d| {
                 d.child(div().h(px(1.)).mx(space::S2).my(space::S2).bg(c.border))
                     .child(div().px(px(8.)).pb(space::S1).text_role(TextRole::Meta).text_color(c.text_faint).child("Categories"))
-                    .child(div().id("market-categories").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(2.)).children(picks))
+                    // (Room round the rows inside the scroll, so the picked one's edge and shadow aren't
+                    // cut by it; the rows stay lined up with those above.)
+                    .child(div().id("market-categories").debug_selector(|| "market-categories".into()).flex_1().min_h_0().overflow_y_scroll().mx(px(-4.)).px(px(4.)).mt(px(-2.)).pt(px(2.)).pb(px(4.)).flex().flex_col().gap(px(2.)).children(picks))
             })
             .into_any_element()
     }

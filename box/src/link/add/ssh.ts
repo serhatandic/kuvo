@@ -95,6 +95,7 @@ export interface Ran {
 export interface RunOptions {
   /** What its standard input gets: bytes, or a file's. */
   input?: Buffer | { file: string };
+  prefix?: Buffer;
   /** Stream binary output to an already opened private file. */
   output?: number;
   /** Recheck permission after waits and before starting a command or sending its buffered input. */
@@ -139,6 +140,7 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
       child.on("error", error => { err.push(Buffer.from(String(error.message))); done(127); });
       child.on("close", status => done(status));
       stdin.on("error", () => {});
+      if (options.prefix) stdin.write(options.prefix);
       const input = options.input;
       if (!input) return void stdin.end();
       if (Buffer.isBuffer(input)) {
@@ -171,7 +173,10 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
 /** Runs `script` on `destination` with `sh`, over a connection shared with this try's other
  * scripts. Its status is the script's; 255 is ssh's own (it couldn't connect, or sign in). */
 export const remote = (destination: string, script: string, options: RunOptions = {}): Promise<Ran> =>
-  run([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...(options.options ?? []), "--", destination, commandFor(script)], options);
+  remoteCommand(destination, commandFor(script), options);
+
+export const remoteCommand = (destination: string, command: string, options: RunOptions = {}): Promise<Ran> =>
+  run([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...(options.options ?? []), "--", destination, command], options);
 
 /** Lets go of the connection shared with `destination` (as a try ends): nothing of it stays. */
 export async function hangUp(destination: string, way?: Way, options: string[] = []): Promise<void> {

@@ -326,6 +326,17 @@ fn another_computers_bots_chat_opens_again_not_its_page(cx: &mut TestAppContext)
     assert!(shown(cx, "bot-chat") && !shown(cx, "bot-head"), "its conversation on screen, not its page");
 }
 
+/// The user's (11-23, beta.46): with Kuvo Foreman, a bot on another computer, open, the title
+/// said "Bots". It names the bot open, wherever it lives.
+#[gpui::test]
+fn a_bot_on_another_computer_is_named_in_the_title_while_its_chat_is_open(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (home, cx) = open_over(cx, &path, mira_on_devbox(), |_, _| {});
+    open_bot(&home, "bot_mira", cx);
+    let title = workspace(&home, cx).read_with(cx, |workspace, cx| workspace.title(cx).0.map(|title| title.to_string()));
+    assert_eq!(title.as_deref(), Some("Mira"));
+}
+
 #[gpui::test]
 fn another_computers_bots_chat_opens_again_once_the_box_answers(cx: &mut TestAppContext) {
     let (_folder, path) = kept();

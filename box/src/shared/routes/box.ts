@@ -31,6 +31,8 @@ export type Compatibility = Infer<typeof COMPATIBILITY>;
  * and `phones`, how many phones reach it: who an uninstall would stop it for. A machine's `pieces`:
  * which version its link, coding agents' bridge and engine each run, against the one in place, and
  * while a newer bridge waits to take over, since when and whether new turns wait for it. */
+const WSL_FACTS = object({ version: literal(2), "distro?": string, "host?": string });
+
 export const INFO = oneOf(
   object({
     kind: literal("mac"),
@@ -51,6 +53,7 @@ export const INFO = oneOf(
   object({
     kind: literal("machine"),
     name: string,
+    "wsl?": WSL_FACTS,
     bridge: string,
     engine: nullable(string),
     features: list(words(...FEATURES)),
@@ -439,7 +442,7 @@ export const LISTED_COMPUTER = object({
   // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
   // words to show.
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
-  via: words("here", "relay"), "address?": string, "relay?": string, "ssh?": list(string),
+  via: words("here", "relay"), "address?": string, "relay?": string, "ssh?": list(string), "sshDistro?": string, "wsl?": WSL_FACTS,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION),
   "update?": COMPUTER_UPDATE,
