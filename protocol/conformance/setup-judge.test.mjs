@@ -224,6 +224,7 @@ test("installer status distinguishes a fresh account, a machine, and an interrup
     assert.equal((await reply.exited).code, 0, stdout + reply.log());
     const seen = JSON.parse(stdout);
     assert.deepEqual([seen.verdict, seen.verb], [verdict, verb]);
+    return seen;
   };
   await check("fresh", "new");
   assert.equal(fs.existsSync(home), false);
@@ -250,8 +251,11 @@ test("installer status distinguishes a fresh account, a machine, and an interrup
   if (mac) {
     const notes = path.join(legacy, "Chats", "c1", "notes.md");
     write(notes, "keep the old work");
-    await check("two", null);
+    const separate = await check("two", null);
+    assert.equal(separate.message, "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.");
     assert.equal(fs.readFileSync(notes, "utf8"), "keep the old work");
+    assert.equal(fs.readFileSync(link, "utf8"), saved);
+    assert.equal(fs.existsSync(path.join(home, "box", "kind")), false);
     fs.rmSync(path.join(legacy, "Chats"), { recursive: true });
   }
   write(path.join(home, "run", "off"), "");

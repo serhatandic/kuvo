@@ -561,7 +561,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         reply["wipeReceipt"] = serde_json::to_value(receipt)?;
     }
     if reply["verdict"] == "two" {
-        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
+        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.".into();
     }
     println!("{reply}");
     Ok(ExitCode::SUCCESS)
