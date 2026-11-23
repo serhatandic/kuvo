@@ -67,6 +67,9 @@ transport use the same dispatcher admission and bounded message channels.
 
 The `engine-sessions` and `engine-worktree` conformance areas use the selected
 resident binary, a scratch home, and the same loopback engine stand-in.
+`engine-live` also uses an installed pinned engine supplied in
+`KUVO_CONFORMANCE_OPENCODE`, with a local model response held open to put
+subsequent sends in its real inbox.
 `kuvo_engine/tests/resident.rs` additionally interrupts an inbox transfer
 after the first message, restarts the resident, and checks delivery order.
 The reference inventory below covers 294 named test cases and the 38
@@ -114,12 +117,13 @@ complete home inventory differs. TypeScript starts agents, vault, Insights, Work
 settings and setup runtimes that are ported in other phases. Rust writes the
 prompt journal. List cursor sequences, queue scanning and some approval and
 removal bookkeeping differed in the comparison. The current-beta fixture's
-saved queue and two OpenCode session and inbox reads matched. The pinned engine
-returned HTTP 500 for the complete inventory on both current-beta copies, so
-that fixture did not establish full list parity.
+saved queue and two OpenCode session and inbox reads matched once the pinned
+model catalog was ready. The first inventory page matched with a limit of one,
+and the second page and multi-session inventory returned HTTP 500 on both
+copies. Full list parity remains open.
 
-The peer outbox still needs the durable delivery entry point and receipt topics
-for addressed sends. The legacy direct routes await engine confirmation.
+Typed draft admission and the peer outbox's addressed sends still need their
+entry points and receipt topics. The legacy direct routes await engine confirmation.
 Keep and release of inboxes are implemented as engine operations. The keeper
 still has to coordinate the hold across the release switch. Setup-wide naming,
 attachment retention, tool-step display fields, full project and worktree
