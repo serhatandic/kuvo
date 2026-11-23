@@ -11,7 +11,9 @@ import { createHash } from "node:crypto";
 
 export function scratch() {
   // Keep Unix socket paths short even under macOS's long default TMPDIR.
-  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
+  const folder = process.env.KUVO_CONFORMANCE_TMP
+    ?? (process.platform === "win32" ? os.tmpdir() : "/tmp");
+  return fs.mkdtempSync(path.join(folder, "kc-"));
 }
 
 export function write(file, data, options) {

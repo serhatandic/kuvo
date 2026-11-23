@@ -19,6 +19,12 @@ the races that span removal, backup, moves, and an authority change.
 | C9 | [SSH Add trusts the selected host and starts an enrolled resident](../../protocol/conformance/ssh-adding.test.mjs) | The TypeScript fake host waits for explicit trust, installs and signs in the resident. Add preserves one member across two verified addresses and refuses a copied machine ID with a different box key. A member follows attempts on the main, survives a lost start reply, answers the host key question, and deletes the failed WSL 1 attempt. |
 | C10 | [Installer enrollment copies only the selected sign-ins and keys](../../protocol/conformance/adding.test.mjs) | Checklist IDs omit secrets and rotating sign-ins. The issuer seals the selected seed at rest. A multipart seed resumes after a failed engine write, preserves the selected key contents and is deleted after an acknowledgment. |
 | C11 | [A member lists the main computer’s keys and issues an installer code through it](../../protocol/conformance/adding.test.mjs) | A member shows the main’s checklist, keeps the token on the requesting side and retries a lost reply with the same invitation hash. The selected copy is already sealed and stays usable after its source key changes. |
+| C12 | [SSH Add explains connection failures before the account is changed](../../protocol/conformance/ssh-adding.test.mjs) | The same scenario runs against both residents with an SSH stand-in. It covers a missing host, a change to an independently trusted key, and refused SSH credentials after explicit trust. |
+| C13 | [SSH Add suggests configured addresses and rejects invalid inputs](../../protocol/conformance/ssh-adding.test.mjs) | Both residents read ordered OpenSSH includes, omit patterns and saved aliases, refuse invalid addresses, and report a missing release. |
+| C14 | [SSH Add keeps an unreadable machine list](../../protocol/conformance/ssh-adding.test.mjs) | Both residents refuse Add for an unreadable list or a missing list with saved links. They preserve both records and never run SSH. |
+| C15 | [An interrupted installer cancels after the computer saves its own work](../../protocol/conformance/adding.test.mjs) | Both residents preserve the independent setup and work. The main closes an unused invitation even if confirmation is replayed, or retires the exact provisional member and replays its canceled answer after restart of the installer. |
+| C16 | [Local discovery keeps the app’s own installation](../../protocol/conformance/setup-judge.test.mjs) | Both binaries recognize the same startup markers, distinguish the same and different setups, read an older engine location, and reject missing inputs and a future card. |
+| C17 | [Local discovery sees an active Unix keeper and ignores it after startup is removed](../../protocol/conformance/setup-judge.test.mjs) | Both binaries recognize the running keeper and classify it as gone when its startup file is absent while the process still runs. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -64,7 +70,8 @@ reference checks. The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a
 separate foreground SSH session. The native resident launched by Add ended
-with the SSH command. Both live exercises used staged executables and isolated
+with the SSH command. The native Windows Add test needs 8.1 for an
+unattended resident. Both live exercises used staged executables and isolated
 homes. Engine and keeper installation and cross-platform release selection
 still need the release path in 7.1 and the native startup owner in 8.1.
 
@@ -93,7 +100,9 @@ invitation hash entries and the TypeScript `run/link.needed` marker.
 The discovery differential agrees on both replies and has 60 differing leaves.
 The missing-release SSH differential agrees on both replies and has 60 differing
 leaves. The credential checklist and two selection refusals agree with 62 home
-differences. The differing paths all have verdicts in the inventory table.
+differences. The differing paths all have verdicts in the inventory table. The Add page and
+submission also agreed when a stopped home had saved links but no machine list.
+That run had 60 differing leaves, all already in the inventory table.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -161,19 +170,19 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 31 have partial coverage, and 159 are open. Of the open cases, 128 list 2.3 as an owner.
+This map lists 194 reference cases, including expanded parameterized cases. 15 have coverage and 179 still have open or partial work. Of those, 143 list 2.3 as an owner (116 open, 27 partial).
 
 ### computers-add
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [addressed SSH cannot start, answer, or cancel an Add in its transient process](../../box/bridge-tests/computers-add.test.js#L14) | Open | 2.3 |
-| [a Darwin fixture keeper with an empty environment reaches only its fake launchctl](../../box/bridge-tests/computers-add.test.js#L30) | Open | 2.3, 6.2 |
-| [a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns](../../box/bridge-tests/computers-add.test.js#L47) | C9 checks availability, literal host suggestions and hiding a saved address. Availability with another release or owner and all configuration variants remain open. | 2.3 |
+| [a Darwin fixture keeper with an empty environment reaches only its fake launchctl](../../box/bridge-tests/computers-add.test.js#L30) | Keeper launchctl isolation belongs to the keeper and Helper. | 7.1, 6.2 |
+| [a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns](../../box/bridge-tests/computers-add.test.js#L47) | C9 and C13 verify availability with an installed release, its absence, the main’s forwarded page and ordered SSH suggestions. | — |
 | [adding a computer: the box shows a host key it doesn't know, and on Trust copies itself there, starts it and signs it in](../../box/bridge-tests/computers-add.test.js#L60) | C9 checks first-use trust, binary copy, signed enrollment and the saved SSH address. Selected sign-ins and installed release, engine and keeper handling remain open. | 2.3, 7.1 |
 | [adding a Windows PC with only WSL 1 tells you how to get WSL 2 before copying Kuvo Code](../../box/bridge-tests/computers-add.test.js#L173) | C9 proves the refusal verbatim and that the WSL 1 account is untouched. | — |
 | [the same computer under another address is the one already here, not a second one](../../box/bridge-tests/computers-add.test.js#L211) | C9 checks the known reply, preserved membership and saved alias. | — |
-| [a host that can't be reached, one that refuses your keys, and one whose key changed are each said in words, and nothing is trusted](../../box/bridge-tests/computers-add.test.js#L224) | Open | 2.3 |
+| [a host that can't be reached, one that refuses your keys, and one whose key changed are each said in words, and nothing is trusted](../../box/bridge-tests/computers-add.test.js#L224) | C12 verifies unreachable hosts, keys changed in the account’s known hosts and a failed sign-in after explicit trust. | — |
 | [a host key that changed from the one you trusted here is asked about again; Cancel leaves everything as it was](../../box/bridge-tests/computers-add.test.js#L261) | Open | 2.3 |
 | [setting a computer up again finds its files in place and leaves its running engine alone](../../box/bridge-tests/computers-add.test.js#L289) | Open | 2.3 |
 | [a machine whose Kuvo is older is brought up to date by this box whatever is at work there, its running engine left alone; Try Again only once it couldn't be reached for days](../../box/bridge-tests/computers-add.test.js#L302) | Open | 2.3, 7.2 |
@@ -192,7 +201,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [a computer that had Kuvo Code before (uninstalled there, its sign-ins kept) is never seeded, and a failed add leaves what it keeps](../../box/bridge-tests/computers-add.test.js#L669) | Open | 2.3 |
 | [a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<id>` and `kuvo/hosts/<id>`) are this box's own](../../box/bridge-tests/computers-add.test.js#L697) | Open | 2.3, 7.3 |
 | [a member of a setup, and a request that can't stay, are told where to add from](../../box/bridge-tests/computers-add.test.js#L751) | Open | 2.3 |
-| [a missing or unreadable list of machines isn't overwritten when this box still keeps machines' links (#753)](../../box/bridge-tests/computers-add.test.js#L773) | Open | 2.3 |
+| [a missing or unreadable list of machines isn't overwritten when this box still keeps machines' links (#753)](../../box/bridge-tests/computers-add.test.js#L773) | C14 verifies the Add page and submission, preserves the list, and never runs SSH. The released machines route stays with 7.3. | 7.3 |
 | [an account enrolled after the probe keeps its data when the second setup is refused](../../box/bridge-tests/computers-add-recovery.test.js#L12) | Open | 2.3 |
 | [a second SSH add cannot install or seed an account reserved by the first](../../box/bridge-tests/computers-add-recovery.test.js#L35) | Open | 2.3 |
 | [a saved offline computer reconnects over SSH after its Mac rotates keys](../../box/bridge-tests/computers-add.test.js#L1407) | Open | 2.3 |
@@ -262,9 +271,9 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [a computer enrolled by installer code receives a verified backup over Relay](../../box/bridge-tests/installer-enrollment.test.js#L919) | Open | 2.3, 2.5 |
 | [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 and U3 cover plain unlink, retained databases and key rotation on machine re-enrollment. Mac Helper and relocated data cases remain open. | 2.3 |
 | [probe, SSH and installer code protect independent work and grants](../../box/bridge-tests/installer-enrollment.test.js#L1067) | Installer admission checks pairing and work. U2 checks both unchanged and changed retained SQLite work. SSH admission and full queue inventory remain open. | 2.3, 2.6 |
-| [a post-claim edit cancels only the provisional installer roster entry](../../box/bridge-tests/installer-enrollment.test.js#L1134) | Open | 2.3 |
+| [a post-claim edit cancels only the provisional installer roster entry](../../box/bridge-tests/installer-enrollment.test.js#L1134) | C15 verifies retiring the exact provisional member, preserving work, and retrying after the cancellation answer is lost. | — |
 | [an expired installer claim can retire its exact entry after a member takes over the issuer’s relay lease](../../box/bridge-tests/installer-enrollment.test.js#L1208) | C6 covers receipt issue, scoped retirement and replay on the original main. Handover, grant and delayed-confirmation variants remain open. | 2.3 |
-| [cancelling an unconfirmed installer claim fences its delayed confirmation](../../box/bridge-tests/installer-enrollment.test.js#L1385) | Open | 2.3 |
+| [cancelling an unconfirmed installer claim fences its delayed confirmation](../../box/bridge-tests/installer-enrollment.test.js#L1385) | C15 verifies that cancellation closes an unused invitation and a delayed confirmation cannot admit the applicant. | — |
 | [Mac code re-enrollment retries a lost host key rotation reply](../../box/bridge-tests/installer-enrollment.test.js#L1430) | Open | 2.3, 6.2 |
 
 ### setup-judge
@@ -275,13 +284,13 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [an older box, with no card, is judged by its link.json: set up from iMac, it needs an update first; set up from this Mac, it's ours; one ~/.kuvo-code and an app's box of another setup on one computer are two](../../box/bridge-tests/setup-judge.test.js#L129) | C5 covers legacy probe lines beside another setup. The remaining probe fixtures and local discovery are open. | 2.3, 2.6 |
 | [the probe's lines are what a box's link.json says: a box writes it as the probe reads it](../../box/bridge-tests/setup-judge.test.js#L154) | Existing setup tests R1–R2 prove the Rust card writer. SSH probe compatibility is open. | 2.3 |
 | [Kuvo Code opening on your Mac mini, which MacBook set up: it attaches to the box that's there, in place, and makes none of its own; its main computer long unheard of changes nothing](../../box/bridge-tests/setup-judge.test.js#L180) | C8 covers attachment to a stopped member without creating an app home. Mac Helper handoff and older link fixtures remain open. | 2.3, 6.2 |
-| [Kuvo Code opening where it has its own box: it goes on using it, with nothing else here, beside a ~/.kuvo-code of its own setup, or beside another's (two boxes, settled later), and an app from before cards keeps its own too](../../box/bridge-tests/setup-judge.test.js#L216) | Open | 2.3, 2.6 |
-| [here is told where the app's own box is and which folder is the machines', never guesses: without either it says so and stops](../../box/bridge-tests/setup-judge.test.js#L256) | Open | 2.3, 6.2 |
-| [here says whether the box there runs: its keeper running now, the box it attaches to](../../box/bridge-tests/setup-judge.test.js#L263) | Open | 2.3 |
+| [Kuvo Code opening where it has its own box: it goes on using it, with nothing else here, beside a ~/.kuvo-code of its own setup, or beside another's (two boxes, settled later), and an app from before cards keeps its own too](../../box/bridge-tests/setup-judge.test.js#L216) | C16 verifies own installation selection beside the same or another setup, the old engine’s database, and a former main now attached as a member. | — |
+| [here is told where the app's own box is and which folder is the machines', never guesses: without either it says so and stops](../../box/bridge-tests/setup-judge.test.js#L256) | C16 proves both required inputs through the deployed here command. | — |
+| [here says whether the box there runs: its keeper running now, the box it attaches to](../../box/bridge-tests/setup-judge.test.js#L263) | C17 recognizes the legacy Unix keeper while it runs. Native startup stays with 8.1. | 8.1 |
 | [Kuvo Code attached to a box in place says so to it (box route, as the app runs it there): its card says the app is there from then on; a phone can't say it](../../box/bridge-tests/setup-judge.test.js#L281) | Existing setup test R2 covers the authorized attach marker and refusal. | — |
-| [a box its Mac removed is no box, whatever's left of it: its keeper still ending, or marked off before its way to start went; and beside the app's own, no second one](../../box/bridge-tests/setup-judge.test.js#L299) | C8 covers ignoring a member marked off. The simultaneous running-keeper and app-owned cases remain open. | 2.3 |
-| [what in the app's own box folder says a box ran there is the vector's, which the app's tests hold the app's list to](../../box/bridge-tests/setup-judge.test.js#L331) | Open | 2.3, 2.6 |
-| [an unsupported setup card cannot be mistaken for an empty computer](../../box/bridge-tests/setup-judge.test.js#L336) | C5 covers the refusal through the public probe route. Local startup discovery remains open. | 2.3 |
+| [a box its Mac removed is no box, whatever's left of it: its keeper still ending, or marked off before its way to start went; and beside the app's own, no second one](../../box/bridge-tests/setup-judge.test.js#L299) | C8 and C17 cover stopped and exiting keepers. C16 verifies the app stays with its own installation when the other startup entry is gone. | — |
+| [what in the app's own box folder says a box ran there is the vector's, which the app's tests hold the app's list to](../../box/bridge-tests/setup-judge.test.js#L331) | C16 reads the shared vector and verifies each marker through here. | — |
+| [an unsupported setup card cannot be mistaken for an empty computer](../../box/bridge-tests/setup-judge.test.js#L336) | C5 and C16 verify the public judge refusal and the local startup refusal without changing the saved card. | — |
 
 ### mac-installing
 
@@ -293,8 +302,8 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [an address is a host's name, user@host or a Host from ~/.ssh/config; anything ssh would read otherwise is refused in words](../../box/test/add-address.test.ts#L13) | Open | 2.3 |
-| [the hosts suggested are ~/.ssh/config's Hosts and those of the files it includes, never a pattern, nor one already added](../../box/test/add-address.test.ts#L24) | Open | 2.3 |
+| [an address is a host's name, user@host or a Host from ~/.ssh/config; anything ssh would read otherwise is refused in words](../../box/test/add-address.test.ts#L13) | C13 checks exact address refusals before SSH and C9 uses literal addresses and aliases. | — |
+| [the hosts suggested are ~/.ssh/config's Hosts and those of the files it includes, never a pattern, nor one already added](../../box/test/add-address.test.ts#L24) | C13 verifies relative, home-relative and absolute includes, sorted matches, recursion, duplicates, filters and missing configuration. | — |
 | [the files go as one tar the system's own tar unpacks, each whole and with its mode](../../box/test/add-address.test.ts#L55) | Open | 2.3 |
 
 ### add-seed
@@ -406,7 +415,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [a machine a Mac removed no longer counts that Mac: its peers and lists go, another Mac's stay](../../box/bridge-tests/peers.test.js#L851) | Open | 2.3 |
-| [a Mac's peers document by mail, or passed on by a peer, counts once it's that Mac's signature; a list a peer passes on unsigned, never](../../box/bridge-tests/peers.test.js#L947) | Open | 2.3, 7.3 |
+| [a Mac's peers document by mail, or passed on by a peer, counts once it's that Mac's signature; a list a peer passes on unsigned, never](../../box/bridge-tests/peers.test.js#L947) | Released beta.1 peers-mail proof remains open. | 7.3 |
 
 ### setup-handover
 
