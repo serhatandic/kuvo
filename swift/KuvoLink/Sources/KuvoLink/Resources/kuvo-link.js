@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 d5f2b9da63e1
+// Kuvo folder layout 23 319f7f923da5
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d5f2b9da63e1";
+var BRIDGE_VERSION = "319f7f923da5";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -98797,7 +98797,11 @@ function appCard(app, installed, details = false) {
         { id: "connect", title: connection === "ready" ? "Reconnect" : "Connect", enabled: connection !== "locked" },
         ...connection === "ready" ? [{ id: "disconnect", title: "Disconnect on This Computer" }] : []
       ],
-      { id: "remove", title: "Remove from All Computers" }
+      { id: "remove", title: "Remove from All Computers", style: "destructive", confirm: {
+        title: `Remove ${app.title}?`,
+        body: "It's removed from all your computers, with each computer's sign-in. Agents can't use it until you add it again.",
+        button: "Remove"
+      } }
     ] : [{ id: "add", title: app.auth === "open" ? "Add" : "Connect" }]
   };
 }
@@ -98910,7 +98914,10 @@ function editForm2(title, markdown) {
   ] };
 }
 function area(id, title, items, query, actions = []) {
-  const categories = [...new Set(items.map((item) => item.category))].map((title) => ({ title, count: items.filter((item) => item.category === title).length }));
+  const titles = [...new Set(items.map((item) => item.category))];
+  const mine = id === "skills" ? YOUR_SKILLS : id === "apps" ? "Yours" : undefined;
+  const ordered = mine && titles.includes(mine) ? id === "skills" ? [mine, ...titles.filter((title) => title !== mine)] : [...titles.filter((title) => title !== mine), mine] : titles;
+  const categories = ordered.map((title) => ({ title, count: items.filter((item) => item.category === title).length }));
   const search = (query.get("q") ?? "").trim().toLowerCase();
   const category = query.get("category");
   const origin = query.get("origin");
@@ -99164,7 +99171,11 @@ async function skillAction(context, id, action, verb, body, skill) {
       installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
       actions: skill ? [
-        { id: "remove", title: "Remove" },
+        { id: "remove", title: "Remove", style: "destructive", confirm: {
+          title: `Remove ${listed?.title ?? cardSkill(info).name ?? id}?`,
+          body: "It's removed from all your computers. You can install it again later.",
+          button: "Remove"
+        } },
         ...skill.source ? [{ id: "update-preview", title: "Check for Update" }] : [],
         ...!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm2(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : []
       ] : [{ id: "add", title: "Install Skill" }]
@@ -99198,7 +99209,14 @@ async function skillAction(context, id, action, verb, body, skill) {
         installed: true,
         revision: text,
         files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha2563(Buffer.from(text)) }],
-        actions: [{ id: "remove", title: "Delete" }, { id: "edit", title: "Edit", form: editForm2(about.name ?? id, text) }]
+        actions: [
+          { id: "remove", title: "Delete", style: "destructive", confirm: {
+            title: `Delete ${about.name ?? id}?`,
+            body: "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.",
+            button: "Delete"
+          } },
+          { id: "edit", title: "Edit", form: editForm2(about.name ?? id, text) }
+        ]
       });
     }
     if (verb === "DELETE")
