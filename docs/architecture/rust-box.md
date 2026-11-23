@@ -401,7 +401,7 @@ parallel.
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |
-| 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities | setup | 1.4, 1.5 | 5 ×2 | A |
+| 2.1 | Rust setup lease, takeover, signed membership, shared saves, time zone and personalities are wired into the resident. [Coverage and remaining parity](rust-setup-coverage.md) | setup | 1.4, 1.5 | 5 ×2 | A |
 | 2.2 | Peer reach, merged lists, record lookup, notice history and standalone device grants implemented. Managed device writes and engine integration remain. [Coverage](rust-peers-coverage.md) | peers | 1.5 | 6 | C |
 | 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment | setup | 2.1 | 5 ×2 | A |
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
