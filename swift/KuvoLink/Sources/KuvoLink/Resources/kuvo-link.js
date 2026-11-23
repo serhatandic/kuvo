@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 a03011946be9
+// Kuvo folder layout 23 84d8d7135199
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1661,7 +1661,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a03011946be9";
+var BRIDGE_VERSION = "84d8d7135199";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -107725,12 +107725,12 @@ function withViewed(read, before) {
   const viewed = Number(before?.time?.viewed) || 0;
   return viewed > (Number(read.time?.viewed) || 0) ? { ...read, time: { ...read.time, viewed } } : read;
 }
-function listOfSessions(sessions, place, known) {
+function sessionFacts(sessions, place, known) {
   const facts = {};
   for (const session of sessions)
     if (typeof session?.id === "string" && !(session.id in facts))
       facts[session.id] = factsNow(session, place, known);
-  return { sessions: facts, projects: listedProjects(facts, place) };
+  return facts;
 }
 async function readSessions(target, signal, strict = false) {
   const all = [];
@@ -107795,7 +107795,17 @@ function sameFacts(a, b, ignoring) {
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length)
     return false;
-  return keys.every((key) => key === ignoring || a[key] === b[key]);
+  return keys.every((key) => {
+    if (key === ignoring || a[key] === b[key])
+      return true;
+    if (key === "subagents" || key === "line") {
+      const before = a[key], after = b[key];
+      return before !== undefined && after !== undefined && before.length === after.length && before.every((id, at) => id === after[at]);
+    }
+    if (key === "messages")
+      return a.messages?.via === b.messages?.via && a.messages?.note === b.messages?.note;
+    return false;
+  });
 }
 function takeIn(list, listed, now, owner) {
   const next = list.seq + 1;
@@ -108268,7 +108278,7 @@ function scheduleWorkOut() {
 }
 function withPending(sessions, placeOf, running, pending, before, knows, stopped, wakeTurns) {
   const box = placeNow(running, sessions, knows, undefined, stopped);
-  const listed = listOfSessions(sessions, { ...box, wakeTurns }, knows).sessions;
+  const listed = sessionFacts(sessions, { ...box, wakeTurns }, knows);
   const work = {};
   for (const session of sessions) {
     const entry = listedWork(session);
