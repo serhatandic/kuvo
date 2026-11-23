@@ -358,7 +358,7 @@ test("a new engine that doesn't start goes back to the one before, which gets wh
   await until(() => prompts().length === sent + 1, "what was held to reach the engine before");
   assert.deepEqual(prompts().slice(sent).map(each => [each.engine, each.id]), [["1.1.0", "msg_swapback0000001"]], "once, on the engine before");
   assert.equal(fs.readFileSync(path.join(RUN, "engine-back"), "utf8").split(" ").slice(0, 2).join(" "), "1.2.0 1.1.0", "the new engine rests");
-  assert.equal(swap(), null, "the swapper done");
+  await until(() => swap() === null, "the rollback journal to clear", 20_000);
   assert.equal(link.boxVersion(), "0.11.0", "the code stays");
 });
 

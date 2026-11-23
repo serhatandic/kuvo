@@ -163,7 +163,7 @@ import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } f
 import { activeBin, convertBin } from "./updates/versions";
 import { continueCutTurns } from "./updates/interrupted";
 import { boxVersion, installedPack, takeUpdateLock, UPDATE_LOCK, UPDATING_ALREADY, agentsWorking, dropOldBackups, updateOnTrial, isUpdating, requestUpdateNow, noteUpdate, update, updateStatus, versionOrder } from "./updates/update";
-import { checkFolderVersion, KUVO_FOLDER_LAYOUT, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
+import { checkFolderVersion, KUVO_FOLDER_LAYOUT, legacyFolderTrial, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { answerSshRoute, writeSshBytes, type SshCommand } from "./server/ssh-route";
 import { pipeSshRoute, selectSshPipe, serveSshPipe, sshPipeSelected } from "./server/ssh-pipe";
 import { BRIDGE_VERSION } from "./version";
@@ -474,9 +474,9 @@ async function run(owner?: ClientOwner): Promise<void> {
   // gone (bots/own-keys.ts).
   await upgradeIntegrations().catch(() => {});
   await dropBotsOwnKeys(runningEngine).catch(() => {});
-  // A link from an earlier bridge: its signing key made, and kept as this one keeps it.
+  // A link from an earlier bridge gets its signing key after its folder can be upgraded.
   updateLink(link => {
-    if (!link) return null;
+    if (!link || legacyFolderTrial(K)) return null;
     link.sign ??= newSigningSeed();
     settleOwnSetup(link);
     foldPhones(link);

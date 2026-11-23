@@ -217,14 +217,21 @@ impl Drop for Attributes {
     }
 }
 
-pub(super) fn spawn(spec: &Spawn, recovery_name: Option<&str>) -> io::Result<ChildGroup> {
+pub(super) fn spawn(
+    spec: &Spawn,
+    recovery_name: Option<&str>,
+    resident: bool,
+) -> io::Result<ChildGroup> {
     let (program, mut line) = command_line(spec)?;
     let cwd = spec.cwd.as_deref().map(|path| wide(path.as_os_str()));
     let env = environment_block(&spec.env);
 
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    if recovery_name.is_none() {
+    if recovery_name.is_none() || resident {
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    }
+    if resident {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
     }
     let name = recovery_name.map(|name| wide(OsStr::new(name)));
     // SAFETY: the name, if present, is NUL-terminated. The handle is non-inheritable.
@@ -323,7 +330,7 @@ pub(super) fn spawn(spec: &Spawn, recovery_name: Option<&str>) -> io::Result<Chi
             process,
             job,
             status: None,
-            recoverable: recovery_name.is_some(),
+            recoverable: recovery_name.is_some() && !resident,
             leave_running: false,
         },
         identity,
@@ -480,6 +487,10 @@ pub(super) struct Adopted {
 }
 
 impl Adopted {
+    pub(super) fn has_job(&self) -> bool {
+        self.job.is_some()
+    }
+
     pub(super) fn open(
         identity: ProcessIdentity,
         recovery_name: Option<&str>,
