@@ -372,6 +372,9 @@ impl Driver {
             return self.settle_failure(view, key, row).await;
         }
         if row.stage == Stage::Finishing {
+            if self.retry.contains_key(&row.id) && !self.retry_due(row, STEP_AGAIN) {
+                return Ok(());
+            }
             return self.finish(row).await;
         }
         if row.stage == Stage::Switching {
@@ -792,11 +795,12 @@ impl Driver {
                 )?;
                 manifest.queues = (!queues.is_empty()).then_some(queues);
                 manifest.session_files = Some(payloads);
-                archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref())
-                    .map_err(|error| match error {
+                archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref()).map_err(
+                    |error| match error {
                         archive::Error::TooLarge => io::ErrorKind::FileTooLarge.into(),
                         other => io::Error::other(other),
-                    })
+                    },
+                )
             })();
             let cleaned = files::remove_tree_synced(&stage);
             packed?;
@@ -1017,7 +1021,16 @@ impl Driver {
             row.note.as_deref()
         };
         listing::save_outcome(self.run_dir(), row, note, None)?;
-        result?;
+        if let Err(error) = result {
+            self.retry.insert(
+                row.id.clone(),
+                RetryClock {
+                    wall: self.reader.now(),
+                    since: Instant::now(),
+                },
+            );
+            return Err(error);
+        }
         handoff::remove_completed(self.run_dir(), row)
     }
 
@@ -2147,7 +2160,9 @@ fn index(given: &Value) -> Option<u32> {
 }
 
 fn too_large(name: &str) -> String {
-    format!("{name} is more than 1 GB, too big to move to another computer, so it stays where it is.")
+    format!(
+        "{name} is more than 1 GB, too big to move to another computer, so it stays where it is."
+    )
 }
 
 fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> bool {

@@ -407,18 +407,33 @@ test("a switched move keeps the original until its backup can be written", {
   const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
   const session = "ses_cleanupBackup", directory = path.join(here.home, "chats");
+  const probe = "mov_cleanupRound";
   fs.mkdirSync(directory, { recursive: true });
   here.engine.sessions.push(sessionOf({ id: session, directory }));
   const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const key = Buffer.from(member.key, "base64url"), secret = Buffer.alloc(32, 1);
+  const exports = () => here.engine.asked.filter(call =>
+    call.method === "GET" && call.path === "/api/experimental/session/" + session + "/export").length;
+  let beforeCleanup, checked = false;
   const stop = relay.intercept(to, from, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), secret, key);
-    if (JSON.parse(payload).move?.op === "switched") here.engine.refuseExport = session;
+    if (JSON.parse(payload).move?.op === "switched") {
+      beforeCleanup ??= exports();
+      here.engine.refuseExport = session;
+    }
     return false;
   });
   t.after(stop);
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+    const move = JSON.parse(payload).move;
+    if (move?.op !== "check" || move.id !== probe) return false;
+    checked = true;
+    return true;
+  }));
   const sourceProcess = here.start(), targetProcess = there.start();
   const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await readyToMove(source, session, member);
@@ -437,6 +452,18 @@ test("a switched move keeps the original until its backup can be written", {
   const location = await request(source, "GET", `kuvo/sessions/${session}/location`);
   assert.equal(location.status, 200, location.text);
   assert.equal(location.json.on?.id, member.key, location.text);
+
+  // A later saved request proves the same driver took another look at the
+  // move journals. The failed backup should wait for its retry interval.
+  const probeFile = path.join(here.home, "run/moves", probe + ".json");
+  write(probeFile, JSON.stringify({
+    formatVersion: 1, id: probe, thing: "ses_cleanupProbe", name: "Another request", kind: "chat",
+    from: main.key, to: member.key, peer: member.key, role: "from", stage: "holding",
+    sessions: ["ses_cleanupProbe"], step: "check", started: Date.now(), tries: 0, twoComputers: true,
+  }));
+  await until(() => checked, "The source did not reach its next move round");
+  assert.equal(exports() - beforeCleanup, 1, "The next round must not immediately retry the failed export");
+  fs.unlinkSync(probeFile);
   await sourceProcess.stop();
   here.engine.refuseExport = undefined;
   const restarted = here.start();

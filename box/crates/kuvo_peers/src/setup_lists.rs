@@ -205,7 +205,12 @@ impl View {
         self.moved_with(id, now, &self.local.ownership)
     }
 
-    pub(crate) fn moved_with(&self, id: &str, now: Millis, ownership: &Ownership) -> Option<String> {
+    pub(crate) fn moved_with(
+        &self,
+        id: &str,
+        now: Millis,
+        ownership: &Ownership,
+    ) -> Option<String> {
         let recorded = ownership.journal.get(&(RecordScope::Session, id.into()));
         let recorded_key = || {
             recorded.map(|location| {

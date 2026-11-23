@@ -255,7 +255,10 @@ impl Handle {
             owner,
             // A newer move announcement can locate a delivery without
             // granting authority to perform a forwarded mutation.
-            letter_home: view.moved_with(session, now, &inventory).as_deref().and_then(decode_exact),
+            letter_home: view
+                .moved_with(session, now, &inventory)
+                .as_deref()
+                .and_then(decode_exact),
             receipt_issuer: original_issuer
                 .map(|key| *inventory.replacements.get(&key).unwrap_or(&key)),
             held: inventory.frozen.contains(session),

@@ -154,7 +154,9 @@ impl Letters {
 
     fn leave_answer(&mut self, id: &Id, mut letter: Letter) -> io::Result<()> {
         letter.at = Some(self.reader.now().max(0) as u64);
-        self.outbox()?.enqueue(id, &letter).map_err(io::Error::other)?;
+        self.outbox()?
+            .enqueue(id, &letter)
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -182,7 +184,9 @@ impl Letters {
             if scope.held && owner.as_ref().is_none_or(|owner| owner.local) {
                 continue;
             }
-            let known = scope.letter_home.or_else(|| owner.and_then(|owner| owner.key));
+            let known = scope
+                .letter_home
+                .or_else(|| owner.and_then(|owner| owner.key));
             let key = known.or_else(|| each.letter.peer.as_deref().and_then(decode_exact));
             let Some(key) = key else {
                 continue;
