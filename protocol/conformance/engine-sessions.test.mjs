@@ -451,6 +451,52 @@ test("Stop keeps named late messages on disk and Resume forgets the ones still m
   assert.ok(here.engine.inboxes.get(session).some(row => row.id === untilResumed));
 });
 
+test("Stop holds a named send before its composed attachment reaches OpenCode", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("stop-slow-attachment");
+  const session = "ses_late";
+  const route = "kuvo/sessions/" + session;
+  const theId = "msg_lateFile";
+  const headers = { "x-kuvo-from": "app" };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const resident = await here.start().ready();
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let reads = 0;
+  here.engine.holdSessionRead = {
+    when: id => id === session && ++reads === 2,
+    accepted: entered.resolve,
+    release: release.promise,
+  };
+  t.after(() => release.resolve());
+  const send = request(resident, "POST", route + "/send", {
+    id: theId, words: "See the attachment.", delivery: "steer",
+    files: [{ uri: "data:image/png;base64,UE5H", name: "evidence.png" }],
+  }, headers);
+  await entered.promise;
+  const stopping = request(resident, "POST", route + "/stop", { items: [theId] }, headers);
+  try {
+    await until(() => {
+      try { return readJSON(path.join(here.home, "run", "queues.json"))?.[session]?.arriving?.[theId]; }
+      catch { return false; }
+    }, "Stop records the named send");
+    release.resolve();
+    const stopped = await stopping;
+    assert.equal(stopped.status, 200, stopped.text);
+    assert.equal(stopped.json.paused, true);
+  } finally {
+    release.resolve();
+  }
+  const sent = await send;
+  assert.equal(sent.status, 200, sent.text);
+  assert.deepEqual(sent.json, { waits: true });
+  assert.equal(here.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")), false);
+  const queue = await request(resident, "GET", route + "/queue?items=1");
+  assert.deepEqual(queue.json.held, [theId]);
+  assert.deepEqual(queue.json.waiting.map(row => row.id), [theId]);
+});
+
 for (const stage of ["before acceptance", "in the inbox", "in the transcript"]) {
   test(`the same desktop send recovers a reply lost ${stage} with one message`, { timeout: 45000 }, async t => {
     const { computer } = await bench(t);

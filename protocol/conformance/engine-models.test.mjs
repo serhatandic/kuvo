@@ -132,6 +132,47 @@ test("the model picker offers models that run and chooses a supported starting m
     "This conversation uses provider models. Start a new conversation to use a coding agent’s models.");
 });
 
+test("the picker distinguishes free access from zero pricing and supplies an unnamed provider’s id", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-free");
+  const stock = [
+    { providerID: "github-copilot", id: "mini", name: "Mini", cost: { input: 0, output: 0 } },
+    { providerID: "anthropic", id: "opus", name: "Opus", cost: { input: 5, output: 25 } },
+    { providerID: "opencode", id: "zen", name: "Zen", cost: { input: 0, output: 0 } },
+    { providerID: "private-gateway", id: "local", name: "Local" },
+  ];
+  here.engine.models.push(...stock);
+  here.engine.providers.push(...stock.filter(model => model.providerID !== "opencode").map(model => ({ id: model.providerID })));
+  here.engine.integrations.push(
+    { id: "anthropic", name: "Anthropic", methods: [{ type: "key" }], connections: [{}] },
+    { id: "github-copilot", name: "GitHub Copilot", methods: [{ type: "oauth" }], connections: [{}] },
+    { id: "opencode", name: "OpenCode Zen", methods: [{ type: "key" }], connections: [] },
+  );
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow model updates");
+  const offered = () => request(record, "GET", "kuvo/models/offered");
+  const answer = await offered();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json.models.map(model => [model.providerID, model.id, model.free ?? false]),
+    stock.map(model => [model.providerID, model.id, model.providerID === "opencode"]));
+  assert.deepEqual(answer.json.providers, [
+    { id: "github-copilot", name: "GitHub Copilot" }, { id: "anthropic", name: "Anthropic" },
+    { id: "opencode", name: "OpenCode Zen" }, { id: "private-gateway", name: "private-gateway" },
+  ]);
+  here.engine.models.length = 0;
+  here.engine.models.push({ providerID: "unavailable", id: "only", name: "Unavailable" });
+  here.engine.integrations.push({ id: "unavailable", methods: [{ type: "key" }], connections: [] });
+  here.engine.emit({ type: "model.updated", data: {} });
+  let empty;
+  await until(async () => {
+    empty = await offered();
+    return empty.json?.models?.length === 0;
+  }, "the catalog without a runnable model to replace the saved models");
+  assert.deepEqual(empty.json, { known: { engine: true, agents: false }, models: [],
+    providers: [], starred: [], starting: null,
+    startChoice: { label: "Choose a Model", refusal: "Choose a model to send it." } });
+});
+
 test("catalog reads are reused until a credential change publishes the new picker", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-model-cache");
@@ -290,6 +331,32 @@ test("a replacement engine clears an older pending provider refresh without clos
   await until(() => !fs.existsSync(due), "The replacement engine kept the old refresh.");
   assert.deepEqual([...here.engine.open], [folder]);
   assert.deepEqual(here.engine.closed, []);
+});
+
+test("the picker settles a folder that finishes before its deferred GitLab refresh is saved", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-picker-refresh-race");
+  const folder = path.join(here.home, "project");
+  const id = "ses_finishing";
+  here.engine.sessions.push(sessionOf({ id, directory: folder }));
+  here.engine.open.add(folder);
+  here.engine.providers.push({ id: "gitlab" });
+  here.engine.models.push({ providerID: "gitlab", id: "duo", name: "Duo" });
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow engine work");
+  here.engine.locationsRead = () => {
+    here.engine.locationsRead = null;
+    here.engine.running.add(id);
+    here.engine.activeRead = () => {
+      here.engine.activeRead = null;
+      here.engine.running.delete(id);
+    };
+  };
+  const refreshed = await request(record, "GET", "kuvo/models/offered?refresh=1");
+  assert.equal(refreshed.status, 200, refreshed.text);
+  await until(() => here.engine.closed.includes(folder), "the refresh to close the folder after the last step finished");
+  await until(() => !fs.existsSync(path.join(here.home, "run/models-due.json")), "the deferred refresh to clear");
+  assert.deepEqual(here.engine.closed, [folder]);
 });
 
 test("an engine-wide refresh checks new work and locations reopened while it closes them", { timeout: 45000 }, async t => {

@@ -55,7 +55,11 @@ export async function standInEngine(root, env) {
         }
         return send(page);
       }
-      if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
+      if (route === "GET /api/session/active") {
+        const data = Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }]));
+        engine.activeRead?.();
+        return send({ data });
+      }
       if (route === "POST /api/session") {
         if (engine.failStart === "before") return send({ message: "Cut short." }, 500);
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });
@@ -71,6 +75,13 @@ export async function standInEngine(root, env) {
       if (one && request.method === "GET") {
         if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
+        if (found && engine.holdSessionRead?.when(found.id)) {
+          const held = engine.holdSessionRead;
+          engine.holdSessionRead = null;
+          held.accepted();
+          void held.release.then(() => send({ data: found }));
+          return;
+        }
         return found ? send({ data: found }) : send({ message: "No such session." }, 404);
       }
       // What's changed, kept, as the engine keeps it (each field given in place of its own).
@@ -189,7 +200,10 @@ export async function standInEngine(root, env) {
         const account = engine.integrations.find(each => each.id === decodeURIComponent(url.pathname.slice("/api/integration/".length)));
         return account ? send({ data: account }) : send({}, 404);
       }
-      if (route === "GET /api/debug/location") return send([...engine.open].map(directory => ({ directory })));
+      if (route === "GET /api/debug/location") {
+        engine.locationsRead?.();
+        return send([...engine.open].map(directory => ({ directory })));
+      }
       if (route === "DELETE /api/debug/location") {
         const folder = url.searchParams.get("location[directory]");
         if (engine.cantClose) return send({}, 405);
