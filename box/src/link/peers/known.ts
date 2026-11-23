@@ -19,7 +19,9 @@ import { IS_MAC, RUN } from "../home";
 import { MOVED_FOR, movedAway } from "../moves/records";
 import { Frame, frame, relaySend } from "../relay/frames";
 import { followedSetup, setupDoc } from "../setup/record";
-import { macSign, updateLink } from "../state";
+import { macSign, readLink, updateLink } from "../state";
+import { AGENTS_FILE, peerOf, readPeerAgents } from "./directory";
+import type { AgentsFile, ListedAgent } from "../../shared/records";
 import type { LinkState } from "../state";
 
 /** A box a Mac names among its peers (PROTOCOL.md, "Documents": `peers`), as this box keeps it:
@@ -259,15 +261,26 @@ export function removedBoxes(link: LinkState | null | undefined): Set<string> {
   return new Set(left.filter(key => !peers.has(key)));
 }
 
-/** This box's own agents as `run/agents.json` lists them: each one's session and name. */
-export function ownListed(): { session: string; name: string | null }[] {
+/** The local entries of the last directory. A portable peer may have no SSH name. */
+export function localDirectory(link: LinkState | null | undefined = readLink()): ListedAgent[] {
   try {
-    const listed = JSON.parse(fs.readFileSync(path.join(RUN, "agents.json"), "utf8")) as { machine?: unknown; agents?: { session?: unknown; name?: unknown; machine?: unknown }[] };
-    return (listed?.agents ?? []).filter(agent => (agent?.machine ?? null) === (listed?.machine ?? null))
-      .map(agent => ({ session: String(agent?.session), name: typeof agent?.name === "string" ? agent.name : null }));
+    const listed = JSON.parse(fs.readFileSync(AGENTS_FILE, "utf8")) as Partial<AgentsFile> & { local?: string[] };
+    const agents = (listed?.agents ?? []).filter(agent => typeof agent?.session === "string");
+    if (Array.isArray(listed?.local)) {
+      const local = new Set(listed.local);
+      return agents.filter(agent => local.has(agent.session));
+    }
+    const peers = peersOf(link);
+    const told = peers.length ? readPeerAgents() : {};
+    return agents.filter(agent => (agent.machine ?? null) === (listed?.machine ?? null) && !peerOf(agent.session, peers, told));
   } catch {
     return [];
   }
+}
+
+/** This box's own agents as `run/agents.json` lists them: each one's session and name. */
+export function ownListed(): { session: string; name: string | null }[] {
+  return localDirectory().map(agent => ({ session: agent.session, name: typeof agent.name === "string" ? agent.name : null }));
 }
 
 /** The legacy Mac writes its list even when set aside. A machine writes one as primary. */

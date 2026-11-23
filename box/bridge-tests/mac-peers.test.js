@@ -20,6 +20,7 @@ import path from "node:path";
 import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
+import { recordRelayLease, relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { runningAs } from "./running-as.js";
 
@@ -31,24 +32,32 @@ for (const home of [macHome, machineHome]) fs.mkdirSync(path.join(home, "run"), 
 fs.writeFileSync(path.join(macHome, "folder-version.json"), '{"version":18}\n');
 
 // Each time a stand-in records something: what a test waits on looks again.
-const waitingForChange = [];
-const changed = () => new Promise(resolve => waitingForChange.push(resolve));
-const poke = () => { for (const resolve of waitingForChange.splice(0)) resolve(); };
+const waitingForChange = new Set();
+const poke = () => { for (const resolve of waitingForChange) resolve(); };
 // Looked at again each time a stand-in records something, until it's there, or the test runs out
 // of time (`signal`), saying what never came.
 async function arrived(found) {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
   for (;;) {
-    const value = await found();
+    const value = found();
     if (value) return value;
-    if (signal?.aborted) throw new Error(`It never came: ${found}`);
-    await Promise.race([changed(), new Promise(resolve => signal?.addEventListener("abort", resolve, { once: true }))]);
+    if (deadline.aborted) throw new Error(`It never came: ${found}`);
+    await new Promise(resolve => {
+      const done = () => {
+        waitingForChange.delete(done);
+        deadline.removeEventListener("abort", done);
+        resolve();
+      };
+      waitingForChange.add(done);
+      deadline.addEventListener("abort", done, { once: true });
+    });
   }
 }
 // What a box wrote that tells nothing here when it does (the machine is another process; mail
 // this Mac's box takes comes through the relay, which only says it delivered): looked at again
 // every few milliseconds until it's there, or the test runs out of time (`signal`).
 let signal;
-function eventually(found) {
+function eventually(found, deadline = signal) {
   return new Promise((resolve, reject) => {
     const look = () => {
       const value = found();
@@ -57,7 +66,7 @@ function eventually(found) {
       resolve(value);
     };
     const timer = setInterval(look, 20);
-    signal?.addEventListener("abort", () => {
+    deadline?.addEventListener("abort", () => {
       clearInterval(timer);
       reject(new Error("it never got there"));
     }, { once: true });
@@ -169,7 +178,8 @@ Object.assign(process.env, {
   KUVO_HOST_PASSWORD: "host-password",
 });
 const link = await import(LINK_BUNDLE.href);
-const relay = await relayStandIn(link, { changed: poke });
+const leases = relayLeaseStandIn({ transferStartsNow: true });
+const relay = await relayStandIn(link, { request: leases.request, changed: poke });
 
 // Each box's engine, with a conversation of its own, and its coding agents' bridge.
 const macEngine = await engineWith([{ id: "ses_mac1", title: "Release notes" }]);
@@ -205,6 +215,7 @@ const read = file => { try { return JSON.parse(fs.readFileSync(file, "utf8")); }
 const sending = home => { try { return fs.readdirSync(path.join(home, "run", "outbox", "sending")).filter(name => name.endsWith(".json")); } catch { return []; } };
 
 let lab = null;
+let macLinkRun;
 
 before(async () => {
   for (const [home, bridge] of [[macHome, macBridge], [machineHome, labBridge]]) {
@@ -213,18 +224,31 @@ before(async () => {
   }
   // This Mac's box on, meeting its machines: up first, as the machine starts after it's set up.
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0" })).json?.state, "failed");
+  // The SSH install already has its identity when the main publishes the membership.
+  const key = link.newKey(), secret = crypto.randomBytes(32), seed = link.newSigningSeed();
+  const peer = { key: link.publicOf(key).toString("base64url"), sign: link.signingKeyOf(seed),
+    address: link.addressOf(secret).toString("base64url"), name: "lab", id: "lab", kind: "machine" };
+  write(path.join(machineHome, "run", "link.json"), {
+    key: key.toString("base64url"), secret: secret.toString("base64url"), sign: seed, phones: [],
+    mac: mac, macs: [mac],
+  });
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [peer], moved: [] })).status, 200);
+  link.noteSetupNow(Date.now(), { soon: 0 });
+  const state = link.readLink().setup;
+  assert.equal(state.role, "primary");
+  const grant = leases.seed(state, { [state.primary]: state.sign, [peer.key]: peer.sign }, 500);
+  recordRelayLease(path.join(macHome, "run"), state, { relay: grant });
   const setup = await ask("GET", "kuvo/link/setup");
   assert.equal(setup.status, 200);
-  // Set up as the app sets it up over SSH.
   const result = spawnSync(process.execPath, [script, "setup"], {
-    input: JSON.stringify({ relay: relay.url, name: "lab", mac, macSign: setup.json.macSign, docs: setup.json.docs, id: "lab" }),
+    input: JSON.stringify({ ...setup.json, relay: relay.url, name: "lab", id: "lab" }),
     env: { PATH: process.env.PATH, HOME: support, KUVO_HOME: machineHome },
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] })).status, 200);
-  link.runMacLink();
+  assert.equal(lab.key, peer.key, result.stdout);
+  macLinkRun = link.runMacLink();
   link.runMacPeers();
 });
 
@@ -232,6 +256,7 @@ removeAtEnd(support);
 atEnd(async () => {
   link.stopMacPeers();
   link.stopMacLink();
+  await macLinkRun;
   let pid = 0;
   try { pid = Number(fs.readFileSync(run("link.pid"), "utf8")); } catch {}
   if (pid > 0) {
@@ -255,15 +280,15 @@ test("each box tells the other who its agents are, with what this Mac answers", 
   // This Mac's box has the machine's, by its name here, for the app's list of everyone.
   const peers = await eventually(() => {
     const agents = read(path.join(macHome, "run", "peer-agents.json"));
-    return agents?.[lab.key] && agents;
-  });
+    return agents?.[lab.key]?.list?.some(agent => agent.session === "ses_lab1") && agents;
+  }, AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]));
   assert.ok(peers);
   const listed = (await ask("GET", "kuvo/link/agents")).json.peers.find(peer => peer.key === lab.key);
-  assert.equal(listed.id, "lab");
+  assert.equal(listed.id, null, "the portable roster identifies the machine by its key");
   assert.deepEqual(listed.list.map(agent => [agent.session, agent.name]), [["ses_lab1", "API work"]]);
   // And the list this Mac's group chats name: its own, and the machine's, by its name.
   const everyone = read(path.join(macHome, "run", "agents.json"));
-  assert.deepEqual(everyone.agents.map(agent => [agent.session, agent.machine ?? null]), [["ses_mac1", null], ["ses_lab1", "lab"]]);
+  assert.deepEqual(everyone.agents.map(agent => [agent.session, agent.machine ?? null]), [["ses_mac1", null], ["ses_lab1", null]]);
 });
 
 test("a letter reaches the other computer and an explicit reply comes back as a new message", { timeout: 60_000 }, async t => {
@@ -342,24 +367,28 @@ test("this Mac in use reaches the machine, with what of its own this Mac's notif
   signal = t.signal;
   const labKey = Buffer.from(read(run("link.json")).key, "base64url");
   const before = relay.delivered.length;
-  assert.equal((await ask("POST", "kuvo/attention", { for: 30, sessions: ["ses_mac1", "ses_lab1"], shown: [{ session: "ses_mac1", ask: false }],
-    elsewhere: { lab: [{ session: "ses_lab1", ask: true, request: "per_1" }], "gone.invalid": [{ session: "ses_x", ask: false }] } })).status, 200);
+  const usage = { session: "ses_lab1", ask: false, request: "usage_fixture" };
+  assert.equal((await ask("POST", "kuvo/attention", { for: 30, sessions: ["ses_mac1", "ses_lab1"], shown: [usage] })).status, 200);
   // What the machine got from this Mac, opened as the machine opens it.
   const said = await arrived(() => relay.delivered.slice(before).map(each => {
     if (!each.to.equals(Buffer.from(lab.address, "base64url"))) return null;
     try { return JSON.parse(link.openOneWay(link.readFrame(each.payload).body, labKey, link.publicOf(macKey)).payload.toString()); } catch { return null; }
   }).find(payload => payload?.attention));
-  assert.deepEqual(said.attention, { for: 30, sessions: ["ses_mac1", "ses_lab1"], shown: [{ session: "ses_lab1", ask: true, request: "per_1" }] });
+  assert.deepEqual(said.attention, { for: 30, sessions: ["ses_mac1", "ses_lab1"], shown: [usage] });
 });
 
 test("a letter left while this Mac's box is off the relay says so at once, and goes once it's back", { timeout: 60_000 }, async t => {
   signal = t.signal;
   link.stopMacLink();
-  await arrived(() => !relay.has(macAddress));
-  const left = await ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_lab1", text: "Sent while away.", wait: true }, session: "ses_mac1" });
-  assert.equal(left.status, 200);
-  assert.deepEqual(left.json, { text: "Your other computers can't be reached through the relay now: it goes once this Mac's back on it, and its answer comes to you as a message.", isError: false });
-  link.runMacLink();
+  try {
+    await macLinkRun;
+    await arrived(() => !relay.has(macAddress));
+    const left = await ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_lab1", text: "Sent while away.", wait: true }, session: "ses_mac1" }, { abort: t.signal });
+    assert.equal(left.status, 200);
+    assert.deepEqual(left.json, { text: "Your other computers can't be reached through the relay now: it goes once this Mac's back on it, and its answer comes to you as a message.", isError: false });
+  } finally {
+    macLinkRun = link.runMacLink();
+  }
   await arrived(() => labEngine.seen.prompts.find(each => each.text.includes("Sent while away.")));
 });
 
@@ -428,10 +457,11 @@ async function stopMachineLink() {
   const pid = Number(fs.readFileSync(run("link.pid"), "utf8"));
   process.kill(pid, "SIGTERM");
   await arrived(() => !relay.has(Buffer.from(lab.address, "base64url")));
+  await eventually(() => !fs.existsSync(run("link.pid")));
 }
 async function startMachineLink() {
   spawn(process.execPath, [script, "run"], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH, HOME: support, KUVO_HOME: machineHome } }).unref();
-  await arrived(() => relay.has(Buffer.from(lab.address, "base64url")));
+  await arrived(() => fs.existsSync(run("link.pid")) && relay.has(Buffer.from(lab.address, "base64url")));
 }
 const NOTE = { from: "Its sessions", words: "It finished.", line: "“Sign-in” finished", delivery: "queue" };
 const THREE_DAYS = 3 * 86_400_000;
@@ -439,12 +469,15 @@ const THREE_DAYS = 3 * 86_400_000;
 test("news kept three days for a lead on the machine, whose link is stopped, arrives once it's started, once", { timeout: 60_000 }, async t => {
   signal = t.signal;
   await stopMachineLink();
-  fs.mkdirSync(path.join(macHome, "run", "outbox", "sending"), { recursive: true });
-  write(path.join(macHome, "run", "outbox", "sending", "ltr_newsformachine.json"), { from: null, to: "ses_lab1", text: "[Session finished] from the Mac", peer: lab.key, wait: false, at: Date.now() - THREE_DAYS, note: NOTE });
-  // A try goes nowhere while it's stopped: it stays.
-  await link.macSendOutbox();
-  assert.ok(sending(macHome).includes("ltr_newsformachine.json"));
-  await startMachineLink();
+  try {
+    fs.mkdirSync(path.join(macHome, "run", "outbox", "sending"), { recursive: true });
+    write(path.join(macHome, "run", "outbox", "sending", "ltr_newsformachine.json"), { from: null, to: "ses_lab1", text: "[Session finished] from the Mac", peer: lab.key, wait: false, at: Date.now() - THREE_DAYS, note: NOTE });
+    // A try goes nowhere while it's stopped: it stays.
+    await link.macSendOutbox();
+    assert.ok(sending(macHome).includes("ltr_newsformachine.json"));
+  } finally {
+    await startMachineLink();
+  }
   // (A try comes each minute: here, a minute on.)
   await link.sendOutbox(link.macLink.host, undefined, Date.now() + 61_000, 0);
   await arrived(() => labEngine.seen.prompts.find(each => each.text === "[Session finished] from the Mac"));

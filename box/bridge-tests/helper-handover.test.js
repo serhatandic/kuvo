@@ -20,6 +20,7 @@ import { removeTestHomeAtExit } from "./test-safety.js";
 import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -30,7 +31,10 @@ const built = fileURLToPath(LINK_BUNDLE);
 const AGENT = "run.kuvo.code.machine";
 const mac = process.platform === "darwin";
 const root = mac ? fs.realpathSync(fs.mkdtempSync("/tmp/k")) : null;
-if (root) removeTestHomeAtExit(root);
+if (root) {
+  removeTestHomeAtExit(root);
+  atEnd(() => fs.writeFileSync(path.join(root, ".closing"), ""));
+}
 
 const write = (file, text, mode = 0o600) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -73,7 +77,12 @@ process.on("SIGTERM", () => {
   serve.stdin.end();
   try { process.kill(keeper.pid, "SIGTERM"); } catch {}
   const end = () => process.exit(0);
-  if (serve.exitCode !== null || serve.signalCode !== null) end(); else { serve.once("exit", end); setTimeout(end, 3000); }
+  if (serve.exitCode !== null || serve.signalCode !== null) end();
+  else {
+    serve.once("exit", end);
+    // The helper waits for its child, ending it if it is still starting.
+    serve.kill("SIGTERM");
+  }
 });
 setInterval(() => {}, 60000);
 `;
@@ -146,6 +155,12 @@ exit 0
     /** The helper launchd started at login, as its build in place then was. */
     login(more = {}) {
       const child = spawn(program, ["keep", "--home", K], { env: { ...env, ...more }, stdio: "ignore" });
+      atEnd(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const done = once(child, "exit");
+        child.kill();
+        await done;
+      });
       fs.writeFileSync(path.join(home, "launchd.pid"), String(child.pid));
       return child.pid;
     },
@@ -237,7 +252,7 @@ test("one launchd refuses to start is opened instead, so this Mac is never left 
   assert.match(read(path.join(box.home, "open.log")), /^-g -j -n .*Kuvo Helper\.app --args keep --home /);
 });
 
-test("a helper still old after its one try is noted, never tried again", { skip: !mac, timeout: 90_000 }, async () => {
+test("a helper still old after its one try is noted, never tried again", { skip: !mac, timeout: 90_000 }, async t => {
   const box = macHome();
   box.bundle(false);
   box.login();
@@ -248,7 +263,14 @@ test("a helper still old after its one try is noted, never tried again", { skip:
   await until(() => box.helpers().length === 2, `a helper started again (log: ${box.serveLog()})`);
   const [, second] = box.helpers();
   assert.equal(second.how, "old");
-  await until(() => box.record()?.stillOld, "still old, noted");
+  await new Promise((resolve, reject) => {
+    const check = () => { if (box.record()?.stillOld) resolve(); };
+    const watcher = fs.watch(path.join(box.K, "run"), check);
+    watcher.once("error", reject);
+    t.after(() => watcher.close());
+    t.signal.addEventListener("abort", () => reject(t.signal.reason), { once: true });
+    check();
+  });
   assert.equal(box.record().stillOld.pid, second.pid);
   assert.equal(box.record().outcome, "handed");
   assert.match(box.serveLog(), /still the one from before the update/);
@@ -280,7 +302,7 @@ test("Kuvo stopped on this Mac: its helper is never handed over, nor started, be
   write(path.join(stopped.K, "run", "paused"), "");
   const serving = stopped.serving();
   stopped.update();
-  await until(() => stopped.serving() && stopped.serving() !== serving, "its server started again on the new code");
+  await until(() => !alive(serving) && !stopped.serving(), "the old server closed and the paused box has no listener");
   assert.equal(stopped.record(), null, "no hand-over");
   assert.equal(stopped.kickstarts(), 0);
   assert.ok(alive(old));

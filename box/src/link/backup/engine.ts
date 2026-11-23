@@ -18,7 +18,7 @@ import { mayActivate } from "../ownership/resolve";
 import { ownKey, peersOf } from "../peers/known";
 import { leadershipDocuments, resolveCheckpoint } from "../setup/checkpoint";
 import { followedSetup } from "../setup/record";
-import { macLink, readLink, updateLink } from "../state";
+import { macLink, readLink, updateLink, type LinkState } from "../state";
 import { backupDisk } from "../server/disk-worker";
 import { archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
 import { backupSshAddress, destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
@@ -172,9 +172,14 @@ function layout(insideUpdate: boolean): number {
   return backupFolderVersion(K);
 }
 
-function acceptedBoundary() {
+// A Mac keeps its keys in the serving process. The disk worker reads the
+// membership under its lock and needs the same identity to interpret it.
+type BackupIdentity = Pick<LinkState, "key" | "sign">;
+
+function acceptedBoundary(identity?: BackupIdentity) {
   let result: { origin: string | null; signer: string | null; setup: string | null; paired: boolean; entries: Entry[]; link: ReturnType<typeof readLink> } | undefined;
-  updateLink(link => {
+  updateLink(kept => {
+    const link = kept && identity ? { ...kept, ...identity } : kept;
     const setup = followedSetup(link);
     const origin = ownKey(link ?? {});
     const entries: Entry[] = [];
@@ -201,9 +206,10 @@ function acceptedBoundary() {
 }
 
 export function captureBackup(file: string, key: string, source: string, id: string, now: number,
-  projects: readonly string[], scratch: string, insideUpdate = false, attachmentHashes?: ReadonlyMap<string, string>): Manifest {
+  projects: readonly string[], scratch: string, insideUpdate = false, attachmentHashes?: ReadonlyMap<string, string>,
+  identity?: BackupIdentity): Manifest {
   const version = layout(insideUpdate);
-  const boundary = acceptedBoundary();
+  const boundary = acceptedBoundary(identity);
   const manifest: Manifest = { format: 1, source, id, at: now, version, origin: boundary.origin, signer: boundary.signer, setup: boundary.setup,
     paired: boundary.paired, projects: projects.map(project => path.basename(project)) };
   const link = boundary.link;
@@ -283,7 +289,10 @@ async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, so
   now: number, projects: string[], scratch: string, insideUpdate = false, boundary?: ExportBoundary): Promise<RestorePoint> {
   const file = path.join(scratch, "archive");
   await boundary?.checkSource();
-  const { version, setup } = await backupDisk.run("captureBackup", file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
+  const link = IS_MAC ? readLink() : null;
+  const identity = link?.key && link.sign ? { key: link.key, sign: link.sign } : undefined;
+  const { version, setup } = await backupDisk.run("captureBackup", file, key, source, id, now, projects, scratch,
+    insideUpdate, boundary?.attachmentHashes, identity);
   if (store.setup !== undefined && store.setup !== setup) throw new Error("Backup membership changed during capture.");
   await store.put(id, file);
   try { await backupDisk.run("authenticate", await store.get(id, scratch), key, archiveContext(source, id)); }

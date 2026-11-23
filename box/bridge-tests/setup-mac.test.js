@@ -20,6 +20,7 @@ import path from "node:path";
 import { beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { recordRelayLease } from "./relay-lease-stand-in.js";
 
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-setup-mac-")));
 removeAtEnd(support);
@@ -73,11 +74,6 @@ const self = box("mac", "Studio"), lab = box("machine", "lab"), other = box("mac
 link.macLink.overlay = { key: k(self.key), secret: k(crypto.randomBytes(32)), sign: self.sign, relay: "wss://relay.test", name: "Studio" };
 link.macLink.config = { phones: false, machines: true, relay: "wss://relay.test", name: "Studio", app: "0.9.0" };
 
-// Mail as the relay hands it on, and what this box sent, opened as `to` would.
-const sent = [];
-const host = { welcomed: true, send: bytes => sent.push(bytes) };
-const mailTo = to => sent.filter(bytes => k(bytes.subarray(1, 17)) === to.address)
-  .map(bytes => JSON.parse(link.openOneWay(link.readFrame(bytes.subarray(17)).body, to.key, link.publicOf(self.key)).payload.toString("utf8")));
 // What lab told of how it numbers, as its Work Queue's mail leaves it here (a box that knows setups
 // says whether it's shared).
 const labTold = numbering => write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_labtoldlabtold", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], shared: false, ...numbering });
@@ -112,29 +108,20 @@ const ownPeers = () => {
 beforeEach(() => {
   fs.rmSync(run, { recursive: true, force: true });
   write(path.join(run, "engine.json"), { ...target, version: "0.0.0" });
-  sent.length = 0;
+  link.forgetQueueMigrated();
   link.writeLink({ phones: [], macPeers: [lab.peer], macMoved: [] });
 });
 
-test("legacy numbering can route through a peer to the recorded primary", () => {
+test("legacy setup discovery identifies the first Mac named by a peer while numbering waits for enrollment", () => {
   write(numbers, { primary: "self", next: 12, leases: [], since: 9_000 });
   labTold({ primary: { key: other.pub, kind: "mac", since: 1_000 } });
-  const primary = link.primaryOf(link.readLink(), numbers);
-  assert.equal(primary.peer?.key, other.pub, "the Mac set up first");
-  assert.equal(primary.via?.key, lab.pub, "reached through lab");
-  link.notePrimaryNow(link.readLink(), { file: numbers });
-  const kept = link.readNumbers(numbers);
-  assert.equal(kept.primary, other.pub);
-  assert.equal(kept.through, lab.pub);
-  assert.ok(kept.asking, "it asks at once, having numbered on its own");
-  link.pushNumbers(host, link.readLink());
-  const asked = mailTo(lab).map(each => each.workQueue);
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].to, other.pub);
-  assert.ok(asked[0].ask.top >= 11, "telling how far it got");
+  const first = link.rankedPrimary(link.readLink(), numbers);
+  assert.equal(first.peer?.key, other.pub);
+  assert.equal(first.via?.key, lab.pub);
+  assert.deepEqual(link.primaryOf(link.readLink()), { away: true });
 });
 
-test("this Mac, numbering on its own, leads a setup of its own: its peers document names it, its numbers go on where they were (#41, then #42), and kuvo/setup says it's the main computer", async () => {
+test("this Mac, numbering on its own, leads a setup of its own: its peers document names it, its numbers go on where they were (next is #42), and kuvo/setup says it's the main computer", async () => {
   write(numbers, { primary: "self", next: 42, leases: [], since: 1_000 });
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: undefined });
   link.noteSetupNow(Date.now(), { soon: 0 });
@@ -146,6 +133,7 @@ test("this Mac, numbering on its own, leads a setup of its own: its peers docume
   link.noteSetupNow(Date.now(), { soon: 0 });
   assert.equal(ownPeers().setup.id, named.id);
 
+  recordRelayLease(run, link.readLink().setup, { high: 90, floor: 41 });
   assert.match(await addItem("Ship it"), /^Added #42 /);
   const shown = await route("GET", "kuvo/setup");
   assert.equal(shown.status, 200);
@@ -170,7 +158,7 @@ test("a Mac follows the numbering primary and ignores obsolete peer flags", () =
   link.noteSetupNow(Date.now(), { soon: 0 });
   assert.equal(link.readLink().setup, undefined, "it numbers from the Mac set up first: no setup of its own");
   assert.equal(ownPeers().setup, undefined);
-  assert.equal(link.primaryOf(link.readLink(), numbers).via?.key, lab.pub, "and through lab, as before");
+  assert.equal(link.rankedPrimary(link.readLink(), numbers).via?.key, lab.pub, "the legacy discovery path");
 
   // A legacy numbering record's shared field does not affect leadership.
   write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
@@ -197,7 +185,7 @@ test("a Mac whose keys were made anew while it doesn't lead lets the setup it le
     link.macLink.overlay = { ...before, key: k(fresh), sign: link.newSigningSeed() };
     // Its machine now numbers from a Mac set up earlier, through which this one numbers too.
     labTold({ primary: { key: other.pub, kind: "mac", since: 500 } });
-    assert.equal(link.primaryOf(link.readLink(), numbers).peer?.key, other.pub, "not its old setup's main computer");
+    assert.equal(link.rankedPrimary(link.readLink(), numbers).peer?.key, other.pub, "the legacy candidate after rotation");
     assert.equal(link.setupView(link.readLink()).setup, null);
     link.noteSetupNow(Date.now(), { soon: 0 });
     assert.equal(link.readLink().setup, undefined, "let go");
@@ -252,71 +240,54 @@ test("this Mac's setup outlives a restart: kept in its link.json, it's named aga
   }
 });
 
-test("this Mac's static key made anew: setting a machine up again lets the old key go, and the machine follows the new setup at once", async () => {
+test("a signed setup cannot be replaced over SSH by a Mac with newly made keys", async () => {
   write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 } });
   link.noteSetupNow(Date.now(), { soon: 0 });
   const script = fileURLToPath(LINK_BUNDLE);
   const machine = path.join(support, "machine");
-  fs.mkdirSync(path.join(machine, "run"), { recursive: true });
-  const env = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machine, TMPDIR: support };
-  // The bridge setup starts on the machine (detached, outliving setup): it names itself in link.pid
-  // once it has loaded, which on a busy computer is after setup has returned.
-  const alive = pid => { try { return pid > 0 && process.kill(pid, 0); } catch { return false; } };
-  const bridgePid = () => { try { return Number(fs.readFileSync(path.join(machine, "run", "link.pid"), "utf8")) || 0; } catch { return 0; } };
-  const bridgeVersion = () => { try { return fs.readFileSync(path.join(machine, "run", "link.version"), "utf8").trim(); } catch { return ""; } };
-  const until = async (done, what) => {
-    for (let tries = 0; !done(); tries++) {
-      if (tries === 600) assert.fail(`${what}, after 30 seconds`);
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-  };
-  // Stopped, and gone, before its folder is removed: one still running writes in it as it goes.
-  atEnd(async () => {
-    const pid = bridgePid();
-    if (!pid) return;
-    try { process.kill(pid, "SIGTERM"); } catch {}
-    await until(() => !alive(pid), "the machine's bridge never stopped");
+  write(path.join(machine, "run", "link.json"), {
+    key: k(lab.key), sign: lab.sign, secret: k(crypto.randomBytes(32)), mac: self.pub, macs: [self.pub], phones: [],
   });
-  // Set up as the app sets it up: what this Mac's box gives (kuvo/link/setup), over SSH. Its bridge
-  // up before the next step, so setting up again finds it running rather than starting a second.
+  const env = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machine, TMPDIR: support };
+  // The legacy SSH command can update membership even while the machine's keeper is paused.
+  write(path.join(machine, "run", "off"), "");
   const runSetup = given => spawnSync(process.execPath, [script, "setup"], {
     input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }),
     env: { ...env, BUN_BE_BUN: process.env.BUN_BE_BUN }, encoding: "utf8",
   });
   const setUp = async () => {
+    recordRelayLease(run, link.readLink().setup);
     const given = (await route("GET", "kuvo/link/setup")).json;
     const result = runSetup(given);
     assert.equal(result.status, 0, result.stderr);
-    // (Its version too, written just after: without it, setting up again starts a newer one.)
-    await until(() => alive(bridgePid()) && bridgeVersion() !== "", "the machine's bridge never started");
+    assert.equal(JSON.parse(result.stdout.trim()).key, lab.pub, result.stdout);
     return { given, link: read(path.join(machine, "run", "link.json")) };
   };
   const first = await setUp();
   assert.deepEqual(first.link.macs, [self.pub]);
   assert.equal(first.link.setup?.primary, self.pub);
+  assert.equal(first.link.setup.managed, true);
 
   const before = link.macLink.overlay;
   const fresh = link.newKey();
   try {
     link.macLink.overlay = { ...before, key: k(fresh), sign: link.newSigningSeed() };
-    link.noteSetupNow(Date.now(), { soon: 0 });
     const now = k(link.publicOf(fresh));
+    labTold({ primary: { key: now, kind: "mac", since: 1_000 } });
+    link.noteSetupNow(Date.now(), { soon: 0 });
+    recordRelayLease(run, link.readLink().setup);
     const offered = (await route("GET", "kuvo/link/setup")).json;
+    assert.deepEqual(offered.replaces, [self.pub]);
     const unrelated = runSetup({ ...offered, replaces: [] });
     assert.equal(unrelated.status, 4, unrelated.stderr);
     assert.equal(read(path.join(machine, "run", "link.json")).setup.id, first.link.setup.id);
-    const again = await setUp();
-    assert.deepEqual(again.link.macs, [now], "never two of one Mac");
-    assert.equal(again.link.setup?.primary, now);
-    assert.equal(again.link.setup?.aside, undefined, "the new key keeps its setup");
-    assert.equal(again.link.setup?.id, ownPeers().setup.id);
-    assert.deepEqual([first.given.replaces, again.given.replaces], [[], [self.pub]], "what this Mac's box gives: the key it had before");
+    const replaced = runSetup(offered);
+    assert.equal(replaced.status, 4, replaced.stderr);
+    const kept = read(path.join(machine, "run", "link.json"));
+    assert.deepEqual(kept.setup, first.link.setup);
+    assert.deepEqual(kept.macs, [self.pub]);
 
-    write(path.join(machine, "run", "link.json"), { ...again.link, setup: { ...again.link.setup, managed: true } });
-    const changingManagedSetup = runSetup({ ...first.given, replaces: [now] });
-    assert.equal(changingManagedSetup.status, 4, changingManagedSetup.stderr);
-    assert.equal(read(path.join(machine, "run", "link.json")).setup.id, again.link.setup.id);
   } finally {
     link.macLink.overlay = before;
   }

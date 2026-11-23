@@ -344,7 +344,7 @@ exec ${JSON.stringify(process.execPath)} "$@"
 `, { mode: 0o700 });
   const keeper = path.join(folder, "bin", "kuvo-start");
   fs.writeFileSync(keeper, fs.readFileSync(new URL("../src/keeper/kuvo-start", import.meta.url), "utf8").replaceAll("@ENGINE@", "test"));
-  fs.writeFileSync(path.join(folder, "run", "update-trial"), "trial");
+  fs.writeFileSync(path.join(folder, "run", "update-trial"), "0.10.0");
   fs.writeFileSync(path.join(saved, "restore.sh"), `#!/bin/sh
 cp "${old}" "${current}" && rm "${folder}/run/update-trial"
 `);

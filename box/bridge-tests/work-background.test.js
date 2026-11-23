@@ -1586,10 +1586,11 @@ test("sidebar, bot work and conversation activity include the same own turn and 
     assert.equal(sidebar.now.working, 9);
     assert.equal(sidebar.now.asking, 1);
     assert.equal(workReport.today.working, 9);
-    assert.deepEqual(workReport.activity, outputs);
-    assert.equal(outputs.sessions.length, 10);
-    assert.ok(outputs.sessions.some(row => row.session === "ses_pixel"));
-    assert.deepEqual(child, { working: 2, asking: 1, sessions: outputs.sessions.filter(row => ["ses_tests", "ses_work6", "ses_remoteAsk"].includes(row.session)) });
+    assert.equal(workReport.activity.sessions.length, 10);
+    assert.ok(workReport.activity.sessions.some(row => row.session === "ses_pixel"));
+    // A conversation already shows its own turn. Its Activity panel lists the descendants.
+    assert.deepEqual(outputs, { working: 8, asking: 1, sessions: workReport.activity.sessions.filter(row => row.session !== "ses_pixel") });
+    assert.deepEqual(child, { working: 1, asking: 1, sessions: outputs.sessions.filter(row => ["ses_work6", "ses_remoteAsk"].includes(row.session)) });
     assert.equal(child.sessions.find(row => row.session === "ses_work6").computer, remote);
   } finally {
     fs.rmSync(path.join(home, "run", "activity"), { force: true, recursive: true });
@@ -1608,6 +1609,6 @@ test("a working native helper does not count its idle bot as another working tur
     engine: { sessions: { ses_pixel: { commands: [], tasks: [], subagents: [{ id: "ses_helper", since: Date.now() }] } } },
   }));
   const report = (await route("GET", `kuvo/work?bot=${bot}`)).body.activity;
-  assert.deepEqual(report, { working: 1, asking: 0, sessions: [{ session: "ses_helper", title: "Helper", state: "working" }] });
+  assert.deepEqual(report, { working: 1, asking: 0, sessions: [{ session: "ses_helper", title: "Helper", state: "working", subagent: true }] });
   assert.equal((await route("GET", "kuvo/bots")).body.bots.find(row => row.id === bot).now.working, 1);
 });

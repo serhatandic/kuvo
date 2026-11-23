@@ -75,3 +75,10 @@ fn connect(path: &Path, flags: OpenFlags, busy: Duration) -> Result<Connection, 
 }
 
 pub const INSIGHTS_BUSY: Duration = Duration::from_secs(3);
+
+/// Open a private staged copy for a move. The engine still owns its schema.
+pub fn open_for_move(path: &Path, busy: Duration) -> Result<Connection, Error> {
+    let connection = connect(path, OpenFlags::SQLITE_OPEN_READ_WRITE, busy)?;
+    connection.pragma_update(None, "trusted_schema", false)?;
+    Ok(connection)
+}

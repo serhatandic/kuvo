@@ -339,6 +339,16 @@ test("rows kept from another computer: the newest it said, and the sessions it n
   assert.deepEqual(read(path.join(run, "work", "elsewhere", `${mini.pub}.json`)).leads.ses_lead.map(each => [each.session, each.title]), [["ses_two", "Two lines here"]]);
 });
 
+test("an older work snapshot cannot bring back rows another computer cleared", () => {
+  const file = path.join(run, "work", "elsewhere", `${mini.pub}.json`);
+  const snapshot = { at: 1000, leads: { ses_lead: [{ session: "ses_far", state: "working" }] } };
+  assert.equal(link.takeRows(mini.peer, snapshot, 1100), true);
+  assert.equal(read(file).leads.ses_lead[0].session, "ses_far");
+  assert.equal(link.takeRows(mini.peer, { at: 2000, leads: {} }, 2100), true);
+  assert.equal(link.takeRows(mini.peer, snapshot, 2200), true, "acknowledge an old snapshot so it isn't sent again");
+  assert.deepEqual(read(file), { at: 2000, heard: 2100, leads: {} });
+});
+
 test("calls kept for a box that's away: the oldest goes each minute; an allow is let go after a day and the lead hears; a stop refused there for good is told", async () => {
   eng.all.set("ses_lead", { id: "ses_lead", title: "Foreman" });
   const T = Date.now();

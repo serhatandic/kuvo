@@ -26,6 +26,8 @@ import { computerName } from "../peers/computer-name";
 import { peersOf } from "../peers/known";
 import { readLink } from "../state";
 import { stopIfWaiting } from "../work/answers";
+import { noteWorkChanged } from "../work/changes";
+import { worksFor } from "../work/tree";
 import { holdArchived } from "./wakes";
 import { readRestorableWorktrees, readWorktrees } from "./worktree-records";
 import type { EngineSession } from "../engine/sessions";
@@ -289,6 +291,8 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
     // you stops, rather than wait out of sight.
     try { holdArchived(id, value as boolean); } catch {}
     if (value === true) await stopIfWaiting(target, id);
+    const bot = worksFor(done.session)?.bot;
+    if (bot) noteWorkChanged(bot);
   }
   return yield* json(200, { session: id, info: done.session });
 }

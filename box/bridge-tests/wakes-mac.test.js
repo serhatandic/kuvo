@@ -23,32 +23,13 @@ process.env.KUVO_BOTS = path.join(support, "bots");
 process.env.KUVO_WAKES = path.join(support, "wakes");
 process.env.KUVO_WAKE_COMMAND = path.join(support, "bin", "kuvo-wake");
 
-// The system tells the box's folder watches of a change when it gets to it: on a busy Mac, FSEvents
-// tells them late or not at all (the box looks again for those, each half minute and each minute).
-// So the watches here hear of each change as a test makes it, as the system tells them: a change
-// in a folder a watch has, or in one inside it only when it watches what's in them too.
-const watches = new Set();
-fs.watch = (folder, options, listener) => {
-  const watch = { folder, recursive: Boolean(options?.recursive), listener, on: () => watch, close: () => watches.delete(watch) };
-  watches.add(watch);
-  return watch;
-};
-const changedOnDisk = file => {
-  for (const { folder, recursive, listener } of [...watches]) {
-    if (path.dirname(file) === folder || (recursive && file.startsWith(folder + path.sep))) listener("rename", path.relative(folder, file));
-  }
-};
 const link = await import(LINK_BUNDLE.href);
 
 const script = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 fs.mkdirSync(path.join(support, "bin"), { recursive: true });
 fs.writeFileSync(process.env.KUVO_WAKE_COMMAND, script, { mode: 0o755 });
 
-// The engine: the conversations it has (each test's), its tools all connected, and the prompts
-// it's sent. Each answer closes its connection. The box's fetch (in this process) gives one it keeps
-// open a timer, on the clock of whichever test is going then (a test's own, below); when the engine
-// closes it seconds later, in another test, Node's mocked clock (22.15) takes it off that test's
-// clock by its old place there, and that test's next timer never goes. Now and then, on a busy Mac.
+// The engine: the conversations it has, its tools and the prompts it's sent.
 const conversations = new Set();
 const prompted = [];
 const engine = http.createServer((request, response) => {
@@ -170,7 +151,6 @@ test("a client follows them: whole notes, each change from the box at once, and 
     const folder = path.join(ada, "wakes");
     for (const name of fs.readdirSync(folder)) {
       fs.rmSync(path.join(folder, name));
-      changedOnDisk(path.join(folder, name));
     }
     await followed.until(line => !line.sessions.some(each => each.session === "ses_ada"));
   } finally {
@@ -193,17 +173,47 @@ test("a watch is made as its agent makes one, and kuvo-wake's refusal comes back
   assert.equal((await ask("POST", "kuvo/wakes/ses_gone/watch", { every: "1h", check: "date", note: "x" })).status, 404, "not a conversation here");
 });
 
-// The box's timers in these run on a clock of the test's: the minute can't pass unless the test
-// moves it. Each waits for the run its box started to be over, then looks at what was sent.
+// Only advance wake-up timers. The engine and the wake command use real I/O.
+function wakeClock() {
+  let now = 0;
+  const timers = new Set();
+  let changed;
+  return {
+    changedOnDisk: () => changed(),
+    start: () => link.sendWakes({
+      schedule(run, delay) {
+        const timer = { at: now + delay, run };
+        timers.add(timer);
+        return timer;
+      },
+      cancel: timer => timers.delete(timer),
+      watch(tell) {
+        changed = tell;
+        return { whole: true, close() { changed = undefined; } };
+      },
+    }),
+    tick(ms) {
+      const until = now + ms;
+      for (;;) {
+        const next = [...timers].sort((a, b) => a.at - b.at)[0];
+        if (!next || next.at > until) break;
+        timers.delete(next);
+        now = next.at;
+        next.run();
+      }
+      now = until;
+    },
+  };
+}
 
 test("this computer's box sends a wake-up when it's due, with kuvo-wake fire, as a machine's keeper does", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const folder = conversation(t, "ses_due", { folder: true });
   fs.writeFileSync(path.join(folder, "wakes", `${now() - 5}-ghijkl`), "Send the weekly summary");
-  const stop = link.sendWakes();
+  const stop = clock.start();
   try {
     // Due already: it goes in half a second.
-    t.mock.timers.tick(500);
+    clock.tick(500);
   } finally {
     await stop();
   }
@@ -217,16 +227,16 @@ const kuvoWake = (folder, ...args) => new Promise((resolve, reject) => execFile(
   (error, out, said) => error ? reject(new Error(said || error.message)) : resolve(out)));
 
 test("a wake-up with a summary reaches its agent whole, marked with the summary its card shows", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const folder = conversation(t, "ses_summed", { folder: true });
   const note = "Look at the last CI run. If it failed, read the log, fix what broke and tell the user.\n\nThen check the deploy.";
   await kuvoWake(folder, "add", "+2h", "--summary", "Check CI and the deploy", note);
   // Due now, as its time comes.
   const [name] = fs.readdirSync(path.join(folder, "wakes"));
   fs.renameSync(path.join(folder, "wakes", name), path.join(folder, "wakes", `${now() - 5}-${name.slice(name.indexOf("-") + 1)}`));
-  const stop = link.sendWakes();
+  const stop = clock.start();
   try {
-    t.mock.timers.tick(500);
+    clock.tick(500);
   } finally {
     await stop();
   }
@@ -247,7 +257,7 @@ test("one woken now keeps its summary", async t => {
 });
 
 test("one kept waiting while you stopped its conversation keeps its summary", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const stopped = conversation(t, "ses_summed_stopped", { folder: true });
   const queues = path.join(support, "box", "run", "queues.json");
   t.after(() => fs.rmSync(queues, { force: true }));
@@ -255,9 +265,9 @@ test("one kept waiting while you stopped its conversation keeps its summary", as
   await kuvoWake(stopped, "add", "+2h", "--summary", "Send the digest", "Send the weekly digest to the team.");
   const [name] = fs.readdirSync(path.join(stopped, "wakes"));
   fs.renameSync(path.join(stopped, "wakes", name), path.join(stopped, "wakes", `${now() - 5}-${name.slice(name.indexOf("-") + 1)}`));
-  const stop = link.sendWakes();
+  const stop = clock.start();
   try {
-    t.mock.timers.tick(500);
+    clock.tick(500);
   } finally {
     await stop();
   }
@@ -271,7 +281,7 @@ test("one kept waiting while you stopped its conversation keeps its summary", as
 });
 
 test("a wake-up due in a conversation you stopped waits on the box, shown as a wake-up, and one that repeats isn't kept twice", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const folder = conversation(t, "ses_stopped", { folder: true });
   const queues = path.join(support, "box", "run", "queues.json");
   t.after(() => fs.rmSync(queues, { force: true }));
@@ -280,9 +290,9 @@ test("a wake-up due in a conversation you stopped waits on the box, shown as a w
   fs.writeFileSync(path.join(folder, "wakes", `${now() - 5}-abcdef`), "Send the weekly summary");
   fs.writeFileSync(path.join(folder, "wakes", `${now() - 5}-ghijkl-1d`), "Check the build");
   const fire = async () => {
-    const stop = link.sendWakes();
+    const stop = clock.start();
     try {
-      t.mock.timers.tick(500);
+      clock.tick(500);
     } finally {
       await stop();
     }
@@ -304,7 +314,7 @@ test("a wake-up due in a conversation you stopped waits on the box, shown as a w
 });
 
 test("two conversations you stopped, with the same wake-up (bots made from one template), each keep theirs", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const first = conversation(t, "ses_inbox1", { folder: true });
   const second = conversation(t, "ses_inbox2", { folder: true });
   const queues = path.join(support, "box", "run", "queues.json");
@@ -312,9 +322,9 @@ test("two conversations you stopped, with the same wake-up (bots made from one t
   fs.writeFileSync(queues, JSON.stringify({ ses_inbox1: { paused: true, held: [] }, ses_inbox2: { paused: true, held: [] } }));
   fs.writeFileSync(path.join(first, "wakes", `${now() - 5}-abcdef-1d`), "Check the inbox");
   const fire = async () => {
-    const stop = link.sendWakes();
+    const stop = clock.start();
     try {
-      t.mock.timers.tick(500);
+      clock.tick(500);
     } finally {
       await stop();
     }
@@ -330,17 +340,17 @@ test("two conversations you stopped, with the same wake-up (bots made from one t
 });
 
 test("one an agent's kuvo-wake writes beside the box goes at its time, not at the next minute", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const folder = conversation(t, "ses_soon", { folder: true });
-  const stop = link.sendWakes();
+  const stop = clock.start();
   try {
     // The box has nothing due (its timer is a minute out) when the agent adds one for now.
     const file = path.join(folder, "wakes", `${now()}-mnopqr`);
     fs.writeFileSync(file, "Read the release notes");
-    changedOnDisk(file);
+    clock.changedOnDisk();
     // The folders settle, then it goes at its time (a second at most from now), well short of the minute.
-    t.mock.timers.tick(200);
-    t.mock.timers.tick(1_000);
+    clock.tick(200);
+    clock.tick(1_000);
   } finally {
     await stop();
   }
@@ -348,13 +358,13 @@ test("one an agent's kuvo-wake writes beside the box goes at its time, not at th
 });
 
 test("one written beside the box that the system never tells it of still goes within the minute", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const clock = wakeClock();
   const folder = conversation(t, "ses_unheard", { folder: true });
-  const stop = link.sendWakes();
+  const stop = clock.start();
   try {
     fs.writeFileSync(path.join(folder, "wakes", `${now()}-stuvwx`), "Water the plants");
     // No word of it from the system: the box's look each minute finds it.
-    t.mock.timers.tick(60_000);
+    clock.tick(60_000);
   } finally {
     await stop();
   }

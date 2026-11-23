@@ -141,6 +141,8 @@ function box() {
   write(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.166.0"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}"\n`, 0o755);
   timing({ holdMost: 300_000 });
   write(path.join(RUN, "launch.notes"), "{}", 0o600);
+  // Each swap starts with an engine that has been requested by the resident.
+  write(path.join(RUN, "engine.now"), "", 0o600);
   write(path.join(RUN, "serve.needed"), "", 0o600);
   return { fake };
 }
@@ -231,7 +233,10 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
     assert.equal(sent.status, 200, JSON.stringify(sent.json));
     assert.deepEqual(sent.json, { waits: true }, "held on the box, not sent to the engine stopped next");
   }
-  const queue = await served("GET", "kuvo/sessions/ses_engine/queue?items=1");
+  const queue = await until(async () => {
+    const answer = await served("GET", "kuvo/sessions/ses_engine/queue?items=1");
+    return answer.json?.items?.length === 3 ? answer : null;
+  }, "the resident to publish the queued messages");
   assert.equal(queue.json.paused, false);
   assert.deepEqual(queue.json.items.map(item => [item.words, item.on]), [["queued before", "engine"], ["first", "box"], ["second", "box"]], "shown waiting, in order");
   assert.match(queue.json.line, /engine is updating/, "with a line saying why");
@@ -372,7 +377,10 @@ test("a hold the turns don't end within its bound is let go of: what it held goe
   await until(() => prompts().length === sent + 1, "what was held to reach the engine at work");
   assert.deepEqual(prompts().slice(sent).map(each => [each.engine, each.id]), [["1.1.0", "msg_swaplong0000001"]]);
   assert.equal(engineNow().pid, at.pid, "the turn at work isn't cut");
-  const queue = await served("GET", "kuvo/sessions/ses_engine/queue?items=1");
+  const queue = await until(async () => {
+    const answer = await served("GET", "kuvo/sessions/ses_engine/queue?items=1");
+    return answer.json?.items?.length === 0 ? answer : null;
+  }, "the resident to publish the emptied queue");
   assert.deepEqual(queue.json.items, [], "nothing left waiting");
   assert.equal(queue.json.line, undefined);
   assert.match((await served("GET", "kuvo/update")).json.engineChange.line, /ready\. It installs once nothing is running/);

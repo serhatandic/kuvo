@@ -226,3 +226,16 @@ pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
         size: file.metadata()?.len(),
     })
 }
+
+pub fn remove_tree(path: &Path) -> io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+
+    let kind = fs::symlink_metadata(path)?.file_type();
+    if kind.is_symlink_dir() {
+        fs::remove_dir(path)
+    } else if kind.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}

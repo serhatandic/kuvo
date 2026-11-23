@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listOf, textOf, writePrivate } from "../files";
-import { isWindowsHost, observeProcess, sandboxGeneration } from "../../shared/platform";
+import { commandLineOf, isWindowsHost, observeProcess, sandboxGeneration } from "../../shared/platform";
 import { accountHome, BOTS, BRIDGE_FILE, CHATS, ENGINE_CONFIG, ENGINE_DATA, ENGINE_FILE, IN_TEST_FOLDER, K, RUN, SANDBOX_NOTE, SESSION_WAKES, SOCKET_KEY_FILE, SSH_AGENTS, SSH_FOR } from "../home";
 import { tellLauncher } from "./allowed";
 import { agentShellScript, agentsNote, launcherScript, pluginScript, type FencePlaces } from "./files";
@@ -22,6 +22,7 @@ import { didntFinish } from "./finished";
 import { LANDLOCK_RUNNER, landlockPolicy, ownNamespaceLater, readOnlyHere, UNFINISHED, UNSHARE } from "./landlock";
 import { appTemporary, fencePolicy, realish, sandboxCaches, whenReadLate } from "./policy";
 import { wakeDisk } from "../server/disk-worker";
+import { keepsList } from "../server/resident-state";
 import { seatbeltProfile } from "./seatbelt";
 
 export interface FenceState {
@@ -305,7 +306,9 @@ function bridgeSays(): "inside" | "outside" | "none" | undefined {
   let bridge: { pid?: number } | null = null;
   try { bridge = JSON.parse(fs.readFileSync(BRIDGE_FILE, "utf8")); } catch {}
   if (!bridge?.pid) return "none";
-  const running = observeProcess(bridge.pid, "kuvo-agents");
+  const observed = observeProcess(bridge.pid, "kuvo-agents");
+  // A transient SSH process exits after this answer, before a queued ps observation can be used.
+  const running = observed ?? (keepsList() ? undefined : commandLineOf(bridge.pid)?.includes("kuvo-agents"));
   if (running === undefined) return undefined;
   if (!running) return "none";
   try {

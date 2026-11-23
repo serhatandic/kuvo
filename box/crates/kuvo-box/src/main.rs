@@ -2,8 +2,9 @@ mod serve;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 
+use kuvo_os::platform::{Account, Platform};
 use kuvo_server::ssh;
-use kuvo_store::{home::Home, layout};
+use kuvo_store::home::Home;
 
 fn main() -> ExitCode {
     match run() {
@@ -41,7 +42,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
-    layout::open(&home)?;
+    let platform = Platform::current();
+    let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
+    kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

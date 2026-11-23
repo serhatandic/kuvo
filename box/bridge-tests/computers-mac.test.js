@@ -207,6 +207,13 @@ test("link updates time out without writing when another writer still owns the l
 test("forwarded pairing checks the membership recorded when the pairing write acquires its lock", async () => {
   fresh();
   link.updateLink(state => ({ ...state, setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: k(link.publicOf(mac)), sign: link.signingKeyOf(state.sign), role: "primary" } }));
+  const setup = link.readLink().setup;
+  const now = { wall: Date.now(), uptime: os.uptime() * 1000 };
+  // The main can commit membership changes while it holds the relay's lease.
+  fs.writeFileSync(path.join(run, "setup-relay-lease.json"), JSON.stringify({
+    setup: setup.id, holder: setup.primary, sign: setup.sign, term: 1, expires: now.wall + 60_000,
+    high: 0, relayHost: false, since: now, validAfter: now, duration: 60_000,
+  }));
   const key = k(link.publicOf(link.newKey()));
   const rename = fs.renameSync;
   let removed = false;

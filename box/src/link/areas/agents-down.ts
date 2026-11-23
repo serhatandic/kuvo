@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { readRepairRecord } from "../updates/repair-record";
-import { processRuns, processRunsKnown } from "../../shared/platform";
+import { observeProcess, processRuns } from "../../shared/platform";
 import { keepsList } from "../lists/sessions";
 import { pause } from "../../shared/wait";
 import type { Target } from "../../shared/records";
@@ -96,8 +96,8 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
   const run = place.run ?? RUN;
   const bin = place.bin ?? path.join(K, "bin");
   const now = place.now ?? Date.now();
-  const runs = place.runs ?? (keepsList() ? processRunsKnown : processRuns);
-  const bridge = place.bridge ?? (() => bridgeAt(run, runs));
+  const runs = place.runs ?? (keepsList() ? (pid, name) => observeProcess(pid, name, true) : processRuns);
+  const bridge = place.bridge ?? (() => bridgeAt(run, (pid, name) => runs(pid, name) === true));
   if (bridge()) {
     seenRunning();
     return { state: "running" };
@@ -110,10 +110,16 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
     } catch {}
     return { state: "restarting", line: AGENTS_RESTARTING };
   }
+  const restarting = { state: "restarting", line: AGENTS_RESTARTING } as const;
+  // The resident asks macOS for the process name asynchronously. Until that
+  // observation comes back, a live PID is neither confirmed nor down.
+  if (runs(readJSON(path.join(run, "bridge.json"))?.pid, "kuvo-agents") === undefined) return restarting;
   if (!fs.existsSync(path.join(bin, "kuvo-agents.js"))) return { state: "down", why: "notInstalled", line: "The coding agents aren't installed here yet. Kuvo's next update brings them.", tryAgain: false };
   // The engine first: the keeper starts the bridge only while it runs.
   const engine = readJSON(path.join(run, "engine.json"));
-  if (!engine || (engine.pid !== undefined && !runs(engine.pid, "opencode"))) {
+  const engineRunning = engine?.pid === undefined ? !!engine : runs(engine.pid, "opencode");
+  if (engineRunning === undefined) return restarting;
+  if (!engineRunning) {
     unexplainedSince = null;
     return { state: "down", why: "engine", line: ENGINE_FIRST, tryAgain: false };
   }
@@ -153,7 +159,9 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
         : { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", tryAgain: true };
     }
   }
-  if (!runs(readNumber(path.join(run, "box.pid")), "kuvo-start")) {
+  const keeping = runs(readNumber(path.join(run, "box.pid")), "kuvo-start");
+  if (keeping === undefined) return restarting;
+  if (!keeping) {
     return { state: "down", why: "keeper", line: "The coding agents stopped, and nothing is starting them again.", tryAgain: true };
   }
   // Stopping again and again: its keeper waits longer before each start (`run/agents.retry`, when, in
@@ -260,6 +268,7 @@ export async function* agentsStartRoute(context: RouteContext): AsyncGenerator<A
   }).finally(() => (starting = null));
   await starting;
   forgetAgentsState();
-  const away = agentsAway();
+  const target = await bridgeBack(context.bridge, context.signal);
+  const away = target ? null : agentsAway();
   return yield* json(away ? 503 : 200, away ?? {});
 }

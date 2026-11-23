@@ -142,7 +142,10 @@ test("who can be in a chat here from your other computers: each peer, taking a c
   const peers = link.seatPeers(link.readLink());
   // This box too, as its plan limits' rows name it (PROTOCOL.md, "Plan limits").
   assert.deepEqual(peers.self, { key: here.pub, name: "devbox" });
-  assert.deepEqual(peers.boxes, [{ key: mac.pub, name: "mac", seats: false }, { key: second.pub, name: "second", seats: true }]);
+  assert.deepEqual(peers.boxes, [
+    { key: mac.pub, name: "mac", seats: false, insights: "connected", limits: "connected" },
+    { key: second.pub, name: "second", seats: true, insights: "unsupported", limits: "connected" },
+  ]);
   assert.deepEqual(peers.bots, [
     { id: "bot_mac", name: "Mac bot", job: "", box: mac.pub, session: "ses_m", look: { color: "sky", shape: "round", face: "calm" } },
     { id: "bot_far", name: "Far", job: "Watches CI", box: second.pub, session: "ses_far", look },

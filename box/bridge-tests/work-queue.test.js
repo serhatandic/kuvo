@@ -36,6 +36,21 @@ const write = (file, text) => {
 const project = path.join(home, "work", "api");
 fs.mkdirSync(project, { recursive: true });
 const queues = path.join(home, "run", "work-queue");
+const linkFile = path.join(home, "run", "link.json");
+const mainKey = "primary".padEnd(43, "0");
+const memberPrimary = { peer: { key: mainKey, address: "address".padEnd(22, "0"), kind: "mac", name: "Mac" } };
+
+function memberNumbers(file, leases = []) {
+  const { peer } = memberPrimary;
+  const sign = "sign".padEnd(43, "0");
+  write(linkFile, JSON.stringify({
+    mac: peer.key, macs: [peer.key], macSigns: { [peer.key]: sign },
+    legacy: { [peer.key]: { at: 1, peers: [{ ...peer, sign }] } },
+    setup: { id: "set_member".padEnd(26, "0"), role: "member", primary: peer.key, sign, epoch: 1 },
+    phones: [],
+  }));
+  write(file, JSON.stringify({ primary: peer.key, leases }));
+}
 
 // The engine: a lead, the sessions it started (and one of theirs), its subagent, a session of its
 // own, a bot, and a group chat's seat; which are at work, and the tool call each is making now.
@@ -109,6 +124,8 @@ fs.mkdirSync(path.join(bot, "workspace"), { recursive: true });
 
 beforeEach(() => {
   fs.rmSync(queues, { recursive: true, force: true });
+  fs.rmSync(linkFile, { force: true });
+  link.forgetQueueMigrated();
   active = new Set();
   calling.clear();
   linksAtPrompt.clear();
@@ -576,7 +593,8 @@ test("an item keeps the last 50 of what happened to it", async () => {
   kept.items[0].events = Array.from({ length: 70 }, (_, index) => ({ at: index + 1, by: { user: true }, kind: index % 2 ? "seen-upstream" : "moved", from: "todo", to: "todo" }));
   fs.writeFileSync(file, JSON.stringify(kept));
   assert.equal((await route("GET", "kuvo/work-queue/items/1")).body.item.events.length, 50, "read: the last 50");
-  await tool("queue_update", { item: 1, working: true }, "ses_lead");
+  const working = await tool("queue_update", { item: 1, working: true }, "ses_lead");
+  assert.equal(working.isError, false, working.text);
   const events = (await route("GET", "kuvo/work-queue/items/1")).body.item.events;
   assert.equal(events.length, 50);
   // (Two more: it went In progress, and its work started.)
@@ -942,7 +960,7 @@ test("the primary hands out numbers: a block to another box, the same block for 
   const primary = path.join(home, "numbers-primary.json");
   const machine = path.join(home, "numbers-machine.json");
   const away = { peer: { key: "k", address: "a", kind: "mac", name: "Mac" } };
-  // The primary numbers its own first.
+  // The primary reserves a block for its own use before allocating a different block to the member.
   assert.equal(link.takeNumber({ self: true }, { file: primary }), 1);
   // The machine has no lease yet: no number, and an ask under way, sent once in its half minute.
   assert.equal(link.takeNumber(away, { file: machine, now: 1000 }), null);
@@ -951,26 +969,26 @@ test("the primary hands out numbers: a block to another box, the same block for 
   assert.equal(link.askToSend({ file: machine, now: 2000 }), null);
   assert.deepEqual(link.askToSend({ file: machine, now: 32_000 }), ask, "sent again, the same ask");
   const block = link.giveBlock("machine-key", ask, { file: primary });
-  assert.deepEqual([block.from, block.to], [2, 1 + link.QUEUE_BLOCK]);
+  assert.deepEqual([block.from, block.to], [1 + link.QUEUE_BLOCK, 2 * link.QUEUE_BLOCK]);
   assert.deepEqual(link.giveBlock("machine-key", ask, { file: primary }), block, "an ask sent again gets the same block");
   assert.deepEqual(link.takeBlock({ ...block }, { file: machine }), { granted: [], claimed: [] });
   assert.equal(link.takeBlock({ ...block }, { file: machine }), null, "taken once");
-  assert.equal(link.takeNumber(away, { file: machine }), 2);
-  assert.equal(link.takeNumber({ self: true }, { file: primary }), 2 + link.QUEUE_BLOCK, "the primary numbers past the block it gave");
+  assert.equal(link.takeNumber(away, { file: machine }), 1 + link.QUEUE_BLOCK);
+  assert.equal(link.takeNumber({ self: true }, { file: primary }), 2, "the primary spends its own reserved block");
 
   // A claim from an import on the machine: what's above the counter is granted, and what's in a block
   // the primary gave that box (its own, which it never used: it claims none it used); never one the
   // primary numbered itself.
-  assert.deepEqual(link.claimNumbers(away, [1, 3, 200, 201], { file: machine }), { granted: null });
+  assert.deepEqual(link.claimNumbers(away, [1, 52, 200, 201], { file: machine }), { granted: null });
   assert.ok(link.readNumbers(machine).leases.every(([from]) => from > 201), "leases at or below a claim go");
   const claim = link.askToSend({ file: machine, now: 100_000 });
-  assert.deepEqual(claim.claims, [[1, 1], [3, 3], [200, 201]]);
+  assert.deepEqual(claim.claims, [[1, 1], [52, 52], [200, 201]]);
   const answer = link.giveBlock("machine-key", claim, { file: primary });
-  assert.deepEqual(answer.granted, [[3, 3], [200, 201]]);
+  assert.deepEqual(answer.granted, [[52, 52], [200, 201]]);
   assert.ok(answer.from > 201);
-  assert.deepEqual(link.giveBlock("other-key", { id: "wqn_otherother0", claims: [[4, 4]], own: true }, { file: primary }).granted, [], "another box's block is never granted");
+  assert.deepEqual(link.giveBlock("other-key", { id: "wqn_otherother0", claims: [[53, 53]], own: true }, { file: primary }).granted, [], "another box's block is never granted");
   // An older box doesn't say it never claims a number it used (`own`): its own block isn't granted it.
-  assert.deepEqual(link.giveBlock("machine-key", { id: "wqn_olderolder0", claims: [[4, 4]] }, { file: primary }).granted, []);
+  assert.deepEqual(link.giveBlock("machine-key", { id: "wqn_olderolder0", claims: [[53, 53]] }, { file: primary }).granted, []);
   // The same box asking again for what it was granted keeps it.
   const again = link.giveBlock("machine-key", { id: "wqn_againagain1", claims: [[200, 201]] }, { file: primary });
   assert.deepEqual(again.granted, [[200, 201]]);
@@ -1139,18 +1157,18 @@ test("items left waiting for a number with nothing under way (a crash midway, a 
   await tool("queue_add", { title: "First" }, "ses_lead");
   const lead = path.join(queues, "queues", "ses_lead.json");
   const kept = JSON.parse(fs.readFileSync(lead, "utf8"));
-  kept.items.push({ ...kept.items[0], id: "wqi_waitingwaitingwait01", number: undefined, wanted: 40, title: "Imported, waiting" });
+  kept.items.push({ ...kept.items[0], id: "wqi_waitingwaitingwait01", number: undefined, wanted: 90, title: "Imported, waiting" });
   kept.items.push({ ...kept.items[0], id: "wqi_waitingwaitingnone01", number: undefined, title: "Made, waiting" });
   write(lead, JSON.stringify(kept));
   assert.equal(link.reclaimWaiting({ self: true }, { file: path.join(queues, "numbers.json") }), true);
   const items = (await view("ses_lead")).items;
-  assert.deepEqual(items.map(item => [item.title, item.number]), [["First", 1], ["Imported, waiting", 40], ["Made, waiting", 41]]);
+  assert.deepEqual(items.map(item => [item.title, item.number]), [["First", 1], ["Imported, waiting", 90], ["Made, waiting", 2]]);
   assert.equal(link.reclaimWaiting({ self: true }, { file: path.join(queues, "numbers.json") }), false, "nothing waits now");
 });
 
 test("a machine with no number left keeps its items waiting, shown without one, until its block comes", async () => {
   // This box's primary: a Mac it names, that isn't answering.
-  write(path.join(home, "run", "work-queue", "numbers.json"), JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
+  memberNumbers(path.join(queues, "numbers.json"));
   const added = await tool("queue_add", { title: "Offline idea" }, "ses_lead");
   assert.match(added.text, /^Added "Offline idea" as Todo\. It has no number yet/);
   const item = (await view("ses_lead")).items[0];
@@ -1165,8 +1183,8 @@ test("a machine with no number left keeps its items waiting, shown without one, 
 
 test("an import on a machine waits for the primary to grant its numbers: granted ones keep theirs, one handed out already gets a new one, with a note", async () => {
   const file = path.join(queues, "numbers.json");
-  const away = { peer: { key: "macKeyThatIsAway", address: "a", kind: "mac", name: "Mac" } };
-  write(file, JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
+  const away = memberPrimary;
+  memberNumbers(file);
   const imported = await tool("queue_import", { items: [{ number: 243, title: "The Work Queue" }, { number: 5, title: "Old one" }] }, "ses_lead");
   assert.match(imported.text, /^Imported 2 items with their numbers: 2 Todo\. 2 wait for the main computer to grant their numbers; until then they show as new\./);
   await tool("queue_add", { title: "Made meanwhile" }, "ses_lead");
@@ -1188,8 +1206,8 @@ const told = (key, numbering) => write(path.join(queues, "peers", `${key.padEnd(
 function twoBoxes() {
   const file = path.join(queues, "numbers.json");
   const primary = path.join(fs.mkdtempSync(path.join(home, "primary-")), "numbers.json");
-  const away = { peer: { key: "macKeyThatIsAway", address: "a", kind: "mac", name: "Mac" } };
-  write(file, JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
+  const away = memberPrimary;
+  memberNumbers(file);
   const send = () => {
     const ask = link.askToSend({ file });
     return ask && link.giveBlock(BOX_KEY, ask, { file: primary });
@@ -1240,8 +1258,10 @@ test("a number that's another item's is renumbered, and the import says which an
   assert.deepEqual([items.Ten, items.Eleven, items.Twelve], [10, 11, 12]);
   assert.ok(items["Not eleven"] > 12, `Not eleven is #${items["Not eleven"]}`);
   assert.match((await route("GET", `kuvo/work-queue/items/${items["Not eleven"]}`)).body.item.notes[0].text, /^Imported as #11, a number already given to another item here/);
-  // On the primary, one it can't keep is said at once too.
+  // On a standalone computer, one it can't keep is said at once too.
   fs.rmSync(queues, { recursive: true, force: true });
+  fs.rmSync(linkFile, { force: true });
+  link.forgetQueueMigrated();
   await tool("queue_add", { title: "First" }, "ses_lead");
   const far = await tool("queue_import", { items: [{ number: 900_000, title: "Far" }, { number: 1, title: "Another first" }] }, "ses_lead");
   assert.match(far.text, /Renumbered, as their own number is another item's or couldn't be kept \(each has a note saying why\): #1 is #3, #900000 is #2\./);
@@ -1262,6 +1282,7 @@ test("numbers an import waits for are never handed out meanwhile: not from a blo
   assert.ok(items.Before > 60 && items.Meanwhile > 60 && items.Before !== items.Meanwhile, JSON.stringify([items.Before, items.Meanwhile]));
   // A block held, a number of it used: the import keeps the rest of the block's numbers, never the one used.
   fs.rmSync(queues, { recursive: true, force: true });
+  link.forgetQueueMigrated();
   const again = twoBoxes();
   await tool("queue_add", { title: "Early" }, "ses_lead");
   again.settle();
@@ -1298,11 +1319,14 @@ function brokenImport({ primary, file }) {
   for (const n of span(151, 300)) items.push(n <= 200 ? item(`Item ${n}`, n + 150, n, 2) : item(`Item ${n}`, n, undefined, 2));
   for (const n of span(301, 448).filter(n => n !== 444)) items.push(n <= 400 ? item(`Item ${n}`, n + 148, n, 3) : item(`Item ${n}`, n, undefined, 3));
   write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify({ owner: "ses_lead", items }));
-  write(file, JSON.stringify({ primary: "macKeyThatIsAway", leases: [[549, 598]] }));
+  write(file, JSON.stringify({ primary: mainKey, leases: [[549, 598]] }));
   const given = [[151, 200, [[1, 150]]], [301, 350, [[1, 150], [201, 300]]], [351, 400, []], [449, 498, [[401, 448]]], [499, 548, []], [549, 598, []]];
   write(primary, JSON.stringify({ primary: "self", next: 599, leases: [], granted: { [BOX_KEY]: [[1, 150], [201, 300], [401, 448]] }, given: Object.fromEntries(given.map(([from, to, granted], at) => [`wqn_oldaskoldask${at}`, { from, to, granted, at }])) }));
   // What the other computers told: a machine with nothing, and this box, past them all.
   told("machineWithNothing", { kind: "machine" });
+  // The scratch ledger tests share the member's process. Its recorded main
+  // cannot be the recipient of either old block.
+  told(mainKey, { kind: "mac" });
   told("boxKeyOfThisOne", { kind: "mac", top: 598 });
 }
 
@@ -1312,6 +1336,7 @@ test("importing the same backlog again gives items an import renumbered their ow
   // off them in the same answer as the ones moving onto them).
   for (const answeredEach of [true, false]) {
     fs.rmSync(queues, { recursive: true, force: true });
+    link.forgetQueueMigrated();
     const boxes = twoBoxes();
     brokenImport(boxes);
     const said = [];
@@ -1360,6 +1385,7 @@ test("a primary gives an older block back only to a box it can only have gone to
 test("an item given its own number back waits for the one that has it to move, without asking again; if that one is deleted instead, it stays, with a note", async () => {
   for (const deleted of [false, true]) {
     fs.rmSync(queues, { recursive: true, force: true });
+    link.forgetQueueMigrated();
     const boxes = twoBoxes();
     // As an answer that came while an import went on leaves them: A has #10 back, and waits for H,
     // which has #10 and is asking for its own, #20.

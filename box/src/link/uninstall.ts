@@ -322,7 +322,7 @@ async function revokeDesktop(): Promise<DesktopRevocation> {
     if (key) {
       if (needsPublish && await askLivePrimary(key)) return { status: "revoked" };
       const removed = await removeDevicesHere([{ key }], null);
-      return { status: removed.status !== 200 ? "unconfirmed" : "revoked" };
+      return { status: removed.status !== 200 || needsPublish ? "unconfirmed" : "revoked" };
     }
     const hasDesktop = (link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop");
     return { status: needsPublish && hasDesktop ? "unconfirmed" : "revoked" };

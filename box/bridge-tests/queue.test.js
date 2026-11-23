@@ -182,7 +182,11 @@ async function ask(method, route, body, from = "app") {
 // Until the box's state of `session` is what `wanted` says (it changes once the engine's last
 // answer is read: looked at again each turn of the event loop).
 async function until(wanted, session = "ses_1") {
-  while (!wanted(link.queueOf(session))) await new Promise(resolve => setImmediate(resolve));
+  const deadline = Date.now() + 5000;
+  while (!wanted(link.queueOf(session))) {
+    assert.ok(Date.now() < deadline, `the queue did not reach the expected state for ${session}`);
+    await new Promise(resolve => setImmediate(resolve));
+  }
   return link.queueOf(session);
 }
 
@@ -678,7 +682,7 @@ test("Undo puts one taken away from what waits back as it was, where it was: its
   const receipt = "msg_undoAda";
   const { removed } = (await ask("DELETE", `kuvo/sessions/ses_1/queue/msg_w1?receipt=${receipt}`)).json;
   // (`before`: what came after it, for Undo to put it back ahead of.)
-  assert.deepEqual(removed, { id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2", receipt });
+  assert.deepEqual(removed, { attached: [], id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2", receipt });
   const back = await ask("POST", "kuvo/sessions/ses_1/queue/add", { ...removed, words: "the build is green.", kept: true });
   assert.equal(back.json.waits, true);
   assert.deepEqual(back.json.waiting.map(each => [each.id, each.from ?? null, each.text]), [["msg_w1", "Ada", "the build is green."], ["msg_w2", null, "Second."], ["msg_w3", null, "Third."]], "first again, where it was");
@@ -813,6 +817,8 @@ test("a conversation deleted while stopped takes what waited on the box with it"
   await ask("POST", "kuvo/sessions/ses_1/stop");
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w1", text: "Carry on.", files: [{ uri: "file:///tmp/a.txt", name: "a.txt" }] });
   box().hear("session.deleted");
+  await until(state => !state.paused && !("ses_1" in link.readQueues()) &&
+    fs.readdirSync(path.join(home, "run", "waiting")).length === 0);
   assert.deepEqual(link.queueOf("ses_1"), { paused: false, held: [] });
   assert.deepEqual(fs.readdirSync(path.join(home, "run", "waiting")), [], "nothing of it left on the box");
   assert.equal("ses_1" in link.readQueues(), false);
@@ -824,7 +830,7 @@ test("a conversation carried on in another session while stopped (a client moved
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w1", text: "[Letter] The build is green.", from: "Ada", words: "The build is green.", kept: true });
   // Its engine's session archived as carried on, as the client that moved it marks it.
   box().hear("session.metadata.updated", { metadata: { "kuvo.archived": true, "kuvo.carriedTo": "ses_2" } });
-  const carried = link.queueOf("ses_2");
+  const carried = await until(state => state.paused, "ses_2");
   assert.equal(carried.paused, true);
   assert.deepEqual(carried.waiting?.map(each => [each.from, each.text]), [["Ada", "The build is green."]]);
   assert.deepEqual(fs.readdirSync(path.join(home, "run", "waiting")), ["msg_w1.json"], "kept, whole, to go there");
@@ -991,7 +997,7 @@ test("a coding agents' session the box finds at work that's free by the time it'
   assert.deepEqual(asked, ["ses_1 msg_q1 steer"]);
   b.wait(1500);
   await settle();
-  assert.deepEqual(asked, ["ses_1 msg_q1 steer"], "once");
+  assert.deepEqual(asked, ["ses_1 msg_q1 steer", "ses_1 resume"], "the queue resumes without sending the message again");
 });
 
 test("the box's stream connecting again while a coding agents' run kept its files: once it's free, its queue goes on, unless that run failed", { timeout: 10_000 }, async () => {

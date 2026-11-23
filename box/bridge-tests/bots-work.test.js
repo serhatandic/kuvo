@@ -7,7 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/bots-work.test.js`.
 import "./test-safety.js";
-import { LINK_BUNDLE } from "./box-stand-ins.js";
+import { LINK_BUNDLE, served } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -265,6 +265,10 @@ function route(method, pathname, body) {
     child.stdin.end(JSON.stringify({ method, path: pathname, body }));
   });
 }
+async function currentBotWork() {
+  assert.equal((await route("GET", "kuvo/sessions/list")).status, 200, "publish the live sessions as the resident does");
+  return route("GET", "kuvo/work?bot=bot_pixel00001");
+}
 const tool = async (name, args, session) => (await route("POST", "kuvo/agent-tools", { name, arguments: args, session })).body;
 // A session put in another mode than the one it started in, as a client sets one: its approval
 // and the rules the box makes for it. A session in Ask First is always the user's to answer,
@@ -472,7 +476,7 @@ test("a session stopped at rest is stopped, its last reply marked as from the tu
   const earlier = [{ id: "msg_i1", type: "idle", outcome: "succeeded", time: { created: ended } }, said("Previous turn finished.", "msg_s1"), { id: "msg_u1", type: "user" }];
   kept.set(session, earlier);
   const line = () => tool("list_sessions", {}, "ses_pixel").then(listed => listed.text.split("\n- ").find(each => each.includes(session)));
-  const row = () => route("GET", "kuvo/work?bot=bot_pixel00001").then(work => work.body.sessions.find(each => each.session === session));
+  const row = () => currentBotWork().then(work => work.body.sessions.find(each => each.session === session));
   assert.match(await line(), /: finished.*\n  Last reply: Previous turn finished/);
   // Stopped at rest: the engine records no turn, its last one ended before. What it said then may
   // be news to its lead (a finish held for what it left running), so it's there, said to be from before.
@@ -517,7 +521,7 @@ test("a session stopped at rest is stopped, its last reply marked as from the tu
   assert.match(listed, /: stopped.*\n  Last reply: Halfway through the sign-in\.$/);
   shown = await row();
   assert.equal(shown.state, "stopped");
-  assert.equal(shown.lastReply, "Halfway through the sign-in.");
+  assert.equal(shown.lastReply, undefined, "the desktop summary only reads the session index");
 });
 
 test("how a lead reads a session past several summaries: what they did isn't how its work went", async () => {
@@ -733,7 +737,7 @@ test("a client sees a bot's work: its sessions, the answers it gave and today's 
   asked.set(session, [{ id: "per_1", sessionID: session, action: "shell", resources: ["git status"] }]);
   await tool("answer_ask", { session, ask: "per_1", decision: "allow", reason: "Tests." }, "ses_pixel");
   active = new Set([session]);
-  const work = await route("GET", "kuvo/work?bot=bot_pixel00001");
+  const work = await currentBotWork();
   assert.equal(work.status, 200);
   assert.equal(work.body.bot, "bot_pixel00001");
   assert.deepEqual(work.body.sessions.map(each => [each.session, each.title, each.state, each.project, each.depth]), [[session, "Haptics", "working", "Tidepool", 1]]);
@@ -743,7 +747,7 @@ test("a client sees a bot's work: its sessions, the answers it gave and today's 
   assert.deepEqual(work.body.limits, { atOnce: 3 });
 });
 
-test("a client sees which account each of a bot's sessions runs on, as Settings › Accounts names it: its provider, and the name you gave a coding agent's account", async t => {
+test("the desktop's work summary carries each session's model and provider without reading live account data", async t => {
   write(path.join(home, "run", "bridge.json"), JSON.stringify({ port: bridge.address().port, password: "b", pid: await runningAs("kuvo-agents", t) }));
   t.after(() => fs.rmSync(path.join(home, "run", "bridge.json"), { force: true }));
   const start = async (title, model, onBridge = false) => {
@@ -762,15 +766,15 @@ test("a client sees which account each of a bot's sessions runs on, as Settings 
   await start("On Auto", { providerID: "auto", id: "auto" });
   await start("On a gone plan", { providerID: "gone", id: "x" });
   integrationsAskedFresh = 0;
-  const work = await route("GET", "kuvo/work?bot=bot_pixel00001");
+  const work = await currentBotWork();
   assert.equal(work.status, 200);
-  assert.deepEqual(Object.fromEntries(work.body.sessions.map(each => [each.title, each.account ?? null])), {
-    "On the work key": { name: "Anthropic", title: "Anthropic" },
-    "On DeepSeek": { name: "DeepSeek", title: "DeepSeek" },
-    "On Claude Code": { name: "Claude Code", title: "Claude" },
-    "On Athas": { name: "Claude Code", title: "Claude · Athas", label: "Athas" },
-    "On Auto": null,
-    "On a gone plan": null,
+  assert.deepEqual(Object.fromEntries(work.body.sessions.map(each => [each.title, each.model])), {
+    "On the work key": { providerID: "anthropic", id: "claude-opus-5-5" },
+    "On DeepSeek": { providerID: "deepseek", id: "deepseek-v4" },
+    "On Claude Code": { providerID: "claude-code", id: "opus" },
+    "On Athas": { providerID: "claude-code@acc0001", id: "opus" },
+    "On Auto": { providerID: "auto", id: "auto" },
+    "On a gone plan": { providerID: "gone", id: "x" },
   });
   assert.equal(integrationsAskedFresh, 0, "each agent's sign-in isn't checked again for a read of the work");
 });
@@ -929,7 +933,7 @@ test("a bot's work further back than the latest two hundred sessions is still it
   for (let at = 0; at < 230; at++) sessions.set(`ses_other${at}`, { id: `ses_other${at}`, title: "Other", location: { directory: tidepool }, time: { created: 10 + at, updated: 10 + at }, metadata: { kuvo: { startedBy: "ses_mine" } } });
   // The latest first, as the engine lists them.
   sessions = new Map([...sessions.entries()].sort(([, a], [, b]) => (b.time?.created ?? 0) - (a.time?.created ?? 0)));
-  const work = await route("GET", "kuvo/work?bot=bot_pixel00001");
+  const work = await currentBotWork();
   assert.deepEqual(work.body.sessions.map(each => each.session), [old]);
 });
 
@@ -1066,11 +1070,9 @@ test("where its sessions' commands run in the sandbox, a bot allows what its own
   }
   const env = { ...process.env, KUVO_HOME: home, HOME: home, TMPDIR: home, OPENCODE_PASSWORD: "box-pw" };
   delete env.KUVO_SANDBOX;
-  const box = spawn(process.execPath, [script, "serve"], { env, stdio: ["pipe", "pipe", "inherit"] });
-  const exited = new Promise(resolve => box.once("exit", resolve));
   const plugin = path.join(home, "config", "opencode", "plugins", "kuvo-sandbox.js");
+  const box = await served(env);
   try {
-    await new Promise(resolve => box.stdout.once("data", resolve));
     assert.ok(fs.existsSync(path.join(home, "run", "fence", "on")), "the sandbox is set up and checked here");
     fs.utimesSync(plugin, 0, 0);
 
@@ -1120,8 +1122,7 @@ test("where its sessions' commands run in the sandbox, a bot allows what its own
       fs.rmSync(path.join(home, "box", "approval.json"), { force: true });
     }
   } finally {
-    box.kill("SIGTERM");
-    await exited;
+    await box.stop();
     // The sandbox gone again, for what comes after.
     fs.rmSync(path.join(home, "run", "fence"), { recursive: true, force: true });
     fs.rmSync(plugin, { force: true });
