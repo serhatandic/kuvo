@@ -11949,6 +11949,9 @@
             "literal": "sessions.list.start"
            },
            {
+            "literal": "sessions.location"
+           },
+           {
             "literal": "sessions.mentions"
            },
            {
@@ -12933,6 +12936,9 @@
            },
            {
             "literal": "sessions.list.start"
+           },
+           {
+            "literal": "sessions.location"
            },
            {
             "literal": "sessions.mentions"
@@ -25765,6 +25771,117 @@
      }
     },
     "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/:session/location",
+   "feature": "sessions.location",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "place": {
+         "oneOf": [
+          {
+           "literal": "engine"
+          },
+          {
+           "literal": "agents"
+          }
+         ]
+        },
+        "running": "bool"
+       }
+      },
+      {
+       "object": {
+        "on": {
+         "object": {
+          "id": "string",
+          "name": "string",
+          "away": "bool",
+          "lastSeen?": "number",
+          "updating?": "bool",
+          "actions": {
+           "list": {
+            "oneOf": [
+             {
+              "literal": "open"
+             },
+             {
+              "literal": "manage"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/location",
+   "feature": "sessions.location",
+   "answers": {
+    "200": {
+     "object": {
+      "place": {
+       "oneOf": [
+        {
+         "literal": "engine"
+        },
+        {
+         "literal": "agents"
+        }
+       ]
+      },
+      "running": "bool"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }
