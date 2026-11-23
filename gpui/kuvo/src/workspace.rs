@@ -57,6 +57,24 @@ const HISTORY: usize = 100;
 /// The raised panel's leading edge, between the rail and the sidebar.
 const CARD_EDGE: Pixels = px(1.);
 
+/// The raised panel's rounded corner, kept clean of what's inside it. GPUI clips children to a
+/// square, so a sidebar's or a page's own background would show its square corner past the
+/// panel's rounded one: a second edge along the corner and down the side. This lays the window's
+/// background over just that sliver, drawn last, under the panel's own edge (borders draw after
+/// children), so every area gets one rounded edge without rounding each page itself.
+///
+/// It's a quad whose border is the fill: placed a radius above and left of the panel, rounded at
+/// twice the radius, its inner curve lands exactly on the inside of the panel's edge.
+fn card_corner(background: gpui::Hsla) -> gpui::Div {
+    let r = radius::CARD;
+    // Insets are from inside the panel's 1px edge.
+    let mut corner = div().absolute().top(-(r + CARD_EDGE)).left(-(r + CARD_EDGE)).right_0().bottom_0().rounded_tl(r * 2.).border_color(background);
+    let widths = &mut corner.style().border_widths;
+    widths.top = Some((r + CARD_EDGE).into());
+    widths.left = Some((r + CARD_EDGE).into());
+    corner
+}
+
 struct SidebarDrag {
     from: Pixels,
     initial: Pixels,
@@ -4544,7 +4562,8 @@ impl Render for Workspace {
                         .children(sidebar)
                         .child(div().debug_selector(|| "workspace-content".into()).relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel)
-                        .children(sheet),
+                        .children(sheet)
+                        .child(card_corner(c.background)),
                 ),
             )
             .children(self.render_quick_search(cx))

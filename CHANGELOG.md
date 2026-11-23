@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.
