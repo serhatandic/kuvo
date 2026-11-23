@@ -16,9 +16,11 @@
 // A file uses `atEnd` and `removeAtEnd` in place of `after`.
 import { after } from "node:test";
 import { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import { MessagePort } from "node:worker_threads";
 
 const steps = [];
 const folders = [];
@@ -99,6 +101,10 @@ async function leftOpen() {
   }
   for (const handle of open()) if (handle instanceof net.Socket && !handle.server) handle.destroy();
   for (let turn = 0; turn < 10 && open().length; turn++) await new Promise(resolve => setImmediate(resolve));
+  // A worker already processing a file's last request can still have a referenced port.
+  // Wait for it to finish and park. A port still active at the deadline remains a teardown error.
+  await Promise.allSettled(open().filter(handle => handle instanceof MessagePort)
+    .map(port => once(port, "close", { signal: AbortSignal.timeout(8_000) })));
   for (const handle of open()) {
     if (handle instanceof net.Server) {
       const where = handle.address();
