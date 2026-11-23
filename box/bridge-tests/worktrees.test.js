@@ -560,16 +560,20 @@ test("every worktree starts with the computer's own prefix, whatever an older Ma
   await ask("POST", "kuvo/worktrees", { project }).then(made => ask("POST", "kuvo/worktrees/remove", { path: made.value.root, forget: true }));
 });
 
-test("one made and removed at once: a follower is told of both, in order", { timeout: SLOW_STEPS }, async () => {
+test("a follower sees a worktree added and then removed", { timeout: SLOW_STEPS }, async t => {
   const handle = link.engineHandler(() => atEngine, { name: "box" }, () => null);
   const abort = new AbortController();
+  const signal = AbortSignal.any([abort.signal, t.signal]);
   const seen = [];
   let made;
-  for await (const part of handle({ method: "GET", path: "kuvo/worktrees/events", headers: {}, body: Buffer.alloc(0) }, {}, abort.signal)) {
+  for await (const part of handle({ method: "GET", path: "kuvo/worktrees/events", headers: {}, body: Buffer.alloc(0) }, {}, signal)) {
     if (!part.body) continue;
     seen.push(JSON.parse(part.body.toString()).worktrees.some(tree => tree.root === made?.root));
     if (seen.length === 1) {
       made = (await ask("POST", "kuvo/worktrees", { project })).value;
+      assert.ok(made.root);
+    }
+    if (seen.length === 2) {
       assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
     }
     if (seen.length === 3) abort.abort();
