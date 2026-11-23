@@ -107,7 +107,6 @@ sockets = [{"path": p, "allowed": a} for p, a in [
 agent_routes = [{"path": p, "allowed": a, "method": m} for p, a, m in [
     ("api/session/ses_1/prompt", True, "POST"), ("api/session", True, "GET"), ("api/event", True, "GET"),
     ("api/integration", True, "GET"), ("api/integration/claude-code@1f2e/connect/oauth", True, "POST"),
-    ("api/kuvo/goals/ses_1/pause", True, "POST"),
     ("api/kuvo/artifacts/noted", False, "POST"), ("api/kuvo/%61rtifacts/noted", False, "POST"),
     ("api/kuvo/link/artifacts?bot=bot_x", True, "GET"),
     ("api/kuvo/auto", True, "POST"), ("api/kuvo/auto/bugs", True, "PUT"),

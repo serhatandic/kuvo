@@ -431,8 +431,8 @@ fn a_computer_back_after_a_drop_shows_what_it_told_meanwhile(cx: &mut TestAppCon
 #[gpui::test]
 fn the_dock_counts_what_waits_on_every_computer_while_its_switch_is_on(cx: &mut TestAppContext) {
     let (notifier, desk) = notifier(cx);
-    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_mac", Waiting { sessions: 2, bots: 1, queue: 4 }, cx));
-    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_devbox", Waiting { sessions: 1, bots: 0, queue: 0 }, cx));
+    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_mac", Waiting { sessions: 2, bots: 1, queue: 4, ..Waiting::default() }, cx));
+    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_devbox", Waiting { sessions: 1, bots: 0, queue: 0, ..Waiting::default() }, cx));
     assert_eq!(desk.borrow().badges.last(), Some(&4));
     cx.update(|cx| yours::change(yours::Change::Dock(false), cx));
     cx.run_until_parked();
@@ -442,7 +442,7 @@ fn the_dock_counts_what_waits_on_every_computer_while_its_switch_is_on(cx: &mut 
     assert_eq!(desk.borrow().badges.last(), Some(&4));
     // Unchanged, the Dock isn't asked again.
     let asked = desk.borrow().badges.len();
-    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_devbox", Waiting { sessions: 1, bots: 0, queue: 2 }, cx));
+    notifier.update(cx, |notifier, cx| notifier.take_waiting("key_devbox", Waiting { sessions: 1, bots: 0, queue: 2, ..Waiting::default() }, cx));
     assert_eq!(desk.borrow().badges.len(), asked);
 }
 

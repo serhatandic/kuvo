@@ -15,7 +15,7 @@ const PROGRAMS = [
   "mail", "mailx", "sendmail", "mutt", "msmtp", "swaks",
 ];
 
-// Overnight, while no goal's public step was on.
+// Publishing actions that used to ask.
 const PUBLISH_ASK_RULES: KitRule[] = [
   "git push*", "npm publish*", "pnpm publish*", "yarn publish*", "yarn npm publish*", "bun publish*", "cargo publish*", "gem push*", "twine upload*", "poetry publish*", "swift package-registry publish*",
   "vercel*", "npx vercel*", "netlify deploy*", "npx netlify*", "wrangler deploy*", "wrangler publish*", "wrangler pages deploy*", "npx wrangler*", "firebase deploy*", "fly deploy*", "flyctl deploy*",

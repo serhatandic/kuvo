@@ -3,6 +3,7 @@
 // asks; an item's file and thumbnail; removing one from it. Times are seconds since 1970.
 
 import { bool, BYTES, list, map, nullable, number, object, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 /** One thing handed over, with the computer it's on. */
 export const LIBRARY_ITEM = object({
@@ -32,7 +33,7 @@ export const LIBRARY_COPY = {
   botNames: map(string),
   sources: object({ bots: list(object(BOT)), you: bool }),
 };
-export const LIBRARY = object({
+export const LIBRARY = object({ ...PENDING_COMPUTERS,
   items: list(LIBRARY_ITEM),
   more: bool,
   sources: object({ bots: list(object({ ...BOT, computer: string })), you: bool }),

@@ -14,6 +14,7 @@ box/src/**/.unresolved-*.ts
 # What checkouts from before the layout move (#709) still keep in the old places, and git never
 # moves: the signing team and the box's installed packages, kept out of commits until they go.
 /Config/Signing.local.xcconfig
+/swift/Config/Signing.local.xcconfig
 /Packages/
 
 # Session notes, drafts and shots stay on disk, never in the repo.
@@ -25,3 +26,5 @@ box/src/**/.unresolved-*.ts
 /protocol/vectors/routes/features.json
 /protocol/vectors/routes/shapes/answers.json
 /protocol/ROUTES.md
+
+/box/target/

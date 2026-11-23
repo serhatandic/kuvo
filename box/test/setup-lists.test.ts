@@ -5,14 +5,14 @@ import "./safety"
 // conversations use the same list and peer protocol after the engine/bridge read.
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["data.ownership", "line.pending-computers", "search.setup", "work-queue.forward.memory", "line.merged-archives", "line.merged-outputs", "line.merged-notices", "line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -27,7 +27,7 @@ const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "
 const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
 const codingSession = (agent: string) => `ses_fixture${agent}`;
 
-function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false } = {}) {
+function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false, withOutputs = false } = {}) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
   const boxes = ["near", "far"].map((name, i) => {
@@ -41,6 +41,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
     const cases: Record<string, { id: string; title: string; time: typeof time; directory?: string; location?: { directory: string } }> = {
       [session]: { id: session, title: `Session on ${name}`, directory: project, time },
     };
+    const transcript: Record<string, object[]> = {};
     const permissions: Record<string, unknown>[] = [];
     const opened = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
     const prompt = Promise.withResolvers<{ session: string; body: unknown }>();
@@ -70,11 +71,15 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
           prompt.resolve(sent);
           return data({});
         }
-        if (route.endsWith("/message")) return data([]);
+        if (route.endsWith("/message")) return data(transcript[route.split("/")[3]!] ?? []);
         if (route.endsWith("/permission")) return data(permissions);
         if (route.endsWith("/inbox") || route.endsWith("/form")) return data([]);
         if (route === "/api/session") return data(Object.values(cases));
         if (route === "/api/session/active") return data([]);
+        if (request.method === "DELETE" && route.startsWith("/api/session/")) {
+          delete cases[route.split("/")[3]!];
+          return data(true);
+        }
         if (route.startsWith("/api/session/")) return data(cases[route.split("/")[3]!]);
         if (route === "/api/provider") return data([{ id: model.providerID }]);
         if (route === "/api/model") return data([{ ...model, name: model.id }]);
@@ -118,7 +123,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
     const run = async (command: object): Promise<any> => {
       const child = Bun.spawn([process.execPath, worker, "kuvo-agents"], {
         env: { ...process.env, KUVO_HOME: home, HOME: root, TMPDIR: root },
-        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary })), stdout: "pipe", stderr: "pipe",
+        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary, withOutputs })), stdout: "pipe", stderr: "pipe",
       });
       try {
         const [status, stdout, stderr] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
@@ -134,7 +139,7 @@ function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = fals
       stdin: Buffer.from(JSON.stringify({ command: { kind: "conversation" }, port: engine.port, bridgePort: bridge?.port })),
       stdout: "ignore", stderr: "inherit", ipc,
     });
-    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions };
+    return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions, transcript };
   });
   const setup = (managed ? "set_" : "setup_") + "a".repeat(32);
   for (const box of boxes) {
@@ -769,3 +774,293 @@ test("the Work Queue’s first Deleted list keeps items from a computer that is 
     } });
   } finally { setup.close(); }
 });
+
+test("setup attention lists the original computer of a kept notice and counts its ask once", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const folder = path.join(far.home, "run", "notices");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "told.json"), JSON.stringify([{
+      id: "ntc_far", at: Date.now(), notice: { category: "finished", data: { session: far.session } },
+    }]));
+    await share(far, near, far.session);
+    const watch = Buffer.from(JSON.stringify({
+      notices: "kuvo/setup/notices/events", waiting: "kuvo/setup/waiting/counts/events",
+    })).toString("base64url");
+    const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    const [, ...frames] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    const states = Object.fromEntries(frames.map(frame => [frame.t, frame.d]));
+    expect(states.notices?.notices).toEqual([expect.objectContaining({
+      id: "ntc_far", computer: far.computer, away: true, lastSeen: expect.any(Number),
+      notice: { category: "finished", data: { session: far.session } },
+    })]);
+    expect(states.waiting).toMatchObject({ sessions: 1, bots: 0 });
+  } finally { setup.close(); }
+});
+
+test("a delegated session stays in Activity as last seen when its computer goes away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const kept = path.join(near.home, "run", "activity");
+    mkdirSync(kept, { recursive: true });
+    const heard = Date.now();
+    writeFileSync(path.join(kept, far.peer.key + ".json"), JSON.stringify({ at: heard, heard, rows: [{
+      session: far.session, state: "working", title: "Delegated work", line: [near.session],
+    }] }));
+    const answer = await near.run({ kind: "route", path: `kuvo/work/background/${near.session}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    expect(JSON.parse(answer.text).activity).toEqual({
+      working: 0, asking: 0, sessions: [],
+      lastSeenSessions: [{ session: far.session, title: "Delegated work", state: "working", computer: far.peer.key, lastSeen: heard }],
+    });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("Activity's first Outputs state includes the kept file made by a delegated session on another computer", async () => {
+  const setup = pair(false, false, { withOutputs: true });
+  const { near, far } = setup;
+  try {
+    Object.assign(far.cases[far.session]!, { parentID: near.session });
+    await share(far, near);
+    const outputs = `kuvo/setup/outputs/events?session=${near.session}`;
+    const watch = Buffer.from(JSON.stringify({ outputs })).toString("base64url");
+    const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "outputs", d: { artifacts: [
+      { name: "delegated.txt", computer: far.computer, away: true, lastSeen: expect.any(Number) },
+    ], next: null } });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("opening a remote bot's New tab gets the bot's folder and tools from its owner", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const bot = "bot_far";
+    const folder = path.join(far.home, "bots", bot);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Remote bot" }));
+    writeFileSync(path.join(folder, "session"), far.session);
+
+    // Its owner advertises live browser, filesystem, Changes and Terminal support over peer mail.
+    const directory = path.join(far.home, "project");
+    writeFileSync(path.join(near.home, "run", "peer-agents.json"), JSON.stringify({
+      [far.computer.id]: { list: [], at: 100, features: [...features, "browser.view", "folders.files", "git.status", "pty.socket"] },
+    }));
+    await share(far, near);
+    const found = await near.read(`kuvo/sessions/${far.session}/location?tools=1`);
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({
+      on: far.computer,
+      tools: { directory, ready: { files: true, browser: true, changes: true, terminal: true } },
+    });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("Settings Archived Sessions shows the kept owner rows with that computer's confirmation", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    far.cases[far.session]!.time.archived = 300;
+    await share(far, near);
+    const owner = JSON.parse((await far.read("kuvo/settings/archived")).text);
+    const confirm = owner.groups[0].rows[0].actions[0].confirm;
+    expect(confirm).toEqual({ title: "Delete “Session on far”?", body: "This can’t be undone.", button: "Delete" });
+    const watch = Buffer.from(JSON.stringify({ archive: "kuvo/settings/archived/events" })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    const rows = first.d.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])]));
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: `session-${far.computer.id}:${far.session}`,
+      title: "Session on far", computer: far.computer,
+      actions: expect.arrayContaining([expect.objectContaining({ id: "delete", confirm: expect.objectContaining({ button: "Delete" }) })]),
+    }));
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: `delete-all-${far.computer.id}`, computer: far.computer,
+      actions: expect.arrayContaining([expect.objectContaining({ id: "delete-all", confirm })]),
+    }));
+  } finally { setup.close(); }
+}, 30_000);
+
+test("search finds words on a reachable computer without copying its transcript", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    far.transcript[far.session] = [{ id: "msg_remote", type: "user", text: "the plum orchard", time: { created: 1 } }];
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "search") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: { path: "kuvo/setup/search?q=plum" }, replyTo: "search" });
+    const found = await answer.promise;
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({ results: [
+      { session: far.session, snippet: expect.stringContaining("plum orchard"), computer: far.computer },
+    ], awayComputers: [], unavailableComputers: [] });
+    expect(existsSync(path.join(near.home, "search", `engine.${far.session}.json`))).toBe(false);
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
+
+test("search reports the computer it could not search because it was away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const found = await near.run({ kind: "route", path: "kuvo/setup/search?q=plum", away: far.peer.address });
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toEqual({ results: [], awayComputers: [far.computer], unavailableComputers: [] });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("merged views name a computer until its first copy arrives and distinguish an away computer", async () => {
+  const setup = pair(false, false, { withLibrary: true, managed: true });
+  const { near, far } = setup;
+  const topics = {
+    ...targets, library: "kuvo/setup/library/events", counts: "kuvo/setup/waiting/counts/events",
+    notices: "kuvo/setup/notices/events", moves: "kuvo/moves/events", archive: "kuvo/settings/archived/events", bots: "kuvo/bots/events", queue: "kuvo/work-queue/events?owner=all",
+  };
+  const watch = Buffer.from(JSON.stringify(topics)).toString("base64url");
+  const read = async (away?: string) => {
+    const { status, text } = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away });
+    expect(status).toBe(200);
+    const [, ...states] = text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(states.map(topic => topic.t).sort()).toEqual(Object.keys(topics).sort());
+    for (const state of states) expect(state).not.toHaveProperty("refused");
+    return Object.fromEntries(states.map(topic => [topic.t, topic.d]));
+  };
+  try {
+    const pending = await read();
+    for (const state of Object.values(pending)) expect(state.pendingComputers).toEqual([far.computer]);
+    const away = await read(far.peer.address);
+    for (const state of Object.values(away)) expect(state.pendingComputers).toEqual([]);
+    expect(pending.library.items).toEqual([]);
+    expect(away.library.computers).toContainEqual(expect.objectContaining({ key: far.computer.id, state: "away" }));
+
+    await share(far, near, far.session);
+    const queues = await far.run({ kind: "publish-queue" });
+    expect(await near.run({ kind: "receive", frames: queues })).toBe(true);
+    const received = await read();
+    for (const state of Object.values(received)) expect(state.pendingComputers).toEqual([]);
+    expect(received.listing.sessions[far.session].computer).toEqual(far.computer);
+    expect(received.waiting.waiting.map((row: any) => row.session)).toEqual([far.session]);
+    expect(received.library.items.map((row: any) => row.computer.key)).toContain(far.computer.id);
+  } finally { setup.close(); }
+}, 30_000);
+
+test("deleting an archived session from the setup page only changes its owner", async () => {
+  const setup = pair(false, false, { managed: true });
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    near.cases[near.session]!.time.archived = 300;
+    far.cases[far.session]!.time.archived = 300;
+    await share(far, near);
+    const page = JSON.parse((await near.read("kuvo/settings/archived")).text);
+    const rows = page.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])]));
+    const archived = rows.find((row: any) => row.id === `session-${far.computer.id}:${far.session}`);
+    expect(archived.computer).toEqual(far.computer);
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "delete") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: {
+      path: `kuvo/settings/archived/${encodeURIComponent(archived.id)}/delete`,
+      body: { was: archived.revision },
+    }, replyTo: "delete" });
+    const deleted = await answer.promise;
+    expect([deleted.status, Object.keys(near.cases), Object.keys(far.cases)]).toEqual([200, [near.session], []]);
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 45_000);
+
+test("a remote bot's tools are resolved on its owner before the first session copy", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  const aReady = Promise.withResolvers<void>();
+  const bReady = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<{ status: number; text: string }>();
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  try {
+    const directory = path.join(far.home, "project");
+    writeFileSync(path.join(near.home, "run", "peer-agents.json"), JSON.stringify({
+      [far.computer.id]: { at: Date.now(), features, list: [
+        { kind: "bot", id: "bot_far", name: "Remote bot", session: far.session },
+      ] },
+    }));
+    a = near.linked(message => {
+      if (message.ready) aReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.replyTo === "tools") answer.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) bReady.resolve();
+      if (message.failure) answer.reject(new Error(message.failure));
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([aReady.promise, bReady.promise]);
+    a.send({ call: { path: `kuvo/sessions/${far.session}/location?tools=1` }, replyTo: "tools" });
+    const found = await answer.promise;
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toMatchObject({ on: far.computer, tools: {
+      directory, ready: { files: true, browser: true, changes: true, terminal: true },
+    } });
+  } finally {
+    a?.kill(); b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
+
+test("the Dock counts a bot's own ask once when both the Sessions and Bots rails include it", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const folder = path.join(far.home, "bots", "bot_far");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_far", name: "Remote bot" }));
+    writeFileSync(path.join(folder, "session"), far.session);
+    await share(far, near, far.session);
+    const watch = Buffer.from(JSON.stringify({ waiting: "kuvo/setup/waiting/counts/events" })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "waiting", d: { sessions: 1, bots: 1, dock: 1 } });
+  } finally { setup.close(); }
+}, 30_000);

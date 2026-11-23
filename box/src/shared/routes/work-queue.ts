@@ -1,3 +1,4 @@
+import { PENDING_COMPUTERS } from "./list-computers";
 import { OFFLINE_EDIT_ANSWERS } from "./ownership";
 // The Work Queue (PROTOCOL.md, "Per area"): an owner's view and its events, one item whole,
 // what `#n` refs name, the statuses, priorities and labels, and what you do from a client. Times
@@ -112,7 +113,7 @@ export const QUEUE_OWNER = object({ owner: string, kind: words("bot", "session",
 export const QUEUE_COUNTS = object({ open: number, statuses: map(number), priorities: map(number), labels: map(number), sources: map(number), computers: map(number), removed: number });
 
 /** An owner's view; with `counts=1`, its counts too; with `q`, only what the words are in. */
-export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL),
+export const QUEUE_VIEW = object({ ...PENDING_COMPUTERS, owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL),
   /** The colours a label may be (the looks' names), in the order a picker offers them. */
   colors: list(string),
   assignees: list(ASSIGNEE),

@@ -619,7 +619,7 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
         expect(ended(id)).toBe(false)
         rmSync(join(root, "lists-blocked"))
       }
-      await until(() => ended(id) && sessions.background()[id]?.tasks.length === (when === "unknown" ? 2 : 1))
+      await until(() => ended(id) && sessions.background()[id]?.commands.length === (when === "unknown" ? 2 : 1))
       expect(delivered).toBeDefined()
       await delivered
       await pass(5_000)
@@ -630,9 +630,9 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
         expect(prompts).toHaveLength(0)
         expect(finishHeld(id, toldFile)).toBe(true)
       }
-      expect(sessions.background()[id]?.tasks.map(({ id, since }) => ({ id, since }))).toEqual(when === "unknown"
-        ? [{ id: "p2", since: commandStart }, { id: "p1", since: listed }]
-        : [{ id: "p1", since: commandStart }])
+      expect(sessions.background()[id]?.commands.map(({ started }) => started)).toEqual(when === "unknown"
+        ? [commandStart, listed]
+        : [commandStart])
       await sessions.stopBackground(id)
       // Even with no background event, the scheduled check releases the held finish.
       await pass(FIRST_LOOK)
@@ -651,10 +651,22 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
     }
   })
 
+  test("a terminal Codex leaves running appears as a process with what it printed", async () => {
+    const item = command("c-p1", "npm run dev")
+    const id = await run([
+      ["item/started", { item }],
+      ["item/commandExecution/outputDelta", { itemId: item.id, delta: "Listening on :3000\n" }],
+      leavesTerminal("npm run dev"),
+    ])
+    const [job] = sessions.background()[id]!.commands
+    expect(job).toMatchObject({ command: "npm run dev" })
+    expect((await shellOutput(job.id))?.output).toBe("Listening on :3000\n")
+  })
+
   test("they keep its Codex running past its idle close, shown as still at work, until they end; it isn't woken for that, as in Codex's own CLI", () =>
     quickly(async () => {
       const id = await run([leavesTerminal("npm run dev"), ["item/completed", { item: { type: "agentMessage", id: "m1", text: "Started the server." } }]])
-      await until(() => (sessions.background()[id]?.tasks.length ?? 0) === 1)
+      await until(() => (sessions.background()[id]?.commands.length ?? 0) === 1)
       // (Listed again every 20 ms: its idle close, 50 ms after the turn, has come round meanwhile.)
       const now = lists()
       await until(() => lists() >= now + 6)
@@ -668,12 +680,12 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
   test("a list that fails isn't taken for none: they're still kept, and listed again", () =>
     quickly(async () => {
       const id = await run([leavesTerminal("npm run dev")])
-      await until(() => (sessions.background()[id]?.tasks.length ?? 0) === 1)
+      await until(() => (sessions.background()[id]?.commands.length ?? 0) === 1)
       writeFileSync(join(root, "lists-fail"), "")
       // Fail repeatedly, past its idle close.
       const now = lists()
       await until(() => lists() >= now + 7, 2_000)
-      expect(sessions.background()[id]?.tasks.length).toBe(1)
+      expect(sessions.background()[id]?.commands.length).toBe(1)
       expect(sent().some((message) => message.method === "thread/unsubscribe")).toBe(false)
       rmSync(join(root, "lists-fail"))
       writeFileSync(join(root, "terminal-done"), "")
@@ -687,33 +699,33 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
       expect(sessions.background()[id]?.tasks[0]?.id).toMatch(/^unknown:/)
       await until(() => lists() >= 2, 2_000)
       rmSync(join(root, "lists-fail"))
-      await until(() => sessions.background()[id]?.tasks[0]?.id === "p1", 2_000)
+      await until(() => sessions.background()[id]?.commands[0]?.command === "npm test", 2_000)
     }))
 
   test("a replacement app-server can reuse the terminal and item IDs without keeping their times", async () => {
     const id = await run([leavesTerminal("npm test")])
-    await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
-    const since = sessions.background()[id].tasks[0].since
+    await until(() => sessions.background()[id]?.commands[0]?.command === "npm test")
+    const since = sessions.background()[id].commands[0].started
     codex!.shutdown()
     sessions.prompt(id, { id: "msg_codex_server_01", text: "Start it again.", files: [], delivery: "queue" })
     await until(() => sessions.messages(id).filter(message => message.type === "idle").length === 2)
-    await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
-    expect(sessions.background()[id].tasks[0].since).toBeGreaterThan(since)
+    await until(() => sessions.background()[id]?.commands[0]?.command === "npm test")
+    expect(sessions.background()[id].commands[0].started).toBeGreaterThan(since)
   })
 
   test("a replacement item with the same process ID gets a fresh fallback", () =>
     quickly(async () => {
       const id = await run([leavesTerminal("npm test")])
-      await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
-      const since = sessions.background()[id].tasks[0].since
+      await until(() => sessions.background()[id]?.commands[0]?.command === "npm test")
+      const since = sessions.background()[id].commands[0].started
       writeFileSync(join(root, "terminal-replaced"), "")
-      await until(() => sessions.background()[id].tasks[0].since > since, 2_000)
+      await until(() => sessions.background()[id].commands[0].started > since, 2_000)
     }))
 
   test("Stop on what it left running ends them", () =>
     quickly(async () => {
       const id = await run([leavesTerminal("npm run dev")])
-      await until(() => (sessions.background()[id]?.tasks.length ?? 0) === 1)
+      await until(() => (sessions.background()[id]?.commands.length ?? 0) === 1)
       await sessions.stopBackground(id)
       expect(sent().some((message) => message.method === "thread/backgroundTerminals/clean")).toBe(true)
       expect(sessions.background()[id]).toBeUndefined()

@@ -11,7 +11,8 @@ export const CARRIED = object({ session: string });
 
 export type Carried = Infer<typeof CARRIED>;
 
-export const LIST_COMPUTER = object({ id: string, name: string });
+export { LIST_COMPUTER };
+import { LIST_COMPUTER, PENDING_COMPUTERS } from "./list-computers";
 
 /** A session started: its address, title, folder and project (null for a chat), whether it shows
  * beside the conversation that started it, and with `wait`, its first answer (null for none yet).
@@ -63,7 +64,7 @@ const REFUSED = object({ message: string });
 
 /** A message waiting on the box while its conversation is paused: who it's from (none for yours),
  * what it says as shown, its files' names, and when it began to wait (ms). */
-export const WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+export const WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), at: number });
 
 /** A session's queue: whether it waits for Resume, what Stop held, in the order it goes, and what
  * waits on the box (left out when nothing does). */
@@ -75,16 +76,16 @@ const ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITIN
 
 /** What `DELETE …/queue/<item>` took away, whole, for Undo to add back (`queue/add` with `kept`),
  * where it was: ahead of `before`, what came after it (none: it was last). */
-const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any, "attached?": list(object({ uri: string, "name?": string })) });
+const REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, draft: string, "before?": string, "receipt?": string, "metadata?": any, "attached?": list(object({ uri: string, "name?": string })) });
 
 export type SessionQueue = Infer<typeof QUEUE>;
 
 /** One message waiting, as clients show it in the queue (`queue.items`): what you wrote (without
- * what the box added for the agent), its files' names, the keyword it was sent with, who it's from
+ * what the box added for the agent), its files' names, who it's from
  * (null for yours), where it waits (the engine's or the coding agents' bridge's inbox, or the box),
  * how it goes, and whether Stop held it. */
 export const QUEUE_ITEM = object({
-  id: string, words: string, files: list(string), keyword: nullable(string), from: nullable(string),
+  id: string, words: string, files: list(string), from: nullable(string),
   on: words("engine", "box"), delivery: words("steer", "queue"), held: bool,
 });
 
@@ -281,8 +282,12 @@ const REMOTE_LIST_COMPUTER = object({
   ...LIST_COMPUTER.object, away: bool, "lastSeen?": number, "updating?": bool, actions: list(words("open", "manage")),
 });
 
-export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool });
-export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER }));
+const CONVERSATION_TOOLS = object({
+  directory: nullable(string),
+  ready: object({ files: bool, changes: bool, browser: bool, terminal: bool }),
+});
+export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool, "tools?": CONVERSATION_TOOLS });
+export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER, "tools?": CONVERSATION_TOOLS }));
 
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
@@ -350,12 +355,12 @@ export const BOT_NOW = object({
 });
 /** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,
  * the bots with a session waiting, and the Work Queue's items a session linked to them waits for. */
-export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
+export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, "dock?": number, ...PENDING_COMPUTERS });
 
 /** The list (`kuvo/sessions/list`): where it's at (`since` resumes from it), whether it's whole
  * (`full`) or only what changed since, the sessions by id, those gone since, its projects, and the
  * places it couldn't read now (`bridge`: the coding agents' sessions as they were last read). */
-export const SESSION_LIST = object({
+export const SESSION_LIST = object({ ...PENDING_COMPUTERS,
   at: string,
   "full?": bool,
   sessions: map(SESSION_FACTS),
@@ -382,16 +387,16 @@ export const SETUP_QUEUE = object({
 });
 const OFFERED_AGENT = object({ id: string, name: string });
 export const START_CATALOG = object({ offered: MODELS_OFFERED, agents: list(OFFERED_AGENT) });
-export const SETUP_SESSIONS = object({
+export const SETUP_SESSIONS = object({ ...PENDING_COMPUTERS,
   sessions: list(object({ ...SETUP_SESSION.object, ...LIST_ORIGIN })),
   projects: list(object({ ...SETUP_PROJECT.object, ...LIST_ORIGIN })),
 });
-export const SETUP_WAITING = object({ waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
-export const SETUP_QUEUES = object({ queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
+export const SETUP_WAITING = object({ ...PENDING_COMPUTERS, waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
+export const SETUP_QUEUES = object({ ...PENDING_COMPUTERS, queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
 /** Where a new session can run: this computer (`here`) and each other computer with its last
  * catalog. One that's away is still listed, with when it was last seen, and can't be started on.
  * `pending`: this computer just started and its catalog is the one it saved last. */
-export const RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, "here?": bool, "pending?": bool, "away?": bool, "lastSeen?": number, "updating?": bool, ...START_CATALOG.object })) });
+export const RUNS_ON = object({ ...PENDING_COMPUTERS, computers: list(object({ computer: LIST_COMPUTER, "here?": bool, "pending?": bool, "away?": bool, "lastSeen?": number, "updating?": bool, ...START_CATALOG.object })) });
 
 export type SessionKind = (typeof SESSION_KINDS)[number];
 export type SessionFacts = Infer<typeof SESSION_FACTS>;

@@ -1,10 +1,12 @@
 import "./safety"
 import { expect, test } from "bun:test"
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { ask } from "./route-answer"
 
+const { BOTS } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
-const { LIST_FILE, listNow } = await import("../src/link/lists/sessions")
+const { LIST_FILE, keepList, listNow, listPlaceHeard, noteListEvent, workOut } = await import("../src/link/lists/sessions")
 
 // What a conversation's Outputs popover lists under Sessions and Subagents: what works for it
 // besides its own turn, never the conversation itself, its subagents told apart from sessions.
@@ -44,5 +46,59 @@ test("a conversation's activity lists what works under it, not itself, and says 
     if (saved) writeFileSync(LIST_FILE, saved)
     else rmSync(LIST_FILE, { force: true })
     engine.stop(true)
+  }
+})
+
+test("a bot-started session disappears from active work when its bridge becomes idle", async () => {
+  const saved = existsSync(LIST_FILE) ? readFileSync(LIST_FILE) : undefined
+  const bot = "bot_activity"
+  const folder = join(BOTS, bot)
+  const root = { id: "ses_bot", location: { directory: folder }, time: { created: 1, updated: 1 } }
+  const child = { ...root, id: "ses_bot_work", location: { directory: "/work" }, metadata: { kuvo: { by: { bot, name: "Coordinator" }, startedBy: root.id, line: [root.id] } } }
+  let ended = false
+  const engine = Bun.serve({
+    port: 0,
+    fetch(request) {
+      return Response.json({ data: new URL(request.url).pathname === "/api/session" ? [root] : [] })
+    },
+  })
+  const bridge = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const route = new URL(request.url).pathname
+      // A snapshot taken after execution ended still saw the bridge keeping the turn's files.
+      if (route === "/api/session/active") return Response.json({ data: ended ? [] : [child.id] })
+      if (route === "/api/session") return Response.json({ data: [child] })
+      if (route === "/api/session/" + child.id) return Response.json({
+        data: ended ? { ...child, outcome: "succeeded", time: { created: 1, updated: 2, idle: 2 } } : child,
+      })
+      return Response.json({ data: [] })
+    },
+  })
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Coordinator" }))
+  writeFileSync(join(folder, "session"), root.id)
+  const target = { port: bridge.port!, password: "test" }
+  const readEngine = () => ({ port: engine.port, password: "test" }) as never
+  const handler = engineHandler(readEngine)
+  const read = () => ask(handler, "GET", "kuvo/work/background/" + root.id)
+  const readBotWork = () => ask(handler, "GET", "kuvo/work?bot=" + bot)
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", readEngine())
+    await listPlaceHeard("bridge", target)
+    expect((await read()).json.activity.sessions.map((row: { session: string }) => row.session)).toEqual([child.id])
+    ended = true
+    await noteListEvent("bridge", target, { type: "session.idle", data: { sessionID: child.id } })
+    workOut()
+    expect((await read()).json.activity).toEqual({ working: 0, asking: 0, sessions: [] })
+    expect((await readBotWork()).json.sessions).toMatchObject([{ session: child.id, state: "finished" }])
+  } finally {
+    stop()
+    engine.stop(true)
+    bridge.stop(true)
+    rmSync(folder, { recursive: true, force: true })
+    if (saved) writeFileSync(LIST_FILE, saved)
+    else rmSync(LIST_FILE, { force: true })
   }
 })

@@ -10,8 +10,8 @@
 import { withNotes } from "../shared/session-notes"
 import { emit } from "./events"
 import { rewriteVia } from "./notes"
-import type { GoalPlace, GoalPlaces } from "./goals"
-import { transcript } from "./goals"
+import type { SessionPlace, SessionPlaces } from "./session-places"
+import { transcript } from "./read-transcript"
 import { answerWithContext, at, line, messages, opening, sessionInfo, type SessionInfo } from "./oneoff"
 
 /** What marks a handoff's note to the new conversation's agent, so clients show it as the handoff's. */
@@ -57,7 +57,7 @@ export class Handoffs {
   /** Those being checked before one starts: a second ask meanwhile (a double click, the phone and the Mac at once) is turned away. */
   private starting = new Set<string>()
 
-  constructor(private readonly places: GoalPlaces) {}
+  constructor(private readonly places: SessionPlaces) {}
 
   get(session: string): Handoff | undefined {
     return this.kept.get(session)
@@ -95,7 +95,7 @@ export class Handoffs {
     return { ...handoff }
   }
 
-  private async carryOn(handoff: Handoff, info: SessionInfo, place: GoalPlace, next?: string) {
+  private async carryOn(handoff: Handoff, info: SessionInfo, place: SessionPlace, next?: string) {
     const session = handoff.from
     // The new conversation, once made: taken away again if what follows fails, so a retry
     // doesn't leave an empty one behind each time.
@@ -146,17 +146,17 @@ export class Handoffs {
     emit("kuvo.handoff", { sessionID: handoff.from, handoff: { ...handoff } })
   }
 
-  private place(session: string): GoalPlace {
+  private place(session: string): SessionPlace {
     return this.places.isBridge(session) ? this.places.bridge : this.places.engine
   }
 
-  private async isActive(session: string, place: GoalPlace): Promise<boolean> {
+  private async isActive(session: string, place: SessionPlace): Promise<boolean> {
     const answer = await place.api.request<{ data?: Record<string, unknown> }>("GET", "/api/session/active").catch(() => undefined)
     return Boolean(answer?.data && session in answer.data)
   }
 
   /** `kuvo.<…>` in a conversation's metadata, in its turn (`notes.ts`), the rest kept as it is then. */
-  private async link(place: GoalPlace, session: string, kuvo: Record<string, string>) {
+  private async link(place: SessionPlace, session: string, kuvo: Record<string, string>) {
     await rewriteVia(place.api, session, (now) => ({ metadata: withNotes(now.metadata, kuvo) })).catch(() => {})
   }
 }

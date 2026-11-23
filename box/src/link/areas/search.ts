@@ -15,9 +15,18 @@ import type { EngineMessage } from "../engine/conversations";
 import { isHiddenRun } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { SEARCH } from "../home";
+import { isObject } from "../../shared/json";
+import { fitsShape } from "../../shared/shape";
+import { SEARCH_FOUND, type SearchFound } from "../../shared/routes/misc";
+import { listComputer } from "../lists/computer";
+import { offRelay } from "../letters/leave";
+import { bridgeTarget, readEngineFile } from "../engine/client";
+import { movedOf, peersOf } from "../peers/known";
+import { readReach } from "../peers/reach";
+import { readLink } from "../state";
+import { forwardAct, MEMORY_READ_FEATURE, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { isBoxWritten } from "../../shared/queues";
 import type { Target } from "../../shared/records";
-import type { SearchFound } from "../../shared/routes/misc";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 /** How many it finds at most, unless asked for fewer. */
@@ -43,26 +52,94 @@ interface Kept {
 const texts = new Map<string, Pick<Kept, "updated" | "folded">>();
 const reading = new Map<string, Promise<Kept | null>>();
 
+type Readers = Pick<RouteContext, "readEngine" | "bridge">;
+const searchReaders = { readEngine: readEngineFile, bridge: bridgeTarget };
+const readLimit = (limit: unknown) => Math.trunc(Math.min(MOST, Math.max(1, Number(limit) || 20)));
+const missingWords = { message: "Say what to search for (q)." };
+const FEATURE = "search.setup";
+
 export async function* searchRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, json } = context;
+  const { request, route, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const query = new URLSearchParams(request.path.split("?")[1] ?? "");
   const words = (query.get("q") ?? "").trim();
-  if (!words) return yield* json(400, { message: "Say what to search for (q)." });
-  const limit = Math.min(MOST, Math.max(1, Number(query.get("limit")) || 20));
+  const setup = route === "kuvo/setup/search";
+  if (!words || (setup && words.length > 512)) return yield* json(400, missingWords);
+  const limit = readLimit(query.get("limit"));
+  const found = setup ? await searchSetup(context, words, limit) : await searchHere(context, words, limit);
+  return yield* json(found.status, found.value);
+}
+
+export function searchForPeer(act: Act): Promise<Acted> {
+  const words = typeof act.body?.words === "string" ? act.body.words.trim() : "";
+  if (act.method !== "GET" || act.item !== "conversations" || !words || words.length > 512)
+    return Promise.resolve({ status: 400, value: missingWords });
+  return searchHere(searchReaders, words, readLimit(act.body?.limit));
+}
+
+type SearchResult = SearchFound["results"][number];
+type SearchComputer = { id: string; name: string };
+
+async function searchSetup(context: RouteContext, words: string, limit: number): Promise<Acted> {
+  const link = readLink();
+  const reach = readReach();
+  const disconnected = offRelay();
+  const moved = movedOf(link);
+  const awayComputers: SearchComputer[] = [];
+  const unavailableComputers: SearchComputer[] = [];
+  const [local, peers] = await Promise.all([
+    searchHere(context, words, limit),
+    Promise.all(peersOf(link).map(async peer => {
+      const computer = { id: peer.key, name: peer.name };
+      if (disconnected || reach[peer.key] !== undefined || !peer.address) return { computer, state: "away" as const };
+      if (!takesForwarded(peer.key, FEATURE) || !takesForwarded(peer.key, MEMORY_READ_FEATURE))
+        return { computer, state: "unavailable" as const };
+      const reply = await forwardAct(peer, "Conversation search", {
+        method: "GET", area: "search", item: "conversations", body: { words, limit },
+      }, context.signal, link, Date.now(), { memory: true });
+      if ("refused" in reply || reply.status !== 200 || !fitsShape(SEARCH_FOUND, reply.value))
+        return { computer, state: readReach()[peer.key] === undefined ? "unavailable" as const : "away" as const };
+      return { computer, found: reply.value as SearchFound };
+    })),
+  ]);
+  const here = listComputer(link);
+  const rows: SearchResult[] = [];
+  const keep = (result: SearchResult, computer: SearchComputer) => {
+    if ((moved.get(result.session) ?? computer.id) === computer.id) rows.push({ ...result, computer });
+  };
+  if (local.status === 200) for (const result of (local.value as SearchFound).results) keep(result, here);
+  else unavailableComputers.push(here);
+  for (const peer of peers) {
+    if (peer.state === "away") awayComputers.push(peer.computer);
+    else if (peer.state === "unavailable") unavailableComputers.push(peer.computer);
+    else if (peer.found) for (const result of peer.found.results) keep(result, peer.computer);
+  }
+  const updated = ({ info }: SearchResult) =>
+    isObject(info) && isObject(info.time) && typeof info.time.updated === "number" ? info.time.updated : 0;
+  rows.sort((a, b) => updated(b) - updated(a) || a.session.localeCompare(b.session) || a.computer!.id.localeCompare(b.computer!.id));
+  const seen = new Set<string>();
+  const results = rows.filter(row => {
+    if (seen.has(row.session)) return false;
+    seen.add(row.session);
+    return true;
+  }).slice(0, limit);
+  return { status: 200, value: { results, awayComputers, unavailableComputers } };
+}
+
+async function searchHere({ readEngine, bridge }: Readers, words: string, limit: number): Promise<Acted> {
   // Where its sessions are: the engine, and the coding agents' bridge while it runs.
   let places: { name: string; target: Target }[];
   try {
     places = [{ name: "engine", target: readEngine() }];
   } catch {
-    return yield* json(503, { message: "This computer's engine isn't running yet. Search again in a moment." });
+    return { status: 503, value: { message: "This computer's engine isn't running yet. Search again in a moment." } };
   }
   const agents = (() => { try { return bridge(); } catch { return null; } })();
   if (agents) places.push({ name: "agents", target: agents });
   const lists = await Promise.all(places.map(place => everySession(place.target).then(sessions => ({ place, sessions }), () => ({ place, sessions: null }))));
   // Its engine's list it must have: without it, nothing found would say what isn't so. (The coding
   // agents' bridge may be starting: its sessions are left out until it answers.)
-  if (!lists[0]!.sessions) return yield* json(503, { message: "This computer's engine didn't answer. Search again in a moment." });
+  if (!lists[0]!.sessions) return { status: 503, value: { message: "This computer's engine didn't answer. Search again in a moment." } };
   const conversations = lists.flatMap(({ place, sessions }) => byConversation(sessions ?? []).map(conversation => ({ ...conversation, place })))
     .sort((one, other) => other.top.time.updated - one.top.time.updated);
   const wanted = fold(words);
@@ -93,7 +170,7 @@ export async function* searchRoute(context: RouteContext): AsyncGenerator<Answer
   // Only where the list was read: one that couldn't be keeps what it had.
   const known = conversations.flatMap(({ top, subagents, place }) => [top, ...subagents].map(session => key(place.name, session.id)));
   forgetGone(new Set(known), lists.filter(list => list.sessions).map(list => list.place.name));
-  return yield* json(200, { results } satisfies SearchFound);
+  return { status: 200, value: { results } satisfies SearchFound };
 }
 
 /** Each conversation of `sessions`: the session at the top, and the subagents working for it, or
@@ -233,17 +310,14 @@ export function searchText(messages: EngineMessage[], directory: string): string
   return [said, done].filter(Boolean).join("\n\n");
 }
 
-/** A message as you wrote it: what Kuvo Code adds to its end comes off (who's named, a keyword it
- * was sent with, the widget it answers, that it's from your phone), but for your review comments, and the names of the
+/** A message as you wrote it: what Kuvo Code adds to its end comes off (who's named,
+ * the widget it answers, that it's from your phone), but for your review comments, and the names of the
  * files it brought. */
 function ownWords(written: string): string {
   let words = written.trim();
-  // /goal in a bot's chat as a box sent it before it went in the block: its marker, then the note.
-  const oldGoal = "\n\n(The user asked for this as a goal: plan it, check what it needs, and put it to them with propose_goal before doing any of the work.)";
-  if (words.startsWith("[Goal] ") && words.endsWith(oldGoal)) return words.slice("[Goal] ".length, -oldGoal.length).trim();
   const kept: string[] = [];
   for (;;) {
-    const block = [["<attached-files>", "</attached-files>"], ["<review-comments>", "</review-comments>"], ["<named-agents>", "</named-agents>"], ["<sent-with>", "</sent-with>"], ["<from-widget>", "</from-widget>"], ["<from-phone>", "</from-phone>"]]
+    const block = [["<attached-files>", "</attached-files>"], ["<review-comments>", "</review-comments>"], ["<named-agents>", "</named-agents>"], ["<from-widget>", "</from-widget>"], ["<from-phone>", "</from-phone>"]]
       .find(([, end]) => words.endsWith("\n" + end));
     const open = block ? words.lastIndexOf(block[0] + "\n") : -1;
     if (!block || open < 0 || (open > 0 && words[open - 1] !== "\n")) break;

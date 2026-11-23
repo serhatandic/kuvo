@@ -6,6 +6,7 @@ for a user.
 
 Where tests live:
 
+- **Box** (Rust): process-level tests in `box/crates/<crate>/tests/`, using a scratch home.
 - **Box** (Bun, TypeScript): `box/test/*.test.ts`. The first import is `./safety`.
 - **Bridge and route scenarios** (Node's runner, the built bridge and link): `box/bridge-tests/*.test.js`,
   first import `./test-safety.js`; route scenarios in `box/test/fixtures/routes/*.json` (CONTRIBUTING.md,
@@ -116,6 +117,7 @@ through `scripts/heavy.sh` (the scripts below take its slots). Linux checks run 
 and `scripts/windows-bridge-check.sh`.
 
 ```sh
+scripts/cargo-box.sh test -p kuvo-box --test info      # Rust box
 scripts/test-box.sh box test/conversation.test.ts      # box
 scripts/test-box.sh bridge agents-renewal.test.js      # bridge
 cd gpui && ../scripts/cargo-locked.sh test -p kuvo --test send_while_working   # Rust

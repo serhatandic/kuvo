@@ -16,7 +16,7 @@ import type { Auto, AutoList } from "./auto"
 import type { EngineLink } from "./engine"
 import type { Roster } from "./roster"
 import { emit, feed, subscribe } from "./events"
-import { goalRoutes, type GoalPlaces, type Goals } from "./goals"
+import type { SessionPlaces } from "./session-places"
 import { sideQuestionRoutes, type SideQuestions } from "./btw"
 import { branchRoutes } from "./branch"
 import { handoffRoutes, type Handoffs } from "./handoff"
@@ -57,13 +57,11 @@ export interface Context {
   peers?: PeerParts
   /** Restarts the agents' processes started before the box's sandbox was on, as you said to (main.ts). */
   restartOutside?: () => void
-  /** Goals that conversations here and on the engine work toward (goals.ts). */
-  goals?: Goals
-  /** The box's other keywords: side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
+  /** Side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
   sideQuestions?: SideQuestions
   handoffs?: Handoffs
   /** Where conversations are, for branching one (branch.ts). */
-  places?: GoalPlaces
+  places?: SessionPlaces
   reviews?: Reviews
   /** Conversations on their way to and from your other computers (carry.ts). */
   carrying?: Carrying
@@ -247,7 +245,6 @@ const BRIDGE_EXTENSIONS = {
   btw: "btw",
   carry: "moves.agents",
   engine: "agents",
-  goals: "work.goals",
   groups: "agents",
   handoff: "handoff",
   insights: "usage.insights",
@@ -704,7 +701,6 @@ export function handler(context: Context, transferring?: () => boolean) {
         return json({})
       }
       if (extension === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
-      if (extension === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
       if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body, request.signal)
       if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
       if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)

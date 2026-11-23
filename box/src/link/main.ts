@@ -44,7 +44,6 @@ import { joinPath, loginEnvironment, loginPath, saveLoginPath, savedLoginPath } 
 import { launchFromLogin } from "./run-command";
 import { watchAsks } from "./areas/asks";
 import { watchWorkAsks } from "./work/asks";
-import { watchGoals } from "./work/goals";
 import { setBoxKey } from "./areas/box-keys";
 import { addMacDefaults, changeSettings, ownsSettings, readSettings } from "./areas/config";
 import { engineConnect } from "./areas/engine";
@@ -107,6 +106,9 @@ import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
+import { shareArchived } from "./areas/settings-pages";
+import { shareOutputs } from "./areas/setup-outputs";
+import { shareNotices } from "./areas/notices";
 import { shareLibrary } from "./areas/library";
 import { shareSetupLists } from "./lists/setup";
 import { pushQueues } from "./work-queue/across";
@@ -210,7 +212,6 @@ export { letAttachmentsGo } from "./server/attached";
 export { FIRST_LOOK, WAITING_LOOK, workWatcher } from "./work/wakes";
 export { forgetOldHomes } from "./work/homes";
 export { AT_WORK_LIMIT, atWorkNow, noteStopped, readBackground, readStopped, stopWork } from "./work/background";
-export { goalFollowers, goalHolds, settleGoalHolds, lookAtGoals, periodOf, periodEnd, pauseGoal, REVIEW_PAUSE } from "./work/goals";
 export { awakeForWork, holdForWork, keptAwake, letGo, lookAtWork, UNTOLD_FOR, WORK_AWAKE_FILE } from "./work/awake";
 export { macLink, readLink, updateLink, writeLink } from "./state";
 export { searchPlugins } from "./areas/plugins";
@@ -571,9 +572,6 @@ async function run(owner?: ClientOwner): Promise<void> {
   watchSandboxAsks(tell, answered);
   // What its bots ask you before they do it (making a project): told the same way.
   watchWorkAsks(tell, { answered });
-  // Its bots' goals: carried on at limits' resets, what waits for you listed (and told quietly),
-  // digests and reports, and this computer kept awake while one is at work.
-  watchGoals(tell, peerTargets, { here: () => hold.inUse });
   // Your other computers: this box's agents told to them while the relay connection is up (and
   // listed here, relay or not), and its agents' letters sent; without the relay a while, those
   // not sent yet go to the Mac.
@@ -667,6 +665,9 @@ async function run(owner?: ClientOwner): Promise<void> {
     deliverLeftAnswers().catch(() => {});
     // The rows of sessions here whose lead lives on another computer, told to it as they change.
     if (current?.welcomed) {
+      void shareNotices(current).catch(() => {});
+      void shareOutputs(current).catch(() => {});
+      void shareArchived(current).catch(() => {});
       void shareLibrary(current).catch(() => {});
       void shareSetupLists(current).catch(() => {});
       pushRows(current, readLink(), peerTargets()).catch(() => {});
@@ -1346,9 +1347,6 @@ async function serve(owner?: ClientOwner): Promise<void> {
   // you on purpose (notify_user).
   watchBox({ tell: notice => { keepTold(notice); return macTell(notice); }, hold: macLink.hold, bots: true, notices: IS_MAC });
   if (IS_MAC) watchSentByAgents(macTell);
-  // Its bots' goals: carried on at limits' resets, what waits for you listed (and told quietly to
-  // your phones), digests and reports, and this Mac kept awake while one is at work (on power).
-  if (IS_MAC) watchGoals(macTell, peerTargets, { here: () => macLink.hold?.inUse ?? false });
   // Its app gone (its stdin closed): so is it, once what its link has queued for the relay is out
   // (a notice sent as the app quit), a moment at most.
   let leaving = false;

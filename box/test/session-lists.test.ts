@@ -866,12 +866,11 @@ test("the queue's count is its open items in Needs you and those a linked sessio
 // What a client's one badge of sessions counts (#718): every session that waits on you, as its rows
 // show them. A bot's own conversation that asks (its bots' area lists it, not "Needs you"), and what
 // the box keeps outside the engine's asks: what an agent asks while it browses, what a bot asks
-// before it does it, and a goal a bot put to you. Each session once; answered, each goes.
-test("what waits counts a bot's own conversation, a browser's ask, a bot's work ask and a proposed goal, each session once", async () => {
+// before it does it. Each session once; answered, each goes.
+test("what waits counts a bot's own conversation, a browser's ask, a bot's work ask, each session once", async () => {
   const { noteAskEvent, forgetAsks, followAsks, lookAtOthers } = await import("../src/link/glance/asked")
   const { BOTS, RUN } = await import("../src/link/home")
   const { askWork, WORK_ASKS } = await import("../src/link/work/asks")
-  const { GOALS_FILE } = await import("../src/link/work/goals")
   const { spawn } = await import("node:child_process")
   const folder = join(BOTS, "bot_asks"), other = join(BOTS, "bot_plans")
   const mine = join(home, "lists-cards")
@@ -921,25 +920,10 @@ test("what waits counts a bot's own conversation, a browser's ask, a bot's work 
     expect(keptList()!.needsYou![0]).toEqual({ session: "ses_makes", asks: { kind: "other", summary: "asks to make a project" } })
     expect(await waiting()).toEqual({ sessions: 3, bots: 1, queue: 0 })
 
-    // A bot puts a goal to you: it waits in the bot's own conversation.
-    mkdirSync(dirname(GOALS_FILE), { recursive: true })
-    writeFileSync(GOALS_FILE, JSON.stringify({ goals: [{ id: "goal_plan", bot: "bot_plans", name: "Juno", session: "ses_bot_plans", goal: "Ship it", state: "proposed", proposed: Date.now(), projects: [], steps: [], checks: [], spend: [], public: [], waiting: [], paused: [] }] }))
-    lookAtOthers()
-    await listed(() => asked("ses_bot_plans"))
-    expect(await waiting()).toEqual({ sessions: 4, bots: 2, queue: 0 })
-    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_plans").now).toEqual({ working: 0, asking: 1, state: "needsYou", since: expect.any(Number) })
-
-    // The same session asking twice is one session: its permission too.
-    noteAskEvent({ type: "permission.asked", data: { id: "per_plans", sessionID: "ses_bot_plans", action: "bash" } }, "engine", 2000)
-    lookAtOthers()
-    expect(await waiting()).toEqual({ sessions: 4, bots: 2, queue: 0 })
-    noteAskEvent({ type: "permission.replied", data: { requestID: "per_plans", sessionID: "ses_bot_plans" } }, "engine")
-
     // Each answered or gone: nothing waits.
     noteAskEvent({ type: "permission.replied", data: { requestID: "per_bot", sessionID: "ses_bot_asks" } }, "engine")
     writeFileSync(browserFiles[1]!, JSON.stringify({ asks: [] }))
     writeFileSync(WORK_ASKS, JSON.stringify({ asks: [] }))
-    writeFileSync(GOALS_FILE, JSON.stringify({ goals: [] }))
     expect(made.id).toMatch(/^wak_/)
     lookAtOthers()
     await listed(() => !["ses_bot_asks", "ses_browses", "ses_makes", "ses_bot_plans"].some(asked))
@@ -949,7 +933,7 @@ test("what waits counts a bot's own conversation, a browser's ask, a bot's work 
     stopList()
     browser.kill()
     forgetAsks()
-    for (const file of [...browserFiles, WORK_ASKS, GOALS_FILE]) rmSync(file, { force: true })
+    for (const file of [...browserFiles, WORK_ASKS]) rmSync(file, { force: true })
     for (const id of ["ses_bot_asks", "ses_bot_plans", "ses_browses", "ses_makes"]) sessions.delete(id)
     rmSync(folder, { recursive: true, force: true })
     rmSync(other, { recursive: true, force: true })

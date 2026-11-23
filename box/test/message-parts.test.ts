@@ -185,12 +185,12 @@ describe("kuvo/sessions/<id>/send", () => {
   })
 
   test("one sent again (Retry) goes as the agent read it, its parts kept", async () => {
-    const text = "Ask again\n\n<sent-with>\nThe user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:\n/plan\n</sent-with>"
+    const text = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nAsk again"
     await send("ses_main", { id: "msg_retry", text, files: [{ uri: "file:///x/a.png", name: "a.png" }] })
     const [sent] = prompted(engineAsked)
     expect(sent.body.text).toBe(text)
     expect(sent.body.files).toEqual([{ uri: "file:///x/a.png", name: "a.png" }])
-    expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Ask again", keyword: "/plan" })
+    expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Ask again", mail: { name: "Ada", session: "ses_ada" } })
   })
 
   test("words starting with \"/\" go as a message: a command an older client names isn't run", async () => {
@@ -244,26 +244,7 @@ describe("queue/add", () => {
     expect(sent.body.metadata.kuvo.parts).toEqual({ words: "After this", widget: "Plans" })
   })
 
-  test("an older message put back while the queue's paused shows the keyword it was sent with", async () => {
-    const stop = "kuvo/sessions/ses_main/stop"
-    expect((await ask(context => queueRoute(context, stop.match(QUEUE_ROUTE)!), "POST", stop, {})).status).toBe(200)
-    const route = "kuvo/sessions/ses_main/queue/add"
-    const { json } = await ask(context => queueRoute(context, route.match(QUEUE_ROUTE)!), "POST", route, { id: "msg_held", text: "check CI\n\n<sent-with>…</sent-with>", kept: true, words: "check CI", metadata: { kuvo: { parts: { words: "check CI", keyword: "/loop every hour" } } }, delivery: "queue" })
-    expect(json.waits).toBe(true)
-    expect(json.waiting.find((each: any) => each.id === "msg_held")).toMatchObject({ text: "check CI", keyword: "/loop every hour" })
-    const resume = "kuvo/sessions/ses_main/queue/resume"
-    await ask(context => queueRoute(context, resume.match(QUEUE_ROUTE)!), "POST", resume, {})
-  })
 
-  test("one a client wrote itself, the way before, keeps the parts of its text where there's more to them; a plain one keeps none", async () => {
-    const route = "kuvo/sessions/ses_main/queue/add"
-    const goal = "[Goal] ship it\n\n(The user asked for this as a goal: plan it, check what it needs, and put it to them with propose_goal before doing any of the work.)"
-    await ask(context => queueRoute(context, route.match(QUEUE_ROUTE)!), "POST", route, { id: "msg_old", text: goal, words: "ship it", delivery: "queue" })
-    await ask(context => queueRoute(context, route.match(QUEUE_ROUTE)!), "POST", route, { id: "msg_plain", text: "[Goal] ship it", delivery: "queue" })
-    const [old, plain] = prompted(engineAsked)
-    expect(old.body.metadata.kuvo.parts).toEqual({ words: "ship it", keyword: "/goal" })
-    expect(plain.body.metadata).toBeUndefined()
-  })
 })
 
 describe("queue/add's other forms", () => {
@@ -281,8 +262,8 @@ describe("queue/add's other forms", () => {
   })
 
   test("one put back as it was kept keeps the parts it had", async () => {
-    await add({ id: "msg_kept", text: "check CI\n\n<sent-with>…</sent-with>", kept: true, words: "check CI", metadata: { kuvo: { parts: { words: "check CI", keyword: "/loop every hour" } } } })
-    expect(prompted(engineAsked)[0].body.metadata.kuvo.parts).toEqual({ words: "check CI", keyword: "/loop every hour" })
+    await add({ id: "msg_kept", text: "check CI", kept: true, words: "check CI", metadata: { kuvo: { parts: { words: "check CI", widget: "Build" } } } })
+    expect(prompted(engineAsked)[0].body.metadata.kuvo.parts).toEqual({ words: "check CI", widget: "Build" })
   })
 })
 

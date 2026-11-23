@@ -1,16 +1,17 @@
 #!/bin/sh
 # Runs a heavy job (a build, a test run) once this Mac has room for it:
 #
-#   scripts/heavy.sh <mac|mac-build|box|rust> <command> [arguments…]
+#   scripts/heavy.sh <mac|mac-build|box|rust|rust-box> <command> [arguments…]
 #
 #   mac        the legacy single-slot lane for older callers
 #   mac-build  desktop bundles and Swift helper builds or tests. Two slots.
 #   box        the box's whole suites (bun test, node --test) and runs on a test machine. Two slots,
 #              as mac-build has (below).
-#   rust       Cargo builds, tests and shots. One slot across all checkouts.
+#   rust       Desktop Cargo builds, tests and shots. One slot across all checkouts.
+#   rust-box   Box Cargo builds and tests. One separate slot across all checkouts.
 #
 # Jobs of one kind share their build folders, which two builds at once break, so each slot of a kind
-# (mac and rust have one; mac-build and box two, below) runs one job at a time, each waiting on its
+# (mac, rust and rust-box have one; mac-build and box two, below) runs one job at a time, each waiting on its
 # slot's lock in this user's own temporary folder (getconf's, not $TMPDIR, which a caller may point
 # elsewhere). Jobs of different kinds run side by side. Before it joins its lane's line, a new job waits while the Mac is thrashing: swapping more than
 # KUVO_HEAVY_SWAP MB a second (10 unless set) or its memory pressure critical, for
@@ -86,7 +87,7 @@
 # heavy.sh exits 124. The clock starts when the command does: not while it waits in line for its
 # slot (for as long as that takes), nor while it waits for room on the Mac. Generous, per kind: mac 45
 # minutes, mac-build 90 (a build, a package's tests), box 40 (the
-# box's and the bridge's suites, which may go together), rust 90.
+# box's and the bridge's suites, which may go together), rust and rust-box 90.
 #
 #   KUVO_HEAVY_LIMIT    this job's limit instead: 90m, 600s, 2h, or plain minutes; 0 for none
 #
@@ -110,14 +111,19 @@
 # says, once, when its slot's holder has held it for 2 minutes without its command running.
 set -eu
 
-# During rollout, a worktree with the Rust lane can use it before the canonical copy gets it.
-[ "${1:-}" != --supports-rust ] || exit 0
+# During rollout, a worktree with a new Cargo lane can use it before the canonical copy gets it.
+case "${1:-}" in --supports-rust | --supports-rust-box) exit 0 ;; esac
 
 # Not the canonical copy: the job is the canonical copy's (once: that one never hands it on).
 CANONICAL="${KUVO_HEAVY_CANONICAL-$HOME/Projects/kuvo-ai/scripts/heavy.sh}"
 if [ -n "$CANONICAL" ] && [ -z "${KUVO_HEAVY_HANDED:-}" ] && [ -f "$CANONICAL" ] && ! [ "$0" -ef "$CANONICAL" ]; then
     case "${1:-}:${2:-}" in
-        rust:* | --holds:rust | status:)
+        rust-box:* | --holds:rust-box | status:)
+            if /bin/sh "$CANONICAL" --supports-rust-box >/dev/null 2>&1; then
+                KUVO_HEAVY_HANDED=1 exec /bin/sh "$CANONICAL" "$@"
+            fi
+            ;;
+        rust:* | --holds:rust)
             if /bin/sh "$CANONICAL" --supports-rust >/dev/null 2>&1; then
                 KUVO_HEAVY_HANDED=1 exec /bin/sh "$CANONICAL" "$@"
             fi
@@ -129,7 +135,7 @@ fi
 unset KUVO_HEAVY_HANDED
 
 usage() {
-    echo "Usage: scripts/heavy.sh <mac|mac-build|box|rust> <command> [arguments…], or --holds <kind>, or status" >&2
+    echo "Usage: scripts/heavy.sh <mac|mac-build|box|rust|rust-box> <command> [arguments…], or --holds <kind>, or status" >&2
     exit 64
 }
 
@@ -183,7 +189,7 @@ status() {
     dir="${KUVO_HEAVY_DIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp/)}"
     dir="${dir%/}"
     uid=$(id -u)
-    for lane in mac mac-build box rust; do
+    for lane in mac mac-build box rust rust-box; do
         queue="$dir/kuvo-code-heavy-$lane-$uid.queue"
         line="$lane:"
         for n in 1 2; do
@@ -222,7 +228,9 @@ if [ "$1" = --holds ]; then
 fi
 kind=$1
 shift
-case "$kind" in mac | mac-build | box | rust) ;; *) usage ;; esac
+case "$kind" in mac | mac-build | box | rust | rust-box) ;; *) usage ;; esac
+cargo_lane=
+case "$kind" in rust | rust-box) cargo_lane=1 ;; esac
 
 DIR="${KUVO_HEAVY_DIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp/)}"
 DIR="${DIR%/}"
@@ -239,7 +247,7 @@ esac
 OLD="$DIR/kuvo-code-heavy-$(id -u).lock"
 MAX_LOAD="${KUVO_HEAVY_LOAD:-}"
 WAITS="${KUVO_HEAVY_WAIT:-1}"
-case "$kind" in mac) DEFAULT_LIMIT=45m ;; mac-build | rust) DEFAULT_LIMIT=90m ;; box) DEFAULT_LIMIT=40m ;; esac
+case "$kind" in mac) DEFAULT_LIMIT=45m ;; mac-build | rust | rust-box) DEFAULT_LIMIT=90m ;; box) DEFAULT_LIMIT=40m ;; esac
 
 # What every job runs under, so it never takes the CPU or the disk from the box: low priority (a
 # prefix: `$LOW "$@"`; its children keep it). macOS: utility QoS (lower CPU and I/O priority than
@@ -310,7 +318,7 @@ slot_env() {
 
 # Whether this runs inside a job of this kind (in either slot) or of the old single lock.
 holds_any() {
-    held "$LOCK" || { [ -n "$LOCK2" ] && held "$LOCK2"; } || { [ "$kind" != rust ] && held "$OLD"; }
+    held "$LOCK" || { [ -n "$LOCK2" ] && held "$LOCK2"; } || { [ -z "$cargo_lane" ] && held "$OLD"; }
 }
 
 # Not waiting (KUVO_HEAVY_WAIT=0): says what for, and stops.
@@ -634,7 +642,7 @@ for candidate in "$LOCK" "$LOCK2"; do
 done
 
 # A Rust worker whose lockf died during handoff must not queue itself as a new job.
-if [ "$kind" = rust ] && [ -n "${KUVO_HEAVY_HOLDING:-}" ] && [ -z "$TAKEN" ]; then
+if [ -n "$cargo_lane" ] && [ -n "${KUVO_HEAVY_HOLDING:-}" ] && [ -z "$TAKEN" ]; then
     exit 143
 fi
 
@@ -647,7 +655,7 @@ if [ -n "$TAKEN" ]; then
         rm -f "$claim"
     fi
     unset KUVO_HEAVY_HOLDING
-    if [ "$kind" = rust ]; then
+    if [ -n "$cargo_lane" ]; then
         # The outer lockf exits immediately on cancellation. This worker and
         # its watchdog keep a second lock until Cargo's process group is cleaned up.
         exec 8>"$TAKEN.running"
@@ -666,7 +674,7 @@ if [ -n "$TAKEN" ]; then
     say_holder 0
     # While jobs were still started the old way, under one lock for every kind (older checkouts'
     # test-app.sh), one of these waited for them, and held that lock too as it ran.
-    if [ "$kind" != rust ] && [ "$(date +%Y%m%d)" -le "${KUVO_HEAVY_OLD_UNTIL:-20261026}" ]; then
+    if [ -z "$cargo_lane" ] && [ "$(date +%Y%m%d)" -le "${KUVO_HEAVY_OLD_UNTIL:-20261026}" ]; then
         if ! lockf -ks -t 0 "$OLD" true; then
             [ "$WAITS" = 0 ] && cannot_wait "A heavy job started the old way is running."
             echo "Waiting for a heavy job started the old way to finish…" >&2
@@ -817,7 +825,7 @@ over_time() {
 # Supervise Rust jobs even in a terminal so cancelling the wrapper PID stops Cargo and frees its slot.
 # (Its command starts now: whoever looks at its slot sees it running.)
 [ -z "${holder_file:-}" ] || say_holder "$(date +%s)"
-if [ "$kind" != rust ] && { [ -t 0 ] || { true </dev/tty; } 2>/dev/null; }; then
+if [ -z "$cargo_lane" ] && { [ -t 0 ] || { true </dev/tty; } 2>/dev/null; }; then
     [ -n "${old_way:-}" ] && exec lockf -k "$OLD" $LOW "$@"
     exec $LOW "$@"
 fi
@@ -837,7 +845,7 @@ trap 'over_time "$command_line"' USR1
 # goes nowhere too: nothing it runs there says anything.
 command exec 9>&2 2>/dev/null || exec 9>/dev/null 2>/dev/null
 set -m
-if [ "$kind" = rust ]; then
+if [ -n "$cargo_lane" ]; then
     # A detached child must not inherit the lock and keep the lane indefinitely.
     $LOW "$@" 8>&- 2>&9 9>&- &
 elif [ -n "${old_way:-}" ]; then

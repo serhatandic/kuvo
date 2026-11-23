@@ -261,6 +261,11 @@ impl BoxClient {
         self.transport.take_back(ids);
     }
 
+    /// The nearest box that serves setup-wide reads. A standalone client reads them on its box.
+    pub(crate) fn setup_reader(&self) -> BoxClient {
+        self.transport.setup_client().unwrap_or_else(|| self.clone())
+    }
+
     /// The box of another of your computers, by its key, as this client reaches it (none where it
     /// doesn't yet).
     pub fn peer(&self, key: &str) -> Option<BoxClient> {
@@ -651,18 +656,16 @@ impl BoxClient {
         self.get(&route)
     }
 
-    /// The parts of messages from before (none kept with them) and of those that ran one of the
-    /// engine's commands, by their ids and texts (`kuvo/messages/parts`): one for each, in order.
-    /// `session`, their conversation: a command still on its way there is waited for a moment.
-    pub fn read_parts(&self, session: &str, messages: &[(String, String)]) -> Result<Vec<Parts>> {
+    /// Read one set of parts per message text, in order.
+    pub fn read_parts(&self, messages: &[(String, String)]) -> Result<Vec<Parts>> {
         #[derive(serde::Deserialize)]
         struct Told {
             parts: Vec<Parts>,
         }
         let mut all = Vec::with_capacity(messages.len());
         for batch in messages.chunks(parts::READ_MOST) {
-            let (ids, texts): (Vec<&String>, Vec<&String>) = batch.iter().map(|(id, text)| (id, text)).unzip();
-            let told: Told = self.value(&Request::post(parts::READ_ROUTE, json!({ "texts": texts, "ids": ids, "session": session })))?;
+            let texts: Vec<_> = batch.iter().map(|(_, text)| text).collect();
+            let told: Told = self.value(&Request::post(parts::READ_ROUTE, json!({ "texts": texts })))?;
             if told.parts.len() != batch.len() {
                 return Err(Error::BadAnswer("The box read a different number of messages than it was asked.".into()));
             }

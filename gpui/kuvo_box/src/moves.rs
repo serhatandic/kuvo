@@ -83,6 +83,8 @@ impl Moving {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Moves {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub moves: Vec<Moving>,
     #[serde(default)]
     pub elsewhere: Vec<Elsewhere>,

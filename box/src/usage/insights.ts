@@ -267,12 +267,13 @@ export class Insights {
    * must not be presented as a completed summary. Kept data still counts when its owner is away. */
   async peerCoverage(computer: string | null) {
     const peers = this.directory.insightPeers().filter(({ key }) => !computer || key === computer)
-    const coverage = await Promise.all(peers.map(async ({ key, insights }) => {
+    const coverage = await Promise.all(peers.map(async ({ key, name, insights }) => {
       const covered = await this.db.read<Coverage>(`peer/${key}`)
-      return [key, covered ? "kept" : insights ?? "unknown"] as const
+      return { key, name, state: covered ? "kept" : insights ?? "unknown" }
     }))
-    const scope = coverage.length ? JSON.stringify(coverage.sort(([a], [b]) => a.localeCompare(b))) : ""
-    return { scope, loading: coverage.some(([, state]) => state === "connected") }
+    const scope = coverage.length ? JSON.stringify(coverage.sort((a, b) => a.key.localeCompare(b.key))) : ""
+    const pendingComputers = coverage.filter(peer => peer.state === "connected").map(({ key, name }) => ({ id: key, name }))
+    return { scope, pendingComputers }
   }
 
   /**
@@ -280,7 +281,7 @@ export class Insights {
    * before, a day-by-day trend, ranked lists (bots with the sessions each is over, providers,
    * models and computers) and up to three standout sessions, each with cost, tokens and cache rate.
    */
-  async summary(params: URLSearchParams, peersLoading?: boolean) {
+  async summary(params: URLSearchParams, coverage?: Awaited<ReturnType<Insights["peerCoverage"]>>) {
     const now = this.now()
     const period = Number(params.get("period") ?? 30)
     if (![7, 30, 90].includes(period)) return
@@ -294,9 +295,9 @@ export class Insights {
     const computer = params.get("computer")
     // A machine can have recorded work before the link learned its name.
     const selected = computer === own.key ? localKeys : computer ? keys.filter((key) => key === computer) : keys
-    const [facts, local, waitingForPeers] = await Promise.all([
+    const [facts, local, peerState] = await Promise.all([
       this.db.summary(now, zone, period, scope, selected, keys), this.db.read<Coverage>("local"),
-      peersLoading ?? this.peerCoverage(computer).then(peer => peer.loading),
+      coverage ?? this.peerCoverage(computer),
     ])
     const named = new Map(computers.map(({ key, name }) => [key, name]))
     for (const key of localKeys) named.set(key, own.name)
@@ -348,8 +349,9 @@ export class Insights {
       cacheRate: cacheRate(totals) !== null && cacheRate(prior) !== null ? cacheRate(totals)! - cacheRate(prior)! : null,
     }
     return {
-      state: waitingForPeers || !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty", period, zone,
+      state: peerState.pendingComputers.length || !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty", period, zone,
       ...(local ? { countedAt: local.scanned } : {}),
+      pendingComputers: peerState.pendingComputers,
       totals: measures(totals), change, trend: facts.trend, lists,
       standouts: facts.standouts.map((each) => ({ id: each.session, name: title(each.title), reason: each.reason, kind: each.kind, ...measures(each.sums) })),
     }
@@ -377,11 +379,14 @@ export class Insights {
     // A machine can have recorded work before the link learned its name.
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys
     delete filter.computer
-    const data = await this.db.view(now, zone, period, filter, selected, route, offset, keys)
+    const [data, { pendingComputers }] = await Promise.all([
+      this.db.view(now, zone, period, filter, selected, route, offset, keys),
+      this.peerCoverage(params.get("computer")),
+    ])
     if ("sessions" in data) {
       const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]))
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
-      return { ...data, sessions, localComputers: localKeys }
+      return { ...data, sessions, pendingComputers, localComputers: localKeys }
     }
     if ("calls" in data) {
       const origin = data.calls.findLast(call => localKeys.includes(call.computer) || this.directory.isPeer(call.computer))?.computer
@@ -389,7 +394,7 @@ export class Insights {
       const destination = home && (localKeys.includes(home) || this.directory.isPeer(home))
         ? { status: "available", computer: home }
         : { status: "unavailable" }
-      return { ...data, destination, localComputers: localKeys }
+      return { ...data, destination, pendingComputers, localComputers: localKeys }
     }
     const local = await this.db.read<Coverage>("local")
     const coverage = await Promise.all(currentComputers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
@@ -398,12 +403,12 @@ export class Insights {
       return { key, name, scanned: read?.scanned, stale: read ? read.scanned < now - 2 * SCAN_EVERY : false, issues }
     }))
     const partial = data.totals.partial > 0 || coverage.some((entry) => !entry.scanned || entry.issues.length > 0) || await this.db.read("failed")
-    const state = (await this.peerCoverage(params.get("computer"))).loading || !local && this.scan ? "loading"
+    const state = pendingComputers.length || !local && this.scan ? "loading"
       : coverage.some((entry) => entry.stale) ? "stale"
       : partial ? "partial"
       : data.totals.sessions ? "ready" : "empty"
     return {
-      ...data, computers, bots: await this.db.choices(keys), coverage, state, zone, period,
+      ...data, computers, bots: await this.db.choices(keys), coverage, state, zone, period, pendingComputers,
       updatedDay: local ? dayIn(local.scanned, zone) : null,
       scanning: !!this.scan, localComputers: localKeys,
       unavailable: data.providers.some((row) => row.name === "cursor" && row.partial > 0)
@@ -428,9 +433,9 @@ export async function insightsRoutes(insights: Insights | undefined, method: str
     params.delete("refresh")
     if (refresh && [7, 30, 90].includes(Number(params.get("period") ?? 30))) await insights.recount()
     // (What the box last read for it at once, while it's read afresh: insights-kept.ts.)
-    const { scope, loading } = await insights.peerCoverage(params.get("computer"))
-    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params, loading), refresh, scope)
-      : await insights.summary(params, loading)
+    const coverage = await insights.peerCoverage(params.get("computer"))
+    const data = insights.kept ? await insights.kept.answer(params, () => insights.summary(params, coverage), refresh, coverage.scope)
+      : await insights.summary(params, coverage)
     return data ? json({ data }) : json({ message: "Choose a 7, 30 or 90 day period." }, 400)
   }
   const route = path.length === 0 ? (params.has("session") ? "detail" : "overview") :

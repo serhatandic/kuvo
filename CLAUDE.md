@@ -8,6 +8,8 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 
 - **A box decides, a client draws (strict).** All logic that isn't drawing goes in `box/`: never in a client, never only for this Mac. Logic already in a client: don't extend it; move it or list it. If something can't be on the box, ask first.
 - **Equal computers, one setup (strict).** Each box works with no client and talks to the others peer to peer through the relay; none is a hub. Lists merge across computers, rows name their computer, "Runs on" picks where work starts.
+- **The Rust box (strict).** `box/` is being rewritten in Rust ([design](docs/architecture/rust-box.md)). Behaviour ports 1:1; the code is idiomatic Rust, never TypeScript translated line by line (real types, `Result` errors, ownership for resources, tasks and channels, one seam per platform). It is proven by the conformance cases against both boxes, side-by-side runs on the same data, and a coverage map of the TypeScript tests.
+- **The TypeScript box is lightly frozen** until the Rust box replaces it: fixes and small features only, each with a scenario test.
 - **Plain words.** Users read computer names, never "box".
 - **Updates:** one version per computer, prepared everywhere then switched together; never locked, nothing manual; mixed versions keep working together.
 - **UI drafts first (strict).** Before any new screen, control or visible change, draft two or three options (light and dark) with a recommendation; the user picks. Match the app's existing look and every state.
@@ -32,6 +34,7 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - `docs/architecture/small-computer.md`: the resource budget; what starts on demand.
 - `docs/architecture/agent-accounts.md`: coding-agent sign-ins and accounts.
 - `docs/architecture/windows.md`: the Windows plan (WSL2 and native).
+- `docs/architecture/rust-box.md`: the box rewritten in Rust: shape, contract, switch-over and phase plan.
 - `docs/working-here.md`: how sessions work (reporting, the user away, subagents, handovers), designing UI, GitHub.
 - `docs/testing.md`: read before writing a test; how to run them, Linux (lokum) and Windows checks.
 - `docs/your-settings-pages.md`: adding a page to the desktop app's Your settings.

@@ -170,6 +170,19 @@ Feature `line`. A client opens one stream to each box, and everything it follows
 - **Older box.** A `404` for `kuvo/line` means a box from before the line, which is updating. Retry
   as after a drop, keep what each topic last said, and never show the `404`.
 
+Setup-wide topics publish the kept peer copies in their first state. `pendingComputers`
+names reachable setup members whose first copy is still coming. An empty copy is complete.
+Away peers keep their last-seen rows and cannot act on this line.
+
+Notice IDs remain stable with their owner. Read the setup's `dock` count directly to avoid
+counting an ask twice across Sessions and Bots. Activity counts only current work and exposes
+last-seen sessions separately. Activity Output bytes and archived-session actions go to each row's
+owner. The archive owner rechecks its own confirmation revision before a write.
+
+A conversation's owner supplies its directory and tool readiness. Search asks reachable peers
+at query time and reports `awayComputers` separately from `unavailableComputers`. The matching
+snippets travel in memory and each owner keeps its own transcript index.
+
 ## Setup-wide lists
 
 Features `line.setup-lists`, `line.merged-sessions` and `line.merged-waiting`. The nearest box
@@ -494,7 +507,7 @@ changed since it was read.
 ### What waits on you
 
 One rule, the box's (`asked`): a permission or question from the session or its subagents, a command
-the sandbox stopped, a vault ask, a browsing ask, a work ask, or a proposed goal. `needsYou`, a
+the sandbox stopped, a vault ask, a browsing ask, or a work ask. `needsYou`, a
 project's `asking`, a bot's `now.asking` and `kuvo/waiting` all come from it. Each box counts its
 own. A client adds them up across computers, but never adds the three areas together. A session
 that waits on you is never counted as at work.
@@ -534,8 +547,7 @@ included. A client sends a draft through the conversation's box with `POST kuvo/
 - A client sends fields, never blocks: `POST kuvo/sessions/<id>/send` (`messages.send`). The box
   writes what the agent reads, and keeps the parts in `metadata.kuvo.parts`. Clients draw from the
   parts, and never read or write blocks.
-- What the agent reads, in order: the words, then blocks for the answered widget, a bot's `/goal`
-  (`<sent-with>`), the agents named with `&` (`<named-agents>`, from everyone the box lists then),
+- What the agent reads, in order: the words, then blocks for the answered widget, the agents named with `&` (`<named-agents>`, from everyone the box lists then),
   the review comments, and the files note. A `&` name the box doesn't list is refused (`409`), never
   dropped. For a group chat, a client sends only the words, and the chat's own computer writes the
   block. Vectors: `vectors/message-parts.json`, `vectors/routes/names/agent-naming.json`.
@@ -545,8 +557,7 @@ included. A client sends a draft through the conversation's box with `POST kuvo/
   `[Image N]`, counted from 1 in attach order. Files go to the client's own computer's box as
   `file://`, to another's as bytes. One that can't be read, or is too big (over 50 MB, or 100 MB in
   all), stops the send; it's never quietly left out.
-- **What the box writes in.** The box's own messages to an agent (a goal changing, its sessions'
-  news, a late answer of yours) are user messages marked `metadata.kuvo.note {from, line}`. A
+- **What the box writes in.** The box's own messages to an agent (its sessions' news, a late answer of yours) are user messages marked `metadata.kuvo.note {from, line}`. A
   client shows the `line` as a line of what happened, never as your bubble, and leaves it out of
   Find, copy, export and history. Sessions' news (`metadata.kuvo.news`) and wake-up cards
   (`metadata.kuvo.wake`) are drawn as given. Engine and bridge notes (`synthetic`) show nothing.
@@ -569,13 +580,15 @@ Bots lead sessions; this is how the box keeps that work.
   let a command out of the sandbox.
 - **Limits you set** (`atOnce`, `perDay`, `depth`, `tokensPerDay`). Each start is noted before the
   check, so starts at the same moment count each other.
-- **Goals** (`goals`, `work.goals`). Only a client starts, changes or stops a goal: never a tool, an
-  agent or another computer's mail (an agent can only `propose_goal`). A goal stays on the box it
-  started on. A check after each turn reads the conversation and runs nothing. `state` is
-  `working`, `paused` (`pausedBy` `you`, `error`, `stalled` or `limit`), `met` or `unmet`. Limits
-  pause a goal, never end it.
 - **Background work** is one fact, worked out on the box. `[Session finished]` waits while anything
   the session left is still running, but services that only listen don't hold it.
+  The process list and output read the same shell on its box. The bridge validates the session
+  when resolving a shell by ID after it leaves the active list. Claude Code supplies a live SDK
+  tail and a final output file. Codex reports liveness through its terminal list and output
+  through command events. The terminal list supplies neither an exit code nor past output.
+  Grok reports background tasks through ACP. Antigravity tracks background timers as subagent
+  work. Cursor reports subagents within a turn. The bridge's final `session.idle` clears the
+  session's turn from Activity. Any remaining background work counts separately.
 
 ## The coding agents' state
 
@@ -632,7 +645,7 @@ safe. (Unverified: whether versioned installs still swap engines in place, `link
 - Each box tells only its own news, once, and words every notice itself. No client words a box's
   news.
 - What counts as news (`link/notices/news.ts`): a reply to you; any question, permission or
-  failure; and what an agent sends on purpose (`notify_user`). Wake-ups, watches, a goal's notes and
+  failure; and what an agent sends on purpose (`notify_user`). Wake-ups, watches and
   replies to another agent never count, though they still leave the conversation unread.
 - Words: one short sentence, never a command line, a path or code. Bodies are cut at a word to 100
   characters; titles and box-worded lines to 60.

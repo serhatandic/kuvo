@@ -609,7 +609,7 @@ export async function takeCall(sender: LetterSender & { name?: string }, given: 
 }
 
 // What a start's call asks for, as start_session takes it here: never where the lead's own
-// conversation is (it's on another computer), nor a step of a goal (goals stay on their bot's).
+// conversation is (it's on another computer).
 function startGiven(args: Record<string, unknown>): Record<string, unknown> {
   const given: Record<string, unknown> = {};
   for (const field of START_FIELDS) if (args[field] !== undefined) given[field] = args[field];

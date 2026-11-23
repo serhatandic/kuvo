@@ -1,7 +1,7 @@
 // Move to Computer when something on the way goes wrong (PROTOCOL.md, `kuvo/moves`): a word between
-// the boxes lost, a box started again partway, its engine or group chats not answering, a bot at
-// work on a goal. Whatever it is, a move ends, and never leaves a second live copy, a group chat
-// held for good, or a goal left behind with nobody at it. One box, real (this Mac's), against a
+// the boxes lost, a box started again partway, its engine or group chats not answering.
+// Whatever it is, a move ends without a second live copy or a group chat held for good.
+// One box, real (this Mac's), against a
 // scripted other computer whose mail goes to the script instead of the relay (`sendMovesWith`); its
 // engine and its group chats' bridge are stand-ins.
 //
@@ -97,17 +97,11 @@ fs.writeFileSync(path.join(home, "run", "engine.json"), JSON.stringify({ port: e
 
 // The group chats' bridge, as the link holds, brings in, starts and lets go of one; it answers 500
 // to all of that while it's `down`.
-// It also keeps conversations' own goals (`/goal`), by their sessions.
 const groups = { chats: new Map(), down: false, refused: 0 };
-const loops = new Map();
-let loopsDown = false;
 const bridgeServer = http.createServer(async (request, response) => {
   const given = await reading(request);
   const url = new URL(request.url, "http://x");
   const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
-  const loop = url.pathname.match(/^\/api\/kuvo\/goals\/([^/]+)$/);
-  if (loop && request.method === "GET" && loopsDown) return send(500, { message: "Busy." });
-  if (loop && request.method === "GET") return loops.has(loop[1]) ? send(200, { data: loops.get(loop[1]) }) : send(404, { message: "That conversation has no goal." });
   const route = url.pathname.match(/^\/api\/kuvo\/groups(?:\/([^/]+)(?:\/([a-z]+))?)?$/);
   if (!route) return send(404, {});
   const [, id, action] = route;
@@ -209,92 +203,6 @@ function writeRecord(record) {
 }
 
 // A bot here: its folder and its conversation.
-function bot(id, name) {
-  const folder = path.join(bots, id);
-  fs.mkdirSync(folder, { recursive: true });
-  fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id, name }));
-  fs.writeFileSync(path.join(folder, "session"), `ses_${id.slice(4)}`);
-  engine.sessions.set(`ses_${id.slice(4)}`, { id: `ses_${id.slice(4)}`, title: name, directory: path.join(folder, "workspace"), messages: [] });
-  return `ses_${id.slice(4)}`;
-}
-// A goal of `bot`'s, kept on this box as it keeps them.
-function goalOf(id, botID, session, state) {
-  const file = path.join(home, "run", "work", "goals.json");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  let goals = [];
-  try { goals = JSON.parse(fs.readFileSync(file, "utf8")).goals; } catch {}
-  goals = goals.filter(each => each.bot !== botID);
-  goals.push({ id, bot: botID, name: "Pixel", session, goal: "Ship the site", state, steps: [{ id: "s1", text: "Plan it", state: "todo" }], checks: [], spend: [], public: [], projects: [], wake: false, digest: "none", proposed: Date.now(), ...(state === "running" ? { started: Date.now() } : {}), waiting: [], paused: [], waited: 0, watching: [] });
-  fs.writeFileSync(file, JSON.stringify({ goals }));
-}
-
-test("a bot working on a goal can't move (its goal stays on this computer), and says why", async () => {
-  const session = bot("bot_goal1", "Pixel");
-  goalOf("goal_g1", "bot_goal1", session, "running");
-  const places = (await ask("GET", "kuvo/moves/places?kind=bot&id=bot_goal1")).json.places;
-  assert.deepEqual(places.map(place => [place.ok, place.why, place.note]), [[false, "Pixel is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.", "Working on a goal"]]);
-  const before = told.length;
-  const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: "bot_goal1", to: peerKey });
-  assert.equal(moved.status, 409);
-  assert.match(moved.json.message, /working on a goal/);
-  assert.equal(told.length, before, "nothing offered");
-  assert.equal(recordOf("bot_goal1"), null);
-  assert.ok(!fs.existsSync(path.join(bots, "bot_goal1", "paused")), "its wake-ups go on");
-});
-
-test("a chat working on its /goal can't move (the goal stays on this computer), and says why; once the goal is met, it can", async () => {
-  engine.sessions.set("ses_goal3", { id: "ses_goal3", title: "Auth tests", directory: chats, messages: [] });
-  loops.set("ses_goal3", { session: "ses_goal3", condition: "all tests in test/auth pass", state: "working", started: Date.now(), turns: 2 });
-  try {
-    const places = (await ask("GET", "kuvo/moves/places?kind=chat&id=ses_goal3")).json.places;
-    assert.deepEqual(places.map(place => [place.ok, place.why, place.note]), [[false, "“Auth tests” is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.", "Working on a goal"]]);
-    const before = told.length;
-    const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_goal3", to: peerKey });
-    assert.equal(moved.status, 409);
-    assert.match(moved.json.message, /working on a goal/);
-    assert.equal(told.length, before, "nothing offered");
-    assert.ok(engine.sessions.has("ses_goal3"), "it stays here, with its goal");
-
-    // Paused, it's still the chat's goal; met, it's done.
-    loops.get("ses_goal3").state = "paused";
-    assert.equal((await ask("GET", "kuvo/moves/places?kind=chat&id=ses_goal3")).json.places[0].ok, false);
-    loops.get("ses_goal3").state = "met";
-    assert.equal((await ask("GET", "kuvo/moves/places?kind=chat&id=ses_goal3")).json.places[0].ok, true);
-
-    // While the bridge can't say whether it has one, it doesn't go.
-    loopsDown = true;
-    const unsure = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_goal3", to: peerKey });
-    assert.equal(unsure.status, 409, JSON.stringify(unsure.json));
-    assert.match(unsure.json.message, /couldn’t be checked/);
-    assert.ok(engine.sessions.has("ses_goal3"));
-  } finally {
-    loopsDown = false;
-    loops.delete("ses_goal3");
-    engine.sessions.delete("ses_goal3");
-  }
-});
-
-test("while a bot moves, its goal can't start, and nothing of a goal is sent to it", async () => {
-  const session = bot("bot_goal2", "Pixel");
-  goalOf("goal_g2", "bot_goal2", session, "proposed");
-  // Its move is under way: it's being switched to on lab (which hasn't answered yet).
-  script = () => {};
-  writeRecord({ id: "mov_goal2", kind: "bot", thing: "bot_goal2", name: "Pixel", from: "", to: peerKey, role: "from", stage: "switching", step: "switch", sessions: [session],
-    peer: peerKey, wasPaused: false, tries: 0, started: Date.now(), offered: true, sentAt: Date.now(), switchSince: Date.now() });
-  try {
-    const started = await ask("POST", "kuvo/work/goals/goal_g2", { action: "start" });
-    assert.equal(started.status, 409, JSON.stringify(started.json));
-    assert.match(started.json.message, /moving to another computer/);
-    const asked = await ask("POST", "kuvo/work/goals/ask", { session, goal: "Write the docs" });
-    assert.equal(asked.status, 409, JSON.stringify(asked.json));
-    // Declined: noted here, but the bot isn't told while it moves.
-    assert.equal((await ask("POST", "kuvo/work/goals/goal_g2", { action: "decline" })).status, 200);
-    assert.deepEqual(engine.prompts.filter(each => each.session === session), [], "nothing reached it");
-  } finally {
-    fs.rmSync(path.join(movesFolder, "mov_goal2.json"), { force: true });
-  }
-});
-
 // A bundle lab packs for what it moves here: a chat's conversations and wake-ups' folder, or a group
 // chat as its bridge held it.
 function bundleFor(contents, folder) {

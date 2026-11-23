@@ -1726,7 +1726,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "git.status": ["POST", "kuvo/git/status"],
     // (Settings › Git kept here, and the prompts written here: a Mac's from before moves in once.)
     "git.words": ["POST", "kuvo/git/settings/move"],
-    goals: ["GET", "kuvo/agents/api/kuvo/goals"],
     groups: ["GET", "kuvo/groups"],
     "groups.delete": ["DELETE", "kuvo/groups/grp_none"],
     "groups.edit": ["PATCH", "kuvo/groups/grp_none"],
@@ -1756,7 +1755,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
-    "messages.commands": ["POST", "kuvo/messages/parts"],
     "messages.compaction-words": ["GET", "api/session/none/message"],
     "messages.send": ["POST", "kuvo/messages/parts"],
     // (Each message page the box forwards: a tool step's title and doing, a lead's news of its sessions.)
@@ -1808,7 +1806,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "queue.items": ["GET", "kuvo/sessions/ses_none/queue"],
     // (queue/add taking a message once by its id, sent again.)
     "queue.once": ["POST", "kuvo/sessions/ses_none/queue/add"],
-    "queue.removed.keyword": ["DELETE", "kuvo/sessions/ses_none/queue/msg_none"],
     // (An item sent at the agent's next step; one that isn't waiting is a 404 of its own.)
     "queue.steer": ["POST", "kuvo/sessions/ses_none/queue/msg_none/steer"],
     "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],
@@ -1919,9 +1916,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)
     "work.elsewhere.start": ["POST", "kuvo/agent-tools"],
-    "work.goals": ["GET", "kuvo/work/goals"],
-    "work.goals.apps": ["GET", "kuvo/work/apps/icon?app=com.example.none"],
-    "work.goals.projects": ["POST", "kuvo/work/goals/goal_none"],
     "work.projects": ["GET", "kuvo/work/settings"],
     "work.subagents": ["GET", "kuvo/work/subagents/ses_none"],
     "work.unanswering": ["GET", "kuvo/work/unanswering"],

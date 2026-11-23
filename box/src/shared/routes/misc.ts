@@ -140,7 +140,11 @@ export type SignInStatus = Infer<typeof SIGN_IN_STATUS>;
  * (`info`), for a client that doesn't list it (an older one, archived). Words a subagent's
  * conversation has find the one it works for, with that subagent's session as listed
  * (`subagent`). */
-export const SEARCH_FOUND = object({ results: list(object({ session: string, snippet: string, info: any, "subagent?": any })) });
+const SEARCH_COMPUTER = object({ id: string, name: string });
+export const SEARCH_FOUND = object({
+  results: list(object({ session: string, snippet: string, info: any, "subagent?": any, "computer?": SEARCH_COMPUTER })),
+  "awayComputers?": list(SEARCH_COMPUTER), "unavailableComputers?": list(SEARCH_COMPUTER),
+});
 
 export type SearchFound = Infer<typeof SEARCH_FOUND>;
 
@@ -178,6 +182,8 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
   // Start signing in by one of an account's ways: its page, code and how it ends.
   { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", body: object({ methodID: string, "answer?": any, "browserReturn?": bool }), answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
+  // Searches reachable computers when asked and names computers whose search could not run.
+  { route: "GET kuvo/setup/search", feature: "search.setup", answers: { 200: SEARCH_FOUND } },
   // Sessions whose conversation has the words searched for, the latest first.
   { route: "GET kuvo/search", feature: "search", answers: { 200: SEARCH_FOUND } },
 ];

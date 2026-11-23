@@ -43,8 +43,6 @@ export interface MessageFields {
 /** A message's parts, as clients draw it: its words, then what went with them. */
 export interface MessageParts {
   words: string;
-  /** The keyword an older message was sent with, as typed ("/loop every hour"): read, never sent now. */
-  keyword?: string;
   widget?: string;
   comments?: ReviewComment[];
   /** Files its note names for the agent to open, or that stayed behind (not those it carries). */
@@ -55,8 +53,6 @@ export interface MessageParts {
   phone?: true;
   /** A message from another agent: its name and address ("unknown" when it can't be answered). */
   mail?: { name: string; session: string };
-  /** An older message that ran a command (`keyword`, "/review"), its arguments `words`. */
-  command?: true;
 }
 
 /** Where a message goes and who's around it: the conversation it's written in (left out of who's
@@ -69,13 +65,6 @@ export interface Naming {
 
 // ——— The words ———
 
-// How older messages carried the keyword they were sent with (read, never written now).
-const KEYWORD_HEADING = "The user sent this with a Kuvo Code keyword, which Kuvo Code has already done (switched to Plan, or set the message to repeat), so there's nothing for you to do about it:";
-/** /goal in a bot's chat (`askGoal`): the bot plans it before any of the work. */
-export const GOAL_HEADING = "The user sent this as a goal, with Kuvo Code's /goal. Plan it, check what it needs, and put it to them with propose_goal before doing any of the work:";
-const KEYWORD_BLOCK = messageBlock("<sent-with>", "</sent-with>", [KEYWORD_HEADING, GOAL_HEADING]);
-// How a box sent /goal before it went in the block: its marker, the words, then this.
-const OLD_GOAL = { marker: "[Goal] ", note: "\n\n(The user asked for this as a goal: plan it, check what it needs, and put it to them with propose_goal before doing any of the work.)" };
 const WIDGET_HEADING = "The user sent this from a widget shown in this conversation (show_widget), titled:";
 const WIDGET_BLOCK = messageBlock("<from-widget>", "</from-widget>", [WIDGET_HEADING]);
 const REVIEW_INTRO = "Comments on lines of the current changes:";
@@ -165,11 +154,8 @@ export function partsOf(message: string): MessageParts {
   const comments = commentsOf(files.text);
   const agents = agentsOf(comments.text);
   const widget = WIDGET_BLOCK.split(agents.text);
-  const withKeyword = widget ? widget.before : agents.text;
-  const keyword = keywordOf(withKeyword);
   return {
-    words: keyword.text,
-    ...(keyword.keyword !== undefined ? { keyword: keyword.keyword } : {}),
+    words: widget ? widget.before : agents.text,
     ...(widget ? { widget: trimmed(widget.lines.slice(1).join(" ")) } : {}),
     ...(comments.comments.length ? { comments: comments.comments } : {}),
     ...(files.paths.length ? { paths: files.paths } : {}),
@@ -242,17 +228,6 @@ function agentsOf(text: string): { text: string; agents: { name: string; session
     return close < 0 || !name ? [] : [{ name, session: line.slice(open + 2, close) }];
   });
   return { text: found.before, agents };
-}
-
-// The keyword it was sent with, as typed: in the block, or as a box sent /goal before.
-function keywordOf(text: string): { text: string; keyword?: string } {
-  if (text.startsWith(OLD_GOAL.marker) && text.endsWith(OLD_GOAL.note) && text.length >= OLD_GOAL.marker.length + OLD_GOAL.note.length) {
-    return { text: trimmed(text.slice(OLD_GOAL.marker.length, text.length - OLD_GOAL.note.length)), keyword: "/goal" };
-  }
-  const found = KEYWORD_BLOCK.split(text);
-  const typed = found?.lines[1];
-  if (!found || typed === undefined || !typed.startsWith("/")) return { text };
-  return { text: found.before, keyword: typed };
 }
 
 // A message from another agent: its first line is "[Message from <name> · <session>] (…)", read

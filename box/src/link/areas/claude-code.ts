@@ -1,7 +1,7 @@
 // What Settings › Agents offers to bring over from Claude Code on this box's computer (PROTOCOL.md,
 // `kuvo/claude-code`): the subagents in its own `~/.claude`, which the engine doesn't read by itself
 // (it does read skills), each with what Import writes in this box's settings and whether they have
-// it already. (Its slash commands aren't offered: Kuvo has no commands to bring them to.) Each box lists its own, a Mac's
+// it already. Each box lists its own, a Mac's
 // and a machine's alike, with its app closed too; a client writes one through `kuvo/config`.
 
 import fs from "node:fs";

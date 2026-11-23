@@ -45,7 +45,8 @@ import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
 import { integrationsRoute } from "../areas/integrations";
 import { namedRoute } from "../areas/named";
-import { noticesRoute } from "../areas/notices";
+import { setupOutputsRoute } from "../areas/setup-outputs";
+import { noticesRoute, setupNoticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
 import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
 import { DESKTOP_UNINSTALL_ROUTE, desktopUninstallRoute } from "../uninstall";
@@ -87,7 +88,7 @@ import { skillsRoute } from "../areas/skills";
 import { moveReceiptRoute, moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
 import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
 import { worktreeEventsRoute, worktreesRoute } from "../areas/worktrees";
-import { APP_ICON_ROUTE, appIconRoute, COMMAND_OUTPUT_ROUTE, commandOutputRoute, newProjectRoute, GOALS_ROUTE, goalsRoute, SUBAGENTS_ROUTE, subagentsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
+import { COMMAND_OUTPUT_ROUTE, commandOutputRoute, newProjectRoute, SUBAGENTS_ROUTE, subagentsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
 import { phoneHere } from "../compat/leave-running";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
@@ -208,6 +209,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "box.ownHome", when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { feature: "attention", when: route => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { feature: "attention", when: route => route === "kuvo/attention", answer: attentionRoute },
+  { feature: "line.merged-outputs", when: route => route === "kuvo/setup/outputs" || route === "kuvo/setup/outputs/events", answer: setupOutputsRoute },
+  { feature: "line.merged-notices", when: route => route === "kuvo/setup/notices/events", answer: setupNoticesRoute },
   { feature: "notices", when: route => route === "kuvo/notices" || route === "kuvo/notices/events", answer: noticesRoute },
   { feature: "named", when: route => route === "kuvo/named", answer: namedRoute },
   { feature: "agent-tools", when: route => route === "kuvo/agent-tools", answer: agentToolsRoute },
@@ -267,6 +270,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // The Work Queue (PROTOCOL.md, "The Work Queue"), before a bot's work, whose routes it starts like.
   { feature: "work-queue", when: route => route.match(WORK_QUEUE_ROUTE), answer: workQueueRoute },
   { feature: "search", when: route => route === "kuvo/search", answer: searchRoute },
+  { feature: "search.setup", when: route => route === "kuvo/setup/search", answer: searchRoute },
   { feature: "git.backups", when: route => route === "kuvo/git/backups" || route === "kuvo/git/backups/restore", answer: backupsRoute },
   { feature: "git", when: route => route.startsWith("kuvo/git/"), answer: changesRoute },
   { feature: "asks", when: route => route === "kuvo/asks" || route === "kuvo/asks/events", answer: asksRoute },
@@ -307,8 +311,6 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // A bot's work (PROTOCOL.md, "Work"), its stop-all before a bot's own route.
   { feature: "work", when: route => route.match(WORK_ROUTE), answer: workRoute },
   { feature: "work.projects", when: route => route.match(WORK_ASKS_ROUTE), answer: workAsksRoute },
-  { feature: "work.goals", when: route => route.match(GOALS_ROUTE), answer: goalsRoute },
-  { feature: "work.goals.apps", when: route => route === APP_ICON_ROUTE, answer: appIconRoute },
   // Bots' own keys, which no box keeps now (PROTOCOL.md, "Bots have no keys of their own"): said in
   // words, for a client from before that still asks.
   { feature: "bots", when: route => route === "kuvo/bots/keys/refresh" || /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: ({ json }: RouteContext) => json(404, { message: "Bots use this computer's integrations now." }) },

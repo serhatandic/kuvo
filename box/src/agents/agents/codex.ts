@@ -20,6 +20,7 @@ import { computerServers } from "../servers"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { elicitationField } from "../forms"
 import { newID } from "../ids"
+import { addShell, endShell } from "../shells"
 import { onMachine, ownFoldersConfig } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { agentsUpdateThemselves } from "../../shared/agent-updates"
@@ -1471,9 +1472,10 @@ class CodexThread implements Thread {
    * when each started (or was first listed if its start wasn't heard). They go with that app-server.
    * Codex doesn't say when one ends, so they're listed again every while, until none is left.
    */
-  private terminals: { id: string; itemId?: string; since: number; order: WorkOrder }[] = []
+  private terminals: { id: string; itemId?: string; since: number; order: WorkOrder; shell?: string }[] = []
   /** Commands by item ID, including ones that haven't appeared in a terminal list yet. */
   private commandStarts = new Map<string, { since: number; order: WorkOrder }>()
+  private terminalOutput = new Map<string, { output: string; total: number }>()
   private terminalsRead?: ReturnType<typeof setTimeout>
   private terminalReadVersion = 0
   /** The initial snapshot failed, so what the turn left running still needs to be checked. */
@@ -1481,7 +1483,7 @@ class CodexThread implements Thread {
 
   get backgroundTasks() {
     if (!this.server || this.server.isClosed) return []
-    const tasks = this.terminals.map(({ id, since, order }) => ({ id, since, order }))
+    const tasks = this.terminals.flatMap(({ id, since, order, shell }) => shell ? [] : [{ id, since, order }])
     return this.terminalsUnknown ? [...tasks, this.terminalsUnknown] : tasks
   }
 
@@ -1489,7 +1491,9 @@ class CodexThread implements Thread {
     clearTimeout(this.terminalsRead)
     ++this.terminalReadVersion
     const changed = this.terminals.length > 0 || this.terminalsUnknown !== undefined
+    for (const terminal of this.terminals) if (terminal.shell) endShell(terminal.shell)
     this.terminals = []
+    this.terminalOutput.clear()
     this.terminalsUnknown = undefined
     this.commandStarts.clear()
     if (changed) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
@@ -1497,7 +1501,7 @@ class CodexThread implements Thread {
 
   async stopBackgroundTasks() {
     const server = this.server
-    if (!this.backgroundTasks.length || !server || !this.nativeID) return
+    if ((!this.terminals.length && !this.terminalsUnknown) || !server || !this.nativeID) return
     await server.request("thread/backgroundTerminals/clean", { threadId: this.nativeID }, 30_000).catch(() => {})
     await this.readTerminals()
   }
@@ -1514,7 +1518,7 @@ class CodexThread implements Thread {
       this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals)
       this.terminalsRead.unref()
     }
-    const listed: { id: string; itemId?: string }[] = []
+    const listed: { id: string; itemId?: string; command?: string }[] = []
     try {
       const seen = new Set<string>()
       let cursor: string | undefined
@@ -1523,7 +1527,11 @@ class CodexThread implements Thread {
         if (!Array.isArray(answer?.data)) throw new Error("Codex didn't list its background terminals.")
         for (const terminal of answer.data) {
           if (typeof terminal?.processId !== "string") continue
-          listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined })
+          listed.push({
+            id: terminal.processId,
+            itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined,
+            command: typeof terminal.command === "string" ? terminal.command : undefined,
+          })
         }
         cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined
         if (cursor) seen.add(cursor)
@@ -1545,18 +1553,45 @@ class CodexThread implements Thread {
     const wasUnknown = this.terminalsUnknown !== undefined
     this.terminalsUnknown = undefined
     const before = new Map(this.terminals.map((terminal) => [terminal.id, terminal]))
-    this.terminals = listed.map(({ id, itemId }) => {
+    this.terminals = listed.map(({ id, itemId, command }) => {
       const known = before.get(id)
+      const same = known?.itemId === itemId ? known : undefined
       const start = itemId === undefined ? undefined : this.commandStarts.get(itemId)
-      const observed = start ?? (known?.itemId === itemId ? known : undefined) ?? { since: Date.now(), order: workOrder() }
-      return { id, itemId, since: observed.since, order: observed.order }
+      const observed = start ?? same ?? { since: Date.now(), order: workOrder() }
+      let shell = same?.shell
+      if (!shell && command) {
+        const output = itemId ? this.outputForTerminal(itemId) : { output: "", total: 0 }
+        shell = addShell(this.session.id, this.session.location.directory, unwrapShell(command), async () => output,
+          async () => {
+            await server.request("thread/backgroundTerminals/terminate", { threadId: threadID, processId: id }, 30_000)
+            await this.readTerminals(true)
+          }, observed.since, observed.order)
+      }
+      return { id, itemId, since: observed.since, order: observed.order, shell }
     })
+    const stillRunning = new Set(this.terminals.map(terminal => terminal.shell))
+    for (const terminal of before.values()) {
+      if (terminal.shell && !stillRunning.has(terminal.shell)) endShell(terminal.shell)
+    }
     // Keep a recent history for commands that haven't been listed yet. Listed terminals carry
     // their own timestamps across polls.
     for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200))) this.commandStarts.delete(id)
+    const liveItems = new Set(this.terminals.map(terminal => terminal.itemId))
+    for (const id of this.terminalOutput.keys()) {
+      if (!liveItems.has(id) && !this.commandStarts.has(id)) this.terminalOutput.delete(id)
+    }
     if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
     this.noteBackground(server)
     if (this.terminals.length) again()
+  }
+
+  private outputForTerminal(itemId: string) {
+    let output = this.terminalOutput.get(itemId)
+    if (!output) {
+      output = { output: "", total: 0 }
+      this.terminalOutput.set(itemId, output)
+    }
+    return output
   }
 
   private noteBackground(server: RPC) {
@@ -2046,6 +2081,20 @@ class CodexThread implements Thread {
     const item = params?.item
     if ((!from || from === this.server) && method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id)) {
       this.commandStarts.set(item.id, { since: Date.now(), order: workOrder() })
+    }
+    if (!from || from === this.server) {
+      if (method === "item/commandExecution/outputDelta" && typeof params.itemId === "string" && typeof params.delta === "string") {
+        const output = this.outputForTerminal(params.itemId)
+        output.output = (output.output + params.delta).slice(-outputLimit)
+        output.total += Buffer.byteLength(params.delta)
+      } else if (method === "item/completed" && item?.type === "commandExecution" && typeof item.id === "string" && typeof item.aggregatedOutput === "string") {
+        const output = this.outputForTerminal(item.id)
+        const total = Buffer.byteLength(item.aggregatedOutput)
+        if (total >= output.total) {
+          output.output = item.aggregatedOutput.slice(-outputLimit)
+          output.total = total
+        }
+      }
     }
     if (!active) return
     const turn = active.turn

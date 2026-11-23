@@ -9,6 +9,37 @@ use serde::Deserialize;
 use crate::client::BoxClient;
 use crate::follow::{Follow, Followed, follow_lines};
 
+/// The whole setup's recent notices, retaining their owning computer across reconnects.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetupTold {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
+    pub origins: Vec<NoticeOrigin>,
+    pub notices: Vec<SetupNotice>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoticeComputer {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoticeOrigin {
+    pub computer: NoticeComputer,
+    pub telling: bool,
+    pub away: bool,
+    #[serde(rename = "lastSeen")]
+    pub last_seen: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetupNotice {
+    pub computer: NoticeComputer,
+    #[serde(flatten)]
+    pub told: ToldNotice,
+}
+
 /// What a box told in the last ten minutes, oldest first, and whether it tells its news now (a
 /// machine whose bridge isn't running doesn't: it has no news to show until it runs again).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -73,6 +104,11 @@ fn strings<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Re
 }
 
 impl BoxClient {
+    /// Setup-wide history with the same origin keys on every box.
+    pub fn follow_setup_notices(&self) -> Follow<Followed<SetupTold>> {
+        follow_lines(self, "kuvo/setup/notices/events".into())
+    }
+
     /// What the box told lately, as it is now.
     pub fn notices(&self) -> crate::Result<Told> {
         self.get("kuvo/notices")
