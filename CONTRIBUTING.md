@@ -84,7 +84,7 @@ Set `KUVO_HEAVY_WAIT=0` to exit 75 if a job would wait, or
 
 #### Route scenarios
 
-The bridge runs `protocol/vectors/routes/*.json` against the machine handler
+The bridge runs `box/test/fixtures/routes/*.json` (and `protocol/vectors/routes/features.json`) against the machine handler
 (`contract.test.js`) and the Mac box handler (`contract-mac.test.js`). The
 Mac scenarios use a captured 0.7 bot kit. The engine is a stand-in in both
 runners. To add a scenario:

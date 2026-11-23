@@ -65,7 +65,7 @@ Baseline is piece T at `819e4f5a6`. Scope is the computer's Kuvo home (including
 
 ## Message formats
 
-The route registry in `box/src/link/server/router.ts`, legacy Mac relay dispatcher in `box/src/link/mac/relay.ts`, and bridge dispatcher in `box/src/agents/server.ts` are the route indexes. `protocol/vectors/routes/` indexes endpoint examples, routing and response shapes. Stream events are included with their endpoint family. The relay protocol's type byte, the encrypted link type byte, and each mail discriminator are separate from schema versions.
+The route registry in `box/src/link/server/router.ts`, legacy Mac relay dispatcher in `box/src/link/mac/relay.ts`, and bridge dispatcher in `box/src/agents/server.ts` are the route indexes. `box/test/fixtures/routes/` indexes endpoint examples, routing and response shapes. Stream events are included with their endpoint family. The relay protocol's type byte, the encrypted link type byte, and each mail discriminator are separate from schema versions.
 
 | Family | Messages and baseline reader rules | Current status |
 | --- | --- | --- |

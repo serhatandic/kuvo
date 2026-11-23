@@ -1,7 +1,7 @@
 // A box's integrations brought up to date by the box, with no client there: from the catalogs it has
 // (a Mac's, or the ones its own update brought). Kuvo Code on a Mac used to do this itself, so a box
 // may find settings it left, and each client's change around the box's has to stay. The catalog is the
-// one a release carries, from the box's own table (protocol/vectors/routes/box, scripts/route-vectors.sh), and what's written here
+// one a release carries, from the box's own table (box/test/fixtures/routes/box, scripts/route-vectors.sh), and what's written here
 // as a Mac is what its `EngineConfig` sent: each server's whole value at its path.
 import "./safety"
 import { afterAll, beforeEach, expect, spyOn, test } from "bun:test"
@@ -20,7 +20,7 @@ import { watchFolder } from "../src/shared/watch"
 import { relayStandIn } from "../bridge-tests/relay-stand-in.js"
 
 const here = import.meta.dir
-const catalogFile = join(here, "../../protocol/vectors/routes/box/integrations.json")
+const catalogFile = join(here, "fixtures/routes/box/integrations.json")
 const main = join(here, "../src/link/main.ts")
 const catalog: { id: string; settings: Record<string, unknown> }[] = JSON.parse(readFileSync(catalogFile, "utf8")).integrations
 const pinned = (id: string) => catalog.find(each => each.id === id)!.settings
@@ -361,7 +361,7 @@ test("a Mac connecting to a machine with no bridge, having put its newer catalog
   expect(JSON.parse(readFileSync(settings, "utf8")).mcp.servers).toEqual(upToDate(MACHINE))
 }, SPAWNS)
 
-const popularFile = join(here, "../../protocol/vectors/routes/box/mcp-catalog.json")
+const popularFile = join(here, "fixtures/routes/box/mcp-catalog.json")
 const popular: { id: string; settings: { command: string[]; environment: Record<string, string> } }[] = JSON.parse(readFileSync(popularFile, "utf8")).servers
 const devTools = popular.find(each => each.id === "chrome-devtools")!.settings
 const devToolsPin = devTools.command[1]

@@ -1,6 +1,6 @@
 // The catalogs a box's release carries (`bin/integrations.json`, `bin/mcp-catalog.json`), written
 // from the box's one table, are what the route scenarios set their boxes up with
-// (protocol/vectors/routes/box, scripts/route-vectors.sh): a change to the table that isn't
+// (box/test/fixtures/routes/box, scripts/route-vectors.sh): a change to the table that isn't
 // written there too would leave every box's runner on a catalog no release has.
 import "./safety"
 import { expect, test } from "bun:test"
@@ -11,7 +11,7 @@ import { dirname, join } from "node:path"
 import { boxFiles, writeBoxFiles } from "../src/release/files"
 import { integrationsCatalog, mcpCatalog } from "../src/shared/integrations/catalogs"
 
-const vector = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "../../protocol/vectors/routes/box", name), "utf8"))
+const vector = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "fixtures/routes/box", name), "utf8"))
 
 test("the route scenarios' boxes have the integrations and popular servers a release brings (scripts/route-vectors.sh after a change to the table)", () => {
   expect(JSON.parse(integrationsCatalog(false))).toEqual(vector("integrations.json"))

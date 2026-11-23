@@ -28,6 +28,8 @@ const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-
 // A phone's key as a phone has one (32 bytes, base64url), named for a test.
 const shaped = name => crypto.createHash("sha256").update(name).digest("base64url");
 const vectors = name => JSON.parse(fs.readFileSync(new URL(`../../protocol/vectors/${name}`, import.meta.url), "utf8"));
+// The box's own cases, which no other side reads (box/test/fixtures).
+const fixture = name => JSON.parse(fs.readFileSync(new URL(`../test/fixtures/${name}`, import.meta.url), "utf8"));
 const hex = s => Buffer.from(s, "hex");
 
 test("Noise IK matches the vectors", () => {
@@ -1432,7 +1434,7 @@ test("a permission's notice names what its Always saves, as the Mac's buttons sa
   assert.equal(await titled("external_directory", [path.join(os.homedir(), "notes/a.md")], [path.join(os.homedir(), "notes/*")]), "Always Allow ~/notes");
   assert.equal(await titled("external_directory", [], [path.join(os.homedir(), "Developer/clients/acme/website-2026/*")]), "Always Allow …/website-2026");
   // The same words as the Mac's and the phone's, case for case (ClientText's AlwaysWordsTests reads them too).
-  const vectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/always-words.json", import.meta.url), "utf8"));
+  const vectors = JSON.parse(fs.readFileSync(new URL("../test/fixtures/always-words.json", import.meta.url), "utf8"));
   for (const each of vectors.cases) assert.equal(link.alwaysTitle(each, each.home ?? null), each.plain, JSON.stringify(each));
 });
 
@@ -2366,7 +2368,7 @@ test("a machine's settings become its own once: what it runs with now, its Mac's
 });
 
 test("personalities' libraries meet as the vectors say", () => {
-  for (const each of vectors("personalities.json").cases) {
+  for (const each of fixture("personalities.json").cases) {
     assert.deepEqual(link.mergePersonalities(...each.libraries), each.expected, each.name);
   }
 });

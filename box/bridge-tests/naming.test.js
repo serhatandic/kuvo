@@ -1,6 +1,6 @@
 // "&" in a message from a phone, on every box (PROTOCOL.md, "Messages in a session", `kuvo/named`):
 // the agents it names, told at its end, as the Mac's AgentReferences words it. Both read the same
-// cases (protocol/vectors/routes/names/agent-naming.json).
+// cases (box/test/fixtures/routes/names/agent-naming.json).
 //
 // Run with `node --test box/bridge-tests/naming.test.js`.
 import "./test-safety.js";
@@ -22,7 +22,7 @@ removeAtEnd(home);
 atEnd(async () => {
   await link.ownRefreshed();
 });
-const vector = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/routes/names/agent-naming.json", import.meta.url), "utf8"));
+const vector = JSON.parse(fs.readFileSync(new URL("../test/fixtures/routes/names/agent-naming.json", import.meta.url), "utf8"));
 
 for (const each of vector.cases) {
   test(each.about, () => {
