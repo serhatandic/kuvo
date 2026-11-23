@@ -1,6 +1,6 @@
 # Credential Manager is scoped to a Windows logon, not HOME. Run only on the opted-in test account.
 param(
-    [ValidateSet('check', 'define', 'remove-fixture')][string]$Action,
+    [ValidateSet('check', 'clear', 'remove-fixture')][string]$Action,
     [string]$Target
 )
 $ErrorActionPreference = 'Stop'
@@ -30,18 +30,11 @@ public static class TestCredentials {
     private static extern void CredFree(IntPtr buffer);
 
     private const int NotFound = 1168;
-    private static bool emptyBaseline;
 
     public static int Count() { return Inspect(false); }
 
-    public static bool BeginRun() {
-        emptyBaseline = Count() == 0;
-        return emptyBaseline;
-    }
-
-    public static int EndRun() {
-        if (!emptyBaseline) throw new InvalidOperationException("No verified empty credential baseline.");
-        emptyBaseline = false;
+    // After a run whose baseline `check` found empty: everything in the store is the run's.
+    public static int Clear() {
         int removed = Inspect(true);
         if (Count() != 0) throw new InvalidOperationException("Credential Manager is still populated after cleanup.");
         return removed;
@@ -84,7 +77,7 @@ switch ($Action) {
         # Generic targets are arbitrary. An empty store is the only unambiguous baseline.
         if ([TestCredentials]::Count() -ne 0) { exit 42 }
     }
-    'define' { } # Keep the verified baseline in the native supervisor's process.
+    'clear' { Write-Output ([TestCredentials]::Clear()) }
     'remove-fixture' {
         if ($Target -cnotmatch '^kuvo-test-[a-f0-9-]{36}$') { throw 'Invalid fixture target.' }
         [TestCredentials]::Delete($Target, 1)
