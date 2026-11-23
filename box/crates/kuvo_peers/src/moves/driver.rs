@@ -35,6 +35,7 @@ use super::{
     receipt::{self, Bundle, Decided, Decision, Payloads, Receipts},
     session_files, session_notes,
     transfer::{BundleSize, Flight, IncomingBundle, OutgoingBundle, PART_BYTES, Receiving},
+    wake_folder,
 };
 use crate::{
     directory::ComputerKey,
@@ -44,7 +45,7 @@ use crate::{
     setup_lists::{Reader, View},
 };
 
-const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
+pub(super) const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
 const CHECK_WAIT: Millis = 45_000;
 const STARTING_ON_RESTART: Millis = 30_000;
 const STEP_AGAIN: Millis = 60_000;
@@ -93,6 +94,7 @@ pub(crate) fn start(
     let events = relay
         .subscribe()
         .ok_or_else(|| io::Error::other("The resident relay stopped"))?;
+    files::create_private_dirs(&reader.run.join("moves"))?;
     let (tx, commands) = mpsc::channel(16);
     let driver = Driver {
         reader,
@@ -221,6 +223,20 @@ impl Driver {
                 "This record is held while its owner changes.",
             ));
         }
+        if let Some(peer) = destination
+            && !listing::supports_moves(&view, &request.to, listing::checkpointed(self.run_dir()))
+        {
+            let name = listing::plain_name(&peer.name);
+            let place = if name.is_empty() {
+                "That computer"
+            } else {
+                &name
+            };
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                listing::needs_update(place),
+            ));
+        }
         let mut random = [0; 12];
         getrandom::fill(&mut random).map_err(|_| unavailable())?;
         // The durable name is also a cross-resident identifier.
@@ -246,11 +262,11 @@ impl Driver {
         row.sessions.push(row.thing.clone());
         row.step = check.then(|| "check".to_owned());
         row.extra.insert("twoComputers".into(), true.into());
-        if let Some(model) = session
-            .get("model")
-            .filter(|model| model["providerID"].is_string() && model["id"].is_string())
-        {
-            row.extra.insert("model".into(), model.clone());
+        if let Some(model) = model(&session) {
+            row.extra.insert(
+                "model".into(),
+                serde_json::to_value(model).expect("a model serializes"),
+            );
         }
         self.reserve(&row)
             .map_err(|_| Refusal::new(StatusCode::CONFLICT, MOVING))?;
@@ -399,14 +415,11 @@ impl Driver {
                     .await;
             }
             if self.retry_due(row, STEP_AGAIN) {
-                self.tell(
-                    view,
-                    key,
-                    row,
-                    "check",
-                    json!({"kind":row.kind,"name":row.name,"model":row.extra.get("model")}),
-                )
-                .await;
+                let mut check = json!({"kind":row.kind,"name":row.name});
+                if let Some(model) = row.extra.get("model") {
+                    check["model"] = model.clone();
+                }
+                self.tell(view, key, row, "check", check).await;
             }
         } else if row.stage == Stage::Holding {
             if let Err(error) = self.pack(view, row).await {
@@ -505,15 +518,9 @@ impl Driver {
             });
         }
         if op == "check" {
-            let plain = given["kind"].as_str() == Some("chat") && given["lane"] != true;
-            let ready = match self.engine.session_move().await {
-                Ok(engine) if plain => engine.ready().await.is_ok(),
-                _ => false,
-            };
-            let answer = if ready {
-                json!({"ok":true})
-            } else {
-                json!({"ok":false,"message":self.no_engine(view)})
+            let answer = match self.check_destination(view, given).await {
+                Ok(()) => json!({"ok":true}),
+                Err(message) => json!({"ok":false,"message":message}),
             };
             self.wire(view, key, id, &Bundle::default(), "checked", answer)
                 .await;
@@ -655,6 +662,9 @@ impl Driver {
                 if row.stage.switched()
                     && (!row.verify_payloads || given["verifiedPayloads"] == true) =>
             {
+                if given["verifiedPayloads"] == true {
+                    row.extra.insert("verifiedPayloads".into(), true.into());
+                }
                 self.finish(&mut row).await?;
             }
             "dropped" if row.stage == Stage::Switching && given["neverSwitched"] == true => {
@@ -670,6 +680,7 @@ impl Driver {
     }
 
     async fn pack(&mut self, view: &View, row: &mut Journal) -> io::Result<()> {
+        wake_folder::hold(self.run_dir(), row, self.reader.now())?;
         let session = self.engine.session_move().await.map_err(io::Error::other)?;
         session
             .settle(&row.sessions)
@@ -726,7 +737,8 @@ impl Driver {
             ));
         }
         let home = self.run_dir().parent().expect("resident has a home");
-        let location = home.join("chats");
+        let location = chats_dir(home);
+        let wake = wake_folder::original(self.run_dir(), row)?;
         let mut manifest = Manifest {
             kind: Kind::Chat,
             thing: row.thing.clone(),
@@ -734,12 +746,12 @@ impl Driver {
             exports,
             queues: (!queues.is_empty()).then_some(queues),
             session_files: None,
-            was_paused: Some(false),
+            was_paused: Some(row.extra.get("wasPaused") == Some(&Value::Bool(true))),
             was: Some(Origin {
                 place: view.roster.name.clone(),
                 folder: location.to_str().map(str::to_owned),
             }),
-            folder: None,
+            folder: wake.as_ref().map(|_| row.thing.clone()),
             lane: None,
             group: None,
             decided: None,
@@ -769,7 +781,8 @@ impl Driver {
                 )?;
                 manifest.queues = (!queues.is_empty()).then_some(queues);
                 manifest.session_files = Some(payloads);
-                archive::write_chat(&path, &manifest, Some(&stage)).map_err(io::Error::other)
+                archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref())
+                    .map_err(io::Error::other)
             })();
             let cleaned = files::remove_tree_synced(&stage);
             packed?;
@@ -813,11 +826,14 @@ impl Driver {
     async fn offer(&mut self, view: &View, key: ComputerKey, row: &Journal) {
         self.mark_retry(row);
         let mut payload = json!({
-            "safeSwitch":true, "twoComputers":true, "wasPaused":false, "kind":row.kind, "thing":row.thing,
+            "safeSwitch":true, "twoComputers":true, "wasPaused":row.extra.get("wasPaused") == Some(&Value::Bool(true)), "kind":row.kind, "thing":row.thing,
             "name":row.name, "size":row.size, "from":row.from,
         });
         if row.verify_payloads {
             payload["verifyPayloads"] = true.into();
+        }
+        if let Some(paused) = row.extra.get("pausedAs") {
+            payload["pausedAs"] = paused.clone();
         }
         self.tell(view, key, row, "offer", payload).await;
     }
@@ -936,6 +952,7 @@ impl Driver {
         key: ComputerKey,
         row: &mut Journal,
     ) -> io::Result<()> {
+        wake_folder::release(self.run_dir(), row)?;
         let status = row
             .extra
             .get("failedStatus")
@@ -986,7 +1003,8 @@ impl Driver {
     async fn clean_source(&self, row: &mut Journal) -> io::Result<()> {
         let session = self.engine.session_move().await.map_err(io::Error::other)?;
         let home = self.run_dir().parent().expect("resident has a home");
-        let backup = home.join(format!("moved-{}", row.thing));
+        let backup = wake_folder::original(self.run_dir(), row)?
+            .unwrap_or_else(|| home.join(format!("moved-{}", row.thing)));
         if row.extra.get("kept") != Some(&Value::Bool(true)) {
             let exports = session
                 .export_tree(&row.thing)
@@ -995,7 +1013,11 @@ impl Driver {
             files::write_atomic_through(
                 &backup.join("conversation.json"),
                 &serde_json::to_vec_pretty(&exports)?,
-                home,
+                if backup.starts_with(home) {
+                    home
+                } else {
+                    &backup
+                },
             )?;
             row.extra.insert("kept".into(), true.into());
             row.save(self.run_dir())?;
@@ -1274,11 +1296,12 @@ impl Driver {
             drop(engine);
             self.clear_copy(&before).await?;
             handoff::remove_completed(self.run_dir(), &before)?;
-        } else if engine
-            .lookup(thing)
-            .await
-            .map_err(io::Error::other)?
-            .is_some()
+        } else if wake_folder::at(self.run_dir(), thing)?.try_exists()?
+            || engine
+                .lookup(thing)
+                .await
+                .map_err(io::Error::other)?
+                .is_some()
         {
             let place = if cfg!(target_os = "macos") {
                 "this Mac"
@@ -1300,6 +1323,11 @@ impl Driver {
         row.verify_payloads = given["verifyPayloads"] == true;
         row.extra.insert("safeSwitch".into(), true.into());
         row.extra.insert("createdSessions".into(), json!([]));
+        row.extra
+            .insert("wasPaused".into(), (given["wasPaused"] == true).into());
+        if let Some(paused) = given["pausedAs"].as_str() {
+            row.extra.insert("pausedAs".into(), paused.into());
+        }
         if given["twoComputers"] == true {
             row.extra.insert("twoComputers".into(), true.into());
         }
@@ -1479,7 +1507,10 @@ impl Driver {
             || manifest.group.is_some()
             || manifest.decided.is_some()
             || (row.verify_payloads && manifest.session_files.is_none())
-            || manifest.folder.is_some()
+            || manifest
+                .folder
+                .as_deref()
+                .is_some_and(|folder| folder != row.thing)
             || manifest.lane.is_some()
             || manifest.work_queue.is_some()
         {
@@ -1487,11 +1518,17 @@ impl Driver {
         }
         let sessions = tree(&manifest.exports, &row.thing)?;
         let home = self.run_dir().parent().expect("resident has a home");
-        let directory = home.join("chats");
+        let directory = chats_dir(home);
         let payloads = manifest.session_files.take().unwrap_or_default();
         session_files::validate(&row.id, &sessions, &payloads)?;
         let staged_files = self.staged(&row.id).join("received-files");
-        archive::unpack_chat_files(bundle, &staged_files, &payloads).map_err(io::Error::other)?;
+        let staged_wake = self.staged(&row.id).join("received-wake");
+        let wake = manifest
+            .folder
+            .as_deref()
+            .map(|folder| (folder, staged_wake.as_path()));
+        archive::unpack_chat_files(bundle, &staged_files, &payloads, wake)
+            .map_err(io::Error::other)?;
         let mut queues = manifest.queues.take().unwrap_or_default();
         session_files::rewrite(home, &payloads, &mut manifest.exports, &mut queues)?;
         let engine = self.engine.session_move().await.map_err(io::Error::other)?;
@@ -1518,6 +1555,9 @@ impl Driver {
         row.save(self.run_dir())?;
         if let Some(payloads) = row.payloads.as_ref() {
             session_files::install(home, &staged_files, &payloads.sessions)?;
+        }
+        if wake.is_some() {
+            wake_folder::place(self.run_dir(), row, &staged_wake, &directory)?;
         }
         files::create_private_dirs(&directory)?;
         let receipt = row.import_receipt()?;
@@ -1637,6 +1677,7 @@ impl Driver {
                 .activate_queues(&row.id, &unpaused)
                 .await
                 .map_err(io::Error::other)?;
+            wake_folder::release(self.run_dir(), row)?;
             handoff::commit_destination(self.run_dir(), row)?;
         }
         handoff::remove_completed(self.run_dir(), row)?;
@@ -1653,7 +1694,7 @@ impl Driver {
             return;
         };
         let home = self.run_dir().parent().expect("resident has a home");
-        let folder = home.join("chats");
+        let folder = chats_dir(home);
         let mut words = format!(
             "You moved to this computer from {place}. What you did before that happened there."
         );
@@ -1760,7 +1801,7 @@ impl Driver {
         let receipt = row.import_receipt()?;
         session_notes::discard(self.run_dir(), &row.sessions, Some(&receipt))?;
         if created.is_none_or(Vec::is_empty) && importing.is_none() {
-            return Ok(());
+            return wake_folder::discard(self.run_dir(), row);
         }
         let engine = self.engine.session_move().await.map_err(io::Error::other)?;
         for id in row.sessions.iter().rev() {
@@ -1775,7 +1816,7 @@ impl Driver {
                     .map_err(io::Error::other)?;
             }
         }
-        Ok(())
+        wake_folder::discard(self.run_dir(), row)
     }
 
     async fn answer_decision(
@@ -1835,13 +1876,66 @@ impl Driver {
         format!("It couldn’t be set up on {}.", view.roster.name)
     }
 
+    async fn check_destination(&self, view: &View, given: &Value) -> Result<(), String> {
+        let place = local_place(self.run_dir(), view);
+        if given["lane"] == true {
+            return Err(format!(
+                "The coding agents on {place} aren’t running. Try again once they are."
+            ));
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let engine = tokio::time::timeout_at(deadline, async {
+            let engine = self.engine.session_move().await?;
+            engine.ready().await?;
+            Ok::<_, kuvo_engine::MoveEngineError>(engine)
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(|| self.no_engine(view))?;
+        if given["kind"].as_str() != Some("group")
+            && let Some(model) = model(given)
+            && matches!(
+                tokio::time::timeout_at(deadline, engine.sign_in_needed(&model.provider)).await,
+                Ok(Ok(true))
+            )
+        {
+            let name = given["name"].as_str().unwrap_or("It");
+            return Err(format!(
+                "{name}’s model needs a sign-in on {place}. Sign in to it in Settings › Accounts there, or choose another model, then move {name}."
+            ));
+        }
+        Ok(())
+    }
+
     fn no_engine(&self, view: &View) -> String {
-        let place = if cfg!(target_os = "macos") {
-            "this Mac"
-        } else {
-            &view.roster.name
-        };
-        format!("The engine isn’t running on {place}.")
+        format!(
+            "The engine on {} isn’t running. Try again once it is.",
+            local_place(self.run_dir(), view)
+        )
+    }
+}
+
+#[derive(Deserialize, serde::Serialize)]
+struct Model {
+    #[serde(rename = "providerID")]
+    provider: String,
+    id: String,
+}
+
+fn model(row: &Value) -> Option<Model> {
+    serde_json::from_value(row.get("model")?.clone()).ok()
+}
+
+fn local_place(run: &Path, view: &View) -> String {
+    if listing::is_mac(run) {
+        return "this Mac".into();
+    }
+    let name = listing::plain_name(&view.roster.name);
+    if name.is_empty() {
+        "this machine".into()
+    } else {
+        name
     }
 }
 
@@ -1946,7 +2040,7 @@ pub(super) async fn chat(engine: &Engine, run: &Path, id: &str) -> Result<Value,
         .map_err(|_| gone())?
         .ok_or_else(gone)?;
     let home = run.parent().expect("the run folder is in the home");
-    let chats = home.join("chats");
+    let chats = chats_dir(home);
     let directory = session
         .pointer("/location/directory")
         .or_else(|| session.get("directory"))
@@ -1963,14 +2057,21 @@ pub(super) async fn chat(engine: &Engine, run: &Path, id: &str) -> Result<Value,
             "It isn’t a chat that moves on its own.",
         ));
     }
-    let file = home.join("wakes").join(id);
-    if file.exists() {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            "The chat’s folder could not be prepared for the move.",
-        ));
-    }
     Ok(session)
+}
+
+fn chats_dir(home: &Path) -> PathBuf {
+    std::env::var_os("KUVO_CHATS")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            if std::env::var("KUVO_BOX").as_deref() == Ok("mac") {
+                if let Some(support) = home.parent() {
+                    return support.join("Chats");
+                }
+            }
+            home.join("chats")
+        })
 }
 
 pub(super) fn chat_name(session: &Value) -> String {
@@ -1995,7 +2096,7 @@ fn conversation(exports: &[Value]) -> Vec<(&Value, &Value)> {
         .collect()
 }
 
-fn session_id(id: &str) -> bool {
+pub(super) fn session_id(id: &str) -> bool {
     id.strip_prefix("ses_").is_some_and(|suffix| {
         (1..=120).contains(&suffix.len())
             && suffix

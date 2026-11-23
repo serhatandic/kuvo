@@ -176,6 +176,23 @@ pub fn replace_synced(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Restore a link in a private staged tree before publishing the directory.
+pub fn restore_symbolic_link(path: &Path, relative: &Path, directory: bool) -> io::Result<()> {
+    if relative.has_root() || relative.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected a relative link",
+        ));
+    }
+    platform::restore_symbolic_link(path, relative, directory)?;
+    sync_parent(path)
+}
+
+pub fn restore_hard_link(path: &Path, target: &Path) -> io::Result<()> {
+    fs::hard_link(target, path)?;
+    sync_parent(path)
+}
+
 /// Publish a staged Mac entry without replacing an entry that appeared at its destination.
 #[cfg(target_os = "macos")]
 pub fn place_mac_entry(from: &Path, to: &Path) -> io::Result<()> {

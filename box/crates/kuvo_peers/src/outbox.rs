@@ -364,6 +364,43 @@ impl Outbox {
         Ok(result)
     }
 
+    /// The answer itself is also a receipt if the delivery acknowledgement went unheard.
+    pub(crate) fn answer(
+        &mut self,
+        from: &[u8; 32],
+        id: &Id,
+        now: u64,
+        reply: impl FnOnce(&Letter) -> Option<Value>,
+    ) -> Result<bool, Error> {
+        self.settle(
+            from,
+            &Delivered {
+                id: id.clone(),
+                ok: true,
+                why: None,
+                retry: None,
+                answer: None,
+                lives: None,
+            },
+            now,
+        )?;
+        let waiting = self.waiting(id);
+        let Some(sent) = read::<Letter>(&waiting)? else {
+            return Ok(false);
+        };
+        if sent.sent_to.as_deref() != Some(keys::encode(from).as_str()) {
+            return Ok(false);
+        }
+        let filed = if let Some(fields) = reply(&sent) {
+            write(&self.replies.join(format!("{}.json", id.as_str())), &fields)?;
+            true
+        } else {
+            false
+        };
+        remove(&waiting)?;
+        Ok(filed)
+    }
+
     /// Finishes terminal notices even if the previous process stopped between retiring a send
     /// and handing its notice to the local delivery queue.
     pub fn finish_failures(

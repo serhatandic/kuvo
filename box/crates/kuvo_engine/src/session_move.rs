@@ -377,6 +377,27 @@ impl SessionMove {
         self.active().await.map(|_| ())
     }
 
+    pub async fn sign_in_needed(&self, provider: &str) -> Result<bool, MoveEngineError> {
+        let listed = self
+            .engine
+            .call::<Value>(&self.lease, Method::GET, "api/provider", None)
+            .await?;
+        Ok(listed.as_array().is_some_and(|accounts| {
+            !accounts.is_empty()
+                && !accounts
+                    .iter()
+                    .any(|row| row["id"].as_str() == Some(provider))
+        }))
+    }
+
+    pub async fn running(&self, session: &str) -> Result<bool, MoveEngineError> {
+        Ok(self
+            .active()
+            .await?
+            .as_object()
+            .is_some_and(|active| active.contains_key(session)))
+    }
+
     pub async fn lookup(&self, session: &str) -> Result<Option<Value>, MoveEngineError> {
         if !valid_session(session) {
             return Err(MoveEngineError::InvalidTree);

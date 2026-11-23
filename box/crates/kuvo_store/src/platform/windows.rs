@@ -26,6 +26,14 @@ pub fn private_dirs(folder: &Path) -> io::Result<()> {
     fs::create_dir_all(folder)
 }
 
+pub fn restore_symbolic_link(path: &Path, relative: &Path, directory: bool) -> io::Result<()> {
+    if directory {
+        std::os::windows::fs::symlink_dir(relative, path)
+    } else {
+        std::os::windows::fs::symlink_file(relative, path)
+    }
+}
+
 // The account's Kuvo home supplies the inheritable ACL on Windows.
 pub fn private_file(_: &File) -> io::Result<()> {
     Ok(())

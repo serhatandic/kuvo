@@ -9,6 +9,10 @@ pub fn private_dirs(folder: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(folder)
 }
 
+pub fn restore_symbolic_link(path: &Path, relative: &Path, _: bool) -> io::Result<()> {
+    std::os::unix::fs::symlink(relative, path)
+}
+
 pub fn private_file(file: &File) -> io::Result<()> {
     file.set_permissions(Permissions::from_mode(0o600))
 }

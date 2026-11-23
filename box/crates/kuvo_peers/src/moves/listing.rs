@@ -54,7 +54,7 @@ impl Shown {
     }
 }
 
-pub(super) fn plain_name(value: &str) -> String {
+pub(crate) fn plain_name(value: &str) -> String {
     value
         .replace(
             |c: char| {
@@ -80,6 +80,38 @@ pub(super) fn place_name(name: Option<&str>) -> String {
 pub(super) fn name_of<'a>(roster: &'a Roster, key: &str) -> Option<&'a str> {
     let key = kuvo_wire::keys::decode_exact(key)?;
     roster.member(&key).map(|member| member.name.as_str())
+}
+
+pub(crate) fn is_mac(run: &Path) -> bool {
+    std::env::var("KUVO_BOX").as_deref() == Ok("mac")
+        || run.parent().is_some_and(|home| {
+            std::fs::read_to_string(home.join("box/kind")).is_ok_and(|kind| kind.trim() == "mac")
+        })
+}
+
+pub(super) fn checkpointed(run: &Path) -> bool {
+    super::read_json(&run.join("link.json"))
+        .ok()
+        .flatten()
+        .is_some_and(|link| link["setup"]["checkpointed"] == true && link["setup"]["aside"] != true)
+}
+
+pub(super) fn supports_moves(view: &View, key: &str, checkpointed: bool) -> bool {
+    let features = view
+        .announced
+        .get(key)
+        .and_then(|entry| entry.features.as_ref());
+    features.is_none_or(|features| features.iter().any(|feature| feature == "moves"))
+        && (!checkpointed
+            || features.is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|feature| feature == "moves.two-computers")
+            }))
+}
+
+pub(super) fn needs_update(name: &str) -> String {
+    format!("{name} needs a newer Kuvo Code before things can move to or from it.")
 }
 
 fn show(record: &Journal, view: &View) -> Option<WithWords> {
@@ -231,6 +263,9 @@ pub(super) fn save_outcome(
         json!({"ok":false, "status":status, "message":message})
     } else {
         let mut value = json!({"ok":true,"move":row.shown()});
+        if row.extra.get("verifiedPayloads") == Some(&Value::Bool(true)) {
+            value["verifiedPayloads"] = true.into();
+        }
         if let Some(note) = note {
             value["note"] = note.into();
         }
@@ -273,29 +308,37 @@ pub(crate) fn register_start(
             if kind != super::Kind::Chat {
                 return Err(Refusal::new(StatusCode::NOT_FOUND, "It isn’t on this computer any more."));
             }
-            let session = super::driver::chat(&engine, &look.run, &id).await?;
+            let session = super::driver::chat(&engine, &look.run, &id).await.map_err(|_| Refusal::new(
+                StatusCode::NOT_FOUND, "It isn’t on this computer any more.",
+            ))?;
             let what = super::driver::chat_name(&session);
             let view = look.view();
             let source = plain_name(&view.roster.name);
-            let moving = journals(&look.run).map_err(format_refusal)?.iter().any(|row| row.live() && row.thing == id);
-            let trash = if cfg!(target_os = "macos") { "the Trash" } else { "Kuvo Code’s trash folder" };
+            let moving = journals(&look.run).map_err(format_refusal)?.iter().any(|row| row.live() && row.covers(&id));
+            let busy = match engine.session_move().await {
+                Ok(engine) => engine.running(&id).await.unwrap_or(false),
+                Err(_) => false,
+            };
+            let waits = if busy { " A turn is running. The move waits up to a minute for it to finish." } else { "" };
+            let trash = if is_mac(&look.run) { "the Trash" } else { "Kuvo Code’s trash folder" };
+            let accepted = checkpointed(&look.run);
             let places: Vec<_> = view.roster.members.iter().filter(|peer| Some(peer.key) != view.roster.here).map(|peer| {
                 let key = kuvo_wire::keys::encode(&peer.key);
                 let entry = view.announced.get(&key);
-                let features = entry.and_then(|entry| entry.features.as_ref());
-                let name = plain_name(&peer.name);
-                let why = if moving { Some(("It’s moving already.".into(), "Moving")) }
-                    else if features.is_some_and(|features| !features.iter().any(|name| name == "moves")) {
-                        Some((format!("Update Kuvo on {name} before trying the move again."), "Needs an update"))
+                let shown = plain_name(&peer.name);
+                let name = if !shown.is_empty() { &shown } else if peer.kind == crate::session::ComputerKind::Mac { "Mac" } else { "Machine" };
+                let why = if moving { Some((super::driver::MOVING.into(), "Moving already")) }
+                    else if !supports_moves(&view, &key, accepted) {
+                        Some((needs_update(name), "Needs a newer Kuvo Code"))
                     } else if view.reach.peer_is_away(&key, entry.and_then(|entry| entry.heard), look.now()) {
-                        Some((format!("{name} isn’t connected."), "Can’t be reached"))
+                        Some((format!("{name} isn’t connected. Connect to it, then try again."), "Can’t be reached"))
                     } else { None };
                 if let Some((why, note)) = why {
                     json!({"key":key,"name":name,"kind":peer.kind,"ok":false,"why":why,"note":note})
                 } else {
                     json!({"key":key,"name":name,"kind":peer.kind,"ok":true,"confirm": {
                         "title":format!("Move {what} to {name}?"), "label":"Move",
-                        "message":format!("Its conversation and wake-ups move with it. New messages and wake-ups wait during the move. Vault items, integrations and browser sign-ins stay on {source}. The original goes to {trash} on {source}."),
+                        "message":format!("Its conversation and wake-ups move with it.{waits} New messages and wake-ups wait during the move. Vault items, integrations and browser sign-ins stay on {source}. The original goes to {trash} on {source}."),
                     }})
                 }
             }).collect();

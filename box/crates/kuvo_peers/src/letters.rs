@@ -1,9 +1,14 @@
 //! Durable ordinary letters and notes. Resolve ownership again for each send
 //! and immediately before placing an incoming prompt on a local session.
 
-use std::{io, path::Path, sync::Arc, time::Duration};
+use std::{
+    io,
+    path::Path,
+    sync::Arc,
+    time::{Duration, UNIX_EPOCH},
+};
 
-use kuvo_engine::Engine;
+use kuvo_engine::{Engine, SessionMove};
 use kuvo_store::{
     files,
     locks::{OnBusy, StaleLock},
@@ -16,13 +21,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
     sync::broadcast,
-    task::JoinHandle,
-    time::{self, MissedTickBehavior},
+    task::{JoinHandle, JoinSet},
+    time::{self, Instant, MissedTickBehavior},
 };
 
 use crate::{
     directory::ComputerKey,
-    outbox::{Delivered, Delivery, Id, IncomingLetter, Outbox, Receipts},
+    moves::{is_mac, plain_name},
+    outbox::{Delivered, Delivery, FailureContext, Id, IncomingLetter, Letter, Outbox, Receipts},
     ownership::Handle,
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, View},
@@ -30,6 +36,8 @@ use crate::{
 
 const MOVED: &str = "It's moving to another computer: it comes again once it's there.";
 const LIMIT: u64 = 600_000;
+const ANSWER_TEXT: usize = 8000;
+const READ_BY_MAIL: usize = 20_000;
 
 pub fn start(
     reader: Reader,
@@ -40,6 +48,7 @@ pub fn start(
     let events = relay
         .subscribe()
         .ok_or_else(|| io::Error::other("The resident relay stopped"))?;
+    files::create_private_dirs(&reader.run.join("outbox/sending"))?;
     let post = Letters {
         reader,
         relay,
@@ -47,6 +56,7 @@ pub fn start(
         ownership,
         outbox: None,
         receipts: None,
+        answers: JoinSet::new(),
     };
     Ok(tokio::spawn(post.run(events)))
 }
@@ -58,6 +68,7 @@ struct Letters {
     ownership: Handle,
     outbox: Option<Outbox>,
     receipts: Option<Receipts>,
+    answers: JoinSet<Option<(Id, Letter)>>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +100,13 @@ impl Letters {
                     Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
+                result = self.answers.join_next(), if !self.answers.is_empty() => {
+                    match result {
+                        Some(Ok(Some((id, letter)))) => self.leave_answer(&id, letter),
+                        Some(Err(error)) => Err(io::Error::other(error)),
+                        _ => Ok(()),
+                    }
+                }
                 _ = tick.tick() => self.send_due().await,
             };
             if let Err(error) = result {
@@ -98,7 +116,12 @@ impl Letters {
     }
 
     fn open_outbox(&mut self) -> io::Result<Option<&mut Outbox>> {
-        if self.outbox.is_none() && self.reader.run.join("outbox/sending").try_exists()? {
+        if self.outbox.is_none()
+            && std::fs::read_dir(self.reader.run.join("outbox/sending"))?
+                .next()
+                .transpose()?
+                .is_some()
+        {
             self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
         }
         Ok(self.outbox.as_mut())
@@ -111,12 +134,31 @@ impl Letters {
         Ok(self.receipts.as_mut().expect("opened receipts for letters"))
     }
 
+    fn leave_answer(&mut self, id: &Id, mut letter: Letter) -> io::Result<()> {
+        letter.at = Some(self.reader.now().max(0) as u64);
+        if self.outbox.is_none() {
+            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
+        }
+        if let Some(outbox) = &mut self.outbox {
+            outbox.enqueue(id, &letter).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
     async fn send_due(&mut self) -> io::Result<()> {
         let view = self.reader.view();
         let now = self.reader.now().max(0) as u64;
+        let run = self.reader.run.clone();
         let Some(outbox) = self.open_outbox()? else {
             return Ok(());
         };
+        if let Some(here) = view.roster.here {
+            outbox
+                .finish_failures(&here, now, |id, letter| {
+                    failure_context(&view, &run, here, id, letter, now)
+                })
+                .map_err(io::Error::other)?;
+        }
         let pending = outbox.due(now, true).map_err(io::Error::other)?;
         for each in pending {
             let Ok(scope) = self.ownership.scope(&each.letter.to, None) else {
@@ -194,8 +236,7 @@ impl Letters {
         // Remote work calls and seats own their own dispatch and receipts.
         if envelope.letter.other.contains_key("call")
             || envelope.letter.other.contains_key("seat")
-            || envelope.letter.read.is_some()
-            || envelope.letter.answers.is_some()
+            || (envelope.letter.read.is_some() && envelope.letter.answers.is_none())
         {
             return Ok(None);
         }
@@ -219,6 +260,14 @@ impl Letters {
         }
         let IncomingLetter { id, letter } = envelope;
         if self.receipts()?.seen(&id, now).map_err(io::Error::other)? {
+            return Ok(Some(delivered(id)));
+        }
+        if let Some(answered) = &letter.answers
+            && (self.accept_answer(view, key, &letter, answered, now)? || letter.read.is_some())
+        {
+            self.receipts()?
+                .accepted(&id, note.is_some(), now)
+                .map_err(io::Error::other)?;
             return Ok(Some(delivered(id)));
         }
         let scope = self
@@ -304,7 +353,7 @@ impl Letters {
             )));
         }
         let text = cut(&letter.text, 32_000).to_owned();
-        let mut sender_known = false;
+        let mut sender = None;
         let (prompt, from, words, steer, metadata) = if let Some(ref note) = note {
             let from = cut(&note.from, 200).to_owned();
             let metadata = note
@@ -319,34 +368,11 @@ impl Letters {
                 metadata,
             )
         } else {
-            let from = letter.from.as_deref().and_then(|from| {
-                let owner = self.ownership.scope(from, None).ok()?.owner;
-                let agent = view
-                    .announced
-                    .get(&key_text)?
-                    .list
-                    .iter()
-                    .find(|agent| agent.session == from)?;
-                (owner?.key == Some(key)).then_some((from, agent.name.as_str()))
-            });
-            sender_known = from.is_some();
-            let name = from.map_or_else(
-                || {
-                    let computer = view
-                        .roster
-                        .member(&key)
-                        .map(|peer| peer.name.split_whitespace().collect::<Vec<_>>().join(" "));
-                    format!(
-                        "an agent on {}",
-                        computer
-                            .as_deref()
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or("another computer")
-                    )
-                },
-                |(_, name)| name.to_owned(),
-            );
-            let address = from.map_or("unknown", |(from, _)| from);
+            sender = self.sender(view, key, letter.from.as_deref());
+            let name = sender
+                .map(|(_, name)| name.to_owned())
+                .unwrap_or_else(|| unknown_sender(view, &key));
+            let address = sender.map_or("unknown", |(from, _)| from);
             let hint = if address == "unknown" {
                 "It can't be answered: who sent it isn't known.".into()
             } else if letter.wait {
@@ -366,21 +392,40 @@ impl Letters {
             return Ok(Some(delivered(id)));
         };
         match engine
-            .deliver_letter(&letter.to, prompt_id, prompt, from, words, steer, metadata)
+            .deliver_letter(
+                &letter.to,
+                prompt_id.clone(),
+                prompt,
+                from,
+                words,
+                steer,
+                metadata,
+            )
             .await
         {
             Ok(kept) => {
                 self.receipts()?
                     .accepted(&id, note.is_some(), now)
                     .map_err(io::Error::other)?;
-                let mut receipt = delivered(id);
-                if note.is_none() && letter.wait && (!sender_known || kept) {
-                    receipt.answer = Some(false);
-                    receipt.why = Some(if sender_known {
-                        "That conversation has a paused queue. Your message waits for the conversation to resume. Its answer, if it writes one, comes to you as a message."
+                let mut receipt = delivered(id.clone());
+                if note.is_none() && letter.wait {
+                    if let Some((from, _)) = sender.filter(|_| !kept) {
+                        self.answers.spawn(wait_for_answer(
+                            engine,
+                            letter.to.clone(),
+                            prompt_id,
+                            from.to_owned(),
+                            key,
+                            id,
+                        ));
                     } else {
-                        "Its answer can't come back to you: it doesn't know who you are."
-                    }.into());
+                        receipt.answer = Some(false);
+                        receipt.why = Some(if sender.is_some() {
+                            "That conversation has a paused queue. Your message waits for the conversation to resume. Its answer, if it writes one, comes to you as a message."
+                        } else {
+                            "Its answer can't come back to you: it doesn't know who you are."
+                        }.into());
+                    }
                 }
                 Ok(Some(receipt))
             }
@@ -394,6 +439,238 @@ impl Letters {
                 Ok(Some(refused(id, message, true, None)))
             }
         }
+    }
+
+    fn sender<'a>(
+        &self,
+        view: &'a View,
+        key: ComputerKey,
+        from: Option<&'a str>,
+    ) -> Option<(&'a str, &'a str)> {
+        let from = from?;
+        let owner = self.ownership.scope(from, None).ok()?.owner?;
+        if owner.key != Some(key) {
+            return None;
+        }
+        let name = if view.roster.here == Some(key) {
+            view.local
+                .list
+                .as_ref()?
+                .sessions
+                .get(from)?
+                .facts
+                .title
+                .as_deref()?
+        } else {
+            &view
+                .announced
+                .get(&encode(&key))?
+                .list
+                .iter()
+                .find(|agent| agent.session == from)?
+                .name
+        };
+        Some((from, name))
+    }
+
+    fn accept_answer(
+        &mut self,
+        view: &View,
+        key: ComputerKey,
+        letter: &Letter,
+        answered: &Id,
+        now: u64,
+    ) -> io::Result<bool> {
+        let run = self.reader.run.clone();
+        let sender = self.sender(view, key, letter.from.as_deref());
+        let Some(outbox) = self.open_outbox()? else {
+            return Ok(false);
+        };
+        outbox
+            .answer(&key, answered, now, |sent| {
+                if is_mac(&run) || !tool_alive(&run, answered, now) {
+                    return None;
+                }
+                if sent.read.is_some() {
+                    let words = letter
+                        .note
+                        .as_ref()
+                        .and_then(|note| note.get("words"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(&letter.text);
+                    let mut reply = json!({"text":cut(words, READ_BY_MAIL), "read":true});
+                    if letter.refused {
+                        reply["isError"] = true.into();
+                    }
+                    return Some(reply);
+                }
+                let fallback = unknown_sender(view, &key);
+                let (from, name) = sender.unwrap_or(("unknown", fallback.as_str()));
+                Some(
+                    json!({"text":cut(&letter.text, ANSWER_TEXT), "to":sent.from,
+                "from":from, "name":name}),
+                )
+            })
+            .map_err(io::Error::other)
+    }
+}
+
+async fn wait_for_answer(
+    engine: SessionMove,
+    session: String,
+    prompt: String,
+    addressed: String,
+    peer: ComputerKey,
+    answers: Id,
+) -> Option<(Id, Letter)> {
+    let text = time::timeout(Duration::from_millis(LIMIT), async {
+        let began = Instant::now();
+        let mut running = false;
+        loop {
+            time::sleep(Duration::from_secs(2)).await;
+            if engine.running(&session).await.unwrap_or(false) {
+                running = true;
+                continue;
+            }
+            if !running && began.elapsed() < Duration::from_secs(6) {
+                continue;
+            }
+            let messages = engine.recent_messages(&session, 20).await.ok().flatten();
+            if let Some(text) = messages
+                .as_deref()
+                .and_then(|messages| answer_after(messages, &prompt))
+            {
+                return Some(text);
+            }
+            if running {
+                return None;
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let mut nonce = [0; 16];
+    getrandom::fill(&mut nonce).ok()?;
+    let id = Id::try_from(format!("ltr_{}", encode(&nonce))).ok()?;
+    let letter = Letter {
+        from: Some(session),
+        to: addressed,
+        text,
+        answers: Some(answers),
+        peer: Some(encode(&peer)),
+        at: None,
+        sent_to: None,
+        note: None,
+        read: None,
+        wait: false,
+        refused: false,
+        other: Default::default(),
+    };
+    Some((id, letter))
+}
+
+fn answer_after(messages: &[Value], prompt: &str) -> Option<String> {
+    let mut text = Vec::new();
+    let mut answered = false;
+    for message in messages
+        .iter()
+        .rev()
+        .filter(|message| message["id"].as_str().is_some_and(|id| id > prompt))
+    {
+        match message["type"].as_str() {
+            Some("assistant") => {
+                let parts = message["content"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let words = parts
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                answered = !words.is_empty() && !parts.iter().any(|part| part["type"] == "tool");
+                if !words.is_empty() {
+                    text.push(words);
+                }
+            }
+            Some("user") if answered => break,
+            _ => {}
+        }
+    }
+    (!text.is_empty()).then(|| cut(&text.join("\n\n"), ANSWER_TEXT).to_owned())
+}
+
+fn unknown_sender(view: &View, key: &ComputerKey) -> String {
+    let name = view
+        .roster
+        .member(key)
+        .map(|peer| plain_name(&peer.name))
+        .unwrap_or_default();
+    let place = if name.is_empty() {
+        "another computer"
+    } else {
+        &name
+    };
+    format!("an agent on {place}")
+}
+
+fn tool_alive(run: &Path, id: &Id, now: u64) -> bool {
+    std::fs::metadata(run.join("replies").join(format!("{}.alive", id.as_str())))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .is_some_and(|updated| u128::from(now).saturating_sub(updated.as_millis()) <= 10_000)
+}
+
+fn failure_context(
+    view: &View,
+    run: &Path,
+    here: ComputerKey,
+    id: &Id,
+    letter: &Letter,
+    now: u64,
+) -> FailureContext {
+    let peer = letter.sent_to.as_deref();
+    let title = peer
+        .and_then(|peer| view.announced.get(peer))
+        .into_iter()
+        .chain(view.announced.values())
+        .flat_map(|copy| &copy.list)
+        .find(|agent| agent.session == letter.to)
+        .map(|agent| agent.name.as_str())
+        .or_else(|| {
+            view.local
+                .list
+                .as_ref()?
+                .sessions
+                .get(&letter.to)?
+                .facts
+                .title
+                .as_deref()
+        })
+        .unwrap_or_default();
+    let mac = is_mac(run);
+    let computer = peer
+        .and_then(decode_exact)
+        .and_then(|peer| {
+            if peer == here {
+                Some(if mac { "this Mac" } else { "this machine" })
+            } else {
+                view.roster.member(&peer).map(|peer| peer.name.as_str())
+            }
+        })
+        .unwrap_or_default();
+    let replies = run.join("replies");
+    let tool_waiting = !mac
+        && letter.wait
+        && !replies.join(format!("{}.gaveup", id.as_str())).exists()
+        && tool_alive(run, id, now);
+    FailureContext {
+        conversation: plain_name(title),
+        computer: plain_name(computer),
+        tool_waiting,
     }
 }
 

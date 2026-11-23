@@ -13,6 +13,8 @@ pub mod receipt;
 mod session_files;
 mod session_notes;
 pub mod transfer;
+mod wake_archive;
+mod wake_folder;
 
 use std::{collections::BTreeSet, io, path::Path};
 
@@ -24,7 +26,7 @@ use crate::{directory::Ownership, lists::matching_paths, reach::Millis};
 
 pub(crate) use driver::Handle;
 pub(crate) use driver::start;
-pub(crate) use listing::{register, register_start};
+pub(crate) use listing::{is_mac, plain_name, register, register_start};
 pub(crate) use notices::{Announcer, Notices};
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");

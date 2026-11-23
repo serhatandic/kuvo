@@ -18,6 +18,7 @@ use super::{
     manifest::{self, Manifest, SessionFile},
     session_files,
     transfer::MAX_BUNDLE_BYTES,
+    wake_archive,
 };
 
 const MANIFEST: &str = "move.json";
@@ -94,24 +95,31 @@ pub fn write_manifest_only(path: &Path, manifest: &Manifest) -> Result<(), Error
     if needs_files(manifest) {
         return Err(Error::RequiresFiles);
     }
-    write_chat(path, manifest, None)
+    write_chat(path, manifest, None, None)
 }
 
 pub(super) fn write_chat(
     path: &Path,
     manifest: &Manifest,
     staged: Option<&Path>,
+    wake: Option<&Path>,
 ) -> Result<(), Error> {
-    if manifest.folder.is_some() || manifest.lane.is_some() || manifest.work_queue.is_some() {
+    if manifest.folder.is_some() != wake.is_some()
+        || manifest.lane.is_some()
+        || manifest.work_queue.is_some()
+    {
         return Err(Error::RequiresFiles);
     }
     let payloads = manifest.session_files.as_deref().unwrap_or_default();
     let bytes = manifest.encode()?;
-    if payloads.iter().fold(bytes.len() as u64, |n, file| {
+    let content = payloads.iter().fold(bytes.len() as u64, |n, file| {
         n.saturating_add(file.proof.size)
-    }) > MAX_BUNDLE_BYTES
-    {
+    });
+    if content > MAX_BUNDLE_BYTES {
         return Err(Error::TooLarge);
+    }
+    if let Some(wake) = wake {
+        wake_archive::measure(wake, MAX_BUNDLE_BYTES - content)?;
     }
     files::write_generated(path, |file| {
         let mut archive = Builder::new(GzEncoder::new(file, Compression::default()));
@@ -132,6 +140,10 @@ pub(super) fn write_chat(
                 contents,
             )?;
         }
+        if let Some((wake, name)) = wake.zip(manifest.folder.as_deref()) {
+            archive.follow_symlinks(false);
+            archive.append_dir_all(name, wake)?;
+        }
         archive.into_inner()?.finish()?;
         Ok(())
     })?;
@@ -142,7 +154,9 @@ pub(super) fn unpack_chat_files(
     path: &Path,
     stage: &Path,
     payloads: &[SessionFile],
+    wake: Option<(&str, &Path)>,
 ) -> Result<(), Error> {
+    let mut wake = wake.map(|(label, path)| wake_archive::Staging::new(label, path));
     let mut expected: BTreeMap<_, _> = payloads
         .iter()
         .map(|file| (format!("session-files/{}", file.relative), file))
@@ -158,6 +172,11 @@ pub(super) fn unpack_chat_files(
             .to_owned();
         let kind = entry.header().entry_type();
         if name == MANIFEST && kind.is_file() {
+            continue;
+        }
+        if let Some(wake) = wake.as_mut()
+            && wake.accept(&name, &mut entry)?
+        {
             continue;
         }
         if kind.is_dir()
@@ -200,6 +219,9 @@ pub(super) fn unpack_chat_files(
     }
     if !expected.is_empty() {
         return Err(Error::RequiresFiles);
+    }
+    if let Some(wake) = wake {
+        wake.seal()?;
     }
     Ok(())
 }
