@@ -25,9 +25,35 @@ binary to include the mixed restart scenario. The crate's `move_storage` test an
 local checks.
 
 Rust uses typed journal views and receipts, the resident's peer actor for authenticated mail
-and per-peer announcements, and `kuvo_store` for atomic writes and durable sealing.
+and timed announcements, and `kuvo_store` for atomic writes and durable sealing.
 A receipt writer holds a scoped lock across the read and write. The replay path only answers
 committed decisions that can be sealed. A live activation journal belongs to the move worker.
+
+The three shared move scenarios and five Rust storage and relay cases passed on
+macOS, WSL2 with GNU libc, static Linux musl under WSL2, and native Windows.
+The macOS workspace compile check, the mixed switch-reply scenario, and the
+TypeScript–Rust reach differential also passed.
+
+## Peer reach files
+
+The differential runner checks both `run/peer-reach.json` and
+`run/peer-reach-checked.json`. A fresh home with no observations leaves both files absent.
+An unreachable peer creates both records. When that peer answers, both files remain
+and its keys are removed. Another peer's saved numeric observations survive both
+writes, including fractional timestamps accepted by the TypeScript reader. The
+pre-port Rust build dropped those entries.
+
+The mixed reach scenario compares those states as well as the final home files.
+The runner normalizes numeric observation timestamps under computer keys and still
+compares file existence, keys and value types. Stream parts and in-memory queue mail
+leave the files alone, as checked over the Rust relay. The `run/agents.json` export
+belongs to 4.1.
+
+For a separate differential run, supply the returning computer's offline seed as
+the third CLI argument. A request can include
+`"peerReach": {"key": "<computer key>", "state": "away"}` followed by a request
+with `"state": "answered"`. The runner starts the peer after observing its absence
+and compares the two saved maps before dispatching each request.
 
 ## TypeScript scenario map
 

@@ -490,7 +490,7 @@ impl Resident {
                                 match result {
                                     Ok(received) => {
                                         if let (Some(key), Some(publisher)) = (received.refresh, &mut publisher) {
-                                            publisher.request(self.view.clone(), now, Refresh::Peer(key));
+                                            publisher.request(self.view.clone(), now, Refresh::Peer { key, ask: received.ask });
                                         }
                                         if let (Some((host, reply)), Some(relay)) = (received.reply, &relay) {
                                             let _ = relay.sender.mail(host, reply).await;
@@ -549,6 +549,20 @@ impl Resident {
                 let Some(peer) = self.view.roster.member(&key) else {
                     return Ok(Received::default());
                 };
+                // Conversation stream parts and in-memory queue reads do
+                // not change the durable reach projection.
+                if payload
+                    .get("sessionFollow")
+                    .and_then(|value| value.get("part"))
+                    .is_some_and(Value::is_object)
+                    || payload
+                        .get("workQueue")
+                        .and_then(|value| value.get("memory"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                {
+                    return Ok(Received::default());
+                }
                 let id = encode(&key);
                 let back = Arc::make_mut(&mut self.view.reach).heard(&self.run, &id)?;
                 let before = self.view.announced.get(&id);
@@ -623,6 +637,7 @@ impl Resident {
                 };
                 return Ok(Received {
                     refresh: (back || was_quiet || ask).then_some(key),
+                    ask,
                     reply,
                 });
             }
@@ -737,13 +752,14 @@ fn take_copy<T: DeserializeOwned + Serialize>(
 #[derive(Default)]
 struct Received {
     refresh: Option<ComputerKey>,
+    ask: bool,
     reply: Option<(Host, Envelope)>,
 }
 
 enum Refresh {
     None,
     All,
-    Peer(ComputerKey),
+    Peer { key: ComputerKey, ask: bool },
 }
 
 struct Publisher {
@@ -759,15 +775,20 @@ impl Drop for Publisher {
 
 impl Publisher {
     fn start(relay: relay::Sender, run: PathBuf) -> Self {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
             let mut announcements = BTreeMap::new();
+            let mut moves = crate::moves::Announcer::default();
             while let Some((view, now, refresh)) = rx.recv().await {
+                match refresh {
+                    Refresh::None => moves.announce(&run, &view.roster, &relay, now).await,
+                    Refresh::Peer { ask: true, .. } => moves.repeat(),
+                    _ => {}
+                }
                 publish_round(
                     &relay,
                     view,
-                    &run,
                     now,
                     refresh,
                     &mut previous,
@@ -787,13 +808,11 @@ impl Publisher {
 async fn publish_round(
     relay: &relay::Sender,
     view: View,
-    run: &Path,
     now: Millis,
     refresh: Refresh,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
 ) {
-    let moving = crate::moves::announcement(run);
     let lists = &view.local_lists;
     let mut older_lists = None;
     let activity = activity::local(&view.local);
@@ -893,7 +912,7 @@ async fn publish_round(
             continue;
         };
         let forced = matches!(refresh, Refresh::All)
-            || matches!(refresh, Refresh::Peer(key) if key == peer.key);
+            || matches!(refresh, Refresh::Peer { key, .. } if key == peer.key);
         let known = view.announced.get(&encode(&peer.key));
         let before = announcements.get(&peer.key);
         if forced
@@ -911,19 +930,6 @@ async fn publish_round(
             }
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
                 announcements.insert(peer.key, (announcement_digest, at));
-            }
-        }
-        if let Some(moving) = &moving {
-            let key = (peer.key, "moving");
-            if forced
-                || previous.get(&key).is_none_or(|(digest, at)| {
-                    *digest != moving.digest || (moving.active && now.saturating_sub(*at) >= 60_000)
-                })
-            {
-                let message = envelope(json!({"at": now, "moving": {"moves": moving.moves}}));
-                if relay.mail(host.clone(), message).await.is_ok() {
-                    previous.insert(key, (moving.digest, now));
-                }
             }
         }
         let activity_key = (peer.key, "activity");

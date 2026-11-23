@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use kuvo_store::format::{self, ObjectFormat};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{
     Journal, Role, Shown, journals,
@@ -214,15 +214,60 @@ fn short(text: &str, most: usize) -> String {
         .collect()
 }
 
-/// A full snapshot, including the first empty one and the empty one after the
-/// last move. A progress byte count doesn't count as a change in stage.
-pub(crate) struct Announcement {
-    pub(crate) moves: Value,
-    pub(crate) digest: [u8; 32],
-    pub(crate) active: bool,
+/// Announce on the resident round. An agents refresh request asks for the move
+/// snapshot anew on that next round, including when there are no active moves.
+#[derive(Default)]
+pub(crate) struct Announcer {
+    sent: Option<([u8; 32], Millis)>,
 }
 
-pub(crate) fn announcement(run: &Path) -> Option<Announcement> {
+impl Announcer {
+    pub(crate) fn repeat(&mut self) {
+        self.sent = None;
+    }
+
+    pub(crate) async fn announce(
+        &mut self,
+        run: &Path,
+        roster: &Roster,
+        relay: &crate::relay::Sender,
+        now: Millis,
+    ) {
+        let Some(current) = announcement(run) else {
+            return;
+        };
+        if self.sent.is_some_and(|(digest, at)| {
+            digest == current.digest && (!current.active || now.saturating_sub(at) < 60_000)
+        }) {
+            return;
+        }
+        let mut sent = roster.members.is_empty();
+        let message = kuvo_wire::mail::Envelope(serde_json::Map::from_iter([
+            ("at".into(), json!(now)),
+            ("moving".into(), json!({"moves": current.moves})),
+        ]));
+        for host in roster
+            .members
+            .iter()
+            .filter_map(crate::directory::Member::host)
+        {
+            sent |= relay.mail(host, message.clone()).await.is_ok();
+        }
+        if sent {
+            self.sent = Some((current.digest, now));
+        }
+    }
+}
+
+/// A full snapshot, including the first empty one and the empty one after the
+/// last move. A progress byte count doesn't count as a change in stage.
+struct Announcement {
+    moves: Value,
+    digest: [u8; 32],
+    active: bool,
+}
+
+fn announcement(run: &Path) -> Option<Announcement> {
     use sha2::{Digest, Sha256};
 
     let moves: Vec<_> = journals(run)

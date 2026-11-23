@@ -61,8 +61,14 @@ struct TestRelay(WebSocketStream<TcpStream>);
 
 impl TestRelay {
     async fn connect() -> (Relay, Self) {
+        Self::connect_with(|_| {}).await
+    }
+
+    async fn connect_with(change: impl FnOnce(&mut Config)) -> (Relay, Self) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut relay = Relay::start(config(format!("ws://{}", listener.local_addr().unwrap())));
+        let mut config = config(format!("ws://{}", listener.local_addr().unwrap()));
+        change(&mut config);
+        let mut relay = Relay::start(config);
         let mut test = Self(
             accept_async(listener.accept().await.unwrap().0)
                 .await
@@ -589,4 +595,123 @@ async fn a_destination_replays_only_the_committed_bundles_receipt() {
             }
         }
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn live_stream_parts_and_temporary_reads_leave_saved_peer_reach_alone() {
+    use kuvo_peers::{
+        directory::{Member, Roster},
+        moves::receipt::{Bundle, Decided, Decision, Receipts},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use std::sync::Arc;
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let home = tempfile::tempdir().unwrap();
+        let run = home.path().join("run");
+        let second_key = [15; 32];
+        let second = Host {
+            key: public(second_key),
+            address: [43; 16],
+        };
+        let original = encode(&public(PEER_KEY));
+        let returning = encode(&second.key);
+        let paths = ["peer-reach.json", "peer-reach-checked.json"].map(|name| run.join(name));
+        let before = json!({(&original): 10, (&returning): 11});
+        for path in &paths {
+            files::write_atomic(path, &serde_json::to_vec(&before).unwrap()).unwrap();
+        }
+        Receipts::open(&run)
+            .record(
+                "mov_confirmed",
+                &Decision {
+                    decided: Decided::Switched,
+                    at: 11,
+                    bundle: Bundle::default(),
+                    peer: Some(returning),
+                    payloads: None,
+                    last: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let (relay, mut wire) = TestRelay::connect_with(|config| {
+            config.peers.push(second.clone());
+        })
+        .await;
+        let _resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(public(RUST_KEY)),
+                main: Some(public(RUST_KEY)),
+                name: "Home".into(),
+                members: [
+                    (public(PEER_KEY), PEER_ADDRESS),
+                    (second.key, second.address),
+                ]
+                .into_iter()
+                .map(|(key, address)| Member {
+                    key,
+                    address: Some(address),
+                    name: encode(&key),
+                    kind: ComputerKind::Machine,
+                })
+                .collect(),
+            },
+            Some(relay),
+            None,
+            false,
+            Arc::new(|| 12),
+        )
+        .await
+        .unwrap();
+
+        for (key, address, packet) in [
+            (
+                PEER_KEY,
+                PEER_ADDRESS,
+                json!({"workQueue": {"memory": true}}),
+            ),
+            (
+                PEER_KEY,
+                PEER_ADDRESS,
+                json!({"sessionFollow": {"part": {}}}),
+            ),
+            (
+                second_key,
+                second.address,
+                json!({"move": {"op": "decision?", "id": "mov_confirmed"}}),
+            ),
+        ] {
+            let bytes = Envelope(packet.as_object().unwrap().clone())
+                .seal(&key, &public(RUST_KEY))
+                .unwrap();
+            wire.send(frames::relay_send(&address, &bytes)).await;
+        }
+
+        // The second peer's receipt confirms both earlier packets have passed
+        // through the resident. Only this ordinary mail clears its reach entry.
+        loop {
+            let bytes = wire.binary().await;
+            if bytes.get(1..17) != Some(&second.address) {
+                continue;
+            }
+            let Some((Kind::Mail, _, body)) = frames::read_frame(&bytes[17..]) else {
+                continue;
+            };
+            let mail = Envelope::open(body, &second_key, &public(RUST_KEY)).unwrap();
+            if mail.0.get("move").is_some() {
+                break;
+            }
+        }
+        for path in paths {
+            let saved: serde_json::Value =
+                serde_json::from_slice(&files::read(&path).unwrap().unwrap()).unwrap();
+            assert_eq!(saved, json!({(&original): 10}));
+        }
+    })
+    .await
+    .unwrap();
 }

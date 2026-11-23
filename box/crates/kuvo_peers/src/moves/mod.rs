@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::{directory::Ownership, lists::matching_paths, reach::Millis};
 
 pub(crate) use listing::register;
-pub(crate) use notices::{Notices, announcement};
+pub(crate) use notices::{Announcer, Notices};
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");

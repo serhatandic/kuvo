@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, openLine, readJSON, request, until, write } from "./adapter.mjs";
+import { boxBinary, openLine, readJSON, request, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
@@ -154,4 +154,31 @@ test("a TypeScript source recovers a lost switch acknowledgement from a restarte
   assert.ok(readJSON(path.join(source.home, "run/moves/moved.json")).some(entry => (
     entry.session === session && entry.key === member.key
   )));
+});
+
+test("both residents create and clear the same peer reach files", {
+  timeout: 90000, skip: !mixed && "Select both binaries to compare their reach files",
+}, async t => {
+  const { compare } = await import("./differential/compare.mjs");
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const here = path.join(root, "here"), peer = path.join(root, "peer");
+  const empty = path.join(root, "empty");
+  const relay = "ws://127.0.0.1:1";
+  const { member, save } = seedPeerSetup(here, relay);
+  seedPeerSetup(peer, relay, 2);
+  write(path.join(empty, "folder-version.json"), '{"version":23}');
+  write(path.join(empty, "run/link.json"), '{"name":"Studio","phones":[]}');
+  const binaries = [boxBinary(), boxBinary(mixed)];
+  const step = state => ({ method: "GET", path: "kuvo/moves/receipt?id=mov_absent", peerReach: { key: member.key, state } });
+  const check = async (home, sequence) => {
+    const differences = await compare(home, sequence, ...binaries, peer);
+    assert.deepEqual(differences.filter(line => /^(request |home\/run\/peer-reach)/.test(line)), []);
+  };
+  await check(empty, [step("absent")]);
+  await check(here, [step("away"), step("answered")]);
+  // Older readers allow any numeric timestamp. Changing Lab must preserve another entry.
+  save("run/peer-reach.json", { kept: 1000.5 });
+  save("run/peer-reach-checked.json", { kept: 1100.5 });
+  await check(here, [step("away"), step("answered")]);
 });
