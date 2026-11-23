@@ -47,22 +47,22 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let accepted_roster = prepared.peer_roster();
     let managed = accepted_roster.is_some();
     let roster = accepted_roster.unwrap_or(bootstrap.roster);
-    let info = info(
-        home,
-        &roster.name,
-        kind,
-        bootstrap.devices.permits_local_pairing(),
-    )?;
     let relay = prepared
         .relay_config()?
         .or(bootstrap.relay)
         .map(Relay::start);
     let setup = prepared.start(relay.as_ref().map(Relay::handle))?;
+    let devices = if managed {
+        bootstrap.devices.with_managed(Arc::new(setup.handle()))
+    } else {
+        bootstrap.devices
+    };
+    let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
     let peers = ResidentPeers::start(
         home,
         roster,
         relay,
-        Some(bootstrap.devices.clone()),
+        Some(devices.clone()),
         kind == ComputerKind::Mac,
         Arc::new(system_clock),
     )
@@ -71,7 +71,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut routes = Registry::new();
     engine.register(&mut routes);
     setup.handle().register(&mut routes);
-    kuvo_peers::routes::register(&mut routes, peers.reader(), bootstrap.devices.clone());
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
         let info = info.clone();
@@ -91,13 +91,8 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
-    let pairings: Arc<dyn kuvo_server::ssh::Pairings> = if managed {
-        Arc::new(setup.handle())
-    } else {
-        Arc::new(bootstrap.devices)
-    };
     resident
-        .serve(dispatcher, pairings, super::shutdown())
+        .serve(dispatcher, Arc::new(devices), super::shutdown())
         .await?;
     Ok(())
 }

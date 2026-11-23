@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
+- The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.
 
 - The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
 - Kuvo keeps the previous file intact if Windows has it locked and refuses an unsupported home layout before starting.

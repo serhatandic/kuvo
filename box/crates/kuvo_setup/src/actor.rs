@@ -68,11 +68,13 @@ struct SetupLink {
     events: broadcast::Receiver<Arc<relay::RelayEvent>>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 struct PairedAccess {
     key: Option<[u8; 32]>,
     public: Option<String>,
     disabled: bool,
+    permits_pairing: bool,
+    devices: Arc<kuvo_peers::devices::DeviceRoster>,
     grants: HashMap<[u8; 32], Grant>,
 }
 
@@ -624,10 +626,13 @@ fn make_view(
     let access = match (setup, own) {
         (Some(_), Some(own)) => {
             let roster = link.member_list()?;
+            let disabled = link.devices_disabled || link.disabled(&roster, &own.public);
             PairedAccess {
                 key: Some(own.key),
                 public: Some(own.public.clone()),
-                disabled: link.devices_disabled || link.disabled(&roster, &own.public),
+                disabled,
+                permits_pairing: !disabled && link.relay.is_some(),
+                devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
                 grants: if link.devices_disabled {
                     HashMap::new()
                 } else {
@@ -639,6 +644,8 @@ fn make_view(
             key: None,
             public: None,
             disabled: true,
+            permits_pairing: false,
+            devices: Arc::default(),
             grants: HashMap::new(),
         },
     };
@@ -864,25 +871,26 @@ impl Owner {
             self.rosters
                 .send_replace(peer_roster(&self.link, self.identity.as_ref()).map(Arc::new));
         }
-        self.refresh();
-        if let Err(error) = self.write_card() {
-            eprintln!("setup card: {error}");
-        }
         if let (Some(network), Some(own), Ok(roster)) =
             (&self.network, &self.identity, self.roster())
         {
-            let grants = self
-                .views
-                .borrow()
-                .access
-                .grants
-                .iter()
-                .map(|(key, grant)| (*key, grant.id.clone()))
-                .collect();
+            let grants = if self.link.devices_disabled {
+                HashMap::new()
+            } else {
+                self.link
+                    .grants(&roster, &own.public)
+                    .into_iter()
+                    .map(|(key, grant)| (key, grant.id))
+                    .collect()
+            };
             let _ = network
                 .sender
-                .trust(grants, roster.hosts(&own.public).collect())
+                .trust_applied(grants, roster.hosts(&own.public).collect())
                 .await;
+        }
+        self.refresh();
+        if let Err(error) = self.write_card() {
+            eprintln!("setup card: {error}");
         }
         Ok(())
     }

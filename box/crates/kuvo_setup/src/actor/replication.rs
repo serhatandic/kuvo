@@ -253,6 +253,7 @@ impl Owner {
                     "setupAuthority",
                     "scopedOfflineEdit",
                     "offlineEditReceipt",
+                    "phoneSync",
                 ]
                 .iter()
                 .any(|field| envelope.0.contains_key(*field)) =>
@@ -263,6 +264,9 @@ impl Owner {
                 }
                 if let Some(docs) = envelope.0.get("docs") {
                     self.receive_docs(*key, &from, docs).await?;
+                }
+                if let Some(given) = envelope.0.get("phoneSync") {
+                    self.phone_sync(&from, given).await?;
                 }
                 if let Some(given) = envelope.0.get("setupAuthority") {
                     self.receive_authority(&from, given).await?;
@@ -280,6 +284,48 @@ impl Owner {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    async fn phone_sync(&mut self, from: &str, given: &Value) -> Result<(), Error> {
+        let Some(id) = given
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| safe_token(id, 22, 43))
+        else {
+            return Ok(());
+        };
+        let setup = self.link.setup()?;
+        if given.get("ack").and_then(Value::as_bool) == Some(true)
+            || given.get("origin").and_then(Value::as_str) != Some(&setup.sign)
+        {
+            return Ok(());
+        }
+        let Some(peer) = self.host(from) else {
+            return Ok(());
+        };
+        if setup.role == Role::Primary {
+            self.refresh_exports().await?;
+        }
+        let find = |kind| {
+            self.exports
+                .iter()
+                .find(|(entry, _)| *entry == kind)
+                .and_then(|(_, envelope)| documents::verify(envelope.clone()).ok())
+                .or_else(|| document::cached(&self.link, kind))
+        };
+        let (Some(phones), Some(peers)) = (find(Kind::Phones), find(Kind::Peers)) else {
+            return Ok(());
+        };
+        let list = format!("{}:{}", phones.n, phones.digest());
+        let roster = format!("{}:{}", peers.n, peers.digest());
+        self.send_doc(&peer, peers.envelope).await;
+        self.send_doc(&peer, phones.envelope).await;
+        self.send(
+            &peer,
+            json!({"phoneSync":{"id":id,"list":list,"peers":roster,"ack":true},"at":lease::wall()}),
+        )
+        .await;
         Ok(())
     }
 
@@ -304,11 +350,11 @@ impl Owner {
         if let Some(part) = given.part
             && let Some(doc) = self.parts.receive(key, part)?
         {
-            self.take_doc(from, doc).await?;
+            self.take_doc(doc).await?;
         }
         for envelope in given.give.into_iter().take(64) {
             if let Ok(doc) = documents::verify(envelope)
-                && let Err(error) = self.take_doc(from, doc).await
+                && let Err(error) = self.take_doc(doc).await
                 && !matches!(
                     error,
                     Error::Conflict | Error::Version(_) | Error::Invalid(_)
@@ -366,6 +412,19 @@ impl Owner {
         } else if setup.role == Role::Primary {
             self.publish_to(peer.clone(), false).await?;
         }
+        if setup.role == Role::Member {
+            for kind in [Kind::SetupShared, Kind::Peers, Kind::Phones] {
+                if let Some(doc) = document::cached(&self.link, kind)
+                    && !given.iter().any(|entry| {
+                        entry.0 == setup.sign
+                            && entry.1 == kind
+                            && (entry.2 > doc.n || (entry.2 == doc.n && entry.3 == doc.digest()))
+                    })
+                {
+                    self.send_doc(&peer, doc.envelope).await;
+                }
+            }
+        }
         if !reply && behind {
             self.send(&peer, json!({
                 "docs": {"have": document::header(&self.link, &self.exports), "reply": true}, "at": lease::wall(),
@@ -374,9 +433,9 @@ impl Owner {
         Ok(())
     }
 
-    async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
+    async fn take_doc(&mut self, doc: Document) -> Result<(), Error> {
         match doc.kind {
-            Kind::SetupShared => self.take_replica(from, doc).await,
+            Kind::SetupShared => self.take_replica(doc).await,
             Kind::SetupCheckpoint => {
                 let setup = self.link.setup()?;
                 if doc.body.get("id").and_then(Value::as_str) != Some(&setup.position.id) {
@@ -437,7 +496,7 @@ impl Owner {
         }
     }
 
-    async fn take_replica(&mut self, from: &str, doc: Document) -> Result<(), Error> {
+    async fn take_replica(&mut self, doc: Document) -> Result<(), Error> {
         #[derive(Deserialize)]
         struct Replica {
             id: String,
@@ -448,7 +507,6 @@ impl Owner {
         }
         let setup = self.link.setup()?;
         if setup.role != Role::Member
-            || setup.position.primary != from
             || setup.sign != encode(&doc.origin)
             || setup.position.epoch != doc.n
         {
@@ -463,10 +521,10 @@ impl Owner {
         membership(&replica.replica, &setup.position, &setup.sign)?;
         if replica.replica.keys().any(|kind| !kind.published())
             || replica.replica.iter().any(|(kind, entry)| {
-                self.link
-                    .shared
-                    .get(kind)
-                    .is_some_and(|old| old.sequence > entry.sequence)
+                self.link.shared.get(kind).is_some_and(|old| {
+                    old.sequence > entry.sequence
+                        || (old.sequence == entry.sequence && old.value != entry.value)
+                })
             })
         {
             return Ok(());
@@ -489,6 +547,11 @@ impl Owner {
                 .is_none_or(|old| old.sequence < entry.sequence)
         }) {
             next.shared.extend(replica.replica);
+            changed = true;
+        }
+        let envelope = json!(doc.envelope);
+        if next.extra.get("setupReplica") != Some(&envelope) {
+            next.extra.insert("setupReplica".into(), envelope);
             changed = true;
         }
         if changed {
