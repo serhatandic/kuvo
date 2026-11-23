@@ -47,10 +47,18 @@ const shortestStretch = (minutes: number | undefined) => Math.max(15 * MINUTE, l
 
 /** Used up from here: a reading this close to the whole of it. */
 const USED_UP = 0.995
-/** A window that starts over this much later than before is a new period. */
-const NEW_PERIOD = 5 * MINUTE
-/** At most this many readings are kept of a window. */
-const MOST = 120
+/** Reset times can move slightly between readings, especially between computers. */
+const RESET_JITTER = 5 * MINUTE
+/** Keep the first and last readings in each time bucket, at most 98 over two lookbacks. */
+const BUCKETS_PER_LOOKBACK = 24
+
+function startedOver(previousReset: number | undefined, last: PaceSample, window: PacedWindow): boolean {
+  const { resetsAt, read, minutes, used } = window
+  if (resetsAt === undefined || previousReset === undefined || resetsAt <= previousReset + RESET_JITTER) return false
+  if (read >= previousReset) return true
+  // An early refill can also start a period: its new start and drop in usage must agree.
+  return minutes !== undefined && resetsAt - minutes * MINUTE >= last.at - RESET_JITTER && used < last.used - 0.02
+}
 
 export class Pace {
   private trails = new Map<string, Trail>()
@@ -62,20 +70,21 @@ export class Pace {
     if (window.resetsAt !== undefined && window.resetsAt <= now) return
     let trail = this.trails.get(key)
     const last = trail?.samples.at(-1)
-    const newPeriod = !trail
-      || (window.resetsAt !== undefined && trail.resetsAt !== undefined && Math.abs(window.resetsAt - trail.resetsAt) > NEW_PERIOD)
-      || (last !== undefined && window.used < last.used - 0.02)
-    if (newPeriod) {
-      trail = { ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}), samples: [] }
+    // A peer can disappear and expose an older reading of the same window.
+    if (last && window.read <= last.at) return
+    if (!trail || (last && startedOver(trail.resetsAt, last, window))) {
+      trail = { samples: [] }
       this.trails.set(key, trail)
     }
-    if (window.resetsAt !== undefined) trail!.resetsAt = window.resetsAt
-    const samples = trail!.samples
-    if (samples.some((sample) => sample.at === window.read)) return
+    if (window.resetsAt !== undefined) trail.resetsAt = window.resetsAt
+    const samples = trail.samples
+    const stretch = lookback(window.minutes)
+    const bucket = (at: number) => Math.floor(at / (stretch / BUCKETS_PER_LOOKBACK))
+    const beforePrevious = samples.at(-2)
+    if (beforePrevious && bucket(beforePrevious.at) === bucket(window.read)) samples.pop()
     samples.push({ at: window.read, used: window.used })
-    samples.sort((a, b) => a.at - b.at)
-    const since = window.read - 2 * lookback(window.minutes)
-    while (samples.length > MOST || (samples.length > 1 && samples[0]!.at < since)) samples.shift()
+    const since = window.read - 2 * stretch
+    while (samples[0]!.at < since) samples.shift()
   }
 
   /** What a window's readings say of it now; nothing where they're too few or too close together. */
@@ -86,7 +95,7 @@ export class Pace {
     const trail = this.trails.get(key)
     if (!trail) return undefined
     const latest = trail.samples.at(-1)
-    if (!latest) return undefined
+    if (!latest || latest.at !== window.read) return undefined
     const recent = trail.samples.filter((sample) => sample.at >= latest.at - lookback(window.minutes))
     const first = recent[0]!
     if (recent.length < FEWEST_READINGS || latest.at - first.at < shortestStretch(window.minutes)) return undefined
@@ -107,7 +116,8 @@ export class Pace {
     if (!saved || typeof saved !== "object") return
     for (const [key, trail] of Object.entries(saved as Record<string, any>)) {
       if (!trail || !Array.isArray(trail.samples)) continue
-      const samples = trail.samples.filter((sample: any) => typeof sample?.at === "number" && typeof sample?.used === "number").slice(-MOST)
+      // Old saves capped by count at 120. Time buckets keep new trails below that bound.
+      const samples = trail.samples.filter((sample: any) => Number.isFinite(sample?.at) && Number.isFinite(sample?.used)).slice(-120)
       this.trails.set(key, { ...(typeof trail.resetsAt === "number" ? { resetsAt: trail.resetsAt } : {}), samples })
     }
   }

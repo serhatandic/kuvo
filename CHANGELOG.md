@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
+
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
 - Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.
 - The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
