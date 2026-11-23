@@ -2,6 +2,7 @@
 // account. The engine and Keychain tools are the golden fixture's stand-ins.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -636,6 +637,24 @@ keeper.listen(0, "127.0.0.1", () => console.log(keeper.address().port));
     assert.deepEqual(readJSON(path.join(app.K, "run/letters-seen.json")), { ltr_valid: at, ltr_other: at });
     assert.equal(fs.existsSync(path.join(app.K, "run/outbox/sending/ltr_away.json")), false);
     assert.ok(reply.status.dropped.includes("A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along."));
+  });
+
+  await t.test("an older pending message keeps its reply reference and valid Unicode at the size limit", () => {
+    reset();
+    const peer = "A".repeat(43);
+    const text = "a".repeat(31_999) + "😀";
+    const pending = { from: "ses_one", to: "ses_two", text, machine: "mini", at: 2_000_000_000_000, answers: "ltr_reply" };
+    write(path.join(app.S, "phone-link.json"), JSON.stringify({ machines: { mini: { peers: true, key: peer } } }));
+    write(path.join(app.S, "agent-messages.json"), JSON.stringify([pending]));
+    assert.equal(move(0).result, "done");
+    const id = "wtg_" + createHash("sha256").update(`${pending.from}\0${pending.to}\0${text}`).digest("hex").slice(0, 32);
+    const { text: carried, ...letter } = readJSON(path.join(app.K, `run/outbox/sending/${id}.json`));
+    assert.equal(carried.length, 31_999);
+    assert.equal(/^a+$/.test(carried), true);
+    assert.deepEqual(letter, {
+      from: pending.from, to: pending.to, wait: false,
+      at: pending.at, peer, answers: pending.answers,
+    });
   });
 
   await t.test("settings left with the old app are named once in the move receipt", () => {
