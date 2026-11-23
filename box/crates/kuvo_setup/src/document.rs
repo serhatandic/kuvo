@@ -136,6 +136,41 @@ pub(crate) fn published(
     Ok((live, changed))
 }
 
+/// These are the main's original signatures. A member can forward them after reconnecting.
+pub(crate) fn cached(link: &Link, kind: Kind) -> Option<Document> {
+    let setup = link.setup().ok()?;
+    let source = if let Some(bucket) = bucket(kind) {
+        link.extra
+            .get("docs")?
+            .get(format!("{} {bucket}", setup.sign))?
+    } else if kind == Kind::SetupShared {
+        link.extra.get("setupReplica")?
+    } else {
+        return None;
+    };
+    let doc = documents::verify(serde_json::from_value(source.clone()).ok()?).ok()?;
+    if doc.kind != kind || encode(&doc.origin) != setup.sign {
+        return None;
+    }
+    let current = match kind {
+        Kind::Peers => doc
+            .body
+            .get("setup")
+            .and_then(|value| serde_json::from_value::<Position>(value.clone()).ok())
+            .is_some_and(|position| position == setup.position),
+        Kind::Phones => {
+            doc.body.get("epoch").and_then(Value::as_u64) == Some(setup.position.epoch)
+                && doc.body.get("setup").and_then(Value::as_str) == Some(&setup.position.id)
+        }
+        Kind::SetupShared => {
+            doc.n == setup.position.epoch
+                && doc.body.get("id").and_then(Value::as_str) == Some(&setup.position.id)
+        }
+        _ => false,
+    };
+    current.then_some(doc)
+}
+
 pub(crate) fn header(link: &Link, exports: &[Export]) -> Vec<DigestEntry> {
     let leader = link
         .setup()
@@ -145,6 +180,7 @@ pub(crate) fn header(link: &Link, exports: &[Export]) -> Vec<DigestEntry> {
         .cloned();
     leader
         .chain(exports.iter().map(|(_, export)| export.clone()))
+        .chain(cached(link, Kind::SetupShared).map(|doc| doc.envelope))
         .filter_map(|value| {
             let doc = documents::verify(value).ok()?;
             Some(digest_entry(&doc))
@@ -173,7 +209,15 @@ pub(crate) fn missing(given: &[DigestEntry], doc: &Document) -> bool {
         .iter()
         .rev()
         .find(|row| row.0 == origin && row.1 == kind)
-        .is_none_or(|row| row.2 < count || (row.2 == count && row.3 > hash))
+        .is_none_or(|row| {
+            row.2 < count
+                || (row.2 == count
+                    && if kind == Kind::SetupShared {
+                        row.3 != hash
+                    } else {
+                        row.3 > hash
+                    })
+        })
 }
 
 fn eligible(link: &Link, doc: &Document) -> bool {

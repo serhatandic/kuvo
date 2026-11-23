@@ -80,7 +80,7 @@ contains 222 declarations across the listed files, including adjacent work.
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 6 | The lease client carries the saved high mark and reserves renewal headroom. The allocator, grant replays, queue mutations and Markdown import are 5.2. | 5.2 allocation, replay and import. |
 | [setup-two-boxes](../../box/bridge-tests/setup-two-boxes.test.js) | 3 | Common roster → B2. Handover → B3. Cards → R1. SSH enrollment, member device refusals, names saved through the computer management route, and queue numbering span 2.2, 2.3 and 5.2. | 2.2 device policy. 2.3 enrollment and computer management. 5.2 numbering. |
 | [documents](../../box/bridge-tests/documents.test.js) | 20 | Vector validation and part corruption → W1 and B8. Current bootstrap, following the main and stale authority → B1, B2, B6. Lost-mail catch-up → B7. Personality removal → B5. The old Mac-ranked, overlapping-setup, and credential re-enrollment cases require their compatibility or later setup paths. B17 covers third-computer forwarding. D1 and D2 cover count recovery and limits, equal-count ordering, and rejection of an alternate main at the same epoch. B24 covers lost publication with both computers connected. Phone denials and legacy library mail are covered by their respective ports. | 2.2 device denials. 2.3 re-enrollment and merged setups. 2.6 old authority. 7.3 old Mac mail and legacy personalities. |
-| [devices-two-boxes](../../box/bridge-tests/devices-two-boxes.test.js) | 7 | Accepted membership and its replica → B2 and B7. Signed device pairing and removal → R4 and R5 at the managed adapter. Device admission routes, device sessions and the reconnect phone/membership exchange are 2.2. Removal with incoming devices switched off and uninstall are 2.3. B17 checks signed roster and device document catch-up through another member. | 2.2 admission, device sessions, grants, paired reconnect and inbound switch. 2.3 uninstall. |
+| [devices-two-boxes](../../box/bridge-tests/devices-two-boxes.test.js) | 7 | Accepted membership and its replica → B2 and B7. R4 and R5 cover the signed adapter. [Managed](rust-peers-coverage.md#typescript-scenario-map) covers managed routes, Noise admission, signed reconnect exports and catch-up through another member. | 2.3 inbound-device switch and uninstall. |
 | [personalities-box](../../box/bridge-tests/personalities-box.test.js) | 10 | Standalone save and removal-wins merge → B1 and B5. Route conformance covers missing fields and preset IDs. B18 covers oversized merge, 500 removals and ID filtering. B19 covers stream changes from an external writer and future-format refusal. | 2.6 app-folder libraries. 5.1 retelling bots. |
 | [time-zone bridge scenarios](../../box/bridge-tests/time-zone.test.js) | 3 | Clock settings and wake-up projection → B4. B20 covers kit and launch fallback. B21 checks that a member with a zone absent from its database projects received rules and warns when rules are unavailable. | 5.1 wake scheduling. |
 | [setup-mac](../../box/bridge-tests/setup-mac.test.js) | 7 | Bootstrap and restart with Helper keys → B12. The other cases cover the retired rank rule, key rotation, SSH re-enrollment or following independent writers of link state under the same lock. | 9.1 cross-process link handoff. 2.3 key rotation and re-enrollment. 2.6 retired rank and 9.3 released Mac rehearsal. |
@@ -130,13 +130,24 @@ contains 222 declarations across the listed files, including adjacent work.
 | [Independent edits converge in either order](../../box/bridge-tests/documents.test.js#L548) | B2 covers independent and conflicting preference changes. B25 checks both orders. | 3.2 session records. 5.2 queue records. |
 | [Only signed `left` plus absence releases a machine](../../box/bridge-tests/documents.test.js#L570) | 2.3 accepted removal and unlink. | 2.3. |
 | [Recovery rejects an implausibly high counter](../../box/bridge-tests/documents.test.js#L585) | D1. | Covered. |
-| [Desktop pairs through a member and is removed](../../box/bridge-tests/devices-two-boxes.test.js#L297) | R4 and R5 cover the signed writer and replica. The managed routes and session access are the 2.2 follow-up. | 2.2. |
+| [Desktop pairs through a member and is removed](../../box/bridge-tests/devices-two-boxes.test.js#L297) | R4 and R5 cover the signed writer and replica. Managed exercises the peer routes and Noise admission through a member. | Covered. |
 | [A relay refuses unsupported route versions](../../box/bridge-tests/devices-two-boxes.test.js#L416) | 1.4/2.2 paired transport. | 1.4 and 2.2. |
-| [Removal with the main's incoming-device switch off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | R5 covers revocation. The switch and route combination remains open. | 2.2. |
-| [Reconnect returns membership and phones](../../box/bridge-tests/devices-two-boxes.test.js#L520) | B7 covers membership replica catch-up. Paired reconnect is the 2.2 follow-up. | 2.2. |
-| [Reconnect catches up through another member](../../box/bridge-tests/devices-two-boxes.test.js#L543) | B17 checks the signed copies reaching the third computer. Paired session reattachment remains open. | 2.2. |
+| [Removal with the main's incoming-device switch off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | R5 covers revocation. | 2.3 inbound-device switch and route combination. |
+| [Reconnect returns membership and phones](../../box/bridge-tests/devices-two-boxes.test.js#L520) | Managed verifies both signed exports and the reconnect receipt. | Covered. |
+| [Reconnect catches up through another member](../../box/bridge-tests/devices-two-boxes.test.js#L543) | B17 checks third-computer document forwarding. Managed verifies the original main-signed revocation applies with only another member online. | Covered. |
 | [Uninstall refuses while a member is active](../../box/bridge-tests/devices-two-boxes.test.js#L701) | 2.3 uninstall. | 2.3. |
 | [Uninstall revokes its desktop before stopping](../../box/bridge-tests/devices-two-boxes.test.js#L739) | R4 covers durable signed revocation. Uninstall coordination belongs to 2.3. | 2.3. |
+
+### Cases inherited from the peer port
+
+| Reference scenario | Rust scenario or open assertion | Owner phase |
+|---|---|---|
+| [Peer announces its setup](../../box/bridge-tests/peers.test.js#L721) | B2 and B17 cover current signed setup discovery. The scenario's unsigned `agents.setup` announcements come from legacy Mac rosters. | 7.3 legacy projection. |
+| [Zone count ties in peer mail](../../box/bridge-tests/peers.test.js#L745) | B20 and B21 cover current carried zones and signed rules. [The TS mail reader](../../box/src/link/peers/mail.ts#L101) stops accepting zone mail once shared saves own it. | 7.3 legacy mail. |
+| [A Mac with no known address receives no answer](../../box/bridge-tests/peers.test.js#L875) | The scenario creates a legacy Mac with a saved signing key and no authenticated address. The current setup uses addressed hosts from accepted membership. | 7.3 legacy reach. |
+| [Legacy peer personality library](../../box/bridge-tests/peers.test.js#L885) | B5 covers the current removal rule. This exchange uses the old per-peer signed library and also retells affected bots. | 7.3 legacy library exchange. 5.1 bot retell. |
+| [Forwarded signed Mac roster and removal](../../box/bridge-tests/peers.test.js#L947) | B17 and D2 cover forwarding and signature eligibility for the current roster. The old unsigned list and Mac unlink path are separate. | 7.3 legacy roster. 2.3 unlink. |
+| [Current main, replay and offline sole main](../../box/bridge-tests/owner-mutations.test.js#L105) | B6 fences the old main, B10 returns the original receipt, and B1 saves with the relay absent. | Covered. |
 
 ## Peer fixture changes
 
@@ -168,8 +179,8 @@ unmarked historical homes and exercise that boundary.
 - `ResidentPeers` owns the relay and setup subscribes through its
   `RelayHandle`. `SetupHandle::change_devices` provides the signed managed
   device writer. Its primary and forwarded paths use the same durable
-  membership transaction. Device routes and relay session grant integration
-  are the 2.2 follow-up.
+  membership transaction. Device routes and relay session grants use this
+  adapter in 2.2b.
 - The accepted edit history handles preference fields. Text passages, session
   notes, work inventory and operational moves remain the owning areas'
   responsibility. The local Mac helper adapter authenticates the host before
