@@ -1,9 +1,11 @@
 //! The resident's on-demand OpenCode and its API passthrough.
 
 mod api;
+mod asks;
 mod attachments;
 mod context;
 mod conversation;
+mod delivery;
 mod disk;
 mod launch;
 mod lifetime;
@@ -12,15 +14,19 @@ mod naming;
 mod parts;
 mod proxy;
 mod queue;
+mod search;
 mod send;
 mod session_list;
 mod sessions;
 mod start_session;
 mod typed;
+mod waiting;
 
 use http::StatusCode;
 use kuvo_protocol::routes::{post_kuvo_engine_restart as restart, post_kuvo_engine_start as start};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
+
+pub const FEATURES: &[&str] = &["search", "sessions.models", "typed", "typed.draft"];
 
 pub use launch::pinned_version;
 pub use lifetime::{Engine, State, Timing};
@@ -30,13 +36,18 @@ impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {
         let list = LocalSessions::start(self.clone());
         session_list::register(list.clone(), routes);
+        asks::register(self, list.clone(), routes);
+        waiting::register(self, list.clone(), routes);
+
         parts::register(routes);
         models::register(self, routes);
+        search::register(self, routes);
         queue::register(self, routes);
         send::register(self, list.clone(), routes);
         sessions::register(self, routes);
         start_session::register(self, list.clone(), routes);
         typed::register(self, list.clone(), routes);
+        delivery::register(self, list.clone(), routes);
         let engine = self.clone();
         routes.engine(move |request, cancel| proxy::http(engine.clone(), request, cancel));
         let engine = self.clone();

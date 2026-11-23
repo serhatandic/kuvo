@@ -141,10 +141,10 @@ export async function request(record, method, route, body, headers = {}) {
   return { status: reply.statusCode, type: reply.headers["content-type"] ?? "", text, json, bytes };
 }
 
-export async function openLine(record, query = "") {
+export async function openLine(record, query = "", headers = {}) {
   const stop = new AbortController();
   const response = await fetch(`http://127.0.0.1:${record.port}/kuvo/line${query}`, {
-    headers: { authorization: authorization(record.password), "x-kuvo-route-version": "1" },
+    headers: { authorization: authorization(record.password), "x-kuvo-route-version": "1", ...headers },
     redirect: "error", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(10000)]),
   });
   return {

@@ -101,3 +101,68 @@ impl Engine {
         serde_json::from_value(value).map_err(Error::Invalid)
     }
 }
+
+#[derive(serde::Deserialize)]
+struct Page {
+    data: Vec<Value>,
+    cursor: Option<PageCursor>,
+}
+
+#[derive(serde::Deserialize)]
+struct PageCursor {
+    next: Option<String>,
+    previous: Option<String>,
+}
+
+pub(crate) enum Scan {
+    Sessions,
+    Messages,
+}
+
+impl Scan {
+    pub async fn read(
+        self,
+        engine: &Engine,
+        lease: &Lease,
+        route: &str,
+    ) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = match self {
+            Self::Sessions => 100,
+            Self::Messages => 200,
+        };
+        let mut path = format!("{route}?limit={limit}&order=desc");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut rows = Vec::new();
+        for _ in 0..1000 {
+            let page = engine
+                .upstream
+                .request(&lease.record, Method::GET, &path)
+                .timeout(WAIT)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Page>()
+                .await?;
+            let count = page.data.len();
+            rows.extend(page.data);
+            if count == 0
+                || matches!(self, Self::Messages) && (count < limit || rows.len() >= 20_000)
+            {
+                break;
+            }
+            let next = page.cursor.and_then(|cursor| match self {
+                Self::Sessions => cursor.next,
+                Self::Messages => cursor.next.or(cursor.previous),
+            });
+            let Some(next) = next else { break };
+            if !seen.insert(next.clone()) {
+                return Err(std::io::Error::other("The engine's page cursor repeated.").into());
+            }
+            path = format!("{route}?limit={limit}&cursor={}", segment(&next));
+        }
+        if seen.len() == 1000 {
+            return Err(std::io::Error::other("The engine's inventory did not finish.").into());
+        }
+        Ok(rows)
+    }
+}

@@ -105,7 +105,7 @@ async fn typed(
         return decision(engine, session, text).await;
     };
     let key = format!("typed\n{session}\n{id}");
-    let _turn = engine.turn(&key).await;
+    let _turn = engine.draft_turns.acquire(&key).await;
     let file = engine.home.join("run/typed-sent.json");
     let receipts = read_decisions(&file).await?;
     let now = disk::now();
@@ -120,7 +120,11 @@ async fn typed(
     let answer = decision(engine, session, text).await?;
     let bytes = serde_json::to_vec(&answer).expect("serializable decision");
     if bytes.len() <= KEEP_BYTES {
-        let _writer = engine.turn("typed-decisions").await;
+        let _writer = engine
+            .decision_writer
+            .acquire()
+            .await
+            .expect("the decision writer stays open");
         let mut receipts = read_decisions(&file).await?;
         let at = disk::now();
         receipts.version = 1;
@@ -146,11 +150,11 @@ async fn typed(
 
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Draft {
-    id: String,
-    text: String,
-    quoted_text: Option<String>,
-    message: Map<String, Value>,
+pub(crate) struct Draft {
+    pub id: String,
+    pub text: String,
+    pub quoted_text: Option<String>,
+    pub message: Map<String, Value>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -163,7 +167,7 @@ struct DraftReceipt {
     outcome: Option<Value>,
 }
 
-fn author(caller: &Caller) -> Result<String, Refusal> {
+pub(crate) fn author(caller: &Caller) -> Result<String, Refusal> {
     match caller {
         Caller::Paired { pairing, .. } => {
             Ok(format!("{}:{}", hex::encode(pairing.key), pairing.id))
@@ -189,7 +193,7 @@ fn store_error(_: std::io::Error) -> Refusal {
     )
 }
 
-async fn submit(
+pub(crate) async fn submit(
     engine: &Engine,
     list: &LocalSessions,
     session: &str,
@@ -198,7 +202,7 @@ async fn submit(
     author: &str,
 ) -> Result<Value, Refusal> {
     let key = disk::key(session, &draft.id);
-    let _turn = engine.turn(&format!("draft:{key}")).await;
+    let _turn = engine.draft_turns.acquire(&format!("draft:{key}")).await;
     let path = engine
         .home
         .join("run/draft-receipts")
@@ -290,7 +294,7 @@ async fn submit(
     Ok(answer)
 }
 
-fn read_draft(call: &RouteCall<()>) -> Result<Draft, Refusal> {
+pub(crate) fn read_draft(call: &RouteCall<()>) -> Result<Draft, Refusal> {
     let bad = || Refusal::new(StatusCode::BAD_REQUEST, DRAFT_FIELDS);
     let draft: Draft = serde_json::from_slice(&call.request.body).map_err(|_| bad())?;
     if draft.id.is_empty()

@@ -139,6 +139,7 @@ fn info(
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
+    features.extend_from_slice(kuvo_engine::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }

@@ -8,7 +8,7 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
-  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
@@ -39,12 +39,14 @@ export async function standInEngine(root, env) {
       }
       if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {
+        if (engine.failStart === "before") return send({ message: "Cut short." }, 500);
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });
         for (const field of ["metadata", "permissions", "agent", "model", "parentID"]) {
           if (Object.hasOwn(given, field)) made[field] = given[field];
         }
         engine.sessions.push(made);
         publish({ type: "session.created", data: { sessionID: made.id, info: made } });
+        if (engine.failStart === "after") return send({ message: "Cut short." }, 500);
         return send({ data: made });
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);
@@ -66,6 +68,19 @@ export async function standInEngine(root, env) {
         const [removed] = engine.sessions.splice(at, 1);
         publish({ type: "session.deleted", data: { sessionID: removed.id } });
         return send({ data: true });
+      }
+      const ask = url.pathname.match(/^\/api\/session\/([^/]+)\/(permission|form)(?:\/([^/]+)(?:\/reply)?)?$/);
+      if (ask) {
+        const [, id, type, key] = ask;
+        const items = type === "permission" ? engine.permissions : engine.forms;
+        if (request.method === "GET") return send({ data: items.get(id) ?? [] });
+        const pending = items.get(id) ?? [];
+        const index = pending.findIndex(item => item.id === decodeURIComponent(key));
+        if (index < 0) return send({}, 404);
+        const [answered] = pending.splice(index, 1);
+        publish({ type: type + (request.method === "DELETE" ? ".cancelled" : ".replied"),
+          data: { sessionID: id, requestID: answered.id } });
+        return send({});
       }
       const prompt = url.pathname.match(/^\/api\/session\/([^/]+)\/prompt$/);
       if (prompt && request.method === "POST") {
@@ -160,6 +175,7 @@ export async function standInEngine(root, env) {
   });
   return Object.assign(engine, {
     emit: publish,
+    subscribers: () => streams.size,
     record: { port: server.address().port, password: "engine", version: "0.0.0", pid: process.pid },
     close: () => new Promise(resolve => {
       server.close(resolve);
