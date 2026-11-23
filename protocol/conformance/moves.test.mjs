@@ -234,6 +234,7 @@ test("a resident keeps the saved draft pending while a recovered move holds its 
   const session = "ses_heldDraft";
   const draft = { id: "msg_heldDraft", text: "Keep it until this session can take it.", message: {} };
   here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  here.engine.sessions.push(sessionOf({ id: "ses_available", directory: path.join(here.home, "chats") }));
   const journal = path.join(here.home, "run/moves/mov_heldDraft.json");
   write(journal, JSON.stringify({ formatVersion: 1, id: "mov_heldDraft", role: "to", stage: "copying", kind: "chat", thing: session,
     from: "other", to: "local", peer: "other", sessions: [session], started: Date.now(), safeSwitch: true,
@@ -245,8 +246,11 @@ test("a resident keeps the saved draft pending while a recovered move holds its 
   assert.equal(answer.json.status, "pending");
   await first.stop();
   const restarted = await here.start().ready();
-  const claim = path.join(here.home, "run/draft-receipts");
-  await until(() => fs.existsSync(claim) && fs.readdirSync(claim).some(name => name.endsWith(".json")), "The worker never tried the saved draft");
+  const other = await request(restarted, "POST", "kuvo/sessions/ses_available/delivery?computer=here",
+    { id: "msg_available", text: "This conversation can take another message.", message: {} }, headers);
+  assert.equal(other.status, 202, other.text);
+  await until(async () => (await request(restarted, "GET", `kuvo/data/messages/${other.json.operation}`, undefined, headers)).json?.status === "committed",
+    "The worker did not reach another draft after the held one", 12000);
   assert.ok(!here.engine.asked.some(call => call.method === "POST" && call.path === `/api/session/${session}/prompt`));
   const receipt = `kuvo/data/messages/${answer.json.operation}`;
   assert.equal((await request(restarted, "GET", receipt, undefined, headers)).json.status, "pending");

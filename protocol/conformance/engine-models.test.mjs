@@ -27,6 +27,17 @@ test("a model starred on a member is signed by the main and appears in both pick
   const member = other.connect(await other.start().ready());
   const view = await member("GET", "kuvo/setup");
   assert.equal(view.json.you.role, "member", view.text);
+  const mainFeatures = (await holder("GET", "kuvo/info")).json.features;
+  if (mainFeatures.includes("data.ownership")) {
+    const peerBook = path.join(other.home, "run", "peer-agents.json");
+    await until(() => {
+      try {
+        return JSON.parse(fs.readFileSync(peerBook, "utf8"))[setup.json.you.key]?.features?.includes("data.ownership");
+      } catch { return false; }
+    }, "The member did not receive the main computer's forwarding capability.");
+  }
+  await until(async () => (await member("GET", route)).json?.starred?.some(star => star.id === kept.id),
+    "The member did not receive the shared stars before changing them.");
   const starred = await member("POST", route, { ...newStar, starred: true }, desktop);
   assert.equal(starred.status, 200, starred.text);
   assert.deepEqual(starred.json.starred, [kept, newStar]);

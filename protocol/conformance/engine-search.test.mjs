@@ -42,7 +42,14 @@ test("search prefers conversation words and keeps its cache when the engine cann
   const older = sessionOf({ id: "ses_older", directory: here.home, title: "Open" });
   const detail = sessionOf({ id: "ses_reviewPart", directory: here.home, parent: newest.id });
   detail.metadata = { kuvo: { reviewPart: true } };
-  here.engine.sessions.push(newest, older, detail);
+  const seat = sessionOf({ id: "ses_seat", directory: here.home });
+  seat.metadata = { kuvo: { seat: "grp_test" } };
+  const turn = sessionOf({ id: "ses_turn", directory: here.home });
+  turn.metadata = { kuvo: { engineFor: newest.id } };
+  const seatChild = sessionOf({ id: "ses_seatChild", parent: seat.id, directory: here.home });
+  const turnChild = sessionOf({ id: "ses_turnChild", parent: turn.id, directory: here.home });
+  const widget = sessionOf({ id: "ses_widget", directory: here.home });
+  here.engine.sessions.push(newest, older, detail, seat, turn, seatChild, turnChild, widget);
   here.engine.messages.set(newest.id, [
     { type: "assistant", content: [
       { type: "tool", state: { input: { command: "find Quartz in the build log" } } },
@@ -52,7 +59,14 @@ test("search prefers conversation words and keeps its cache when the engine cann
   here.engine.messages.set(older.id, [
     { type: "user", text: "An earlier Quartz result." },
   ]);
+  here.engine.messages.set(widget.id, [
+    { type: "user", text: "Pick the left one.\n\n<from-widget>\nThe user sent this from a widget shown in this conversation (show_widget), titled:\nChooseAmber\n</from-widget>" },
+    { type: "user", text: "[Session started] The build began without you.", metadata: { kuvo: { note: { from: "Its sessions" } } } },
+  ]);
   here.engine.messages.set(detail.id, [{ type: "user", text: "UnlistedReviewText" }]);
+  for (const session of [seat, turn, seatChild, turnChild]) {
+    here.engine.messages.set(session.id, [{ type: "user", text: "A HiddenQuartz result." }]);
+  }
   const record = await here.start().ready();
   const search = (q, limit) => request(record, "GET", "kuvo/search?" + new URLSearchParams({ q, ...(limit ? { limit } : {}) }));
   const found = await search("quartz");
@@ -60,6 +74,10 @@ test("search prefers conversation words and keeps its cache when the engine cann
   assert.deepEqual(found.json.results.map(row => [row.session, row.snippet]),
     [[newest.id, "Our Quartz result was accepted."], [older.id, "An earlier Quartz result."]]);
   assert.deepEqual((await search("UnlistedReviewText")).json, { results: [] });
+  for (const hidden of ["HiddenQuartz", "ChooseAmber", "show_widget", "build began"]) {
+    assert.deepEqual((await search(hidden)).json.results, [], hidden);
+  }
+  assert.deepEqual((await search("pick the left one")).json.results.map(row => row.session), [widget.id]);
   assert.deepEqual((await search("quartz", "1")).json.results.map(row => row.session), [newest.id]);
   assert.equal((await search("")).status, 400);
   here.engine.messages.set(older.id, [
