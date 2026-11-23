@@ -71,9 +71,19 @@ export async function standInEngine(root, env) {
       if (one && request.method === "PATCH") {
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
         if (!found) return send({ message: "No such session." }, 404);
-        Object.assign(found, given);
-        publish({ type: "session.updated", data: { sessionID: found.id, info: found } });
-        return send({ data: found });
+        const apply = () => {
+          Object.assign(found, given);
+          publish({ type: "session.updated", data: { sessionID: found.id, info: found } });
+          return send({ data: found });
+        };
+        if (engine.holdSessionPatch?.id === found.id) {
+          const held = engine.holdSessionPatch;
+          engine.holdSessionPatch = null;
+          held.accepted();
+          void held.release.then(apply);
+          return;
+        }
+        return apply();
       }
       if (one && request.method === "DELETE") {
         const at = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));

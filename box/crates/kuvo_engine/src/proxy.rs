@@ -21,6 +21,7 @@ const DIRECTORY: &str = "x-opencode-directory";
 const REQUEST_HEADERS: &[&str] = &["content-type", "accept", DIRECTORY, "last-event-id"];
 const RESPONSE_HEADERS: &[&str] = &["content-type", "cache-control"];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const SESSION_WRITE_TURN: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct Upstream(Client);
@@ -236,26 +237,29 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     if let Err(refused) = crate::consent::raw(&engine, &lease, &request, &cancel).await {
         return refused.reply();
     }
-    let archive = (request.method == Method::PATCH)
+    let changing = (request.method == Method::PATCH)
         .then(|| path.strip_prefix("api/session/"))
         .flatten()
         .and_then(|id| percent_encoding::percent_decode_str(id).decode_utf8().ok())
-        .filter(|id| crate::sessions::valid_id(id))
-        .zip(
-            serde_json::from_slice::<Value>(&request.body)
-                .ok()
-                .and_then(|body| body["metadata"]["kuvo.archived"].as_bool()),
-        );
-    let mut archive_turn = None;
+        .filter(|id| crate::sessions::valid_id(id));
+    let mut session_turn = None;
     let mut flip = None;
-    if let Some((id, archived)) = &archive {
-        archive_turn = Some(engine.turn(id).await);
-        let before = engine
-            .call::<Value>(&lease, Method::GET, path, None)
-            .await
-            .ok();
-        if before.map(|state| state["metadata"]["kuvo.archived"] == true) != Some(*archived) {
-            flip = Some((id, *archived));
+    if let Some(id) = &changing {
+        session_turn = cancel.run_until_cancelled(engine.turn(id)).await;
+        if session_turn.is_none() {
+            return down(&engine).await.reply();
+        }
+        if let Some(archived) = serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .and_then(|body| body["metadata"]["kuvo.archived"].as_bool())
+        {
+            let before = engine
+                .call::<Value>(&lease, Method::GET, path, None)
+                .await
+                .ok();
+            if before.map(|state| state["metadata"]["kuvo.archived"] == true) != Some(archived) {
+                flip = Some((id, archived));
+            }
         }
     }
     let mut outgoing =
@@ -271,8 +275,19 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
         let body = crate::attachments::raw(&engine, &request).await;
         outgoing = outgoing.body(body.map_or(request.body, Into::into));
     }
+    let send = async {
+        let request = outgoing.send();
+        tokio::pin!(request);
+        tokio::select! {
+            answer = &mut request => answer.ok(),
+            _ = tokio::time::sleep(SESSION_WRITE_TURN), if session_turn.is_some() => {
+                drop(session_turn.take());
+                request.await.ok()
+            }
+        }
+    };
     let response = tokio::select! {
-        result = outgoing.send() => result.ok(),
+        result = send => result,
         () = cancel.cancelled() => None,
     };
     let Some(response) = response else {
@@ -284,7 +299,7 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     {
         crate::sessions::after_archive(&engine, &lease, id, archived).await;
     }
-    drop(archive_turn);
+    drop(session_turn);
     let headers: HeaderMap = RESPONSE_HEADERS
         .iter()
         .filter_map(|&name| {

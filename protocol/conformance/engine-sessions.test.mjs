@@ -118,6 +118,41 @@ test("rename and archive keep session notes, and a subagent goes with its conver
   await until(() => !fs.existsSync(waiting), "The deleted session's waiting payload was retained.");
 });
 
+test("a raw session patch waits for the conversation's resident writer", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-note-turns");
+  const session = "ses_noteTurn";
+  const unrelated = "ses_noteOther151";
+  here.engine.sessions.push(
+    { ...sessionOf({ id: session, directory: here.home }), metadata: { keep: true } },
+    sessionOf({ id: unrelated, directory: here.home }),
+  );
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The session list did not connect.");
+  let accepted, release;
+  const atWrite = new Promise(resolve => { accepted = resolve; });
+  const unheld = new Promise(resolve => { release = resolve; });
+  here.engine.holdSessionPatch = { id: session, accepted, release: unheld };
+  const resident = request(record, "POST", `kuvo/sessions/${session}/pin`, { pinned: true });
+  await atWrite;
+  const raw = request(record, "PATCH", `api/session/${session}`, { metadata: { changedByClient: true } });
+  try {
+    const other = await request(record, "POST", `kuvo/sessions/${unrelated}/rename`, { title: "Independent" }, {}, 2000);
+    assert.equal(other.status, 200, other.text);
+    assert.equal(other.json.info.title, "Independent");
+  } finally {
+    release();
+  }
+  const [pin, patch] = await Promise.all([resident, raw]);
+  assert.equal(pin.status, 200, pin.text);
+  assert.equal(patch.status, 200, patch.text);
+  const writes = here.engine.asked.filter(call => call.method === "PATCH" && call.path === `/api/session/${session}`);
+  assert.deepEqual(writes.map(call => call.json.metadata), [
+    { keep: true, "kuvo.pinned": true }, { changedByClient: true },
+  ]);
+  assert.deepEqual(here.engine.sessions.find(row => row.id === session).metadata, { changedByClient: true });
+});
+
 test("a busy conversation can steer, edit and remove messages in its queue", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-queue");

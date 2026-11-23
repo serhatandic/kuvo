@@ -73,27 +73,7 @@ pub struct Engine {
     state: watch::Receiver<State>,
 }
 
-#[derive(Clone)]
-pub(crate) struct Turns(std::sync::Arc<[tokio::sync::Semaphore; 64]>);
-
-impl Turns {
-    pub(crate) fn new() -> Self {
-        Self(std::sync::Arc::new(std::array::from_fn(|_| {
-            tokio::sync::Semaphore::new(1)
-        })))
-    }
-
-    pub(crate) async fn acquire(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
-        // A stable stripe within this engine ensures writers of one session run in order.
-        let hash = session.bytes().fold(0usize, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
-        });
-        self.0[hash % self.0.len()]
-            .acquire()
-            .await
-            .expect("the engine's turns stay open")
-    }
-}
+pub(crate) use crate::turns::Turns;
 
 pub(crate) struct Lease {
     pub record: Record,
@@ -187,7 +167,7 @@ impl Engine {
         })
     }
 
-    pub(crate) async fn turn(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
+    pub(crate) async fn turn(&self, session: &str) -> crate::turns::Turn {
         self.turns.acquire(session).await
     }
 

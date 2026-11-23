@@ -30,6 +30,7 @@ mod session_move;
 mod sessions;
 mod start_session;
 mod submissions;
+mod turns;
 mod typed;
 mod waiting;
 

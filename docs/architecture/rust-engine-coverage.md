@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 76 of
-411 declarations are covered, 114 are partial and 221 are gaps.
-Row 3.2 retains 210 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 78 of
+411 declarations are covered, 114 are partial and 219 are gaps.
+Row 3.2 retains 208 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -112,8 +112,8 @@ owners on the same case each own the part described by their phase.
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
 | `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
-| `box/test/session-notes.test.ts` (8) | — | 6 | 1–5, 7–8 | 3.2 · 1–8 |
-| `box/test/session-notes-writers.test.ts` (7) | — | 1 | 2–7 | 3.2 · 1–7<br>7.3 · 6 |
+| `box/test/session-notes.test.ts` (8) | 2 | 6 | 1, 3–5, 7–8 | 3.2 · 1, 3–8 |
+| `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
@@ -154,9 +154,11 @@ Each row uses the same one-based numbering and ownership rule.
 ### Implementation and remaining parity work
 
 The Rust queue uses the TypeScript index and waiting payload paths and the
-shared Rust atomic file writer. A
-per-session turn orders writes and an owned permit serializes durable index
-replacement off the resident executor. Removal and Undo leave a spent token
+shared Rust atomic file writer. A Tokio task orders writers by session or
+receipt key. A dropped caller releases its turn, and an unrelated session
+can write while one is waiting on OpenCode. Forwarded session PATCH requests
+use the same turn as resident writers. An owned permit serializes durable
+queue index replacement off the resident executor. Removal and Undo leave a spent token
 so a retry cannot take a new occurrence. Direct sends journal the original
 request before posting. On retry the resident checks the saved answer, the
 box queue, the OpenCode inbox and then the exact transcript ID. The journal has
@@ -319,7 +321,7 @@ records or runtime endpoint they hold.
 | `agents`, `run/agents.json` | 4.1 | Agent runtime and roster |
 | `agents/limits.json`, `agents/usage`, `agents/usage/claude-files`, `agents/usage/codex-files`, `agents/usage/grok-files`, `agents/usage/insights.sqlite`, `agents/usage/insights.sqlite-shm`, `agents/usage/insights.sqlite-wal`, `agents/usage/settings.json`, `agents/usage/usage.json`, `run/usage-attribution.json` | 5.4 | Usage, limits and the Insights database sidecars |
 | `artifacts`, `artifacts/citations-v1.json`, `artifacts/copies`, `artifacts/index-v1.sqlite`, `artifacts/key`, `artifacts/log`, `box/marketplace`, `box/marketplace/mcp-relay-v1.json`, `library`, `library/backfill.json`, `run/docs.changed` | 5.5 | Artifact storage, Library, and Marketplace relay and document invalidation |
-| `bots`, `run/bots-seen`, `run/notes`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json`, `wakes` | 5.1 | Bots, wakes, work activity, notes and notices |
+| `bots`, `run/bots-seen`, `run/notices`, `run/notices/teller`, `run/work`, `run/work/background.json`, `run/work/told.json`, `wakes` | 5.1 | Bots, wakes, work activity and notices |
 | `box/approval.json` | 6.1 | TypeScript's `approvalsSince` reads the differing `since` field to distinguish old and new sessions during approval adoption. Rust session start reads the shared `last` and `fullAccess` values. |
 | `chats` | 1.4 | TypeScript creates the folder on the first `kuvo/info` request. Rust creates it while preparing the resident's info response. |
 | `box/found-folders.json` | 6.3 | First-seen project folders |
@@ -328,6 +330,7 @@ records or runtime endpoint they hold.
 | `run/glance`, `run/glance/asks.json` | Identical | Both writers publish the `asks` object that the TypeScript reader in `glance/asked.ts` consumes. |
 | `run/glance-source.json` | Unread by released readers | `rg -n -F glance-source.json box/src box/crates gpui` finds only the Rust checkpoint reader and writer. The digest binds the checkpoint to its OpenCode process. |
 | `run/lists/sessions.json` | 3.2 | Both boxes and the Rust peer publisher read the list. Rust writes the same owner, start identity and `workByBot` fields and advances each inventory as one revision. The desktop restart still differed in the saved floor and the affected row's sequence. |
+| `run/notes` | 3.2, 7.3 | TypeScript keeps per-session writer locks. Rust orders these writes through the resident. Compatibility with the released lock and stale lock cleanup still need proof. |
 | `run/queues-scanned.json` | Identical | Both writers use a format-one port-to-process map. A same-process restart with a saved receipt resumes its inbox and preserves a stopped session in the conformance scenario. |
 | `run/github-sign-in`, `run/work-queue`, `run/work-queue/forward`, `run/work-queue/model.json`, `run/work-queue/numbers.json` | 5.2 | Work Queue model, numbering, forwarding and GitHub credential exchange |
 | `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signed shared values and outcomes, and local checkpoint projection |
