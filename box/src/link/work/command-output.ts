@@ -61,17 +61,31 @@ async function readOnce(command: Command, target: Target | null, signal?: AbortS
 // one that's no longer listed (it ended) is still read where it was.
 const listed = new Map<string, Command>();
 
-/** `session`'s command `id`, as the box lists what it left running (and as it last listed it, once
- * it no longer does); null for one it doesn't know. */
+/** Remember the source of commands handed to Activity so an open after completion can still read them. */
+export function rememberCommands(session: string, commands: ReturnType<typeof readSessionBackground>["commands"]): void {
+  for (const { id, command, started, folder, agents } of commands) {
+    const key = JSON.stringify([session, id]);
+    listed.delete(key);
+    listed.set(key, { id, command, started, ...(folder ? { folder } : {}), ...(agents ? { agents: true } : {}) });
+  }
+  while (listed.size > 200) listed.delete(listed.keys().next().value!);
+}
+
+/** Resolve a command from the running snapshot or from the last list sent to a client. */
 export function commandOf(session: string, id: string, file = WORK_BACKGROUND): Command | null {
-  const key = JSON.stringify([session, id]);
   const found = readSessionBackground(session, file).commands.find(each => each.id === id);
-  if (!found) return listed.get(key) ?? null;
-  const command: Command = { id: found.id, command: found.command, started: found.started, ...(found.folder ? { folder: found.folder } : {}), ...(found.agents ? { agents: true } : {}) };
-  listed.delete(key);
-  listed.set(key, command);
-  if (listed.size > 200) listed.delete(listed.keys().next().value!);
-  return command;
+  if (found) rememberCommands(session, [found]);
+  return listed.get(JSON.stringify([session, id])) ?? null;
+}
+
+/** The bridge owns shell IDs and keeps completed shells after they leave the Activity list. */
+export async function bridgeCommand(session: string, id: string, target: Target | null, signal?: AbortSignal): Promise<Command | null> {
+  if (!target || !id.startsWith("shl_")) return null;
+  const job = await call(target, "GET", `/api/shell/${encodeURIComponent(id)}`, undefined, signal).catch(() => null) as {
+    command?: string; metadata?: { sessionID?: string }; time?: { started?: number };
+  } | null;
+  if (job?.metadata?.sessionID !== session || typeof job.command !== "string" || typeof job.time?.started !== "number") return null;
+  return { id, command: job.command, started: job.time.started, agents: true };
 }
 
 /** A reader of what `command` printed, as the route answers it: each read given what was said last,

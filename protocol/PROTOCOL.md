@@ -569,6 +569,13 @@ Bots lead sessions; this is how the box keeps that work.
   check, so starts at the same moment count each other.
 - **Background work** is one fact, worked out on the box. `[Session finished]` waits while anything
   the session left is still running, but services that only listen don't hold it.
+  The process list and output read the same shell on its box. The bridge validates the session
+  when resolving a shell by ID after it leaves the active list. Claude Code supplies a live SDK
+  tail and a final output file. Codex reports liveness through its terminal list and output
+  through command events. The terminal list supplies neither an exit code nor past output.
+  Grok reports background tasks through ACP. Antigravity tracks background timers as subagent
+  work. Cursor reports subagents within a turn. The bridge's final `session.idle` clears the
+  session's turn from Activity. Any remaining background work counts separately.
 
 ## The coding agents' state
 

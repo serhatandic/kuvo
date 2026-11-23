@@ -161,3 +161,24 @@ test("a coding agent's command is read through their bridge, and still where it 
   keep(file, "bridge", "ses_agent", [])
   expect(await outputReader(commandOf("ses_agent", "shl_agent", file), () => ({ engine: null, bridge: target }))()).toMatchObject({ command: { id: "shl_agent", agents: true }, output: "watching for changes", state: "ended" })
 })
+
+test("a command opened from Activity after it finishes still shows its output", async () => {
+  const before = existsSync(WORK_BACKGROUND) ? readFileSync(WORK_BACKGROUND) : null
+  try {
+    const command = { id: "sh_race", command: "cargo build", started: 15, folder }
+    const route = "kuvo/work/background/ses_finish"
+    const handler = engineHandler((() => target) as any, { name: "test" } as any, (() => { throw new Error("No bridge") }) as any)
+    jobs.set(command.id, { folder, status: "running", printed: "Compiling\n" })
+    keep(WORK_BACKGROUND, "engine", "ses_finish", [command])
+    expect((await ask(handler, "GET", route)).json.commands).toEqual([command])
+    jobs.set(command.id, { folder, status: "exited", printed: "Compiling\nFinished\n" })
+    keep(WORK_BACKGROUND, "engine", "ses_finish", [])
+    expect((await ask(handler, "GET", route)).json.commands).toEqual([])
+    expect((await ask(handler, "GET", route + "/commands/sh_race/output")).json).toEqual({
+      command, output: "Compiling\nFinished", cut: false, state: "ended",
+    })
+  } finally {
+    if (before) writeFileSync(WORK_BACKGROUND, before)
+    else rmSync(WORK_BACKGROUND, { force: true })
+  }
+})
