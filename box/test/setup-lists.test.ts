@@ -255,7 +255,7 @@ test("Runs on lists this computer's models and its peers' at once after a restar
       const watch = Buffer.from(JSON.stringify({ runs: targets.runs })).toString("base64url");
       const { status, text } = await near.read(`kuvo/line?once=1&watch=${watch}`);
       expect(status).toBe(200);
-      const runs = text.trim().split("\n").map(line => JSON.parse(line)).find((row: any) => row.t === "runs")!.d;
+      const runs = text.trim().split("\n").map((line: string) => JSON.parse(line)).find((row: any) => row.t === "runs")!.d;
       expect(fitsShape(RUNS_ON, runs)).toBe(true);
       return runs.computers.map((row: any) => [row.computer.name, row.here ?? false, row.pending ?? false, row.offered.models.map((model: any) => model.id)]);
     };

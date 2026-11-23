@@ -10608,14 +10608,18 @@ seconds since 1970.
 
 - `GET kuvo/library[?source=all|you|<bot>][&kind=image|document|page|other][&q=<words>][&hidden=1]`:
   `{items, more, sources: {bots: [{id, name, look?, computer}], you}, computers: [{key, name, here?, state,
-  message?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
+  message?, seen?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
   ones; a search finds them). A bot's `look` is as `kuvo/bots` gives it, to draw it by. `q` matches words in an item's name, its bot's name and its computer's.
   The box asks each of your other computers for its part by mail (an act in the `library` area,
   `GET list {query}`) and labels each item with the computer it's on: `state` is `here` (this one),
   `there`, `away` (not answering now), `older` (its Kuvo Code has no Library yet) or `failed`, with a
-  `message` to show. A client shows the computer only when there's more than one.
+  `message` to show. A client shows the computer only when there's more than one. The box keeps each
+  other computer's part as last read (`run/library/peers/<key>.json`, the latest lists asked, never a
+  search with words): one away or not answering is listed with that part and `seen` (ms, when it was
+  read), its `message` saying it's as last seen, and none only the very first time.
 - `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
-  part changes or, asked again every 20 seconds, another's does.
+  part changes or, asked again every 20 seconds, another's does. Its first line doesn't wait for your
+  other computers: each is its part as last read (`state: there` with `seen`), until it answers.
 - `GET kuvo/library/<id>[?computer=<key>]`: the item; `…/file`: its bytes, with its type (the record's
   copy once the file is gone; `410` when there's neither); `…/thumbnail`: a PNG, or the picture as it
   is (`404` for none); `POST …/hide {hidden}`: removed from the Library (`hidden: false` puts it back),

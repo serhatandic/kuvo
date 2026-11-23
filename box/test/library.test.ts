@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url"
 import { ArtifactStore } from "../src/link/artifacts/store"
 import { Recorder, type Event, type Source } from "../src/link/artifacts/recorder"
 import { libraryService } from "../src/link/library/service"
-import { askPeers, libraryForPeer, merged, type Asked } from "../src/link/areas/library"
+import { askPeers, followLibrary, LIBRARY_PEERS, libraryForPeer, merged, type Asked } from "../src/link/areas/library"
 import type { Peer } from "../src/link/peers/known"
 
 // The Library (`kuvo/library`): what was handed over to you on a computer (a file an agent showed,
@@ -274,6 +274,31 @@ describe("across your computers", () => {
     const there = await askPeers("", null, { peers: [peer("k_studio", "Mac Studio")], has: () => true, away: () => false, ask: async () => ({ status: 503, refused: "Mac Studio stopped answering." }) })
     expect(there[0]).toMatchObject({ state: "away", message: "Mac Studio stopped answering." })
     expect(merged(there).items).toEqual([])
+  })
+
+  test("another computer's part as last read is listed at once after a restart, with when it was seen, while it's silent or away", async () => {
+    const laptop = peer("L".repeat(43), "Laptop")
+    const kept = join(LIBRARY_PEERS, `${laptop.key}.json`)
+    rmSync(kept, { force: true })
+    try {
+      const part = { items: [item("lib_b", 20)], sources: { you: true } }
+      await askPeers("kind=image", null, { peers: [laptop], has: () => true, away: () => false, ask: async () => ({ status: 200, value: part }), now: () => 1_700_000_000_000 })
+      // Started again, the Laptop not answering yet: its part comes in the first line, as of then.
+      const silent = { peers: [laptop], has: () => true, away: () => false, ask: (_: unknown, __: unknown, signal?: AbortSignal | null) => new Promise<any>(done => signal?.addEventListener("abort", () => done({ status: 503, refused: "stopped" }))) }
+      const follow = followLibrary("kind=image", null, silent as any)
+      expect(((await follow.next()).value as any).head.status).toBe(200)
+      const first = JSON.parse(Buffer.from(((await follow.next()).value as any).body).toString())
+      await follow.return(undefined)
+      expect(first.items.map((each: any) => [each.id, each.computer.name])).toEqual([["lib_b", "Laptop"]])
+      expect(first.computers.find((each: any) => each.name === "Laptop")).toMatchObject({ state: "there", seen: 1_700_000_000_000 })
+      // Away: still its part as last read, said so.
+      const away = await askPeers("kind=image", null, { peers: [laptop], has: () => true, away: () => true, ask: async () => { throw new Error("not asked") } })
+      const library = merged(away)
+      expect(library.items.map((each: any) => each.id)).toEqual(["lib_b"])
+      expect(library.computers[0]).toMatchObject({ state: "away", seen: 1_700_000_000_000, message: "Laptop isn’t answering now, so its part of the Library is as it was when last seen." })
+      // A list it never answered is said not shown.
+      expect((await askPeers("kind=page", null, { peers: [laptop], has: () => true, away: () => true }))[0]).toMatchObject({ state: "away", message: expect.stringContaining("isn’t shown") })
+    } finally { rmSync(kept, { force: true }) }
   })
 
   test("another computer asks only for the list, an item, its file or thumbnail, or removing one", async () => {
