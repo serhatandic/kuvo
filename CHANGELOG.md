@@ -7,6 +7,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
+- Kuvo keeps the previous file intact if Windows has it locked and refuses an unsupported home layout before starting.
+
 - The Rust box can show your other computers’ saved sessions and notices as soon as it starts, with their last-seen time when they’re away.
 - The Rust server starts OpenCode when work needs it, keeps it running through a server restart, and parks it when idle.
 

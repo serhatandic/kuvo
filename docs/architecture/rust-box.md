@@ -397,7 +397,7 @@ parallel.
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
-| 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home | store | 0.4, 0.2 | 6 | C |
+| 1.2 | **Done.** `kuvo_store`: home paths, envelopes, atomic writes, locks, layout 23 gate, policy declarations and SQLite. [Coverage](rust-store-coverage.md) | store | 0.4, 0.2 | 6 | C |
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
 | 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |

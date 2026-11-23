@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::{self, File},
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -669,16 +669,7 @@ impl Receipts {
 }
 
 fn lock(path: &Path) -> Result<File, Error> {
-    let file = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .read(true)
-        .open(path)
-        .map_err(|source| storage(path, source))?;
-    file.try_lock()
-        .map_err(|source| storage(path, source.into()))?;
-    Ok(file)
+    kuvo_store::locks::try_file_lock(path).map_err(|source| storage(path, source))
 }
 
 fn storage(path: &Path, source: io::Error) -> Error {
@@ -702,25 +693,15 @@ fn read<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Error> {
 }
 
 fn write(path: &Path, value: &impl Serialize) -> Result<(), Error> {
-    let parent = path.parent().expect("delivery file has a directory");
-    let mut temp =
-        tempfile::NamedTempFile::new_in(parent).map_err(|source| storage(path, source))?;
-    serde_json::to_writer(&mut temp, value).map_err(|source| Error::Json {
+    let bytes = serde_json::to_vec(value).map_err(|source| Error::Json {
         path: path.to_owned(),
         source,
     })?;
-    temp.flush()
-        .and_then(|_| temp.as_file().sync_all())
-        .map_err(|source| storage(path, source))?;
-    temp.persist(path)
-        .map_err(|error| storage(path, error.error))?;
-    sync_parent(path)
+    kuvo_store::files::write_atomic(path, &bytes).map_err(|source| storage(path, source))
 }
 
 fn relocate(from: &Path, to: &Path) -> Result<(), Error> {
-    fs::rename(from, to).map_err(|source| storage(from, source))?;
-    sync_parent(to)?;
-    sync_parent(from)
+    kuvo_store::files::replace_synced(from, to).map_err(|source| storage(from, source))
 }
 
 fn remove(path: &Path) -> Result<(), Error> {
@@ -732,12 +713,5 @@ fn remove(path: &Path) -> Result<(), Error> {
 }
 
 fn sync_parent(path: &Path) -> Result<(), Error> {
-    // Windows cannot flush a directory handle. The file handle was flushed before replacement.
-    #[cfg(unix)]
-    File::open(path.parent().expect("delivery file has a directory"))
-        .and_then(|dir| dir.sync_all())
-        .map_err(|source| storage(path, source))?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
+    kuvo_store::files::sync_parent(path).map_err(|source| storage(path, source))
 }
