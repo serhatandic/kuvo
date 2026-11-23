@@ -15,7 +15,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     Error, SetupHandle,
-    actor::{Command, Request, Response, View},
+    actor::{Command, Request, Response, Unlink, View},
     edits::{Edit, Submitter, Target},
     preferences::PersonalityChange,
 };
@@ -124,9 +124,85 @@ impl SetupHandle {
                 )
             }
         });
+        let setup = self.clone();
+        routes.register::<post_kuvo_computers_add_code::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    let by = submitter(&call.request.caller)?;
+                    let credentials = serde_json::from_slice::<Value>(&call.request.body)
+                        .ok()
+                        .and_then(|mut given| given.as_object_mut()?.shift_remove("credentials"));
+                    let answer = setup
+                        .request(Command::InstallerCode(credentials, by))
+                        .await?;
+                    if answer.status == 201 {
+                        typed::<post_kuvo_computers_add_code::Spec, 201>(answer.value)
+                    } else {
+                        Err(response_refusal(answer))
+                    }
+                }
+            },
+        );
+        let setup = self.clone();
+        routes.register::<patch_kuvo_computers_key::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let setup = setup.clone();
+                async move {
+                    let by = submitter(&call.request.caller)?;
+                    let key = call.param("key").unwrap_or_default().to_owned();
+                    let name = serde_json::from_slice::<Value>(&call.request.body)
+                        .ok()
+                        .and_then(|body| body["name"].as_str().map(ToOwned::to_owned))
+                        .unwrap_or_default();
+                    let answer = setup
+                        .request(Command::RenameComputer(key, name, by))
+                        .await?;
+                    if answer.status == 200 {
+                        typed::<patch_kuvo_computers_key::Spec, 200>(answer.value)
+                    } else {
+                        respond(answer)
+                    }
+                }
+            },
+        );
+        self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, false);
+        self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, true);
         self.register_edits(routes);
         self.register_personalities(routes);
         self.register_clock(routes);
+    }
+
+    fn register_unlink<R>(&self, routes: &mut Registry, explicit: bool)
+    where
+        R: RouteSpec<Body = ()> + JsonStatus<200> + Send + Sync + 'static,
+        <R as JsonStatus<200>>::Body: serde::de::DeserializeOwned,
+    {
+        let setup = self.clone();
+        routes.register::<R, _, _>(Access::DesktopOrPaired, move |call| {
+            let setup = setup.clone();
+            async move {
+                let by = submitter(&call.request.caller)?;
+                let key = call.param("key").unwrap_or_default().to_owned();
+                let body = &call.request.body;
+                let request = if body.is_empty() {
+                    Unlink::default()
+                } else {
+                    serde_json::from_slice::<Option<Unlink>>(body)
+                        .map_err(|_| {
+                            Refusal::new(StatusCode::BAD_REQUEST, "Send a valid removal request.")
+                        })?
+                        .unwrap_or_default()
+                };
+                respond(
+                    setup
+                        .request(Command::UnlinkComputer(key, request, explicit, by))
+                        .await?,
+                )
+            }
+        });
     }
 
     async fn request(&self, command: Command) -> Result<Response, Refusal> {
@@ -544,11 +620,15 @@ where
     if response.status == 200 {
         typed::<R, 200>(response.value)
     } else {
-        Err(Refusal::json(
-            StatusCode::from_u16(response.status).expect("setup response status"),
-            response.value,
-        ))
+        Err(response_refusal(response))
     }
+}
+
+fn response_refusal(response: Response) -> Refusal {
+    Refusal::json(
+        StatusCode::from_u16(response.status).expect("setup response status"),
+        response.value,
+    )
 }
 
 fn events<R>(

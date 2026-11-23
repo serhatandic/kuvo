@@ -194,7 +194,7 @@ unmarked historical homes and exercise that boundary.
 
 | Cross-area check | Owner phase |
 |---|---|
-| Installer code and real SSH enrollment in the two-computer conformance scenario | 2.3 |
+| SSH enrollment. The installer-code two-computer scenario passes on both boxes. | [2.3](rust-adding-coverage.md) |
 | Bot templates in the complete personality lifecycle | 5.1 |
 | Project list in the complete current golden-home scenario | 6.3 |
 | Tagged layout upgrade and released peer mail | 2.6 migration. 7.3 released readers. |
